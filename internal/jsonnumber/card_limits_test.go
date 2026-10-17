@@ -57,3 +57,11 @@ func TestBoundaryCardRunBarriers(t *testing.T) {
 		t.Fatal("number-only control lost evidence")
 	}
 }
+
+func TestTrailingDigitIssuerFixturesValidate(t *testing.T) {
+	for _, card := range []string{cardtest.Issuer("37", 15), cardtest.Issuer("3528", 16), cardtest.Issuer("4111", 16)} {
+		if !ValidCardNumber(card) {
+			t.Fatalf("fixture of length %d does not validate", len(card))
+		}
+	}
+}

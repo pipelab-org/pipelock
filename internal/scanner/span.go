@@ -112,8 +112,8 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 	}
 	if p.withoutLeftBoundary == nil {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			if p.accepts(text, loc[0], loc[1]) {
-				return loc[0], loc[1], true
+			if start, end, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
+				return start, end, true
 			}
 		}
 		return 0, 0, false
@@ -167,8 +167,9 @@ func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []i
 		return 0, 0, false
 	}
 	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		if p.accepts(text, loc[0], loc[1]) && p.validateJoined(text, loc[0], loc[1], source, offsets) {
-			return loc[0], loc[1], true
+		start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
+		if ok && p.validateJoined(text, start, end, source, offsets) {
+			return start, end, true
 		}
 	}
 	return 0, 0, false

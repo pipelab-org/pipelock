@@ -279,6 +279,9 @@ type CompiledDLPPattern struct {
 	Re       *regexp.Regexp
 	Severity string
 	validate func(string) bool // post-match checksum (Luhn, mod-97, etc.), nil = regex-only
+	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
+	// policy, so scan-diff and runtime scanning agree on card endpoints.
+	cardPrefixRetry bool
 }
 
 var gitProtectClassByPatternName = map[string]redact.Class{
@@ -319,6 +322,7 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 		cp.Re = re
 		if p.Validator != "" {
 			cp.validate = scanner.DLPValidators[p.Validator]
+			cp.cardPrefixRetry = scanner.RetriesCardPrefixes(p)
 		}
 		compiled = append(compiled, cp)
 	}
@@ -350,7 +354,7 @@ func (cp *CompiledDLPPattern) regexMatches(text string) bool {
 		return cp.Re.MatchString(text)
 	}
 	for _, match := range cp.Re.FindAllString(text, -1) {
-		if cp.validate(match) {
+		if scanner.AcceptsMatch(match, cp.validate, cp.cardPrefixRetry) {
 			return true
 		}
 	}

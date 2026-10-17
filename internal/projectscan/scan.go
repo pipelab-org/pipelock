@@ -287,6 +287,9 @@ type compiledDLP struct {
 	name     string
 	re       *regexp.Regexp
 	validate func(string) bool
+	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
+	// policy, so project scans and runtime scanning agree on card endpoints.
+	cardPrefixRetry bool
 }
 
 func compileDLPPatterns() ([]compiledDLP, error) {
@@ -312,6 +315,7 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
 			}
 			cp.validate = fn
+			cp.cardPrefixRetry = scanner.RetriesCardPrefixes(p)
 		}
 		patterns = append(patterns, cp)
 	}
@@ -326,7 +330,7 @@ func (p compiledDLP) matches(text string) bool {
 		return p.re.MatchString(text)
 	}
 	for _, match := range p.re.FindAllString(text, -1) {
-		if p.validate(match) {
+		if scanner.AcceptsMatch(match, p.validate, p.cardPrefixRetry) {
 			return true
 		}
 	}
