@@ -22,7 +22,7 @@ Generate or collect a receipt chain, then verify it offline:
 
 ```bash
 pipelock verify-receipt \
-  --chain /path/to/receipts.jsonl \
+  --chain /path/to/evidence-dir --whole-recorder \
   --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 

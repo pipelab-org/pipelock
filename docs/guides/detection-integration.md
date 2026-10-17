@@ -196,11 +196,18 @@ python -m pipelock_verify "$EVIDENCE_FILE" --key <public-key-hex>
 Or use the Go CLI that ships with Pipelock:
 
 ```bash
-pipelock verify-receipt "$EVIDENCE_FILE" --key <public-key-hex>
+pipelock verify-receipt "$EVIDENCE_FILE" --whole-recorder --key <public-key-hex>
 ```
 
-Both exit 0 on success, 1 on any signature failure, chain break, or
-reordering. The verifiers are byte-for-byte equivalent.
+Both exit 1 on a signature failure, chain break, or reordering in the
+ActionReceipt v1 chain, and both reproduce the same v1 signature and
+chain-linking checks. They don't check the same scope. `pipelock-verify`
+checks only that v1 chain, has no end proof, and exits 0 when it verifies.
+`pipelock verify-receipt` also checks the recorder hash chain and the
+EvidenceReceipt v2 chain. With `--whole-recorder` it exits 0 only when the
+run's transcript root proves its end. Without that flag, a cleanly stopped run
+that recorded v2 receipts, for example by blocking a request, reports
+`VALID PREFIX, END UNPROVEN` and exits 3.
 
 ### Consuming receipts in a detector
 

@@ -932,7 +932,10 @@ pipelock verify-receipt --chain /var/lib/pipelock/recorder/evidence \
 
 Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
-`CHAIN VALID`. See [receipt verification](receipt-verification.md).
+`CHAIN VALID`. A cleanly stopped run that recorded EvidenceReceipt v2 receipts
+reports `VALID PREFIX, END UNPROVEN` and exits 3 in this mode; add
+`--whole-recorder` to prove each run's end from its transcript root. See
+[receipt verification](receipt-verification.md).
 
 ## 17. Rotate certs and keys
 
