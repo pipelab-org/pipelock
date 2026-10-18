@@ -214,7 +214,13 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 			missing        bool
 			regular        bool
 			laterFail      bool
+			binaryReplace  bool
+			idleRelay      bool
 		}{
+			{name: "binary replacement before rebind", binaryReplace: true},
+			{name: "binary replacement with idle relay", binaryReplace: true, idleRelay: true},
+			{name: "binary replacement rollback with idle relay", binaryReplace: true, idleRelay: true, laterFail: true},
+			{name: "binary replacement before failed rebind", binaryReplace: true, laterFail: true},
 			{name: "changed active socket"},
 			{name: "unchanged active socket", unchanged: true},
 			{name: "changed inactive socket", inactive: true},
@@ -230,6 +236,11 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 		} {
 			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
 				env, runner, out := newFakeEnv(t)
+				if tc.binaryReplace {
+					if err := os.WriteFile(env.pipelockTarget, []byte("old binary"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 				services := []config.ContainmentLoopbackService{}
 				socketPath, relayPath := env.proxyForwarderSocketPath, env.proxyForwarderServicePath
 				listenPath := containedDoorwaySocketPath
@@ -279,7 +290,7 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 				if !tc.disabled {
 					runner.on(argvFor(testSystemctl, "is-enabled", socket), systemctlEnabled, 0, nil)
 				}
-				active, relayActive := !tc.inactive, !tc.inactive
+				active, relayActive := !tc.inactive, !tc.inactive && !tc.idleRelay
 				bound := oldListen
 				if tc.inactive {
 					bound = ""
@@ -294,6 +305,16 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 						return result, code, runErr
 					}
 					unit := args[len(args)-1]
+					if args[0] == "is-active" && (unit == socket || unit == relay) {
+						isActive := active
+						if unit == relay {
+							isActive = relayActive
+						}
+						if isActive {
+							return systemctlActive, 0, nil
+						}
+						return "inactive", 3, nil
+					}
 					failThis := !failed && args[0] == tc.failAction && (args[0] == "daemon-reload" ||
 						(args[0] == "stop" && unit == relay) ||
 						(args[0] == "start" && unit == socket))
@@ -310,6 +331,11 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 						}
 					}
 					if unit == socket {
+						// Traffic can activate an idle relay after state capture,
+						// immediately before the listener closes.
+						if args[0] == "stop" && active && tc.idleRelay {
+							relayActive = true
+						}
 						switch args[0] {
 						case "stop", "restart":
 							active, bound = false, ""
@@ -329,6 +355,8 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 									}
 								}
 								active = true
+								// The new listener receives traffic before a possible rollback.
+								relayActive = true
 							}
 						}
 					}
@@ -348,6 +376,9 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 					return originalStat(path)
 				}
 				steps := []step{stepInstallNetworkNamespaceWithServices(&services)}
+				if tc.binaryReplace {
+					steps = append([]step{stepInstallPipelockBinary()}, steps...)
+				}
 				if tc.laterFail {
 					steps = append(steps, step{name: "later", apply: func(context.Context, *installEnv) (bool, error) {
 						return false, errors.New("later failure")
@@ -355,6 +386,15 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 				}
 				_, err = runSteps(t.Context(), env, out, steps)
 				wantFailure := tc.foreign || tc.failAction != "" || tc.missing || tc.regular || tc.laterFail
+				if tc.laterFail && (err == nil || !strings.Contains(err.Error(), "later failure")) {
+					t.Fatalf("later failure step was not reached: %v", err)
+				}
+				if tc.binaryReplace && tc.laterFail {
+					got, readErr := os.ReadFile(env.pipelockTarget)
+					if readErr != nil || string(got) != "old binary" {
+						t.Fatalf("binary rollback: body=%q err=%v", got, readErr)
+					}
+				}
 				if (err != nil) != wantFailure {
 					t.Fatalf("runSteps = %v, want failure=%t; calls=%v", err, wantFailure, runner.calls)
 				}

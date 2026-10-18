@@ -847,22 +847,24 @@ func captureManagedNamespaceRuntimeState(ctx context.Context, env *installEnv, u
 	return states
 }
 
-// quiesceManagedNamespaceRuntimeUnits closes doorway sockets before a binary
-// swap. Stopping their services first prevents a still-active accepted
-// connection from using the replacement before its matching command surface is
-// installed.
+// quiesceManagedNamespaceRuntimeUnits closes doorway sockets before stopping
+// their services and replacing the binary. Closing listeners first prevents
+// traffic from reactivating a relay after it has been stopped.
 func quiesceManagedNamespaceRuntimeUnits(ctx context.Context, env *installEnv, units []managedNamespaceRuntimeUnit, states map[string]unitRuntimeState) error {
-	for _, unit := range units {
-		if !unit.socket && states[unit.name].active {
-			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
-				return fmt.Errorf("stop managed forwarder %s before binary replacement: %w", unit.name, err)
-			}
-		}
-	}
 	for _, unit := range units {
 		if unit.socket && states[unit.name].active {
 			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
 				return fmt.Errorf("stop managed doorway socket %s before binary replacement: %w", unit.name, err)
+			}
+		}
+	}
+	for _, unit := range units {
+		// An idle relay can be activated after state capture and before its
+		// socket closes. Stop it whenever its listener was active, too.
+		socketWasActive := unit.socketActivated && states[strings.TrimSuffix(unit.name, ".service")+".socket"].active
+		if !unit.socket && (states[unit.name].active || socketWasActive) {
+			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
+				return fmt.Errorf("stop managed forwarder %s before binary replacement: %w", unit.name, err)
 			}
 		}
 	}
