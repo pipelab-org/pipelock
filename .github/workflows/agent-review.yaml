@@ -21,12 +21,12 @@ jobs:
       github.event.comment.user.type == 'User' &&
       github.event.comment.author_association == 'MEMBER' &&
       github.event.issue.pull_request &&
-      github.event.comment.body == '/agent-review'
+      contains(fromJSON('["/review","/review deep"]'), github.event.comment.body)
     permissions:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@14617a9618403c3b5eae1ff4f641dff1aeb27810 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@856e474c1697f3897ccaa156f083e0b9504196e0 # main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
