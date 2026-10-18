@@ -1014,6 +1014,29 @@ func TestReleaseVerifierPublisherBindings(t *testing.T) {
 		{name: "wrong ref", version: "0.6.6", repository: "pipelab-org/pipelock", ref: "main", commit: "pending publication", want: "verifier source ref does not match inventory version"},
 		{name: "unrecognized historical version", version: "0.5.0", repository: "luckyPipewrench/pipelock", ref: "verifier-v0.5.0", commit: strings.Repeat("a", 40), want: "unrecognized historical verifier publication version"},
 	}
+	// These are the peeled verifier-v<version> tags published before the
+	// repository transfer. Each exception must bind both its owner and commit.
+	for _, historical := range []struct{ version, commit string }{
+		{"0.2.0", "aec4376ecef307496fafcdf2a59cd628c089d61f"},
+		{"0.3.0", "a2bc6cb18d728841b0edd7f714aca67d234f2e52"},
+		{"0.3.1", "d794fb901796702dea0e7a4a62b36756f52efbc0"},
+		{"0.4.0", "6f3105b994249853908ec896bfb8513e9ca940c2"},
+		{"0.4.1", "21643163a71c6e43d8b914528dcf45e69b1ffb9e"},
+	} {
+		for _, variation := range []struct{ name, repository, commit, want string }{
+			{"published", "luckyPipewrench/pipelock", historical.commit, ""},
+			{"changed commit", "luckyPipewrench/pipelock", strings.Repeat("a", 40), "historical verifier source commit mismatch"},
+			{"changed owner", "pipelab-org/pipelock", historical.commit, "unexpected TypeScript verifier publication contract"},
+		} {
+			tests = append(tests, struct {
+				name, version, repository, workflow, environment, ref, commit, want string
+			}{
+				name: historical.version + " " + variation.name, version: historical.version,
+				repository: variation.repository, ref: "verifier-v" + historical.version,
+				commit: variation.commit, want: variation.want,
+			})
+		}
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := stageReleaseVerifierInventoryTest(t)
