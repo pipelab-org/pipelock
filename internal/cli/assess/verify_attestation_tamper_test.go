@@ -6,11 +6,14 @@ package assess
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -104,7 +107,16 @@ func runDirListing(t *testing.T, dir string) []string {
 		if err != nil {
 			return err
 		}
-		out = append(out, rel+"|"+info.ModTime().String()+"|"+info.Mode().String())
+		entry := rel + "|" + info.ModTime().String() + "|" + info.Mode().String()
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(data)
+			entry += "|" + strconv.FormatInt(info.Size(), 10) + "|" + hex.EncodeToString(sum[:])
+		}
+		out = append(out, entry)
 		return nil
 	})
 	if err != nil {

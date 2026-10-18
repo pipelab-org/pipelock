@@ -439,8 +439,10 @@ pipelock verify-receipt \
 
 Without `--whole-recorder` this command checks the receipt chain only. A run
 that has not ended in a signed `session_close` exits 3 with
-`VALID PREFIX, END UNPROVEN`, including while the recorder is still running. A
-clean stop writes that `session_close`, and the same command can then exit 0.
+`VALID PREFIX, END UNPROVEN`. Against a recorder that is still running, the
+command can also fail with exit 1 if a shard or link changes during verification;
+use `pipelock evidence doctor DIR` for a live check, or verify a copy. A clean
+stop writes that `session_close`, and the same command can then exit 0.
 That proves the receipt chain ended. It does not prove the recorder entries
 around it. Add `--whole-recorder`, and keep `--key` and every
 `--rotation-endorsement` flag, to check the `transcript_root` seal.
