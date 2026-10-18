@@ -910,7 +910,13 @@ func TestAgentRegistryLookupUsesLicenseClock(t *testing.T) {
 	if _, ok := reg.LookupByName("client"); !ok {
 		t.Fatal("future profile refused before license-clock expiry")
 	}
-	clk.Advance(time.Hour + time.Second)
+	// License deadlines are whole Unix seconds. The expiry second itself is
+	// still allowed; the following second is not. See LookupByName.
+	clk.Advance(time.Hour)
+	if _, ok := reg.LookupByName("client"); !ok {
+		t.Fatal("named profile refused during the expiry second")
+	}
+	clk.Advance(time.Second)
 	if agent, ok := reg.LookupByName("client"); ok || agent != reg.Fallback() {
 		t.Fatal("expired profile did not fall back")
 	}
