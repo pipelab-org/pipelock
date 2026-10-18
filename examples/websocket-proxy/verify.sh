@@ -78,7 +78,7 @@ wait_for_health() {
   local port="$1"
   local i
   for i in $(seq 1 50); do
-    if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    if curl -sf --max-time 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -94,7 +94,7 @@ health_field() {
   # not remote code, and keeping the download separate from the interpreter
   # avoids a download-then-run supply-chain pattern.
   local body
-  body=$(curl -sf "http://127.0.0.1:${port}/health") || return 1
+  body=$(curl -sf --max-time 1 "http://127.0.0.1:${port}/health") || return 1
   printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(sys.argv[1],""))' "$field"
 }
 

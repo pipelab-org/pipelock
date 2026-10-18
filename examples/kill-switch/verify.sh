@@ -79,7 +79,7 @@ PY
 wait_for_health() {
   local port="$1"
   for _ in $(seq 1 80); do
-    if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    if curl -sf --max-time 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -92,7 +92,7 @@ health_field() {
   local field="$2"
   local health_json
   health_json="$(mktemp "$WORK/health.XXXXXX.json")"
-  curl -sf -o "$health_json" "http://127.0.0.1:${port}/health"
+  curl -sf --max-time 10 -o "$health_json" "http://127.0.0.1:${port}/health"
   python3 -c \
     'import json,sys; print(json.load(open(sys.argv[2], encoding="utf-8")).get(sys.argv[1],""))' \
     "$field" "$health_json"
@@ -139,7 +139,7 @@ fetch_url() {
   local port="$1"
   local url="$2"
   local out_file="$3"
-  curl -sS -o "$out_file" -w '%{http_code}' -G \
+  curl -sS --max-time 10 -o "$out_file" -w '%{http_code}' -G \
     --data-urlencode "url=${url}" \
     "http://127.0.0.1:${port}/fetch"
 }
@@ -235,7 +235,7 @@ else
   fail "health kill_switch_active not true (got $KS)"
 fi
 
-HEALTH_CODE="$(curl -sS -o "$WORK/health.json" -w '%{http_code}' \
+HEALTH_CODE="$(curl -sS --max-time 10 -o "$WORK/health.json" -w '%{http_code}' \
   "http://127.0.0.1:${PROXY_PORT}/health")"
 if [ "$HEALTH_CODE" = "200" ]; then
   pass "health endpoint still returns HTTP 200"

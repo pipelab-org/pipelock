@@ -448,7 +448,7 @@ if [[ ! "$rust_artifact_digest" =~ ^[0-9a-f]{64}$ ]]; then
 	printf 'release verifier install gate: inventory must pin the crates.io checksum for pipelock-verifier-rs@%s\n' "$rust_version" >&2
 	exit 2
 fi
-if ! rust_index="$("$CI_RETRY" curl -fsSL https://index.crates.io/pi/pe/pipelock-verifier-rs)"; then
+if ! rust_index="$("$CI_RETRY" curl -fsSL --max-time 10 https://index.crates.io/pi/pe/pipelock-verifier-rs)"; then
 	printf 'release verifier install gate: could not reach crates.io for pipelock-verifier-rs@%s\n' "$rust_version" >&2
 	exit 2
 fi
@@ -473,7 +473,7 @@ if [[ ! "$python_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
 	printf 'release verifier install gate: inventory must pin the PyPI wheel SHA-256 for pipelock-verify@%s\n' "$python_version" >&2
 	exit 2
 fi
-if ! python_release_metadata="$("$CI_RETRY" curl -fsSL \
+if ! python_release_metadata="$("$CI_RETRY" curl -fsSL --max-time 10 \
 	"https://pypi.org/pypi/pipelock-verify/$python_version/json")"; then
 	printf 'release verifier install gate: could not reach PyPI for pipelock-verify@%s\n' "$python_version" >&2
 	exit 2
@@ -572,7 +572,7 @@ if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" npm audit signatu
 	printf 'release verifier install gate: could not verify npm signatures after retries\n' >&2
 	exit 2
 fi
-if ! npm_attestations="$("$CI_RETRY" curl -fsSL \
+if ! npm_attestations="$("$CI_RETRY" curl -fsSL --max-time 10 \
 	"https://registry.npmjs.org/-/npm/v1/attestations/@pipelock%2fverifier-ts@$ts_version")"; then
 	printf 'release verifier install gate: could not fetch npm provenance for @pipelock/verifier-ts@%s\n' "$ts_version" >&2
 	exit 2

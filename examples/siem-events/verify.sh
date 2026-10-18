@@ -91,7 +91,7 @@ PY
 wait_for_health() {
   local port="$1"
   for _ in $(seq 1 80); do
-    if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    if curl -sf --max-time 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -199,7 +199,7 @@ fetch_url() {
   local port="$1"
   local url="$2"
   local out_file="$3"
-  curl -sS -o "$out_file" -w '%{http_code}' -G \
+  curl -sS --max-time 10 -o "$out_file" -w '%{http_code}' -G \
     --data-urlencode "url=${url}" \
     "http://127.0.0.1:${port}/fetch"
 }
@@ -207,7 +207,7 @@ fetch_url() {
 wait_for_blocked_event() {
   local deadline=$(( $(date +%s) + 8 ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
-    events_json="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || true)"
+    events_json="$(curl -sf --max-time 1 "http://${WEBHOOK_ADDR}/events" 2>/dev/null || true)"
     if [ -n "$events_json" ] && python3 -c '
 import json,sys
 events=json.load(sys.stdin)
@@ -292,13 +292,14 @@ else
   exit 1
 fi
 sleep 0.3
-CLEAN_EVENTS_JSON="$(curl -sf "http://${WEBHOOK_ADDR}/events" 2>/dev/null || echo '[]')"
-BLOCKED_AFTER_CLEAN="$(python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))' <<<"${CLEAN_EVENTS_JSON:-[]}" 2>/dev/null || echo 0)"
-if [ "$BLOCKED_AFTER_CLEAN" = "0" ]; then
+if ! CLEAN_EVENTS_JSON="$(curl -sf --max-time 1 "http://${WEBHOOK_ADDR}/events" 2>/dev/null)" \
+  || ! BLOCKED_AFTER_CLEAN="$(python3 -c 'import json,sys; print(sum(1 for e in json.load(sys.stdin) if e.get("type")=="blocked"))' <<<"$CLEAN_EVENTS_JSON" 2>/dev/null)"; then
+  fail "could not read webhook events after clean fetch"
+elif [ "$BLOCKED_AFTER_CLEAN" = "0" ]; then
   pass "no blocked webhook events after clean fetch"
 else
   fail "unexpected blocked events after clean fetch (count=$BLOCKED_AFTER_CLEAN)"
-  curl -sf "http://${WEBHOOK_ADDR}/events" >&2 || true
+  curl -sf --max-time 1 "http://${WEBHOOK_ADDR}/events" >&2 || true
 fi
 
 # -- Test 4 -------------------------------------------------------------------
@@ -316,12 +317,12 @@ if wait_for_blocked_event; then
   pass "webhook received blocked/ssrf event"
 else
   fail "webhook missing blocked/ssrf event"
-  curl -sf "http://${WEBHOOK_ADDR}/events" >&2 || true
+  curl -sf --max-time 1 "http://${WEBHOOK_ADDR}/events" >&2 || true
   tail -30 "$PROXY_LOG" >&2 || true
 fi
 
 # Assert instance id when present
-if curl -sf "http://${WEBHOOK_ADDR}/events" | grep -q 'siem-events-example'; then
+if curl -sf --max-time 1 "http://${WEBHOOK_ADDR}/events" | grep -q 'siem-events-example'; then
   pass "event includes instance_id siem-events-example"
 else
   fail "event missing instance_id"

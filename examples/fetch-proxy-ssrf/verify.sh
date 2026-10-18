@@ -73,7 +73,7 @@ PY
 wait_for_health() {
   local port="$1"
   for _ in $(seq 1 80); do
-    if curl -sf "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+    if curl -sf --max-time 1 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.1
@@ -122,7 +122,7 @@ fetch_url() {
   local port="$1"
   local url="$2"
   local out_file="$3"
-  curl -sS -o "$out_file" -w '%{http_code}' -G \
+  curl -sS --max-time 10 -o "$out_file" -w '%{http_code}' -G \
     --data-urlencode "url=${url}" \
     "http://127.0.0.1:${port}/fetch"
 }

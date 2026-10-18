@@ -42,7 +42,7 @@ mkdir -p "$WORK"
 
 wait_for_health() {
   for _ in $(seq 1 80); do
-    if curl -sf "${PIPELOCK_PROXY_URL}/health" >/dev/null 2>&1; then
+    if curl -sf --max-time 1 "${PIPELOCK_PROXY_URL}/health" >/dev/null 2>&1; then
       return 0
     fi
     sleep 0.25
