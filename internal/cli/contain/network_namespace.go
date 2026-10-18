@@ -26,7 +26,8 @@ import (
 const systemdRunPath = "/usr/bin/systemd-run"
 
 type loopbackForwarderInventory struct {
-	Services []loopbackForwarderRecord `json:"services"`
+	Services   []loopbackForwarderRecord `json:"services"`
+	ProxyRelay bool                      `json:"proxy_relay,omitempty"`
 }
 
 type loopbackForwarderRecord struct {
@@ -180,7 +181,7 @@ ProtectSystem=strict
 }
 
 func desiredLoopbackForwarders(services []config.ContainmentLoopbackService) loopbackForwarderInventory {
-	inv := loopbackForwarderInventory{Services: make([]loopbackForwarderRecord, 0, len(services))}
+	inv := loopbackForwarderInventory{Services: make([]loopbackForwarderRecord, 0, len(services)), ProxyRelay: true}
 	for _, service := range services {
 		inv.Services = append(inv.Services, loopbackForwarderRecord{
 			Unit:      loopbackForwarderUnitBase(service.Host, service.Port),
@@ -778,6 +779,31 @@ ProtectSystem=strict
 `, proxyUser, proxyUser, pipelockPath, target)
 }
 
+// isLegacyManagedProxyRelay migrates installations predating the proxy inventory
+// record. v3.6.0 and v3.7.0 emitted this exact renderer with a loopback TCP target.
+// Match the complete body; a name, description or command substring is not proof.
+func isLegacyManagedProxyRelay(env *installEnv) bool {
+	body, err := env.readFile(env.proxyForwarderServicePath)
+	if err != nil {
+		return false
+	}
+	prefix := "ExecStart=" + env.pipelockTarget + " contain netns-forward --systemd-listener --target-tcp "
+	for _, line := range strings.Split(string(body), "\n") {
+		target, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		host, portText, splitErr := net.SplitHostPort(target)
+		port, portErr := strconv.Atoi(portText)
+		ip := net.ParseIP(host)
+		if splitErr != nil || portErr != nil || port < 1 || port > 65535 || ip == nil || !ip.IsLoopback() {
+			return false
+		}
+		return string(body) == renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, target)
+	}
+	return false
+}
+
 type unitRuntimeState struct {
 	enabled bool
 	active  bool
@@ -999,6 +1025,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			// Establish ownership before replacing files. A familiar service
 			// name alone never authorizes stopping an operator's relay.
 			ownedRelays = make(map[string]bool)
+			if oldInventory.ProxyRelay || isLegacyManagedProxyRelay(env) {
+				ownedRelays[filepath.Base(env.proxyForwarderServicePath)] = true
+			}
 			for _, record := range oldInventory.Services {
 				ownedRelays[record.Unit+".service"] = true
 			}

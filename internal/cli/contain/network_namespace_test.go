@@ -209,6 +209,7 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 			inactive       bool
 			foreign        bool
 			inventoryRelay bool
+			legacyRelay    bool
 			disabled       bool
 			failAction     string
 			missing        bool
@@ -226,6 +227,8 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 			{name: "changed inactive socket", inactive: true},
 			{name: "foreign relay", foreign: true},
 			{name: "inventory owns drifted relay", inventoryRelay: true},
+			{name: "legacy proxy relay target changed", legacyRelay: true},
+			{name: "legacy proxy rollback", legacyRelay: true, laterFail: true},
 			{name: "relay stop failure", failAction: "stop"},
 			{name: "daemon reload failure", failAction: "daemon-reload"},
 			{name: "socket start failure", failAction: "start"},
@@ -274,15 +277,22 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 					}
 					// Inventory ownership is independently sufficient. Remove
 					// it to exercise the managed-file boundary for either kind.
-					if tc.inventoryRelay && !declared {
-						// The proxy has no loopback inventory record; ownership
-						// must come from its managed relay file instead.
-						t.Skip("inventory ownership applies to declared loopback relays")
-					}
 					if tc.foreign {
 						if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{}\n"), 0o600); err != nil {
 							t.Fatal(err)
 						}
+					}
+				}
+				if tc.legacyRelay {
+					if declared {
+						t.Skip("legacy migration applies to the proxy relay")
+					}
+					if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{\"services\": []}\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					oldRelay := renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.proxyPort+1)
+					if err := os.WriteFile(relayPath, []byte(oldRelay), 0o600); err != nil {
+						t.Fatal(err)
 					}
 				}
 				socket, relay := filepath.Base(socketPath), filepath.Base(relayPath)
@@ -397,6 +407,12 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 				}
 				if (err != nil) != wantFailure {
 					t.Fatalf("runSteps = %v, want failure=%t; calls=%v", err, wantFailure, runner.calls)
+				}
+				if tc.legacyRelay {
+					inv, readErr := readLoopbackForwarderInventory(env)
+					if readErr != nil || inv.ProxyRelay == tc.laterFail {
+						t.Fatalf("proxy inventory ownership=%t err=%v, rollback=%t", inv.ProxyRelay, readErr, tc.laterFail)
+					}
 				}
 				if tc.foreign {
 					if fakeRunnerCalled(runner, "systemctl stop "+relay) {
@@ -1611,5 +1627,43 @@ func TestDeclaredLoopbackOrphanListenerIsRetired(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Fatalf("unrelated unit file was touched: %v", err)
+	}
+}
+
+func TestLegacyManagedProxyRelay(t *testing.T) {
+	for _, tc := range []struct {
+		name, target string
+		mutate       func(string) string
+		missing      bool
+		want         bool
+	}{
+		{name: "IPv4", target: "127.0.0.1:8889", want: true},
+		{name: "IPv6", target: "[::1]:8889", want: true},
+		{name: "foreign target", target: "192.0.2.1:8889"},
+		{name: "hostname", target: "localhost:8889"},
+		{name: "zero port", target: "127.0.0.1:0"},
+		{name: "invalid port", target: "127.0.0.1:65536"},
+		{name: "port text", target: "127.0.0.1:http"},
+		{name: "malformed target", target: "127.0.0.1"},
+		{name: "extra directive", target: "127.0.0.1:8889", mutate: func(s string) string { return s + "ExecStartPost=/usr/bin/true\n" }},
+		{name: "changed identity", target: "127.0.0.1:8889", mutate: func(s string) string { return strings.Replace(s, "User=", "User=foreign-", 1) }},
+		{name: "foreign body", mutate: func(string) string { return "[Service]\nExecStart=/usr/bin/true\n" }},
+		{name: "missing", missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			if !tc.missing {
+				body := renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, tc.target)
+				if tc.mutate != nil {
+					body = tc.mutate(body)
+				}
+				if err := os.WriteFile(env.proxyForwarderServicePath, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := isLegacyManagedProxyRelay(env); got != tc.want {
+				t.Fatalf("legacy ownership=%t, want %t", got, tc.want)
+			}
+		})
 	}
 }

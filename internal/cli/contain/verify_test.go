@@ -4071,7 +4071,7 @@ func allPassEnv(t *testing.T) *probeEnv {
 		case env.namespaceForwarderServicePath:
 			return []byte(renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)), nil
 		case env.loopbackForwarderInvPath:
-			return []byte("{\n  \"services\": []\n}\n"), nil
+			return []byte("{\n  \"services\": [],\n  \"proxy_relay\": true\n}\n"), nil
 		}
 		if path == env.configPath {
 			return []byte("metrics_listen: 127.0.0.1:9091\n"), nil
