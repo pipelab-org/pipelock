@@ -111,21 +111,21 @@ expected = {
     "Go": {
         "package": "pipelock-verifier",
         "install_source": "candidate source build",
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/release.yaml",
         "environment": "tagged product release",
     },
     "TypeScript": {
         "package": "@pipelock/verifier-ts",
         "install_source": "npm",
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
     },
     "Rust": {
         "package": "pipelock-verifier-rs",
         "install_source": "crates.io",
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
     },
@@ -137,6 +137,34 @@ expected = {
         "environment": "pypi",
     },
 }
+# Published verifier tags before the repository transfer retain their original
+# publisher identity. Each exception binds a version, its tag and peeled commit;
+# it does not authorize the old owner to publish another release.
+historical_sources = {
+    "0.2.0": "aec4376ecef307496fafcdf2a59cd628c089d61f",
+    "0.3.0": "a2bc6cb18d728841b0edd7f714aca67d234f2e52",
+    "0.3.1": "d794fb901796702dea0e7a4a62b36756f52efbc0",
+    "0.4.0": "6f3105b994249853908ec896bfb8513e9ca940c2",
+    "0.4.1": "21643163a71c6e43d8b914528dcf45e69b1ffb9e",
+    "0.6.5": "05179c855c4be2e9f06c305041a2be6b79626afa"
+}
+
+def verifier_repository(entry):
+    version = entry["version"]
+    publisher = entry["publisher"]
+    if publisher["source_ref"] != f"verifier-v{version}":
+        raise SystemExit("verifier source ref does not match inventory version")
+    if version in historical_sources:
+        if publisher["source_commit"] != historical_sources[version]:
+            raise SystemExit("historical verifier source commit mismatch")
+        return "luckyPipewrench/pipelock"
+    parts = version.split(".")
+    if len(parts) != 3 or any(not part.isascii() or not part.isdecimal() for part in parts):
+        raise SystemExit("unsupported verifier publication version")
+    if tuple(map(int, parts)) <= (0, 6, 5):
+        raise SystemExit("unrecognized historical verifier publication version")
+    return "pipelab-org/pipelock"
+
 seen = set()
 for entry in inventory.get("verifiers", []):
     publisher = entry.get("publisher", {})
@@ -149,7 +177,9 @@ for entry in inventory.get("verifiers", []):
         for key in ("repository", "workflow", "environment", "source_ref", "source_commit")
     ):
         raise SystemExit(f"incomplete or duplicate verifier inventory entry: {entry!r}")
-    contract = expected[language]
+    contract = dict(expected[language])
+    if language in {"TypeScript", "Rust"}:
+        contract["repository"] = verifier_repository(entry)
     actual = {
         "package": entry["package"],
         "install_source": entry["install_source"],
@@ -231,6 +261,8 @@ inventory_field() {
 
 ts_version="$(inventory_field TypeScript version)"
 rust_version="$(inventory_field Rust version)"
+ts_repository="$(inventory_field TypeScript repository)"
+rust_repository="$(inventory_field Rust repository)"
 ts_ref="$(inventory_field TypeScript source_ref)"
 rust_ref="$(inventory_field Rust source_ref)"
 ts_source_commit="$(inventory_field TypeScript source_commit)"
@@ -342,7 +374,7 @@ require_command git
 # to one commit, be reachable from this candidate, and carry matching TS and
 # Rust manifests. This makes a stale registry package or a stray tag fail
 # before any customer-install simulation starts.
-if [[ "$ts_version" != "$rust_version" || "$ts_ref" != "$rust_ref" ]]; then
+if [[ "$ts_version" != "$rust_version" || "$ts_ref" != "$rust_ref" || "$ts_repository" != "$rust_repository" ]]; then
 	printf 'release verifier install gate: TypeScript and Rust inventory entries must name one shared verifier release\n' >&2
 	exit 2
 fi
@@ -398,6 +430,8 @@ if ! git -C "$ROOT_DIR" diff --quiet "$verifier_commit" HEAD -- "${verifier_sour
 	printf 'release verifier install gate: verifier package source differs from immutable tag %s\n' "$ts_ref" >&2
 	exit 2
 fi
+
+verify_tagged_verifier_repository "$ROOT_DIR" "$verifier_commit" "$ts_repository"
 
 # The release workflow and these checks use the same source of truth. Refuse a
 # quiet inventory/workflow drift before talking to a registry.
@@ -578,45 +612,8 @@ if ! npm_attestations="$("$CI_RETRY" curl -fsSL --max-time 10 \
 	exit 2
 fi
 printf '%s\n' "$npm_attestations" >"$scratch_dir/npm-attestations.json"
-python3 - "$ts_version" "$ts_artifact_digest" "$ts_ref" "$ts_source_commit" "$scratch_dir/npm-attestations.json" <<'PY'
-import base64
-import json
-import sys
-
-version, integrity, source_ref, source_commit, attestation_path = sys.argv[1:]
-with open(attestation_path, encoding="utf-8") as fh:
-    attestations = json.load(fh).get("attestations", [])
-statements = []
-for attestation in attestations:
-    envelope = attestation.get("bundle", {}).get("dsseEnvelope", {})
-    payload = envelope.get("payload")
-    if payload:
-        statements.append(json.loads(base64.b64decode(payload)))
-matches = [statement for statement in statements if statement.get("predicateType") == "https://slsa.dev/provenance/v1"]
-if len(matches) != 1:
-    raise SystemExit(f"expected one npm SLSA provenance statement, found {len(matches)}")
-statement = matches[0]
-expected_digest = base64.b64decode(integrity.removeprefix("sha512-")).hex()
-subject = statement.get("subject", [])
-if len(subject) != 1 or subject[0].get("name") != f"pkg:npm/%40pipelock/verifier-ts@{version}" or subject[0].get("digest", {}).get("sha512") != expected_digest:
-    raise SystemExit("npm provenance subject does not bind the pinned package digest")
-definition = statement.get("predicate", {}).get("buildDefinition", {})
-workflow = definition.get("externalParameters", {}).get("workflow", {})
-expected_workflow = {
-    "ref": f"refs/tags/{source_ref}",
-    "repository": "https://github.com/luckyPipewrench/pipelock",
-    "path": ".github/workflows/publish-verifiers.yaml",
-}
-if workflow != expected_workflow:
-    raise SystemExit(f"npm provenance workflow mismatch: {workflow!r}")
-dependencies = definition.get("resolvedDependencies", [])
-if not any(
-    dependency.get("uri") == f"git+https://github.com/luckyPipewrench/pipelock@refs/tags/{source_ref}"
-    and dependency.get("digest", {}).get("gitCommit") == source_commit
-    for dependency in dependencies
-):
-    raise SystemExit("npm provenance does not bind the pinned source commit")
-PY
+verify_npm_provenance "$ts_version" "$ts_artifact_digest" "$ts_ref" "$ts_source_commit" \
+	"$ts_repository" "$scratch_dir/npm-attestations.json"
 if ! "$CI_RETRY" env CARGO_HOME="$scratch_dir/cargo-home" \
 	cargo install --locked --root "$scratch_dir/rust" "pipelock-verifier-rs@$rust_version"; then
 	printf 'release verifier install gate: could not install the Rust verifier after retries\n' >&2

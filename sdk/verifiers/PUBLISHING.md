@@ -148,7 +148,7 @@ not gate.
 npm (`@pipelock/verifier-ts`): package page, Settings, Trusted Publisher, add a
 GitHub Actions publisher with:
 
-- Organization or user: `luckyPipewrench`
+- Organization or user: `pipelab-org`
 - Repository: `pipelock`
 - Workflow filename: `publish-verifiers.yaml` (filename only, not a path)
 - Environment: `verifier-release`
@@ -157,10 +157,16 @@ GitHub Actions publisher with:
 crates.io (`pipelock-verifier-rs`): crate page, Settings, Trusted Publishing, add
 a GitHub publisher with:
 
-- Repository owner: `luckyPipewrench`
+- Repository owner: `pipelab-org`
 - Repository name: `pipelock`
 - Workflow filename: `publish-verifiers.yaml`
 - Environment: `verifier-release`
+
+### Repository transfer
+
+The publisher settings for future releases must name `pipelab-org/pipelock`, `publish-verifiers.yaml`, and `verifier-release` on both registries. Check the registry settings and the GitHub environment's required reviewer before approving a release. A repository field in a package doesn't establish the registry's trusted publisher configuration.
+
+Published releases retain their original provenance. The installer gate binds the historical old-owner releases to their exact version, tag and peeled commit; later releases require the new repository. npm provenance must bind that repository, workflow path, tag, source commit and package digest. Keep historical identities unchanged when preparing a new inventory entry.
 
 ### Cutting a release
 

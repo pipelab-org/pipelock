@@ -4,7 +4,7 @@ Pipelock is a security boundary for agent egress and tool traffic. This policy e
 
 ## Vulnerability Reporting
 
-Report security vulnerabilities privately through the [private security advisory form](https://github.com/luckyPipewrench/pipelock/security/advisories/new).
+Report security vulnerabilities privately through the [private security advisory form](https://github.com/pipelab-org/pipelock/security/advisories/new).
 
 Do not open a public issue for a security vulnerability. Public reports may expose users before a fix or mitigation is available.
 
