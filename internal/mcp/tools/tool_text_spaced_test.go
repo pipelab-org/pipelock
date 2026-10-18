@@ -201,7 +201,7 @@ func TestSpacedCredentialRequestOffersCandidate(t *testing.T) {
 func TestSpacedCredentialRequestWithoutCandidateGivesReason(t *testing.T) {
 	for _, tc := range []struct {
 		name, raw, want string
-		cfg            *ToolScanConfig
+		cfg             *ToolScanConfig
 	}{
 		{"no server", spacedRequestTool(spacedRequestDesc), credentialAckSpacedUnavailable, ackScanConfig().WithServer("", "")},
 		{

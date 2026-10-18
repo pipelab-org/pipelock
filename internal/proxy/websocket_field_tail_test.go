@@ -249,9 +249,9 @@ func TestWSProxy_UpstreamCrossMessageInjection(t *testing.T) {
 	})
 }
 
-// wideJSONMessage carries delta plus more string fields than one message
+// wideJSONMessage carries content plus more string fields than one message
 // may hold at the default field budget.
-func wideJSONMessage(delta string) string { return wideJSONMessageN(delta, 1100) }
+func wideJSONMessage() string { return wideJSONMessageN("world", 1100) }
 
 func wideJSONMessageN(delta string, n int) string {
 	var b strings.Builder
@@ -272,7 +272,7 @@ func TestWSProxy_JSONFieldLimitsFailClosed(t *testing.T) {
 		conn := dialWS(t, proxyAddr, backendAddr)
 		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, inputDeltaMessage("ev1", "hello"))
-		sendExpectClosed(t, conn, wideJSONMessage("world"))
+		sendExpectClosed(t, conn, wideJSONMessage())
 	})
 	t.Run("client wide message first passes", func(t *testing.T) {
 		backendAddr, backendCleanup := wsEchoServer(t)
@@ -281,16 +281,16 @@ func TestWSProxy_JSONFieldLimitsFailClosed(t *testing.T) {
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
 		defer func() { _ = conn.Close() }()
-		sendExpectEcho(t, conn, wideJSONMessage("world"))
+		sendExpectEcho(t, conn, wideJSONMessage())
 	})
 	t.Run("upstream wide message after field content is blocked", func(t *testing.T) {
-		got := receiveUpstreamMessages(t, blockResponses, []string{outputDeltaMessage("ev1", "hello"), wideJSONMessage("world")})
+		got := receiveUpstreamMessages(t, blockResponses, []string{outputDeltaMessage("ev1", "hello"), wideJSONMessage()})
 		if len(got) != 1 {
 			t.Fatalf("delivered %d messages, want 1", len(got))
 		}
 	})
 	t.Run("upstream wide message after field content closes in warn mode", func(t *testing.T) {
-		got := receiveUpstreamMessages(t, func(cfg *config.Config) { cfg.ResponseScanning.Action = config.ActionWarn }, []string{outputDeltaMessage("ev1", "hello"), wideJSONMessage("world")})
+		got := receiveUpstreamMessages(t, func(cfg *config.Config) { cfg.ResponseScanning.Action = config.ActionWarn }, []string{outputDeltaMessage("ev1", "hello"), wideJSONMessage()})
 		if len(got) != 1 {
 			t.Fatalf("delivered %d messages, want 1", len(got))
 		}
