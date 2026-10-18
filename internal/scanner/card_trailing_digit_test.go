@@ -101,24 +101,72 @@ func TestTrailingDigitCardBooleanPath(t *testing.T) {
 // validator keeps whole-match semantics, so it still judges the greedy hit.
 func TestTrailingDigitRetryScopedToShippedRule(t *testing.T) {
 	custom := config.DLPPattern{Name: "Operator Card", Regex: `\b\d{4}(?:[- ]?\d){11,15}(?:\b)`, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}
-	if RetriesCardPrefixes(custom) || !RetriesCardPrefixes(config.DLPPattern{Regex: jsonnumber.ShippedCardPattern, Validator: config.ValidatorLuhn}) ||
+	exactCustom := config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}
+	if RetriesCardPrefixes(exactCustom) {
+		t.Fatal("operator pattern with the shipped regex gained prefix retry")
+	}
+	if RetriesCardPrefixes(custom) || !RetriesCardPrefixes(config.DLPPattern{Name: cardPatternName, Regex: jsonnumber.ShippedCardPattern, Validator: config.ValidatorLuhn}) ||
 		RetriesCardPrefixes(config.DLPPattern{Regex: jsonnumber.ShippedCardPattern, Validator: config.ValidatorMod97}) {
 		t.Fatal("prefix retry scope is wrong")
 	}
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.DLP.ScanEnv = false
-	cfg.DLP.Patterns = []config.DLPPattern{custom}
-	s := MustNew(cfg)
-	t.Cleanup(s.Close)
-	card := cardtest.Number()
-	if r := s.ScanTextForDLP(context.Background(), "card "+card); r.Clean {
-		t.Fatal("operator luhn pattern lost its whole-card match")
+	for _, pattern := range []config.DLPPattern{custom, exactCustom} {
+		t.Run(pattern.Name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.Patterns = []config.DLPPattern{pattern}
+			s := MustNew(cfg)
+			t.Cleanup(s.Close)
+			card := cardtest.Number()
+			if r := s.ScanTextForDLP(context.Background(), "card "+card); r.Clean {
+				t.Fatal("operator luhn pattern lost its whole-card match")
+			}
+			for _, m := range s.ScanTextForDLP(context.Background(), "card "+card+" 2 apples").Matches {
+				if m.PatternName == pattern.Name {
+					t.Fatal("operator luhn pattern was widened to retry shorter candidates")
+				}
+			}
+		})
 	}
-	for _, m := range s.ScanTextForDLP(context.Background(), "card "+card+" 2 apples").Matches {
-		if m.PatternName == custom.Name {
-			t.Fatal("operator luhn pattern was widened to retry shorter candidates")
-		}
+}
+
+func TestTrailingDigitRetryDoesNotWidenCustomJSONCardRule(t *testing.T) {
+	card := cardtest.Number()
+	// The first string is not a complete digit piece, so only WINDOW can
+	// reconstruct the card. Its greedy hit includes the trailing "2".
+	body := `["card ` + card[:4] + `","` + card[4:8] + ` ` + card[8:12] + ` ` + card[12:] + `","2"]`
+	cardView := "card " + card[:4] + jsonnumber.StringBoundary + card[4:8] + " " + card[8:12] + " " + card[12:] + jsonnumber.StringBoundary + "2"
+	for _, tt := range []struct {
+		name    string
+		pattern config.DLPPattern
+		want    bool
+	}{
+		{"built-in", config.DLPPattern{Name: cardPatternName, Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityMedium, Validator: config.ValidatorLuhn}, true},
+		{"operator exact regex", config.DLPPattern{Name: "Operator exact card", Regex: jsonnumber.ShippedCardPattern, Severity: config.SeverityHigh, Validator: config.ValidatorLuhn}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			cfg.DLP.Patterns = []config.DLPPattern{tt.pattern}
+			s := MustNew(cfg)
+			t.Cleanup(s.Close)
+			found := false
+			for _, match := range s.ScanJSONCardRuns(t.Context(), body) {
+				found = found || match.PatternName == tt.pattern.Name
+			}
+			if found != tt.want {
+				t.Fatalf("card run match=%v, want=%v", found, tt.want)
+			}
+			result := s.ScanTextForDLPWithTypedCardView(t.Context(), "safe", cardView)
+			found = false
+			for _, match := range result.Matches {
+				found = found || match.PatternName == tt.pattern.Name
+			}
+			if found != tt.want {
+				t.Fatalf("typed card view match=%v, want=%v", found, tt.want)
+			}
+		})
 	}
 }
 

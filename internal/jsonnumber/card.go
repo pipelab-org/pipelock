@@ -31,6 +31,7 @@ type CardRun struct {
 	Digits         string
 	SpaceCandidate string // complete pieces joined by one ASCII space, or an exact WINDOW hit
 	NumberOnly     bool
+	RetryOnly      bool // WINDOW found this candidate only by shortening a failed greedy hit
 }
 
 // ShippedCardPattern is the canonical generic card rule. Config and the
@@ -303,7 +304,13 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 		}
 		if count > 1 {
 			digits := strings.NewReplacer(" ", "", "-", "").Replace(candidate)
-			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}
+			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit, RetryOnly: end != len(hit)}
+			if run.RetryOnly {
+				// A complete-piece run already existed before retry was added.
+				if _, exists := seen[CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}]; exists {
+					continue
+				}
+			}
 			if _, exists := seen[run]; !exists {
 				seen[run] = struct{}{}
 				runs = append(runs, run)

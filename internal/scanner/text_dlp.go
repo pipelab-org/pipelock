@@ -314,6 +314,7 @@ func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match Text
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
 	genericCard       bool
+	cardPrefixRetry   bool
 	numberOnlyCardRun bool
 	informational     bool
 	PatternName       string `json:"pattern_name"`
@@ -672,9 +673,12 @@ func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, ma
 		var memo decodingMemo
 		result := s.scanTextForDLPWithDecodes(ctx, run.Digits, textDLPOptions{patterns: textDLPCardPatterns}, &memo)
 		for i := range result.Matches {
+			if run.RetryOnly && !result.Matches[i].cardPrefixRetry {
+				continue
+			}
 			s.classifyCardRun(&result.Matches[i], run)
+			matches = append(matches, result.Matches[i])
 		}
-		matches = append(matches, result.Matches...)
 	}
 	return matches
 }
@@ -772,13 +776,19 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		var runDecodes decodingMemo
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
 		for i := range runResult.Matches {
+			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
+				continue
+			}
 			s.classifyCardRun(&runResult.Matches[i], run)
+			original.Matches = append(original.Matches, runResult.Matches[i])
 		}
 		for i := range runResult.InformationalMatches {
+			if run.RetryOnly && !runResult.InformationalMatches[i].cardPrefixRetry {
+				continue
+			}
 			runResult.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.InformationalMatches[i].span.ViewLabel)
+			original.InformationalMatches = append(original.InformationalMatches, runResult.InformationalMatches[i])
 		}
-		original.Matches = append(original.Matches, runResult.Matches...)
-		original.InformationalMatches = append(original.InformationalMatches, runResult.InformationalMatches...)
 	}
 	original.Clean = !HasEnforcingMatch(original.Matches)
 	if emit {
@@ -948,6 +958,7 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 		if start, end, ok := p.matchSpanInView(cleaned, text); ok {
 			matches = append(matches, TextDLPMatch{
 				genericCard:                         p.genericCard,
+				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,
 				Severity:                            p.severity,
 				Bundle:                              p.bundle,
@@ -1125,6 +1136,7 @@ func (s *Scanner) matchDLPPatternsNormalized(text, encoding, proseSource string)
 		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
 			matches = append(matches, TextDLPMatch{
 				genericCard:                         p.genericCard,
+				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,
 				Severity:                            p.severity,
 				Encoded:                             encoding,
@@ -1161,6 +1173,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 			}
 			matches = append(matches, TextDLPMatch{
 				genericCard:                         p.genericCard,
+				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,
 				Severity:                            p.severity,
 				Encoded:                             "whitespace",

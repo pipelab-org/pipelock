@@ -172,12 +172,12 @@ func validateAWSAccessIDCandidate(candidate string) bool {
 	return awsCredentialPrefixRe.MatchString(candidate)
 }
 
-// RetriesCardPrefixes reports whether p is the canonical card rule with its
-// luhn validator: the only rule whose failed greedy hits retry shorter
-// candidates (jsonnumber.AcceptedCardEnd). Operator regexes carrying the luhn
-// validator keep whole-match semantics.
+// RetriesCardPrefixes reports whether p is the built-in card rule with its
+// luhn validator. Preset YAML copies the built-in rule without its Compiled
+// marker, so rule name and regex both identify it. A separately named operator
+// rule using the same regex keeps whole-match semantics.
 func RetriesCardPrefixes(p config.DLPPattern) bool {
-	return p.Validator == config.ValidatorLuhn && jsonnumber.IsShippedCardPattern(p.Regex)
+	return p.Name == "Credit Card Number" && p.Validator == config.ValidatorLuhn && jsonnumber.IsShippedCardPattern(p.Regex)
 }
 
 // AcceptsMatch applies the scanner's accepted-span policy to one regex hit for
