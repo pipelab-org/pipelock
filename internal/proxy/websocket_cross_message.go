@@ -11,6 +11,7 @@ import (
 	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -105,7 +106,8 @@ func (r *wsRelay) enforceUpstreamCrossMessage(ctx context.Context, log *audit.Lo
 		return false, false
 	}
 	if joined.Failed() {
-		r.closeUpstreamCrossMessage(log, "response scan failed: "+joined.ScanError, "response scan incomplete")
+		r.closeUpstreamCrossMessage(log, "response scan failed: "+joined.ScanError, "response scan incomplete", "response_scan_error",
+			blockInfoFor(blockreason.ParseError, "response_scan_error"))
 		return true, false
 	}
 	if joined.Clean {
@@ -139,22 +141,24 @@ func (r *wsRelay) enforceUpstreamCrossMessage(ctx context.Context, log *audit.Lo
 		})
 		return false, true
 	}
-	r.closeUpstreamCrossMessage(log, fmt.Sprintf("cross-message injection detected: %s", strings.Join(names, ", ")), "injection detected")
+	r.closeUpstreamCrossMessage(log, fmt.Sprintf("cross-message injection detected: %s", strings.Join(names, ", ")), "injection detected", responseScanLayer,
+		blockInfoFor(blockreason.PromptInjection, responseScanLayer))
 	return true, true
 }
 
-func (r *wsRelay) closeUpstreamCrossMessage(log *audit.Logger, reason, closeReason string) {
+func (r *wsRelay) closeUpstreamCrossMessage(log *audit.Logger, reason, upstreamReason, layer string, info blockreason.Info) {
 	log.LogWSBlocked(audit.WSBlockedEvent{
-		Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: responseScanLayer,
+		Target: r.targetURL, Direction: audit.DirectionServerToClient, Scanner: layer,
 		Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
 		Agent: r.agent, AgentAuth: string(r.actorAuth),
 	})
 	_ = r.emitReceipt(receipt.EmitOpts{
-		ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
+		ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: layer, Pattern: reason,
 		Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 	})
-	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closeReason)
-	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closeReason)
+	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		info.WithRequestID(r.requestID).CloseFramePayload())
+	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, upstreamReason)
 }
 
 // blockCrossMessageIncomplete closes the relay when a JSON message is too
@@ -170,6 +174,7 @@ func (r *wsRelay) blockCrossMessageIncomplete(log *audit.Logger, direction strin
 		ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "ws_protocol", Pattern: crossMessageIncompleteReason,
 		Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 	})
-	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-message inspection incomplete")
+	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
 	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-message inspection incomplete")
 }
