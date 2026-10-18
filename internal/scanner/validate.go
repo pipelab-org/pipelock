@@ -172,6 +172,25 @@ func validateAWSAccessIDCandidate(candidate string) bool {
 	return awsCredentialPrefixRe.MatchString(candidate)
 }
 
+// RetriesCardPrefixes reports whether p is the built-in card rule with its
+// luhn validator. Preset YAML copies the built-in rule without its Compiled
+// marker, so rule name and regex both identify it. A separately named operator
+// rule using the same regex keeps whole-match semantics.
+func RetriesCardPrefixes(p config.DLPPattern) bool {
+	return p.Name == "Credit Card Number" && p.Validator == config.ValidatorLuhn && jsonnumber.IsShippedCardPattern(p.Regex)
+}
+
+// AcceptsMatch applies the scanner's accepted-span policy to one regex hit for
+// consumers that keep their own pattern loop, such as scan-diff and the
+// project scan, so they agree with runtime scanning on card endpoints.
+func AcceptsMatch(match string, validate func(string) bool, cardPrefixRetry bool) bool {
+	if !cardPrefixRetry {
+		return validate(match)
+	}
+	_, ok := jsonnumber.AcceptedCardEnd(match, func(end int) bool { return validate(match[:end]) })
+	return ok
+}
+
 // validateLuhn preserves the scanner validator contract while the shared
 // number helper keeps redaction and detection on the same issuer/checksum rule.
 func validateLuhn(s string) bool { return jsonnumber.ValidCardNumber(s) }

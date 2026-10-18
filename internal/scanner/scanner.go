@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
@@ -430,6 +431,9 @@ type compiledPattern struct {
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
 	genericCard         bool              // validator provenance, never a display-name exemption
+	// cardPrefixRetry marks the canonical card rule with its luhn validator.
+	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
+	cardPrefixRetry bool
 	// validateAt judges a candidate in the view it was found in, with the view
 	// around it. It is set only in scanners built for tool-command text.
 	validateAt func(view string, start, end int) bool
@@ -472,7 +476,7 @@ func (p *compiledPattern) matches(text string) bool {
 	// No cap: regex specificity (BIN prefixes, IBAN format) and data budget
 	// limits already bound the match count in practice.
 	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		if p.accepts(text, loc[0], loc[1]) {
+		if _, _, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
 			return true
 		}
 	}
@@ -486,6 +490,20 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 		return false
 	}
 	return p.validateAt == nil || p.validateAt(view, start, end)
+}
+
+// acceptedSpan returns the finding span of one regex hit. For every pattern
+// but the canonical card rule that is the hit itself, when accepts takes it.
+// The card rule may instead accept a shorter candidate with the same start,
+// so the returned span, not the hit, is the evidence to report.
+func (p *compiledPattern) acceptedSpan(view string, start, end int) (int, int, bool) {
+	if !p.cardPrefixRetry {
+		return start, end, p.accepts(view, start, end)
+	}
+	accepted, ok := jsonnumber.AcceptedCardEnd(view[start:end], func(candidateEnd int) bool {
+		return p.accepts(view, start, start+candidateEnd)
+	})
+	return start, start + accepted, ok
 }
 
 // New creates a Scanner from config. Config should be validated first via
@@ -644,6 +662,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			}
 			cp.validate = fn
 			cp.genericCard = p.Validator == config.ValidatorLuhn
+			cp.cardPrefixRetry = RetriesCardPrefixes(p)
 		}
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)

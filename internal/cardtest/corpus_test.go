@@ -5,6 +5,7 @@ package cardtest
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -51,5 +52,21 @@ func TestCorpusDocuments(t *testing.T) {
 	}
 	if len(TransportCases()) != len(JSONCases())+len(WholeKeyCases()) {
 		t.Fatal("transport corpus lost key cases")
+	}
+}
+
+func TestTrailingDigitCorpus(t *testing.T) {
+	names := make(map[string]bool)
+	for _, c := range TrailingDigitCases() {
+		if c.Name == "" || names[c.Name] {
+			t.Fatalf("empty or repeated case name: %q", c.Name)
+		}
+		names[c.Name] = true
+		if c.Clean == (c.Card != "") {
+			t.Fatalf("case %q: a detected case names its card, a clean case none", c.Name)
+		}
+		if c.Card != "" && !strings.Contains(c.Text, c.Card) {
+			t.Fatalf("case %q: card is not in the text", c.Name)
+		}
 	}
 }

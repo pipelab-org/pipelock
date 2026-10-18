@@ -31,6 +31,7 @@ type CardRun struct {
 	Digits         string
 	SpaceCandidate string // complete pieces joined by one ASCII space, or an exact WINDOW hit
 	NumberOnly     bool
+	RetryOnly      bool // WINDOW found this candidate only by shortening a failed greedy hit
 }
 
 // ShippedCardPattern is the canonical generic card rule. Config and the
@@ -38,6 +39,53 @@ type CardRun struct {
 const ShippedCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
 
 var shippedCardRule = regexp.MustCompile(ShippedCardPattern)
+
+// IsShippedCardPattern reports whether regex is the canonical card rule. Only
+// that rule retries shorter candidates; an operator regex that merely carries
+// the luhn validator keeps whole-match semantics.
+func IsShippedCardPattern(regex string) bool { return regex == ShippedCardPattern }
+
+// AcceptedCardEnd returns the end of the card in one ordinary FindAll hit of
+// the shipped rule, judged by accept(end) over hit[:end]. The complete hit is
+// tried first. The rule is greedy and its validator sees only what it is
+// given, so a card followed by a separator and another digit ("12/27",
+// "2 apples", "-3") yields one hit that fails the issuer or Luhn check.
+//
+// On that failure the start stays fixed and the end moves back to each
+// separator already inside the hit, longest first. The separators are the
+// rule's own [- ] class. A retried prefix keeps at least cardRunMinDigits
+// digits, which is both the rule's floor (\d{4} plus eleven repeats) and the
+// validator's, so every retry is itself a complete match of the shipped rule
+// ending on a word boundary. A retry never ends inside a contiguous digit
+// group, never moves the start, and never looks past the original hit.
+func AcceptedCardEnd(hit string, accept func(end int) bool) (int, bool) {
+	if accept(len(hit)) {
+		return len(hit), true
+	}
+	digits := 0
+	for i := range len(hit) {
+		if hit[i] >= '0' && hit[i] <= '9' {
+			digits++
+		}
+	}
+	for end := len(hit) - 1; end > 0; end-- {
+		switch c := hit[end]; {
+		case c >= '0' && c <= '9':
+			digits--
+			continue
+		case c != ' ' && c != '-':
+			// Not a shipped-rule hit; judge only the complete candidate.
+			return 0, false
+		}
+		if digits < cardRunMinDigits {
+			break
+		}
+		if accept(end) {
+			return end, true
+		}
+	}
+	return 0, false
+}
 
 // Enforces applies UNION to a validated candidate: either a complete-piece
 // rule match or a shipped-rule WINDOW hit. Number-only runs stay informational.
@@ -203,7 +251,8 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 }
 
 // appendCardWindows applies the shipped rule's ordinary greedy FindAll to the
-// typed scalar sequence. Keep literal string context and separators: compacting
+// typed scalar sequence, accepting each hit's card through AcceptedCardEnd as
+// the scanner does. Keep literal string context and separators: compacting
 // them would invent matches outside that rule. Only hits crossing a typed join
 // belong here; whole-leaf matching remains the caller's ordinary scan.
 func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
@@ -235,15 +284,19 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 	}
 	next := 0
 	for _, loc := range shippedCardRule.FindAllStringIndex(text, -1) {
-		candidate := text[loc[0]:loc[1]]
-		if !ValidCardNumber(candidate) {
+		hit := text[loc[0]:loc[1]]
+		end, ok := AcceptedCardEnd(hit, func(end int) bool { return ValidCardNumber(hit[:end]) })
+		if !ok {
 			continue
 		}
+		candidate := hit[:end]
 		for next < len(spans) && spans[next].end <= loc[0] {
 			next++
 		}
+		// Pieces cut off by a shorter accepted end take no part in the run:
+		// a trailing string cannot promote a number-only card to enforcing.
 		count, stringHit := 0, false
-		for i := next; i < len(spans) && spans[i].start < loc[1]; i++ {
+		for i := next; i < len(spans) && spans[i].start < loc[0]+end; i++ {
 			if spans[i].end > loc[0] {
 				count++
 				stringHit = stringHit || !spans[i].number
@@ -251,7 +304,13 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 		}
 		if count > 1 {
 			digits := strings.NewReplacer(" ", "", "-", "").Replace(candidate)
-			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}
+			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit, RetryOnly: end != len(hit)}
+			if run.RetryOnly {
+				// A complete-piece run already existed before retry was added.
+				if _, exists := seen[CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}]; exists {
+					continue
+				}
+			}
 			if _, exists := seen[run]; !exists {
 				seen[run] = struct{}{}
 				runs = append(runs, run)
