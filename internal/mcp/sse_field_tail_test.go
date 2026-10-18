@@ -231,14 +231,14 @@ func TestStreamFieldTailInspectionLimitBlocksUnderWarn(t *testing.T) {
 	sse.Action = config.ActionWarn
 	depth := extract.MaxExtractDepth + 1
 	open := strings.Repeat(`{"a":`, depth)
-	close := "1" + strings.Repeat("}", depth)
-	body := minimalTextEvent(t, open) + minimalTextEvent(t, close)
+	closingFragment := "1" + strings.Repeat("}", depth)
+	body := minimalTextEvent(t, open) + minimalTextEvent(t, closingFragment)
 	var out bytes.Buffer
 	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{})
 	if !errors.Is(err, ErrSSEStreamScanError) {
 		t.Fatalf("warn forwarded an over-budget field join: %v", err)
 	}
-	if strings.Contains(out.String(), close) {
+	if strings.Contains(out.String(), closingFragment) {
 		t.Fatalf("over-budget event was written: %q", out.String())
 	}
 
@@ -261,14 +261,14 @@ func TestA2AStreamFieldTailInspectionLimitIsScanError(t *testing.T) {
 	a2a.Action = config.ActionWarn
 	depth := extract.MaxExtractDepth + 1
 	open := strings.Repeat(`{"a":`, depth)
-	close := "1" + strings.Repeat("}", depth)
-	body := minimalTextEvent(t, open) + minimalTextEvent(t, close)
+	closingFragment := "1" + strings.Repeat("}", depth)
+	body := minimalTextEvent(t, open) + minimalTextEvent(t, closingFragment)
 	var out bytes.Buffer
 	err := ScanA2AStream(context.Background(), strings.NewReader(body), &out, nil, sc, &a2a)
 	if !errors.Is(err, ErrSSEStreamScanError) || errors.Is(err, ErrA2AStreamFinding) {
 		t.Fatalf("warn classified an over-budget A2A join as a finding: %v", err)
 	}
-	if strings.Contains(out.String(), close) {
+	if strings.Contains(out.String(), closingFragment) {
 		t.Fatalf("over-budget A2A event was written: %q", out.String())
 	}
 }
