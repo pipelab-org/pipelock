@@ -97,19 +97,30 @@ func flipLastHex(t *testing.T, h string) string {
 
 func runDirListing(t *testing.T, dir string) []string {
 	t.Helper()
+	// Open once so content reads stay inside this directory. A path swapped
+	// for a symlink between the walk and the read must not escape the root.
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+
 	var out []string
-	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(dir, path)
 		if err != nil {
 			return err
 		}
-		rel, _ := filepath.Rel(dir, path)
 		info, err := d.Info()
 		if err != nil {
 			return err
 		}
 		entry := rel + "|" + info.ModTime().String() + "|" + info.Mode().String()
 		if info.Mode().IsRegular() {
-			data, err := os.ReadFile(filepath.Clean(path))
+			data, err := root.ReadFile(rel)
 			if err != nil {
 				return err
 			}
