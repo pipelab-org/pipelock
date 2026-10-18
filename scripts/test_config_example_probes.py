@@ -70,6 +70,31 @@ class ConfigExampleProbeTests(unittest.TestCase):
         self.assertIn("timeout command", result.stderr)
         self.assertNotIn("mktemp", result.stderr)
 
+    def test_stalled_connect_is_bounded(self):
+        # A listener whose accept queue is full makes Linux drop further SYNs, so a
+        # connect stalls in the kernel retry schedule exactly as it does on a host
+        # whose firewall silently drops closed-port SYNs. Unbounded, this hangs past
+        # the subprocess deadline in run_probe.
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(0)
+            port = listener.getsockname()[1]
+            fillers = []
+            try:
+                for _ in range(4):
+                    filler = socket.socket()
+                    filler.setblocking(False)
+                    try:
+                        filler.connect(("127.0.0.1", port))
+                    except BlockingIOError:
+                        pass
+                    fillers.append(filler)
+                result = self.run_probe(f"http_ready {port}")
+                self.assertEqual(result.returncode, 1, result.stderr)
+            finally:
+                for filler in fillers:
+                    filler.close()
+
     def test_health_requires_a_response_and_accepts_a_live_peer(self):
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
