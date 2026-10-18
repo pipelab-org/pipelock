@@ -46,6 +46,42 @@ var actionPinRefPattern = regexp.MustCompile("(?i)^([^\\s/\"'`{}\\[\\](),#]+)/pi
 // actionPinBlockHeader is a YAML block-scalar header (>, >-, |, |+2 ...).
 var actionPinBlockHeader = regexp.MustCompile(`^[>|][1-9+-]{0,2}\s*(?:#.*)?$`)
 
+// actionPinCommentIndex reports a YAML 1.2 comment marker. '#' starts a comment
+// only outside a quoted scalar, so a commented-out step is not a pin and a
+// trailing "# v3.7.0" on a real step is not a second one.
+func actionPinCommentIndex(line string) int {
+	inSingle := false
+	inDouble := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case inSingle:
+			if c == '\'' {
+				if i+1 < len(line) && line[i+1] == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+		case inDouble:
+			if c == '\\' && i+1 < len(line) {
+				i++
+				continue
+			}
+			if c == '"' {
+				inDouble = false
+			}
+		case c == '\'':
+			inSingle = true
+		case c == '"':
+			inDouble = true
+		case c == '#':
+			return i
+		}
+	}
+	return -1
+}
+
 var fullCommitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
 // actionPinRequiredFiles must each carry at least one pinned copy, so a
@@ -113,8 +149,13 @@ func findActionPins(rel, content string) []actionPin {
 	var pins []actionPin
 	lines := strings.Split(content, "\n")
 	for i, line := range lines {
+		commentAt := actionPinCommentIndex(line)
 		keys := actionPinUsesKeyPattern.FindAllStringIndex(line, -1)
 		for k, loc := range keys {
+			usesRel := strings.Index(strings.ToLower(line[loc[0]:loc[1]]), actionPinUsesWord)
+			if usesRel < 0 || (commentAt >= 0 && loc[0]+usesRel > commentAt) {
+				continue
+			}
 			end := len(line)
 			if k+1 < len(keys) {
 				end = keys[k+1][0]
@@ -454,6 +495,28 @@ func actionPinCheckerCases() []actionPinCase {
 			files:     okRequired(step("evil-fork", shaA)),
 			wantPins:  3,
 			wantInErr: []string{`README.md:1: owner "evil-fork" is not an official pipelock owner`},
+		},
+		{
+			name:     "commented-out pin is not a copy",
+			files:    okRequired(step("luckyPipewrench", shaA) + "# - " + k + " luckyPipewrench/pipelock@" + shaB + "\n"),
+			wantOK:   true,
+			wantPins: 3,
+		},
+		{
+			name: "comment-only pin does not satisfy a required file",
+			files: map[string]string{
+				"README.md":                  "# - " + k + " luckyPipewrench/pipelock@" + shaA + "\n",
+				"docs/guide.md":              step("luckyPipewrench", shaA),
+				".github/workflows/scan.yml": step("luckyPipewrench", shaA),
+			},
+			wantPins:  2,
+			wantInErr: []string{"README.md: no pipelock action pin found"},
+		},
+		{
+			name:     "hash inside a quoted ref stays a pin",
+			files:    okRequired("- " + k + ` "luckyPipewrench/pipelock@` + shaA + ` # keep"` + "\n"),
+			wantOK:   true,
+			wantPins: 3,
 		},
 		{
 			name: "only the release-doc fixture file is skipped",
