@@ -19,6 +19,11 @@ func TestSSRFChecksEmbeddedIPv4(t *testing.T) {
 		"64:ff9b::7f00:1", "64:ff9b::a00:1", "2002:7f00:1::", "2002:a00:1::1",
 		"::127.0.0.1", "::10.0.0.1", "2001:0:a00:1::f5ff:fffe",
 		"2001:0:a00:1::f7f7:f7f7", "2001:0:808:808::f5ff:fffe", // server only, client only
+		// Local NAT64 /96 of an internal address. A single /48 reading is public.
+		"64:ff9b:1:abcd::a00:1",
+		// Same /48 internal address with a nonzero suffix. RFC 6052 says the
+		// receiver still extracts the IPv4.
+		"64:ff9b:1:a00:1:ff08:808:808",
 	}
 	for _, ip := range internal {
 		if !s.IsInternalIP(net.ParseIP(ip)) {
@@ -36,7 +41,11 @@ func TestSSRFChecksEmbeddedIPv4(t *testing.T) {
 		}
 		rs.Close()
 	}
-	for _, ip := range []string{"64:ff9b::808:808", "2002:808:808::1", "2001:0:808:808::f7f7:f7f7"} {
+	for _, ip := range []string{
+		"64:ff9b::808:808", "2002:808:808::1", "2001:0:808:808::f7f7:f7f7",
+		// RFC 8215 checksum-neutral /96 whose other zero-u readings are public.
+		"64:ff9b:1:fffd:1::808:808",
+	} {
 		if s.IsInternalIP(net.ParseIP(ip)) {
 			t.Errorf("IsInternalIP(%s) = true; embedded IPv4 is public", ip)
 		}
