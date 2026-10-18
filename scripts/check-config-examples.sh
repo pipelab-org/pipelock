@@ -26,6 +26,25 @@
 
 set -euo pipefail
 
+# Every loopback connect is bounded. Where a host firewall silently drops SYNs to
+# a closed port instead of refusing them, an unbounded /dev/tcp connect waits for
+# the kernel's full SYN retry schedule (about two minutes at the Linux default of
+# net.ipv4.tcp_syn_retries=6) on every probe, and it also holds the boot loop past
+# its own deadline. One second is far above a loopback round trip.
+PROBE_CONNECT_TIMEOUT="${CONFIG_EXAMPLES_CONNECT_TIMEOUT:-1}"
+# Bash arithmetic wraps on overflow. printf rejects values outside its signed
+# integer range; the comparison also reserves room for the read deadline.
+if ! [[ "$PROBE_CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]] \
+    || ! printf -v PROBE_CONNECT_TIMEOUT '%d' "$PROBE_CONNECT_TIMEOUT" 2>/dev/null \
+    || (( PROBE_CONNECT_TIMEOUT + 1 <= PROBE_CONNECT_TIMEOUT )); then
+    echo "config-examples: CONFIG_EXAMPLES_CONNECT_TIMEOUT must be a positive whole number of seconds with room for the read deadline" >&2
+    exit 1
+fi
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "config-examples: the timeout command (GNU coreutils) is required" >&2
+    exit 1
+fi
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -228,21 +247,6 @@ environment_failure_reason() {
 
     echo ""
 }
-
-# Every loopback connect is bounded. Where a host firewall silently drops SYNs to
-# a closed port instead of refusing them, an unbounded /dev/tcp connect waits for
-# the kernel's full SYN retry schedule (about two minutes at the Linux default of
-# net.ipv4.tcp_syn_retries=6) on every probe, and it also holds the boot loop past
-# its own deadline. One second is far above a loopback round trip.
-PROBE_CONNECT_TIMEOUT="${CONFIG_EXAMPLES_CONNECT_TIMEOUT:-1}"
-if ! [[ "$PROBE_CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
-    echo "config-examples: CONFIG_EXAMPLES_CONNECT_TIMEOUT must be a positive whole number of seconds" >&2
-    exit 1
-fi
-if ! command -v timeout >/dev/null 2>&1; then
-    echo "config-examples: the timeout command (GNU coreutils) is required" >&2
-    exit 1
-fi
 
 # Prints the first status line of GET /health on 127.0.0.1:$1. The extra second
 # covers the one-second read of the reply. Exit 124 means the limit fired.
