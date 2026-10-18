@@ -5,6 +5,7 @@
 package licenseclocktest
 
 import (
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -37,8 +38,9 @@ type handle struct {
 }
 
 // Install sets a Fake starting at start (truncated to whole seconds, like
-// license deadlines) as the license clock until the test ends. The clock is
-// process-global: callers must not use t.Parallel.
+// license deadlines) as the license clock until the test ends. Install before
+// starting work that uses the clock, and stop that work before test cleanup.
+// The clock is process-global: callers must not use t.Parallel.
 func Install(t *testing.T, start time.Time) *Fake {
 	t.Helper()
 	if !testing.Testing() {
@@ -86,21 +88,31 @@ func (h *handle) Stop() bool {
 	return was
 }
 
-// Advance moves time forward and runs every live timer that is now due,
-// outside the lock. It returns how many timers fired.
+// Advance moves time forward and runs every live timer that is now due in
+// deadline order, outside the lock. Equal deadlines retain registration order.
+// It returns how many timers fired.
 func (f *Fake) Advance(d time.Duration) int {
 	f.mu.Lock()
 	f.now = f.now.Add(d)
-	var due []func()
+	var due []*timer
+	live := f.timers[:0]
 	for _, tm := range f.timers {
-		if !tm.stopped && !tm.deadline.After(f.now) {
+		if tm.stopped {
+			continue
+		}
+		if !tm.deadline.After(f.now) {
 			tm.stopped = true
-			due = append(due, tm.fn)
+			due = append(due, tm)
+		} else {
+			live = append(live, tm)
 		}
 	}
+	clear(f.timers[len(live):])
+	f.timers = live
 	f.mu.Unlock()
-	for _, fn := range due {
-		fn()
+	slices.SortStableFunc(due, func(a, b *timer) int { return a.deadline.Compare(b.deadline) })
+	for _, tm := range due {
+		tm.fn()
 	}
 	return len(due)
 }
