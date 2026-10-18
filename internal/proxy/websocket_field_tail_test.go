@@ -59,7 +59,7 @@ func TestWSProxy_CrossMessageDLP_JSONFieldSplitKey(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectClosed(t, conn, inputDeltaMessage("ev1", "key "+prefix+suffix+" end"))
 	})
 
@@ -69,7 +69,7 @@ func TestWSProxy_CrossMessageDLP_JSONFieldSplitKey(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, inputDeltaMessage("ev1", "key "+prefix))
 		sendExpectClosed(t, conn, inputDeltaMessage("ev2", suffix+" end"))
 	})
@@ -80,7 +80,7 @@ func TestWSProxy_CrossMessageDLP_JSONFieldSplitKey(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		for i, delta := range []string{"The quarterly", " report is", " ready for", " your review."} {
 			sendExpectEcho(t, conn, inputDeltaMessage("ev"+string(rune('1'+i)), delta))
 		}
@@ -122,7 +122,7 @@ func TestWSProxy_CrossRequestJSONFieldSplitAcrossConnections(t *testing.T) {
 			_ = first.Close()
 
 			second := dialWS(t, proxyAddr, backendAddr)
-			defer second.Close() //nolint:errcheck // test
+			defer func() { _ = second.Close() }()
 			sendExpectClosed(t, second, tc.second)
 		})
 	}
@@ -153,7 +153,7 @@ func wsScriptedServer(t *testing.T, msgs []string) (string, func()) {
 		if upgradeErr != nil {
 			return
 		}
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		if _, _, readErr := wsutil.ReadClientData(conn); readErr != nil {
 			return
 		}
@@ -181,7 +181,7 @@ func receiveUpstreamMessages(t *testing.T, cfgMod func(*config.Config), msgs []s
 	proxyAddr, proxyCleanup := setupWSProxy(t, cfgMod)
 	defer proxyCleanup()
 	conn := dialWS(t, proxyAddr, backendAddr)
-	defer conn.Close() //nolint:errcheck // test
+	defer func() { _ = conn.Close() }()
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hi")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -270,7 +270,7 @@ func TestWSProxy_JSONFieldLimitsFailClosed(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, inputDeltaMessage("ev1", "hello"))
 		sendExpectClosed(t, conn, wideJSONMessage("world"))
 	})
@@ -280,7 +280,7 @@ func TestWSProxy_JSONFieldLimitsFailClosed(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, wideJSONMessage("world"))
 	})
 	t.Run("upstream wide message after field content is blocked", func(t *testing.T) {
@@ -344,7 +344,7 @@ func TestWSProxy_JSONFieldBudgetAndSessionUpdate(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		call := func(idx int, args string) string {
 			return `{"tool_calls":[{"index":` + strconv.Itoa(idx) + `,"arguments":"` + args + `"}]}`
 		}
@@ -361,7 +361,7 @@ func TestWSProxy_JSONFieldBudgetAndSessionUpdate(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		call := func(idx int, args string) string {
 			return `{"tool_calls":[{"index":` + strconv.Itoa(idx) + `,"arguments":"` + args + `"}]}`
 		}
@@ -378,7 +378,7 @@ func TestWSProxy_JSONFieldBudgetAndSessionUpdate(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) { cfg.WebSocketProxy.CrossMessageFieldLimit = 16 })
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, evicting[0])
 		sendExpectEcho(t, conn, evicting[1])
 		sendExpectClosed(t, conn, evicting[2])
@@ -389,7 +389,7 @@ func TestWSProxy_JSONFieldBudgetAndSessionUpdate(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, nil)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		for _, msg := range evicting {
 			sendExpectEcho(t, conn, msg)
 		}
@@ -462,7 +462,7 @@ func TestWSProxy_JSONFieldTailsBenignCorpus(t *testing.T) {
 		proxyAddr, proxyCleanup := setupWSProxy(t, enableJSONCrossRequestDetection)
 		defer proxyCleanup()
 		conn := dialWS(t, proxyAddr, backendAddr)
-		defer conn.Close() //nolint:errcheck // test
+		defer func() { _ = conn.Close() }()
 		sendExpectEcho(t, conn, sessionUpdateMessage(20, "You are a concise assistant."))
 		for i, text := range benignWSTranscripts[:8] {
 			for j, delta := range wsWordDeltas(text) {
