@@ -34,9 +34,8 @@ func TestValidateRejectsBadPathEntropyExclusion(t *testing.T) {
 	}
 }
 
-// Canonical ordering has a scheme tiebreak that validation makes unreachable
-// at runtime, since a non-https entry is refused. Canonicalization runs on the
-// raw struct though, and hot reload and the dashboard snapshot both call it, so
+// Canonical ordering has a scheme tiebreak. Validation accepts http and https,
+// and hot reload and the dashboard snapshot also canonicalize a raw struct, so
 // the ordering must be total rather than dependent on validation having run.
 func TestCanonicalPathEntropyExclusionsOrderIsTotal(t *testing.T) {
 	t.Parallel()

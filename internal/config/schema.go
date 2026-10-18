@@ -1242,7 +1242,7 @@ type QueryEntropyParamExclusion struct {
 // that value back, can still use it to carry data; verify that is not possible
 // for a route before exempting it.
 type PathEntropyExclusion struct {
-	Scheme     string `yaml:"scheme,omitempty"` // https when unset; an entry never matches a scheme it does not name
+	Scheme     string `yaml:"scheme,omitempty"` // https when unset; http matches cleartext only
 	Host       string `yaml:"host"`             // exact host, or *.example.com
 	PathPrefix string `yaml:"path_prefix"`      // literal prefix of the normalized path, e.g. /document/d/
 	Reason     string `yaml:"reason,omitempty"` // why this route is exempt, for the operator reading it later

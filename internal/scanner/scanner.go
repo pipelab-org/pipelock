@@ -4921,10 +4921,11 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 		if scheme == "" {
 			scheme = config.QueryEntropyParamDefaultScheme
 		}
-		// An exemption never covers cleartext. Validation refuses a non-https
-		// scheme; dropping it here too means an unvalidated Config cannot
-		// install one.
-		if scheme != config.QueryEntropyParamDefaultScheme {
+		// Empty scheme is https. An explicit http entry matches cleartext only.
+		// Any other scheme is dropped so an unvalidated Config cannot install
+		// it. https and http do not cross-exempt: isPathEntropyExcluded
+		// compares the scheme.
+		if scheme != config.QueryEntropyParamDefaultScheme && scheme != "http" {
 			continue
 		}
 		out = append(out, pathEntropyExclusion{

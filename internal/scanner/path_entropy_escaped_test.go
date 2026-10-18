@@ -167,8 +167,9 @@ func TestPathEntropyExclusion_ConstructionCompilesTheCurrentList(t *testing.T) {
 // buildPathEntropyExclusions drops an over-broad entry at the point of use, not
 // only in validation, because a Config can reach the scanner without having
 // been validated. That defense was incomplete: it caught an empty host and an
-// empty prefix and let a bare / prefix and a cleartext scheme through, which
-// are the same over-broad exemption in different spellings. These construct the
+// empty prefix and let a bare / prefix through, which is the same over-broad
+// exemption in a different spelling. An explicit http entry is installed and
+// matches cleartext only; these construct the
 // scanner directly, bypassing Validate exactly as the gap required.
 //
 // Only the SCHEME and PREFIX spellings remain here. An over-broad HOST no
@@ -214,12 +215,6 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			reason: "a / prefix is a host-wide exemption in a different spelling",
 		},
 		{
-			name:   "a cleartext scheme must never be installed",
-			entry:  config.PathEntropyExclusion{Scheme: "http", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
-			probe:  "http://docs.vendor.example/document/d/" + highEntropyID,
-			reason: "an exemption never covers cleartext",
-		},
-		{
 			name:   "an unknown scheme is not silently treated as https",
 			entry:  config.PathEntropyExclusion{Scheme: "ftp", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
 			probe:  exempted,
@@ -243,6 +238,12 @@ func TestPathEntropyExclusion_BuilderDropsOverBroadEntries(t *testing.T) {
 			bare.Close()
 			if bareAllowed {
 				t.Fatalf("probe %q is allowed with NO exclusions configured, so this case cannot detect an installed entry", tt.probe)
+			}
+
+			// A scheme mismatch can keep the probe blocked even if the builder
+			// retains the invalid entry. Assert that it was actually dropped.
+			if got := buildPathEntropyExclusions([]config.PathEntropyExclusion{tt.entry}); len(got) != 0 {
+				t.Fatalf("builder retained invalid entry %+v as %+v", tt.entry, got)
 			}
 
 			s := pathExclusionScanner(t, tt.entry)

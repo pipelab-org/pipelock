@@ -79,9 +79,9 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 			wantErr: "must start with /",
 		},
 		{
-			name:    "http is refused so an entry cannot silently cover cleartext",
-			entry:   PathEntropyExclusion{Scheme: "http", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
-			wantErr: "must be https",
+			name:    "a scheme other than http or https is refused",
+			entry:   PathEntropyExclusion{Scheme: "ftp", Host: "docs.vendor.example", PathPrefix: "/document/d/"},
+			wantErr: "must be http or https",
 		},
 		{
 			name:    "an over-broad wildcard is refused",
@@ -182,6 +182,32 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 		err := validatePathEntropyExclusions([]PathEntropyExclusion{valid, valid})
 		if err == nil || !strings.Contains(err.Error(), "duplicates an earlier entry") {
 			t.Fatalf("error = %v, want a duplicate rejection", err)
+		}
+	})
+
+	t.Run("an explicit http entry is accepted and normalized", func(t *testing.T) {
+		t.Parallel()
+		entries := []PathEntropyExclusion{{
+			Scheme:     " HTTP ",
+			Host:       "files.vendor.example",
+			PathPrefix: "/artifacts/",
+		}}
+		if err := validatePathEntropyExclusions(entries); err != nil {
+			t.Fatalf("validatePathEntropyExclusions(http) = %v, want nil", err)
+		}
+		if entries[0].Scheme != "http" {
+			t.Errorf("scheme = %q, want http", entries[0].Scheme)
+		}
+	})
+
+	t.Run("http and https of the same route are different exemptions", func(t *testing.T) {
+		t.Parallel()
+		err := validatePathEntropyExclusions([]PathEntropyExclusion{
+			{Scheme: "http", Host: "files.vendor.example", PathPrefix: "/artifacts/"},
+			{Scheme: "https", Host: "files.vendor.example", PathPrefix: "/artifacts/"},
+		})
+		if err != nil {
+			t.Fatalf("validatePathEntropyExclusions(http and https) = %v, want nil", err)
 		}
 	})
 

@@ -2076,8 +2076,11 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 		if scheme == "" {
 			scheme = QueryEntropyParamDefaultScheme
 		}
-		if scheme != schemeHTTPS {
-			return fmt.Errorf("%s.scheme %q must be https", field, entry.Scheme)
+		// An omitted scheme stays https. An explicit http entry is a separate
+		// exemption for that cleartext route. Query-parameter exclusions stay
+		// https-only in validateQueryEntropyParamExclusions.
+		if scheme != schemeHTTPS && scheme != schemeHTTP {
+			return fmt.Errorf("%s.scheme %q must be http or https", field, entry.Scheme)
 		}
 
 		if err := RawHostASCIIError(entry.Host); err != nil {
