@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
@@ -184,7 +183,7 @@ func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool)
 			return agent, true
 		}
 		revoked, done := r.licenseRevoked.snapshot()
-		if revoked || (r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt) {
+		if revoked || (r.licenseExpiresAt > 0 && edition.CurrentLicenseClock().Now().Unix() > r.licenseExpiresAt) {
 			return r.fallback, false
 		}
 		resolved := *agent

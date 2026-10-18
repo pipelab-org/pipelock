@@ -999,10 +999,14 @@ func searchSubstring(s, substr string) bool {
 type blockingSyslogWriter struct {
 	started  chan struct{}
 	releaseC chan struct{}
-	mu       sync.Mutex
-	logs     []string
-	count    atomic.Int64
-	closed   atomic.Bool
+	// Concurrent writes and a Close/release race can both try to close
+	// these channels; the Onces make each close happen exactly once.
+	startedOnce sync.Once
+	releaseOnce sync.Once
+	mu          sync.Mutex
+	logs        []string
+	count       atomic.Int64
+	closed      atomic.Bool
 }
 
 func newBlockingSyslogWriter() *blockingSyslogWriter {
@@ -1035,11 +1039,7 @@ func (w *blockingSyslogWriter) write(msg string) error {
 	w.mu.Lock()
 	w.logs = append(w.logs, msg)
 	w.mu.Unlock()
-	select {
-	case <-w.started:
-	default:
-		close(w.started)
-	}
+	w.startedOnce.Do(func() { close(w.started) })
 	<-w.releaseC
 	return nil
 }
@@ -1054,11 +1054,7 @@ func (w *blockingSyslogWriter) waitStarted(t *testing.T) {
 }
 
 func (w *blockingSyslogWriter) release() {
-	select {
-	case <-w.releaseC:
-	default:
-		close(w.releaseC)
-	}
+	w.releaseOnce.Do(func() { close(w.releaseC) })
 }
 
 func (w *blockingSyslogWriter) messages() []string {

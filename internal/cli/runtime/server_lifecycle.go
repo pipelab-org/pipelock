@@ -1262,15 +1262,17 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()
-			remaining := time.Until(time.Unix(cfg.LicenseExpiresAt, 0))
+			clock := edition.CurrentLicenseClock()
+			remaining := time.Unix(cfg.LicenseExpiresAt, 0).Sub(clock.Now())
 			if remaining <= 0 {
 				s.expireLicensedRuntime()
 				return
 			}
-			timer := time.NewTimer(remaining)
+			fired := make(chan struct{})
+			timer := clock.AfterFunc(remaining, func() { close(fired) })
 			defer timer.Stop()
 			select {
-			case <-timer.C:
+			case <-fired:
 				s.expireLicensedRuntime()
 			case <-ctx.Done():
 			}
