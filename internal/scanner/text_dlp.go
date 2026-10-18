@@ -1008,7 +1008,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 	if strings.Contains(cleaned, "%") {
 		for _, dropped := range invalidPercentEscapeViews(cleaned) {
 			if dropped != cleaned {
-				matches = append(matches, s.matchDLPPatternsInView(IterativeDecode(dropped), encodingURL, cleaned)...)
+				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInView(IterativeDecode(dropped), encodingURL, cleaned))...)
 			}
 		}
 	}
@@ -1072,7 +1072,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		}
 	}
 	if !hasEnforcedMatch(matches) {
-		matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes)...)
+		matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes, opts.patterns)...)
 	}
 
 	// Check for env + file secret leaks (raw + encoded forms). These detect a
@@ -1508,7 +1508,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // contiguous in one of the decoded views; neighbouring hex values only add
 // bytes around it. The work is linear in the input, with no window search,
 // piece-length floor or budget.
-func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
@@ -1521,7 +1521,7 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 				continue
 			}
 			d := string(decoded)
-			if m := s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d); len(m) > 0 {
+			if m := patterns.selectMatches(s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d)); len(m) > 0 {
 				return m
 			}
 		}

@@ -277,9 +277,10 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			}
 			action = config.StrongestAction(action, findingAction)
 		}
-		// A credential split across adjacent values, such as hex halves in
-		// consecutive text parts, is contiguous only in these views.
-		if dlpResult := sc.ScanTextForDLP(ctx, view); !dlpResult.Clean {
+		// Non-card credentials split across adjacent text parts are contiguous
+		// only in these views. Pass 2 owns card classification from the original
+		// document; a text join must not erase its scalar boundaries.
+		if dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, view, ""); !dlpResult.Clean {
 			result.Clean = false
 			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 			findingAction := defaultFindingAction

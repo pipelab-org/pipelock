@@ -29,3 +29,36 @@ func TestScanTextForDLP_HexCredentialSplitAcrossValues(t *testing.T) {
 		t.Errorf("benign adjacent hex flagged: %+v", r.Matches)
 	}
 }
+
+func TestScanTextForDLP_DecodedViewsPreserveCardPartition(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := "41111111" + "11111111"
+	cardHex := hex.EncodeToString([]byte(card))
+	keyHex := hex.EncodeToString([]byte("AKIA" + "IOSFODNN7" + "EXAMPLQ"))
+	for _, text := range []string{
+		"card-%zz" + card,
+		cardHex[:16] + " " + cardHex[16:],
+	} {
+		// The original typed document owns card evidence. Its additional
+		// non-card view must neither reclassify cards nor stop at one before
+		// inspecting a later non-card credential.
+		if got := s.ScanTextForDLPWithTypedCardView(t.Context(), text, ""); !got.Clean || len(got.Matches) != 0 {
+			t.Fatalf("non-card view produced card enforcement: %+v", got.Matches)
+		}
+		withKey := text + " separator " + keyHex[:20] + " " + keyHex[20:]
+		got := s.ScanTextForDLPWithTypedCardView(t.Context(), withKey, "")
+		found := false
+		for _, match := range got.Matches {
+			if match.genericCard {
+				t.Fatal("decoded card escaped the non-card partition")
+			}
+			found = found || match.PatternName == "AWS Access ID"
+		}
+		if got.Clean || !found {
+			t.Fatal("decoded card suppressed a later split credential")
+		}
+	}
+}
