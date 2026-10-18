@@ -32,7 +32,7 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "git clone release branch",
         re.compile(
-            r"git\s+clone(?=[^\n]*https://github\.com/luckyPipewrench/pipelock(?:\.git)?)"
+            r"git\s+clone(?=[^\n]*https://github\.com/(?:luckyPipewrench|pipelab-org)/pipelock(?:\.git)?(?![A-Za-z0-9_.-]))"
             r"[^\n]*?(?:--branch(?:=|\s+)|-b\s+)(?P<version>[^\s]+)"
         ),
     ),

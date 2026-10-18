@@ -18,7 +18,7 @@ Run the archive commands in a fresh directory. If verification fails or provenan
 
 ```bash
 # From source (Go 1.26+)
-git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 make -C pipelock install
 
 # Or download the v3.7.0 Linux amd64 archive

@@ -9,7 +9,7 @@ Docker Compose deployment.
 
 ```bash
 # 1. Install pipelock
-git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 make -C pipelock install
 
 # 2. Generate a config (or copy a preset)

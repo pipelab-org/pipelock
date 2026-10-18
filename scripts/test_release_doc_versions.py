@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 CURRENT = """\
-git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.6.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
 helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.6.0
 RUN curl -fsSL https://github.com/luckyPipewrench/pipelock/releases/download/v3.6.0/pipelock_3.6.0_linux_amd64.tar.gz
@@ -51,7 +51,7 @@ class ReleaseDocVersionTests(unittest.TestCase):
 
     def test_each_supported_stale_pin_fails(self) -> None:
         stale_cases = (
-            ("git clone branch", "git clone --branch v3.5.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git"),
+            ("git clone branch", "git clone --branch v3.5.0 --depth 1 https://github.com/pipelab-org/pipelock.git"),
             ("Docker tag", "docker pull ghcr.io/luckypipewrench/pipelock:3.5.0"),
             ("Helm version", "helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.5.0"),
             (
@@ -67,12 +67,36 @@ class ReleaseDocVersionTests(unittest.TestCase):
             with self.subTest(surface=label), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 write_tree(root, current=CURRENT.replace(
-                    "git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git",
+                    "git clone --branch v3.6.0 --depth 1 https://github.com/pipelab-org/pipelock.git",
                     line,
                     1,
                 ))
                 findings = check(root, "v3.6.0")
                 self.assertTrue(any("expected" in finding and "README.md" in finding for finding in findings), findings)
+
+    def test_clone_pins_from_both_repository_owners_are_checked(self) -> None:
+        for owner in ("pipelab-org", "luckyPipewrench"):
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root, current=CURRENT + (
+                    f"git clone --branch v3.5.0 --depth 1 https://github.com/{owner}/pipelock.git\n"
+                ))
+                self.assertTrue(any("git clone release branch" in finding and "3.5.0" in finding
+                                    for finding in check(root, "v3.6.0")))
+
+    def test_near_miss_repository_name_is_not_a_clone_pin(self) -> None:
+        for url in (
+            "https://github.com/pipelab-org/pipelock-fork.git",
+            "https://github.com/luckyPipewrench/pipelock-fork.git",
+            "https://github.com/pipelab-org/pipelock.git.backup",
+        ):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root, current=CURRENT + (
+                    f"git clone --branch v3.5.0 --depth 1 {url}\n"
+                ))
+                findings = check(root, "v3.6.0")
+                self.assertFalse(any("3.5.0" in finding for finding in findings), findings)
 
     def test_quoted_stale_pins_cannot_hide_behind_current_pins(self) -> None:
         for quote in ("'", '"', "`"):

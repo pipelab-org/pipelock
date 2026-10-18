@@ -122,7 +122,7 @@ The bench is deterministic to a useful degree but not bit-for-bit. Run-to-run di
 For the public `/learn/performance/` page we use `--release` mode on a quiet box, which raises iteration counts and adds the 30-minute memory window. Your numbers will differ. The repro command stays single-shot:
 
 ```bash
-git clone https://github.com/luckyPipewrench/pipelock
+git clone https://github.com/pipelab-org/pipelock
 cd pipelock
 make bench-egress
 cat bench/egress/results.json
