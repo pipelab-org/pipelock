@@ -325,14 +325,15 @@ func TestCardUnionUsesShippedReconstructionRule(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 	// This configured rule finds the same digit values but excludes separators.
-	// Typed reconstruction still follows the shared shipped-rule UNION.
+	// Typed reconstruction still follows the shared shipped-rule UNION, but
+	// candidates found only by the shipped rule's retry stay with that rule.
 	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Card fixture", Regex: strings.ReplaceAll(jsonnumber.ShippedCardPattern, "[- ]?", ""), Validator: "luhn", Severity: config.SeverityHigh}}
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, tt := range cardtest.UnionCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			matches := s.ScanJSONCardRuns(t.Context(), tt.Body)
-			if HasEnforcingMatch(matches) != (!tt.Clean && !tt.Warn) {
+			if HasEnforcingMatch(matches) != (!tt.Clean && !tt.Warn && !tt.Retry) {
 				t.Fatal("configured matching changed the shared reconstruction policy")
 			}
 		})

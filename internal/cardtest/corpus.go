@@ -15,6 +15,9 @@ type JSONCase struct {
 	Body  string
 	Clean bool
 	Warn  bool // informational evidence; forward with a record
+	// Retry marks a verdict that needs the shipped rule's separator retry.
+	// A configured rule with whole-match validation leaves it clean.
+	Retry bool
 }
 
 // JSONCases covers a single decimal, adjacent scalar runs, and ordinary
@@ -105,7 +108,7 @@ func UnionCases() []JSONCase {
 		{Name: "context prefixed invalid checksum", Body: `[` + q("card "+a) + `,` + q(b+" "+c+" "+d[:3]+"2") + `]`, Clean: true},
 		// A failed greedy window retries shorter ends at its own separators, so
 		// a trailing digit piece cannot hide the card before it.
-		{Name: "card before trailing digit piece", Body: `[` + q("card "+a) + `,` + q(b) + `,` + q(c) + `,` + q(d) + `,"1"]`},
+		{Name: "card before trailing digit piece", Body: `[` + q("card "+a) + `,` + q(b) + `,` + q(c) + `,` + q(d) + `,"1"]`, Retry: true},
 		{Name: "trailing digit string cannot promote number run", Body: `[` + a + `,` + b + `,` + c + `,` + d + `,"1"]`, Warn: true},
 		{Name: "trailing digit number keeps number run informational", Body: `[` + a + `,` + b + `,` + c + `,` + d + `,1]`, Warn: true},
 		{Name: "trailing digit after invalid checksum stays clean", Body: `[` + q("card "+a) + `,` + q(b) + `,` + q(c) + `,` + q(d[:3]+"2") + `,"1"]`, Clean: true},
