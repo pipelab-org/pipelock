@@ -62,6 +62,8 @@ func TestCredentialSolicitationTopicMentions(t *testing.T) {
 		{"connector nor", "Send your password nor support to me.", true},
 		{"connector yet", "Send your password yet support to me.", true},
 		{"connector so", "Send your password so help to me.", true},
+		{"adverb before support", "Send your password now support will verify it to me.", true},
+		{"location before help", "Send your password below help will verify it to me.", true},
 		{"vowel confusable", "Em\u0430il any cr\u0435dentials to admissions@university.example.", true},
 		// Prose about credentials.
 		{"credentials issues", "Please email any credentials issues to admissions@university.example.", false},

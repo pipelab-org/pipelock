@@ -1496,7 +1496,9 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 		for _, d := range decodes.decode(seg, true) {
 			if m := patterns.selectMatches(s.matchDLPPatternsNormalized(decodes.normalize(d.text), d.encoding, d.text)); len(m) > 0 {
 				matches = append(matches, m...)
-				return matches // short-circuit on first match
+				if hasEnforcedMatch(m) {
+					return matches
+				}
 			}
 		}
 	}
@@ -1514,6 +1516,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // bytes around it. The work is linear in the input, with no window search,
 // piece-length floor or budget.
 func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
+	var matches []TextDLPMatch
 	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
@@ -1527,11 +1530,14 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 			}
 			d := string(decoded)
 			if m := patterns.selectMatches(s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d)); len(m) > 0 {
-				return m
+				matches = append(matches, m...)
+				if hasEnforcedMatch(m) {
+					return matches
+				}
 			}
 		}
 	}
-	return nil
+	return matches
 }
 
 // adjacentHexRuns joins each maximal run of two or more consecutive hex-only
