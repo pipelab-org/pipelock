@@ -1280,6 +1280,9 @@ func stepPreflight(opts installOpts) step {
 			for label, path := range map[string]string{
 				"bash":    env.bashPath,
 				"nologin": env.nologinPath,
+				// The namespace doorway probe runs curl. Refusing here
+				// avoids writing units and then rolling them back.
+				"curl": env.curlPath,
 			} {
 				if err := expectExecutablePath(env.stat, label, path); err != nil {
 					return false, err

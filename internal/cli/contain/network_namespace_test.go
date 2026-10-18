@@ -222,7 +222,7 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 			{name: "inventory owns drifted relay", inventoryRelay: true},
 			{name: "relay stop failure", failAction: "stop"},
 			{name: "daemon reload failure", failAction: "daemon-reload"},
-			{name: "restart failure", failAction: "restart"},
+			{name: "socket start failure", failAction: "start"},
 			{name: "missing listen path", missing: true},
 			{name: "regular file at listen path", regular: true},
 			{name: "later step failure", laterFail: true},
@@ -294,12 +294,20 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 						return result, code, runErr
 					}
 					unit := args[len(args)-1]
-					if !failed && args[0] == tc.failAction && (unit == socket || unit == relay || args[0] == "daemon-reload") {
+					failThis := !failed && args[0] == tc.failAction && (args[0] == "daemon-reload" ||
+						(args[0] == "stop" && unit == relay) ||
+						(args[0] == "start" && unit == socket))
+					if failThis {
 						failed = true
 						return "injected failure", 1, nil
 					}
 					if args[0] == "stop" && unit == relay {
 						relayActive = false
+						// A still-listening socket accepts another connection
+						// and starts the relay again before the next command.
+						if active {
+							relayActive = true
+						}
 					}
 					if unit == socket {
 						switch args[0] {
@@ -357,7 +365,7 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 					return
 				}
 				if tc.unchanged || tc.inactive {
-					if fakeRunnerCalled(runner, "systemctl restart "+socket) || fakeRunnerCalled(runner, "systemctl stop "+relay) {
+					if fakeRunnerCalled(runner, "systemctl restart "+socket) || fakeRunnerCalled(runner, "systemctl stop "+socket) || fakeRunnerCalled(runner, "systemctl stop "+relay) {
 						t.Fatalf("unnecessary restart or relay stop: %v", runner.calls)
 					}
 				}
@@ -372,13 +380,19 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 					if tc.disabled && !fakeRunnerCalled(runner, argvFor(testSystemctl, "disable", socket)) {
 						t.Fatal("rollback did not restore disabled socket state")
 					}
+					if fakeRunnerCalled(runner, "systemctl start "+relay) {
+						t.Fatal("socket-activated relay was started directly during rollback")
+					}
 					return
 				}
 				if bound != listenPath {
 					t.Fatalf("listening at %q, want %q", bound, listenPath)
 				}
+				if fakeRunnerCalled(runner, "systemctl start "+relay) {
+					t.Fatal("socket-activated relay was started directly")
+				}
 				if !tc.unchanged && !tc.inactive {
-					wantOrder := []string{"systemctl stop " + relay, "systemctl daemon-reload", "systemctl restart " + socket, "systemctl enable --now " + containedNamespaceForwarderUnit}
+					wantOrder := []string{"systemctl stop " + socket, "systemctl stop " + relay, "systemctl daemon-reload", "systemctl start " + socket, "systemctl enable --now " + containedNamespaceForwarderUnit}
 					index := 0
 					for _, call := range runner.calls {
 						if argvFor(call.name, call.args...) == wantOrder[index] {
@@ -394,6 +408,26 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestSingleListenStream(t *testing.T) {
+	path := containedDoorwaySocketPath
+	body := renderContainedProxySocketUnit("pipelock-agent")
+	got, err := singleListenStream(body)
+	if err != nil || got != path {
+		t.Fatalf("singleListenStream() = %q, %v", got, err)
+	}
+	withCR := strings.ReplaceAll(body, "ListenStream="+path+"\n", "ListenStream="+path+" \r\n")
+	got, err = singleListenStream(withCR)
+	if err != nil || got != path {
+		t.Fatalf("trimmed ListenStream = %q, %v", got, err)
+	}
+	if _, err := singleListenStream(body + "ListenStream=/run/other.sock\n"); err == nil {
+		t.Fatal("two ListenStream lines were accepted")
+	}
+	if _, err := singleListenStream("[Socket]\nSocketMode=0660\n"); err == nil {
+		t.Fatal("a socket unit with no ListenStream was accepted")
 	}
 }
 
