@@ -107,6 +107,49 @@ func TestPathEntropyExclusion_ExemptsOnlyTheNamedRoute(t *testing.T) {
 	}
 }
 
+func TestPathEntropyExclusion_HTTPEntryMatchesCleartextOnly(t *testing.T) {
+	t.Parallel()
+
+	entry := config.PathEntropyExclusion{
+		Scheme:     "http",
+		Host:       "files.vendor.example",
+		PathPrefix: "/artifacts/",
+	}
+	httpURL := "http://files.vendor.example/artifacts/" + highEntropyID
+	httpsURL := "https://files.vendor.example/artifacts/" + highEntropyID
+
+	s := pathExclusionScanner(t, entry)
+	defer s.Close()
+
+	for _, raw := range []string{httpURL, httpsURL} {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", raw, err)
+		}
+		bare := pathExclusionScanner(t)
+		if bare.checkEntropy(parsed).Allowed {
+			bare.Close()
+			t.Fatalf("probe %q is allowed with no exclusions, so this case cannot detect an installed entry", raw)
+		}
+		bare.Close()
+	}
+
+	httpParsed, err := url.Parse(httpURL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if res := s.checkEntropy(httpParsed); !res.Allowed {
+		t.Fatalf("http entry did not exempt the cleartext route: %s", res.Reason)
+	}
+	httpsParsed, err := url.Parse(httpsURL)
+	if err != nil {
+		t.Fatalf("url.Parse: %v", err)
+	}
+	if res := s.checkEntropy(httpsParsed); res.Allowed {
+		t.Fatal("http entry exempted the https URL")
+	}
+}
+
 // The whole point of a dedicated field is that it does not disable the other
 // gates the way the host-wide list does. Query entropy is the one that matters
 // most: the query is where a payload actually reaches a collector.
