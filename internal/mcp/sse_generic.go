@@ -470,8 +470,9 @@ func ScanGenericSSEStreamWithOptions(
 		// Warn and an exempt response domain log a finding and continue. They
 		// do not make an unjoined field safe to forward: the raw tail cannot
 		// see across the JSON envelope, so this closes in every action.
-		if (!skipTailInjection && fieldInjectionTail.Incomplete(frame)) ||
-			(!skipTailDLP && fieldTail.Incomplete(frame)) {
+		// A finding on this event skips another tail scan. It must not skip
+		// the field-limit close; both tails can be skipped on one event.
+		if fieldInjectionTail.Incomplete(frame) || fieldTail.Incomplete(frame) {
 			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
 		}
 		// Any finding reported for this event clears the field tails so the
