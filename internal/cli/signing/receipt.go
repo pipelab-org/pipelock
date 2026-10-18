@@ -795,7 +795,14 @@ func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 			}
 			opts.ExpectedHead, opts.ExpectedSeq = "", nil
 		}
-		if err := verifyEvidenceChainResultDetailed(out, label, res, trustedKeys, opts); err != nil {
+		chainOpts := opts
+		if opts.RequireSeal {
+			// A required seal is decided below, as on the action-chain path.
+			// Checking the unproven end here first would report a missing
+			// seal as an accepted or unproven prefix instead.
+			chainOpts.CheckEnd = false
+		}
+		if err := verifyEvidenceChainResultDetailed(out, label, res, trustedKeys, chainOpts); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no action receipt chain, so no transcript_root seal covers this recorder")

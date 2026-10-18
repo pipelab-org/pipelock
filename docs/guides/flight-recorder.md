@@ -437,6 +437,11 @@ pipelock verify-receipt \
   --rotation-endorsement /etc/pipelock/keys/receipt-rotation-2026-07-30.json
 ```
 
+Without `--whole-recorder` this check exits 3 with `VALID PREFIX, END UNPROVEN`,
+whether or not the recorder is still running; after a clean stop, add
+`--whole-recorder` and keep `--key` and every `--rotation-endorsement` flag to
+prove the run ended.
+
 For a later rotation, pin the same original root and pass each earlier
 `--rotation-endorsement` to both the endorsement command and the verifier. This
 proves the full delegation path instead of treating the latest key as a new
