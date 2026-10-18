@@ -15,6 +15,7 @@ on:
       - '.github/workflows/clusterfuzzlite.yaml'
 permissions:
   contents: read
+  actions: read
 jobs:
   PR:
     runs-on: ubuntu-latest
@@ -37,6 +38,7 @@ jobs:
       - name: Build Fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           language: go
       - name: Run Fuzzers
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
