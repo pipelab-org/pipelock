@@ -229,11 +229,40 @@ environment_failure_reason() {
     echo ""
 }
 
+# Every loopback connect is bounded. Where a host firewall silently drops SYNs to
+# a closed port instead of refusing them, an unbounded /dev/tcp connect waits for
+# the kernel's full SYN retry schedule (about two minutes at the Linux default of
+# net.ipv4.tcp_syn_retries=6) on every probe, and it also holds the boot loop past
+# its own deadline. One second is far above a loopback round trip.
+PROBE_CONNECT_TIMEOUT="${CONFIG_EXAMPLES_CONNECT_TIMEOUT:-1}"
+if ! [[ "$PROBE_CONNECT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "config-examples: CONFIG_EXAMPLES_CONNECT_TIMEOUT must be a positive whole number of seconds" >&2
+    exit 1
+fi
+if ! command -v timeout >/dev/null 2>&1; then
+    echo "config-examples: the timeout command (GNU coreutils) is required" >&2
+    exit 1
+fi
+
+# Prints the first status line of GET /health on 127.0.0.1:$1. The extra second
+# covers the one-second read of the reply. Exit 124 means the limit fired.
+probe_exchange() {
+    timeout "$((PROBE_CONNECT_TIMEOUT + 1))" bash -c '
+        exec 3<>"/dev/tcp/127.0.0.1/$1" || exit 1
+        printf "GET /health HTTP/1.0\r\n\r\n" >&3
+        IFS= read -r -t 1 status <&3
+        printf "%s" "$status"
+    ' _ "$1" 2>/dev/null
+}
+
 choose_port() {
     local port i
     for ((i=0; i<40; i++)); do
         port=$((20000 + RANDOM % 30000))
-        if ! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+        # Only a completed connect proves the port is taken. A refusal or a
+        # dropped SYN both leave it available; a bind collision is still caught
+        # and retried by the caller.
+        if ! timeout "$PROBE_CONNECT_TIMEOUT" bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$port" 2>/dev/null; then
             echo "$port"
             return 0
         fi
@@ -242,13 +271,8 @@ choose_port() {
 }
 
 http_ready() {
-    local port="$1" status
-    status="$({
-        exec 3<>"/dev/tcp/127.0.0.1/$port"
-        printf 'GET /health HTTP/1.0\r\n\r\n' >&3
-        IFS= read -r -t 1 status <&3
-        printf '%s' "$status"
-    } 2>/dev/null)" || return 1
+    local status
+    status="$(probe_exchange "$1")" || return 1
     [[ "$status" == HTTP/* ]]
 }
 
