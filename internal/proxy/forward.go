@@ -2385,7 +2385,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			Method: r.Method, Target: targetURL, Layer: "browser_cache",
 			Pattern: pattern, Taint: forwardTaint,
 		})))
-		writeFullResponseBlock(w)
+		writeFullResponseBlock(w, requestID)
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
 		outcomeReason = pattern
 		return

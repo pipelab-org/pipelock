@@ -1793,7 +1793,8 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			PolicyHash: ceeAdmission.PolicyHash, Pattern: ceeReceiptPattern(ceeRes), Transport: TransportWS,
 			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
 		return true
 	}
@@ -1812,7 +1813,8 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 				RequestID: r.requestID, Agent: r.agent, PolicyHash: ceeAdmission.PolicyHash,
 			})
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 		return true
 	}
@@ -2578,7 +2580,8 @@ func (r *wsRelay) blockIdentityReload() bool {
 	r.terminalOnce.Do(func() {
 		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{Target: r.targetURL, Scanner: "identity_reload", Reason: stateIdentityReloadReason, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth)})
 		_ = r.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, stateIdentityReloadReason)
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.AuthorityMismatch, "identity_reload").WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, stateIdentityReloadReason)
 	})
 	return true
@@ -2643,7 +2646,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
 			blocked = true
 			return
@@ -2678,7 +2682,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
@@ -2801,7 +2806,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+					blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
@@ -2827,7 +2833,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, reason)
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfo(scannerLabelRedaction).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, reason)
 			blocked = true
 			return
@@ -3024,7 +3031,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "response scan incomplete")
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.ParseError, "response_scan_error").WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "response scan incomplete")
 		return nil, true
 	}
@@ -3063,7 +3071,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	case config.ActionStrip:
@@ -3083,7 +3092,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 				Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 			return nil, true
 		}
@@ -3102,7 +3112,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "injection detected")
+		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload())
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	default:
@@ -3221,7 +3232,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "kill switch active")
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
 			blocked = true
 			return
@@ -3255,7 +3267,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
@@ -3413,7 +3426,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+					blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
@@ -3482,7 +3496,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, "media blocked")
+				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+					blockInfoFor(blockreason.MediaPolicy, "media_policy").WithRequestID(r.requestID).CloseFramePayload())
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "media blocked")
 				blocked = true
 				return

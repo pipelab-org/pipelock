@@ -2157,7 +2157,7 @@ func newInterceptHandler(
 				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: pattern,
 				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
 			}))
-			writeFullResponseBlock(w)
+			writeFullResponseBlock(w, ic.RequestID)
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, pattern)
 			return
 		}

@@ -35,9 +35,9 @@ func fullResponseRefusal(resp *http.Response) string {
 
 // writeFullResponseBlock uses the same synthetic response as the reverse path,
 // including its block metadata, without copying any origin headers.
-func writeFullResponseBlock(w http.ResponseWriter) {
+func writeFullResponseBlock(w http.ResponseWriter, requestID string) {
 	resp := &http.Response{Header: make(http.Header)}
-	replaceWithBlockReason(resp, string(blockreason.ResponseIncomplete), blockInfoFor(blockreason.ResponseIncomplete, "browser_cache"))
+	replaceWithBlockReason(resp, string(blockreason.ResponseIncomplete), blockInfoFor(blockreason.ResponseIncomplete, "browser_cache").WithRequestID(requestID))
 	for name, values := range resp.Header {
 		w.Header()[name] = values
 	}

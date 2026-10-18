@@ -19,6 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
+
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
@@ -377,8 +380,12 @@ func TestWebSocketResponseSuppressionDoesNotMaskEncodedFinding(t *testing.T) {
 	if closeErr.Code != ws.StatusPolicyViolation {
 		t.Fatalf("close code = %d, want %d", closeErr.Code, ws.StatusPolicyViolation)
 	}
-	if closeErr.Reason != "injection detected" {
-		t.Fatalf("close reason = %q, want %q", closeErr.Reason, "injection detected")
+	var metadata map[string]string
+	if err := json.Unmarshal([]byte(closeErr.Reason), &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if metadata["block_reason"] != string(blockreason.PromptInjection) || !receiptcontent.ValidRequestID(metadata["request_id"]) {
+		t.Fatalf("close reason = %q, want injection block metadata with request ID", closeErr.Reason)
 	}
 }
 

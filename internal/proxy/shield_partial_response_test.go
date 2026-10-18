@@ -99,6 +99,7 @@ func TestForwardShieldPartialResponse(t *testing.T) {
 			if resp.Header.Get("Content-Range") != "" || strings.Contains(string(body), partialShieldPage) {
 				t.Fatalf("blocked range leaked upstream metadata or body: headers=%v body=%q", resp.Header, body)
 			}
+			assertBlockRequestID(t, resp.Header)
 			assertIncompleteResponseBlock(t, resp, body)
 		})
 	}
