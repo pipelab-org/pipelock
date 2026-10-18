@@ -48,11 +48,15 @@ func IsNonOverridableSSRFTarget(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	ip = NormalizeIP(ip)
-	return IsCloudMetadataIP(ip) ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
+	for _, form := range SSRFForms(ip) {
+		if IsCloudMetadataIP(form) ||
+			form.IsLinkLocalUnicast() ||
+			form.IsLinkLocalMulticast() ||
+			form.IsInterfaceLocalMulticast() ||
+			form.IsMulticast() ||
+			form.IsUnspecified() {
+			return true
+		}
+	}
+	return false
 }

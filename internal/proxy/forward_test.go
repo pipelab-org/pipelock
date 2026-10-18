@@ -6794,3 +6794,27 @@ func TestRequestHelpersKeepBodyContext(t *testing.T) {
 		})
 	}
 }
+
+func TestSSRFSafeDialContext_BlocksEmbeddedIPv4(t *testing.T) {
+	for _, target := range []string{"[64:ff9b::7f00:1]:80", "[2002:a00:1::]:80", "[::10.0.0.1]:80", "[64:ff9b::a9fe:a9fe]:80"} {
+		t.Run(target, func(t *testing.T) {
+			cfg := config.Defaults()
+			sc := scanner.MustNew(cfg)
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatalf("proxy.New: %v", err)
+			}
+			defer p.Close()
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", target)
+			if conn != nil {
+				_ = conn.Close()
+			}
+			var ssrfErr *ssrfDialBlockError
+			if !errors.As(err, &ssrfErr) {
+				t.Fatalf("error = %v, want ssrfDialBlockError", err)
+			}
+		})
+	}
+}

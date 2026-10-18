@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"hash"
 	"mime"
 	"regexp"
@@ -164,13 +165,18 @@ func classifyFieldName(name string) FieldClass {
 //
 // Bounds: maxWalkDepth (stack), maxWalkNodes (total leaves). On node budget
 // breach, emits a single FieldBudgetExceeded and stops.
-func WalkA2AJSON(data json.RawMessage, emit func(path string, value string, class FieldClass)) {
+//
+// It returns an error, and emits nothing, when data is not one valid JSON
+// document. Nothing was inspected in that case, so callers must treat the
+// error as an incomplete inspection, never as a clean result.
+func WalkA2AJSON(data json.RawMessage, emit func(path string, value string, class FieldClass)) error {
 	var parsed interface{}
 	if err := extract.DecodeJSON(data, &parsed); err != nil {
-		return
+		return fmt.Errorf("a2a: walk: %w", err)
 	}
 	nodeCount := 0
 	walkValue(parsed, "", "", &nodeCount, 0, emit)
+	return nil
 }
 
 // walkValue recursively walks a JSON value.

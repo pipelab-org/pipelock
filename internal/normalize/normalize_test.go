@@ -396,6 +396,39 @@ func TestConfusableToASCII_IPASmallCaps(t *testing.T) {
 	}
 }
 
+// TestForToolTextSpaced keeps a word boundary wherever ForToolText removes a
+// control or invisible character, and otherwise normalizes the same way.
+func TestForToolTextSpaced(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		stripped string
+		spaced   string
+	}{
+		{"plain", "fetch a URL", "fetch a URL", "fetch a URL"},
+		{"newline", "yolo\nmode", "yolomode", "yolo mode"},
+		{"crlf", "yolo\r\nmode", "yolomode", "yolo  mode"},
+		{"tab", "yolo\tmode", "yolomode", "yolo mode"},
+		{"vertical tab", "yolo\vmode", "yolomode", "yolo mode"},
+		{"form feed", "yolo\fmode", "yolomode", "yolo mode"},
+		{"next line", "yolo\u0085mode", "yolomode", "yolo mode"},
+		{"nul", "yolo\x00mode", "yolomode", "yolo mode"},
+		{"zero width space", "yolo\u200Bmode", "yolomode", "yolo mode"},
+		{"line separator", "yolo\u2028mode", "yolo mode", "yolo mode"},
+		{"leetspeak and confusable", "y0l\u043E\nmode", "yolomode", "yolo mode"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ForToolText(tt.input); got != tt.stripped {
+				t.Errorf("ForToolText(%q) = %q, want %q", tt.input, got, tt.stripped)
+			}
+			if got := ForToolTextSpaced(tt.input); got != tt.spaced {
+				t.Errorf("ForToolTextSpaced(%q) = %q, want %q", tt.input, got, tt.spaced)
+			}
+		})
+	}
+}
+
 // TestForToolText_IPASmallCaps_IMPORTANT verifies the full pipeline catches
 // "IMPORTANT" spelled with IPA Small Caps - external pen test finding.
 func TestForToolText_IPASmallCaps_IMPORTANT(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 // BaselineCmd is the top-level `pipelock baseline` operator command.
@@ -151,7 +152,7 @@ func renderBaselineList(w io.Writer, resp proxy.BaselineListResponse) error {
 	_, _ = fmt.Fprintln(tw, "AGENT\tSTATE\tSESSIONS\tOBSERVED\tTRIMMED\tRATIFIED\tLEARNED")
 	for _, profile := range resp.Profiles {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%s\t%d\t%t\t%s\n",
-			profile.AgentKey,
+			termsafe.Escape(profile.AgentKey),
 			profile.State,
 			profile.SessionCount,
 			baselineObservedSessions(profile),
@@ -164,7 +165,7 @@ func renderBaselineList(w io.Writer, resp proxy.BaselineListResponse) error {
 }
 
 func renderBaselineProfile(w io.Writer, profile proxy.BaselineProfile) error {
-	_, _ = fmt.Fprintf(w, "Baseline %s\n", profile.AgentKey)
+	_, _ = fmt.Fprintf(w, "Baseline %s\n", termsafe.Escape(profile.AgentKey))
 	_, _ = fmt.Fprintf(w, "  state:             %s\n", profile.State)
 	_, _ = fmt.Fprintf(w, "  ratified:          %t\n", profile.Ratified)
 	if profile.RatifiedAt != nil && !profile.RatifiedAt.IsZero() {

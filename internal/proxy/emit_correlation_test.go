@@ -34,7 +34,23 @@ const (
 	corrTestConnTag  = "connect-0007"
 	corrTestInnerTag = "inner-0013"
 	corrWaitTimeout  = 5 * time.Second
+	// corrTunnelSeconds keeps the tunnel's idle and dial bounds far beyond
+	// any scheduling stall: these tests assert correlation fields, not
+	// tunnel liveness, so a starved handshake must not be torn down.
+	corrTunnelSeconds = 300
 )
+
+// withCorrelationTunnel configures the correlation header and removes the
+// short wall-clock tunnel bounds the shared forward-proxy setup uses. SNI
+// verification is off because its fixed ClientHello read deadline is another
+// wall-clock bound unrelated to correlation; SNI has its own tests.
+func withCorrelationTunnel(cfg *config.Config) {
+	withCorrelationHeader(cfg)
+	cfg.ForwardProxy.IdleTimeoutSeconds = corrTunnelSeconds
+	cfg.ForwardProxy.MaxTunnelSeconds = corrTunnelSeconds
+	off := false
+	cfg.ForwardProxy.SNIVerification = &off
+}
 
 // corrTestAWSKey is assembled at runtime so the source holds no credential
 // literal.
@@ -111,7 +127,9 @@ func okUpstream(t *testing.T) *httptest.Server {
 // and closing the body.
 func doCorrelationGET(t *testing.T, client *http.Client, target, tag string) int {
 	t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	// Bound by the test's own context: a hang fails at the package -timeout,
+	// and no fixed wall-clock budget decides the result under load.
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,8 +230,15 @@ func forwardProxyClient(t *testing.T, proxyAddr string, tr *http.Transport) *htt
 		tr = &http.Transport{}
 	}
 	tr.Proxy = http.ProxyURL(proxyURL)
+	// Close each connection after its response, so a CONNECT tunnel ends
+	// when the request does instead of idling until a proxy timeout while
+	// the proxy cleanup (deferred before t.Cleanup runs) waits on it.
+	tr.DisableKeepAlives = true
 	t.Cleanup(tr.CloseIdleConnections)
-	return &http.Client{Transport: tr, Timeout: corrWaitTimeout}
+	// No Client.Timeout: an unscaled 5s budget for CONNECT, dial, TLS
+	// handshake and response through a loaded test binary is what made
+	// these tests flaky. The request carries the test context instead.
+	return &http.Client{Transport: tr}
 }
 
 func TestEmitCorrelation_ForwardHTTP(t *testing.T) {
@@ -259,7 +284,7 @@ func TestEmitCorrelation_ConnectPassthrough(t *testing.T) {
 	t.Run("connect header carried", func(t *testing.T) {
 		t.Parallel()
 		logger, sink := newCorrelationAuditLogger(t)
-		addr, _, cleanup := setupForwardProxyWithLogger(t, logger, withCorrelationHeader)
+		addr, _, cleanup := setupForwardProxyWithLogger(t, logger, withCorrelationTunnel)
 		defer cleanup()
 		tr := &http.Transport{
 			TLSClientConfig:    &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
@@ -272,7 +297,7 @@ func TestEmitCorrelation_ConnectPassthrough(t *testing.T) {
 	t.Run("inner header invisible", func(t *testing.T) {
 		t.Parallel()
 		logger, sink := newCorrelationAuditLogger(t)
-		addr, _, cleanup := setupForwardProxyWithLogger(t, logger, withCorrelationHeader)
+		addr, _, cleanup := setupForwardProxyWithLogger(t, logger, withCorrelationTunnel)
 		defer cleanup()
 		tr := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}}
 		doCorrelationGET(t, forwardProxyClient(t, addr, tr), backend.URL+"/", corrTestInnerTag)
@@ -302,9 +327,9 @@ func setupCorrelationTLSProxy(t *testing.T, logger *audit.Logger, upstreamRootCA
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.APIAllowlist = nil
 	cfg.ForwardProxy.Enabled = true
-	cfg.ForwardProxy.MaxTunnelSeconds = 10
-	cfg.ForwardProxy.IdleTimeoutSeconds = 2
-	cfg.FetchProxy.TimeoutSeconds = 5
+	cfg.ForwardProxy.MaxTunnelSeconds = corrTunnelSeconds
+	cfg.ForwardProxy.IdleTimeoutSeconds = corrTunnelSeconds
+	cfg.FetchProxy.TimeoutSeconds = corrTunnelSeconds
 	cfg.TLSInterception.Enabled = true
 	cfg.TLSInterception.CACertPath = certPath
 	cfg.TLSInterception.CAKeyPath = keyPath

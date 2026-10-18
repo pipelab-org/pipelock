@@ -49,7 +49,10 @@ func TestInterceptTunnel_DNSInfrastructureError_NoSignal(t *testing.T) {
 	cfg.AdaptiveEnforcement.Enabled = true
 	cfg.AdaptiveEnforcement.EscalationThreshold = 5.0
 
-	sc := scanner.MustNew(cfg)
+	sc, err := scanner.NewWithOptions(cfg, scanner.Options{UpstreamResolver: failingInterceptResolver{}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { sc.Close() })
 
 	rec := &interceptMockRecorder{}
@@ -208,4 +211,12 @@ func TestInterceptTunnel_RealSSRF_RecordsSignalBlock(t *testing.T) {
 	if !foundBlock {
 		t.Errorf("real SSRF (private IP) must record SignalBlock in intercept URL path; got signals=%v", rec.signals)
 	}
+}
+
+// failingInterceptResolver fails every lookup so the test does not depend on
+// how the host resolver treats reserved names.
+type failingInterceptResolver struct{}
+
+func (failingInterceptResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }

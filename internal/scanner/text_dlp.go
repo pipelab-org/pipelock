@@ -448,6 +448,11 @@ type TextDLPResult struct {
 	Clean                bool           `json:"clean"`
 	Matches              []TextDLPMatch `json:"matches,omitempty"`
 	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
+	// Incomplete reports that the scan context had ended by the time the
+	// scan returned. Every detector still runs, so Clean and Matches are the
+	// full result; callers that bound the scan with a deadline use the flag
+	// to tell that the deadline passed and treat the result as unverified.
+	Incomplete bool `json:"incomplete,omitempty"`
 }
 
 // textDLPOptions tunes a text-DLP scan. emitWarns controls warn-hook telemetry.
@@ -798,6 +803,14 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 }
 
 func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	result := s.scanTextForDLPDetectors(ctx, text, opts, decodes)
+	if ctx.Err() != nil {
+		result.Incomplete = true
+	}
+	return result
+}
+
+func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 
@@ -989,6 +1002,17 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
 	}
 
+	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
+	// percent-decoding give up on the whole token. A receiver that drops the
+	// invalid escapes recovers the credential, so match that view too.
+	if strings.Contains(cleaned, "%") {
+		for _, dropped := range invalidPercentEscapeViews(cleaned) {
+			if dropped != cleaned {
+				matches = append(matches, s.matchDLPPatternsInView(IterativeDecode(dropped), encodingURL, cleaned)...)
+			}
+		}
+	}
+
 	// Dot-collapse check: catches secrets split across DNS subdomains
 	// (e.g. "sk-ant-api03.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03AABBCCDDEEFFGGHH...").
 	// Only applied when text contains dots that could be subdomain separators.
@@ -1046,6 +1070,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 				break
 			}
 		}
+	}
+	if !hasEnforcedMatch(matches) {
+		matches = append(matches, s.decodeSplitHexRunsWithDecodes(text, decodes)...)
 	}
 
 	// Check for env + file secret leaks (raw + encoded forms). These detect a
@@ -1471,6 +1498,75 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	return matches
 }
 
+// decodeSplitHexRunsWithDecodes catches a hex credential split across
+// adjacent values, such as consecutive JSON strings or lines. Normalization
+// for matching removes the whitespace that separates such values from their
+// neighbours, so the runs are taken from the text before that step.
+//
+// Each maximal run of two or more adjacent hex-only pieces is joined and
+// decoded once at each nibble alignment. A credential spanning pieces is
+// contiguous in one of the decoded views; neighbouring hex values only add
+// bytes around it. The work is linear in the input, with no window search,
+// piece-length floor or budget.
+func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
+		for offset := 0; offset < 2; offset++ {
+			body := run[offset:]
+			body = body[:len(body)-len(body)%2]
+			if len(body) < 10 {
+				continue
+			}
+			decoded, err := hex.DecodeString(body)
+			if err != nil || len(decoded) == 0 {
+				continue
+			}
+			d := string(decoded)
+			if m := s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d); len(m) > 0 {
+				return m
+			}
+		}
+	}
+	return nil
+}
+
+// adjacentHexRuns joins each maximal run of two or more consecutive hex-only
+// segments.
+func adjacentHexRuns(segments []string) []string {
+	var runs []string
+	var b strings.Builder
+	n := 0
+	flush := func() {
+		if n > 1 {
+			runs = append(runs, b.String())
+		}
+		b.Reset()
+		n = 0
+	}
+	for _, seg := range segments {
+		if !isHexText(seg) {
+			flush()
+			continue
+		}
+		b.WriteString(seg)
+		n++
+	}
+	flush()
+	return runs
+}
+
+func isHexText(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
 //pipelock:provenance-transform text_segment
 func isTextDLPEncodingDelimiter(r rune) bool {
 	switch r {
@@ -1635,4 +1731,48 @@ func rot13ASCII(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// invalidPercentEscapeViews returns the text with its invalid percent
+// escapes removed in the two ways a lenient receiver might remove them: the
+// lone '%' only, and the '%' with up to two following bytes. Each view is one
+// linear pass.
+func invalidPercentEscapeViews(text string) []string {
+	return []string{dropInvalidPercent(text, 0), dropInvalidPercentEscapes(text)}
+}
+
+// dropInvalidPercentEscapes removes each '%' that does not start a valid
+// two-digit hex escape, together with the up to two bytes that follow it.
+func dropInvalidPercentEscapes(text string) string { return dropInvalidPercent(text, 2) }
+
+// dropInvalidPercent removes each '%' that does not start a valid two-digit
+// hex escape, together with up to extra following bytes, stopping at the
+// next '%'.
+func dropInvalidPercent(text string, extra int) string {
+	if !strings.Contains(text, "%") {
+		return text
+	}
+	var b strings.Builder
+	b.Grow(len(text))
+	for i := 0; i < len(text); i++ {
+		if text[i] != '%' {
+			b.WriteByte(text[i])
+			continue
+		}
+		if i+2 < len(text) && isHexByte(text[i+1]) && isHexByte(text[i+2]) {
+			b.WriteString(text[i : i+3])
+			i += 2
+			continue
+		}
+		skip := 0
+		for skip < extra && i+1+skip < len(text) && text[i+1+skip] != '%' {
+			skip++
+		}
+		i += skip
+	}
+	return b.String()
+}
+
+func isHexByte(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 }
