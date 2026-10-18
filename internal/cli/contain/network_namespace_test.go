@@ -451,6 +451,158 @@ func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
 	}
 }
 
+// An inactive desired socket is not rebound, but apply still runs
+// enable --now. That start can hand the listener to the relay before the
+// command returns, including when the relay unit file did not exist yet.
+// Undo has to stop that relay after the socket. A relay already active
+// before this attempt, including one this install does not own, stays up.
+func TestInactiveDoorwayRollbackStopsRelayStartedByEnableNow(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		for _, tc := range []struct {
+			name             string
+			fresh            bool
+			preexistingRelay bool
+			foreign          bool
+			failAfterStart   bool
+		}{
+			{name: "seeded later failure"},
+			{name: "seeded enable starts then fails", failAfterStart: true},
+			{name: "fresh later failure", fresh: true},
+			{name: "fresh enable starts then fails", fresh: true, failAfterStart: true},
+			{name: "pre-existing relay stays up", preexistingRelay: true},
+			{name: "foreign pre-existing relay stays up", preexistingRelay: true, foreign: true},
+			{name: "foreign inactive file later failure", foreign: true},
+			{name: "foreign inactive file enable starts then fails", foreign: true, failAfterStart: true},
+		} {
+			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
+				env, runner, out := newFakeEnv(t)
+				services := []config.ContainmentLoopbackService{}
+				socketPath, relayPath := env.proxyForwarderSocketPath, env.proxyForwarderServicePath
+				if declared {
+					service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+					services = append(services, service)
+					base := loopbackForwarderUnitBase(service.Host, service.Port)
+					socketPath = filepath.Join(filepath.Dir(socketPath), base+".socket")
+					relayPath = filepath.Join(filepath.Dir(relayPath), base+".service")
+				}
+				if !tc.fresh {
+					if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(t.Context(), env); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.foreign {
+					if err := os.WriteFile(relayPath, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{}\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.fresh {
+					if _, err := os.Stat(relayPath); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("fresh relay path %s exists: %v", relayPath, err)
+					}
+				}
+				socket, relay := filepath.Base(socketPath), filepath.Base(relayPath)
+				runner.calls = nil
+				socketActive, relayActive := false, tc.preexistingRelay
+				originalRun := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					result, code, runErr := originalRun(ctx, name, args...)
+					if name != testSystemctl || len(args) == 0 {
+						return result, code, runErr
+					}
+					unit := args[len(args)-1]
+					if args[0] == "is-active" && (unit == socket || unit == relay) {
+						on := socketActive
+						if unit == relay {
+							on = relayActive
+						}
+						if on {
+							return systemctlActive, 0, nil
+						}
+						return "inactive", 3, nil
+					}
+					if unit == relay && args[0] == "stop" {
+						relayActive = false
+						if socketActive {
+							relayActive = true
+						}
+						return result, code, runErr
+					}
+					if unit == socket && (args[0] == "stop" || args[0] == "restart") {
+						socketActive = false
+						return result, code, runErr
+					}
+					if unit == socket && (args[0] == "start" || (args[0] == "enable" && containsArg(args, "--now"))) {
+						if !socketActive {
+							if relayActive {
+								return "Socket service " + relay + " already active, refusing.", 1, nil
+							}
+							socketActive = true
+							relayActive = true
+							if tc.failAfterStart {
+								return "dependency failed", 1, nil
+							}
+						}
+						return result, code, runErr
+					}
+					return result, code, runErr
+				}
+				steps := []step{stepInstallNetworkNamespaceWithServices(&services)}
+				if !tc.failAfterStart && !tc.preexistingRelay {
+					steps = append(steps, step{name: "later", apply: func(context.Context, *installEnv) (bool, error) {
+						return false, errors.New("later failure")
+					}})
+				}
+				_, err := runSteps(t.Context(), env, out, steps)
+				if err == nil {
+					t.Fatalf("runSteps succeeded, want rollback: calls=%v", runner.calls)
+				}
+				if strings.Contains(err.Error(), "rollback incomplete") {
+					t.Fatalf("rollback failed: %v", err)
+				}
+				if tc.preexistingRelay {
+					if !relayActive || socketActive {
+						t.Fatalf("pre-existing relay not preserved: socket=%t relay=%t err=%v calls=%v", socketActive, relayActive, err, runner.calls)
+					}
+					if fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatalf("stopped a relay that was already active: %v", runner.calls)
+					}
+					return
+				}
+				if tc.failAfterStart && !strings.Contains(err.Error(), "dependency failed") {
+					t.Fatalf("enable --now failure was not reached: %v", err)
+				}
+				if !tc.failAfterStart && !strings.Contains(err.Error(), "later failure") {
+					t.Fatalf("later failure was not the rollback result: %v", err)
+				}
+				if relayActive || socketActive {
+					t.Fatalf("rollback left doorway running: socket=%t relay=%t calls=%v", socketActive, relayActive, runner.calls)
+				}
+				stopSocket := argvFor(testSystemctl, "stop", socket)
+				stopRelay := argvFor(testSystemctl, "stop", relay)
+				socketAt, relayAt := -1, -1
+				for i, call := range runner.calls {
+					got := argvFor(call.name, call.args...)
+					if got == stopSocket && socketAt < 0 {
+						socketAt = i
+					}
+					if got == stopRelay && relayAt < 0 {
+						relayAt = i
+					}
+				}
+				if socketAt < 0 || relayAt < 0 || relayAt < socketAt {
+					t.Fatalf("undo stopped socket at %d and relay at %d, want relay after socket: %v", socketAt, relayAt, runner.calls)
+				}
+			})
+		}
+	}
+}
+
 func TestSingleListenStream(t *testing.T) {
 	path := containedDoorwaySocketPath
 	body := renderContainedProxySocketUnit("pipelock-agent")

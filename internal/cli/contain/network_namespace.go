@@ -926,6 +926,8 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 	var changedNamespaceForwarders map[string]bool
 	var changedSockets map[string]string
 	var reboundSockets map[string]bool
+	var startedInactiveSockets map[string]bool
+	var writtenRelays map[string]bool
 	var ownedRelays map[string]bool
 	var touched []string
 	var retired map[string][]byte
@@ -1040,6 +1042,8 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			changedNamespaceForwarders = make(map[string]bool)
 			changedSockets = make(map[string]string)
 			reboundSockets = make(map[string]bool)
+			startedInactiveSockets = make(map[string]bool)
+			writtenRelays = make(map[string]bool)
 			retired = make(map[string][]byte)
 			if env.ownedLoopbackAnchorUnitPath != "" {
 				previousLegacyAnchor = systemdUnitRuntimeState(ctx, env, filepath.Base(env.ownedLoopbackAnchorUnitPath))
@@ -1055,6 +1059,12 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				}
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
+				}
+				// The pre-write ownership check misses a file that did not
+				// match, including a foreign unit this attempt replaces and
+				// a unit that did not exist. The body just written is ours.
+				if strings.HasSuffix(item.path, ".service") {
+					writtenRelays[filepath.Base(item.path)] = true
 				}
 				if item.path == env.networkNamespaceUnitPath {
 					namespaceDefinitionChanged = true
@@ -1185,6 +1195,17 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				if strings.HasPrefix(socket, "pipelock-agent-loopback-") && !desiredUnits[strings.TrimSuffix(socket, ".socket")] {
 					continue
 				}
+				relay := strings.TrimSuffix(socket, ".socket") + ".service"
+				// systemctl(1) can start the socket before enable --now reports
+				// failure. Record that possibility before the call. A relay
+				// already active belongs to the captured state. A relay that
+				// was inactive, and whose managed body this attempt wrote or
+				// already owned, is this attempt's startup.
+				if !previousSockets[socket].active &&
+					!systemdUnitRuntimeState(ctx, env, relay).active &&
+					(ownedRelays[relay] || writtenRelays[relay]) {
+					startedInactiveSockets[socket] = true
+				}
 				if err := runOrErr(ctx, env, "systemctl", "enable", "--now", socket); err != nil {
 					// systemctl may have enabled or started the unit before reporting
 					// a dependency failure. Mark the step applied so runSteps invokes
@@ -1268,29 +1289,26 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			for socket, state := range previousSockets {
 				declared := socket == filepath.Base(env.proxyForwarderSocketPath) || desiredUnits[strings.TrimSuffix(socket, ".socket")]
-				// Close a rebound listener before its relay. A connection
-				// accepted while the socket is still up would start the
-				// socket-activated relay again, and the later start of the
-				// restored socket would then be refused.
+				relay := strings.TrimSuffix(socket, ".socket") + ".service"
+				// Close the listener before its relay. A connection accepted
+				// while the socket is still up starts the socket-activated
+				// relay again, and the later start is refused with
+				// "Socket service ... already active, refusing."
+				// enable --now also starts a socket that was inactive. That
+				// hands the listener to a managed relay; stopping only the
+				// socket leaves the relay holding it (systemd.socket(5)).
 				if !state.active || !declared || reboundSockets[socket] {
 					if err := runSystemctlCleanupUnit(ctx, env, "stop", socket); err != nil {
 						errs = append(errs, err)
 					}
 				}
-				if reboundSockets[socket] {
-					if err := runSystemctlCleanupUnit(ctx, env, "stop", strings.TrimSuffix(socket, ".socket")+".service"); err != nil {
+				if reboundSockets[socket] || !declared || startedInactiveSockets[socket] {
+					if err := runSystemctlCleanupUnit(ctx, env, "stop", relay); err != nil {
 						errs = append(errs, err)
 					}
 				}
 				if !state.enabled || !declared {
 					if err := runSystemctlCleanupUnit(ctx, env, "disable", socket); err != nil {
-						errs = append(errs, err)
-					}
-				}
-				// A revoke that failed before apply stopped the host relay
-				// leaves it running on the descriptor it was handed.
-				if !declared {
-					if err := runSystemctlCleanupUnit(ctx, env, "stop", strings.TrimSuffix(socket, ".socket")+".service"); err != nil {
 						errs = append(errs, err)
 					}
 				}
