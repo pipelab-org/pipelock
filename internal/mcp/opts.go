@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/authority"
@@ -780,8 +781,19 @@ func (o MCPProxyOpts) a2aResponseOpts(scanOpts ResponseScanOptions) *A2AResponse
 			cardURL:         o.A2ACardURL,
 			authFingerprint: o.A2ACardAuthFingerprint,
 		},
-		ScanOpts: scanOpts,
+		ScanOpts:    scanOpts,
+		ScanTimeout: o.a2aResponseScanTimeout(),
 	}
+}
+
+// a2aResponseScanTimeout bounds the A2A response scan by the configured
+// upstream response timeout, so a response is never scanned for longer than
+// the proxy would wait for it.
+func (o MCPProxyOpts) a2aResponseScanTimeout() time.Duration {
+	if inputCfg := o.inputCfg(); inputCfg != nil && inputCfg.ResponseTimeoutSeconds > 0 {
+		return time.Duration(inputCfg.ResponseTimeoutSeconds) * time.Second
+	}
+	return 0
 }
 
 func (o MCPProxyOpts) mediaPolicy() *config.MediaPolicy {

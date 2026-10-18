@@ -20,10 +20,27 @@ var metadataIPv6 = map[string]struct{}{
 	"fd00:ec2::254": {}, // AWS IMDSv6
 }
 
-// IsCloudMetadataIP reports whether an address is a cloud instance-metadata
-// endpoint. Callers use this to upgrade a generic SSRF block into the more
-// specific metadata classification.
+// IsCloudMetadataIP reports whether ip, or an IPv4 address embedded in it by
+// a fixed translation or tunnel layout, is a cloud instance-metadata endpoint.
+// Callers use this to upgrade a generic SSRF block into the more specific
+// metadata classification.
 func IsCloudMetadataIP(ip net.IP) bool {
+	if ip == nil {
+		return false
+	}
+	for _, form := range SSRFForms(ip) {
+		if cloudMetadataEndpoint(form) {
+			return true
+		}
+	}
+	return false
+}
+
+// cloudMetadataEndpoint reports whether ip itself is a listed metadata
+// endpoint. It does not walk embeddings. IsCloudMetadataIP does that walk
+// once; calling this from the walk keeps the two from recursing, because
+// SSRFForms always includes its input.
+func cloudMetadataEndpoint(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
@@ -48,11 +65,15 @@ func IsNonOverridableSSRFTarget(ip net.IP) bool {
 	if ip == nil {
 		return false
 	}
-	ip = NormalizeIP(ip)
-	return IsCloudMetadataIP(ip) ||
-		ip.IsLinkLocalUnicast() ||
-		ip.IsLinkLocalMulticast() ||
-		ip.IsInterfaceLocalMulticast() ||
-		ip.IsMulticast() ||
-		ip.IsUnspecified()
+	for _, form := range SSRFForms(ip) {
+		if IsCloudMetadataIP(form) ||
+			form.IsLinkLocalUnicast() ||
+			form.IsLinkLocalMulticast() ||
+			form.IsInterfaceLocalMulticast() ||
+			form.IsMulticast() ||
+			form.IsUnspecified() {
+			return true
+		}
+	}
+	return false
 }

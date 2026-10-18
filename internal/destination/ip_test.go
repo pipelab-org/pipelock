@@ -79,6 +79,15 @@ func TestIsCloudMetadataIP(t *testing.T) {
 		"168.63.129.16",   // Azure WireServer
 		"100.100.100.200", // Alibaba Cloud ECS
 		"fd00:ec2::254",   // AWS IMDSv6
+		// Fixed layouts of those same endpoints. The outer address is not itself
+		// in the metadata tables.
+		"64:ff9b::a9fe:a9fe", // well-known prefix, 169.254.169.254
+		"64:ff9b::a83f:8110", // well-known prefix, Azure WireServer
+		"64:ff9b::6464:64c8", // well-known prefix, Alibaba
+		"2002:a9fe:a9fe::",   // 6to4
+		"::169.254.169.254",  // IPv4-compatible
+		"2001:0:a9fe:a9fe::", // Teredo server
+		"2001::5601:5601",    // Teredo client, obfuscated 169.254.169.254
 	}
 	for _, s := range metadata {
 		if !IsCloudMetadataIP(net.ParseIP(s)) {
@@ -86,7 +95,11 @@ func TestIsCloudMetadataIP(t *testing.T) {
 		}
 	}
 
-	notMetadata := []string{"93.184.216.34", "10.0.0.1", "127.0.0.1", "::1", "169.254.1.1"}
+	notMetadata := []string{
+		"93.184.216.34", "10.0.0.1", "127.0.0.1", "::1", "169.254.1.1",
+		"64:ff9b::808:808", "64:ff9b::a00:1", "64:ff9b::a9fe:101",
+		"64:ff9b:1::808:808", "64:ff9b:1:abcd:0:5431:808:808", "64:ff9b:1::a9fe:a9fe",
+	}
 	for _, s := range notMetadata {
 		if IsCloudMetadataIP(net.ParseIP(s)) {
 			t.Errorf("IsCloudMetadataIP(%s) = true, want false", s)

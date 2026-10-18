@@ -661,6 +661,15 @@ func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *dec
 // isCoreCIDRBlocked checks whether an IP falls within any core internal CIDR.
 // This check always runs, even if the user's config.Internal is empty.
 func (s *Scanner) isCoreCIDRBlocked(ip net.IP) bool {
+	for _, form := range destination.SSRFForms(ip) {
+		if s.isRawCoreCIDRBlocked(form) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scanner) isRawCoreCIDRBlocked(ip net.IP) bool {
 	if s.core == nil {
 		return false
 	}

@@ -53,6 +53,12 @@ type normalizedRegion struct {
 // concatenation is byte-identical to norm, the text the detector actually
 // matched; normalization that interacts across a boundary fails the gate.
 func normalizedRegions(text, norm string, spans []toolTextSpan) ([]normalizedRegion, bool) {
+	return normalizedRegionsWith(text, norm, spans, normalize.ForToolText)
+}
+
+// normalizedRegionsWith is normalizedRegions for the view that normalizeView
+// produces, so the same gate applies to the stripped and spaced views.
+func normalizedRegionsWith(text, norm string, spans []toolTextSpan, normalizeView func(string) string) ([]normalizedRegion, bool) {
 	var b strings.Builder
 	regions := make([]normalizedRegion, 0, len(spans))
 	prev := 0
@@ -60,13 +66,13 @@ func normalizedRegions(text, norm string, spans []toolTextSpan) ([]normalizedReg
 		if sp.Start < prev || sp.End < sp.Start || sp.End > len(text) {
 			return nil, false
 		}
-		b.WriteString(normalize.ForToolText(text[prev:sp.Start]))
+		b.WriteString(normalizeView(text[prev:sp.Start]))
 		start := b.Len()
-		b.WriteString(normalize.ForToolText(text[sp.Start:sp.End]))
+		b.WriteString(normalizeView(text[sp.Start:sp.End]))
 		regions = append(regions, normalizedRegion{pointer: sp.Pointer, start: start, end: b.Len()})
 		prev = sp.End
 	}
-	b.WriteString(normalize.ForToolText(text[prev:]))
+	b.WriteString(normalizeView(text[prev:]))
 	if b.String() != norm {
 		return nil, false
 	}
@@ -94,7 +100,13 @@ func attributeCredentialRequests(text string, spans []toolTextSpan) credentialRe
 // correctness rests on the unconditional byte-equality check in
 // normalizedRegions. Tests pass a mismatched norm to exercise that path.
 func attributeWithNorm(text, norm string, spans []toolTextSpan) credentialRequestAttribution {
-	regions, ok := normalizedRegions(text, norm, spans)
+	return attributeView(text, norm, spans, normalize.ForToolText)
+}
+
+// attributeView attributes the matches in norm, the view of text that
+// normalizeView produces, with offsets in that view of each field.
+func attributeView(text, norm string, spans []toolTextSpan, normalizeView func(string) string) credentialRequestAttribution {
+	regions, ok := normalizedRegionsWith(text, norm, spans, normalizeView)
 
 	var out credentialRequestAttribution
 	type ordinalKey struct {

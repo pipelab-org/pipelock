@@ -1759,8 +1759,10 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 }
 
 func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg []byte, includeFragments bool) bool {
+	fragmentLeaves, fragmentPayloads, partitionReason := r.clientCEEFragmentLeaves(msg, includeFragments)
 	ceeAdmission := r.proxy.admitCurrentCEE(ctx, ceeAdmitRequest{
 		ActorAuth: r.actorAuth, Outbound: msg,
+		BodyFragmentPayloads: fragmentPayloads, BodyFragmentLeaves: fragmentLeaves, PartitionReason: partitionReason,
 		TargetURL: r.targetURL, Agent: r.agent, ClientIP: r.clientIP, RequestID: r.requestID,
 		IncludeFragments: includeFragments,
 	})
@@ -1816,6 +1818,32 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 		return true
 	}
 	return false
+}
+
+// clientCEEFragmentLeaves partitions a JSON text message into the same keyed
+// per-field leaves cross-request detection uses for JSON request bodies, so a
+// value split across messages (or connections) is reassembled per field
+// instead of across the JSON envelope. Non-JSON messages keep only the raw
+// outbound stream, exactly as before.
+func (r *wsRelay) clientCEEFragmentLeaves(msg []byte, text bool) (map[string][]ceeJSONLeaf, map[string][]byte, string) {
+	if !text || r.proxy == nil || !wsMessageLooksLikeJSON(msg) || !ceeJSONBodyPartitioningEnabled(r.proxy.cfgPtr.Load()) {
+		return nil, nil, ""
+	}
+	var partitionKey []byte
+	if fb := r.proxy.fragmentBufferPtr.Load(); fb != nil {
+		partitionKey = fb.PartitionKey()
+	}
+	sessionKey := ceeSessionKey(r.cfg, r.agent, r.clientIP, r.actorAuth)
+	leaves, reason := jsonBodyFragmentLeaves(contentTypeJSON, msg, sessionKey, partitionKey)
+	return leaves, concatCEEJSONLeaves(leaves), reason
+}
+
+// wsMessageLooksLikeJSON reports whether msg starts like a JSON object or
+// array. Plain-text messages are not partitioned and must not be counted as
+// malformed JSON.
+func wsMessageLooksLikeJSON(msg []byte) bool {
+	trimmed := bytes.TrimLeft(msg, " \t\r\n")
+	return len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
 }
 
 func updateWSCrossMessageTail(tail []byte, msg []byte) []byte {
@@ -2575,6 +2603,10 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	var crossMsgNumberTail []byte
 	var crossMsgNumberCardTail []byte
 	var controlMsgTail []byte // separate tail for Ping/Pong payload DLP scanning
+	// JSON-framed messages are reassembled per field by the upstream, so a
+	// value split across messages is joined per field here as well; the raw
+	// tail cannot see across the JSON envelope between the halves.
+	fieldTail := extract.NewFieldTailsWithLimit("", r.crossMessageFieldLimit())
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 	redactionEnabled := r.redaction != nil && r.redaction.required
 
@@ -2918,6 +2950,19 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				blocked = true
 				return
 			}
+			frame := fieldTail.ParseFrame(msg)
+			for _, view := range fieldTail.Views(frame) {
+				if r.scanClientCrossMessageText(ctx, log, []byte(view.Tail), []byte(view.Value)) {
+					blocked = true
+					return
+				}
+			}
+			if fieldTail.Incomplete(frame) {
+				r.blockCrossMessageIncomplete(log, audit.DirectionClientToServer)
+				blocked = true
+				return
+			}
+			fieldTail.Advance(frame, false)
 		}
 
 		if ctx.Err() != nil {
@@ -3136,6 +3181,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 	defer r.recoverRelayPanic(cancel, &blocked)
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
+	crossMessage := newUpstreamCrossMessage(r.crossMessageFieldLimit())
 
 	for {
 		if r.clientClosing.Load() && !time.Now().Before(r.closeGraceDeadline()) {
@@ -3471,6 +3517,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			var responseBlocked bool
 			msg, responseBlocked = r.enforceUpstreamTextPayload(ctx, log, msg, true)
 			if responseBlocked {
+				blocked = true
+				return
+			}
+			if crossMessage.enforce(ctx, r, log, msg) {
 				blocked = true
 				return
 			}

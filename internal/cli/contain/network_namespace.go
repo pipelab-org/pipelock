@@ -26,7 +26,8 @@ import (
 const systemdRunPath = "/usr/bin/systemd-run"
 
 type loopbackForwarderInventory struct {
-	Services []loopbackForwarderRecord `json:"services"`
+	Services   []loopbackForwarderRecord `json:"services"`
+	ProxyRelay bool                      `json:"proxy_relay,omitempty"`
 }
 
 type loopbackForwarderRecord struct {
@@ -180,7 +181,7 @@ ProtectSystem=strict
 }
 
 func desiredLoopbackForwarders(services []config.ContainmentLoopbackService) loopbackForwarderInventory {
-	inv := loopbackForwarderInventory{Services: make([]loopbackForwarderRecord, 0, len(services))}
+	inv := loopbackForwarderInventory{Services: make([]loopbackForwarderRecord, 0, len(services)), ProxyRelay: true}
 	for _, service := range services {
 		inv.Services = append(inv.Services, loopbackForwarderRecord{
 			Unit:      loopbackForwarderUnitBase(service.Host, service.Port),
@@ -650,6 +651,16 @@ func probeNetworkNamespaceBoundary(ctx context.Context, env *probeEnv) (string, 
 	if canaryCode == 0 {
 		return statusFail, fmt.Sprintf("contained agent reached host loopback canary %s", listener.Addr())
 	}
+	status, detail := probeContainedProxyReachability(ctx, env)
+	if status != statusPass {
+		return status, detail
+	}
+	return statusPass, fmt.Sprintf("private namespace %s cannot reach host loopback and can reach its socket-activated proxy", containedNetworkNamespaceUnit)
+}
+
+// probeContainedProxyReachability checks the whole proxy doorway from the
+// agent namespace, including the host relay and the proxy HTTP handler.
+func probeContainedProxyReachability(ctx context.Context, env *probeEnv) (string, string) {
 	proxyArgs := namespaceProbeSystemdRunArgs(env, []string{
 		env.curlPath,
 		"--noproxy", "*",
@@ -665,7 +676,7 @@ func probeNetworkNamespaceBoundary(ctx context.Context, env *probeEnv) (string, 
 	if proxyCode != 0 {
 		return statusFail, fmt.Sprintf("contained namespace cannot reach the proxy socket (exit=%d): %s", proxyCode, oneLine(proxyOut))
 	}
-	return statusPass, fmt.Sprintf("private namespace %s cannot reach host loopback and can reach its socket-activated proxy", containedNetworkNamespaceUnit)
+	return statusPass, "contained namespace can reach its socket-activated proxy"
 }
 
 func namespaceProbeSystemdRunArgs(env *probeEnv, command []string) []string {
@@ -768,9 +779,59 @@ ProtectSystem=strict
 `, proxyUser, proxyUser, pipelockPath, target)
 }
 
+// isLegacyManagedProxyRelay migrates installations predating the proxy inventory
+// record. v3.6.0 and v3.7.0 emitted this exact renderer with a loopback TCP target.
+// Match the complete body; a name, description or command substring is not proof.
+func isLegacyManagedProxyRelay(env *installEnv) bool {
+	body, err := env.readFile(env.proxyForwarderServicePath)
+	if err != nil {
+		return false
+	}
+	prefix := "ExecStart=" + env.pipelockTarget + " contain netns-forward --systemd-listener --target-tcp "
+	for _, line := range strings.Split(string(body), "\n") {
+		target, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		host, portText, splitErr := net.SplitHostPort(target)
+		port, portErr := strconv.Atoi(portText)
+		ip := net.ParseIP(host)
+		if splitErr != nil || portErr != nil || port < 1 || port > 65535 || ip == nil || !ip.IsLoopback() {
+			return false
+		}
+		return string(body) == renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, target)
+	}
+	return false
+}
+
 type unitRuntimeState struct {
 	enabled bool
 	active  bool
+}
+
+// singleListenStream returns the one pathname ListenStream in a rendered
+// socket unit. systemd.socket(5) permits repeating the key; these units do not.
+func singleListenStream(body string) (string, error) {
+	var path string
+	found := false
+	for _, line := range strings.Split(body, "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "ListenStream=")
+		if !ok {
+			continue
+		}
+		if found {
+			return "", fmt.Errorf("socket unit has more than one ListenStream")
+		}
+		path = strings.TrimSpace(value)
+		if path == "" {
+			return "", fmt.Errorf("socket unit has an empty ListenStream")
+		}
+		found = true
+	}
+	if !found {
+		return "", fmt.Errorf("socket unit has no ListenStream")
+	}
+	return path, nil
 }
 
 // managedNamespaceRuntimeUnit describes every unit that can execute the
@@ -812,22 +873,24 @@ func captureManagedNamespaceRuntimeState(ctx context.Context, env *installEnv, u
 	return states
 }
 
-// quiesceManagedNamespaceRuntimeUnits closes doorway sockets before a binary
-// swap. Stopping their services first prevents a still-active accepted
-// connection from using the replacement before its matching command surface is
-// installed.
+// quiesceManagedNamespaceRuntimeUnits closes doorway sockets before stopping
+// their services and replacing the binary. Closing listeners first prevents
+// traffic from reactivating a relay after it has been stopped.
 func quiesceManagedNamespaceRuntimeUnits(ctx context.Context, env *installEnv, units []managedNamespaceRuntimeUnit, states map[string]unitRuntimeState) error {
-	for _, unit := range units {
-		if !unit.socket && states[unit.name].active {
-			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
-				return fmt.Errorf("stop managed forwarder %s before binary replacement: %w", unit.name, err)
-			}
-		}
-	}
 	for _, unit := range units {
 		if unit.socket && states[unit.name].active {
 			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
 				return fmt.Errorf("stop managed doorway socket %s before binary replacement: %w", unit.name, err)
+			}
+		}
+	}
+	for _, unit := range units {
+		// An idle relay can be activated after state capture and before its
+		// socket closes. Stop it whenever its listener was active, too.
+		socketWasActive := unit.socketActivated && states[strings.TrimSuffix(unit.name, ".service")+".socket"].active
+		if !unit.socket && (states[unit.name].active || socketWasActive) {
+			if err := runSystemctlCleanupUnit(ctx, env, "stop", unit.name); err != nil {
+				return fmt.Errorf("stop managed forwarder %s before binary replacement: %w", unit.name, err)
 			}
 		}
 	}
@@ -887,6 +950,11 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 	var legacyAnchorTouched bool
 	var namespaceDefinitionChanged bool
 	var changedNamespaceForwarders map[string]bool
+	var changedSockets map[string]string
+	var reboundSockets map[string]bool
+	var startedInactiveSockets map[string]bool
+	var writtenRelays map[string]bool
+	var ownedRelays map[string]bool
 	var touched []string
 	var retired map[string][]byte
 	return step{
@@ -954,6 +1022,23 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					return false, errors.New("contained network namespace unit path is not configured")
 				}
 			}
+			// Establish ownership before replacing files. A familiar service
+			// name alone never authorizes stopping an operator's relay.
+			ownedRelays = make(map[string]bool)
+			if oldInventory.ProxyRelay || isLegacyManagedProxyRelay(env) {
+				ownedRelays[filepath.Base(env.proxyForwarderServicePath)] = true
+			}
+			for _, record := range oldInventory.Services {
+				ownedRelays[record.Unit+".service"] = true
+			}
+			for _, item := range paths {
+				if !strings.HasSuffix(item.path, ".service") {
+					continue
+				}
+				if body, readErr := env.readFile(item.path); readErr == nil && string(body) == item.body {
+					ownedRelays[filepath.Base(item.path)] = true
+				}
+			}
 
 			previousSockets = make(map[string]unitRuntimeState)
 			proxySocket := filepath.Base(env.proxyForwarderSocketPath)
@@ -984,6 +1069,10 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			legacyAnchorTouched = false
 			namespaceDefinitionChanged = false
 			changedNamespaceForwarders = make(map[string]bool)
+			changedSockets = make(map[string]string)
+			reboundSockets = make(map[string]bool)
+			startedInactiveSockets = make(map[string]bool)
+			writtenRelays = make(map[string]bool)
 			retired = make(map[string][]byte)
 			if env.ownedLoopbackAnchorUnitPath != "" {
 				previousLegacyAnchor = systemdUnitRuntimeState(ctx, env, filepath.Base(env.ownedLoopbackAnchorUnitPath))
@@ -1000,8 +1089,24 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				if err := backupAndWrite(env, item.path, []byte(item.body), item.mode); err != nil {
 					return len(touched) > 0, fmt.Errorf("write %s: %w", item.path, err)
 				}
+				// The pre-write ownership check misses a file that did not
+				// match, including a foreign unit this attempt replaces and
+				// a unit that did not exist. The body just written is ours.
+				if strings.HasSuffix(item.path, ".service") {
+					writtenRelays[filepath.Base(item.path)] = true
+				}
 				if item.path == env.networkNamespaceUnitPath {
 					namespaceDefinitionChanged = true
+				}
+				if strings.HasSuffix(item.path, ".socket") {
+					// Rendered managed sockets carry one pathname ListenStream.
+					// systemd.socket(5) allows more than one; a second line would
+					// make the post-start check look at the wrong path.
+					path, parseErr := singleListenStream(item.body)
+					if parseErr != nil {
+						return len(touched) > 0, fmt.Errorf("parse %s: %w", item.path, parseErr)
+					}
+					changedSockets[filepath.Base(item.path)] = path
 				}
 				if item.path == env.namespaceForwarderServicePath {
 					changedNamespaceForwarders[containedNamespaceForwarderUnit] = true
@@ -1054,6 +1159,29 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					retired[path] = body
 				}
 			}
+			for socket := range changedSockets {
+				if !previousSockets[socket].active {
+					continue
+				}
+				relay := strings.TrimSuffix(socket, ".socket") + ".service"
+				if !ownedRelays[relay] {
+					return true, fmt.Errorf("cannot rebind changed socket %s: relay %s is not managed", socket, relay)
+				}
+				// Mark before stopping: a failed stop or start may still
+				// have changed runtime state and must be undone.
+				// Close the listener before the relay. The relay is
+				// socket-activated, so a connection accepted while the
+				// socket is still up starts it again. systemctl start of
+				// the socket then fails with "Socket service ... already
+				// active, refusing" (the stale-unit comment above).
+				reboundSockets[socket] = true
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", socket); err != nil {
+					return true, fmt.Errorf("stop managed doorway socket %s: %w", socket, err)
+				}
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", relay); err != nil {
+					return true, fmt.Errorf("stop managed doorway relay %s: %w", relay, err)
+				}
+			}
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				// Retiring a stale forwarder disabled it and restored its files
 				// even when no managed file was written; report that too.
@@ -1062,6 +1190,23 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			if namespaceDefinitionChanged && previousNamespace.active {
 				if err := runOrErr(ctx, env, "systemctl", "restart", filepath.Base(env.networkNamespaceUnitPath)); err != nil {
 					return true, fmt.Errorf("restart updated contained network namespace: %w", err)
+				}
+			}
+			for socket := range reboundSockets {
+				// The socket was stopped above, before daemon-reload, so
+				// start binds the ListenStream from the unit just written.
+				// enable --now does not replace an already-active listener
+				// (systemctl(1)).
+				if err := runOrErr(ctx, env, "systemctl", "start", socket); err != nil {
+					return true, fmt.Errorf("start updated contained namespace socket %s: %w", socket, err)
+				}
+				path := changedSockets[socket]
+				info, statErr := env.stat(path)
+				if statErr != nil {
+					return true, fmt.Errorf("check started doorway socket %s: %w", path, statErr)
+				}
+				if info.Mode()&os.ModeSocket == 0 {
+					return true, fmt.Errorf("started doorway %s is not a socket", path)
 				}
 			}
 			for unit, state := range previousNamespaceForwarders {
@@ -1078,6 +1223,17 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			for socket := range previousSockets {
 				if strings.HasPrefix(socket, "pipelock-agent-loopback-") && !desiredUnits[strings.TrimSuffix(socket, ".socket")] {
 					continue
+				}
+				relay := strings.TrimSuffix(socket, ".socket") + ".service"
+				// systemctl(1) can start the socket before enable --now reports
+				// failure. Record that possibility before the call. A relay
+				// already active belongs to the captured state. A relay that
+				// was inactive, and whose managed body this attempt wrote or
+				// already owned, is this attempt's startup.
+				if !previousSockets[socket].active &&
+					!systemdUnitRuntimeState(ctx, env, relay).active &&
+					(ownedRelays[relay] || writtenRelays[relay]) {
+					startedInactiveSockets[socket] = true
 				}
 				if err := runOrErr(ctx, env, "systemctl", "enable", "--now", socket); err != nil {
 					// systemctl may have enabled or started the unit before reporting
@@ -1162,20 +1318,26 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			for socket, state := range previousSockets {
 				declared := socket == filepath.Base(env.proxyForwarderSocketPath) || desiredUnits[strings.TrimSuffix(socket, ".socket")]
-				if !state.active || !declared {
+				relay := strings.TrimSuffix(socket, ".socket") + ".service"
+				// Close the listener before its relay. A connection accepted
+				// while the socket is still up starts the socket-activated
+				// relay again, and the later start is refused with
+				// "Socket service ... already active, refusing."
+				// enable --now also starts a socket that was inactive. That
+				// hands the listener to a managed relay; stopping only the
+				// socket leaves the relay holding it (systemd.socket(5)).
+				if !state.active || !declared || reboundSockets[socket] {
 					if err := runSystemctlCleanupUnit(ctx, env, "stop", socket); err != nil {
+						errs = append(errs, err)
+					}
+				}
+				if reboundSockets[socket] || !declared || startedInactiveSockets[socket] {
+					if err := runSystemctlCleanupUnit(ctx, env, "stop", relay); err != nil {
 						errs = append(errs, err)
 					}
 				}
 				if !state.enabled || !declared {
 					if err := runSystemctlCleanupUnit(ctx, env, "disable", socket); err != nil {
-						errs = append(errs, err)
-					}
-				}
-				// A revoke that failed before apply stopped the host relay
-				// leaves it running on the descriptor it was handed.
-				if !declared {
-					if err := runSystemctlCleanupUnit(ctx, env, "stop", strings.TrimSuffix(socket, ".socket")+".service"); err != nil {
 						errs = append(errs, err)
 					}
 				}

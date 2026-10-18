@@ -1125,7 +1125,7 @@ func TestHTTPListener_GETAndDELETEBlockPathsEmitReceipts(t *testing.T) {
 						cfg := config.Defaults()
 						cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 						cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-						sc := scanner.MustNew(cfg)
+						sc := newFailingDNSScanner(t, cfg)
 						t.Cleanup(sc.Close)
 						opts.Scanner = sc
 						opts.A2ACfg = &config.A2AScanning{
@@ -2062,7 +2062,7 @@ func TestHTTPListener_GETAndDELETEA2AHeaderInfrastructureErrorIsAdaptiveNeutral(
 			cfg := config.Defaults()
 			cfg.Internal = []string{"127.0.0.0/8"}
 			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-			sc := scanner.MustNew(cfg)
+			sc := newFailingDNSScanner(t, cfg)
 			t.Cleanup(sc.Close)
 
 			a2aCfg := &config.A2AScanning{
@@ -2434,7 +2434,7 @@ func TestHTTPListener_GETAndDELETEBlockA2AInfrastructureErrorBeforeUpstream(t *t
 			cfg := config.Defaults()
 			cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-			sc := scanner.MustNew(cfg)
+			sc := newFailingDNSScanner(t, cfg)
 			t.Cleanup(sc.Close)
 
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{

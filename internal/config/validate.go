@@ -3237,6 +3237,9 @@ func (c *Config) validateWebSocketProxy(warnings *[]Warning) error {
 	if c.WebSocketProxy.IdleTimeoutSeconds <= 0 {
 		return fmt.Errorf("websocket_proxy.idle_timeout_seconds must be positive")
 	}
+	if c.WebSocketProxy.CrossMessageFieldLimit < 0 || c.WebSocketProxy.CrossMessageFieldLimit > MaxWebSocketCrossMessageFieldLimit {
+		return fmt.Errorf("websocket_proxy.cross_message_field_limit must be between 0 and %d", MaxWebSocketCrossMessageFieldLimit)
+	}
 	switch c.WebSocketProxy.OriginPolicy {
 	case OriginPolicyRewrite, OriginPolicyForward, ActionStrip:
 		// valid

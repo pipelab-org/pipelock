@@ -832,7 +832,7 @@ A matched rule records a decision metric and an audit event with bounded, operat
 
 ## WebSocket Proxy
 
-Bidirectional WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Text frames are scanned through the full DLP + injection pipeline. Fragment reassembly handles split messages in scan-only mode; when `redaction.enabled` is on, outbound fragmented client messages fail closed because the proxy only rewrites complete JSON messages.
+WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Client-to-server text frames are scanned for DLP and prompt injection (governed by `request_body_scanning`); server-to-client text frames are scanned for prompt injection only, with no DLP in that direction. Content split across messages is scanned joined (DLP for client messages, prompt injection for server messages): raw text through a trailing window, and JSON messages per string field plus a stream-level text window (see `cross_message_field_limit`). Prompt injection in client messages is scanned per message. Per-field tails retain JSON strings; numeric values use the separate typed numeric scanning path. Fragment reassembly handles split messages in scan-only mode; when `redaction.enabled` is on, outbound fragmented client messages fail closed because the proxy only rewrites complete JSON messages.
 
 ```yaml
 websocket_proxy:
@@ -846,6 +846,7 @@ websocket_proxy:
   idle_timeout_seconds: 300
   origin_policy: rewrite        # rewrite, forward, or strip
   forward_cookies: false
+  cross_message_field_limit: 0  # 0 = default (512), max 4096
 ```
 
 | Field | Default | Restart? | Description |
@@ -860,6 +861,9 @@ websocket_proxy:
 | `idle_timeout_seconds` | `300` | No | Close established connections after this much inactivity |
 | `origin_policy` | `"rewrite"` | No | Origin header: rewrite, forward, or strip |
 | `forward_cookies` | `false` | No | Forward client Cookie headers to upstream |
+| `cross_message_field_limit` | `0` (512) | No | JSON fields per connection and direction whose trailing text is joined with the next text message, so a value split across messages is scanned as one. A message that cannot be joined within this budget closes the connection; raise it for clients that send large JSON messages such as tool schemas. Maximum 4096 |
+
+Cross-message joining keeps, per connection and direction, the trailing text of each JSON string field plus one stream-level window fed by text members (`text`, `delta`, `arguments`, `partial_json`, `thinking`, `input`, `output`, and a delta's `content`, `reasoning_content`, `reasoning` and `refusal`) and by changed string members of `choices`, `tool_calls` and content-block elements, and scans each new value joined with them. A message with more JSON leaves than the per-message limit (1024, or twice `cross_message_field_limit` if larger) is joined only as far as it was partitioned; after such a message, any later message that adds a string field the connection is not already tracking fails closed. The same applies to SSE responses, whose per-message limit is fixed at 1024 leaves. Neither the 1024-leaf limit nor the 512 default is taken from a provider specification; both are bounds chosen for observed message shapes, and the WebSocket budget is configurable.
 
 ## DLP (Data Loss Prevention)
 
@@ -1285,7 +1289,7 @@ mcp_input_scanning:
   enabled: true
   action: warn
   on_parse_error: block         # block or forward
-  response_timeout_seconds: 0   # 0 = disabled (stdio MCP proxy only)
+  response_timeout_seconds: 0   # 0 = disabled; see the table for scope
 ```
 
 | Field | Default | Description |
@@ -1293,7 +1297,7 @@ mcp_input_scanning:
 | `enabled` | `false` | Enable input scanning |
 | `action` | `"warn"` | warn or block. Immutable core DLP findings (`AWS Access ID`, `AWS Secret Key`, `GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`, `Private Key Header`, `GCP Service Account Key`) in a request hard-block regardless of this action; the operator cannot downgrade the core floor here. Two things happen before this stage rather than downgrading it: a core credential that top-level `redaction` fully rewrites follows this action instead (see the redaction note below), and a core-floor credential that carries a compiled audience (`GitHub Token`, `GitHub Fine-Grained PAT`, `GitLab PAT`, `Slack Token`) is removed from the finding set before enforcement when it is presented to its compiled audience on a permitted carrier (see [Provider-Key DLP Coverage](security/provider-key-dlp-coverage.md)), so it never reaches this hard-block. Non-core findings follow this action. |
 | `on_parse_error` | `"block"` | What to do with protocol parse errors in otherwise valid JSON: `block` or `forward`. Malformed JSON, invalid UTF-8, exact duplicate keys, and noncanonical aliases of protocol fields always block the request. |
-| `response_timeout_seconds` | `0` | Per-read timeout (seconds) for upstream MCP server responses. `0` disables it (default). When set, a wrapped server that accepts a request but never replies no longer hangs the agent: the proxy fails closed, emitting a JSON-RPC `-32000` error for every pending request. The deadline is per complete response message (one JSON-RPC message, or one SSE data event on the bridge): it resets when each message arrives, so a steady stream of responses is never severed, but it does bound the wait for the *next* message — set it above your slowest legitimate tool's response latency. Applies to the **stdio subprocess proxy** (`-- COMMAND`, including sandboxed mode) and the **stdio-to-HTTP bridge** (`--upstream URL`). On the subprocess proxy a timeout **terminates the hung child** (a stuck subprocess cannot recover); on the HTTP bridge it **fails the affected request closed and the session keeps serving** (one slow response should not kill a shared HTTP upstream). The HTTP reverse-proxy listener (`--listen`) instead uses its own HTTP client/server timeouts. |
+| `response_timeout_seconds` | `0` | Per-read timeout (seconds) for upstream MCP server responses. `0` disables it (default). When set, a wrapped server that accepts a request but never replies no longer hangs the agent: the proxy fails closed, emitting a JSON-RPC `-32000` error for every pending request. The deadline is per complete response message (one JSON-RPC message, or one SSE data event on the bridge): it resets when each message arrives, so a steady stream of responses is never severed, but it does bound the wait for the *next* message — set it above your slowest legitimate tool's response latency. Applies to the **stdio subprocess proxy** (`-- COMMAND`, including sandboxed mode) and the **stdio-to-HTTP bridge** (`--upstream URL`). On the subprocess proxy a timeout **terminates the hung child** (a stuck subprocess cannot recover); on the HTTP bridge it **fails the affected request closed and the session keeps serving** (one slow response should not kill a shared HTTP upstream). The HTTP reverse-proxy listener (`--listen`) instead uses its own HTTP client/server timeouts for the read path. On every MCP proxy mode, including `--listen`, a positive value also caps how long the A2A response scan and Agent Card scan may run for one response; a scan that exceeds it is treated as incomplete and the response is blocked. |
 
 The table shows the values an explicitly written section starts from. When the section is left out of the config entirely (no `enabled: true` and no `action`), `pipelock mcp proxy` turns it on with `action: block`. `response_timeout_seconds` applies independently of `enabled`; it governs the response read path whenever the stdio-fronted proxy is running.
 

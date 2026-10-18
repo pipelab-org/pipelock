@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 // Decision represents the operator's choice for a threat.
@@ -217,17 +219,21 @@ func (a *Approver) prompt(lines <-chan string, req *Request) Decision {
 		a.drainStaleLines(lines)
 		a.lastPromptTimedOut = false
 	}
+	// Every field below can carry request or response content (agent header,
+	// URL, matched body text, pattern names derived from it), so each one is
+	// escaped after truncation. Raw control or bidi characters here could
+	// rewrite or reorder the prompt the operator is deciding on.
 	_, _ = fmt.Fprintf(a.output, "\n=== PIPELOCK: THREAT DETECTED ===\n")
 	if req.Agent != "" {
-		_, _ = fmt.Fprintf(a.output, "Agent:    %s\n", req.Agent)
+		_, _ = fmt.Fprintf(a.output, "Agent:    %s\n", termsafe.Escape(req.Agent))
 	}
-	_, _ = fmt.Fprintf(a.output, "URL:      %s\n", truncate(req.URL, 80))
-	_, _ = fmt.Fprintf(a.output, "Reason:   %s\n", req.Reason)
+	_, _ = fmt.Fprintf(a.output, "URL:      %s\n", termsafe.Escape(truncate(req.URL, 80)))
+	_, _ = fmt.Fprintf(a.output, "Reason:   %s\n", termsafe.Escape(req.Reason))
 	if len(req.Patterns) > 0 {
-		_, _ = fmt.Fprintf(a.output, "Patterns: %s\n", strings.Join(req.Patterns, ", "))
+		_, _ = fmt.Fprintf(a.output, "Patterns: %s\n", termsafe.Escape(strings.Join(req.Patterns, ", ")))
 	}
 	if req.Preview != "" {
-		_, _ = fmt.Fprintf(a.output, "Preview:  %s\n", truncate(req.Preview, 200))
+		_, _ = fmt.Fprintf(a.output, "Preview:  %s\n", termsafe.Escape(truncate(req.Preview, 200)))
 	}
 	_, _ = fmt.Fprintf(a.output, "\nAllow (y), Block (N), or Strip (s)? [%ds timeout] ", int(a.timeout.Seconds()))
 

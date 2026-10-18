@@ -255,6 +255,8 @@ the `pattern.validator` field.
 | Injection pattern | `injection` | `response_scanning.patterns` |
 | Tool poison pattern | `tool-poison` | `mcp_tool_scanning` descriptions |
 
+Every bundle rule matches regardless of case. Pipelock adds `(?i)` to a rule regex that doesn't already turn it on, for all three rule types. For an injection rule that opens with a flag group such as `(?s)`, `i` joins that group (`(?is)`), and a leading group that clears it, such as `(?-i)`, is kept as written. Wrap a span in `(?-i:...)` when it must match exact case.
+
 Tool-poison rules with `scan_field: description` scan the tool's `description` and `description` fields nested in its input schema. Built-in scanning still covers every other agent-visible tool field, but those fields do not trigger description-scoped bundle rules.
 
 Bundle rules are deny-only. A `pattern.exempt_domains` field is accepted for compatibility but ignored, and the loader reports a warning naming the rule when it sees one. Configure exemptions in the local Pipelock config instead.

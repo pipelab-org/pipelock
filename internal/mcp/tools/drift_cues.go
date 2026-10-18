@@ -243,15 +243,24 @@ type cueIdentity struct {
 }
 
 // driftCues returns the cue identities present in a definition's text. Text is
-// normalized the same way tool-poison matching normalizes it, so a homoglyph or
-// zero-width split cannot hide a cue from the comparison on one side and reveal
-// it on the other.
+// normalized into the same two views tool-poison matching uses, so a homoglyph,
+// a zero-width split or a line break cannot hide a cue from the comparison on
+// one side and reveal it on the other.
 func driftCues(text string) map[cueIdentity]bool {
 	if text == "" {
 		return nil
 	}
-	normalized := normalize.ForToolText(text)
 	found := make(map[cueIdentity]bool)
+	stripped := normalize.ForToolText(text)
+	addDriftCues(found, stripped)
+	if spaced := normalize.ForToolTextSpaced(text); spaced != stripped {
+		addDriftCues(found, spaced)
+	}
+	return found
+}
+
+// addDriftCues adds the cues present in one normalized view of a definition.
+func addDriftCues(found map[cueIdentity]bool, normalized string) {
 	for _, p := range driftCuePatterns {
 		if !p.valued {
 			if p.re.MatchString(normalized) {
@@ -275,7 +284,6 @@ func driftCues(text string) map[cueIdentity]bool {
 			found[cueIdentity{class: p.cue, value: value}] = true
 		}
 	}
-	return found
 }
 
 // introducedDriftCues returns the cue classes present in the new definition
@@ -335,7 +343,9 @@ func definitionCues(desc string) map[cueIdentity]bool {
 	if cues == nil {
 		cues = make(map[cueIdentity]bool)
 	}
-	for _, name := range checkToolPoison(normalize.ForToolText(desc)) {
+	norm := normalize.ForToolText(desc)
+	found := checkToolPoison(norm)
+	for _, name := range append(found, checkSpacedToolPoison(desc, norm, found)...) {
 		cues[cueIdentity{class: DriftCuePoison, value: name}] = true
 	}
 	return cues

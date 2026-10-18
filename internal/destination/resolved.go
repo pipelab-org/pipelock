@@ -72,7 +72,7 @@ func FirstFloorHit(addrs []ResolvedAddr) (ResolvedAddr, bool) {
 func FirstInternalHit(addrs []ResolvedAddr, cidrs []*net.IPNet, allowlisted func(net.IP) bool) (ResolvedAddr, bool) {
 	for _, a := range addrs {
 		for _, cidr := range cidrs {
-			if cidr == nil || !cidr.Contains(a.IP) {
+			if cidr == nil || !ContainsAnySSRFForm(cidr, a.IP) {
 				continue
 			}
 			if allowlisted != nil && allowlisted(a.IP) {

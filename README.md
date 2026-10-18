@@ -464,7 +464,7 @@ Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspectio
 
 - **Fetch proxy** (`/fetch?url=...`): Fetches the URL, extracts text, scans for injection, returns clean content.
 - **Forward proxy** (`HTTPS_PROXY`): Standard HTTP CONNECT tunneling without application code changes. Proxy configuration is still required. Optional TLS interception enables payload scanning.
-- **WebSocket proxy** (`/ws?url=ws://...`): Bidirectional frame scanning with DLP + injection detection.
+- **WebSocket proxy** (`/ws?url=ws://...`): Scans client-to-server text frames for DLP and prompt injection, and server-to-client text frames for prompt injection.
 - **MCP proxy** (`pipelock mcp proxy`): Wraps stdio or HTTP MCP servers with bidirectional scanning.
 - **A2A inspection**: Inspects Google Agent-to-Agent protocol traffic as it crosses the forward and MCP paths.
 

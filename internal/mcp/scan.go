@@ -20,6 +20,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -1253,6 +1254,19 @@ type A2AResponseOpts struct {
 	// scanning is disabled or the response is ordinary MCP traffic.
 	// The zero value preserves ScanResponse (no suppression) behavior.
 	ScanOpts ResponseScanOptions
+	// ScanTimeout bounds the field-aware A2A response and Agent Card scans.
+	// A scan that runs past it blocks as incomplete. Zero leaves the scan
+	// unbounded.
+	ScanTimeout time.Duration
+}
+
+// scanContext returns the context for one A2A response scan, bounded by
+// ScanTimeout when it is positive.
+func (o *A2AResponseOpts) scanContext() (context.Context, context.CancelFunc) {
+	if o.ScanTimeout > 0 {
+		return context.WithTimeout(context.Background(), o.ScanTimeout)
+	}
+	return context.Background(), func() {}
 }
 
 // ScanResponseA2A scans a JSON-RPC 2.0 response with optional A2A-aware
@@ -1369,7 +1383,9 @@ func scanA2AResponseDispatchClass(line []byte, sc *scanner.Scanner, a2aOpts *A2A
 	}
 
 	// All other A2A methods: field-aware body scanning.
-	result := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
+	ctx, cancel := a2aOpts.scanContext()
+	defer cancel()
+	result := ScanA2AResponseBody(ctx, line, sc, a2aOpts.Cfg)
 	return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, result), joined), len(result.InjectFindings) > 0 || len(joined.Matches) > 0
 }
 
@@ -1413,14 +1429,18 @@ func scanAgentCardRPCResponse(line []byte, sc *scanner.Scanner, a2aOpts *A2AResp
 	// error.message and error.data. Don't skip scanning just because
 	// the response is an error instead of a result.
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
-		errResult := ScanA2AResponseBody(context.Background(), line, sc, a2aOpts.Cfg)
+		ctx, cancel := a2aOpts.scanContext()
+		defer cancel()
+		errResult := ScanA2AResponseBody(ctx, line, sc, a2aOpts.Cfg)
 		return mergeA2AResponseVerdicts(a2aScanToVerdict(rpcID, errResult), joined), len(errResult.InjectFindings) > 0 || len(joined.Matches) > 0
 	}
 	if len(rpc.Result) == 0 || string(rpc.Result) == jsonrpc.Null {
 		return mergeA2AResponseVerdicts(jsonrpc.ScanVerdict{ID: rpcID, Clean: true}, joined), len(joined.Matches) > 0
 	}
+	ctx, cancel := a2aOpts.scanContext()
+	defer cancel()
 	cardResult := scanAgentCard(
-		context.Background(), rpc.Result, sc,
+		ctx, rpc.Result, sc,
 		a2aOpts.Baseline, a2aOpts.CardKey, agentCardScanOptions{cfg: a2aOpts.Cfg, commitBaseline: joined.Clean, confirmAcceptance: a2aOpts.ConfirmCardAcceptance},
 	)
 	if cardResult.DriftAdopted && a2aOpts.OnCardDriftAdopted != nil {
