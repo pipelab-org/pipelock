@@ -953,9 +953,10 @@ func isCredentialTopicMention(content string, match ResponseMatch) bool {
 }
 
 // credentialTopicWordAt reports whether afterNoun opens with a credential
-// noun used as the modifier of a topic word. A hand-off preposition in the
-// one-word slot ("to support") and a topic word that is an email local-part
-// ("support@") are requests for the credential, not a subject line.
+// noun used as the modifier of a topic word. A hand-off preposition or a
+// coordinating connector in the one-word slot ("to support", "and support",
+// "then help") and a topic word that is an email local-part ("support@")
+// are requests for the credential, not a subject line.
 func credentialTopicWordAt(afterNoun string) bool {
 	loc := credentialTopicWordRe.FindStringIndex(afterNoun)
 	if loc == nil || loc[0] != 0 {
@@ -967,15 +968,21 @@ func credentialTopicWordAt(afterNoun string) bool {
 	words := strings.FieldsFunc(afterNoun[:loc[1]], func(r rune) bool {
 		return r == ' ' || r == '\t' || r == '-'
 	})
-	if len(words) == 2 && foldedDirectionWord(words[0]) {
+	if len(words) == 2 && foldedNonModifierWord(words[0]) {
 		return false
 	}
 	return true
 }
 
-func foldedDirectionWord(word string) bool {
+// foldedNonModifierWord reports a function word that cannot modify the topic
+// noun. Hand-off prepositions were the original slot. Coordinating
+// conjunctions, and "then", occupy that same slot and are not modifiers.
+// The list is that closed class, vowel-folded like the topic expression.
+func foldedNonModifierWord(word string) bool {
 	switch word {
-	case normalize.FoldVowels("to"), normalize.FoldVowels("for"), normalize.FoldVowels("with"), normalize.FoldVowels("via"):
+	case normalize.FoldVowels("to"), normalize.FoldVowels("for"), normalize.FoldVowels("with"), normalize.FoldVowels("via"),
+		normalize.FoldVowels("and"), normalize.FoldVowels("or"), normalize.FoldVowels("but"), normalize.FoldVowels("nor"),
+		normalize.FoldVowels("yet"), normalize.FoldVowels("so"), normalize.FoldVowels("then"):
 		return true
 	default:
 		return false

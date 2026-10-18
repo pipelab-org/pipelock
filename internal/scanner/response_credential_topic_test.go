@@ -55,6 +55,13 @@ func TestCredentialSolicitationTopicMentions(t *testing.T) {
 		{"cue first", "Email to admissions@university.example any credentials.", true},
 		{"topic and credential", "Send your token issues and the token to me.", true},
 		{"topic word after cue", "Send your token to me with any questions.", true},
+		{"connector and", "Send your password and support to me.", true},
+		{"connector then", "Email your token then help to me.", true},
+		{"connector or", "Send your password or support to me.", true},
+		{"connector but", "Send your password but help to me.", true},
+		{"connector nor", "Send your password nor support to me.", true},
+		{"connector yet", "Send your password yet support to me.", true},
+		{"connector so", "Send your password so help to me.", true},
 		{"vowel confusable", "Em\u0430il any cr\u0435dentials to admissions@university.example.", true},
 		// Prose about credentials.
 		{"credentials issues", "Please email any credentials issues to admissions@university.example.", false},
