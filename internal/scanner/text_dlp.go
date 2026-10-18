@@ -799,6 +799,11 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	if emit {
 		s.EmitTextDLPWarnMatches(ctx, append(original.InformationalMatches[:len(original.InformationalMatches):len(original.InformationalMatches)], original.Matches...))
 	}
+	// Later passes have their own results. A deadline that arrives after the
+	// first pass must still mark the merged result unverified.
+	if ctx.Err() != nil {
+		original.Incomplete = true
+	}
 	return original
 }
 
