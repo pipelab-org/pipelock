@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
@@ -105,6 +106,22 @@ func TestWholeRecorderRequireSealParity(t *testing.T) {
 					if tc.code == 1 && !errors.Is(err, errUnsealedRecorder) {
 						t.Fatalf("err = %v, want the missing-seal error", err)
 					}
+					if tc.code == 1 {
+						if strings.Contains(out.String(), "CHAIN VALID") || strings.Contains(out.String(), endproof.Prefix) {
+							t.Fatalf("missing seal presented as success or an unproven prefix:\n%s", out.String())
+						}
+						if jsonMode {
+							var report endproof.Report
+							if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+								t.Fatal(err)
+							}
+							if report.Integrity != "invalid" || report.EndProof.Proven || report.Status != endproof.Invalid {
+								t.Fatalf("json report=%+v", report)
+							}
+						} else if !strings.Contains(out.String(), "INCOMPLETE:") {
+							t.Fatalf("missing incomplete verdict:\n%s", out.String())
+						}
+					}
 				})
 			}
 		}
@@ -173,6 +190,9 @@ func TestWholeRecorderRequireSealChecksPin(t *testing.T) {
 					if !errors.Is(err, errUnsealedRecorder) {
 						t.Fatalf("err = %v, want the missing-seal error", err)
 					}
+					if strings.Contains(out.String(), "CHAIN VALID") || strings.Contains(out.String(), endproof.Prefix) {
+						t.Fatalf("matching pin presented the missing seal as success:\n%s", out.String())
+					}
 					return
 				}
 				if errors.Is(err, errUnsealedRecorder) || !strings.Contains(err.Error()+out.String(), tc.wantErr) {
@@ -180,5 +200,44 @@ func TestWholeRecorderRequireSealChecksPin(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The in-memory whole-recorder oracle is the streaming verifier's expected
+// verdict. Production sets CheckEnd, so a required seal on an evidence-only
+// recorder has to deny on both, including when --allow-prefix is also set.
+func TestWholeRecorderRequireSealMatchesLegacy(t *testing.T) {
+	path, pub := buildEvidenceOnlyRecorderJSONL(t)
+	key := hex.EncodeToString(pub)
+	name := filepath.Base(path)
+	for _, tc := range []struct {
+		name string
+		opts verifyReceiptOptions
+		pin  bool
+	}{
+		{name: "require-seal", opts: verifyReceiptOptions{CheckEnd: true, RequireSeal: true}},
+		{name: "require-seal-allow-prefix", opts: verifyReceiptOptions{CheckEnd: true, RequireSeal: true, AllowPrefix: true}},
+		{name: "require-seal-pin", opts: verifyReceiptOptions{CheckEnd: true, RequireSeal: true, ExpectedHead: strings.Repeat("0", 64)}, pin: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stream, legacy bytes.Buffer
+			streamErr := verifyWholeRecorderFromFile(&stream, name, path, []string{key}, tc.opts)
+			legacyErr := legacyVerifyWholeRecorderFromFile(&legacy, name, path, []string{key}, tc.opts)
+			if verdictOf(&stream, streamErr) != verdictOf(&legacy, legacyErr) {
+				t.Fatalf("streaming verdict differs\nstreaming: %v %s\nin-memory: %v %s", streamErr, stream.String(), legacyErr, legacy.String())
+			}
+			if tc.pin {
+				if streamErr == nil || errors.Is(streamErr, errUnsealedRecorder) || !strings.Contains(streamErr.Error(), "does not match expected head") {
+					t.Fatalf("pin err = %v", streamErr)
+				}
+				return
+			}
+			if !errors.Is(streamErr, errUnsealedRecorder) {
+				t.Fatalf("err = %v, want the missing-seal error", streamErr)
+			}
+			if strings.Contains(stream.String(), "CHAIN VALID") || strings.Contains(stream.String(), endproof.Prefix) {
+				t.Fatalf("missing seal presented as success or an unproven prefix:\n%s", stream.String())
+			}
+		})
 	}
 }

@@ -437,10 +437,13 @@ pipelock verify-receipt \
   --rotation-endorsement /etc/pipelock/keys/receipt-rotation-2026-07-30.json
 ```
 
-Without `--whole-recorder` this check exits 3 with `VALID PREFIX, END UNPROVEN`,
-whether or not the recorder is still running; after a clean stop, add
-`--whole-recorder` and keep `--key` and every `--rotation-endorsement` flag to
-prove the run ended.
+Without `--whole-recorder` this command checks the receipt chain only. A run
+that has not ended in a signed `session_close` exits 3 with
+`VALID PREFIX, END UNPROVEN`, including while the recorder is still running. A
+clean stop writes that `session_close`, and the same command can then exit 0.
+That proves the receipt chain ended. It does not prove the recorder entries
+around it. Add `--whole-recorder`, and keep `--key` and every
+`--rotation-endorsement` flag, to check the `transcript_root` seal.
 
 For a later rotation, pin the same original root and pass each earlier
 `--rotation-endorsement` to both the endorsement command and the verifier. This
