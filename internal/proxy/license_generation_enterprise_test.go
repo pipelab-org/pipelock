@@ -15,13 +15,9 @@ import (
 	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/edition/licenseclocktest"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
-
-// licenseExpiryTestWindow leaves room for proxy setup and the positive-control
-// WebSocket exchange before the license expires.
-const licenseExpiryTestWindow = 10 * time.Second
 
 func requireLicensedWebSocketTeardown(t *testing.T, mutate func(cfg *config.Config), act func(t *testing.T, p *Proxy)) {
 	t.Helper()
@@ -74,16 +70,16 @@ func TestLicenseReplacementClosesPreviousGeneration(t *testing.T) {
 
 // Expiry closes a paid request even without a CRL refresh.
 func TestLicenseExpiryClosesPreviousGeneration(t *testing.T) {
+	clk := licenseclocktest.Install(t, time.Now().Add(-licenseclocktest.WallOffset))
+	expiresAt := clk.Now().Add(time.Hour)
 	requireLicensedWebSocketTeardown(t, func(cfg *config.Config) {
 		revocationConnectionConfig(cfg)
-		// Unix() truncates to whole seconds, so a short window can expire
-		// before proxy setup and the WebSocket dial finish under -race.
-		cfg.LicenseExpiresAt = time.Now().Add(licenseExpiryTestWindow).Unix()
+		cfg.LicenseExpiresAt = expiresAt.Unix()
 	}, func(t *testing.T, p *Proxy) {
-		testwait.For(t, licenseExpiryTestWindow+5*time.Second, func() bool {
-			_, ok := p.Edition().LookupProfile("client")
-			return !ok
-		}, "paid profile expiry")
+		// The positive control has passed, so expiry happens only now.
+		if fired := clk.Advance(time.Hour + time.Second); fired == 0 {
+			t.Fatal("no per-connection expiry timer was armed for the paid connection")
+		}
 	})
 }
 

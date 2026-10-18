@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/edition/licenseclocktest"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -891,5 +892,29 @@ func TestAgentRegistryNamedAgentAddressAllowlistSurvivesMerge(t *testing.T) {
 	body := `{"to": "0x742daaaaaaaaaaaaaaaaaaaaaaaaaaaaaaf2bd3e"}`
 	if res := ck.CheckText(body, "trader"); len(res.Findings) == 0 {
 		t.Fatal("licensed named-agent allowed_addresses was dropped by merge: no lookalike finding")
+	}
+}
+
+func TestAgentRegistryLookupUsesLicenseClock(t *testing.T) {
+	clk := licenseclocktest.Install(t, time.Now().Add(-licenseclocktest.WallOffset))
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{
+		"client": {Mode: config.ModeStrict}, testProfileDefault: {Mode: config.ModeAudit},
+	}
+	cfg.LicenseExpiresAt = clk.Now().Add(time.Hour).Unix()
+	reg, err := NewAgentRegistry(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+	if _, ok := reg.LookupByName("client"); !ok {
+		t.Fatal("future profile refused before license-clock expiry")
+	}
+	clk.Advance(time.Hour + time.Second)
+	if agent, ok := reg.LookupByName("client"); ok || agent != reg.Fallback() {
+		t.Fatal("expired profile did not fall back")
+	}
+	if _, ok := reg.LookupByName(testProfileDefault); !ok {
+		t.Fatal("expiry removed the default profile")
 	}
 }

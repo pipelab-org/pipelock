@@ -23,13 +23,14 @@ func agentLicenseContext(parent context.Context, resolved *edition.ResolvedAgent
 	ctx, cancel := context.WithCancelCause(parent)
 	// Bound each request independently of the runtime watchdog so an expiry
 	// teardown delayed by another lifecycle operation cannot prolong traffic.
-	var expiry *time.Timer
+	var expiry edition.LicenseTimer
 	if resolved.LicenseExpiresAt > 0 {
-		remaining := time.Until(time.Unix(resolved.LicenseExpiresAt, 0))
+		clock := edition.CurrentLicenseClock()
+		remaining := time.Unix(resolved.LicenseExpiresAt, 0).Sub(clock.Now())
 		if remaining <= 0 {
 			cancel(errAgentLicenseRevoked)
 		} else {
-			expiry = time.AfterFunc(remaining, func() { cancel(errAgentLicenseRevoked) })
+			expiry = clock.AfterFunc(remaining, func() { cancel(errAgentLicenseRevoked) })
 		}
 	}
 	select {

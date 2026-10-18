@@ -183,6 +183,7 @@ func writeMCPFileSentryConfig(t *testing.T, bestEffort bool, paths ...string) st
 
 func failFileSentryWatcher(t *testing.T, watchErr error) {
 	t.Helper()
+	requireNoLeakedRuns(t)
 	old := newFileSentryWatcher
 	newFileSentryWatcher = func(*config.FileSentry, filesentry.DLPScanner, filesentry.Lineage, func(error)) (filesentry.Watcher, error) {
 		return nil, watchErr
@@ -263,8 +264,13 @@ func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 		os.Args[0],
 		"-test.run=TestMCPRuntimeHelperProcess$",
 	})
-	done := make(chan error, 1)
-	go func() { done <- cmd.Execute() }()
+	done := runJoined(t, ctx, func(runCtx context.Context) error {
+		cmd.SetContext(runCtx)
+		return cmd.Execute()
+	}, func() {
+		_ = inputW.Close()
+		_ = inputR.Close()
+	})
 
 	select {
 	case <-watcher.started:
@@ -309,8 +315,13 @@ func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 		os.Args[0],
 		"-test.run=TestMCPRuntimeHelperProcess$",
 	})
-	done := make(chan error, 1)
-	go func() { done <- cmd.Execute() }()
+	done := runJoined(t, ctx, func(runCtx context.Context) error {
+		cmd.SetContext(runCtx)
+		return cmd.Execute()
+	}, func() {
+		_ = inputW.Close()
+		_ = inputR.Close()
+	})
 
 	select {
 	case <-watcher.started:
@@ -1934,8 +1945,10 @@ func runMCPProxyCommandWithInputAndCommand(t *testing.T, args []string, input st
 	cmd.SetIn(strings.NewReader(input))
 	cmd.SetArgs(args)
 
-	done := make(chan error, 1)
-	go func() { done <- cmd.Execute() }()
+	done := runJoined(t, ctx, func(runCtx context.Context) error {
+		cmd.SetContext(runCtx)
+		return cmd.Execute()
+	}, nil)
 
 	select {
 	case err := <-done:
