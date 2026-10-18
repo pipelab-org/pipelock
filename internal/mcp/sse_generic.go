@@ -472,7 +472,7 @@ func ScanGenericSSEStreamWithOptions(
 		// see across the JSON envelope, so this closes in every action.
 		if (!skipTailInjection && fieldInjectionTail.Incomplete(frame)) ||
 			(!skipTailDLP && fieldTail.Incomplete(frame)) {
-			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamFinding)
+			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
 		}
 		// Any finding reported for this event clears the field tails so the
 		// same bytes are not reported again by the next event.

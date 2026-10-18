@@ -1522,7 +1522,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			}
 		}
 		if fieldTail.Incomplete(frame) || fieldInjectionTail.Incomplete(frame) {
-			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrA2AStreamFinding)
+			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
 		}
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: cross-event inspection incomplete: %s", ErrSSEStreamScanError, err.Error())
