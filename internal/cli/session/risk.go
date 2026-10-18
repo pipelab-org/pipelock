@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 func riskCmd(flags *rootFlags) *cobra.Command {
@@ -52,7 +53,7 @@ func riskCmd(flags *rootFlags) *cobra.Command {
 
 func renderWhoamiRisk(w io.Writer, r proxy.AdaptiveWhoami) error {
 	_, _ = fmt.Fprintf(w, "session=%s level=%s score=%.2f airlock_tier=%s ttl_seconds=%d\n",
-		r.SessionKey, r.EscalationLevel, r.ThreatScore, defaultIfEmpty(r.AirlockTier, "none"), r.LockdownTTLSeconds)
+		termsafe.Escape(r.SessionKey), termsafe.Escape(r.EscalationLevel), r.ThreatScore, defaultIfEmpty(r.AirlockTier, "none"), r.LockdownTTLSeconds)
 	return nil
 }
 
@@ -66,6 +67,6 @@ func renderSessionRisk(w io.Writer, d proxy.SessionDetail) error {
 		hint = "-"
 	}
 	_, _ = fmt.Fprintf(w, "session=%s level=%s score=%.2f block_all=%t auto_recover_at=%s hint=%s\n",
-		d.Key, d.EscalationLevel, d.ThreatScore, d.BlockAll, eta, strconv.Quote(hint))
+		termsafe.Escape(d.Key), termsafe.Escape(d.EscalationLevel), d.ThreatScore, d.BlockAll, eta, strconv.Quote(hint))
 	return nil
 }

@@ -81,6 +81,10 @@ func ScanA2AResponseBody(ctx context.Context, body []byte, sc *scanner.Scanner, 
 	return scanA2ABody(ctx, body, sc, cfg, nil)
 }
 
+// a2aMaxScanBytes caps the body bytes one A2A scan inspects. It matches the
+// largest message the MCP transports frame.
+const a2aMaxScanBytes = transport.MaxLineSize
+
 // scanA2ABody is the shared implementation for request and response scanning.
 func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *config.A2AScanning, entropyOpts *A2AContentEntropyOptions) A2AScanResult {
 	if err := ctx.Err(); err != nil {
@@ -110,6 +114,16 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			InspectionIncomplete: true,
 		}
 	}
+	// Every pass below scans a view derived from the body, so the body size
+	// bounds total scan work. A body beyond the cap is not inspected at all.
+	if len(trimmed) > a2aMaxScanBytes {
+		return A2AScanResult{
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               "a2a: input exceeds maximum inspectable size",
+			InspectionIncomplete: true,
+		}
+	}
 	if err := redact.NoDuplicateJSONKeys(trimmed); err != nil {
 		reason := fmt.Sprintf("a2a: invalid JSON: %v", err)
 		if redact.IsDuplicateKeyBlock(err) {
@@ -134,7 +148,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	}
 
 	// Pass 1: field-aware walker - classifies and routes each leaf.
-	WalkA2AJSON(json.RawMessage(body), func(path, value string, class FieldClass) {
+	walkErr := WalkA2AJSON(json.RawMessage(body), func(path, value string, class FieldClass) {
 		if class == FieldBudgetExceeded {
 			budgetExceeded = true
 			return
@@ -209,6 +223,18 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			}
 		}
 	})
+	if walkErr != nil {
+		// Defense in depth: the empty-body and duplicate-key checks above
+		// already reject every body the walk's decoder would refuse, so no
+		// request reaches this branch. If one ever does, nothing was walked
+		// and nothing was inspected, so it blocks as incomplete.
+		return A2AScanResult{
+			Clean:                false,
+			Action:               config.ActionBlock,
+			Reason:               "a2a: invalid JSON: " + walkErr.Error(),
+			InspectionIncomplete: true,
+		}
+	}
 
 	if entropyOpts != nil {
 		if finding := contententropy.ScanTexts(entropyTexts, *entropyOpts); finding != nil && result.EntropyFinding == nil {
@@ -247,6 +273,18 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
 			findingAction := defaultFindingAction
 			if budgetExceeded {
+				findingAction = config.ActionBlock
+			}
+			action = config.StrongestAction(action, findingAction)
+		}
+		// Non-card credentials split across adjacent text parts are contiguous
+		// only in these views. Pass 2 owns card classification from the original
+		// document; a text join must not erase its scalar boundaries.
+		if dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, view, ""); !dlpResult.Clean {
+			result.Clean = false
+			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
+			findingAction := defaultFindingAction
+			if budgetExceeded || a2aDLPForcesBlock(dlpResult.Matches) {
 				findingAction = config.ActionBlock
 			}
 			action = config.StrongestAction(action, findingAction)
@@ -298,7 +336,12 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-			dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
+			keyMatches, _ := a2aKeyCardMatches(ctx, sc, extracted.Atoms, nil)
+			dlpResult.Matches = append(dlpResult.Matches, keyMatches...)
+			if dlpResult.Incomplete {
+				result.Clean = false
+				result.ScanError = "a2a: credential inspection incomplete: " + context.Cause(ctx).Error()
+			}
 			if len(dlpResult.Matches) > 0 {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
@@ -396,6 +439,10 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		return true
 	}
 	if len(extracted.Strings) == 0 {
+		if err := ctx.Err(); err != nil {
+			result.ScanError = "a2a: overflow inspection incomplete: " + err.Error()
+			return true
+		}
 		return forceBlock
 	}
 	joined := strings.Join(extracted.Strings, "\n")
@@ -408,27 +455,95 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
 		forceBlock = true
 	}
+	// The joined view catches a credential split across leaves. Each leaf
+	// also gets the same per-string DLP scan the field-aware walk gives it,
+	// so a leaf decodes past the budget exactly as it would within it.
 	dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-	dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
-	if len(dlpResult.Matches) > 0 {
-		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
-		if a2aDLPForcesBlock(dlpResult.Matches) {
+	// The field walk already stopped at maxWalkNodes. Key and leaf scans past
+	// that same budget are incomplete and fail closed, rather than running
+	// one DLP pass per remaining value.
+	scansLeft := maxWalkNodes
+	keyMatches, keyLimited := a2aKeyCardMatches(ctx, sc, extracted.Atoms, &scansLeft)
+	dlpResult.Matches = append(dlpResult.Matches, keyMatches...)
+	if a2aOverflowRecordDLP(result, dlpResult) {
+		forceBlock = true
+	}
+	if dlpResult.Incomplete {
+		result.ScanError = "a2a: overflow credential inspection incomplete: " + context.Cause(ctx).Error()
+		return true
+	}
+	if keyLimited {
+		result.ScanError = "a2a: overflow inspection exceeds maximum distinct leaf count"
+		return true
+	}
+	scanned := make(map[string]struct{}, len(extracted.Strings))
+	for _, leaf := range extracted.Strings {
+		if forceBlock {
+			break
+		}
+		if _, seen := scanned[leaf]; seen || leaf == "" {
+			continue
+		}
+		if scansLeft <= 0 {
+			result.ScanError = "a2a: overflow inspection exceeds maximum distinct leaf count"
+			return true
+		}
+		scansLeft--
+		scanned[leaf] = struct{}{}
+		leafResult := sc.ScanTextForDLPWithCardView(ctx, leaf, "")
+		if a2aOverflowRecordDLP(result, leafResult) {
 			forceBlock = true
 		}
+		if leafResult.Incomplete {
+			result.ScanError = "a2a: overflow credential inspection incomplete: " + context.Cause(ctx).Error()
+			return true
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		result.ScanError = "a2a: overflow inspection incomplete: " + err.Error()
+		return true
 	}
 	return forceBlock
 }
 
 // a2aKeyCardMatches scans each object key on its own. Card joins omit keys,
 // and the per-leaf walk uses no card view, so a whole-key card needs this pass.
-func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom) []scanner.TextDLPMatch {
+// limit is the number of key scans still allowed. A nil limit does not apply
+// a cap. Repeated copies of one key text and card view count once, the same
+// way the leaf pass counts one string once. A different card view is a
+// different scan. The boolean reports that another distinct key view remained
+// after the cap.
+func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom, limit *int) ([]scanner.TextDLPMatch, bool) {
 	var matches []scanner.TextDLPMatch
+	seen := make(map[struct{ text, card string }]struct{})
 	for _, atom := range atoms {
-		if atom.Key {
-			matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
+		if !atom.Key || atom.Text == "" {
+			continue
 		}
+		view := struct{ text, card string }{atom.Text, atom.Card}
+		if _, ok := seen[view]; ok {
+			continue
+		}
+		if limit != nil && *limit <= 0 {
+			return matches, true
+		}
+		if limit != nil {
+			*limit--
+		}
+		seen[view] = struct{}{}
+		matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
 	}
-	return matches
+	return matches, false
+}
+
+// a2aOverflowRecordDLP adds DLP findings from the overflow pass and reports
+// whether they must block.
+func a2aOverflowRecordDLP(result *A2AScanResult, dlpResult scanner.TextDLPResult) bool {
+	if len(dlpResult.Matches) == 0 {
+		return false
+	}
+	result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
+	return a2aDLPForcesBlock(dlpResult.Matches)
 }
 
 func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {
@@ -1257,6 +1372,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 	var numberTail string
 	var numberCardTail string
 	var previousLastNumber bool
+	// The tails above join every string of an event, keys included, so a
+	// field name always sits between two halves of a split artifact text.
+	// The field tails join each JSON field only with its own earlier content.
+	fieldTail := extract.NewFieldTails("")
+	fieldInjectionTail := extract.NewFieldTails("")
 
 	for {
 		select {
@@ -1351,6 +1471,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			cardBoundary := jsonnumber.CardBoundary(previousLastNumber, currentFirstNumber)
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
 			if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
+				if scanner.HasInspectionLimit(dlpResult.Matches) {
+					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
@@ -1362,6 +1485,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		if numberTail != "" && numberText != "" {
 			result := sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
 			if len(result.Matches) > 0 && !recordNumberOnly(result.Matches) {
+				if scanner.HasInspectionLimit(result.Matches) {
+					return sseDLPFindingError(result.Matches, "cross-event dlp")
+				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s", ErrA2AStreamFinding, sseDLPMatchNames(result.Matches))
 			}
 		}
@@ -1371,6 +1497,38 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			numberTail = advanceSSERollingTail(numberTail, []byte(numberText), false, "")
 			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
+
+		frame := extract.ParseFieldTailFrame(event)
+		for _, view := range fieldInjectionTail.Views(frame) {
+			tailResult := sc.ScanResponse(ctx, view.Joined)
+			if tailResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
+			}
+			if !tailResult.Clean {
+				return fmt.Errorf("%w: cross-event injection detected", ErrA2AStreamFinding)
+			}
+		}
+		for _, view := range fieldTail.Views(frame) {
+			dlpResult := sc.ScanTextForDLP(ctx, view.Joined)
+			if dlpResult.Incomplete {
+				return fmt.Errorf("%w: cross-event dlp scan incomplete: %s", ErrSSEStreamScanError, context.Cause(ctx).Error())
+			}
+			if !dlpResult.Clean {
+				if scanner.HasInspectionLimit(dlpResult.Matches) {
+					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+				}
+				return fmt.Errorf("%w: cross-event dlp detected: %s",
+					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+			}
+		}
+		if fieldTail.Incomplete(frame) || fieldInjectionTail.Incomplete(frame) {
+			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: cross-event inspection incomplete: %s", ErrSSEStreamScanError, err.Error())
+		}
+		fieldTail.Advance(frame, false)
+		fieldInjectionTail.Advance(frame, false)
 
 		// Update rolling tails.
 		if currentText != "" {

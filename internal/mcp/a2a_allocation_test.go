@@ -45,7 +45,7 @@ func TestA2AWalkBoundedPathAllocation(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	longest, leaves := 0, 0
-	WalkA2AJSON(raw, func(path, _ string, class FieldClass) {
+	mustWalkA2AJSON(raw, func(path, _ string, class FieldClass) {
 		longest = max(longest, len(path))
 		if class == FieldOpaque {
 			leaves++

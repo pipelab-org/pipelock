@@ -33,7 +33,9 @@ func TestExtremeNumberKeepsA2AFieldInspection(t *testing.T) {
 	// Numeric leaves still consume the existing walker budget.
 	body := `[` + strings.Repeat(`1e999,`, maxWalkNodes) + `1e999]`
 	budget := false
-	WalkA2AJSON(json.RawMessage(body), func(_, _ string, class FieldClass) { budget = budget || class == FieldBudgetExceeded })
+	if err := WalkA2AJSON(json.RawMessage(body), func(_, _ string, class FieldClass) { budget = budget || class == FieldBudgetExceeded }); err != nil {
+		t.Fatal(err)
+	}
 	if !budget {
 		t.Fatal("numeric leaves bypassed node budget")
 	}

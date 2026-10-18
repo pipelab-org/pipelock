@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -773,7 +774,7 @@ func filterDefensiveCredentialSolicitationMatches(content string, matches []Resp
 
 	filtered := matches[:0]
 	for _, match := range matches {
-		if isSecretAskPattern(match.PatternName) && isDefensiveCredentialSolicitation(content, match) {
+		if isSecretAskPattern(match.PatternName) && (isDefensiveCredentialSolicitation(content, match) || isCredentialTopicMention(content, match)) {
 			continue
 		}
 		filtered = append(filtered, match)
@@ -907,6 +908,103 @@ func hasSolicitationContinuation(suffix string) bool {
 		}
 	}
 	return false
+}
+
+// Credential nouns and the topic words that turn one into a subject line:
+// "email any credentials issues to admissions@..." asks for a support message
+// about credentials, not for the credentials. Both are vowel-folded so the
+// check gives the same answer on every normalization pass, including the
+// vowel-fold pass. One modifier word may sit between ("password reset
+// questions"). That word is not a hand-off preposition: "password to
+// support@..." is still a request for the password, and so is a topic word
+// used as an email local-part. A credential noun followed by anything else
+// still counts.
+var (
+	credentialTopicNounRe = regexp.MustCompile(normalize.FoldVowels(
+		`\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`))
+	credentialTopicWordRe = regexp.MustCompile(normalize.FoldVowels(
+		`^(?:[ \t-]+[a-z]+)?[ \t-]+(?:issues?|problems?|questions?|quer(?:y|ies)|inquir(?:y|ies)|enquir(?:y|ies)|concerns?|complaints?|troubles?|troubleshooting|feedback|support|help|errors?|bugs?|polic(?:y|ies))\b`))
+)
+
+// isCredentialTopicMention reports whether every credential noun that starts
+// inside the match is the modifier of a topic word. The topic word may follow
+// the match end, because the cue-first branch of the pattern ends on the noun.
+// A match with no recognizable noun is kept.
+func isCredentialTopicMention(content string, match ResponseMatch) bool {
+	start := match.Position
+	end := start + match.matchLength
+	if match.matchLength == 0 {
+		end = start + len(match.MatchText)
+	}
+	if start < 0 || end <= start || end > len(content) {
+		return false
+	}
+	folded := foldCredentialTopicText(content)
+	nouns := credentialTopicNounRe.FindAllStringIndex(folded[start:end], -1)
+	if len(nouns) == 0 {
+		return false
+	}
+	for _, loc := range nouns {
+		if !credentialTopicWordAt(folded[start+loc[1]:]) {
+			return false
+		}
+	}
+	return true
+}
+
+// credentialTopicWordAt reports whether afterNoun opens with a credential
+// noun used as the modifier of a topic word. A hand-off preposition or a
+// coordinating connector in the one-word slot ("to support", "and support",
+// "then help") and a topic word that is an email local-part ("support@")
+// are requests for the credential, not a subject line.
+func credentialTopicWordAt(afterNoun string) bool {
+	loc := credentialTopicWordRe.FindStringIndex(afterNoun)
+	if loc == nil || loc[0] != 0 {
+		return false
+	}
+	if loc[1] < len(afterNoun) && afterNoun[loc[1]] == '@' {
+		return false
+	}
+	words := strings.FieldsFunc(afterNoun[:loc[1]], func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '-'
+	})
+	if len(words) == 2 && foldedNonModifierWord(words[0]) {
+		return false
+	}
+	return true
+}
+
+// foldedNonModifierWord reports a function word that cannot modify the topic
+// noun. Hand-off prepositions were the original slot. Coordinating
+// conjunctions, and "then", occupy that same slot and are not modifiers.
+// The list is that closed class, vowel-folded like the topic expression.
+func foldedNonModifierWord(word string) bool {
+	switch word {
+	case normalize.FoldVowels("to"), normalize.FoldVowels("for"), normalize.FoldVowels("with"), normalize.FoldVowels("via"),
+		normalize.FoldVowels("and"), normalize.FoldVowels("or"), normalize.FoldVowels("but"), normalize.FoldVowels("nor"),
+		normalize.FoldVowels("yet"), normalize.FoldVowels("so"), normalize.FoldVowels("then"):
+		return true
+	default:
+		return false
+	}
+}
+
+// foldCredentialTopicText lowercases and vowel-folds ASCII letters byte by
+// byte, so byte offsets into the result are byte offsets into s even when s
+// is not valid UTF-8.
+func foldCredentialTopicText(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		switch c {
+		case 'e', 'i', 'o', 'u':
+			c = 'a'
+		}
+		b[i] = c
+	}
+	return string(b)
 }
 
 // matchPatternsAgainst runs a pattern set against content and returns matches.

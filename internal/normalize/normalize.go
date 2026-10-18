@@ -733,7 +733,25 @@ func FoldVowels(s string) string {
 // whitespace. More aggressive than ForMatching because tool descriptions have no
 // legitimate control chars - any present are evasion attempts.
 func ForToolText(s string) string {
-	s = StripControlChars(s)
+	return toolTextNormalize(StripControlChars(s))
+}
+
+// ForToolTextSpaced is ForToolText with each control and invisible character
+// replaced by a space instead of removed. Removal joins the words on either
+// side of a line break or zero-width separator ("yolo\nmode" becomes
+// "yolomode"), which hides a phrase from patterns that need a word boundary.
+// Removal is still right for a separator inside a word ("IMPOR\tTANT"), so
+// tool scanning matches both views, as response scanning does.
+func ForToolTextSpaced(s string) string {
+	return toolTextNormalize(strings.Map(func(r rune) rune {
+		if isDLPControl(r) {
+			return ' '
+		}
+		return r
+	}, s))
+}
+
+func toolTextNormalize(s string) string {
 	s = norm.NFKC.String(s)
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)

@@ -203,27 +203,37 @@ func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
 	for _, kind := range []string{"generic", "a2a"} {
-		const maxCheckpoint = 64
-		cancelledCheckpoints := 0
-		ended := false
-		for checkpoint := int32(1); checkpoint <= maxCheckpoint; checkpoint++ {
-			reached := false
+		scan := func(ctx context.Context) error {
+			body := "data: {\"text\":\"ordinary response\"}\n\ndata: {\"text\":\"another response\"}\n\n"
+			var out bytes.Buffer
+			if kind == "generic" {
+				return ScanGenericSSEStream(ctx, strings.NewReader(body), &out, nil, sc, enabledSSECfg())
+			}
+			return ScanA2AStream(ctx, strings.NewReader(body), &out, nil, sc, enabledA2ACfg())
+		}
+		control := &cancelOnErrorCheck{Context: t.Context()}
+		if err := scan(control); err != nil {
+			t.Fatalf("%s complete stream scan: %v", kind, err)
+		}
+		checkpoints := control.checks.Load()
+		if checkpoints == 0 {
+			t.Fatalf("%s stream exposed no cancellation checkpoint", kind)
+		}
+		for checkpoint := int32(1); checkpoint <= checkpoints+1; checkpoint++ {
 			t.Run(fmt.Sprintf("%s/%d", kind, checkpoint), func(t *testing.T) {
 				base, cancel := context.WithCancel(t.Context())
 				defer cancel()
 				ctx := &cancelOnErrorCheck{Context: base, cancel: cancel, after: checkpoint}
-				body := "data: {\"text\":\"ordinary response\"}\n\ndata: {\"text\":\"another response\"}\n\n"
-				var out bytes.Buffer
-				var err error
-				if kind == "generic" {
-					err = ScanGenericSSEStream(ctx, strings.NewReader(body), &out, nil, sc, enabledSSECfg())
-				} else {
-					err = ScanA2AStream(ctx, strings.NewReader(body), &out, nil, sc, enabledA2ACfg())
+				err := scan(ctx)
+				if checkpoint == checkpoints+1 {
+					if base.Err() != nil || err != nil {
+						t.Fatalf("complete stream scan: context=%v error=%v", base.Err(), err)
+					}
+					return
 				}
 				if base.Err() == nil {
-					t.Skipf("checkpoint %d not reached; finite stream scan completed", checkpoint)
+					t.Fatalf("checkpoint %d measured by control was not reached", checkpoint)
 				}
-				cancelledCheckpoints++
 				if err == nil {
 					t.Fatal("cancelled response scan returned nil error")
 				}
@@ -231,7 +241,6 @@ func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 					// Cancellation before an event scan reaches the stream loop is
 					// returned directly. It is still an incomplete scan, never a
 					// finding.
-					reached = true
 					return
 				}
 				if !errors.Is(err, ErrSSEStreamScanError) {
@@ -240,18 +249,7 @@ func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 				if errors.Is(err, ErrSSEStreamFinding) || strings.Contains(err.Error(), "injection") {
 					t.Fatalf("cancellation classified as injection: %v", err)
 				}
-				reached = true
 			})
-			if !reached {
-				ended = true
-				break
-			}
-		}
-		if cancelledCheckpoints == 0 {
-			t.Fatalf("%s stream exposed no reachable cancellation checkpoint", kind)
-		}
-		if !ended && cancelledCheckpoints == maxCheckpoint {
-			t.Fatalf("%s stream exceeded bounded checkpoint guard of %d", kind, maxCheckpoint)
 		}
 	}
 }

@@ -878,9 +878,7 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		}
 	}
 	var parsed interface{}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&parsed); err == nil {
+	if err := DecodeJSON(raw, &parsed); err == nil {
 		extract(parsed, 0)
 	}
 	ordered := AllStringsFromJSONOrderedResult(raw)

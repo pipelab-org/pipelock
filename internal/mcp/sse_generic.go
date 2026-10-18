@@ -112,12 +112,14 @@ type GenericSSEScanOptions struct {
 // flushing pass-through so the disabled mode preserves token-by-token UX
 // instead of silently buffering a streaming protocol it recognizes.
 //
-// The scanner intentionally does NOT field-walk JSON (that's the A2A
-// scanner's job). Generic SSE data: payloads can be non-JSON: OpenAI
-// emits "[DONE]" as a literal sentinel and some providers send raw text
-// deltas. Treating the joined data: payload as text is the lowest-common
-// denominator that catches DLP and injection patterns across providers,
-// including payloads split across sequential token events.
+// Every event is scanned as text: generic SSE data: payloads can be
+// non-JSON (OpenAI emits "[DONE]" as a literal sentinel and some providers
+// send raw text deltas), so the joined data: payload is the lowest-common
+// denominator for DLP and injection patterns. Cross-event scanning keeps
+// two kinds of tail: raw tails over the event text, and, for events that
+// are JSON documents, per-field tails (extract.FieldTails) so a phrase or
+// credential split across token deltas is joined the way the client joins
+// it rather than across the JSON envelope between the halves.
 func ScanGenericSSEStream(
 	ctx context.Context,
 	body io.Reader,
@@ -159,6 +161,11 @@ func ScanGenericSSEStreamWithOptions(
 	var numberTail string
 	var numberCardTail string
 	var payloadInjectionTail string
+	// JSON providers stream deltas whose text the client reassembles per
+	// field; the raw tails above cannot see across the JSON envelope that
+	// sits between two halves. These keep each field's own recent content.
+	fieldTail := extract.NewFieldTails("")
+	fieldInjectionTail := extract.NewFieldTails("")
 	// Stream-scoped on purpose. injectionTail carries bytes from one event into
 	// the next event's scan, so a finding in event N is presented again by
 	// event N+1's rolling scan. A per-event recorder starts with an empty seen
@@ -418,6 +425,60 @@ func ScanGenericSSEStreamWithOptions(
 			numberTail = advanceSSERollingTail(numberTail, []byte(numberText), false, "")
 			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
+
+		frame := extract.ParseFieldTailFrame(event)
+		resetFieldInjectionTail := false
+		if !skipTailInjection && !resetInjectionTail {
+			for _, view := range fieldInjectionTail.Views(frame) {
+				result := sc.ScanResponseWithSuppress(ctx, view.Joined, opts.Target, opts.Suppress)
+				observedCore.record(result)
+				if result.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
+				}
+				if result.Clean {
+					continue
+				}
+				findingErr := fmt.Errorf("%w: cross-event injection: %s", ErrSSEStreamFinding, sseInjectionNames(result.Matches))
+				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+					onFinding(findingErr)
+					resetFieldInjectionTail = true
+					break
+				}
+				return findingErr
+			}
+		}
+		resetFieldTail := false
+		if !skipTailDLP && !resetDLPTail {
+			for _, view := range fieldTail.Views(frame) {
+				result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view.Joined), opts.Target, opts.Suppress)
+				if err := checkSSEDLPContext(ctx); err != nil {
+					return err
+				}
+				droppedDLP.record(droppedMatches)
+				if result.Clean {
+					continue
+				}
+				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
+				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
+					onFinding(findingErr)
+					resetFieldTail = true
+					break
+				}
+				return findingErr
+			}
+		}
+		// Warn and an exempt response domain log a finding and continue. They
+		// do not make an unjoined field safe to forward: the raw tail cannot
+		// see across the JSON envelope, so this closes in every action.
+		// A finding on this event skips another tail scan. It must not skip
+		// the field-limit close; both tails can be skipped on one event.
+		if fieldInjectionTail.Incomplete(frame) || fieldTail.Incomplete(frame) {
+			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrSSEStreamScanError)
+		}
+		// Any finding reported for this event clears the field tails so the
+		// same bytes are not reported again by the next event.
+		fieldTail.Advance(frame, resetFieldTail || resetDLPTail || clearDLPTailAfterCurrent)
+		fieldInjectionTail.Advance(frame, resetFieldInjectionTail || resetInjectionTail || clearInjectionTailAfterCurrent)
 
 		if clearDLPTailAfterCurrent {
 			if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {

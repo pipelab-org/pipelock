@@ -28,6 +28,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	contractstore "github.com/luckyPipewrench/pipelock/internal/contract/store"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 const (
@@ -297,15 +298,15 @@ func renderRatifyRule(w io.Writer, c contract.Contract, rule contract.Rule, inde
 	_, err := fmt.Fprintf(w, "\nRule %d/%d: %s\nselector: %s\nobservations: %s\nwilson: %s\nconfidence: %s\ndata_class: %s\nfp_risk: %s\nrationale: %s\nsamples: %s\n[e]nforce [c]apture-only [r]eject > ",
 		index+1,
 		len(c.Rules),
-		rule.RuleID,
-		summarizeSelector(rule.Selector),
-		mapValueString(rule.Observation, "event_count"),
-		rule.WilsonLower,
-		rule.Confidence,
-		dataClass,
-		mapValueString(rule.Rationale, "fp_risk_class"),
-		summarizeMap(rule.Rationale),
-		summarizeSamples(rule.Observation),
+		termsafe.Escape(rule.RuleID),
+		termsafe.Escape(summarizeSelector(rule.Selector)),
+		termsafe.Escape(mapValueString(rule.Observation, "event_count")),
+		termsafe.Escape(rule.WilsonLower),
+		termsafe.Escape(rule.Confidence),
+		termsafe.Escape(dataClass),
+		termsafe.Escape(mapValueString(rule.Rationale, "fp_risk_class")),
+		termsafe.Escape(summarizeMap(rule.Rationale)),
+		termsafe.Escape(summarizeSamples(rule.Observation)),
 	)
 	return err
 }

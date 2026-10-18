@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"net"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -103,7 +104,10 @@ func TestScanURL_DNSFailure_ClassifiedAsInfrastructureError(t *testing.T) {
 	// DNS path at all. nil would disable the SSRF check entirely.
 	cfg.Internal = []string{"127.0.0.0/8", "10.0.0.0/8"}
 
-	s := MustNew(cfg)
+	s, err := NewWithOptions(cfg, Options{UpstreamResolver: failingLookupResolver{}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer s.Close()
 
 	result := s.Scan(context.Background(), "https://nonexistent.invalid/")
@@ -211,4 +215,12 @@ func TestScanURL_RealSSRF_StillThreat(t *testing.T) {
 	if result.Class != ClassThreat {
 		t.Errorf("real SSRF must remain ClassThreat; got class=%d", result.Class)
 	}
+}
+
+// failingLookupResolver fails every lookup so the test does not depend on
+// how the host resolver treats reserved names.
+type failingLookupResolver struct{}
+
+func (failingLookupResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
 }
