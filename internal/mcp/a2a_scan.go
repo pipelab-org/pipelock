@@ -509,11 +509,19 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 // a2aKeyCardMatches scans each object key on its own. Card joins omit keys,
 // and the per-leaf walk uses no card view, so a whole-key card needs this pass.
 // limit is the number of key scans still allowed. A nil limit does not apply
-// a cap. The boolean reports that another key remained after the cap.
+// a cap. Repeated copies of one key text and card view count once, the same
+// way the leaf pass counts one string once. A different card view is a
+// different scan. The boolean reports that another distinct key view remained
+// after the cap.
 func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom, limit *int) ([]scanner.TextDLPMatch, bool) {
 	var matches []scanner.TextDLPMatch
+	seen := make(map[struct{ text, card string }]struct{})
 	for _, atom := range atoms {
 		if !atom.Key || atom.Text == "" {
+			continue
+		}
+		view := struct{ text, card string }{atom.Text, atom.Card}
+		if _, ok := seen[view]; ok {
 			continue
 		}
 		if limit != nil && *limit <= 0 {
@@ -522,6 +530,7 @@ func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract
 		if limit != nil {
 			*limit--
 		}
+		seen[view] = struct{}{}
 		matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
 	}
 	return matches, false

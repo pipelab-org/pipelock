@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -492,8 +493,8 @@ func TestA2AOverflowSplitCredentialBlocks(t *testing.T) {
 }
 
 // TestA2AOverflowDistinctLeafBudgetFailsClosed checks that key and leaf scans
-// after the field walk stop at maxWalkNodes. Repeated copies of one leaf stay
-// inside that distinct-value budget.
+// after the field walk stop at maxWalkNodes. Repeated copies of one leaf or
+// one key view stay inside that distinct-value budget.
 func TestA2AOverflowDistinctLeafBudgetFailsClosed(t *testing.T) {
 	sc := testA2AScanner(t)
 	t.Cleanup(sc.Close)
@@ -532,5 +533,61 @@ func TestA2AOverflowDistinctLeafBudgetFailsClosed(t *testing.T) {
 	got = ScanA2ARequestBody(context.Background(), []byte(keys.String()), sc, cfg)
 	if !got.BudgetExceeded || got.Action != config.ActionBlock || !strings.Contains(got.ScanError, "distinct leaf") {
 		t.Fatalf("distinct keys past maxWalkNodes must fail closed: %+v", got)
+	}
+
+	// Copies of the same over-wide key set are still one distinct set.
+	copied := `[` + keys.String() + `,` + keys.String() + `]`
+	got = ScanA2ARequestBody(context.Background(), []byte(copied), sc, cfg)
+	if !got.BudgetExceeded || got.Action != config.ActionBlock || !strings.Contains(got.ScanError, "distinct leaf") {
+		t.Fatalf("repeated copies of too many distinct keys must fail closed: %+v", got)
+	}
+}
+
+// TestA2AOverflowRepeatedKeyBudget checks that copies of one object key do
+// not exhaust the distinct-value budget, and that a credential key in that
+// repeated shape still blocks.
+func TestA2AOverflowRepeatedKeyBudget(t *testing.T) {
+	sc := testA2AScanner(t)
+	t.Cleanup(sc.Close)
+	cfg := enabledA2ACfg()
+	cfg.Action = config.ActionWarn
+
+	repeated := "[" + strings.Repeat(`{"a":"k"},`, maxWalkNodes) + `{"a":"k"}]`
+	got := ScanA2ARequestBody(context.Background(), []byte(repeated), sc, cfg)
+	if !got.BudgetExceeded || strings.Contains(got.ScanError, "distinct leaf") || got.Action != config.ActionWarn {
+		t.Fatalf("one repeated key must keep the configured overflow action: %+v", got)
+	}
+
+	credential := a2aOverflowValues()["credential"]
+	credentialKey := "[" + strings.Repeat(`{"a":"k"},`, maxWalkNodes) + `{"` + credential + `":"x"}]`
+	got = ScanA2ARequestBody(context.Background(), []byte(credentialKey), sc, cfg)
+	if !got.BudgetExceeded || got.Action != config.ActionBlock || !hasAWSFinding(got.DLPFindings) || strings.Contains(got.ScanError, "distinct leaf") {
+		t.Fatalf("credential key after repeated keys must block as a credential: %+v", got)
+	}
+
+	onlyCredential := `{"` + credential + `":"x"}`
+	repeatedCredential := "[" + strings.Repeat(onlyCredential+",", maxWalkNodes) + onlyCredential + "]"
+	got = ScanA2ARequestBody(context.Background(), []byte(repeatedCredential), sc, cfg)
+	if !got.BudgetExceeded || got.Action != config.ActionBlock || !hasAWSFinding(got.DLPFindings) || strings.Contains(got.ScanError, "distinct leaf") {
+		t.Fatalf("repeated credential key must block as a credential: %+v", got)
+	}
+
+	limit := 2
+	atoms := []extract.DLPAtom{
+		{Text: "a", Card: "a", Key: true},
+		{Text: "a", Card: "a", Key: true},
+		{Text: "a", Card: "a-other-view", Key: true},
+		{Text: "b", Card: "b", Key: true},
+	}
+	if _, limited := a2aKeyCardMatches(context.Background(), sc, atoms, &limit); !limited || limit != 0 {
+		t.Fatalf("a different key card view must still consume the distinct budget: limited=%v limit=%d", limited, limit)
+	}
+	limit = 1
+	repeats := make([]extract.DLPAtom, maxWalkNodes+1)
+	for i := range repeats {
+		repeats[i] = extract.DLPAtom{Text: "a", Card: "a", Key: true}
+	}
+	if _, limited := a2aKeyCardMatches(context.Background(), sc, repeats, &limit); limited || limit != 0 {
+		t.Fatalf("repeated copies of one key view must cost one scan: limited=%v limit=%d", limited, limit)
 	}
 }
