@@ -9,6 +9,7 @@ package signing
 // except to follow a deliberate verdict change in both implementations.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -81,7 +82,19 @@ func legacyVerifyWholeRecorderDetailed(out io.Writer, label string, entries []re
 	if len(whole.Receipts) == 0 && len(evidenceReceipts) > 0 {
 		// Evidence receipts alone: verify them, but the transcript_root seal
 		// covers an action receipt chain, so there is nothing it can seal.
-		if err := verifyEvidenceChainDetailed(out, label, evidenceReceipts, trustedKeys, opts); err != nil {
+		// Same seal decision as the streaming verifier: a required seal is not
+		// an unproven prefix, and the evidence-chain success line is not shown.
+		chainOpts := opts
+		chainOut := out
+		var suppressed bytes.Buffer
+		if opts.RequireSeal {
+			chainOpts.CheckEnd = false
+			chainOut = &suppressed
+		}
+		if err := verifyEvidenceChainDetailed(chainOut, label, evidenceReceipts, trustedKeys, chainOpts); err != nil {
+			if opts.RequireSeal {
+				_, _ = io.Copy(out, &suppressed)
+			}
 			return err
 		}
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no action receipt chain, so no transcript_root seal covers this recorder")
