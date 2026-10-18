@@ -336,7 +336,8 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-			dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
+			keyMatches, _ := a2aKeyCardMatches(ctx, sc, extracted.Atoms, nil)
+			dlpResult.Matches = append(dlpResult.Matches, keyMatches...)
 			if dlpResult.Incomplete {
 				result.Clean = false
 				result.ScanError = "a2a: credential inspection incomplete: " + context.Cause(ctx).Error()
@@ -458,12 +459,21 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 	// also gets the same per-string DLP scan the field-aware walk gives it,
 	// so a leaf decodes past the budget exactly as it would within it.
 	dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-	dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
+	// The field walk already stopped at maxWalkNodes. Key and leaf scans past
+	// that same budget are incomplete and fail closed, rather than running
+	// one DLP pass per remaining value.
+	scansLeft := maxWalkNodes
+	keyMatches, keyLimited := a2aKeyCardMatches(ctx, sc, extracted.Atoms, &scansLeft)
+	dlpResult.Matches = append(dlpResult.Matches, keyMatches...)
 	if a2aOverflowRecordDLP(result, dlpResult) {
 		forceBlock = true
 	}
 	if dlpResult.Incomplete {
 		result.ScanError = "a2a: overflow credential inspection incomplete: " + context.Cause(ctx).Error()
+		return true
+	}
+	if keyLimited {
+		result.ScanError = "a2a: overflow inspection exceeds maximum distinct leaf count"
 		return true
 	}
 	scanned := make(map[string]struct{}, len(extracted.Strings))
@@ -474,6 +484,11 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		if _, seen := scanned[leaf]; seen || leaf == "" {
 			continue
 		}
+		if scansLeft <= 0 {
+			result.ScanError = "a2a: overflow inspection exceeds maximum distinct leaf count"
+			return true
+		}
+		scansLeft--
 		scanned[leaf] = struct{}{}
 		leafResult := sc.ScanTextForDLPWithCardView(ctx, leaf, "")
 		if a2aOverflowRecordDLP(result, leafResult) {
@@ -493,14 +508,23 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 
 // a2aKeyCardMatches scans each object key on its own. Card joins omit keys,
 // and the per-leaf walk uses no card view, so a whole-key card needs this pass.
-func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom) []scanner.TextDLPMatch {
+// limit is the number of key scans still allowed. A nil limit does not apply
+// a cap. The boolean reports that another key remained after the cap.
+func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom, limit *int) ([]scanner.TextDLPMatch, bool) {
 	var matches []scanner.TextDLPMatch
 	for _, atom := range atoms {
-		if atom.Key {
-			matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
+		if !atom.Key || atom.Text == "" {
+			continue
 		}
+		if limit != nil && *limit <= 0 {
+			return matches, true
+		}
+		if limit != nil {
+			*limit--
+		}
+		matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
 	}
-	return matches
+	return matches, false
 }
 
 // a2aOverflowRecordDLP adds DLP findings from the overflow pass and reports
@@ -1438,6 +1462,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			cardBoundary := jsonnumber.CardBoundary(previousLastNumber, currentFirstNumber)
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
 			if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
+				if scanner.HasInspectionLimit(dlpResult.Matches) {
+					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
@@ -1449,6 +1476,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		if numberTail != "" && numberText != "" {
 			result := sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
 			if len(result.Matches) > 0 && !recordNumberOnly(result.Matches) {
+				if scanner.HasInspectionLimit(result.Matches) {
+					return sseDLPFindingError(result.Matches, "cross-event dlp")
+				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s", ErrA2AStreamFinding, sseDLPMatchNames(result.Matches))
 			}
 		}
@@ -1475,6 +1505,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 				return fmt.Errorf("%w: cross-event dlp scan incomplete: %s", ErrSSEStreamScanError, context.Cause(ctx).Error())
 			}
 			if !dlpResult.Clean {
+				if scanner.HasInspectionLimit(dlpResult.Matches) {
+					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
+				}
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}

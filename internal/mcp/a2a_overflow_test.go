@@ -490,3 +490,47 @@ func TestA2AOverflowSplitCredentialBlocks(t *testing.T) {
 		})
 	}
 }
+
+// TestA2AOverflowDistinctLeafBudgetFailsClosed checks that key and leaf scans
+// after the field walk stop at maxWalkNodes. Repeated copies of one leaf stay
+// inside that distinct-value budget.
+func TestA2AOverflowDistinctLeafBudgetFailsClosed(t *testing.T) {
+	sc := testA2AScanner(t)
+	t.Cleanup(sc.Close)
+	cfg := enabledA2ACfg()
+	cfg.Action = config.ActionWarn
+
+	var distinct strings.Builder
+	distinct.WriteByte('[')
+	for i := 0; i < maxWalkNodes+1; i++ {
+		if i > 0 {
+			distinct.WriteByte(',')
+		}
+		fmt.Fprintf(&distinct, `"k%d"`, i)
+	}
+	distinct.WriteByte(']')
+	got := ScanA2ARequestBody(context.Background(), []byte(distinct.String()), sc, cfg)
+	if !got.BudgetExceeded || got.Action != config.ActionBlock || !strings.Contains(got.ScanError, "distinct leaf") {
+		t.Fatalf("distinct leaves past maxWalkNodes must fail closed: %+v", got)
+	}
+
+	repeated := `{"a":[` + strings.Repeat(`"k",`, maxWalkNodes) + `"k"]}`
+	got = ScanA2ARequestBody(context.Background(), []byte(repeated), sc, cfg)
+	if !got.BudgetExceeded || strings.Contains(got.ScanError, "distinct leaf") || got.Action != config.ActionWarn {
+		t.Fatalf("one repeated leaf must keep the configured overflow action: %+v", got)
+	}
+
+	var keys strings.Builder
+	keys.WriteByte('{')
+	for i := 0; i < maxWalkNodes+1; i++ {
+		if i > 0 {
+			keys.WriteByte(',')
+		}
+		fmt.Fprintf(&keys, `"k%d":0`, i)
+	}
+	keys.WriteByte('}')
+	got = ScanA2ARequestBody(context.Background(), []byte(keys.String()), sc, cfg)
+	if !got.BudgetExceeded || got.Action != config.ActionBlock || !strings.Contains(got.ScanError, "distinct leaf") {
+		t.Fatalf("distinct keys past maxWalkNodes must fail closed: %+v", got)
+	}
+}

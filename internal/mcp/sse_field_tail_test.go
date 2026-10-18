@@ -220,6 +220,59 @@ func TestA2AStreamFieldTailDeadlineBlocksBeforeForward(t *testing.T) {
 	}
 }
 
+// TestStreamFieldTailInspectionLimitBlocksUnderWarn joins two events into one
+// JSON document deeper than the typed card budget. Each event alone is not a
+// document, so only the field tail can see the limit, and warn must not
+// forward that event.
+func TestStreamFieldTailInspectionLimitBlocksUnderWarn(t *testing.T) {
+	t.Parallel()
+	sc, cfg := defaultStreamScanner(t)
+	sse := cfg.ResponseScanning.SSEStreaming
+	sse.Action = config.ActionWarn
+	depth := extract.MaxExtractDepth + 1
+	open := strings.Repeat(`{"a":`, depth)
+	close := "1" + strings.Repeat("}", depth)
+	body := minimalTextEvent(t, open) + minimalTextEvent(t, close)
+	var out bytes.Buffer
+	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{})
+	if !errors.Is(err, ErrSSEStreamScanError) {
+		t.Fatalf("warn forwarded an over-budget field join: %v", err)
+	}
+	if strings.Contains(out.String(), close) {
+		t.Fatalf("over-budget event was written: %q", out.String())
+	}
+
+	benign := minimalTextEvent(t, "hello") + minimalTextEvent(t, "there")
+	out.Reset()
+	err = ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(benign), &out, nil, sc, &sse, GenericSSEScanOptions{})
+	if err != nil || !strings.Contains(out.String(), "hello") || !strings.Contains(out.String(), "there") {
+		t.Fatalf("benign warn stream: err=%v out=%q", err, out.String())
+	}
+}
+
+// TestA2AStreamFieldTailInspectionLimitIsScanError is the A2A twin of the
+// generic field-tail limit. Warn mode must record the withheld join as a
+// scan error, which is what transport wrappers block on.
+func TestA2AStreamFieldTailInspectionLimitIsScanError(t *testing.T) {
+	t.Parallel()
+	sc, cfg := defaultStreamScanner(t)
+	a2a := cfg.A2AScanning
+	a2a.Enabled = true
+	a2a.Action = config.ActionWarn
+	depth := extract.MaxExtractDepth + 1
+	open := strings.Repeat(`{"a":`, depth)
+	close := "1" + strings.Repeat("}", depth)
+	body := minimalTextEvent(t, open) + minimalTextEvent(t, close)
+	var out bytes.Buffer
+	err := ScanA2AStream(context.Background(), strings.NewReader(body), &out, nil, sc, &a2a)
+	if !errors.Is(err, ErrSSEStreamScanError) || errors.Is(err, ErrA2AStreamFinding) {
+		t.Fatalf("warn classified an over-budget A2A join as a finding: %v", err)
+	}
+	if strings.Contains(out.String(), close) {
+		t.Fatalf("over-budget A2A event was written: %q", out.String())
+	}
+}
+
 func TestStreamFieldTailsLimitsFailClosedUnderWarn(t *testing.T) {
 	t.Parallel()
 	sc, cfg := defaultStreamScanner(t)
