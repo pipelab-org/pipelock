@@ -7534,7 +7534,7 @@ func TestScanHTTPInput_A2AWarnAction(t *testing.T) {
 func TestScanHTTPInput_A2AWarnAction_InfrastructureErrorNoSignal(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = []string{"127.0.0.0/8"}
-	sc := scanner.MustNew(cfg)
+	sc := newFailingDNSScanner(t, cfg)
 	t.Cleanup(sc.Close)
 
 	a2aCfg := &config.A2AScanning{

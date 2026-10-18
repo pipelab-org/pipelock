@@ -81,7 +81,7 @@ func TestA2ADepthIndependentOfNodeBudget(t *testing.T) {
 
 func TestA2APathLocations(t *testing.T) {
 	var paths []string
-	WalkA2AJSON(json.RawMessage(`{"items":[{"text":"hello"},{"text":"world"}]}`), func(path, _ string, class FieldClass) {
+	mustWalkA2AJSON(json.RawMessage(`{"items":[{"text":"hello"},{"text":"world"}]}`), func(path, _ string, class FieldClass) {
 		if class == FieldText {
 			paths = append(paths, path)
 		}

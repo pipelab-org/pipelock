@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 // deferredCmd is the `pipelock session deferred` command group: list held
@@ -121,7 +122,7 @@ func deferredDenyCmd(flags *rootFlags) *cobra.Command {
 // deliberately the actual FinalDecision, so an approve that the rule forbids
 // prints "approve <id> -> block", not a misleading success.
 func renderDeferredResolve(w io.Writer, resp proxy.DeferredResolveResult) error {
-	_, _ = fmt.Fprintf(w, "%s %s -> %s\n", resp.Action, resp.DeferID, resp.FinalDecision)
+	_, _ = fmt.Fprintf(w, "%s %s -> %s\n", termsafe.Escape(resp.Action), termsafe.Escape(resp.DeferID), termsafe.Escape(resp.FinalDecision))
 	return nil
 }
 
@@ -134,7 +135,8 @@ func renderDeferredList(w io.Writer, resp proxy.DeferredListResponse) error {
 	_, _ = fmt.Fprintln(tw, "DEFER_ID\tSURFACE\tMETHOD\tTARGET\tSESSION\tDEPTH\tREASON")
 	for _, a := range resp.Held {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
-			a.DeferID, a.Surface, a.Method, a.Target, a.SessionID, a.CascadeDepth, a.Reason)
+			termsafe.Escape(a.DeferID), termsafe.Escape(a.Surface), termsafe.Escape(a.Method),
+			termsafe.Escape(a.Target), termsafe.Escape(a.SessionID), a.CascadeDepth, termsafe.Escape(a.Reason))
 	}
 	return tw.Flush()
 }

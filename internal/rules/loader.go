@@ -581,10 +581,45 @@ func loadDLPRule(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, patternName, _ 
 	return nil
 }
 
+// caseInsensitiveRuleRegex applies the bundle contract that every rule
+// matches regardless of case. Response patterns are compiled verbatim, so the
+// flag must be added here; DLP patterns get it at scanner compile time and
+// tool-poison rules get it when the loader compiles them. When the rule
+// already opens with a flag group, i joins that group, so (?s) becomes (?is)
+// rather than gaining a second group. A rule whose leading group already sets
+// or clears i keeps it, and a span can still opt out with (?-i:...).
+func caseInsensitiveRuleRegex(regex string) string {
+	flags, ok := leadingRegexFlags(regex)
+	if !ok {
+		return "(?i)" + regex
+	}
+	if strings.ContainsRune(flags, 'i') {
+		return regex
+	}
+	return "(?i" + regex[len("(?"):]
+}
+
+// leadingRegexFlags returns the flags of a "(?flags)" group at the start of
+// regex, such as "s" for (?s) or "m-s" for (?m-s).
+func leadingRegexFlags(regex string) (string, bool) {
+	if !strings.HasPrefix(regex, "(?") {
+		return "", false
+	}
+	end := strings.IndexByte(regex, ')')
+	if end <= len("(?") {
+		return "", false
+	}
+	flags := regex[len("(?"):end]
+	if strings.Count(flags, "-") > 1 || strings.Trim(flags, "imsU-") != "" {
+		return "", false
+	}
+	return flags, true
+}
+
 func loadInjectionRule(ctx *bundleExecCtx, bundle *Bundle, rule *Rule, patternName, _ string, loaded *LoadedBundle) error {
 	ctx.Result.Injection = append(ctx.Result.Injection, config.ResponseScanPattern{
 		Name:          patternName,
-		Regex:         rule.Pattern.Regex,
+		Regex:         caseInsensitiveRuleRegex(rule.Pattern.Regex),
 		Bundle:        bundle.Name,
 		BundleVersion: bundle.Version,
 	})

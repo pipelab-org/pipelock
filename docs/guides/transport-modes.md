@@ -10,7 +10,7 @@ Pipelock supports multiple proxy modes, each with different scanning capabilitie
 | CONNECT | `HTTPS_PROXY` | HTTPS tunnel | CONNECT metadata and handshake headers; no encrypted content | None | Standard HTTPS clients (no interception) |
 | CONNECT + TLS interception | `HTTPS_PROXY` | HTTPS tunnel (MITM) | Full body + headers | Injection detection | Full DLP on HTTPS traffic |
 | Absolute-URI | `HTTP_PROXY` | HTTP | Full URL | Injection detection (when enabled) | Plaintext HTTP clients |
-| WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection | Real-time agent communication |
+| WebSocket | `/ws?url=...` | WS/WSS | Bidirectional frames | DLP + injection (client→server), injection (server→client) | Real-time agent communication |
 | MCP stdio | `pipelock mcp proxy -- CMD` | stdio | Full messages | Full (6 layers) | Local MCP servers |
 | MCP HTTP | `pipelock mcp proxy --upstream URL` | HTTP | Full messages | Full (6 layers) | Remote MCP servers (HTTP) |
 | MCP WebSocket | `pipelock mcp proxy --upstream ws://...` | WS/WSS | Full messages | Full (6 layers) | Remote MCP servers (WS) |
@@ -129,7 +129,9 @@ Bidirectional WebSocket proxy with frame-level scanning.
 - Ordered URL scan on the target URL
 - `request_policy` route-only checks on the upgrade and per-frame operation checks on reassembled text frames
 - DLP scanning on WebSocket upgrade request headers
-- Bidirectional frame scanning (both client-to-server and server-to-client)
+- Client-to-server text frames: DLP and prompt injection scanning (prompt injection governed by `request_body_scanning`)
+- Server-to-client text frames: prompt injection scanning; no DLP scanning in this direction
+- Content split across messages is scanned joined (DLP for client messages, prompt injection for server messages): raw text, and per JSON string field for JSON messages
 - Fragment reassembly for multi-frame messages
 - Compression rejection (RSV1 bit check prevents deflate-based DLP bypass)
 - Data budget tracking per domain

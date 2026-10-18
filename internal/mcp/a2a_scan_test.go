@@ -428,8 +428,8 @@ func TestScanA2ARequestBody_BudgetExceededSkipsUnboundedKeyEntropyPass(t *testin
 	if result.EntropyFinding != nil {
 		t.Fatalf("budget-exceeded payload must not run a second unbounded key entropy pass, got %+v", result.EntropyFinding)
 	}
-	if result.Action != config.ActionWarn {
-		t.Fatalf("Action = %q, want %q from A2A budget finding", result.Action, config.ActionWarn)
+	if result.Action != config.ActionBlock || !strings.Contains(result.ScanError, "maximum distinct leaf count") {
+		t.Fatalf("distinct key budget must fail closed even under warn: %+v", result)
 	}
 }
 

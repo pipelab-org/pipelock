@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 // Column header constants used by the table renderers. Extracted so
@@ -41,8 +42,8 @@ func renderList(w io.Writer, snaps []proxy.SessionSnapshot) error {
 			tier = "none"
 		}
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%.2f\t%s\n",
-			s.Key, defaultDash(s.Agent), defaultDash(s.ClientIP),
-			tier, defaultDash(s.EscalationLevel), s.ThreatScore,
+			termsafe.Escape(s.Key), defaultDash(s.Agent), defaultDash(s.ClientIP),
+			termsafe.Escape(tier), defaultDash(s.EscalationLevel), s.ThreatScore,
 			relativeTime(s.LastActivity))
 	}
 	return tw.Flush()
@@ -51,7 +52,7 @@ func renderList(w io.Writer, snaps []proxy.SessionSnapshot) error {
 // renderDetail writes a human-readable inspect view of a SessionDetail.
 func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	buf := &strings.Builder{}
-	fmt.Fprintf(buf, "Session %s\n", d.Key)
+	fmt.Fprintf(buf, "Session %s\n", termsafe.Escape(d.Key))
 	fmt.Fprintf(buf, "  kind:             %s\n", defaultDash(d.Kind))
 	fmt.Fprintf(buf, "  agent:            %s\n", defaultDash(d.Agent))
 	fmt.Fprintf(buf, "  client_ip:        %s\n", defaultDash(d.ClientIP))
@@ -73,7 +74,7 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 		fmt.Fprintf(buf, "  auto_recover_at:  %s\n", d.AutoRecoverAt.UTC().Format(time.RFC3339))
 	}
 	if d.RecoverHint != "" {
-		fmt.Fprintf(buf, "  recover_hint:     %s\n", d.RecoverHint)
+		fmt.Fprintf(buf, "  recover_hint:     %s\n", termsafe.Escape(d.RecoverHint))
 	}
 	fmt.Fprintln(buf, "  adaptive_scopes:")
 	if len(d.AdaptiveScopes) == 0 {
@@ -81,17 +82,17 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	} else {
 		for _, sc := range d.AdaptiveScopes {
 			fmt.Fprintf(buf, "    %s airlock=%s level=%s score=%.2f block_all=%t\n",
-				sc.Scope, defaultIfEmpty(sc.AirlockTier, "none"),
+				termsafe.Escape(sc.Scope), defaultIfEmpty(sc.AirlockTier, "none"),
 				defaultDash(sc.EscalationLevel), sc.ThreatScore, sc.BlockAll)
 		}
 	}
 	fmt.Fprintf(buf, "  taint_level:      %s\n", defaultDash(d.TaintLevel))
 	fmt.Fprintf(buf, "  contaminated:     %t\n", d.Contaminated)
 	if d.CurrentTaskID != "" {
-		fmt.Fprintf(buf, "  current_task_id:  %s\n", d.CurrentTaskID)
+		fmt.Fprintf(buf, "  current_task_id:  %s\n", termsafe.Escape(d.CurrentTaskID))
 	}
 	if d.CurrentTaskLabel != "" {
-		fmt.Fprintf(buf, "  current_task:     %s\n", d.CurrentTaskLabel)
+		fmt.Fprintf(buf, "  current_task:     %s\n", termsafe.Escape(d.CurrentTaskLabel))
 	}
 	if d.LastActivity.IsZero() {
 		fmt.Fprintln(buf, "  last_activity:    -")
@@ -106,7 +107,7 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	} else {
 		for _, e := range d.RecentEvents {
 			fmt.Fprintf(buf, "    [%s] %s target=%s score=%.2f detail=%s\n",
-				e.At.UTC().Format(time.RFC3339), e.Kind, defaultDash(e.Target), e.Score, e.Detail)
+				e.At.UTC().Format(time.RFC3339), termsafe.Escape(e.Kind), defaultDash(e.Target), e.Score, termsafe.Escape(e.Detail))
 		}
 	}
 
@@ -118,11 +119,11 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 // SessionExplanation.
 func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	buf := &strings.Builder{}
-	fmt.Fprintf(buf, "Session %s explanation\n", e.Key)
+	fmt.Fprintf(buf, "Session %s explanation\n", termsafe.Escape(e.Key))
 	fmt.Fprintf(buf, "  tier:                %s\n", defaultIfEmpty(e.Tier, "none"))
 	fmt.Fprintf(buf, "  reason:              %s\n", defaultDash(e.Reason))
 	if e.Trigger != "" {
-		fmt.Fprintf(buf, "  trigger:             %s (source=%s)\n", e.Trigger, defaultDash(e.TriggerSource))
+		fmt.Fprintf(buf, "  trigger:             %s (source=%s)\n", termsafe.Escape(e.Trigger), defaultDash(e.TriggerSource))
 	}
 	fmt.Fprintf(buf, "  escalation:          %s (%d)\n", defaultDash(e.EscalationLevel), e.EscalationLevelInt)
 	fmt.Fprintf(buf, "  threat_score:        %.2f\n", e.ThreatScore)
@@ -136,19 +137,19 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 			fmt.Fprintf(buf, "    at:     %s\n", e.EvidenceAt.UTC().Format(time.RFC3339))
 		}
 		if e.EvidenceKind != "" {
-			fmt.Fprintf(buf, "    kind:   %s\n", e.EvidenceKind)
+			fmt.Fprintf(buf, "    kind:   %s\n", termsafe.Escape(e.EvidenceKind))
 		}
 		if e.EvidenceTarget != "" {
-			fmt.Fprintf(buf, "    target: %s\n", e.EvidenceTarget)
+			fmt.Fprintf(buf, "    target: %s\n", termsafe.Escape(e.EvidenceTarget))
 		}
 		if e.EvidenceDetail != "" {
-			fmt.Fprintf(buf, "    detail: %s\n", e.EvidenceDetail)
+			fmt.Fprintf(buf, "    detail: %s\n", termsafe.Escape(e.EvidenceDetail))
 		}
 	} else {
 		fmt.Fprintln(buf, "  evidence:            (none recorded)")
 	}
 	if e.NextDeescalationTier != "" {
-		fmt.Fprintf(buf, "  next_deescalation:   tier=%s", e.NextDeescalationTier)
+		fmt.Fprintf(buf, "  next_deescalation:   tier=%s", termsafe.Escape(e.NextDeescalationTier))
 		if !e.NextDeescalationAt.IsZero() {
 			fmt.Fprintf(buf, " at=%s (in %s)",
 				e.NextDeescalationAt.UTC().Format(time.RFC3339),
@@ -162,20 +163,23 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	return err
 }
 
-// defaultDash returns s when non-empty, or "-" to keep tables tidy.
+// defaultDash returns s escaped for the terminal when non-empty, or "-" to
+// keep tables tidy. Session fields such as the agent name, target and detail
+// originate from client requests, so they are never written raw.
 func defaultDash(s string) string {
 	if s == "" {
 		return "-"
 	}
-	return s
+	return termsafe.Escape(s)
 }
 
-// defaultIfEmpty returns s when non-empty, or the provided fallback.
+// defaultIfEmpty returns s escaped for the terminal when non-empty, or the
+// provided fallback.
 func defaultIfEmpty(s, fallback string) string {
 	if s == "" {
 		return fallback
 	}
-	return s
+	return termsafe.Escape(s)
 }
 
 // formatDuration prints a short fixed-width duration suitable for

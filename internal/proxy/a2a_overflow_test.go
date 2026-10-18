@@ -137,3 +137,28 @@ func TestProxyA2AJoinedTextParts(t *testing.T) {
 		}
 	}
 }
+
+// TestProxyA2AOverflowDeepTailBlocks is an end-to-end behaviour test: a value
+// nested past the inspectable depth after the walk budget must be refused on
+// both proxy paths without reaching upstream.
+func TestProxyA2AOverflowDeepTailBlocks(t *testing.T) {
+	nested := strings.Repeat(`{"a":`, 70) + `"v"` + strings.Repeat(`}`, 70)
+	body := `{"a":[` + strings.Repeat("0,", 9998) + `0],"z":` + nested + `}`
+	for _, transport := range []string{"forward", "intercept"} {
+		t.Run(transport, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.A2AScanning.Enabled = true
+			cfg.A2AScanning.Action = config.ActionWarn
+			cfg.RequestBodyScanning.Enabled = false
+			cfg.ResponseScanning.Enabled = false
+			w, hits, _ := driveProxyA2AHardening(t, transport, body, `{"text":"hello"}`, "application/a2a+json", cfg)
+			if w.Code != http.StatusForbidden || hits != 0 {
+				t.Fatalf("uninspectable tail past budget released: status=%d hits=%d body=%.200s", w.Code, hits, w.Body.String())
+			}
+			if !strings.Contains(w.Body.String(), "maximum inspectable nesting depth") {
+				t.Fatalf("block reason must name the nesting depth limit: %.300s", w.Body.String())
+			}
+		})
+	}
+}

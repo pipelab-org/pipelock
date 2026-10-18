@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
@@ -109,6 +110,14 @@ const (
 const (
 	OriginPolicyRewrite = "rewrite"
 	OriginPolicyForward = "forward"
+)
+
+// WebSocket cross-message field budget: 0 selects
+// DefaultWebSocketCrossMessageFieldLimit. The maximum is the field tail
+// package's own ceiling, so a validated value is never clamped.
+const (
+	DefaultWebSocketCrossMessageFieldLimit = 512
+	MaxWebSocketCrossMessageFieldLimit     = extract.FieldTailMaxPathsLimit
 )
 
 // Header mode constants for request body scanning.
@@ -1055,6 +1064,13 @@ type WebSocketProxy struct {
 	MaxConnectionSeconds     int    `yaml:"max_connection_seconds"`
 	IdleTimeoutSeconds       int    `yaml:"idle_timeout_seconds"`
 	OriginPolicy             string `yaml:"origin_policy"` // rewrite (default), forward, strip
+	// CrossMessageFieldLimit is the number of JSON fields per connection and
+	// direction whose trailing text is joined with the next text message.
+	// 0 selects DefaultWebSocketCrossMessageFieldLimit; the maximum is
+	// MaxWebSocketCrossMessageFieldLimit. A message that cannot be joined
+	// within this budget closes the connection. Omitted from the canonical
+	// policy view when 0, so the default leaves policy hashes unchanged.
+	CrossMessageFieldLimit int `yaml:"cross_message_field_limit" json:"CrossMessageFieldLimit,omitempty"`
 	// ContentEntropyExclusions lists trusted WebSocket destination hosts whose
 	// client-to-server text frames may legitimately carry opaque high-entropy
 	// content. The exemption applies only to per-message content entropy; body

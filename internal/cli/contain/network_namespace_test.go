@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -197,6 +198,444 @@ func TestInstallNetworkNamespaceRollbackAfterStartFailure(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "undo install-agent-network-namespace") {
 		t.Fatalf("rollback output missing namespace undo:\n%s", out.String())
+	}
+}
+
+func TestInstallNetworkNamespaceDoorwayRebind(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		for _, tc := range []struct {
+			name           string
+			unchanged      bool
+			inactive       bool
+			foreign        bool
+			inventoryRelay bool
+			legacyRelay    bool
+			disabled       bool
+			failAction     string
+			missing        bool
+			regular        bool
+			laterFail      bool
+			binaryReplace  bool
+			idleRelay      bool
+		}{
+			{name: "binary replacement before rebind", binaryReplace: true},
+			{name: "binary replacement with idle relay", binaryReplace: true, idleRelay: true},
+			{name: "binary replacement rollback with idle relay", binaryReplace: true, idleRelay: true, laterFail: true},
+			{name: "binary replacement before failed rebind", binaryReplace: true, laterFail: true},
+			{name: "changed active socket"},
+			{name: "unchanged active socket", unchanged: true},
+			{name: "changed inactive socket", inactive: true},
+			{name: "foreign relay", foreign: true},
+			{name: "inventory owns drifted relay", inventoryRelay: true},
+			{name: "legacy proxy relay target changed", legacyRelay: true},
+			{name: "legacy proxy rollback", legacyRelay: true, laterFail: true},
+			{name: "relay stop failure", failAction: "stop"},
+			{name: "daemon reload failure", failAction: "daemon-reload"},
+			{name: "socket start failure", failAction: "start"},
+			{name: "missing listen path", missing: true},
+			{name: "regular file at listen path", regular: true},
+			{name: "later step failure", laterFail: true},
+			{name: "restore active disabled socket", disabled: true, laterFail: true},
+		} {
+			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
+				env, runner, out := newFakeEnv(t)
+				if tc.binaryReplace {
+					if err := os.WriteFile(env.pipelockTarget, []byte("old binary"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				services := []config.ContainmentLoopbackService{}
+				socketPath, relayPath := env.proxyForwarderSocketPath, env.proxyForwarderServicePath
+				listenPath := containedDoorwaySocketPath
+				if declared {
+					service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+					services = append(services, service)
+					base := loopbackForwarderUnitBase(service.Host, service.Port)
+					socketPath = filepath.Join(filepath.Dir(socketPath), base+".socket")
+					relayPath = filepath.Join(filepath.Dir(relayPath), base+".service")
+					listenPath = declaredLoopbackDoorwayPath(service.Host, service.Port)
+				}
+				if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(t.Context(), env); err != nil {
+					t.Fatal(err)
+				}
+				body, err := os.ReadFile(filepath.Clean(socketPath))
+				if err != nil {
+					t.Fatal(err)
+				}
+				oldListen := listenPath + ".previous"
+				if !tc.unchanged {
+					body = []byte(strings.ReplaceAll(string(body), listenPath, oldListen))
+					if err := os.WriteFile(socketPath, body, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					oldListen = listenPath
+				}
+				if tc.foreign || tc.inventoryRelay {
+					if err := os.WriteFile(relayPath, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					// Inventory ownership is independently sufficient. Remove
+					// it to exercise the managed-file boundary for either kind.
+					if tc.foreign {
+						if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{}\n"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if tc.legacyRelay {
+					if declared {
+						t.Skip("legacy migration applies to the proxy relay")
+					}
+					if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{\"services\": []}\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					oldRelay := renderContainedProxyForwarderUnit(env.pipelockTarget, env.proxyUserName, env.proxyPort+1)
+					if err := os.WriteFile(relayPath, []byte(oldRelay), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				socket, relay := filepath.Base(socketPath), filepath.Base(relayPath)
+				runner.calls = nil
+				if !tc.disabled {
+					runner.on(argvFor(testSystemctl, "is-enabled", socket), systemctlEnabled, 0, nil)
+				}
+				active, relayActive := !tc.inactive, !tc.inactive && !tc.idleRelay
+				bound := oldListen
+				if tc.inactive {
+					bound = ""
+				} else {
+					runner.on(argvFor(testSystemctl, "is-active", socket), systemctlActive, 0, nil)
+				}
+				originalRun := env.runCmd
+				failed := false
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					result, code, runErr := originalRun(ctx, name, args...)
+					if name != testSystemctl || len(args) == 0 {
+						return result, code, runErr
+					}
+					unit := args[len(args)-1]
+					if args[0] == "is-active" && (unit == socket || unit == relay) {
+						isActive := active
+						if unit == relay {
+							isActive = relayActive
+						}
+						if isActive {
+							return systemctlActive, 0, nil
+						}
+						return "inactive", 3, nil
+					}
+					failThis := !failed && args[0] == tc.failAction && (args[0] == "daemon-reload" ||
+						(args[0] == "stop" && unit == relay) ||
+						(args[0] == "start" && unit == socket))
+					if failThis {
+						failed = true
+						return "injected failure", 1, nil
+					}
+					if args[0] == "stop" && unit == relay {
+						relayActive = false
+						// A still-listening socket accepts another connection
+						// and starts the relay again before the next command.
+						if active {
+							relayActive = true
+						}
+					}
+					if unit == socket {
+						// Traffic can activate an idle relay after state capture,
+						// immediately before the listener closes.
+						if args[0] == "stop" && active && tc.idleRelay {
+							relayActive = true
+						}
+						switch args[0] {
+						case "stop", "restart":
+							active, bound = false, ""
+						}
+						if args[0] == "restart" || args[0] == "start" || (args[0] == "enable" && containsArg(args, "--now")) {
+							if !active {
+								if relayActive {
+									return "socket service already active, refusing", 1, nil
+								}
+								current, readErr := os.ReadFile(filepath.Clean(socketPath))
+								if readErr != nil {
+									t.Fatal(readErr)
+								}
+								for _, line := range strings.Split(string(current), "\n") {
+									if path, ok := strings.CutPrefix(line, "ListenStream="); ok {
+										bound = path
+									}
+								}
+								active = true
+								// The new listener receives traffic before a possible rollback.
+								relayActive = true
+							}
+						}
+					}
+					return result, code, runErr
+				}
+				originalStat := env.stat
+				env.stat = func(path string) (os.FileInfo, error) {
+					if path == listenPath {
+						if tc.missing || bound != path {
+							return nil, os.ErrNotExist
+						}
+						if tc.regular {
+							return fakeFileInfo{}, nil
+						}
+						return fakeFileInfo{mode: os.ModeSocket}, nil
+					}
+					return originalStat(path)
+				}
+				steps := []step{stepInstallNetworkNamespaceWithServices(&services)}
+				if tc.binaryReplace {
+					steps = append([]step{stepInstallPipelockBinary()}, steps...)
+				}
+				if tc.laterFail {
+					steps = append(steps, step{name: "later", apply: func(context.Context, *installEnv) (bool, error) {
+						return false, errors.New("later failure")
+					}})
+				}
+				_, err = runSteps(t.Context(), env, out, steps)
+				wantFailure := tc.foreign || tc.failAction != "" || tc.missing || tc.regular || tc.laterFail
+				if tc.laterFail && (err == nil || !strings.Contains(err.Error(), "later failure")) {
+					t.Fatalf("later failure step was not reached: %v", err)
+				}
+				if tc.binaryReplace && tc.laterFail {
+					got, readErr := os.ReadFile(env.pipelockTarget)
+					if readErr != nil || string(got) != "old binary" {
+						t.Fatalf("binary rollback: body=%q err=%v", got, readErr)
+					}
+				}
+				if (err != nil) != wantFailure {
+					t.Fatalf("runSteps = %v, want failure=%t; calls=%v", err, wantFailure, runner.calls)
+				}
+				if tc.legacyRelay {
+					inv, readErr := readLoopbackForwarderInventory(env)
+					if readErr != nil || inv.ProxyRelay == tc.laterFail {
+						t.Fatalf("proxy inventory ownership=%t err=%v, rollback=%t", inv.ProxyRelay, readErr, tc.laterFail)
+					}
+				}
+				if tc.foreign {
+					if fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatal("stopped a foreign relay")
+					}
+					return
+				}
+				if tc.unchanged || tc.inactive {
+					if fakeRunnerCalled(runner, "systemctl restart "+socket) || fakeRunnerCalled(runner, "systemctl stop "+socket) || fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatalf("unnecessary restart or relay stop: %v", runner.calls)
+					}
+				}
+				if wantFailure {
+					got, readErr := os.ReadFile(filepath.Clean(socketPath))
+					if readErr != nil || string(got) != string(body) || bound != oldListen || !active {
+						t.Fatalf("rollback: body=%q err=%v bound=%q active=%t", got, readErr, bound, active)
+					}
+					if strings.Contains(err.Error(), "rollback incomplete") {
+						t.Fatalf("rollback failed: %v", err)
+					}
+					if tc.disabled && !fakeRunnerCalled(runner, argvFor(testSystemctl, "disable", socket)) {
+						t.Fatal("rollback did not restore disabled socket state")
+					}
+					if fakeRunnerCalled(runner, "systemctl start "+relay) {
+						t.Fatal("socket-activated relay was started directly during rollback")
+					}
+					return
+				}
+				if bound != listenPath {
+					t.Fatalf("listening at %q, want %q", bound, listenPath)
+				}
+				if fakeRunnerCalled(runner, "systemctl start "+relay) {
+					t.Fatal("socket-activated relay was started directly")
+				}
+				if !tc.unchanged && !tc.inactive {
+					wantOrder := []string{"systemctl stop " + socket, "systemctl stop " + relay, "systemctl daemon-reload", "systemctl start " + socket, "systemctl enable --now " + containedNamespaceForwarderUnit}
+					index := 0
+					for _, call := range runner.calls {
+						if argvFor(call.name, call.args...) == wantOrder[index] {
+							index++
+							if index == len(wantOrder) {
+								break
+							}
+						}
+					}
+					if index != len(wantOrder) {
+						t.Fatalf("missing ordered actions %v: %v", wantOrder, runner.calls)
+					}
+				}
+			})
+		}
+	}
+}
+
+// An inactive desired socket is not rebound, but apply still runs
+// enable --now. That start can hand the listener to the relay before the
+// command returns, including when the relay unit file did not exist yet.
+// Undo has to stop that relay after the socket. A relay already active
+// before this attempt, including one this install does not own, stays up.
+func TestInactiveDoorwayRollbackStopsRelayStartedByEnableNow(t *testing.T) {
+	for _, declared := range []bool{false, true} {
+		for _, tc := range []struct {
+			name             string
+			fresh            bool
+			preexistingRelay bool
+			foreign          bool
+			failAfterStart   bool
+		}{
+			{name: "seeded later failure"},
+			{name: "seeded enable starts then fails", failAfterStart: true},
+			{name: "fresh later failure", fresh: true},
+			{name: "fresh enable starts then fails", fresh: true, failAfterStart: true},
+			{name: "pre-existing relay stays up", preexistingRelay: true},
+			{name: "foreign pre-existing relay stays up", preexistingRelay: true, foreign: true},
+			{name: "foreign inactive file later failure", foreign: true},
+			{name: "foreign inactive file enable starts then fails", foreign: true, failAfterStart: true},
+		} {
+			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
+				env, runner, out := newFakeEnv(t)
+				services := []config.ContainmentLoopbackService{}
+				socketPath, relayPath := env.proxyForwarderSocketPath, env.proxyForwarderServicePath
+				if declared {
+					service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222}
+					services = append(services, service)
+					base := loopbackForwarderUnitBase(service.Host, service.Port)
+					socketPath = filepath.Join(filepath.Dir(socketPath), base+".socket")
+					relayPath = filepath.Join(filepath.Dir(relayPath), base+".service")
+				}
+				if !tc.fresh {
+					if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(t.Context(), env); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.foreign {
+					if err := os.WriteFile(relayPath, []byte("[Service]\nExecStart=/usr/bin/true\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(filepath.Dir(env.loopbackForwarderInvPath), 0o750); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(env.loopbackForwarderInvPath, []byte("{}\n"), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if tc.fresh {
+					if _, err := os.Stat(relayPath); !errors.Is(err, os.ErrNotExist) {
+						t.Fatalf("fresh relay path %s exists: %v", relayPath, err)
+					}
+				}
+				socket, relay := filepath.Base(socketPath), filepath.Base(relayPath)
+				runner.calls = nil
+				socketActive, relayActive := false, tc.preexistingRelay
+				originalRun := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					result, code, runErr := originalRun(ctx, name, args...)
+					if name != testSystemctl || len(args) == 0 {
+						return result, code, runErr
+					}
+					unit := args[len(args)-1]
+					if args[0] == "is-active" && (unit == socket || unit == relay) {
+						on := socketActive
+						if unit == relay {
+							on = relayActive
+						}
+						if on {
+							return systemctlActive, 0, nil
+						}
+						return "inactive", 3, nil
+					}
+					if unit == relay && args[0] == "stop" {
+						relayActive = false
+						if socketActive {
+							relayActive = true
+						}
+						return result, code, runErr
+					}
+					if unit == socket && (args[0] == "stop" || args[0] == "restart") {
+						socketActive = false
+						return result, code, runErr
+					}
+					if unit == socket && (args[0] == "start" || (args[0] == "enable" && containsArg(args, "--now"))) {
+						if !socketActive {
+							if relayActive {
+								return "Socket service " + relay + " already active, refusing.", 1, nil
+							}
+							socketActive = true
+							relayActive = true
+							if tc.failAfterStart {
+								return "dependency failed", 1, nil
+							}
+						}
+						return result, code, runErr
+					}
+					return result, code, runErr
+				}
+				steps := []step{stepInstallNetworkNamespaceWithServices(&services)}
+				if !tc.failAfterStart && !tc.preexistingRelay {
+					steps = append(steps, step{name: "later", apply: func(context.Context, *installEnv) (bool, error) {
+						return false, errors.New("later failure")
+					}})
+				}
+				_, err := runSteps(t.Context(), env, out, steps)
+				if err == nil {
+					t.Fatalf("runSteps succeeded, want rollback: calls=%v", runner.calls)
+				}
+				if strings.Contains(err.Error(), "rollback incomplete") {
+					t.Fatalf("rollback failed: %v", err)
+				}
+				if tc.preexistingRelay {
+					if !relayActive || socketActive {
+						t.Fatalf("pre-existing relay not preserved: socket=%t relay=%t err=%v calls=%v", socketActive, relayActive, err, runner.calls)
+					}
+					if fakeRunnerCalled(runner, "systemctl stop "+relay) {
+						t.Fatalf("stopped a relay that was already active: %v", runner.calls)
+					}
+					return
+				}
+				if tc.failAfterStart && !strings.Contains(err.Error(), "dependency failed") {
+					t.Fatalf("enable --now failure was not reached: %v", err)
+				}
+				if !tc.failAfterStart && !strings.Contains(err.Error(), "later failure") {
+					t.Fatalf("later failure was not the rollback result: %v", err)
+				}
+				if relayActive || socketActive {
+					t.Fatalf("rollback left doorway running: socket=%t relay=%t calls=%v", socketActive, relayActive, runner.calls)
+				}
+				stopSocket := argvFor(testSystemctl, "stop", socket)
+				stopRelay := argvFor(testSystemctl, "stop", relay)
+				socketAt, relayAt := -1, -1
+				for i, call := range runner.calls {
+					got := argvFor(call.name, call.args...)
+					if got == stopSocket && socketAt < 0 {
+						socketAt = i
+					}
+					if got == stopRelay && relayAt < 0 {
+						relayAt = i
+					}
+				}
+				if socketAt < 0 || relayAt < 0 || relayAt < socketAt {
+					t.Fatalf("undo stopped socket at %d and relay at %d, want relay after socket: %v", socketAt, relayAt, runner.calls)
+				}
+			})
+		}
+	}
+}
+
+func TestSingleListenStream(t *testing.T) {
+	path := containedDoorwaySocketPath
+	body := renderContainedProxySocketUnit("pipelock-agent")
+	got, err := singleListenStream(body)
+	if err != nil || got != path {
+		t.Fatalf("singleListenStream() = %q, %v", got, err)
+	}
+	withCR := strings.ReplaceAll(body, "ListenStream="+path+"\n", "ListenStream="+path+" \r\n")
+	got, err = singleListenStream(withCR)
+	if err != nil || got != path {
+		t.Fatalf("trimmed ListenStream = %q, %v", got, err)
+	}
+	if _, err := singleListenStream(body + "ListenStream=/run/other.sock\n"); err == nil {
+		t.Fatal("two ListenStream lines were accepted")
+	}
+	if _, err := singleListenStream("[Socket]\nSocketMode=0660\n"); err == nil {
+		t.Fatal("a socket unit with no ListenStream was accepted")
 	}
 }
 
@@ -1188,5 +1627,43 @@ func TestDeclaredLoopbackOrphanListenerIsRetired(t *testing.T) {
 	}
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Fatalf("unrelated unit file was touched: %v", err)
+	}
+}
+
+func TestLegacyManagedProxyRelay(t *testing.T) {
+	for _, tc := range []struct {
+		name, target string
+		mutate       func(string) string
+		missing      bool
+		want         bool
+	}{
+		{name: "IPv4", target: "127.0.0.1:8889", want: true},
+		{name: "IPv6", target: "[::1]:8889", want: true},
+		{name: "foreign target", target: "192.0.2.1:8889"},
+		{name: "hostname", target: "localhost:8889"},
+		{name: "zero port", target: "127.0.0.1:0"},
+		{name: "invalid port", target: "127.0.0.1:65536"},
+		{name: "port text", target: "127.0.0.1:http"},
+		{name: "malformed target", target: "127.0.0.1"},
+		{name: "extra directive", target: "127.0.0.1:8889", mutate: func(s string) string { return s + "ExecStartPost=/usr/bin/true\n" }},
+		{name: "changed identity", target: "127.0.0.1:8889", mutate: func(s string) string { return strings.Replace(s, "User=", "User=foreign-", 1) }},
+		{name: "foreign body", mutate: func(string) string { return "[Service]\nExecStart=/usr/bin/true\n" }},
+		{name: "missing", missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			if !tc.missing {
+				body := renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, tc.target)
+				if tc.mutate != nil {
+					body = tc.mutate(body)
+				}
+				if err := os.WriteFile(env.proxyForwarderServicePath, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := isLegacyManagedProxyRelay(env); got != tc.want {
+				t.Fatalf("legacy ownership=%t, want %t", got, tc.want)
+			}
+		})
 	}
 }

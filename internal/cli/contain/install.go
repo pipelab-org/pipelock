@@ -540,6 +540,15 @@ func stepWaitPipelockReady() step {
 			if status != statusPass {
 				return false, fmt.Errorf("installed proxy failed readiness: %s", detail)
 			}
+			status, detail = probeContainedProxyReachability(ctx, &probeEnv{
+				agentUserName: env.agentUserName,
+				port:          env.proxyPort,
+				curlPath:      env.curlPath,
+				runCmd:        env.runCmd,
+			})
+			if status != statusPass {
+				return false, fmt.Errorf("installed proxy doorway failed readiness: %s", detail)
+			}
 			return false, nil
 		},
 	}
@@ -1271,6 +1280,9 @@ func stepPreflight(opts installOpts) step {
 			for label, path := range map[string]string{
 				"bash":    env.bashPath,
 				"nologin": env.nologinPath,
+				// The namespace doorway probe runs curl. Refusing here
+				// avoids writing units and then rolling them back.
+				"curl": env.curlPath,
 			} {
 				if err := expectExecutablePath(env.stat, label, path); err != nil {
 					return false, err
