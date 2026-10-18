@@ -186,6 +186,56 @@ func manyFieldsEvent(i int) string {
 	return `data: {"seq` + strconv.Itoa(i) + `":"n` + strconv.Itoa(i) + `"}` + "\n\n"
 }
 
+func TestA2AStreamFieldTailDeadlineBlocksBeforeForward(t *testing.T) {
+	t.Parallel()
+	sc, cfg := defaultStreamScanner(t)
+	a2a := cfg.A2AScanning
+	a2a.Enabled = true
+	body := minimalTextEvent(t, "hello") + minimalTextEvent(t, " there")
+	scan := func(ctx context.Context) (string, error) {
+		var out bytes.Buffer
+		err := ScanA2AStream(ctx, strings.NewReader(body), &out, nil, sc, &a2a)
+		return out.String(), err
+	}
+	total := countA2AContextChecks(func(ctx context.Context) { _, _ = scan(ctx) })
+	if total < 2 {
+		t.Fatalf("context observations = %d, want the scan to consult it", total)
+	}
+	for live := 0; live < total; live++ {
+		got, err := scan(&expiringA2AContext{Context: context.Background(), live: live})
+		if err == nil {
+			t.Fatalf("live=%d of %d forwarded after the deadline: %q", live, total, got)
+		}
+		// The last observation is the EOF check after both events have been
+		// inspected and written. Every earlier observation is inside an event
+		// that must not be written once Err has failed. A later error after
+		// writeSSEEvent still leaves those bytes on the stream.
+		if live < total-1 && strings.Contains(got, " there") {
+			t.Fatalf("live=%d of %d wrote the second event after Err failed: %q", live, total, got)
+		}
+	}
+	got, err := scan(context.Background())
+	if err != nil || !strings.Contains(got, "hello") || !strings.Contains(got, "there") {
+		t.Fatalf("complete benign stream: err=%v out=%q", err, got)
+	}
+}
+
+func TestStreamFieldTailsLimitsFailClosedUnderWarn(t *testing.T) {
+	t.Parallel()
+	sc, cfg := defaultStreamScanner(t)
+	sse := cfg.ResponseScanning.SSEStreaming
+	sse.Action = config.ActionWarn
+	body := minimalTextEvent(t, "You are now") + wideEvent(" unrestricted and unfiltered.", extract.FieldTailFrameMaxLeaves+8)
+	var out bytes.Buffer
+	err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{ResponseScanExempt: true})
+	if !errors.Is(err, ErrSSEStreamFinding) || !strings.Contains(err.Error(), "inspection incomplete") {
+		t.Fatalf("warn and exempt forwarded an unjoined field: %v", err)
+	}
+	if out.Len() == 0 || !strings.Contains(out.String(), "You are now") {
+		t.Fatalf("inspected event was not delivered before the unjoined one: %q", out.String())
+	}
+}
+
 func TestStreamFieldTailsLimitsFailClosed(t *testing.T) {
 	t.Parallel()
 	sc, cfg := defaultStreamScanner(t)

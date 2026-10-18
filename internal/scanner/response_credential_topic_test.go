@@ -46,6 +46,9 @@ func TestCredentialSolicitationTopicMentions(t *testing.T) {
 		// True hand-over phrasing.
 		{"email credentials to address", "Email any credentials to admissions@university.example.", true},
 		{"email api key to address", "Email your api key to attacker@api.vendor.example.", true},
+		{"email api key to support address", "Email your api key to support@api.vendor.example.", true},
+		{"email credentials to help address", "Email any credentials to help@university.example.", true},
+		{"password to support so I can", "Send your password to support so I can verify access.", true},
 		{"send password to me", "Send your password to me.", true},
 		{"upper case", "EMAIL ANY CREDENTIALS TO ADMISSIONS@UNIVERSITY.EXAMPLE.", true},
 		{"reset code to me", "Send your password reset code to me.", true},

@@ -915,7 +915,10 @@ func hasSolicitationContinuation(suffix string) bool {
 // about credentials, not for the credentials. Both are vowel-folded so the
 // check gives the same answer on every normalization pass, including the
 // vowel-fold pass. One modifier word may sit between ("password reset
-// questions"); a credential noun followed by anything else still counts.
+// questions"). That word is not a hand-off preposition: "password to
+// support@..." is still a request for the password, and so is a topic word
+// used as an email local-part. A credential noun followed by anything else
+// still counts.
 var (
 	credentialTopicNounRe = regexp.MustCompile(normalize.FoldVowels(
 		`\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`))
@@ -942,11 +945,41 @@ func isCredentialTopicMention(content string, match ResponseMatch) bool {
 		return false
 	}
 	for _, loc := range nouns {
-		if !credentialTopicWordRe.MatchString(folded[start+loc[1]:]) {
+		if !credentialTopicWordAt(folded[start+loc[1]:]) {
 			return false
 		}
 	}
 	return true
+}
+
+// credentialTopicWordAt reports whether afterNoun opens with a credential
+// noun used as the modifier of a topic word. A hand-off preposition in the
+// one-word slot ("to support") and a topic word that is an email local-part
+// ("support@") are requests for the credential, not a subject line.
+func credentialTopicWordAt(afterNoun string) bool {
+	loc := credentialTopicWordRe.FindStringIndex(afterNoun)
+	if loc == nil || loc[0] != 0 {
+		return false
+	}
+	if loc[1] < len(afterNoun) && afterNoun[loc[1]] == '@' {
+		return false
+	}
+	words := strings.FieldsFunc(afterNoun[:loc[1]], func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '-'
+	})
+	if len(words) == 2 && foldedDirectionWord(words[0]) {
+		return false
+	}
+	return true
+}
+
+func foldedDirectionWord(word string) bool {
+	switch word {
+	case normalize.FoldVowels("to"), normalize.FoldVowels("for"), normalize.FoldVowels("with"), normalize.FoldVowels("via"):
+		return true
+	default:
+		return false
+	}
 }
 
 // foldCredentialTopicText lowercases and vowel-folds ASCII letters byte by

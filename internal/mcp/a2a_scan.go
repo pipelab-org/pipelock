@@ -1469,13 +1469,20 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			}
 		}
 		for _, view := range fieldTail.Views(frame) {
-			if dlpResult := sc.ScanTextForDLP(ctx, view.Joined); !dlpResult.Clean {
+			dlpResult := sc.ScanTextForDLP(ctx, view.Joined)
+			if dlpResult.Incomplete {
+				return fmt.Errorf("%w: cross-event dlp scan incomplete: %s", ErrSSEStreamScanError, context.Cause(ctx).Error())
+			}
+			if !dlpResult.Clean {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
 		}
 		if fieldTail.Incomplete(frame) || fieldInjectionTail.Incomplete(frame) {
 			return fmt.Errorf("%w: cross-event inspection incomplete: event exceeds JSON field limits", ErrA2AStreamFinding)
+		}
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: cross-event inspection incomplete: %s", ErrSSEStreamScanError, err.Error())
 		}
 		fieldTail.Advance(frame, false)
 		fieldInjectionTail.Advance(frame, false)

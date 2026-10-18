@@ -289,6 +289,12 @@ func TestWSProxy_JSONFieldLimitsFailClosed(t *testing.T) {
 			t.Fatalf("delivered %d messages, want 1", len(got))
 		}
 	})
+	t.Run("upstream wide message after field content closes in warn mode", func(t *testing.T) {
+		got := receiveUpstreamMessages(t, func(cfg *config.Config) { cfg.ResponseScanning.Action = config.ActionWarn }, []string{outputDeltaMessage("ev1", "hello"), wideJSONMessage("world")})
+		if len(got) != 1 {
+			t.Fatalf("delivered %d messages, want 1", len(got))
+		}
+	})
 }
 
 // sessionUpdateMessage is a realtime session.update carrying tools tool

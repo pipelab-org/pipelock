@@ -69,17 +69,12 @@ func (c *upstreamCrossMessage) enforce(ctx context.Context, r *wsRelay, log *aud
 			}
 		}
 	}
+	// A finding may be warn-only. An unjoined field is not a finding: the
+	// raw tail cannot see across the JSON envelope, so the message closes
+	// in every action, including warn and response-scan exemptions.
 	if !reported && c.fields.Incomplete(frame) {
-		if r.upstreamCrossMessageAction() != config.ActionWarn {
-			r.blockCrossMessageIncomplete(log, audit.DirectionServerToClient)
-			return true
-		}
-		log.LogWSScan(audit.WSScanEvent{
-			Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID,
-			Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionWarn, MatchCount: 1,
-			PatternNames: []string{crossMessageIncompleteReason},
-		})
-		reported = true
+		r.blockCrossMessageIncomplete(log, audit.DirectionServerToClient)
+		return true
 	}
 	// A reported finding clears the retained content so the same bytes are
 	// not reported again by the next message.
