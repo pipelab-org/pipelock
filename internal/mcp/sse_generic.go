@@ -458,8 +458,8 @@ func ScanGenericSSEStreamWithOptions(
 				if result.Clean {
 					continue
 				}
-				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
-				if cfg.Action == config.ActionWarn {
+				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
+				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
 					resetFieldTail = true
 					break
