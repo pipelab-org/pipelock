@@ -481,3 +481,142 @@ func TestReplacementRetainedRecoveryBlocksUpdate(t *testing.T) {
 	assertReplacementBytes(t, target+backupSuffix, "rollback")
 	assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)
 }
+
+func TestReplacementRetainedRollback(t *testing.T) {
+	injected := errors.New("injected rollback failure")
+	for _, tt := range []struct {
+		name   string
+		mutate func(*testing.T, string, string, *replacementOps)
+		want   string
+		target string
+	}{
+		{name: "success", target: originalBytes},
+		{name: "backup changed", mutate: func(t *testing.T, _, candidate string, _ *replacementOps) {
+			writeReplacementFixture(t, candidate, changedBytes)
+		}, want: "backup differs", target: replacementBytes},
+		{name: "candidate missing", mutate: func(t *testing.T, _, candidate string, _ *replacementOps) {
+			if err := os.Remove(candidate); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "backup differs", target: replacementBytes},
+		{name: "prior changed", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, priorImageName), changedBytes)
+		}, want: "images differ", target: replacementBytes},
+		{name: "target changed", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			writeReplacementFixture(t, target, changedBytes)
+		}, want: "images differ", target: changedBytes},
+		{name: "record changed", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, replacementRecordName), "bad")
+		}, want: "unrecognized recovery record", target: replacementBytes},
+		{name: "extra entry", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, "unrelated"), "keep")
+		}, want: "unrecognized recovery entry", target: replacementBytes},
+		{name: "incomplete cleanup", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			if err := os.Remove(filepath.Join(target+replacementSuffix, priorImageName)); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "incomplete recovery state", target: replacementBytes},
+		{name: "rollback slot collision", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, rollbackImageName), changedBytes)
+		}, want: "images differ", target: replacementBytes},
+		{name: "rollback slot directory", mutate: func(t *testing.T, target, _ string, _ *replacementOps) {
+			if err := os.Mkdir(filepath.Join(target+replacementSuffix, rollbackImageName), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "checking replaced image", target: replacementBytes},
+		{name: "first move fails", mutate: func(_ *testing.T, _, _ string, ops *replacementOps) {
+			ops.move = func(string, string) error { return injected }
+		}, want: "original unchanged", target: replacementBytes},
+		{name: "second move fails", mutate: func(_ *testing.T, _, candidate string, ops *replacementOps) {
+			ops.move = func(src, dst string) error {
+				if src == candidate {
+					return injected
+				}
+				return simulatedMove(src, dst)
+			}
+		}, want: "original restored", target: replacementBytes},
+		{name: "restore fails", mutate: func(_ *testing.T, target, _ string, ops *replacementOps) {
+			ops.move = func(src, dst string) error {
+				if src != target {
+					return injected
+				}
+				return simulatedMove(src, dst)
+			}
+		}, want: "restore failed (target missing)"},
+		{name: "restore collision", mutate: func(_ *testing.T, target, candidate string, ops *replacementOps) {
+			ops.move = func(src, dst string) error {
+				if src == candidate {
+					writeReplacementFixture(t, target, changedBytes)
+					return injected
+				}
+				return simulatedMove(src, dst)
+			}
+		}, want: "restore failed (target changed)", target: changedBytes},
+		{name: "saved image changed", mutate: func(_ *testing.T, target, _ string, ops *replacementOps) {
+			ops.digest = func(path string) (string, error) {
+				if path == filepath.Join(target+replacementSuffix, rollbackImageName) {
+					if _, err := os.Stat(path); err == nil {
+						return "", injected
+					}
+				}
+				return binaryDigest(path)
+			}
+		}, want: "original restored", target: replacementBytes},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target, candidate := replacementFixture(t)
+			writeReplacementFixture(t, target+backupSuffix, originalBytes)
+			if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+				t.Fatal(err)
+			}
+			writeReplacementFixture(t, candidate, originalBytes)
+			ops := replacementOps{move: simulatedMove}
+			if tt.mutate != nil {
+				tt.mutate(t, target, candidate, &ops)
+			}
+			err := rollbackRetained(candidate, target, ops)
+			if tt.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)
+				assertReplacementBytes(t, filepath.Join(target+replacementSuffix, rollbackImageName), replacementBytes)
+				// A second rollback is idempotent and never adds another generation.
+				writeReplacementFixture(t, candidate, originalBytes)
+				if err := rollbackRetained(candidate, target, ops); err != nil {
+					t.Fatal(err)
+				}
+				for _, name := range []string{priorImageName, rollbackImageName} {
+					err := cleanupRecovery(target, replacementOps{remove: func(path string) error {
+						if filepath.Base(path) == name {
+							return injected
+						}
+						return os.Remove(path)
+					}})
+					if !errors.Is(err, injected) {
+						t.Fatalf("mapped %s cleanup: %v", name, err)
+					}
+				}
+				if err := cleanupRecovery(target, replacementOps{}); err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("rollback = %v, want %q", err, tt.want)
+			}
+			if tt.target != "" {
+				assertReplacementBytes(t, target, tt.target)
+			} else if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing target = %v", err)
+			}
+			assertReplacementBytes(t, target+backupSuffix, originalBytes)
+		})
+	}
+}
+
+func TestReplacementRollbackWithoutRecovery(t *testing.T) {
+	target, candidate := replacementFixture(t)
+	if err := rollbackRetained(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+		t.Fatal(err)
+	}
+	assertReplacementBytes(t, target, replacementBytes)
+}

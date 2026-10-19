@@ -248,6 +248,10 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 	}
 	defer unlock()
 
+	if err := checkReplacementReady(target); err != nil {
+		return backupPath, err
+	}
+
 	// Back up the current binary by copying its bytes (the original keeps its
 	// inode; copy preserves the running process's mapping on Linux).
 	if err := copyFile(target, backupPath); err != nil {
@@ -283,11 +287,12 @@ func rollback(target string) (backupPath string, err error) {
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := copyFile(backupPath, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("staging backup: %w", err)
 	}
-	if err := replaceBinary(tmpPath, target); err != nil {
+	if err := restoreBinary(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("restoring backup: %w", err)
 	}

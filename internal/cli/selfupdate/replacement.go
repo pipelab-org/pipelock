@@ -16,10 +16,12 @@ import (
 )
 
 // The recovery directory is reserved exclusively by the replacement helper.
-// Only these two files are owned. Never glob backups or recursively remove it.
+// Only the fixed image names and record below are owned. Never glob backups
+// or recursively remove the directory.
 const (
 	replacementSuffix     = ".pipelock-update"
 	priorImageName        = "previous.exe"
+	rollbackImageName     = "replaced.exe"
 	replacementRecordName = "sha256"
 )
 
@@ -197,88 +199,123 @@ func removeIfPresent(ops replacementOps, path string) error {
 	return nil
 }
 
-func cleanupRecovery(target string, ops replacementOps) error {
+func inspectRecovery(target string, ops replacementOps) (state recoveryState, err error) {
 	ops = ops.defaults()
 	dir := target + replacementSuffix
 	info, err := os.Lstat(dir)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return state, nil
 	}
 	if err != nil {
-		return err
+		return state, err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("unrecognized recovery directory %q", dir)
+		return state, fmt.Errorf("unrecognized recovery directory %q", dir)
 	}
 	// Windows FileInfo loads its file ID lazily. Resolve it before cleanup so
 	// a later comparison cannot accidentally identify a replacement directory.
 	if !os.SameFile(info, info) {
-		return errors.New("cannot establish recovery directory identity")
+		return state, errors.New("cannot establish recovery directory identity")
 	}
-	dirInfo := info
+	state.info = info
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return state, err
 	}
 	for _, entry := range entries {
-		if entry.Name() != priorImageName && entry.Name() != replacementRecordName {
-			return fmt.Errorf("unrecognized recovery entry %q", filepath.Join(dir, entry.Name()))
+		if entry.Name() != priorImageName && entry.Name() != rollbackImageName && entry.Name() != replacementRecordName {
+			return state, fmt.Errorf("unrecognized recovery entry %q", filepath.Join(dir, entry.Name()))
 		}
 	}
 	if len(entries) == 0 {
-		// Left by a start that stopped after removing the record. Nothing is owned.
-		if err := removeIfPresent(ops, dir); err != nil {
-			return fmt.Errorf("removing recovery directory: %w", err)
-		}
-		return nil
+		return state, nil
 	}
 	record := filepath.Join(dir, replacementRecordName)
 	info, err = os.Lstat(record)
 	const digestLength = sha256.Size * 2
 	const recordLength = 2 * (digestLength + 1)
 	if err != nil {
-		return fmt.Errorf("checking recovery record: %w", err)
+		return state, fmt.Errorf("checking recovery record: %w", err)
 	}
 	if !info.Mode().IsRegular() || info.Size() != recordLength {
-		return errors.New("unrecognized recovery record")
+		return state, errors.New("unrecognized recovery record")
 	}
 	f, err := os.Open(record) // #nosec G304 -- fixed file inside the updater recovery directory
 	if err != nil {
-		return err
+		return state, err
 	}
 	data, readErr := io.ReadAll(io.LimitReader(f, recordLength+1))
 	_ = f.Close()
 	if readErr != nil {
-		return readErr
+		return state, readErr
 	}
 	if len(data) != recordLength || data[digestLength] != '\n' || data[recordLength-1] != '\n' {
-		return errors.New("invalid recovery record")
+		return state, errors.New("invalid recovery record")
 	}
 	old, next := string(data[:digestLength]), string(data[digestLength+1:recordLength-1])
 	if _, err := hex.DecodeString(old + next); err != nil {
-		return fmt.Errorf("invalid recovery digests: %w", err)
+		return state, fmt.Errorf("invalid recovery digests: %w", err)
 	}
-	current, err := ops.digest(target)
+
+	state.data, state.old, state.next = data, old, next
+	state.current, err = ops.digest(target)
 	if err != nil {
-		return fmt.Errorf("checking installed image: %w", err)
+		return state, fmt.Errorf("checking installed image: %w", err)
 	}
-	aside := filepath.Join(dir, priorImageName)
-	prior, err := ops.digest(aside)
-	if errors.Is(err, os.ErrNotExist) {
-		if current != next && current != old {
-			return errors.New("installed image differs from recovery record")
+	prior, priorErr := ops.digest(filepath.Join(dir, priorImageName))
+	if priorErr != nil && !errors.Is(priorErr, os.ErrNotExist) {
+		return state, fmt.Errorf("checking prior image: %w", priorErr)
+	}
+	state.prior = priorErr == nil
+	displaced, displacedErr := ops.digest(filepath.Join(dir, rollbackImageName))
+	if displacedErr != nil && !errors.Is(displacedErr, os.ErrNotExist) {
+		return state, fmt.Errorf("checking replaced image: %w", displacedErr)
+	}
+	state.displaced = displacedErr == nil
+	if state.displaced {
+		// The unchanged two-digest record also binds the one immediate rollback:
+		// previous.exe is old, replaced.exe is next, and the installed image is old.
+		if displaced != next || state.current != old || state.prior && prior != old {
+			return state, errors.New("images differ from recovery record; retaining rollback images")
 		}
-	} else {
-		if err != nil {
-			return fmt.Errorf("checking prior image: %w", err)
+	} else if state.prior {
+		if prior != old || state.current != next {
+			return state, errors.New("images differ from recovery record; retaining prior image")
 		}
-		if prior != old || current != next {
-			return errors.New("images differ from recovery record; retaining prior image")
-		}
-		if err := removeIfPresent(ops, aside); err != nil {
-			return fmt.Errorf("removing prior image %q: %w", aside, err)
+	} else if state.current != next && state.current != old {
+		return state, errors.New("installed image differs from recovery record")
+	}
+	return state, nil
+}
+
+type recoveryState struct {
+	info               os.FileInfo
+	data               []byte
+	old, next, current string
+	prior, displaced   bool
+}
+
+func cleanupRecovery(target string, ops replacementOps) error {
+	ops = ops.defaults()
+	state, err := inspectRecovery(target, ops)
+	if err != nil {
+		return err
+	}
+	if state.info == nil {
+		return nil
+	}
+	dir := target + replacementSuffix
+	if len(state.data) == 0 {
+		return removeIfPresent(ops, dir)
+	}
+	// Validate every image before deleting any; a mapped image is retained for
+	// a later startup. A partial cleanup remains recognizable by the same record.
+	for _, name := range []string{priorImageName, rollbackImageName} {
+		if err := removeIfPresent(ops, filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("removing prior image %q: %w", filepath.Join(dir, name), err)
 		}
 	}
+	record := filepath.Join(dir, replacementRecordName)
 	if err := removeIfPresent(ops, record); err != nil {
 		return fmt.Errorf("removing recovery record: %w", err)
 	}
@@ -286,12 +323,49 @@ func cleanupRecovery(target string, ops replacementOps) error {
 		// Retain the ownership record for retry if the final directory removal
 		// fails. Never overwrite a colliding record or follow a replaced dir.
 		currentDir, statErr := os.Lstat(dir)
-		if statErr == nil && os.SameFile(dirInfo, currentDir) {
-			if writeErr := ops.write(record, data, 0o600); writeErr != nil {
+		if statErr == nil && os.SameFile(state.info, currentDir) {
+			if writeErr := ops.write(record, state.data, 0o600); writeErr != nil {
 				err = errors.Join(err, writeErr)
 			}
 		}
 		return fmt.Errorf("removing recovery directory: %w", err)
+	}
+	return nil
+}
+
+// rollbackRetained reuses the original update's ownership record. One fixed
+// additional slot retains the updated image if it is still mapped. It never
+// overwrites previous.exe, changes the record, or removes a mapped image.
+// The caller holds the replacement lock across staging and these moves.
+func rollbackRetained(candidate, target string, ops replacementOps) error {
+	ops = ops.defaults()
+	state, err := inspectRecovery(target, ops)
+	if err != nil {
+		return err
+	}
+	if state.info == nil {
+		return replaceRunningBinary(candidate, target, ops)
+	}
+	if len(state.data) == 0 || !state.prior && !state.displaced {
+		return errors.New("incomplete recovery state; original unchanged; restart to retry cleanup")
+	}
+	restored, err := ops.digest(candidate)
+	if err != nil || restored != state.old {
+		return fmt.Errorf("backup differs from recorded prior image; original unchanged: %w", errors.Join(err, errors.New("rollback requires the recorded original")))
+	}
+	// Already rolled back; do not grow recovery state.
+	if state.displaced {
+		return nil
+	}
+	aside := filepath.Join(target+replacementSuffix, rollbackImageName)
+	if err := ops.move(target, aside); err != nil {
+		return fmt.Errorf("moving installed image aside (%s): %w", originalState(target, state.next, ops), err)
+	}
+	if got, err := ops.digest(aside); err != nil || got != state.next {
+		return restorePriorImage(target, aside, state.next, ops, errors.New("saved installed image changed during rollback"))
+	}
+	if err := ops.move(candidate, target); err != nil {
+		return restorePriorImage(target, aside, state.next, ops, err)
 	}
 	return nil
 }

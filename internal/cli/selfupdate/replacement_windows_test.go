@@ -4,6 +4,7 @@
 package selfupdate
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -100,6 +102,11 @@ func TestWindowsRunningExecutableReplacement(t *testing.T) {
 func TestWindowsReplacementChild(t *testing.T) {
 	mode := os.Getenv(windowsHelperMode)
 	if mode == "" {
+		return
+	}
+	if mode == "hold image" {
+		_, _ = fmt.Fprintln(os.Stdout, "ready")
+		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 		return
 	}
 	if mode == "lock probe" {
@@ -312,4 +319,194 @@ func windowsFileIdentity(t *testing.T, path string) os.FileInfo {
 		t.Fatal(closeErr)
 	}
 	return info
+}
+
+// Keep both generations mapped across the operation, as a running service and
+// an updater launched from its replacement would do.
+func TestWindowsRetainedRecoveryRollback(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	target := filepath.Join(dir, "pipelock.exe")
+	candidate := filepath.Join(dir, "candidate.exe")
+	if err := copyFile(exe, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := copyFile(exe, candidate); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(filepath.Clean(candidate), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, writeErr := f.WriteString("replacement PE overlay")
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		t.Fatal(errors.Join(writeErr, closeErr))
+	}
+	original, err := binaryDigest(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hold := func() func() {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		child := exec.CommandContext(ctx, target, "-test.run=^TestWindowsReplacementChild$") // #nosec G204 -- test-owned executable
+		child.Env = append(os.Environ(), windowsHelperMode+"=hold image")
+		input, err := child.StdinPipe()
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		output, err := child.StdoutPipe()
+		if err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			cancel()
+			t.Fatal(err)
+		}
+		stopped := false
+		stop := func() {
+			if stopped {
+				return
+			}
+			stopped = true
+			_ = input.Close()
+			if err := child.Wait(); err != nil {
+				t.Error(err)
+			}
+			cancel()
+		}
+		t.Cleanup(stop)
+		ready, err := bufio.NewReader(output).ReadString('\n')
+		if err != nil || strings.TrimSpace(ready) != "ready" {
+			t.Fatalf("holder readiness: %q %v", ready, err)
+		}
+		return stop
+	}
+	stopOriginal := hold()
+	if _, err := installBinary(target, candidate); err != nil {
+		t.Fatal(err)
+	}
+	prior := filepath.Join(target+replacementSuffix, priorImageName)
+	if err := os.Remove(prior); err == nil {
+		t.Fatal("original image was not mapped")
+	}
+	stopInstalled := hold()
+	if !t.Run("refused update preserves backup", func(t *testing.T) {
+		if err := copyFile(exe, candidate); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := installBinary(target, candidate); err == nil {
+			t.Fatal("second update accepted retained recovery")
+		}
+		got, err := binaryDigest(target + backupSuffix)
+		if err != nil || got != original {
+			t.Fatalf("refused update changed rollback backup: digest=%s want=%s err=%v", got, original, err)
+		}
+	}) {
+		return
+	}
+	if !t.Run("immediate rollback", func(t *testing.T) {
+		if _, err := rollback(target); err != nil {
+			t.Fatal(err)
+		}
+		got, err := binaryDigest(target)
+		if err != nil || got != original {
+			t.Fatalf("rollback digest=%s want=%s err=%v", got, original, err)
+		}
+	}) {
+		return
+	}
+
+	displaced := filepath.Join(target+replacementSuffix, rollbackImageName)
+	for _, path := range []string{prior, displaced} {
+		if err := os.Remove(path); err == nil {
+			t.Fatalf("mapped image deleted: %s", path)
+		}
+	}
+	identity := windowsFileIdentity(t, displaced)
+	if _, err := rollback(target); err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(identity, windowsFileIdentity(t, displaced)) {
+		t.Fatal("repeated rollback changed saved image")
+	}
+	stopOriginal()
+	if err := cleanupReplacement(target, replacementOps{}); err == nil {
+		t.Fatal("cleanup removed mapped updated image")
+	}
+	if _, err := os.Lstat(prior); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("original image not cleaned: %v", err)
+	}
+	if _, err := rollback(target); err != nil {
+		t.Fatal(err)
+	}
+	stopInstalled()
+	if err := cleanupReplacement(target, replacementOps{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(target + replacementSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retained recovery after cleanup: %v", err)
+	}
+}
+
+func TestWindowsRetainedRecoveryRefusals(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*testing.T, string)
+	}{
+		{name: "valid retained state"},
+		{name: "malformed record", mutate: func(t *testing.T, target string) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, replacementRecordName), "bad")
+		}},
+		{name: "changed prior", mutate: func(t *testing.T, target string) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, priorImageName), changedBytes)
+		}},
+		{name: "changed target", mutate: func(t *testing.T, target string) { writeReplacementFixture(t, target, changedBytes) }},
+		{name: "unknown entry", mutate: func(t *testing.T, target string) {
+			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, "unrelated"), "keep")
+		}},
+		{name: "changed backup", mutate: func(t *testing.T, target string) { writeReplacementFixture(t, target+backupSuffix, changedBytes) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			target, candidate := replacementFixture(t)
+			if _, err := installBinary(target, candidate); err != nil {
+				t.Fatal(err)
+			}
+			if tt.mutate != nil {
+				tt.mutate(t, target)
+			}
+			current, err := binaryDigest(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backup, err := binaryDigest(target + backupSuffix)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeReplacementFixture(t, candidate, originalBytes)
+			if _, err := installBinary(target, candidate); err == nil {
+				t.Fatal("update accepted retained recovery")
+			}
+			if tt.mutate != nil {
+				if _, err := rollback(target); err == nil {
+					t.Fatal("rollback accepted unrecognized state")
+				}
+				got, err := binaryDigest(target)
+				if err != nil || got != current {
+					t.Fatalf("refusal changed target: %s %v", got, err)
+				}
+			}
+			got, err := binaryDigest(target + backupSuffix)
+			if err != nil || got != backup {
+				t.Fatalf("refusal changed backup: %s %v", got, err)
+			}
+		})
+	}
 }

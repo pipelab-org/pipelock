@@ -70,7 +70,7 @@ func acquireReplacementLock(target string) (func(), error) {
 	return func() { _ = f.Close() }, nil
 }
 
-// CleanupOnStart removes only the recorded prior image of this executable.
+// CleanupOnStart removes only the recorded saved images of this executable.
 // A locked image or unrecognized recovery state is retained with a warning.
 func CleanupOnStart(stderr io.Writer) {
 	exe, err := os.Executable()
@@ -83,4 +83,20 @@ func CleanupOnStart(stderr io.Writer) {
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "Warning: self-update cleanup deferred: %s\n", termsafe.Escape(err.Error()))
 	}
+}
+
+// checkReplacementReady runs under the replacement lock before touching .bak.
+func checkReplacementReady(target string) error {
+	dir := target + replacementSuffix
+	if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+		if err != nil {
+			return fmt.Errorf("checking recovery directory; original and backup unchanged: %w", err)
+		}
+		return fmt.Errorf("recovery directory %q remains from an earlier update; original and backup unchanged. After confirming %q runs correctly, stop processes still running the previous executable, then remove that directory and retry", dir, target)
+	}
+	return nil
+}
+
+func restoreBinary(tmpPath, target string) error {
+	return rollbackRetained(tmpPath, target, replacementOps{move: moveWithoutReplace})
 }

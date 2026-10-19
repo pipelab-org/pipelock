@@ -23,3 +23,7 @@ func CleanupOnStart(_ io.Writer) {}
 
 // Unix replacement does not use the Windows recovery directory.
 func acquireReplacementLock(_ string) (func(), error) { return func() {}, nil }
+
+func checkReplacementReady(_ string) error { return nil }
+
+func restoreBinary(tmpPath, target string) error { return replaceBinary(tmpPath, target) }

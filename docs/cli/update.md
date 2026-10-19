@@ -90,11 +90,20 @@ installed binary unchanged**:
    that encounters a busy lock stops before changing the binary or its backup.
    The `<binary>.pipelock-update.lock` file remains between runs and must not
    be deleted while a command is running.
-   A retained recovery directory blocks the next update or rollback. After
-   confirming the installed binary works, stop processes still running the
-   previous executable before removing that directory; Windows won't delete
-   an image while a process maps it. `<binary>.bak` is never touched by this
-   cleanup.
+   A retained recovery directory blocks the next update before it changes
+   `<binary>.bak`. Rollback can reuse a valid retained directory when the backup
+   matches the recorded original. It keeps `previous.exe` and moves the updated
+   image to the fixed `replaced.exe` slot before restoring the backup. Both
+   images may stay mapped by running processes; neither is overwritten. Repeated
+   rollback uses the same state. Cleanup verifies both images against the
+   original record; later startups retry after the processes exit. Malformed records,
+   changed images, or unknown entries block rollback and remain for inspection.
+   If rollback stops between its two renames, restore `replaced.exe` to the
+   missing binary path to keep the updated version, or copy `<binary>.bak` to
+   restore the original. After confirming the installed binary works, stop
+   processes still running either saved image before removing the directory;
+   Windows won't delete an image while a process maps it. `<binary>.bak` is
+   never touched by cleanup.
 
 ### Authenticity model (native vs cosign)
 
