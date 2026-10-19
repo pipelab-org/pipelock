@@ -249,7 +249,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -327,7 +327,7 @@ jobs:
   # This is what pull requests wait on. Without -race the same tests run five to
   # eleven times faster (the scanner tree: about 40s against 7m50s), so whole
   # package trees fit one shard and a pull request needs a handful of runners
-  # instead of thirty-eight. The race lane above proves the same tests under
+  # instead of forty. The race lane above proves the same tests under
   # -race after merge. Coverage comes from this lane: set-mode counters cost
   # little without -race, and every pull request and main push reports it.
   #
@@ -536,7 +536,7 @@ jobs:
       # request's no-race lane and every other open pull request needed.
       max-parallel: 4
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -611,7 +611,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -704,7 +704,7 @@ jobs:
       # request's no-race lane and every other open pull request needed.
       max-parallel: 4
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

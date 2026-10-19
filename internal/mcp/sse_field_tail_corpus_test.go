@@ -86,27 +86,10 @@ func characterDeltas(s string, n int) []string {
 	return append(out, s)
 }
 
-func TestStreamFieldTailsBenignCorpusHasNoFindings(t *testing.T) {
+func TestStreamFieldTailsBenignCorpusSingleEvents(t *testing.T) {
 	t.Parallel()
 	sc, cfg := defaultStreamScanner(t)
 	sse := cfg.ResponseScanning.SSEStreaming
-	a2a := cfg.A2AScanning
-	a2a.Enabled = true
-
-	type shape struct {
-		name  string
-		event sseShape
-		a2a   bool
-	}
-	shapes := []shape{
-		{name: "chat chunk", event: chatCompletionChunk},
-		{name: "content block", event: contentBlockDelta},
-		{name: "artifact update", event: artifactUpdate},
-		{name: "minimal text", event: minimalTextEvent},
-		{name: "a2a artifact update", event: artifactUpdate, a2a: true},
-		{name: "a2a minimal text", event: minimalTextEvent, a2a: true},
-	}
-	toolArgs := `{"location":"Boston, MA","unit":"celsius","days":3,"include_hourly":false}`
 	// Precondition: each transcript is clean as one whole event, so any
 	// finding below comes from joining deltas.
 	for _, text := range benignStreamTranscripts {
@@ -116,41 +99,87 @@ func TestStreamFieldTailsBenignCorpusHasNoFindings(t *testing.T) {
 			t.Fatalf("corpus transcript %q is not clean as a single event: %v", text, err)
 		}
 	}
+}
+
+// The CI planner schedules top-level tests, so each stream format has its own
+// entry point while sharing the complete transcript and split matrix.
+func TestStreamFieldTailsBenignCorpusChatChunks(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, chatCompletionChunk, false)
+}
+
+func TestStreamFieldTailsBenignCorpusContentBlocks(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, contentBlockDelta, false)
+}
+
+func TestStreamFieldTailsBenignCorpusArtifactUpdates(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, artifactUpdate, false)
+}
+
+func TestStreamFieldTailsBenignCorpusMinimalText(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, minimalTextEvent, false)
+}
+
+func TestStreamFieldTailsBenignCorpusA2AArtifactUpdates(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, artifactUpdate, true)
+}
+
+func TestStreamFieldTailsBenignCorpusA2AMinimalText(t *testing.T) {
+	t.Parallel()
+	testStreamFieldTailsBenignCorpus(t, minimalTextEvent, true)
+}
+
+func testStreamFieldTailsBenignCorpus(t *testing.T, event sseShape, isA2A bool) {
+	t.Helper()
+	sc, cfg := defaultStreamScanner(t)
+	sse := cfg.ResponseScanning.SSEStreaming
+	a2a := cfg.A2AScanning
+	a2a.Enabled = true
 	streams := 0
-	for _, sh := range shapes {
-		for i, text := range benignStreamTranscripts {
-			for _, split := range []string{"words", "chars"} {
-				parts := wordDeltas(text)
-				if split == "chars" {
-					parts = characterDeltas(text, 3+i%5)
-				}
-				var body string
-				if sh.a2a {
-					body = a2aStream(t, sh.event, parts...)
-				} else {
-					body = sseStream(t, sh.event, parts...)
-				}
-				name := sh.name + "/" + split + "/" + strconv.Itoa(i)
-				var out bytes.Buffer
-				var err error
-				if sh.a2a {
-					err = ScanA2AStream(context.Background(), strings.NewReader(body), &out, nil, sc, &a2a)
-				} else {
-					err = ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{})
-				}
-				if err != nil {
-					t.Errorf("%s: benign stream %q blocked: %v", name, text, err)
-				}
-				streams++
+	for i, text := range benignStreamTranscripts {
+		for _, split := range []string{"words", "chars"} {
+			parts := wordDeltas(text)
+			if split == "chars" {
+				parts = characterDeltas(text, 3+i%5)
 			}
+			var body string
+			if isA2A {
+				body = a2aStream(t, event, parts...)
+			} else {
+				body = sseStream(t, event, parts...)
+			}
+			var out bytes.Buffer
+			var err error
+			if isA2A {
+				err = ScanA2AStream(context.Background(), strings.NewReader(body), &out, nil, sc, &a2a)
+			} else {
+				err = ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{})
+			}
+			if err != nil {
+				t.Errorf("%s/%d: benign stream %q blocked: %v", split, i, text, err)
+			}
+			streams++
 		}
 	}
+	if streams < 48 {
+		t.Fatalf("corpus too small: %d streams", streams)
+	}
+}
+
+func TestStreamFieldTailsBenignCorpusProducerShapes(t *testing.T) {
+	t.Parallel()
+	sc, cfg := defaultStreamScanner(t)
+	sse := cfg.ResponseScanning.SSEStreaming
+	toolArgs := `{"location":"Boston, MA","unit":"celsius","days":3,"include_hourly":false}`
 	var out bytes.Buffer
 	body := sseStream(t, benignToolCallChunk, characterDeltas(toolArgs, 4)...)
 	if err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(body), &out, nil, sc, &sse, GenericSSEScanOptions{}); err != nil {
 		t.Errorf("benign tool call arguments blocked: %v", err)
 	}
-	streams++
 
 	// Producer shapes that exercise interleaving, envelope repeats, wide
 	// events and non-string leaves.
@@ -173,7 +202,6 @@ func TestStreamFieldTailsBenignCorpusHasNoFindings(t *testing.T) {
 		if err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(b.String()), &out, nil, sc, &sse, GenericSSEScanOptions{}); err != nil {
 			t.Errorf("producer shapes/%d: benign stream blocked: %v", i, err)
 		}
-		streams++
 	}
 	// An envelope id that repeats on every event must not be joined with
 	// itself: two copies of it would read as a credential.
@@ -185,9 +213,5 @@ func TestStreamFieldTailsBenignCorpusHasNoFindings(t *testing.T) {
 	out.Reset()
 	if err := ScanGenericSSEStreamWithOptions(context.Background(), strings.NewReader(repeated.String()), &out, nil, sc, &sse, GenericSSEScanOptions{}); err != nil {
 		t.Errorf("repeated envelope id blocked: %v", err)
-	}
-	streams++
-	if streams < 48 {
-		t.Fatalf("corpus too small: %d streams", streams)
 	}
 }
