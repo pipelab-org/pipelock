@@ -113,7 +113,7 @@ These examples target the published v3.7.0 binary. The commit pin selects action
 Use the `exclude-paths` input (one pattern per line):
 
 ```yaml
-- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
+- uses: luckyPipewrench/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
   with:
     version: '3.7.0'
     exclude-paths: |
@@ -139,7 +139,7 @@ Write a Pipelock config file, then pass its path with the `config` input:
         reason: "Test tokens"
     EOF
 
-- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
+- uses: luckyPipewrench/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
   with:
     version: '3.7.0'
     config: pipelock-ci.yaml

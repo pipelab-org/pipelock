@@ -292,7 +292,7 @@ To transition a deliberate audit trial to enforcement:
 
 If you find a pattern that consistently produces false positives on common traffic, file an issue:
 
-**[github.com/luckyPipewrench/pipelock/issues](https://github.com/luckyPipewrench/pipelock/issues)**
+**[github.com/pipelab-org/pipelock/issues](https://github.com/pipelab-org/pipelock/issues)**
 
 Include:
 - The log entry (scanner, rule, severity)

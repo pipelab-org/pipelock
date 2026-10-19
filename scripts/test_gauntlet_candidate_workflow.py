@@ -22,7 +22,7 @@ ACCEPTANCE = ROOT / "benchmark" / "gauntlet-acceptance.json"
 EXPECTED_AEB_REF = "79a51f084fc4f4cd5254e4ec15a273c556c280d5"
 EXPECTED_AEB_RELEASE_TAG = "v1.1.0"
 GAUNTLET_WORKFLOW_URL = (
-    "https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"
+    "https://github.com/pipelab-org/pipelock/actions/workflows/continuous-gauntlet.yaml"
 )
 GAUNTLET_BADGE_URL = GAUNTLET_WORKFLOW_URL + "/badge.svg"
 PLAYGROUND_PAGE_URL = "https://pipelab.org/playground"

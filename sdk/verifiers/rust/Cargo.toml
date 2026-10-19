@@ -1,11 +1,11 @@
 [package]
 name = "pipelock-verifier-rs"
-version = "0.6.5"
+version = "0.6.6"
 edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
 description = "Reference Rust verifier for Pipelock signed agent-egress receipts (Audit Packet v0, ActionReceipt v1, EvidenceReceipt v2)."
-repository = "https://github.com/luckyPipewrench/pipelock"
+repository = "https://github.com/pipelab-org/pipelock"
 homepage = "https://pipelab.org/learn/action-receipt-spec/"
 documentation = "https://docs.rs/pipelock-verifier-rs"
 readme = "README.md"

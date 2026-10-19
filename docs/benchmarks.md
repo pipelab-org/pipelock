@@ -4,7 +4,7 @@ Receipt-load measurements and raw scanner benchmarks from Go's testing framework
 
 ## Million-request receipt run
 
-The released 3.7.0 binary, which contains the receipt caching and bounded-search changes in [#1897](https://github.com/luckyPipewrench/pipelock/pull/1897), completed 1,000,000 measured requests with required receipts after 1,000 warm-up requests. All 5,855,850 expected receipt records were present, including those from warm-up. Throughput and latency exclude warm-up. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
+The released 3.7.0 binary, which contains the receipt caching and bounded-search changes in [#1897](https://github.com/pipelab-org/pipelock/pull/1897), completed 1,000,000 measured requests with required receipts after 1,000 warm-up requests. All 5,855,850 expected receipt records were present, including those from warm-up. Throughput and latency exclude warm-up. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
 
 | Measurement | Observed result |
 |---|---:|

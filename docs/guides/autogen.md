@@ -264,7 +264,7 @@ networks:
 
 services:
   pipelock:
-    # Pin to a specific version for production. See https://github.com/luckyPipewrench/pipelock/releases for available tags.
+    # Pin to a specific version for production. See https://github.com/pipelab-org/pipelock/releases for available tags.
     image: ghcr.io/luckypipewrench/pipelock:3.7.0
     networks:
       - pipelock-internal

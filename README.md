@@ -7,18 +7,18 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet exam" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
-  <a href="go.mod"><img alt="Go 1.26+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
+  <a href="https://github.com/pipelab-org/pipelock/actions/workflows/ci.yaml"><img alt="CI" src="https://github.com/pipelab-org/pipelock/actions/workflows/ci.yaml/badge.svg"></a>
+  <a href="https://github.com/pipelab-org/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/pipelab-org/pipelock/actions/workflows/security.yaml/badge.svg"></a>
+  <a href="https://github.com/pipelab-org/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet exam" src="https://github.com/pipelab-org/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
+  <a href="go.mod"><img alt="Go 1.26+" src="https://img.shields.io/github/go-mod/go-version/pipelab-org/pipelock?logo=go&label=Go"></a>
+  <a href="https://github.com/pipelab-org/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/pipelab-org/pipelock"></a>
 </p>
 
 <p align="center">
-  <a href="https://scorecard.dev/viewer/?uri=github.com/luckyPipewrench/pipelock"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/luckyPipewrench/pipelock/badge"></a>
+  <a href="https://scorecard.dev/viewer/?uri=github.com/pipelab-org/pipelock"><img alt="OpenSSF Scorecard" src="https://api.scorecard.dev/projects/github.com/pipelab-org/pipelock/badge"></a>
   <a href="https://www.bestpractices.dev/projects/11948"><img alt="OpenSSF Best Practices" src="https://www.bestpractices.dev/projects/11948/badge"></a>
-  <a href="https://codecov.io/gh/luckyPipewrench/pipelock"><img alt="codecov" src="https://codecov.io/gh/luckyPipewrench/pipelock/graph/badge.svg"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/blob/main/.github/workflows/ci.yaml#L21-L35"><img alt="pipelock self-scanned" src="https://img.shields.io/badge/pipelock-self--scanned-00FFC8?style=flat&labelColor=1A1A2E&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNCAxNCI+PHBhdGggZmlsbD0iIzAwRkZDOCIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik03IDAuNWMtMS45MyAwLTMuNSAxLjY2LTMuNSAzLjd2MS4zSDNjLS44MyAwLTEuNSAuNjctMS41IDEuNXY2YzAgLjgzLjY3IDEuNSAxLjUgMS41aDhjLjgzIDAgMS41LS42NyAxLjUtMS41VjdjMC0uODMtLjY3LTEuNS0xLjUtMS41aC0uNVY0LjJjMC0yLjA0LTEuNTctMy43LTMuNS0zLjdabS0yIDVWNC4yYzAtMS40OSAxLjEyLTIuNyAyLjUtMi43czIuNSAxLjIxIDIuNSAyLjd2MS4zSDVaTTIuNSA1aDJ2MS4yaC0yVjVabTcgMGgydjEuMmgtMlY1Wk03IDguMmMtLjY5IDAtMS4yNS41Ni0xLjI1IDEuMjUgMCAuNDQuMjMuODMuNTcgMS4wNXYxLjVoMS4zNnYtMS41Yy4zNC0uMjIuNTctLjYxLjU3LTEuMDUgMC0uNjktLjU2LTEuMjUtMS4yNS0xLjI1WiIvPjwvc3ZnPgo="></a>
+  <a href="https://codecov.io/gh/pipelab-org/pipelock"><img alt="codecov" src="https://codecov.io/gh/pipelab-org/pipelock/graph/badge.svg"></a>
+  <a href="https://github.com/pipelab-org/pipelock/blob/main/.github/workflows/ci.yaml#L21-L35"><img alt="pipelock self-scanned" src="https://img.shields.io/badge/pipelock-self--scanned-00FFC8?style=flat&labelColor=1A1A2E&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNCAxNCI+PHBhdGggZmlsbD0iIzAwRkZDOCIgZmlsbC1ydWxlPSJldmVub2RkIiBjbGlwLXJ1bGU9ImV2ZW5vZGQiIGQ9Ik03IDAuNWMtMS45MyAwLTMuNSAxLjY2LTMuNSAzLjd2MS4zSDNjLS44MyAwLTEuNSAuNjctMS41IDEuNXY2YzAgLjgzLjY3IDEuNSAxLjUgMS41aDhjLjgzIDAgMS41LS42NyAxLjUtMS41VjdjMC0uODMtLjY3LTEuNS0xLjUtMS41aC0uNVY0LjJjMC0yLjA0LTEuNTctMy43LTMuNS0zLjdabS0yIDVWNC4yYzAtMS40OSAxLjEyLTIuNyAyLjUtMi43czIuNSAxLjIxIDIuNSAyLjd2MS4zSDVaTTIuNSA1aDJ2MS4yaC0yVjVabTcgMGgydjEuMmgtMlY1Wk03IDguMmMtLjY5IDAtMS4yNS41Ni0xLjI1IDEuMjUgMCAuNDQuMjMuODMuNTcgMS4wNXYxLjVoMS4zNnYtMS41Yy4zNC0uMjIuNTctLjYxLjU3LTEuMDUgMC0uNjktLjU2LTEuMjUtMS4yNS0xLjI1WiIvPjwvc3ZnPgo="></a>
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
 
 Pipelock sits between AI agents and the network. It inspects mediated HTTP, WebSocket, MCP, and A2A traffic, plus CONNECT tunnel contents when TLS interception is enabled, for secret exfiltration, prompt injection, SSRF, tool poisoning, and risky tool-call chains. Plain CONNECT without interception is scanned at the hostname and URL level. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
-Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. The [Gauntlet](https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml) workflow is the product's scheduled candidate exam against a pinned corpus commit; it does not auto-publish a public score. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
+Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/action-receipt-spec/) over content-aware boundary decisions, so a reviewer can verify what Pipelock decided outside the agent runtime. The public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus exercises the detections. The [Gauntlet](https://github.com/pipelab-org/pipelock/actions/workflows/continuous-gauntlet.yaml) workflow is the product's scheduled candidate exam against a pinned corpus commit; it does not auto-publish a public score. Learn more: [Open-source AI firewall](https://pipelab.org/learn/open-source-ai-firewall/).
 
 **Works with:** Claude Code · OpenAI Codex · Cline · OpenCode · Pi · Zed · Cursor · VS Code · JetBrains · OpenAI Agents SDK · Google ADK · AutoGen · CrewAI · LangGraph
 
@@ -126,7 +126,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 
 ```bash
 # Download a binary
-# See https://github.com/luckyPipewrench/pipelock/releases
+# See https://github.com/pipelab-org/pipelock/releases
 
 # Docker
 docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
@@ -587,7 +587,7 @@ The commit below pins the action source; its `action.yml` is identical to the on
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
+- uses: luckyPipewrench/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
   with:
     version: '3.7.0'
     scan-diff: 'true'
@@ -780,7 +780,7 @@ Run `make test` to verify locally. First-party benchmark evidence: the public [a
 
 Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-If Pipelock is useful, please [star this repository](https://github.com/luckyPipewrench/pipelock). It helps others find the project.
+If Pipelock is useful, please [star this repository](https://github.com/pipelab-org/pipelock). It helps others find the project.
 
 ---
 

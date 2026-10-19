@@ -4,7 +4,7 @@ Pipelock accepts security vulnerability reports through coordinated disclosure. 
 
 ## Reporting channel
 
-Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories/new). Public GitHub issues are out of scope. A vulnerability filed publicly is moved to a private advisory on receipt and the original issue is closed.
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/pipelab-org/pipelock/security/advisories/new). Public GitHub issues are out of scope. A vulnerability filed publicly is moved to a private advisory on receipt and the original issue is closed.
 
 The reporting channel is monitored by the project maintainer. Reports are acknowledged on the response SLA below from the time the report is complete.
 
