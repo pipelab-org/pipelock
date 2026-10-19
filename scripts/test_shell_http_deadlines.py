@@ -60,7 +60,8 @@ class ShellHTTPDeadlineTests(unittest.TestCase):
         commands = re.findall(
             r'"\$CI_RETRY" (curl [^\n]*?)\)"', source.replace("\\\n", "")
         )
-        self.assertEqual(len(commands), 3)
+        # npm supplies verified provenance; only crates.io and PyPI use curl.
+        self.assertEqual(len(commands), 2)
         for command in commands:
             with self.subTest(command=command), socket.socket() as listener:
                 listener.bind(("127.0.0.1", 0))

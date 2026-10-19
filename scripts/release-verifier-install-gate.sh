@@ -462,6 +462,7 @@ if [[ "$python_tag_commit" != "$python_source_commit" ]]; then
 fi
 
 require_command npm
+require_npm_attestations
 require_command curl
 
 if [[ ! "$ts_artifact_digest" =~ ^sha512-[A-Za-z0-9+/]+={0,2}$ ]]; then

@@ -24,6 +24,25 @@ verify_accepts_and_rejects() {
 	printf '  [ok] %s accepts candidate receipt and rejects payload/signature tampering\n' "$label"
 }
 
+require_npm_attestations() {
+	local npm_version
+	if ! npm_version="$(npm --version)"; then
+		printf 'release verifier install gate: could not read npm version\n' >&2
+		return 1
+	fi
+	# npm/cli v11.12.0 added audit --include-attestations (npm/cli#9049).
+	python3 - "$npm_version" <<'PY'
+import re
+import sys
+
+version = sys.argv[1]
+if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+    raise SystemExit(f"release verifier install gate: cannot parse npm version {version!r}")
+if tuple(map(int, version.split("."))) < (11, 12, 0):
+    raise SystemExit(f"release verifier install gate: npm {version} is too old; need npm >= 11.12.0 for verified attestation output; use a newer Node.js/npm toolchain")
+PY
+}
+
 verify_npm_provenance() {
 	python3 - "$@" <<'PY'
 import base64

@@ -1071,6 +1071,48 @@ func TestReleaseVerifierPublisherBindings(t *testing.T) {
 	}
 }
 
+func TestReleaseVerifierNPMAttestationToolchain(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	for _, tt := range []struct {
+		version string
+		exit    int
+		want    string
+	}{
+		{version: "10.99.0", want: "need npm >= 11.12.0"},
+		{version: "11.11.99", want: "need npm >= 11.12.0"},
+		{version: "11.12.0"},
+		{version: "11.12.1"},
+		{version: "11.19.1"},
+		{version: "12.0.0"},
+		{version: "", want: "cannot parse npm version"},
+		{version: "11.12", want: "cannot parse npm version"},
+		{version: "11.12.0-beta.1", want: "cannot parse npm version"},
+		{version: "11.12.0\n12.0.0", want: "cannot parse npm version"},
+		{version: "11.12.0", exit: 1, want: "could not read npm version"},
+	} {
+		t.Run(tt.version+"/"+strconv.Itoa(tt.exit), func(t *testing.T) {
+			cmd := exec.Command("bash", "-c", `
+set -euo pipefail
+source "$1"
+version="$2"
+version_exit="$3"
+npm() { printf '%s' "$version"; return "$version_exit"; }
+require_npm_attestations
+`, "npm-toolchain-test", "release-verifier-install-gate-lib.sh", tt.version, strconv.Itoa(tt.exit))
+			output, err := cmd.CombinedOutput()
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("supported npm rejected: %v\n%s", err, output)
+				}
+			} else if err == nil || !strings.Contains(string(output), tt.want) {
+				t.Fatalf("error = %v, output = %q, want %q", err, output, tt.want)
+			}
+		})
+	}
+}
+
 func TestReleaseVerifierNPMProvenanceBindings(t *testing.T) {
 	for _, repository := range []string{"luckyPipewrench/pipelock", "pipelab-org/pipelock"} {
 		t.Run(repository, func(t *testing.T) {
