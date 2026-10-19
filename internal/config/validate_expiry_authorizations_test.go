@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TestValidateExpiryAuthorizations pins the expiry-only validation that the
+// TestValidateExpiryAuthorizations pins the authorization validation that the
 // hot-reload path runs before admitting a reloaded config. Startup goes
 // through Validate, but direct Reload callers bypass Load, so this method is
 // the activation boundary for every temporary-expiry authorization on
@@ -60,22 +60,22 @@ func TestValidateExpiryAuthorizations(t *testing.T) {
 	}
 	withPathEntropyExclusion := func(expires string) *Config {
 		cfg := Defaults()
-		cfg.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{{Expires: expires}}
+		cfg.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{{Host: "api.vendor.example", PathPrefix: "/files/", Expires: expires}}
 		return cfg
 	}
 	withQueryEntropyParamExclusion := func(expires string) *Config {
 		cfg := Defaults()
-		cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{Expires: expires}}
+		cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/files", Param: "id", Expires: expires}}
 		return cfg
 	}
 	withContentEntropyWarnRoute := func(expires string) *Config {
-		cfg := Defaults()
-		cfg.RequestBodyScanning.ContentEntropyWarnRoutes = []RequestBodyEntropyWarnRoute{{Expires: expires}}
+		cfg := validEntropyWarnRouteConfig()
+		cfg.RequestBodyScanning.ContentEntropyWarnRoutes[0].Expires = expires
 		return cfg
 	}
 	withSigV4CredentialRoute := func(expires string) *Config {
-		cfg := Defaults()
-		cfg.RequestBodyScanning.SigV4CredentialRoutes = []RequestBodySigV4CredentialRoute{{Expires: expires}}
+		cfg := validSigV4CredentialRouteConfig()
+		cfg.RequestBodyScanning.SigV4CredentialRoutes[0].Expires = expires
 		return cfg
 	}
 

@@ -377,6 +377,9 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	// An expired containment grant is dropped from the effective set rather
 	// than refusing to start, so a lapsed entry can never take the proxy, and
 	// every contained agent's egress, down with it.
+	if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	if _, err := cfg.LapseExpiredContainmentGrants(time.Now()); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

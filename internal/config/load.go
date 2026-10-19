@@ -253,6 +253,9 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 			// file: drop it from the effective set before the policy hash is
 			// taken so it is never exposed, and keep it recorded for the
 			// runtime to report.
+			if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+				return nil, fmt.Errorf("invalid config: %w", err)
+			}
 			if _, err := cfg.LapseExpiredContainmentGrants(time.Now()); err != nil {
 				return nil, fmt.Errorf("invalid config: %w", err)
 			}

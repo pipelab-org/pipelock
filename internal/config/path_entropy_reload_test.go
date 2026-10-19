@@ -6,7 +6,6 @@ package config
 import (
 	"strings"
 	"testing"
-	"time"
 )
 
 // A reload that adds an exemption reduces detection coverage, and an operator
@@ -98,7 +97,7 @@ func TestPathEntropyExclusionsReloadWarnings(t *testing.T) {
 				PathPrefix: "/document/d/",
 				Reason:     "a corrected explanation",
 				Owner:      "someone else",
-				Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon - 24*time.Hour),
+				Expires:    pathEntropyReloadEntry.Expires,
 			}},
 			wantNil: true,
 			why:     "strict mode refuses downgrades, so a comment edit must not read as one",

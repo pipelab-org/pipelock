@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -179,9 +178,14 @@ func validateEntropyHostExclusions(field string, entries []EntropyHostExclusion)
 	if err := validateHostnamePatternList(field, hosts); err != nil {
 		return err
 	}
+	seen := make(map[string]int, len(entries))
 	for i := range entries {
 		entry := &entries[i]
 		entry.Host = hosts[i]
+		if prior, ok := seen[entry.Host]; ok {
+			return fmt.Errorf("%s[%d] duplicates %s[%d] for host %q", field, i, field, prior, entry.Host)
+		}
+		seen[entry.Host] = i
 		if !entry.temporary() {
 			continue
 		}
@@ -192,34 +196,10 @@ func validateEntropyHostExclusions(field string, entries []EntropyHostExclusion)
 		if entry.Expires == "" {
 			return fmt.Errorf("%s.expires is required when an exclusion is written as a mapping", label)
 		}
-		if err := validateTemporaryExpiryDate(label+".expires", entry.Expires, MaxContentEntropyHostExclusionHorizon); err != nil {
+		if err := validateLapsingExpiryDate(label+".expires", entry.Expires, MaxContentEntropyHostExclusionHorizon); err != nil {
 			return err
 		}
-		for _, text := range []struct {
-			name  string
-			value string
-			max   int
-		}{{"reason", entry.Reason, 200}, {"owner", entry.Owner, 100}} {
-			if len(text.value) > text.max {
-				return fmt.Errorf("%s.%s must be %d characters or fewer", label, text.name, text.max)
-			}
-			if strings.IndexFunc(text.value, unicode.IsControl) >= 0 {
-				return fmt.Errorf("%s.%s must not contain control characters", label, text.name)
-			}
-		}
-	}
-	return nil
-}
-
-// validateEntropyExclusionExpiry re-checks expiry only. Hot reload runs it
-// without the full validator, as it does for the other temporary exceptions.
-func validateEntropyExclusionExpiry(field string, entries []EntropyHostExclusion) error {
-	for i, entry := range entries {
-		if !entry.temporary() {
-			continue
-		}
-		label := fmt.Sprintf("%s[%d].expires", field, i)
-		if err := validateTemporaryExpiryDate(label, strings.TrimSpace(entry.Expires), MaxContentEntropyHostExclusionHorizon); err != nil {
+		if err := validateScannerExceptionMetadata(label, entry.Reason, entry.Owner); err != nil {
 			return err
 		}
 	}

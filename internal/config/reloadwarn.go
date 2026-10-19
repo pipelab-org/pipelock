@@ -984,7 +984,7 @@ func contentEntropyReloadConsumed(c *Config) bool {
 // reason on reload does not read as a policy downgrade, which matches how the
 // canonical policy hash treats the same fields.
 func pathEntropyExclusionTuple(entry PathEntropyExclusion) string {
-	return entry.Scheme + "://" + entry.Host + entry.PathPrefix
+	return entry.Scheme + "://" + entry.Host + entry.PathPrefix + scannerExceptionExpiryIdentity(entry.Expires)
 }
 
 func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
@@ -1056,7 +1056,7 @@ func queryEntropyParamTuple(entry QueryEntropyParamExclusion) string {
 	if scheme == "" {
 		scheme = QueryEntropyParamDefaultScheme
 	}
-	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param)
+	return fmt.Sprintf("%s://%s%s?%s", scheme, entry.Host, entry.Path, entry.Param) + scannerExceptionExpiryIdentity(entry.Expires)
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
@@ -1859,4 +1859,12 @@ func appendMCPAckReloadWarnings(warnings *[]ReloadWarning, old, updated []MCPAck
 				"acknowledgment removed for "+key+": its Credential Request Directive finding follows mcp_tool_scanning.action again"))
 		}
 	}
+}
+
+// Expiry changes the duration of effective enforcement. Metadata does not.
+func scannerExceptionExpiryIdentity(expires string) string {
+	if expires == "" {
+		return ""
+	}
+	return " expires=" + expires
 }

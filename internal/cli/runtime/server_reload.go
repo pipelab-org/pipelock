@@ -68,6 +68,9 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	if newCfg == nil {
 		return errors.New("rejected: invalid config reload: config is nil")
 	}
+	// Candidate normalization and lapse must never mutate an active or caller-
+	// owned config, including when the candidate is rejected later.
+	newCfg = newCfg.Clone()
 	if _, validationErr := newCfg.DestinationGrantSet(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -77,6 +80,9 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
+	}
+	if _, validationErr := newCfg.LapseExpiredScannerExceptions(time.Now()); validationErr != nil {
+		return fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 	}
 	if validationErr := newCfg.ValidateReservedDoWLimits(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
