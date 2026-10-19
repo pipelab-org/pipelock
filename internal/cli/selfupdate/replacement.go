@@ -124,10 +124,10 @@ func replaceRunningBinary(candidate, target string, ops replacementOps) error {
 	}
 	// Refuse to install if the source changed while it was being prepared.
 	if got, hashErr := ops.digest(aside); hashErr != nil || got != original {
-		return restorePriorImage(target, aside, original, ops, errors.New("saved original changed during replacement"))
+		return restorePriorImage(target, aside, original, ops, errors.New("saved original changed during replacement"), false)
 	}
 	if err := ops.move(candidate, target); err != nil {
-		return restorePriorImage(target, aside, original, ops, err)
+		return restorePriorImage(target, aside, original, ops, err, false)
 	}
 	// The old image is still mapped by this process. Leave it for next startup.
 	return nil
@@ -147,14 +147,16 @@ func originalState(target, original string, ops replacementOps) string {
 	}
 }
 
-func restorePriorImage(target, aside, original string, ops replacementOps, installErr error) error {
+func restorePriorImage(target, aside, original string, ops replacementOps, installErr error, retainRecovery bool) error {
 	if err := ops.move(aside, target); err != nil {
 		return fmt.Errorf("replacement failed; restore failed (%s); saved image at %q (%s): %w",
 			originalState(target, original, ops), aside, originalState(aside, original, ops), errors.Join(installErr, err))
 	}
-	// Keep the record if cleanup fails; next startup can finish without touching
-	// the rollback backup. Cleanup failure must not turn restoration into data loss.
-	_ = cleanupRecovery(target, ops)
+	// A failed rollback still needs the earlier update's recovery image and
+	// record. Installation can clean its own new record after restoration.
+	if !retainRecovery {
+		_ = cleanupRecovery(target, ops)
+	}
 	if state := originalState(target, original, ops); state != "original unchanged" {
 		return fmt.Errorf("replacement failed; saved image restored (%s): %w", state, installErr)
 	}
@@ -350,23 +352,23 @@ func rollbackRetained(candidate, target string, ops replacementOps) error {
 		return errors.New("incomplete recovery state; original unchanged; restart to retry cleanup")
 	}
 	restored, err := ops.digest(candidate)
+	// A rollback without retained state records the restored image as next.
+	// A matching installed image is already restored; preserve recovery copies.
+	if err == nil && restored == state.current {
+		return nil
+	}
 	if err != nil || restored != state.old {
 		return fmt.Errorf("backup differs from recorded prior image; original unchanged: %w", errors.Join(err, errors.New("rollback requires the recorded original")))
-	}
-	// Already restored, including a manual copy from the documented backup.
-	// Keep the existing recovery images for cleanup without growing state.
-	if state.current == state.old {
-		return nil
 	}
 	aside := filepath.Join(target+replacementSuffix, rollbackImageName)
 	if err := ops.move(target, aside); err != nil {
 		return fmt.Errorf("moving installed image aside (%s): %w", originalState(target, state.next, ops), err)
 	}
 	if got, err := ops.digest(aside); err != nil || got != state.next {
-		return restorePriorImage(target, aside, state.next, ops, errors.New("saved installed image changed during rollback"))
+		return restorePriorImage(target, aside, state.next, ops, errors.New("saved installed image changed during rollback"), true)
 	}
 	if err := ops.move(candidate, target); err != nil {
-		return restorePriorImage(target, aside, state.next, ops, err)
+		return restorePriorImage(target, aside, state.next, ops, err, true)
 	}
 	return nil
 }

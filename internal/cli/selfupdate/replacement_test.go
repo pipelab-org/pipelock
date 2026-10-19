@@ -586,12 +586,93 @@ func TestReplacementRetainedRollback(t *testing.T) {
 	}
 }
 
+func TestReplacementFailedRollbackPreservesRecovery(t *testing.T) {
+	for _, phase := range []string{"candidate move", "saved image digest"} {
+		t.Run(phase, func(t *testing.T) {
+			target, candidate := replacementFixture(t)
+			writeReplacementFixture(t, target+backupSuffix, originalBytes)
+			if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+				t.Fatal(err)
+			}
+			writeReplacementFixture(t, candidate, originalBytes)
+			dir := target + replacementSuffix
+			record, err := os.ReadFile(filepath.Clean(filepath.Join(dir, replacementRecordName)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			injected := errors.New("injected rollback failure")
+			ops := replacementOps{move: simulatedMove}
+			if phase == "candidate move" {
+				ops.move = func(src, dst string) error {
+					if src == candidate {
+						return injected
+					}
+					return simulatedMove(src, dst)
+				}
+			} else {
+				ops.digest = func(path string) (string, error) {
+					if path == filepath.Join(dir, rollbackImageName) {
+						if _, err := os.Stat(path); err == nil {
+							return "", injected
+						}
+					}
+					return binaryDigest(path)
+				}
+			}
+			if err := rollbackRetained(candidate, target, ops); err == nil || !strings.Contains(err.Error(), "original restored") {
+				t.Fatalf("failed rollback = %v, want restored installed image", err)
+			}
+			assertReplacementBytes(t, target, replacementBytes)
+			assertReplacementBytes(t, target+backupSuffix, originalBytes)
+			assertReplacementBytes(t, filepath.Join(dir, priorImageName), originalBytes)
+			assertReplacementBytes(t, filepath.Join(dir, replacementRecordName), string(record))
+			if err := rollbackRetained(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+				t.Fatalf("retry rollback: %v", err)
+			}
+			assertReplacementBytes(t, target, originalBytes)
+			assertReplacementBytes(t, filepath.Join(dir, priorImageName), originalBytes)
+			assertReplacementBytes(t, filepath.Join(dir, rollbackImageName), replacementBytes)
+		})
+	}
+}
+
 func TestReplacementRollbackWithoutRecovery(t *testing.T) {
 	target, candidate := replacementFixture(t)
 	if err := rollbackRetained(candidate, target, replacementOps{move: simulatedMove}); err != nil {
 		t.Fatal(err)
 	}
 	assertReplacementBytes(t, target, replacementBytes)
+	// The first rollback creates its own recovery record, with the restored
+	// image recorded as next rather than old. Retrying must leave it intact.
+	for _, tt := range []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "already installed", data: replacementBytes},
+		{name: "different backup", data: changedBytes, want: "backup differs"},
+		{name: "missing backup", want: "backup differs"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			retryCandidate := filepath.Join(t.TempDir(), "candidate.exe")
+			if tt.data != "" {
+				writeReplacementFixture(t, retryCandidate, tt.data)
+			}
+			err := rollbackRetained(retryCandidate, target, replacementOps{move: func(string, string) error {
+				t.Fatal("rollback retry must not move recovery images")
+				return nil
+			}})
+			if tt.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("rollback = %v, want %q", err, tt.want)
+			}
+			assertReplacementBytes(t, target, replacementBytes)
+			assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)
+		})
+	}
 }
 
 func TestReplacementRollbackAfterManualRestore(t *testing.T) {
