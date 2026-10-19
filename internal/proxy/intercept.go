@@ -2095,6 +2095,17 @@ func newInterceptHandler(
 		// adjustment during the request cannot distort the wait.
 		base := time.Now()
 		var wroteAt, connAt atomic.Int64
+		// Match net/http/httputil.ReverseProxy (Go issue 16036): a known
+		// zero-length body is absent. Do this after scanning and signing,
+		// which can restore a non-nil empty reader. Otherwise HTTP/2 sends
+		// an empty DATA frame instead of ending the stream on HEADERS.
+		if r.ContentLength == 0 {
+			if r.Body != nil {
+				_ = r.Body.Close()
+			}
+			r.Body = nil
+			r.GetBody = nil
+		}
 		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
