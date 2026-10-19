@@ -46,13 +46,17 @@ func ReloadCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				_, _ = fmt.Fprintf(out, "config %s: instance=%s generation=%d\nsource candidate=%s last-accepted=%s\ncanonical policy=%s\npending restart=%t fields=%s\nreload available=%t watcher=%s\n",
+				if _, err := fmt.Fprintf(out, "config %s: instance=%s generation=%d\nsource candidate=%s last-accepted=%s\ncanonical policy=%s\npending restart=%t fields=%s\nreload available=%t watcher=%s\n",
 					result.Verdict, termsafe.Escape(result.InstanceID), result.Generation,
 					result.CandidateSourceHash, result.AcceptedSourceHash, result.CanonicalPolicyHash,
 					result.PendingRestart, termsafe.Escape(strings.Join(result.RestartRequiredFields, ", ")),
-					result.ReloadAvailable, termsafe.Escape(result.WatcherState))
+					result.ReloadAvailable, termsafe.Escape(result.WatcherState)); err != nil {
+					return err
+				}
 				if result.Reason != "" {
-					_, _ = fmt.Fprintln(out, termsafe.Escape(result.Reason))
+					if _, err := fmt.Fprintln(out, termsafe.Escape(result.Reason)); err != nil {
+						return err
+					}
 				}
 			}
 			if result.PendingRestart || (result.Verdict != proxy.ReloadAccepted && result.Verdict != proxy.ReloadUnchanged) {

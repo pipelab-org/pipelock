@@ -6,6 +6,7 @@ package session
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -135,17 +136,41 @@ func TestReloadCommandOutputAndFailure(t *testing.T) {
 	if err := cmd.Execute(); err != nil || !strings.Contains(buf.String(), "generation=1") || !strings.Contains(buf.String(), out.Reason) {
 		t.Fatalf("text output=%q err=%v", buf.String(), err)
 	}
-	cmd = ReloadCmd()
-	cmd.SetOut(errWriter{})
-	cmd.SetArgs([]string{"--api-url", srv.URL, "--api-token", testToken, "--json"})
-	if err := cmd.Execute(); err == nil {
-		t.Fatal("JSON output error ignored")
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		writer io.Writer
+	}{
+		{"JSON", []string{"--json"}, errWriter{}},
+		{"text status", nil, errWriter{}},
+		{"text reason", nil, &reloadReasonErrorWriter{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := ReloadCmd()
+			cmd.SetOut(tc.writer)
+			cmd.SetArgs(append([]string{"--api-url", srv.URL, "--api-token", testToken}, tc.args...))
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "boom") {
+				t.Fatalf("output error not propagated: %v", err)
+			}
+		})
 	}
 	srv.Close()
 	client := newClient(endpoint{URL: srv.URL, Token: testToken})
 	if _, err := client.ConfigReload(t.Context(), true); err == nil {
 		t.Fatal("unavailable daemon reported success")
 	}
+}
+
+type reloadReasonErrorWriter struct {
+	wroteStatus bool
+}
+
+func (w *reloadReasonErrorWriter) Write(p []byte) (int, error) {
+	if w.wroteStatus {
+		return errWriter{}.Write(p)
+	}
+	w.wroteStatus = true
+	return len(p), nil
 }
 
 func TestReloadMalformedRequiredWireFields(t *testing.T) {
