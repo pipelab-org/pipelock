@@ -496,7 +496,7 @@ func ReloadPanicHandler(r any, sentryClient *plsentry.Client, logger *audit.Logg
 	if r == nil {
 		return
 	}
-	reloadErr := fmt.Errorf("scanner construction panic during config reload: %v", r)
+	reloadErr := fmt.Errorf("panic during config reload: %v", r)
 	if sentryClient != nil {
 		sentryClient.CaptureError(reloadErr)
 	}

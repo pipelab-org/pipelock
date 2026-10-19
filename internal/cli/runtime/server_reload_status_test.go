@@ -331,3 +331,49 @@ func TestReloadOutcomeUnavailableSource(t *testing.T) {
 		t.Fatalf("unavailable: %+v", out)
 	}
 }
+
+func TestSameRuntimeConfigNil(t *testing.T) {
+	cfg := config.Defaults()
+	for _, tc := range []struct {
+		name          string
+		before, after *config.Config
+		want          bool
+	}{
+		{"both absent", nil, nil, true},
+		{"before absent", nil, cfg, false},
+		{"after absent", cfg, nil, false},
+		{"present", cfg, cfg.Clone(), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameRuntimeConfig(tc.before, tc.after); got != tc.want {
+				t.Fatalf("sameRuntimeConfig = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReloadOutcomeAbsentPriorConfiguration(t *testing.T) {
+	s := reloadStatusServer(t)
+	s.finishReloadLocked(&reloadAttempt{}, nil)
+	out := s.ReloadStatus()
+	if out.Generation != 2 || out.Verdict != proxy.ReloadAccepted || out.CanonicalPolicyHash != s.proxy.CurrentConfig().CanonicalPolicyHash() {
+		t.Fatalf("first publication outcome: %+v", out)
+	}
+}
+
+func TestReloadWatcherTerminalState(t *testing.T) {
+	for _, state := range []string{"not_started", "failed", "stopped"} {
+		t.Run(state, func(t *testing.T) {
+			s := reloadStatusServer(t)
+			s.setReloadWatcherState(state)
+			s.setReloadWatcherState("watching")
+			want := state
+			if state == "not_started" {
+				want = "watching"
+			}
+			if got := s.ReloadStatus().WatcherState; got != want {
+				t.Fatalf("state=%q, want %q", got, want)
+			}
+		})
+	}
+}

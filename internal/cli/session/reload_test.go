@@ -5,6 +5,7 @@ package session
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
@@ -204,5 +206,28 @@ func TestReloadMalformedRequiredWireFields(t *testing.T) {
 				t.Fatalf("accepted malformed field %s", tc.field)
 			}
 		})
+	}
+}
+
+func TestConfigReloadUsesCallerCancellation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(validReloadTestOutcome())
+	}))
+	defer srv.Close()
+	transport := &http.Client{Timeout: time.Nanosecond}
+	client := newClientWithHTTP(endpoint{URL: srv.URL, Token: testToken}, transport)
+	if _, err := client.ConfigReload(t.Context(), false); err != nil {
+		t.Fatalf("reload used short status timeout: %v", err)
+	}
+	if transport.Timeout != time.Nanosecond {
+		t.Fatal("reload changed shared client timeout")
+	}
+	if _, err := client.ConfigReload(t.Context(), true); err == nil {
+		t.Fatal("status lost short client timeout")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := client.ConfigReload(ctx, false); err == nil {
+		t.Fatal("reload ignored caller cancellation")
 	}
 }

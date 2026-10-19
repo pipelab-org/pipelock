@@ -45,6 +45,9 @@ func TestReceiptGroupRestartReadyAfterSharedVerification(t *testing.T) {
 	if got := receiveNotify(t, messages); got != "READY=1" {
 		t.Fatalf("initial notification=%q", got)
 	}
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "STATUS=config accepted instance=") || !strings.Contains(got, "generation=1") {
+		t.Fatalf("initial status=%q", got)
+	}
 	assertListening := func(stderr *syncBuffer) {
 		t.Helper()
 		for _, line := range strings.Split(stderr.String(), "\n") {

@@ -114,6 +114,10 @@
         },
         {
           "kind": "command",
+          "value": "pipelock reload"
+        },
+        {
+          "kind": "command",
           "value": "pipelock preflight"
         },
         {

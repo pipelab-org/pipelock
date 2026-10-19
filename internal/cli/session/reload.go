@@ -75,9 +75,22 @@ func (c *Client) ConfigReload(ctx context.Context, status bool) (proxy.ReloadOut
 	if status {
 		method, path = http.MethodGet, "/api/v1/config/status"
 	}
+	// Synchronous activation can wait for a serialized durable transaction.
+	// Use the caller's context for cancellation instead of the short timeout
+	// intended for status queries. Copy both clients to avoid changing siblings.
+	requestClient := c
+	if !status {
+		if transport, ok := c.http.(*http.Client); ok {
+			httpCopy := *transport
+			httpCopy.Timeout = 0
+			clientCopy := *c
+			clientCopy.http = &httpCopy
+			requestClient = &clientCopy
+		}
+	}
 	var result proxy.ReloadOutcome
 	var raw json.RawMessage
-	if err := c.do(ctx, method, c.base+path, nil, &raw); err != nil {
+	if err := requestClient.do(ctx, method, c.base+path, nil, &raw); err != nil {
 		return result, err
 	}
 	var fields map[string]json.RawMessage

@@ -69,6 +69,9 @@ func (s *Server) reloadSnapshotLocked() proxy.ReloadOutcome {
 func (s *Server) setReloadWatcherState(state string) {
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
+	if state == "watching" && s.reloadOutcome.WatcherState != "not_started" {
+		return
+	}
 	s.reloadOutcome.WatcherState = state
 }
 
@@ -173,6 +176,9 @@ func (s *Server) finishReloadLocked(attempt *reloadAttempt, err error) {
 }
 
 func sameRuntimeConfig(before, after *config.Config) bool {
+	if before == nil || after == nil {
+		return before == after
+	}
 	left, right := reflect.ValueOf(before).Elem(), reflect.ValueOf(after).Elem()
 	for i := range left.NumField() {
 		if left.Type().Field(i).IsExported() && !reflect.DeepEqual(left.Field(i).Interface(), right.Field(i).Interface()) {
