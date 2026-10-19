@@ -3,8 +3,8 @@
 Update Pipelock to the latest verified release (alias: `pipelock upgrade`).
 
 `pipelock update` checks GitHub Releases for a newer build, downloads the
-archive for the current OS/architecture, verifies it, and atomically replaces
-the running binary in place. The previous binary is saved next to the new one
+archive for the current OS/architecture, verifies it, and replaces
+the running binary in place using the platform procedure below. The previous binary is saved next to the new one
 as `<binary>.bak` so a bad update can be rolled back.
 
 The command is **fail-closed**: any failure in the verification chain aborts
@@ -72,7 +72,10 @@ installed binary unchanged**:
    `..` traversal segment or an absolute path is rejected (zip-slip /
    tar-traversal protection).
 6. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
-   prior backup), then install the verified temp binary.
+   prior backup), then install the verified temp binary. Once the backup is
+   copied, it contains the binary from this attempt even if replacement fails;
+   the older backup is no longer retained. Verification failures, a busy update
+   lock, and retained recovery state are rejected before this backup rotation.
    On Linux and macOS, renaming over a running executable is allowed, and a
    failed rename leaves the original untouched.
 
@@ -139,8 +142,8 @@ It probes the directory because that is what the atomic replace actually
 requires; a writable binary in a non-writable directory could not be replaced
 anyway. If Pipelock is installed to a root-owned location (for example
 `/usr/local/bin`), the update aborts early with a message to re-run with
-appropriate privileges (for example via `sudo`). The update is never partially
-applied.
+appropriate privileges (for example via `sudo`). This permission check happens
+before installation starts.
 
 ## Unsupported platforms
 

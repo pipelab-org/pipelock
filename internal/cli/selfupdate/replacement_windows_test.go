@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sys/windows"
 
 	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const windowsHelperMode = "PIPELOCK_TEST_SELFUPDATE_MODE"
@@ -353,7 +354,7 @@ func TestWindowsRetainedRecoveryRollback(t *testing.T) {
 	}
 	hold := func() func() {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(30*time.Second))
 		child := exec.CommandContext(ctx, target, "-test.run=^TestWindowsReplacementChild$") // #nosec G204 -- test-owned executable
 		child.Env = append(os.Environ(), windowsHelperMode+"=hold image")
 		input, err := child.StdinPipe()
