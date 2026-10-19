@@ -17,6 +17,11 @@ const ResponseScanningMCPDisabledWarning = "warning: response_scanning.enabled=f
 // ResolveAndReportConfig applies runtime-mode config resolution and immediately
 // emits any operator-facing notices for fallbacks or auto-enabled MCP controls.
 func ResolveAndReportConfig(cfg *config.Config, opts config.RuntimeResolveOpts, w io.Writer, modeLabel string) (*config.Config, config.ResolveRuntimeInfo) {
+	if w != nil {
+		for _, warning := range cfg.MCPCompatibilityWarnings() {
+			_, _ = fmt.Fprintf(w, "pipelock: warning: %s\n", warning.Message)
+		}
+	}
 	resolved, info := cfg.ResolveRuntime(opts)
 	EmitResolveInfoLogs(w, info, modeLabel)
 	return resolved, info

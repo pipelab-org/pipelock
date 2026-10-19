@@ -199,10 +199,10 @@ func (c *Config) EffectiveKillSwitchAPITokenConfigured() bool {
 
 // applyMCPAutoEnable flips MCP scanning sections on when the operator did
 // not explicitly configure them. A section counts as unconfigured when
-// Enabled is false AND Action is empty (ApplyDefaults sets Action only
-// when Enabled is true, so an empty Action with Enabled false indicates
-// an unset YAML section rather than an explicit disable). Tool policy also
-// requires len(Rules)==0 for the same reason. Each auto-enable branch
+// Enabled is false AND Action is empty. YAML and programmatic
+// configs use the same convention: false plus
+// a nonempty action disables, while the zero value permits defaults.
+// Tool policy also requires len(Rules)==0. Each auto-enable branch
 // records its decision on info so callers can print operator-facing
 // log messages without replicating the predicate.
 func applyMCPAutoEnable(c *Config, defaultToolPolicyRules func() []ToolPolicyRule, info *ResolveRuntimeInfo) {
@@ -224,8 +224,8 @@ func applyMCPAutoEnable(c *Config, defaultToolPolicyRules func() []ToolPolicyRul
 
 // applyToolScanningAutoEnable flips MCP tool-definition scanning on when the
 // operator left it unconfigured (Enabled false and Action empty - see
-// applyMCPAutoEnable's doc comment for why that combination means unset
-// rather than an explicit disable). Split out of applyMCPAutoEnable so
+// applyMCPAutoEnable's doc comment for the load-time normalization and
+// programmatic config convention). Split out of applyMCPAutoEnable so
 // RuntimeMCPScan can auto-enable tool scanning without also auto-enabling the
 // request-side sections (input scanning, tool policy) it has no request path
 // to enforce.

@@ -684,8 +684,8 @@ func TestDoctorChecksCoverConfiguredBranches(t *testing.T) {
 
 	t.Run("mcp wrapper and provenance report configured warnings", func(t *testing.T) {
 		cfg := config.Defaults()
-		if check := checkDoctorMCPWrapperFeatures(cfg); check.Status != doctorStatusInfo {
-			t.Fatalf("disabled wrapper check = %+v, want info", check)
+		if check := checkDoctorMCPWrapperFeatures(cfg); check.Status != doctorStatusWarn || !check.Configured {
+			t.Fatalf("default wrapper check = %+v, want configured warning", check)
 		}
 		cfg.MCPInputScanning.Enabled = true
 		cfg.MCPToolScanning.Enabled = true

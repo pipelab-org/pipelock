@@ -69,6 +69,7 @@ func normalizeConductor(c *Conductor) {
 // distinguish "field omitted" (should default to true, fail-closed) from "field
 // explicitly set to false" (user intent). We unmarshal into a raw map to detect
 // which fields are actually present with a non-nil value, then default the rest.
+// It also records ambiguous legacy MCP settings without changing their defaults.
 func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
@@ -90,6 +91,22 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 			*target = true
 		}
 	}
+
+	// False plus an empty action is the historical unset representation,
+	// including in generated YAML. Preserve its runtime defaults and warn
+	// rather than silently interpreting existing files as disables.
+	warnAmbiguousMCPDisable := func(name string, enabled bool, action string, configured bool) {
+		section, _ := raw[name].(map[string]interface{})
+		if value, present := section["enabled"]; present && value != nil && !enabled && action == "" && !configured {
+			cfg.mcpCompatibilityWarnings = append(cfg.mcpCompatibilityWarnings, Warning{
+				Field:   name,
+				Message: fmt.Sprintf("%s: enabled: false with an empty action is ambiguous; retaining runtime defaults in MCP modes. To disable this section intentionally, set \"action: warn\" under %s, replacing any existing action line (a second action key is a duplicate-key error), aligned with enabled (or inside the same inline mapping), and restart. Remove enabled: false to keep defaults without this warning.", name, name),
+			})
+		}
+	}
+	warnAmbiguousMCPDisable("mcp_input_scanning", cfg.MCPInputScanning.Enabled, cfg.MCPInputScanning.Action, false)
+	warnAmbiguousMCPDisable("mcp_tool_scanning", cfg.MCPToolScanning.Enabled, cfg.MCPToolScanning.Action, false)
+	warnAmbiguousMCPDisable("mcp_tool_policy", cfg.MCPToolPolicy.Enabled, cfg.MCPToolPolicy.Action, len(cfg.MCPToolPolicy.Rules) != 0)
 
 	dlp, _ := raw["dlp"].(map[string]interface{})
 	setBoolDefault(dlp, "scan_env", &cfg.DLP.ScanEnv)
