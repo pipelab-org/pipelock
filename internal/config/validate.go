@@ -2149,10 +2149,6 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 			}
 		}
 
-		if err := validateScannerExceptionMetadata(field, entry.Reason, entry.Owner); err != nil {
-			return err
-		}
-
 		key := scheme + "|" + host + "|" + prefix
 		if _, dup := seen[key]; dup {
 			return fmt.Errorf("%s duplicates an earlier entry for %s%s", field, host, prefix)
@@ -2201,10 +2197,6 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 			if err := validateLapsingExpiryDate(field+".expires", expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
 				return err
 			}
-		}
-
-		if err := validateScannerExceptionMetadata(field, entry.Reason, entry.Owner); err != nil {
-			return err
 		}
 
 		entry.Scheme = scheme

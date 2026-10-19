@@ -115,16 +115,12 @@ func TestExpiredScannerExceptionsValidateBeforeLapse(t *testing.T) {
 		{"path malformed date", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].Expires = "2026-02-30" }},
 		{"path invalid host", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].Host = "*.com" }},
 		{"path invalid prefix", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].PathPrefix = "/" }},
-		{"path invalid metadata", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].Owner = "bad\aowner" }},
 		{"path duplicate", func(c *Config) {
 			c.FetchProxy.Monitoring.PathEntropyExclusions = append(c.FetchProxy.Monitoring.PathEntropyExclusions, c.FetchProxy.Monitoring.PathEntropyExclusions[0])
 		}},
 		{"query invalid host", func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Host = "*.vendor.example" }},
 		{"query invalid path", func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Path = "/../files" }},
 		{"query invalid parameter", func(c *Config) { c.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Param = "*" }},
-		{"query invalid metadata", func(c *Config) {
-			c.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Reason = strings.Repeat("x", 201)
-		}},
 		{"query duplicate", func(c *Config) {
 			c.FetchProxy.Monitoring.QueryEntropyParamExclusions = append(c.FetchProxy.Monitoring.QueryEntropyParamExclusions, c.FetchProxy.Monitoring.QueryEntropyParamExclusions[0])
 		}},
@@ -139,17 +135,11 @@ func TestExpiredScannerExceptionsValidateBeforeLapse(t *testing.T) {
 		}},
 		{"body mapping invalid host", func(c *Config) { c.RequestBodyScanning.ContentEntropyExclusions[0].Host = "*.com" }},
 		{"body mapping invalid metadata", func(c *Config) { c.RequestBodyScanning.ContentEntropyExclusions[0].Reason = "bad\areason" }},
-		{"body mapping duplicate", func(c *Config) {
-			c.RequestBodyScanning.ContentEntropyExclusions = append(c.RequestBodyScanning.ContentEntropyExclusions, c.RequestBodyScanning.ContentEntropyExclusions[0])
-		}},
 		{"websocket mapping invalid host", func(c *Config) { c.WebSocketProxy.ContentEntropyExclusions[0].Host = "*.com" }},
 		{"websocket mapping invalid metadata", func(c *Config) { c.WebSocketProxy.ContentEntropyExclusions[0].Owner = "bad\aowner" }},
 		{"websocket mapping missing expiry", func(c *Config) {
 			c.WebSocketProxy.ContentEntropyExclusions[0].Expires = ""
 			c.WebSocketProxy.ContentEntropyExclusions[0].mapped = true
-		}},
-		{"websocket mapping duplicate", func(c *Config) {
-			c.WebSocketProxy.ContentEntropyExclusions = append(c.WebSocketProxy.ContentEntropyExclusions, c.WebSocketProxy.ContentEntropyExclusions[0])
 		}},
 		{"sigv4 invalid parent", func(c *Config) {
 			c.RequestBodyScanning.Enabled = false
@@ -398,6 +388,59 @@ func TestScannerLapsePreservesOtherExpiryRefusals(t *testing.T) {
 			}
 			if err := cfg.ValidateExpiryAuthorizations(); err == nil || !strings.Contains(err.Error(), "expired") {
 				t.Fatalf("unrelated expired authorization was accepted: %v", err)
+			}
+		})
+	}
+}
+
+// TestScannerExceptionsKeepPreviouslyAcceptedShapes pins the pre-lapse
+// contract: lapsing expired entries must not add refusals for declarations the
+// loader already accepted (repeated host mappings, free-form path/query
+// governance text).
+func TestScannerExceptionsKeepPreviouslyAcceptedShapes(t *testing.T) {
+	future := todayUTC().AddDate(0, 0, 1).Format(time.DateOnly)
+	long := strings.Repeat("r", 300)
+	tests := []struct {
+		name  string
+		apply func(cfg *Config)
+	}{
+		{"duplicate body host mapping", func(cfg *Config) {
+			cfg.RequestBodyScanning.ContentEntropyExclusions = []EntropyHostExclusion{
+				{Host: "dup.vendor.example", Expires: future},
+				{Host: "dup.vendor.example", Expires: future},
+			}
+		}},
+		{"duplicate websocket host mapping", func(cfg *Config) {
+			cfg.WebSocketProxy.ContentEntropyExclusions = []EntropyHostExclusion{
+				{Host: "dup.vendor.example", Expires: future},
+				{Host: "dup.vendor.example", Expires: future},
+			}
+		}},
+		{"plain and mapped body host", func(cfg *Config) {
+			cfg.RequestBodyScanning.ContentEntropyExclusions = []EntropyHostExclusion{
+				{Host: "dup.vendor.example"},
+				{Host: "dup.vendor.example", Expires: future},
+			}
+		}},
+		{"long path metadata", func(cfg *Config) {
+			cfg.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{{Host: "a.vendor.example", PathPrefix: "/files/", Reason: long, Owner: long, Expires: future}}
+		}},
+		{"control path metadata", func(cfg *Config) {
+			cfg.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{{Host: "a.vendor.example", PathPrefix: "/files/", Reason: "line\none", Owner: "o\twner"}}
+		}},
+		{"long query metadata", func(cfg *Config) {
+			cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{Host: "a.vendor.example", Path: "/files", Param: "id", Reason: long, Owner: "x\x00y", Expires: future}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := scannerExceptionConfig()
+			tt.apply(cfg)
+			if err := cfg.Clone().validateScannerExceptions(); err != nil {
+				t.Fatalf("previously accepted declaration refused: %v", err)
+			}
+			if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+				t.Fatalf("lapse refused previously accepted declaration: %v", err)
 			}
 		})
 	}

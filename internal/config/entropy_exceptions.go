@@ -178,14 +178,9 @@ func validateEntropyHostExclusions(field string, entries []EntropyHostExclusion)
 	if err := validateHostnamePatternList(field, hosts); err != nil {
 		return err
 	}
-	seen := make(map[string]int, len(entries))
 	for i := range entries {
 		entry := &entries[i]
 		entry.Host = hosts[i]
-		if prior, ok := seen[entry.Host]; ok {
-			return fmt.Errorf("%s[%d] duplicates %s[%d] for host %q", field, i, field, prior, entry.Host)
-		}
-		seen[entry.Host] = i
 		if !entry.temporary() {
 			continue
 		}
