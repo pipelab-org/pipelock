@@ -6,15 +6,9 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"fmt"
 	"io"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// Record decrypted upstream bytes without changing HTTP/2 framing or handling.
+// Record upstream bytes without changing HTTP/2 framing or handling.
 type interceptFrameConn struct {
 	net.Conn
 	mu  sync.Mutex
@@ -46,17 +40,10 @@ func (c *interceptFrameConn) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (c *interceptFrameConn) ConnectionState() tls.ConnectionState {
-	return c.Conn.(*tls.Conn).ConnectionState()
-}
-
-func (c *interceptFrameConn) HandshakeContext(ctx context.Context) error {
-	return c.Conn.(*tls.Conn).HandshakeContext(ctx)
-}
-
-// interceptFrameListener records the one accepted TLS connection. net/http
-// serves HTTP/2 on any connection that can report its handshake, so the test
-// does not call the deprecated HTTP/2 ServeConn entry point.
+// interceptFrameListener records the one accepted connection. Go 1.26 attaches
+// TLS HTTP/2 only to a concrete *tls.Conn, so a wrapper cannot record decrypted
+// bytes and stay on that path. Prior-knowledge HTTP/2 serves any net.Conn on
+// both supported Go versions.
 type interceptFrameListener struct {
 	net.Listener
 	conn *interceptFrameConn
@@ -67,78 +54,42 @@ func (l *interceptFrameListener) Accept() (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	tlsConn, ok := c.(*tls.Conn)
-	if !ok || l.conn.Conn != nil {
+	if l.conn.Conn != nil {
 		_ = c.Close()
-		return nil, fmt.Errorf("upstream accepted %T", c)
+		return nil, fmt.Errorf("upstream accepted a second connection")
 	}
-	l.conn.Conn = tlsConn
+	l.conn.Conn = c
 	return l.conn, nil
-}
-
-func framingTestCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: serial,
-		Subject:      pkix.Name{CommonName: "api.vendor.example"},
-		DNSNames:     []string{"api.vendor.example"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pool := x509.NewCertPool()
-	pool.AddCert(leaf)
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
 }
 
 func startObservedHTTP2Upstream(t *testing.T, handler http.Handler) (*http.Transport, *interceptFrameConn) {
 	t.Helper()
-	cert, pool := framingTestCert(t)
 	raw, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-		NextProtos:   []string{"h2"},
-	}
 	observed := &interceptFrameConn{}
-	ln := &interceptFrameListener{Listener: tls.NewListener(raw, tlsCfg), conn: observed}
-	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 5 * time.Second}
+	serverProtocols := new(http.Protocols)
+	serverProtocols.SetHTTP1(true)
+	serverProtocols.SetUnencryptedHTTP2(true)
+	srv := &http.Server{
+		Handler:           handler,
+		Protocols:         serverProtocols,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
 	serveDone := make(chan struct{})
 	go func() {
-		_ = srv.Serve(ln)
+		_ = srv.Serve(&interceptFrameListener{Listener: raw, conn: observed})
 		close(serveDone)
 	}()
 	t.Cleanup(func() {
 		_ = srv.Close()
 		<-serveDone
 	})
+	clientProtocols := new(http.Protocols)
+	clientProtocols.SetUnencryptedHTTP2(true)
 	transport := &http.Transport{
-		ForceAttemptHTTP2: true,
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			RootCAs:    pool,
-			ServerName: "api.vendor.example",
-		},
+		Protocols: clientProtocols,
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, network, raw.Addr().String())
 		},
@@ -240,6 +191,8 @@ func TestInterceptTunnelRequestBodyFraming(t *testing.T) {
 						if tc.unknownLength && r.ContentLength != -1 {
 							t.Errorf("unknown body length=%d, want -1", r.ContentLength)
 						}
+						// Prior-knowledge HTTP/2 is selected for http URLs. Leave the body alone.
+						r.URL.Scheme = "http"
 						return upstreamTransport.RoundTrip(r)
 					}), RequestID: "request-body-framing",
 				})
