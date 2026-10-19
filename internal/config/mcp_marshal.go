@@ -1,0 +1,49 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package config
+
+import "gopkg.in/yaml.v3"
+
+// Unset MCP sections omit enabled:false when written to YAML so generated
+// files do not carry ambiguous legacy settings. Explicit disables use false
+// plus a nonempty action, matching applyMCPAutoEnable's existing convention.
+
+// MarshalYAML omits the unset `enabled: false` so the file round-trips as
+// unconfigured.
+func (s MCPInputScanning) MarshalYAML() (any, error) {
+	type plain MCPInputScanning
+	return marshalOmittingUnsetEnabled(plain(s), !s.Enabled && s.Action == "")
+}
+
+// MarshalYAML omits the unset `enabled: false` so the file round-trips as
+// unconfigured.
+func (s MCPToolScanning) MarshalYAML() (any, error) {
+	type plain MCPToolScanning
+	return marshalOmittingUnsetEnabled(plain(s), !s.Enabled && s.Action == "")
+}
+
+// MarshalYAML omits the unset `enabled: false` so the file round-trips as
+// unconfigured. Tool policy is unset only without rules, matching
+// applyMCPAutoEnable.
+func (s MCPToolPolicy) MarshalYAML() (any, error) {
+	type plain MCPToolPolicy
+	return marshalOmittingUnsetEnabled(plain(s), !s.Enabled && s.Action == "" && len(s.Rules) == 0)
+}
+
+func marshalOmittingUnsetEnabled(section any, unset bool) (any, error) {
+	var node yaml.Node
+	if err := node.Encode(section); err != nil {
+		return nil, err
+	}
+	if !unset || node.Kind != yaml.MappingNode {
+		return &node, nil
+	}
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "enabled" {
+			node.Content = append(node.Content[:i], node.Content[i+2:]...)
+			break
+		}
+	}
+	return &node, nil
+}

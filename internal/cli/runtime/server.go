@@ -459,13 +459,14 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s.runtimeMode = runtimeMode
 
 	var bundleResult *rules.LoadResult
-	cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
+	cfg, resolveInfo := runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 		Mode: runtimeMode,
 		MergeBundles: func(c *config.Config) {
 			bundleResult = rules.MergeIntoConfig(c, cliutil.Version)
 		},
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
-	}, opts.Stderr, "listener")
+	}, nil, "listener")
+	runtimeconfig.EmitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
 	if err := s.reportStartupRuleBundleResult(cfg, bundleResult); err != nil {
 		s.cleanup()
 		return nil, err

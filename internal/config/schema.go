@@ -579,6 +579,9 @@ type Config struct {
 	// Not serialized to YAML. Set by Load(), nil for Defaults().
 	rawBytes []byte `yaml:"-"`
 
+	// Load-time advisories only; never participate in effective policy identity.
+	mcpCompatibilityWarnings []Warning
+
 	// allowEphemeralListeners is test-only provenance for in-process runtime
 	// harnesses that need the kernel to choose collision-free ports. Operator
 	// YAML can never set it.

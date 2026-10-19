@@ -589,13 +589,14 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	// the startup flags: reload cannot toggle MCP listener or forward
 	// proxy enablement (both gated above).
 	var reloadBundleResult *rules.LoadResult
-	newCfg, _ = runtimeconfig.ResolveAndReportConfig(newCfg, config.RuntimeResolveOpts{
+	newCfg, resolveInfo := runtimeconfig.ResolveAndReportConfig(newCfg, config.RuntimeResolveOpts{
 		Mode: s.runtimeMode,
 		MergeBundles: func(c *config.Config) {
 			reloadBundleResult = rules.MergeIntoConfig(c, cliutil.Version)
 		},
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
-	}, s.opts.Stderr, reloadRuntimeModeLabel(s.runtimeMode))
+	}, nil, reloadRuntimeModeLabel(s.runtimeMode))
+	runtimeconfig.EmitResolveInfoLogs(s.opts.Stderr, resolveInfo, reloadRuntimeModeLabel(s.runtimeMode))
 	reportReloadRuleBundleResult(s.opts.Stderr, s.logger, newCfg, reloadBundleResult)
 	if oldCfg != nil {
 		// Compare resolved-vs-resolved configs so bundle merges and

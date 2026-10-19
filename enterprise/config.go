@@ -585,6 +585,7 @@ func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
 	}
 	out.LicenseIntermediateCert = licenseIntermediateCert
 	out.LicenseIntermediateLoadError = licenseIntermediateLoadError
+	out.CopyMCPCompatibilityWarningsFrom(cfg)
 	// LicenseAgentsFeature is a runtime-derived bit (yaml:"-"), so the
 	// marshal/unmarshal round-trip above drops it. It must be preserved or the
 	// per-agent scanner built from the merged config would treat a licensed
