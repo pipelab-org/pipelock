@@ -142,8 +142,8 @@ func TestReloadCommandOutputAndFailure(t *testing.T) {
 		writer io.Writer
 	}{
 		{"JSON", []string{"--json"}, errWriter{}},
-		{"text status", nil, errWriter{}},
-		{"text reason", nil, &reloadReasonErrorWriter{}},
+		{"text status", nil, &reloadOutputErrorWriter{failStatus: true}},
+		{"text reason", nil, &reloadOutputErrorWriter{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := ReloadCmd()
@@ -161,15 +161,17 @@ func TestReloadCommandOutputAndFailure(t *testing.T) {
 	}
 }
 
-type reloadReasonErrorWriter struct {
+type reloadOutputErrorWriter struct {
 	wroteStatus bool
+	failStatus  bool
 }
 
-func (w *reloadReasonErrorWriter) Write(p []byte) (int, error) {
-	if w.wroteStatus {
+func (w *reloadOutputErrorWriter) Write(p []byte) (int, error) {
+	isStatus := !w.wroteStatus
+	w.wroteStatus = true
+	if isStatus == w.failStatus {
 		return errWriter{}.Write(p)
 	}
-	w.wroteStatus = true
 	return len(p), nil
 }
 
