@@ -149,7 +149,7 @@ Defense in depth: use tools at multiple layers. A compromised agent must bypass 
 
 ## Links
 
-- [Pipelock](https://github.com/luckyPipewrench/pipelock)
+- [Pipelock](https://github.com/pipelab-org/pipelock)
 - [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit)
 - [CAPSEM](https://github.com/google/capsem)
 - [Signet](https://github.com/Prismer-AI/signet)

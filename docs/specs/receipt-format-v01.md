@@ -62,13 +62,13 @@ The per-primitive prior-art mapping lives at
 | Surface | What it is |
 |---|---|
 | https://pipelab.org/learn/action-receipt-spec/ | Implementation spec, canonical. |
-| [`internal/receipt/`](https://github.com/luckyPipewrench/pipelock/tree/main/internal/receipt) | Go reference implementation. |
-| [`cmd/pipelock-verifier/`](https://github.com/luckyPipewrench/pipelock/tree/main/cmd/pipelock-verifier) | Standalone verifier binary (no network surface, drop-in for CI). |
-| [`sdk/verifiers/ts/`](https://github.com/luckyPipewrench/pipelock/tree/main/sdk/verifiers/ts) | TypeScript verifier. |
-| [`sdk/verifiers/rust/`](https://github.com/luckyPipewrench/pipelock/tree/main/sdk/verifiers/rust) | Rust verifier. |
+| [`internal/receipt/`](https://github.com/pipelab-org/pipelock/tree/main/internal/receipt) | Go reference implementation. |
+| [`cmd/pipelock-verifier/`](https://github.com/pipelab-org/pipelock/tree/main/cmd/pipelock-verifier) | Standalone verifier binary (no network surface, drop-in for CI). |
+| [`sdk/verifiers/ts/`](https://github.com/pipelab-org/pipelock/tree/main/sdk/verifiers/ts) | TypeScript verifier. |
+| [`sdk/verifiers/rust/`](https://github.com/pipelab-org/pipelock/tree/main/sdk/verifiers/rust) | Rust verifier. |
 | [`pipelock-verify-python`](https://github.com/luckyPipewrench/pipelock-verify-python) | Python verifier, `pip install pipelock-verify`. |
-| [`sdk/conformance/testdata/`](https://github.com/luckyPipewrench/pipelock/tree/main/sdk/conformance/testdata) | Cross-language conformance fixtures. |
-| [`sdk/audit-packet/`](https://github.com/luckyPipewrench/pipelock/tree/main/sdk/audit-packet) | Audit Packet v0 schema (locked) and Go bindings. |
+| [`sdk/conformance/testdata/`](https://github.com/pipelab-org/pipelock/tree/main/sdk/conformance/testdata) | Cross-language conformance fixtures. |
+| [`sdk/audit-packet/`](https://github.com/pipelab-org/pipelock/tree/main/sdk/audit-packet) | Audit Packet v0 schema (locked) and Go bindings. |
 | https://pipelab.org/schemas/audit-packet-v0.schema.json | Audit Packet v0 JSON Schema, served. |
 | [`agent-egress-bench/receipts/v0/conformance/`](https://github.com/luckyPipewrench/agent-egress-bench/tree/main/receipts/v0/conformance) | Vendor-neutral receipt-verifier conformance corpus. |
 

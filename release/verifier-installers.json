@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_blocked": false,
+  "release_blocked": true,
   "verifiers": [
     {
       "language": "Go",
@@ -9,7 +9,7 @@
       "install_source": "candidate source build",
       "artifact_digest": "computed at run time",
       "publisher": {
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/release.yaml",
         "environment": "tagged product release",
         "source_ref": "candidate tag",
@@ -19,29 +19,29 @@
     {
       "language": "TypeScript",
       "package": "@pipelock/verifier-ts",
-      "version": "0.6.5",
+      "version": "0.6.6",
       "install_source": "npm",
-      "artifact_digest": "sha512-sG2pNOtFtyx9eCgMnWw+J+9LMRecSrf7YsTUbLYv5pF7lHUori0AjufubvFSgalUdzaJm15Zx7rdKie9NwzPgQ==",
+      "artifact_digest": "pending publication",
       "publisher": {
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.6.5",
-        "source_commit": "05179c855c4be2e9f06c305041a2be6b79626afa"
+        "source_ref": "verifier-v0.6.6",
+        "source_commit": "pending publication"
       }
     },
     {
       "language": "Rust",
       "package": "pipelock-verifier-rs",
-      "version": "0.6.5",
+      "version": "0.6.6",
       "install_source": "crates.io",
-      "artifact_digest": "ba1ffae37e86f995cdd5da1822a24d29b1d8e51d97222965cb60abd146e40250",
+      "artifact_digest": "pending publication",
       "publisher": {
-        "repository": "luckyPipewrench/pipelock",
+        "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.6.5",
-        "source_commit": "05179c855c4be2e9f06c305041a2be6b79626afa"
+        "source_ref": "verifier-v0.6.6",
+        "source_commit": "pending publication"
       }
     },
     {

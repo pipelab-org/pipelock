@@ -330,4 +330,4 @@ deployment-level fix, not a product-level one.
 
 If you are integrating Pipelock receipts into a detection pipeline
 and run into something the spec does not cover, open an issue at
-<https://github.com/luckyPipewrench/Pipelock/issues>.
+<https://github.com/pipelab-org/pipelock/issues>.

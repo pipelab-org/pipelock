@@ -248,7 +248,7 @@ Pipelock keeps its direct dependency set intentionally small. Any new dependency
 
 ## Security
 
-- **Vulnerabilities**: Report via [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories), NOT public issues
+- **Vulnerabilities**: Report via [GitHub Security Advisories](https://github.com/pipelab-org/pipelock/security/advisories), NOT public issues
 - **Don't weaken capability separation:** the proxy must never access agent secrets
 - **Don't bypass fail-closed defaults:** if in doubt, block
 - See [SECURITY.md](SECURITY.md) for the full policy
