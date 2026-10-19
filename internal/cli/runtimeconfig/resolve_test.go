@@ -101,3 +101,20 @@ func TestEmitResolveInfoLogs_AllBranches(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveAndReportConfig_MCPCompatibility(t *testing.T) {
+	cfg := loadConfigYAML(t, "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false, action: null}\nmcp_tool_policy: {enabled: false}\n")
+	for _, mode := range []config.RuntimeMode{config.RuntimeMCPProxy, config.RuntimeForwardWithMCPListener, config.RuntimeMCPScan, config.RuntimeForward} {
+		var stderr bytes.Buffer
+		resolved, _ := ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{Mode: mode}, &stderr, "test")
+		for _, warning := range cfg.MCPCompatibilityWarnings() {
+			if !strings.Contains(stderr.String(), warning.Message) {
+				t.Fatalf("startup omitted warning: %s", stderr.String())
+			}
+		}
+		if mode.WrapsMCP() && (!resolved.MCPInputScanning.Enabled || !resolved.MCPToolScanning.Enabled || !resolved.MCPToolPolicy.Enabled) {
+			t.Fatal("legacy configuration disabled MCP protection")
+		}
+		ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{Mode: mode}, nil, "test")
+	}
+}

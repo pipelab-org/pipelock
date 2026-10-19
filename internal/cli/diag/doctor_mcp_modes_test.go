@@ -17,7 +17,7 @@ func TestDoctorMCPEffectiveModes(t *testing.T) {
 	}{
 		{name: "omitted", configured: true},
 		{name: "empty", body: "mcp_input_scanning: {}\nmcp_tool_scanning: null\nmcp_tool_policy: {enabled: null}\n", configured: true},
-		{name: "disabled", body: "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"},
+		{name: "disabled", body: "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg, err := config.LoadBytes([]byte(tc.body))
@@ -45,5 +45,24 @@ func TestDoctorMCPEffectiveModes(t *testing.T) {
 				t.Fatalf("wrong disabled modes: %s", check.Detail)
 			}
 		})
+	}
+}
+
+func TestDoctorMCPCompatibilityWarnings(t *testing.T) {
+	cfg, err := config.LoadBytes([]byte("mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := buildDoctorReport(cfg, "test")
+	for _, warning := range cfg.MCPCompatibilityWarnings() {
+		found := false
+		for _, check := range report.Checks {
+			if check.Name == warning.Field+"_compatibility" && check.Status == doctorStatusWarn && check.Detail == warning.Message {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("doctor omitted warning: %+v", warning)
+		}
 	}
 }

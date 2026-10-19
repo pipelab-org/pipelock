@@ -18,7 +18,7 @@ func TestMergeAgentProfileMCPExplicitDisable(t *testing.T) {
 		wantBase, wantPolicy bool
 	}{
 		{name: "omitted", wantBase: true, wantPolicy: true},
-		{name: "disabled base", body: "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"},
+		{name: "disabled base", body: "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"},
 		{name: "disabled profile", profile: &config.AgentProfile{MCPToolPolicy: &config.MCPToolPolicy{Enabled: false}}, wantBase: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

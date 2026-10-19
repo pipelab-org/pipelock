@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-const disabledMCPSections = "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"
+const disabledMCPSections = "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"
 
 func TestResolveRuntimeMCPYAMLIntent(t *testing.T) {
 	for _, tc := range []struct {
@@ -25,9 +25,9 @@ func TestResolveRuntimeMCPYAMLIntent(t *testing.T) {
 		{name: "null section", section: "null", unset: true},
 		{name: "null enabled", section: "{enabled: null}", unset: true},
 		{name: "blank enabled", section: "{enabled: }", unset: true},
-		{name: "false", section: "{enabled: false}"},
-		{name: "false empty action", section: `{enabled: false, action: ""}`},
-		{name: "false null action", section: "{enabled: false, action: null}"},
+		{name: "false", section: "{enabled: false}", unset: true},
+		{name: "false empty action", section: `{enabled: false, action: ""}`, unset: true},
+		{name: "false null action", section: "{enabled: false, action: null}", unset: true},
 		{name: "false warn", section: "{enabled: false, action: warn}"},
 		{name: "false block", section: "{enabled: false, action: block}"},
 		{name: "action only", section: "{action: warn}"},
@@ -93,12 +93,12 @@ func TestResolveRuntimeMCPYAMLIntent(t *testing.T) {
 }
 
 func TestMCPExplicitDisableSharedLoadersAndIdentity(t *testing.T) {
-	body := []byte("mcp_input_scanning: &off {enabled: false}\nmcp_tool_scanning: {<<: *off}\nmcp_tool_policy: *off\n")
+	body := []byte("mcp_input_scanning: &off {enabled: false, action: warn}\nmcp_tool_scanning: {<<: *off}\nmcp_tool_policy: *off\n")
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	explicit, err := LoadBytes([]byte(strings.ReplaceAll(string(body), "enabled: false", "enabled: false, action: warn")))
+	explicit, err := LoadBytes([]byte(strings.ReplaceAll(string(body), "action: warn", "action: block")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,8 +142,8 @@ func TestMCPExplicitDisableSharedLoadersAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if implicit.CanonicalPolicyHash() != explicit.CanonicalPolicyHash() {
-		t.Fatal("implicit and explicit warn have different canonical identities")
+	if implicit.CanonicalPolicyHash() == explicit.CanonicalPolicyHash() {
+		t.Fatal("different actions have the same canonical identity")
 	}
 	omitted, err := LoadBytes([]byte("mode: balanced\n"))
 	if err != nil {
@@ -220,7 +220,7 @@ func TestMCPExplicitDisableFileReload(t *testing.T) {
 func TestMCPExplicitDisableDoesNotDisableSiblings(t *testing.T) {
 	for _, section := range []string{"mcp_input_scanning", "mcp_tool_scanning", "mcp_tool_policy"} {
 		t.Run(section, func(t *testing.T) {
-			cfg, err := LoadBytes([]byte(section + ": {enabled: false}\n"))
+			cfg, err := LoadBytes([]byte(section + ": {enabled: false, action: warn}\n"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -232,12 +232,123 @@ func TestMCPExplicitDisableDoesNotDisableSiblings(t *testing.T) {
 			}
 		})
 	}
-	cfg, err := LoadBytes([]byte("mcp_input_scanning: {enabled: false, response_timeout_seconds: 10}\n"))
+	cfg, err := LoadBytes([]byte("mcp_input_scanning: {enabled: false, action: warn, response_timeout_seconds: 10}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	resolved, _ := cfg.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeMCPProxy})
 	if resolved.MCPInputScanning.Enabled || resolved.MCPInputScanning.ResponseTimeoutSeconds != 10 {
 		t.Fatal("disabled scanning changed the independent response timeout")
+	}
+}
+
+func TestMCPCompatibilityWarnings(t *testing.T) {
+	for _, tc := range []struct {
+		name, section string
+		want          bool
+	}{
+		{name: "omitted"},
+		{name: "null", section: "null"},
+		{name: "null enabled", section: "{enabled: null}"},
+		{name: "false", section: "{enabled: false}", want: true},
+		{name: "empty action", section: `{enabled: false, action: ""}`, want: true},
+		{name: "null action", section: "{enabled: false, action: null}", want: true},
+		{name: "disabled", section: "{enabled: false, action: warn}"},
+		{name: "enabled", section: "{enabled: true}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body string
+			for _, section := range []string{"mcp_input_scanning", "mcp_tool_scanning", "mcp_tool_policy"} {
+				if tc.section != "" {
+					value := tc.section
+					if tc.name == "enabled" && section == "mcp_tool_policy" {
+						value = "{enabled: true, rules: [{name: deny, tool_pattern: '^denied$'}]}"
+					}
+					body += section + ": " + value + "\n"
+				}
+			}
+			path := filepath.Join(t.TempDir(), "legacy.yaml")
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			warnings := cfg.MCPCompatibilityWarnings()
+			want := 0
+			if tc.want {
+				want = 3
+			}
+			if len(warnings) != want {
+				t.Fatalf("warnings = %+v, want %d", warnings, want)
+			}
+			for _, warning := range warnings {
+				for _, text := range []string{path, warning.Field, `"action: warn"`, "retaining runtime defaults"} {
+					if !strings.Contains(warning.Message, text) {
+						t.Fatalf("warning lacks %q: %s", text, warning.Message)
+					}
+				}
+			}
+			if len(warnings) > 0 {
+				warnings[0].Message = "changed"
+				if cfg.MCPCompatibilityWarnings()[0].Message == "changed" {
+					t.Fatal("caller mutated stored warning")
+				}
+			}
+			validated, err := cfg.ValidateWithWarnings()
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := 0
+			for _, warning := range validated {
+				if strings.Contains(warning.Message, "ambiguous") {
+					found++
+				}
+			}
+			if found != want {
+				t.Fatalf("validation returned %d compatibility warnings, want %d", found, want)
+			}
+		})
+	}
+}
+
+// TestMCPCompatibilityRemedyOnGeneratedYAML applies the printed remedy to the
+// four-space shape an older generator wrote (an explicit empty action line):
+// adding a second action key cannot load, replacing the line disables the
+// section, and the warning says which one to do.
+func TestMCPCompatibilityRemedyOnGeneratedYAML(t *testing.T) {
+	legacy := "mode: " + ModeBalanced + "\n" +
+		"mcp_input_scanning:\n    enabled: false\n    action: \"\"\n" +
+		"mcp_tool_scanning:\n    enabled: false\n    action: \"\"\n" +
+		"mcp_tool_policy:\n    enabled: false\n    action: \"\"\n    rules: []\n"
+	cfg, err := LoadBytes([]byte(legacy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := cfg.MCPCompatibilityWarnings()
+	if len(warnings) != 3 {
+		t.Fatalf("warnings = %+v, want 3", warnings)
+	}
+	for _, warning := range warnings {
+		if !strings.Contains(warning.Message, "replacing any existing action line") {
+			t.Fatalf("remedy does not say to replace the action line: %s", warning.Message)
+		}
+	}
+	inserted := strings.ReplaceAll(legacy, "    enabled: false\n", "    enabled: false\n    action: warn\n")
+	if _, err := LoadBytes([]byte(inserted)); err == nil || !strings.Contains(err.Error(), "already defined") {
+		t.Fatalf("inserting a second action key: err = %v, want duplicate-key error", err)
+	}
+	replaced := strings.ReplaceAll(legacy, "action: \"\"", "action: warn")
+	fixed, err := LoadBytes([]byte(replaced))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fixed.MCPCompatibilityWarnings()) != 0 {
+		t.Fatalf("replaced remedy still warns: %+v", fixed.MCPCompatibilityWarnings())
+	}
+	resolved, _ := fixed.ResolveRuntime(RuntimeResolveOpts{Mode: RuntimeMCPProxy})
+	if resolved.MCPInputScanning.Enabled || resolved.MCPToolScanning.Enabled || resolved.MCPToolPolicy.Enabled {
+		t.Fatal("replacing the action line did not disable the sections")
 	}
 }

@@ -160,6 +160,14 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
 	}
+	for _, warning := range cfg.MCPCompatibilityWarnings() {
+		report.Checks = append(report.Checks, doctorReportCheck{
+			Name:    warning.Field + "_compatibility",
+			Surface: doctorSurfaceConfig,
+			Status:  doctorStatusWarn,
+			Detail:  warning.Message,
+		})
+	}
 	report.Checks = append(report.Checks, checkDoctorConfigSemantics(cfg)...)
 	report.Checks = append(report.Checks, checkDoctorAvailableKnobs(cfg)...)
 	report.Summary = retallyDoctorSummary(report.Checks)

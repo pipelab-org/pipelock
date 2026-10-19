@@ -5,13 +5,9 @@ package config
 
 import "gopkg.in/yaml.v3"
 
-// The loader reads an explicit `enabled: false` in an MCP scanning section as
-// an operator opt-out (see applySecurityDefaults), so a section that is still
-// unset in memory (Enabled false and Action empty, the zero value
-// applyMCPAutoEnable treats as unconfigured) must not be written back as
-// `enabled: false`. Marshaling would otherwise turn the runtime default into a
-// permanent disable when the generated file is loaded again: presets, init,
-// sidecar and project-scan output all marshal an unresolved Config.
+// Unset MCP sections omit enabled:false when written to YAML so generated
+// files do not carry ambiguous legacy settings. Explicit disables use false
+// plus a nonempty action, matching applyMCPAutoEnable's existing convention.
 
 // MarshalYAML omits the unset `enabled: false` so the file round-trips as
 // unconfigured.

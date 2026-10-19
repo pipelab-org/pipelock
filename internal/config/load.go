@@ -141,6 +141,13 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	// Detect omitted security booleans via raw YAML introspection and
 	// default them to true (fail-closed). Must run before ApplyDefaults().
 	applySecurityDefaults(data, cfg)
+	sourceLabel := sourceName
+	if sourceName == "-" {
+		sourceLabel = "stdin (no config file)"
+	}
+	for i := range cfg.mcpCompatibilityWarnings {
+		cfg.mcpCompatibilityWarnings[i].Message = fmt.Sprintf("config %q: %s", sourceLabel, cfg.mcpCompatibilityWarnings[i].Message)
+	}
 
 	cfg.ApplyDefaults()
 

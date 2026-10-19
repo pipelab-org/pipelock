@@ -19,7 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
-const disabledMCPYAML = "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"
+const disabledMCPYAML = "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"
 
 func TestMCPCommandsExplicitDisable(t *testing.T) {
 	for _, tc := range []struct {
@@ -27,16 +27,16 @@ func TestMCPCommandsExplicitDisable(t *testing.T) {
 		disabled     bool
 	}{
 		{name: "omitted"},
-		{name: "false", disabled: true},
-		{name: "false empty action", action: `, action: ""`, disabled: true},
-		{name: "false null action", action: ", action: null", disabled: true},
+		{name: "false"},
+		{name: "false empty action", action: `, action: ""`},
+		{name: "false null action", action: ", action: null"},
 		{name: "false warn", action: ", action: warn", disabled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
 			body := "flight_recorder: {enabled: false}\n"
-			if tc.disabled {
-				body += strings.ReplaceAll(disabledMCPYAML, "enabled: false}", "enabled: false"+tc.action+"}")
+			if tc.name != "omitted" {
+				body += strings.ReplaceAll(disabledMCPYAML, ", action: warn", tc.action)
 			}
 			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 				t.Fatal(err)

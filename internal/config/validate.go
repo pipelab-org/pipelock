@@ -588,12 +588,18 @@ func (c *Config) Validate() error {
 	return err
 }
 
+// MCPCompatibilityWarnings returns advisories for ambiguous legacy MCP settings.
+// These describe the loaded source, independently of later runtime resolution.
+func (c *Config) MCPCompatibilityWarnings() []Warning {
+	return append([]Warning(nil), c.mcpCompatibilityWarnings...)
+}
+
 // ValidateWithWarnings validates the config and returns any non-fatal
 // advisory warnings alongside the first hard error. Dispatch order matches
 // Validate() exactly. Warnings are returned even when err is non-nil, so
 // callers can surface every advisory emitted before the failing validator.
 func (c *Config) ValidateWithWarnings() ([]Warning, error) {
-	var warnings []Warning
+	warnings := c.MCPCompatibilityWarnings()
 	if err := c.validateIntegerDurationBounds(); err != nil {
 		return warnings, err
 	}

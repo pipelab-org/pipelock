@@ -199,9 +199,8 @@ func (c *Config) EffectiveKillSwitchAPITokenConfigured() bool {
 
 // applyMCPAutoEnable flips MCP scanning sections on when the operator did
 // not explicitly configure them. A section counts as unconfigured when
-// Enabled is false AND Action is empty. The YAML loader gives explicit
-// enabled:false sections a nonempty action, preserving the opt-out through
-// config copies. Programmatic configs use the same convention: false plus
+// Enabled is false AND Action is empty. YAML and programmatic
+// configs use the same convention: false plus
 // a nonempty action disables, while the zero value permits defaults.
 // Tool policy also requires len(Rules)==0. Each auto-enable branch
 // records its decision on info so callers can print operator-facing
