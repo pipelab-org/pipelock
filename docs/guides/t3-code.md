@@ -11,10 +11,10 @@ is vendor-neutral and does not require Pipelock.
 ## Requirements and tested scope
 
 Use a Pipelock build containing the T3 compatibility fixes in
-[#1778](https://github.com/luckyPipewrench/pipelock/pull/1778),
-[#1780](https://github.com/luckyPipewrench/pipelock/pull/1780),
-[#1787](https://github.com/luckyPipewrench/pipelock/pull/1787), and
-[#1792](https://github.com/luckyPipewrench/pipelock/pull/1792).
+[#1778](https://github.com/pipelab-org/pipelock/pull/1778),
+[#1780](https://github.com/pipelab-org/pipelock/pull/1780),
+[#1787](https://github.com/pipelab-org/pipelock/pull/1787), and
+[#1792](https://github.com/pipelab-org/pipelock/pull/1792).
 These fixes ship in v3.7.0 and later. v3.6.0 doesn't contain them, so installing
 v3.6.0 isn't equivalent to this setup.
 
@@ -102,7 +102,7 @@ tested development binary predates negotiated-version propagation, so it sent
 this value on every request. Recheck it when upgrading T3.
 
 Builds that include
-[#1846](https://github.com/luckyPipewrench/pipelock/pull/1846) send the explicit
+[#1846](https://github.com/pipelab-org/pipelock/pull/1846) send the explicit
 header on the initialize request and on anything sent before negotiation
 finishes. Once the upstream answers that request with a successful, well-formed
 initialize result carrying a date-shaped `protocolVersion`, Pipelock replaces

@@ -6796,8 +6796,16 @@ func TestRequestHelpersKeepBodyContext(t *testing.T) {
 }
 
 func TestSSRFSafeDialContext_BlocksEmbeddedIPv4(t *testing.T) {
-	for _, target := range []string{"[64:ff9b::7f00:1]:80", "[2002:a00:1::]:80", "[::10.0.0.1]:80", "[64:ff9b::a9fe:a9fe]:80"} {
-		t.Run(target, func(t *testing.T) {
+	for _, tc := range []struct {
+		target string
+		want   blockreason.Reason
+	}{
+		{"[64:ff9b::7f00:1]:80", blockreason.SSRFPrivateIP},
+		{"[2002:a00:1::]:80", blockreason.SSRFPrivateIP},
+		{"[::10.0.0.1]:80", blockreason.SSRFPrivateIP},
+		{"[64:ff9b::a9fe:a9fe]:80", blockreason.SSRFMetadata},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
 			cfg := config.Defaults()
 			sc := scanner.MustNew(cfg)
 			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -6807,13 +6815,16 @@ func TestSSRFSafeDialContext_BlocksEmbeddedIPv4(t *testing.T) {
 			defer p.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
-			conn, err := p.ssrfSafeDialContext(ctx, "tcp", target)
+			conn, err := p.ssrfSafeDialContext(ctx, "tcp", tc.target)
 			if conn != nil {
 				_ = conn.Close()
 			}
 			var ssrfErr *ssrfDialBlockError
 			if !errors.As(err, &ssrfErr) {
 				t.Fatalf("error = %v, want ssrfDialBlockError", err)
+			}
+			if ssrfErr.reason != tc.want {
+				t.Fatalf("reason = %s, want %s", ssrfErr.reason, tc.want)
 			}
 		})
 	}
