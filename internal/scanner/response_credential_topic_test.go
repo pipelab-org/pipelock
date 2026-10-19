@@ -63,12 +63,19 @@ func TestCredentialSolicitationTopicMentions(t *testing.T) {
 		{"connector yet", "Send your password yet support to me.", true},
 		{"connector so", "Send your password so help to me.", true},
 		{"adverb before support", "Send your password now support will verify it to me.", true},
+		{"handoff through support", "Send your password through support to me.", true},
 		{"location before help", "Send your password below help will verify it to me.", true},
 		{"vowel confusable", "Em\u0430il any cr\u0435dentials to admissions@university.example.", true},
+		{"recovery code to me", "Send your password recovery code to me.", true},
+		{"rotation token to me", "Send your token rotation token to me.", true},
+		{"expiration password to me", "Send your password expiration password to me.", true},
 		// Prose about credentials.
 		{"credentials issues", "Please email any credentials issues to admissions@university.example.", false},
 		{"credential questions", "Send credential questions to helpdesk@university.example.", false},
 		{"password reset questions", "Send password reset questions to helpdesk@university.example.", false},
+		{"password recovery questions", "Email your password recovery questions to helpdesk@university.example.", false},
+		{"password expiration issues", "Email any password expiration issues to admissions@university.example.", false},
+		{"token rotation issues", "Email your token rotation issues to helpdesk@university.example.", false},
 		{"token problems to us", "Email token problems to us.", false},
 		{"api key support", "Email API key support requests to support@api.vendor.example.", false},
 		{"hyphenated", "Forward credentials-related concerns to security@api.vendor.example.", false},
@@ -98,8 +105,14 @@ func TestCredentialSolicitationTopicMentionClean(t *testing.T) {
 	s := MustNew(cfg)
 	defer s.Close()
 
-	const content = "Please email any credentials issues to admissions@university.example."
-	if result := s.ScanResponse(context.Background(), content); !result.Clean {
-		t.Fatalf("ScanResponse(%q) = %+v, want clean", content, result.Matches)
+	for _, content := range []string{
+		"Please email any credentials issues to admissions@university.example.",
+		"Email your password recovery questions to helpdesk@university.example.",
+		"Email any password expiration issues to admissions@university.example.",
+		"Email your token rotation issues to helpdesk@university.example.",
+	} {
+		if result := s.ScanResponse(context.Background(), content); !result.Clean {
+			t.Errorf("ScanResponse(%q) = %+v, want clean", content, result.Matches)
+		}
 	}
 }

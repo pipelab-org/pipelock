@@ -914,8 +914,9 @@ func hasSolicitationContinuation(suffix string) bool {
 // "email any credentials issues to admissions@..." asks for a support message
 // about credentials, not for the credentials. Both are vowel-folded so the
 // check gives the same answer on every normalization pass, including the
-// vowel-fold pass. The supported modifiers "reset" and "related" may sit
-// between ("password reset questions"). Other words retain detection: "password to
+// vowel-fold pass. The supported topic modifiers may sit between ("password reset questions",
+// "password recovery questions", "password expiration issues", "token rotation
+// issues", and "credentials-related concerns"). Other words retain detection: "password to
 // support@..." is still a request for the password, and so is a topic word
 // used as an email local-part. A credential noun followed by anything else
 // still counts.
@@ -923,7 +924,7 @@ var (
 	credentialTopicNounRe = regexp.MustCompile(normalize.FoldVowels(
 		`\b(?:password|passwd|token|api[_ -]?key|secret|credentials?|private[_ -]?key|ssh[_ -]?key|session[_ -]?cookie)\b`))
 	credentialTopicWordRe = regexp.MustCompile(normalize.FoldVowels(
-		`^(?:[ \t-]+(?:reset|related))?[ \t-]+(?:issues?|problems?|questions?|quer(?:y|ies)|inquir(?:y|ies)|enquir(?:y|ies)|concerns?|complaints?|troubles?|troubleshooting|feedback|support|help|errors?|bugs?|polic(?:y|ies))\b`))
+		`^(?:[ \t-]+(?:reset|related|recovery|expiration|rotation))?[ \t-]+(?:issues?|problems?|questions?|quer(?:y|ies)|inquir(?:y|ies)|enquir(?:y|ies)|concerns?|complaints?|troubles?|troubleshooting|feedback|support|help|errors?|bugs?|polic(?:y|ies))\b`))
 )
 
 // isCredentialTopicMention reports whether every credential noun that starts

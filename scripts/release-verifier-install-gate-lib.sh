@@ -30,9 +30,19 @@ import base64
 import json
 import sys
 
-version, integrity, source_ref, source_commit, repository, attestation_path = sys.argv[1:]
-with open(attestation_path, encoding="utf-8") as fh:
-    attestations = json.load(fh).get("attestations", [])
+version, integrity, source_ref, source_commit, repository, report_path = sys.argv[1:]
+# npm's --include-attestations report contains the bundles it verified, unlike
+# a separate registry response fetched after signature auditing.
+with open(report_path, encoding="utf-8") as fh:
+    report = json.load(fh)
+if report.get("invalid") or report.get("missing"):
+    raise SystemExit("npm signature audit has invalid or missing signatures")
+verified = [package for package in report.get("verified", [])
+            if package.get("name") == "@pipelock/verifier-ts"
+            and package.get("version") == version]
+if len(verified) != 1:
+    raise SystemExit(f"expected one verified npm package, found {len(verified)}")
+attestations = verified[0].get("attestationBundles", [])
 statements = []
 for attestation in attestations:
     envelope = attestation.get("bundle", {}).get("dsseEnvelope", {})

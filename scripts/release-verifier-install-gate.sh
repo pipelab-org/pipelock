@@ -602,18 +602,16 @@ if (withInstallScripts.length) {
   process.exit(2)
 }
 NODE
-if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" npm audit signatures --prefix "$scratch_dir/typescript"; then
+# Redirect inside each retry so a failed attempt cannot contaminate the JSON
+# report from a later successful audit.
+if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" sh -c \
+	'exec npm audit signatures --json --include-attestations --prefix "$1" >"$2"' \
+	sh "$scratch_dir/typescript" "$scratch_dir/npm-signatures.json"; then
 	printf 'release verifier install gate: could not verify npm signatures after retries\n' >&2
 	exit 2
 fi
-if ! npm_attestations="$("$CI_RETRY" curl -fsSL --max-time 10 \
-	"https://registry.npmjs.org/-/npm/v1/attestations/@pipelock%2fverifier-ts@$ts_version")"; then
-	printf 'release verifier install gate: could not fetch npm provenance for @pipelock/verifier-ts@%s\n' "$ts_version" >&2
-	exit 2
-fi
-printf '%s\n' "$npm_attestations" >"$scratch_dir/npm-attestations.json"
 verify_npm_provenance "$ts_version" "$ts_artifact_digest" "$ts_ref" "$ts_source_commit" \
-	"$ts_repository" "$scratch_dir/npm-attestations.json"
+	"$ts_repository" "$scratch_dir/npm-signatures.json"
 if ! "$CI_RETRY" env CARGO_HOME="$scratch_dir/cargo-home" \
 	cargo install --locked --root "$scratch_dir/rust" "pipelock-verifier-rs@$rust_version"; then
 	printf 'release verifier install gate: could not install the Rust verifier after retries\n' >&2

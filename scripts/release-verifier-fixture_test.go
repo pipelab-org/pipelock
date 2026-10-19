@@ -1087,6 +1087,14 @@ func TestReleaseVerifierNPMProvenanceBindings(t *testing.T) {
 				name, field, value, want string
 			}{
 				{name: "matching provenance"},
+				{name: "unverified endpoint response", field: "report", value: "raw", want: "expected one verified npm package"},
+				{name: "missing verified package", field: "report", value: "missing", want: "expected one verified npm package"},
+				{name: "duplicate verified package", field: "report", value: "duplicate", want: "expected one verified npm package"},
+				{name: "wrong verified name", field: "verified-name", value: "@vendor/verifier-ts", want: "expected one verified npm package"},
+				{name: "wrong verified version", field: "verified-version", value: "0.1.0", want: "expected one verified npm package"},
+				{name: "missing verified bundles", field: "report", value: "no-bundles", want: "expected one npm SLSA provenance statement"},
+				{name: "invalid audit", field: "report", value: "invalid", want: "npm signature audit has invalid or missing signatures"},
+				{name: "missing audit signatures", field: "report", value: "missing-signatures", want: "npm signature audit has invalid or missing signatures"},
 				{name: "wrong owner", field: "repository", value: "https://github.com/vendor/pipelock", want: "npm provenance workflow mismatch"},
 				{name: "other official owner", field: "repository", value: "https://github.com/luckyPipewrench/pipelock", want: "npm provenance workflow mismatch"},
 				{name: "wrong workflow", field: "path", value: ".github/workflows/other.yaml", want: "npm provenance workflow mismatch"},
@@ -1129,10 +1137,33 @@ func TestReleaseVerifierNPMProvenanceBindings(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					attestations := map[string]interface{}{"attestations": []interface{}{map[string]interface{}{
+					bundles := []interface{}{map[string]interface{}{
 						"bundle": map[string]interface{}{"dsseEnvelope": map[string]string{"payload": base64.StdEncoding.EncodeToString(payload)}},
-					}}}
-					raw, err := json.Marshal(attestations)
+					}}
+					verified := map[string]interface{}{"name": "@pipelock/verifier-ts", "version": version, "attestationBundles": bundles}
+					report := map[string]interface{}{"invalid": []interface{}{}, "missing": []interface{}{}, "verified": []interface{}{verified}}
+					switch tt.field {
+					case "verified-name":
+						verified["name"] = tt.value
+					case "verified-version":
+						verified["version"] = tt.value
+					case "report":
+						switch tt.value {
+						case "raw":
+							report = map[string]interface{}{"attestations": bundles}
+						case "missing":
+							delete(report, "verified")
+						case "duplicate":
+							report["verified"] = []interface{}{verified, verified}
+						case "no-bundles":
+							delete(verified, "attestationBundles")
+						case "invalid":
+							report["invalid"] = []interface{}{map[string]string{"name": "@pipelock/verifier-ts"}}
+						case "missing-signatures":
+							report["missing"] = []interface{}{map[string]string{"name": "@pipelock/verifier-ts"}}
+						}
+					}
+					raw, err := json.Marshal(report)
 					if err != nil {
 						t.Fatal(err)
 					}

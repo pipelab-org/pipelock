@@ -41,9 +41,11 @@ func TestTextDLPWarnContinuation(t *testing.T) {
 		{"base64 segments", base64.StdEncoding.EncodeToString([]byte(staged)) + "/" + base64.StdEncoding.EncodeToString([]byte(enforced)), true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			matches := s.decodeSplitHexRunsWithDecodes(tc.text, nil, textDLPAllPatterns)
+			var matches []TextDLPMatch
 			if tc.segments {
 				matches = s.decodeTextSegmentsWithDecodes(tc.text, nil, textDLPAllPatterns)
+			} else {
+				matches = s.decodeSplitHexRunsWithDecodes(tc.text, nil, textDLPAllPatterns)
 			}
 			if hasEnforcedMatch(matches) != tc.want {
 				t.Fatalf("decoded matches=%+v, want enforced=%v", matches, tc.want)
