@@ -23,6 +23,8 @@ const (
 	replacementRecordName = "sha256"
 )
 
+var errReplacementBusy = errors.New("another self-update or cleanup is running")
+
 // replacementOps exposes filesystem failures without process-global test hooks.
 // move must refuse an existing destination; Windows supplies MoveFileW.
 type replacementOps struct {
@@ -72,7 +74,8 @@ func binaryDigest(path string) (string, error) {
 // replaceRunningBinary keeps the mapped image available under a private name.
 // Windows cannot delete a mapped executable; rename aside avoids that delete.
 // The two moves are not an atomic exchange. On second-move failure the first
-// move is reversed without clobbering a concurrently created target.
+// move is reversed without clobbering a concurrently created target. Production
+// callers hold the replacement lock across backup and this entire operation.
 func replaceRunningBinary(candidate, target string, ops replacementOps) error {
 	ops = ops.defaults()
 	next, err := ops.digest(candidate)
@@ -148,7 +151,7 @@ func restorePriorImage(target, aside, original string, ops replacementOps, insta
 	}
 	// Keep the record if cleanup fails; next startup can finish without touching
 	// the rollback backup. Cleanup failure must not turn restoration into data loss.
-	_ = cleanupReplacement(target, ops)
+	_ = cleanupRecovery(target, ops)
 	if state := originalState(target, original, ops); state != "original unchanged" {
 		return fmt.Errorf("replacement failed; saved image restored (%s): %w", state, installErr)
 	}
@@ -158,7 +161,20 @@ func restorePriorImage(target, aside, original string, ops replacementOps, insta
 // cleanupReplacement is deliberately conservative: an unrecognized directory,
 // record, changed image or extra entry is left for operator inspection.
 func cleanupReplacement(target string, ops replacementOps) error {
-	err := cleanupRecovery(target, ops)
+	if _, err := os.Lstat(target + replacementSuffix); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		if errors.Is(err, errReplacementBusy) {
+			// The owner serializes replacement and cleanup. A later startup can
+			// retry without warning about this expected concurrent operation.
+			return nil
+		}
+		return err
+	}
+	defer unlock()
+	err = cleanupRecovery(target, ops)
 	if errors.Is(err, os.ErrNotExist) {
 		// Simultaneous starts race to finish the same cleanup; an entry another
 		// process just removed is not a failure. Look once more.

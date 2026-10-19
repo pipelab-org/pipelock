@@ -20,3 +20,6 @@ func replaceBinary(tmpPath, target string) error {
 
 // CleanupOnStart is a no-op on systems that can replace a running executable.
 func CleanupOnStart(_ io.Writer) {}
+
+// Unix replacement does not use the Windows recovery directory.
+func acquireReplacementLock(_ string) (func(), error) { return func() {}, nil }

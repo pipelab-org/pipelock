@@ -242,6 +242,11 @@ func checkWritable(target string) error {
 // would itself fail on Windows and misreport an intact original as lost.
 func installBinary(target, tmpPath string) (backupPath string, err error) {
 	backupPath = target + backupSuffix
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		return backupPath, err
+	}
+	defer unlock()
 
 	// Back up the current binary by copying its bytes (the original keeps its
 	// inode; copy preserves the running process's mapping on Linux).
@@ -259,6 +264,11 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 // no backup exists.
 func rollback(target string) (backupPath string, err error) {
 	backupPath = target + backupSuffix
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		return backupPath, err
+	}
+	defer unlock()
 	if _, statErr := os.Stat(backupPath); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return backupPath, ErrNoBackup

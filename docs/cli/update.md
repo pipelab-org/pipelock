@@ -72,7 +72,7 @@ installed binary unchanged**:
    `..` traversal segment or an absolute path is rejected (zip-slip /
    tar-traversal protection).
 6. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
-   prior backup), then atomically rename the verified temp binary into place.
+   prior backup), then install the verified temp binary.
    On Linux and macOS, renaming over a running executable is allowed, and a
    failed rename leaves the original untouched.
 
@@ -86,7 +86,11 @@ installed binary unchanged**:
    the files the updater recorded; anything else is kept, with a warning. If
    the process or machine stops between the two renames, the binary is missing:
    move `previous.exe` from the recovery directory back, or copy `<binary>.bak`
-   into place. A retained recovery directory blocks the next update until you
+   into place. Update, rollback, and cleanup share an exclusive lock; an update
+   that encounters a busy lock stops before changing the binary or its backup.
+   The `<binary>.pipelock-update.lock` file remains between runs and must not
+   be deleted while a command is running.
+   A retained recovery directory blocks the next update until you
    remove it. `<binary>.bak` is never touched by this cleanup.
 
 ### Authenticity model (native vs cosign)

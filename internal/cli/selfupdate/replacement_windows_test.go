@@ -102,6 +102,23 @@ func TestWindowsReplacementChild(t *testing.T) {
 	if mode == "" {
 		return
 	}
+	if mode == "lock probe" {
+		unlock, err := acquireReplacementLock(os.Getenv("PIPELOCK_TEST_LOCK_TARGET"))
+		if os.Getenv("PIPELOCK_TEST_LOCK_BUSY") == "true" {
+			if !errors.Is(err, errReplacementBusy) {
+				if unlock != nil {
+					unlock()
+				}
+				t.Fatalf("lock contention = %v", err)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlock()
+		return
+	}
 	var warnings bytes.Buffer
 	CleanupOnStart(&warnings)
 	if warnings.Len() != 0 {
@@ -137,6 +154,99 @@ func TestWindowsReplacementChild(t *testing.T) {
 	default:
 		t.Fatalf("unknown child mode %q", mode)
 	}
+}
+
+func TestWindowsReplacementLock(t *testing.T) {
+	target, _ := replacementFixture(t)
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { unlock() }()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe := func(busy string) {
+		t.Helper()
+		child := exec.CommandContext(t.Context(), exe, "-test.run=^TestWindowsReplacementChild$") // #nosec G204 -- current test executable
+		child.Env = append(os.Environ(), windowsHelperMode+"=lock probe", "PIPELOCK_TEST_LOCK_TARGET="+target, "PIPELOCK_TEST_LOCK_BUSY="+busy)
+		if out, err := child.CombinedOutput(); err != nil {
+			t.Fatalf("cross-process lock probe: %v\n%s", err, out)
+		}
+	}
+	probe("true")
+	lockPath := target + replacementSuffix + ".lock"
+	if err := os.Remove(lockPath); err == nil {
+		t.Fatal("held lock could be deleted")
+	}
+	unlock()
+	unlock = func() {}
+	probe("false")
+}
+
+func TestWindowsReplacementLockInvalidPaths(t *testing.T) {
+	for _, kind := range []string{"invalid name", "missing parent", "directory", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			target, _ := replacementFixture(t)
+			lockPath := target + replacementSuffix + ".lock"
+			switch kind {
+			case "invalid name":
+				target += "\x00"
+			case "missing parent":
+				target = filepath.Join(target, "missing", "pipelock.exe")
+			case "directory":
+				if err := os.Mkdir(lockPath, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink(target, lockPath); err != nil {
+					t.Skipf("symlink unavailable: %v", err)
+				}
+			}
+			unlock, err := acquireReplacementLock(target)
+			if unlock != nil {
+				unlock()
+			}
+			if err == nil {
+				t.Fatal("accepted invalid lock path")
+			}
+		})
+	}
+}
+
+func TestWindowsReplacementCleanupExcludesLaterUpdate(t *testing.T) {
+	target, candidate := replacementFixture(t)
+	if _, err := installBinary(target, candidate); err != nil {
+		t.Fatal(err)
+	}
+	next := filepath.Join(filepath.Dir(target), "next.exe")
+	writeReplacementFixture(t, next, changedBytes)
+	aside := filepath.Join(target+replacementSuffix, priorImageName)
+	checked := false
+	err := cleanupReplacement(target, replacementOps{digest: func(path string) (string, error) {
+		digest, err := binaryDigest(path)
+		if path == aside {
+			checked = true
+			if _, err := installBinary(target, next); !errors.Is(err, errReplacementBusy) {
+				t.Fatalf("update while cleanup owns recovery = %v", err)
+			}
+			if _, err := rollback(target); !errors.Is(err, errReplacementBusy) {
+				t.Fatalf("rollback while cleanup owns recovery = %v", err)
+			}
+			assertReplacementBytes(t, target+backupSuffix, originalBytes)
+		}
+		return digest, err
+	}})
+	if err != nil || !checked {
+		t.Fatalf("cleanup = %v, checked contention = %v", err, checked)
+	}
+	if _, err := installBinary(target, next); err != nil {
+		t.Fatal(err)
+	}
+	assertReplacementBytes(t, aside, replacementBytes)
+	assertReplacementBytes(t, target, changedBytes)
+	assertReplacementBytes(t, target+backupSuffix, replacementBytes)
 }
 
 func TestWindowsMoveWithoutReplace(t *testing.T) {
