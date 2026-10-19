@@ -6,9 +6,15 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -38,6 +44,107 @@ func (c *interceptFrameConn) Read(p []byte) (int, error) {
 	_, _ = c.buf.Write(p[:n])
 	c.mu.Unlock()
 	return n, err
+}
+
+func (c *interceptFrameConn) ConnectionState() tls.ConnectionState {
+	return c.Conn.(*tls.Conn).ConnectionState()
+}
+
+func (c *interceptFrameConn) HandshakeContext(ctx context.Context) error {
+	return c.Conn.(*tls.Conn).HandshakeContext(ctx)
+}
+
+// interceptFrameListener records the one accepted TLS connection. net/http
+// serves HTTP/2 on any connection that can report its handshake, so the test
+// does not call the deprecated HTTP/2 ServeConn entry point.
+type interceptFrameListener struct {
+	net.Listener
+	conn *interceptFrameConn
+}
+
+func (l *interceptFrameListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	tlsConn, ok := c.(*tls.Conn)
+	if !ok || l.conn.Conn != nil {
+		_ = c.Close()
+		return nil, fmt.Errorf("upstream accepted %T", c)
+	}
+	l.conn.Conn = tlsConn
+	return l.conn, nil
+}
+
+func framingTestCert(t *testing.T) (tls.Certificate, *x509.CertPool) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 62))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: "api.vendor.example"},
+		DNSNames:     []string{"api.vendor.example"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, pool
+}
+
+func startObservedHTTP2Upstream(t *testing.T, handler http.Handler) (*http.Transport, *interceptFrameConn) {
+	t.Helper()
+	cert, pool := framingTestCert(t)
+	raw, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		NextProtos:   []string{"h2"},
+	}
+	observed := &interceptFrameConn{}
+	ln := &interceptFrameListener{Listener: tls.NewListener(raw, tlsCfg), conn: observed}
+	srv := &http.Server{Handler: handler, TLSConfig: tlsCfg, ReadHeaderTimeout: 5 * time.Second}
+	serveDone := make(chan struct{})
+	go func() {
+		_ = srv.Serve(ln)
+		close(serveDone)
+	}()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		<-serveDone
+	})
+	transport := &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			RootCAs:    pool,
+			ServerName: "api.vendor.example",
+		},
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, raw.Addr().String())
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	return transport, observed
 }
 
 func (c *interceptFrameConn) requestFrames() (bool, int, error) {
@@ -100,38 +207,20 @@ func TestInterceptTunnelRequestBodyFraming(t *testing.T) {
 				err          error
 			}
 			seen := make(chan observation, 1)
-			upstream := httptest.NewUnstartedServer(nil)
-			upstream.EnableHTTP2 = true
-			upstream.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
-				"h2": func(_ *http.Server, conn *tls.Conn, _ http.Handler) {
-					recorded := &interceptFrameConn{Conn: conn}
-					// net/http does not expose decrypted HTTP/2 frames. ServeConn
-					// lets this test observe framing without replacing the protocol.
-					server := &http2.Server{} //nolint:staticcheck // Frame observation requires ServeConn.
-					//nolint:staticcheck // Frame observation requires ServeConn.
-					server.ServeConn(recorded, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						body, err := io.ReadAll(r.Body)
-						endStream, frames, frameErr := recorded.requestFrames()
-						if err == nil {
-							err = frameErr
-						}
-						seen <- observation{body: string(body), lengthHeader: r.Header.Get("Content-Length"), endStream: endStream, dataFrames: frames, err: err}
-						if r.ProtoMajor != 2 || (r.Method == http.MethodGet && (!endStream || frames != 0 || r.Header.Get("Content-Length") != "")) {
-							http.Error(w, "unexpected request body framing", http.StatusBadRequest)
-							return
-						}
-						_, _ = io.WriteString(w, "accepted")
-					})})
-				},
-			}
-			upstream.StartTLS()
-			t.Cleanup(upstream.Close)
-			upstreamTransport := upstream.Client().Transport.(*http.Transport)
-			upstreamTransport.TLSClientConfig.ServerName = upstream.Listener.Addr().(*net.TCPAddr).IP.String()
-			upstreamTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
-			}
-			t.Cleanup(upstreamTransport.CloseIdleConnections)
+			var recorded *interceptFrameConn
+			upstreamTransport, recorded := startObservedHTTP2Upstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				endStream, frames, frameErr := recorded.requestFrames()
+				if err == nil {
+					err = frameErr
+				}
+				seen <- observation{body: string(body), lengthHeader: r.Header.Get("Content-Length"), endStream: endStream, dataFrames: frames, err: err}
+				if r.ProtoMajor != 2 || (r.Method == http.MethodGet && (!endStream || frames != 0 || r.Header.Get("Content-Length") != "")) {
+					http.Error(w, "unexpected request body framing", http.StatusBadRequest)
+					return
+				}
+				_, _ = io.WriteString(w, "accepted")
+			}))
 
 			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
 			cfg.RequestBodyScanning.Enabled = tc.scan
