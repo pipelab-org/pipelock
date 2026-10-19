@@ -17,7 +17,6 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -237,17 +236,21 @@ func checkWritable(target string) error {
 	return nil
 }
 
-// installBinary backs up the current binary to <target>.bak (overwriting any
-// prior backup) and renames the verified temp binary into place. On rename
-// failure it restores from the backup. tmpPath and backup live in the same
-// directory as target, so the rename is atomic on one filesystem on Unix.
-//
-// Windows note: os.Rename cannot overwrite an existing file, so the old binary
-// is removed first; the replace is therefore NOT atomic on Windows, but the
-// .bak backup is the recovery path. Replacing a running .exe still fails (the
-// OS locks it) — fail-closed, backup intact.
+// installBinary saves the current binary to <target>.bak, replacing the previous
+// backup, then installs the verified candidate through the platform replacement
+// helper. That helper owns restoration; copying over a running image on failure
+// would itself fail on Windows and misreport an intact original as lost.
 func installBinary(target, tmpPath string) (backupPath string, err error) {
 	backupPath = target + backupSuffix
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		return backupPath, err
+	}
+	defer unlock()
+
+	if err := checkReplacementReady(target); err != nil {
+		return backupPath, err
+	}
 
 	// Back up the current binary by copying its bytes (the original keeps its
 	// inode; copy preserves the running process's mapping on Linux).
@@ -256,12 +259,7 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 	}
 
 	if err := replaceBinary(tmpPath, target); err != nil {
-		// Restore from backup on failure, best-effort.
-		if restoreErr := copyFile(backupPath, target); restoreErr != nil {
-			return backupPath, fmt.Errorf("install failed AND restore failed (backup at %s): %w",
-				backupPath, errors.Join(err, restoreErr))
-		}
-		return backupPath, fmt.Errorf("installing new binary: %w (restored from backup)", err)
+		return backupPath, fmt.Errorf("installing new binary (backup at %s): %w", backupPath, err)
 	}
 	return backupPath, nil
 }
@@ -270,6 +268,11 @@ func installBinary(target, tmpPath string) (backupPath string, err error) {
 // no backup exists.
 func rollback(target string) (backupPath string, err error) {
 	backupPath = target + backupSuffix
+	unlock, err := acquireReplacementLock(target)
+	if err != nil {
+		return backupPath, err
+	}
+	defer unlock()
 	if _, statErr := os.Stat(backupPath); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			return backupPath, ErrNoBackup
@@ -284,29 +287,16 @@ func rollback(target string) (backupPath string, err error) {
 	}
 	tmpPath := tmp.Name()
 	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
 	if err := copyFile(backupPath, tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("staging backup: %w", err)
 	}
-	if err := replaceBinary(tmpPath, target); err != nil {
+	if err := restoreBinary(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return backupPath, fmt.Errorf("restoring backup: %w", err)
 	}
 	return backupPath, nil
-}
-
-// replaceBinary moves the staged file at tmpPath over target. On Unix this is an
-// atomic rename. On Windows os.Rename cannot overwrite an existing file, so the
-// old target is removed first — NOT atomic, but install/rollback both keep a
-// .bak backup as the recovery path. Replacing a running .exe still fails (the OS
-// locks it): fail-closed, backup intact.
-func replaceBinary(tmpPath, target string) error {
-	if runtime.GOOS == "windows" {
-		if rmErr := os.Remove(target); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
-			return rmErr
-		}
-	}
-	return os.Rename(tmpPath, target)
 }
 
 // copyFile copies src to dst with the executable binary perm. dst is written

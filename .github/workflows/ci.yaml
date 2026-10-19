@@ -1119,6 +1119,9 @@ jobs:
       - name: internal/config test package builds on Windows
         run: go test -count=1 -run "TestWindows" ./internal/config/...
 
+      - name: Replace and roll back a running Windows executable
+        run: go test -count=1 ./internal/cli/selfupdate/...
+
   test-windows-arm64:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
@@ -1168,6 +1171,9 @@ jobs:
 
       - name: internal/config test package builds on Windows
         run: go test -count=1 -run "TestWindows" ./internal/config/...
+
+      - name: Replace and roll back a running Windows executable
+        run: go test -count=1 ./internal/cli/selfupdate/...
 
   # Native linux/arm64 lane. GoReleaser publishes a linux/arm64 binary
   # (.goreleaser.yaml) and no job has ever executed a test on that architecture,
