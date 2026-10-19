@@ -155,7 +155,14 @@ func restorePriorImage(target, aside, original string, ops replacementOps, insta
 	// A failed rollback still needs the earlier update's recovery image and
 	// record. Installation can clean its own new record after restoration.
 	if !retainRecovery {
-		_ = cleanupRecovery(target, ops)
+		// The saved image has moved back to target, even if its bytes changed
+		// during installation. Remove only this installation's record and empty
+		// directory; image validation would reject those restored changed bytes.
+		// A failed record removal or any unexpected entry leaves the directory.
+		dir := target + replacementSuffix
+		if err := removeIfPresent(ops, filepath.Join(dir, replacementRecordName)); err == nil {
+			_ = removeIfPresent(ops, dir)
+		}
 	}
 	if state := originalState(target, original, ops); state != "original unchanged" {
 		return fmt.Errorf("replacement failed; saved image restored (%s): %w", state, installErr)

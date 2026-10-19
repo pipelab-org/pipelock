@@ -377,6 +377,35 @@ func TestReplacementRejectsUnownedPaths(t *testing.T) {
 	}
 }
 
+func TestReplacementChangedImageRestoreCleanup(t *testing.T) {
+	for _, extra := range []bool{false, true} {
+		t.Run(fmt.Sprintf("extra entry=%t", extra), func(t *testing.T) {
+			target, candidate := replacementFixture(t)
+			dir := target + replacementSuffix
+			err := replaceRunningBinary(candidate, target, replacementOps{move: func(src, dst string) error {
+				err := simulatedMove(src, dst)
+				if err == nil && src == target {
+					writeReplacementFixture(t, dst, changedBytes)
+					if extra {
+						writeReplacementFixture(t, filepath.Join(dir, "unrelated"), "keep")
+					}
+				}
+				return err
+			}})
+			if err == nil || !strings.Contains(err.Error(), "saved image restored (target changed)") {
+				t.Fatalf("replacement = %v", err)
+			}
+			assertReplacementBytes(t, target, changedBytes)
+			assertReplacementBytes(t, candidate, replacementBytes)
+			if extra {
+				assertReplacementBytes(t, filepath.Join(dir, "unrelated"), "keep")
+			} else if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("empty recovery state remains: %v", err)
+			}
+		})
+	}
+}
+
 func TestReplacementRestoreCleanupFailure(t *testing.T) {
 	target, candidate := replacementFixture(t)
 	err := replaceRunningBinary(candidate, target, replacementOps{move: func(src, dst string) error {
@@ -516,7 +545,7 @@ func TestReplacementRetainedRollback(t *testing.T) {
 				return simulatedMove(src, dst)
 			}
 		}, want: "restore failed (target missing)"},
-		{name: "restore collision", mutate: func(_ *testing.T, target, candidate string, ops *replacementOps) {
+		{name: "restore collision", mutate: func(t *testing.T, target, candidate string, ops *replacementOps) {
 			ops.move = func(src, dst string) error {
 				if src == candidate {
 					writeReplacementFixture(t, target, changedBytes)
