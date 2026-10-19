@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -104,7 +105,7 @@ func TestReplacementPhases(t *testing.T) {
 				t.Fatal(err)
 			}
 			writeReplacementFixture(t, filepath.Join(target+replacementSuffix, "unrelated"), "keep")
-		}, want: "reserving recovery directory", target: originalBytes},
+		}, want: "remove that directory and retry", target: originalBytes},
 		{name: "record collision", setup: func(t *testing.T, _, _ string, ops *replacementOps) {
 			ops.write = func(path string, _ []byte, _ os.FileMode) error {
 				writeReplacementFixture(t, path, "unrelated record")
@@ -242,6 +243,13 @@ func TestReplacementCleanup(t *testing.T) {
 			writeReplacementFixture(t, target, originalBytes)
 			if err := os.Remove(filepath.Join(target+replacementSuffix, priorImageName)); err != nil {
 				t.Fatal(err)
+			}
+		}},
+		{name: "empty directory after interrupted cleanup", mutate: func(t *testing.T, target string) {
+			for _, name := range []string{priorImageName, replacementRecordName} {
+				if err := os.Remove(filepath.Join(target+replacementSuffix, name)); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}},
 		{name: "changed prior", mutate: func(t *testing.T, target string) {
@@ -416,4 +424,57 @@ func TestReplacementDigestBoundsAndPermissions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Simultaneous starts after an update all try to finish the same cleanup. Only
+// real failures may surface; losing the race to another process is not one.
+func TestReplacementConcurrentCleanup(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		target, candidate := replacementFixture(t)
+		if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+			t.Fatal(err)
+		}
+		errs := make([]error, 4)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = cleanupReplacement(target, replacementOps{})
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if _, err := os.Lstat(target + replacementSuffix); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("recovery directory remains: %v", err)
+		}
+	}
+}
+
+// A later install by another tool leaves recovery state cleanup cannot prove it
+// owns. It is retained, and the next update tells the operator how to proceed
+// without touching the installed image or the rollback backup.
+func TestReplacementRetainedRecoveryBlocksUpdate(t *testing.T) {
+	target, candidate := replacementFixture(t)
+	writeReplacementFixture(t, target+backupSuffix, "rollback")
+	if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+		t.Fatal(err)
+	}
+	writeReplacementFixture(t, target, changedBytes)
+	if err := cleanupReplacement(target, replacementOps{}); err == nil || !strings.Contains(err.Error(), "images differ") {
+		t.Fatalf("cleanup error=%v, want images differ", err)
+	}
+	next := filepath.Join(filepath.Dir(target), "next.exe")
+	writeReplacementFixture(t, next, "next update")
+	err := replaceRunningBinary(next, target, replacementOps{move: simulatedMove})
+	if err == nil || !strings.Contains(err.Error(), "remove that directory and retry") || !errors.Is(err, os.ErrExist) {
+		t.Fatalf("update error=%v, want operator remedy wrapping ErrExist", err)
+	}
+	assertReplacementBytes(t, target, changedBytes)
+	assertReplacementBytes(t, target+backupSuffix, "rollback")
+	assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)
 }

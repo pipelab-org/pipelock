@@ -91,6 +91,12 @@ func replaceRunningBinary(candidate, target string, ops replacementOps) error {
 	}
 	dir := target + replacementSuffix
 	if err := ops.mkdir(dir, 0o750); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			// Cleanup never removes state it cannot prove it owns, so this
+			// stays blocked until the operator inspects it.
+			return fmt.Errorf("recovery directory %q remains from an earlier update; original unchanged. "+
+				"After confirming %q runs correctly, remove that directory and retry: %w", dir, target, err)
+		}
 		return fmt.Errorf("reserving recovery directory %q; original unchanged: %w", dir, err)
 	}
 	record := filepath.Join(dir, replacementRecordName)
@@ -152,6 +158,29 @@ func restorePriorImage(target, aside, original string, ops replacementOps, insta
 // cleanupReplacement is deliberately conservative: an unrecognized directory,
 // record, changed image or extra entry is left for operator inspection.
 func cleanupReplacement(target string, ops replacementOps) error {
+	err := cleanupRecovery(target, ops)
+	if errors.Is(err, os.ErrNotExist) {
+		// Simultaneous starts race to finish the same cleanup; an entry another
+		// process just removed is not a failure. Look once more.
+		err = cleanupRecovery(target, ops)
+	}
+	if err != nil {
+		if _, statErr := os.Lstat(target + replacementSuffix); errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		}
+	}
+	return err
+}
+
+// removeIfPresent treats an entry already removed by another start as done.
+func removeIfPresent(ops replacementOps, path string) error {
+	if err := ops.remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func cleanupRecovery(target string, ops replacementOps) error {
 	ops = ops.defaults()
 	dir := target + replacementSuffix
 	info, err := os.Lstat(dir)
@@ -178,6 +207,13 @@ func cleanupReplacement(target string, ops replacementOps) error {
 		if entry.Name() != priorImageName && entry.Name() != replacementRecordName {
 			return fmt.Errorf("unrecognized recovery entry %q", filepath.Join(dir, entry.Name()))
 		}
+	}
+	if len(entries) == 0 {
+		// Left by a start that stopped after removing the record. Nothing is owned.
+		if err := removeIfPresent(ops, dir); err != nil {
+			return fmt.Errorf("removing recovery directory: %w", err)
+		}
+		return nil
 	}
 	record := filepath.Join(dir, replacementRecordName)
 	info, err = os.Lstat(record)
@@ -222,14 +258,14 @@ func cleanupReplacement(target string, ops replacementOps) error {
 		if prior != old || current != next {
 			return errors.New("images differ from recovery record; retaining prior image")
 		}
-		if err := ops.remove(aside); err != nil {
+		if err := removeIfPresent(ops, aside); err != nil {
 			return fmt.Errorf("removing prior image %q: %w", aside, err)
 		}
 	}
-	if err := ops.remove(record); err != nil {
+	if err := removeIfPresent(ops, record); err != nil {
 		return fmt.Errorf("removing recovery record: %w", err)
 	}
-	if err := ops.remove(dir); err != nil {
+	if err := removeIfPresent(ops, dir); err != nil {
 		// Retain the ownership record for retry if the final directory removal
 		// fails. Never overwrite a colliding record or follow a replaced dir.
 		currentDir, statErr := os.Lstat(dir)

@@ -73,8 +73,21 @@ installed binary unchanged**:
    tar-traversal protection).
 6. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
    prior backup), then atomically rename the verified temp binary into place.
-   On Linux, renaming over a running executable is allowed. If the rename fails,
-   the binary is restored from the backup.
+   On Linux and macOS, renaming over a running executable is allowed, and a
+   failed rename leaves the original untouched.
+
+   Windows cannot delete a running executable but can rename it. There the
+   updater moves the running image into a recovery directory named
+   `<binary>.pipelock-update`, then moves the verified binary into place. These
+   are two renames, not one atomic step. If the second fails, the original is
+   moved back; the error states whether the original is intact, restored, or
+   needs manual recovery and where the saved image is. The next start of the
+   new binary removes the recovery directory once it can prove it holds only
+   the files the updater recorded; anything else is kept, with a warning. If
+   the process or machine stops between the two renames, the binary is missing:
+   move `previous.exe` from the recovery directory back, or copy `<binary>.bak`
+   into place. A retained recovery directory blocks the next update until you
+   remove it. `<binary>.bak` is never touched by this cleanup.
 
 ### Authenticity model (native vs cosign)
 
@@ -99,7 +112,8 @@ check.
 ## Rollback
 
 `pipelock update --rollback` restores `<binary>.bak` over the current binary
-using the same atomic rename. If no backup exists, it reports a clear error.
+using the same replacement as an update (the Windows recovery directory
+applies here too). If no backup exists, it reports a clear error.
 
 ## Privileged install paths
 
