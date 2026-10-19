@@ -1217,6 +1217,12 @@ func TestCovNSInstallNetworkNamespaceUndoInactiveStateCleanupFailures(t *testing
 func TestCovNSInstallNetworkNamespaceUndoActiveStateRestoreFailures(t *testing.T) {
 	env, runner, out := newFakeEnv(t)
 	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9222, Owner: "x", Reason: "y", ExpiresAt: futureExpiryForTest}
+	services := []config.ContainmentLoopbackService{service}
+	// Active socket state must have matching installed units. Keep these
+	// unchanged so this test exercises restoration rather than rebinding.
+	if _, err := stepInstallNetworkNamespaceWithServices(&services).apply(t.Context(), env); err != nil {
+		t.Fatal(err)
+	}
 	unit := loopbackForwarderUnitBase(service.Host, service.Port)
 	legacyBody := "[Service]\nSlice=pipelock_contained.slice\n"
 	if err := os.WriteFile(env.ownedLoopbackAnchorUnitPath, []byte(legacyBody), 0o600); err != nil {
@@ -1240,7 +1246,6 @@ func TestCovNSInstallNetworkNamespaceUndoActiveStateRestoreFailures(t *testing.T
 	}
 	runner.on(argvFor(testSystemctl, "start", nsUnit), "denied", 1, nil)
 
-	services := []config.ContainmentLoopbackService{service}
 	laterFailure := step{
 		name: "later-failure",
 		desc: "force namespace rollback",

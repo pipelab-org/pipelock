@@ -176,6 +176,8 @@ On systemd 253 or newer, newly installed `pipelock.service` units are `Type=noti
 
 `contain install` writes the unit and runs `systemctl daemon-reload`; when it replaces a running managed unit or binary, it restarts the service. An old `Type=simple` unit with a new binary remains compatible (the notifier is a no-op because systemd does not provide `NOTIFY_SOCKET`). A new `Type=notify-reload` unit needs the matching new binary: an old binary never sends `READY=1`, so systemd waits until its start timeout.
 
+When a managed doorway socket's definition changes while it is active, install stops that socket, stops its managed relay, reloads systemd, starts the socket, and checks that the new socket pathname exists before starting its namespace forwarder. An unchanged active socket stays up. Before reporting success, install requests the proxy's `/health` endpoint from inside the agent namespace, using the same probe as `contain verify`. A failed doorway check triggers rollback, including restoration of the previous socket definition and listener.
+
 Exit codes:
 
 - **0**, all steps applied (or already in place).

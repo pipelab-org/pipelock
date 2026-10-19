@@ -237,9 +237,9 @@ func walkJSONStringLeaves(decoder *json.Decoder, out map[string]struct{}, path [
 // key/value walk, the field name) between the two halves, and no pattern
 // can match across that.
 //
-// A value identical to the previous value on the same path is not appended:
-// envelope fields such as ids and model names repeat on every frame and
-// would otherwise grow into a tail that only adds false positives.
+// Identical values on envelope paths are not appended: ids and model names
+// repeat on every frame and would otherwise add false positives. Text paths
+// retain every occurrence, matching a client appending repeated deltas.
 //
 // When the path budget is exhausted a path is evicted, preferring the least
 // recently seen path that is not a streamed text member, and its last
@@ -258,8 +258,7 @@ type FieldTails struct {
 	// stream is the stream-level text tail: every frame's text-bearing
 	// leaves joined in arrival order regardless of path, so a value whose
 	// array index or text member changes between frames is still joined.
-	stream     string
-	streamLast [sha256.Size]byte
+	stream string
 }
 
 type fieldTail struct {
@@ -303,7 +302,7 @@ type FieldTailView struct {
 	Joined string
 }
 
-// Views returns what to scan for frame: for every leaf whose value changed
+// Views returns what to scan for frame: for every text leaf or changed envelope leaf
 // and whose path retains earlier content, that content followed by the
 // value. A leaf without retained bytes adds no view, since the caller's
 // per-frame scan already covers the value alone.
@@ -318,12 +317,12 @@ func (t *FieldTails) Views(frame FieldTailFrame) []FieldTailView {
 			continue
 		}
 		state := t.tails[path]
-		if state == nil || state.text == "" || state.last == sha256.Sum256(value) {
+		if state == nil || state.text == "" || (!state.priority && state.last == sha256.Sum256(value)) {
 			continue
 		}
 		views = append(views, FieldTailView{Tail: state.text, Value: string(value), Joined: state.text + t.separator + string(value)})
 	}
-	if text := t.streamText(frame); text != "" && t.stream != "" && t.streamLast != sha256.Sum256([]byte(text)) {
+	if text := t.streamText(frame); text != "" && t.stream != "" {
 		stream := FieldTailView{Tail: t.stream, Value: text, Joined: t.stream + t.separator + text}
 		duplicate := false
 		for _, view := range views {
@@ -368,14 +367,14 @@ func (t *FieldTails) Incomplete(frame FieldTailFrame) bool {
 		if t.saturated {
 			return true
 		}
-		if last, ok := t.evicted[sha256.Sum256([]byte(path))]; ok && last != sha256.Sum256(value) {
+		if last, ok := t.evicted[sha256.Sum256([]byte(path))]; ok && (fieldTailPriority(path) || last != sha256.Sum256(value)) {
 			return true
 		}
 	}
 	return false
 }
 
-// Advance records frame's changed values into their path tails. reset drops
+// Advance records frame's text occurrences and changed envelope values. reset drops
 // every retained byte and eviction record first (the caller reported a
 // finding and must not report the same bytes again), while still
 // remembering the current values so repeated envelope fields stay out of the
@@ -396,13 +395,8 @@ func (t *FieldTails) Advance(frame FieldTailFrame, reset bool) {
 	if !frame.OK {
 		return
 	}
-	if text := t.streamText(frame); text != "" {
-		if sum := sha256.Sum256([]byte(text)); sum != t.streamLast {
-			t.streamLast = sum
-			if !reset {
-				t.stream = rollFieldTail(t.stream, text, t.separator)
-			}
-		}
+	if text := t.streamText(frame); text != "" && !reset {
+		t.stream = rollFieldTail(t.stream, text, t.separator)
 	}
 	if frame.Overflow && !reset {
 		t.saturated = true
@@ -423,7 +417,7 @@ func (t *FieldTails) Advance(frame FieldTailFrame, reset bool) {
 			delete(t.evicted, sha256.Sum256([]byte(path)))
 		}
 		state.seen = t.clock
-		if state.last == sum {
+		if state.last == sum && !state.priority {
 			continue
 		}
 		state.last = sum

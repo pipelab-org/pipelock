@@ -13,6 +13,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
+	"github.com/luckyPipewrench/pipelock/internal/edition/licenseclocktest"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestLicenseExpiryWatchdogClosesCIDRGeneration(t *testing.T) {
@@ -30,16 +32,25 @@ func TestLicenseExpiryWatchdogClosesCIDRGeneration(t *testing.T) {
 		t.Fatal("positive control must have no dedicated listener or Conductor")
 	}
 	// Set the already-verified entitlement's runtime deadline before serving.
-	s.cfg.LicenseExpiresAt = time.Now().Add(2 * time.Second).Unix()
+	// License time stands still until advanced, so setup cannot race it.
+	clk := licenseclocktest.Install(t, time.Now().Add(-licenseclocktest.WallOffset))
+	s.cfg.LicenseExpiresAt = clk.Now().Add(time.Hour).Unix()
 	ra, ok := s.proxy.Edition().LookupProfile("client")
 	if !ok || ra.LicenseRevoked == nil {
 		t.Fatal("positive control: paid profile missing")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
+	done := runJoined(t, ctx, s.Start, nil)
 	waitForServerCancel(t, s)
+	// The per-connection timer is not involved here; only the watchdog arms.
+	testwait.For(t, 5*time.Second, func() bool { return clk.Pending() > 0 }, "runtime expiry watchdog armed")
+	select {
+	case <-ra.LicenseRevoked:
+		t.Fatal("generation ended before the license deadline")
+	default:
+	}
+	clk.Advance(time.Hour)
 	select {
 	case <-ra.LicenseRevoked:
 	case <-time.After(5 * time.Second):

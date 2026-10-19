@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
@@ -16,6 +18,7 @@ import (
 	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func inputDeltaMessage(eventID, delta string) string {
@@ -44,9 +47,11 @@ func sendExpectClosed(t *testing.T, conn net.Conn, msg string) {
 	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(msg)); err != nil {
 		return // already closed
 	}
-	if reply, _, err := wsutil.ReadServerData(conn); err == nil {
+	reply, _, err := wsutil.ReadServerData(conn)
+	if err == nil {
 		t.Fatalf("message forwarded, echo %q; want connection closed", reply)
 	}
+	requireWSClosed(t, err)
 }
 
 func TestWSProxy_CrossMessageDLP_JSONFieldSplitKey(t *testing.T) {
@@ -190,6 +195,7 @@ func receiveUpstreamMessages(t *testing.T, cfgMod func(*config.Config), msgs []s
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		reply, op, err := wsutil.ReadServerData(conn)
 		if err != nil {
+			requireWSClosed(t, err)
 			break
 		}
 		if op == ws.OpText {
@@ -484,4 +490,94 @@ func TestWSProxy_JSONFieldTailsBenignCorpus(t *testing.T) {
 			}
 		}
 	})
+}
+
+// requireWSClosed rejects deadlines and transport failures as evidence of a block.
+func requireWSClosed(t *testing.T, err error) {
+	t.Helper()
+	var closed wsutil.ClosedError
+	if !errors.As(err, &closed) && !errors.Is(err, io.EOF) {
+		t.Fatalf("want WebSocket close or EOF, got %T: %v", err, err)
+	}
+}
+
+func TestWSProxy_RepeatedTextDeltaCredential(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+	proxyAddr, proxyCleanup := setupWSProxy(t, nil)
+	defer proxyCleanup()
+	conn := dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+	parts := []string{"AKIA" + "IOSFO", "D", "N", "N", "7" + testWSExample}
+	for i, part := range parts[:4] {
+		sendExpectEcho(t, conn, inputDeltaMessage(strconv.Itoa(i), part))
+	}
+	sendExpectClosed(t, conn, inputDeltaMessage("last", parts[4]))
+}
+
+func TestWSMessageLooksLikeJSON(t *testing.T) {
+	for _, tc := range []struct {
+		name, msg string
+		want      bool
+	}{
+		{"object", `{}`, true},
+		{"array", `[]`, true},
+		{"whitespace", " \t\r\n{}", true},
+		{"empty", "", false},
+		{"spaces", " \n", false},
+		{"plain text", "hello", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := wsMessageLooksLikeJSON([]byte(tc.msg)); got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWSClientCEEFragmentLeavesGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name, msg                        string
+		text, proxy, enabled, wantLeaves bool
+	}{
+		{"binary", `{"text":"hello"}`, false, true, true, false},
+		{"nil proxy", `{"text":"hello"}`, true, false, true, false},
+		{"disabled", `{"text":"hello"}`, true, true, false, false},
+		{"plain text", "hello", true, true, true, false},
+		{"whitespace JSON", " \t\n" + `{"text":"hello"}`, true, true, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			if tc.enabled {
+				enableJSONCrossRequestDetection(cfg)
+			} else {
+				cfg.CrossRequestDetection.Enabled = false
+			}
+			relay := &wsRelay{cfg: cfg}
+			if tc.proxy {
+				relay.proxy = &Proxy{}
+				relay.proxy.cfgPtr.Store(cfg)
+				f := cfg.CrossRequestDetection.FragmentReassembly
+				relay.proxy.fragmentBufferPtr.Store(scanner.NewFragmentBuffer(f.MaxBufferBytes, f.ResolvedMaxSessions(), f.WindowMinutes*60))
+			}
+			leaves, joined, reason := relay.clientCEEFragmentLeaves([]byte(tc.msg), tc.text)
+			if reason != "" {
+				t.Fatalf("reason = %q", reason)
+			}
+			if !tc.wantLeaves {
+				if len(leaves) != 0 || len(joined) != 0 {
+					t.Fatalf("unexpected partition: %v %v", leaves, joined)
+				}
+				return
+			}
+			if len(leaves) != 1 || len(joined) != 1 {
+				t.Fatalf("partition = %v %v", leaves, joined)
+			}
+			for _, value := range joined {
+				if string(value) != "hello" {
+					t.Fatalf("joined = %q", value)
+				}
+			}
+		})
+	}
 }

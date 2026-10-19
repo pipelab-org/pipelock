@@ -230,6 +230,54 @@ func TestStepWaitPipelockReadyUsesInstallBudget(t *testing.T) {
 	}
 }
 
+func TestInstallDoorwayReadinessRequiresNamespaceHealth(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code int
+		err  error
+	}{
+		{name: "healthy doorway"},
+		{name: "host TCP alone", code: 7},
+		{name: "namespace probe could not run", err: errors.New("systemd-run failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner, out := newFakeEnv(t)
+			env.curlPath = "/custom/bin/curl"
+			hostDialed := false
+			env.dialCtx = func(context.Context, string, string, time.Duration) (net.Conn, error) {
+				hostDialed = true
+				return &fakeConn{}, nil
+			}
+			probe := &probeEnv{agentUserName: env.agentUserName, port: env.proxyPort, curlPath: env.curlPath}
+			args := namespaceProbeSystemdRunArgs(probe, []string{
+				env.curlPath, "--noproxy", "*", "--connect-timeout", "2", "--max-time", "5",
+				"--silent", "--show-error", "--fail", "http://127.0.0.1:8888/health",
+			})
+			command := argvFor(systemdRunPath, args...)
+			runner.on(command, "doorway unavailable", tc.code, tc.err)
+			_, err := runSteps(t.Context(), env, out, []step{stepInstallNetworkNamespace(), stepWaitPipelockReady()})
+			if !hostDialed || !fakeRunnerCalled(runner, command) {
+				t.Fatalf("readiness did not check host and namespace: %v", runner.calls)
+			}
+			if tc.code == 0 && tc.err == nil {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), "installed proxy doorway failed readiness") {
+				t.Fatalf("readiness = %v, want namespace health failure", err)
+			}
+			if _, statErr := os.Stat(env.proxyForwarderSocketPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("namespace install not rolled back: %v", statErr)
+			}
+			if !strings.Contains(out.String(), "undo install-agent-network-namespace") {
+				t.Fatalf("missing rollback: %s", out)
+			}
+		})
+	}
+}
+
 func TestStepChownToProxy_CallsChownPerFile(t *testing.T) {
 	env, _, _ := newFakeEnv(t)
 	if err := os.MkdirAll(env.configDir, 0o750); err != nil {

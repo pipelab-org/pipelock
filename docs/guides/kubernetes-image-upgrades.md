@@ -34,7 +34,7 @@ Use GitHub CLI v2.102.0 or later for attestation verification; this release fixe
 ```bash
 PIPELOCK_RELEASE=v3.7.0
 PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
-PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
+PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
 test -n "$PIPELOCK_COMMIT"
@@ -93,7 +93,7 @@ release you are verifying. Verify the chart, keep the digest the attestation
 names, and confirm the archive you pull has that same digest:
 
 ```bash
-PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
+PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
 test -n "$PIPELOCK_COMMIT"

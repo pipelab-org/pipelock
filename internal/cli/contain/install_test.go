@@ -988,6 +988,21 @@ func TestStepPreflightRefusesMissingLaterPrerequisites(t *testing.T) {
 		}
 	})
 
+	t.Run("missing curl", func(t *testing.T) {
+		env := preflightReadyEnv(t)
+		realStat := env.stat
+		env.stat = func(path string) (os.FileInfo, error) {
+			if path == env.curlPath {
+				return nil, os.ErrNotExist
+			}
+			return realStat(path)
+		}
+		applied, err := stepPreflight(installOpts{}).apply(context.Background(), env)
+		if err == nil || applied || !strings.Contains(err.Error(), "curl") {
+			t.Fatalf("preflight must refuse a host without curl: applied=%v err=%v", applied, err)
+		}
+	})
+
 	t.Run("missing certutil", func(t *testing.T) {
 		env := preflightReadyEnv(t)
 		env.platformFamily = platformFamilyDebian

@@ -11,7 +11,7 @@ Thanks for your interest in making AI agents more secure.
 ## Quick Start
 
 ```bash
-git clone https://github.com/luckyPipewrench/pipelock.git
+git clone https://github.com/pipelab-org/pipelock.git
 cd pipelock
 make build
 make test

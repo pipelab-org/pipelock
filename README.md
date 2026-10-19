@@ -110,7 +110,7 @@ These examples target the published v3.7.0 release. For an existing deployment, 
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 make -C pipelock install
 
 # Discover local agent integrations and save a config

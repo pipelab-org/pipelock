@@ -309,3 +309,54 @@ func TestFieldTailsStreamTextKeepsFrameEndAndIndexedMembers(t *testing.T) {
 		t.Fatalf("indexed member views = %q, want a join containing one-two", joinedViews(views))
 	}
 }
+
+func TestFieldTailsPreservesRepeatedTextOccurrences(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"delta", "text", "arguments", "partial_json", "thinking", "input", "output"} {
+		t.Run(field, func(t *testing.T) {
+			tails := NewFieldTails("")
+			parts := []string{"AKIA" + "IOSFOD", "N", "N", "7EXAMPLE"}
+			var joined string
+			for i, part := range parts {
+				frame := ParseFieldTailFrame([]byte(`{"` + field + `":` + strconv.Quote(part) + `}`))
+				joined += part
+				if i > 0 && !slicesContains(joinedViews(tails.Views(frame)), joined) {
+					t.Fatalf("views = %q, want rendered text %q", joinedViews(tails.Views(frame)), joined)
+				}
+				tails.Advance(frame, false)
+			}
+			frame := ParseFieldTailFrame([]byte(`{"` + field + `":"N"}`))
+			tails.Advance(frame, true)
+			if got := tails.Views(frame); len(got) != 0 {
+				t.Fatalf("reset kept content: %v", got)
+			}
+			tails.Advance(frame, false)
+			if !slicesContains(joinedViews(tails.Views(frame)), "NN") {
+				t.Fatal("repeat after reset was dropped")
+			}
+		})
+	}
+	t.Run("stream across paths", func(t *testing.T) {
+		tails := NewFieldTails("")
+		for i, part := range []string{"A", "N", "N"} {
+			frame := ParseFieldTailFrame([]byte(`{"tool_calls":[{"index":` + strconv.Itoa(i) + `,"arguments":` + strconv.Quote(part) + `}]}`))
+			if i == 2 && !slicesContains(joinedViews(tails.Views(frame)), "ANN") {
+				t.Fatalf("stream views = %q", joinedViews(tails.Views(frame)))
+			}
+			tails.Advance(frame, false)
+		}
+		frame := ParseFieldTailFrame([]byte(`{"text":"Z"}`))
+		if !slicesContains(joinedViews(tails.Views(frame)), "ANNZ") {
+			t.Fatalf("retained stream views = %q", joinedViews(tails.Views(frame)))
+		}
+	})
+	t.Run("evicted priority occurrence fails closed", func(t *testing.T) {
+		tails := NewFieldTailsWithLimit("", 1)
+		repeated := ParseFieldTailFrame([]byte(`{"text":"N"}`))
+		tails.Advance(repeated, false)
+		tails.Advance(ParseFieldTailFrame([]byte(`{"delta":"other"}`)), false)
+		if !tails.Incomplete(repeated) {
+			t.Fatal("repeated evicted text lost its history without failing closed")
+		}
+	})
+}
