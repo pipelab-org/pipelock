@@ -52,6 +52,7 @@ func RegisterCommand(cmd *cobra.Command) {
 
 // Execute runs the root command.
 func Execute() error {
+	selfupdate.CleanupOnStart(os.Stderr)
 	return rootCmd().Execute()
 }
 
