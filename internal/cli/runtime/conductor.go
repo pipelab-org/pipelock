@@ -127,12 +127,12 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
 	beforeOutcome := s.reloadSnapshotLocked()
-	beforePolicy := s.proxy.CurrentConfig()
+	beforePolicy := s.liveConfig()
 	s.reloadDurablePending = true
 	defer func() {
 		s.reloadDurablePending = false
 		s.reloadOutcome.CandidateSourceHash = fmt.Sprintf("%x", sha256.Sum256([]byte(bundle.Payload.ConfigYAML)))
-		s.finishConductorReloadLocked(beforeOutcome, s.proxy.CurrentConfig() != beforePolicy, applyErr)
+		s.finishConductorReloadLocked(beforeOutcome, s.liveConfig() != beforePolicy, applyErr)
 	}()
 
 	// Re-check under the apply lock: teardownConductor runs concurrently (CRL
@@ -253,12 +253,12 @@ func (s *Server) recoverActiveConductorPolicy() (recoverErr error) {
 		return fmt.Errorf("building conductor recovery trust resolver: %w", err)
 	}
 	beforeOutcome := s.reloadSnapshotLocked()
-	beforePolicy := s.proxy.CurrentConfig()
+	beforePolicy := s.liveConfig()
 	s.reloadDurablePending = true
 	defer func() {
 		s.reloadDurablePending = false
 		s.reloadOutcome.CandidateSourceHash = fmt.Sprintf("%x", sha256.Sum256([]byte(active.Bundle.Payload.ConfigYAML)))
-		s.finishConductorReloadLocked(beforeOutcome, s.proxy.CurrentConfig() != beforePolicy, recoverErr)
+		s.finishConductorReloadLocked(beforeOutcome, s.liveConfig() != beforePolicy, recoverErr)
 	}()
 	_, err = (applycache.Boundary{
 		Cache: cache,
@@ -1099,7 +1099,12 @@ func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, publish
 	} else {
 		// A bundle is enforcement-only input, not a full daemon source file.
 		out.AcceptedSourceHash = ""
-		if out.PendingRestart {
+		if s.conductorApplyConsistencyError() != nil {
+			// Teardown can keep the independent denial engaged after a durably
+			// committed apply; a success verdict must not mask a denying gate.
+			out.Verdict = proxy.ReloadUncertain
+			out.Reason = conductorApplyUncertainMessage
+		} else if out.PendingRestart {
 			out.Verdict = proxy.ReloadRestartRequired
 			out.Reason = "Conductor policy committed; follower-local fields still require restart or their documented reconciliation"
 		}

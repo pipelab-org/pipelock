@@ -21,14 +21,25 @@ type reloadAttempt struct {
 	restart    []string
 }
 
+// liveConfig tolerates a manually constructed Server that has no proxy yet;
+// such a server can still reject a candidate before anything is published.
+func (s *Server) liveConfig() *config.Config {
+	if s.proxy == nil {
+		return nil
+	}
+	return s.proxy.CurrentConfig()
+}
+
 func (s *Server) initReloadIdentity() {
-	cfg := s.proxy.CurrentConfig()
 	s.reloadOutcome = proxy.ReloadOutcome{
 		InstanceID: rand.Text(), Generation: 1, Trigger: "startup",
-		AcceptedSourceHash: cfg.Hash(), CanonicalPolicyHash: cfg.CanonicalPolicyHash(),
 		Verdict: proxy.ReloadAccepted, RestartRequiredFields: []string{},
 		ReloadAvailable: s.opts.ConfigFile != "" && s.opts.ConfigFile != "-",
 		WatcherState:    "not_started",
+	}
+	if cfg := s.liveConfig(); cfg != nil {
+		s.reloadOutcome.AcceptedSourceHash = cfg.Hash()
+		s.reloadOutcome.CanonicalPolicyHash = cfg.CanonicalPolicyHash()
 	}
 }
 
@@ -73,7 +84,7 @@ func (s *Server) ReloadFile() proxy.ReloadOutcome {
 func (s *Server) reloadEventLocked(event config.ReloadEvent, trigger string) proxy.ReloadOutcome {
 	if event.Err != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), event.Err)
-		s.finishReloadLocked(&reloadAttempt{before: s.proxy.CurrentConfig(), sourceHash: event.SourceHash}, event.Err)
+		s.finishReloadLocked(&reloadAttempt{before: s.liveConfig(), sourceHash: event.SourceHash}, event.Err)
 		if s.reloadOutcome.Verdict == proxy.ReloadRejected {
 			s.reloadOutcome.Reason = "configuration loading or validation failed; inspect daemon logs for details"
 		}
@@ -92,7 +103,7 @@ func (s *Server) finishReloadLocked(attempt *reloadAttempt, err error) {
 	out := &s.reloadOutcome
 	out.Trigger = "runtime"
 	out.CandidateSourceHash = attempt.sourceHash
-	live := s.proxy.CurrentConfig()
+	live := s.liveConfig()
 	changed := live != attempt.before
 	runtimeChanged := false
 	if changed {

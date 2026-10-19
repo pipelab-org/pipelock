@@ -56,7 +56,7 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 }
 
 func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringPriorPolicy bool) (err error) {
-	attempt := &reloadAttempt{before: s.proxy.CurrentConfig()}
+	attempt := &reloadAttempt{before: s.liveConfig()}
 	if newCfg != nil {
 		attempt.sourceHash = newCfg.Hash()
 		newCfg = newCfg.Clone()
@@ -384,6 +384,25 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: dashboard_snapshot settings changed — writer is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
 			attempt.restart = append(attempt.restart, "dashboard_snapshot")
 			newCfg.DashboardSnapshot = oldCfg.DashboardSnapshot
+		}
+		// These blocks are startup-only, so a changed value is pending restart,
+		// not an activation. Preserve the running value so the drift is
+		// recomputed on every reload; preserving before ValidateReload means this
+		// branch owns the operator warning, like its siblings above.
+		if !reflect.DeepEqual(oldCfg.HealthWatchdog, newCfg.HealthWatchdog) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: health_watchdog config changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "health_watchdog")
+			newCfg.HealthWatchdog = oldCfg.HealthWatchdog
+		}
+		if !reflect.DeepEqual(oldCfg.Sandbox, newCfg.Sandbox) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sandbox config changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "sandbox")
+			newCfg.Sandbox = oldCfg.Sandbox
+		}
+		if oldCfg.Sentry.DSN != newCfg.Sentry.DSN {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sentry.dsn changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "sentry.dsn")
+			newCfg.Sentry.DSN = oldCfg.Sentry.DSN
 		}
 
 		// Dedupe identical-hash reload EVENTS within a short window.

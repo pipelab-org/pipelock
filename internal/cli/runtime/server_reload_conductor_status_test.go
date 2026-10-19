@@ -157,3 +157,18 @@ func TestReloadOutcomeConductorRetainsPriorUncertainty(t *testing.T) {
 		t.Fatalf("staging rejection obscured prior uncertainty: %+v", out)
 	}
 }
+
+// A durably committed apply must not report success while the independent
+// uncertainty gate (for example a teardown strict denial) still denies traffic.
+func TestReloadOutcomeConductorSuccessCannotMaskDenyingGate(t *testing.T) {
+	s, _ := newConductorApplyTestServer(t)
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
+	before := s.reloadSnapshotLocked()
+	s.killswitch.SetConductorApplyFailure(true, conductorApplyUncertainMessage)
+	s.finishConductorReloadLocked(before, true, nil)
+	out := s.reloadSnapshotLocked()
+	if out.Verdict != proxy.ReloadUncertain || out.Reason == "" {
+		t.Fatalf("success masked a denying gate: %+v", out)
+	}
+}
