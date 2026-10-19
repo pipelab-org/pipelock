@@ -44,7 +44,9 @@ OIDC) for ecosystem auditors. Cosign absence is allowed after native Ed25519
 verification succeeds; checksum-only updates are never allowed.
 
 The previous binary is saved to <binary>.bak so "pipelock update --rollback"
-can restore it. When downgrading to a release that predates the update command
+can restore it. On Windows, a temporary recovery directory beside the executable
+holds the running image until a later start can remove it. The .bak copy stays
+available for rollback. When downgrading to a release that predates the update command
 (before v2.8.0), the updater warns that --rollback will not be available from
 the downgraded binary and prints the manual recovery command.
 

@@ -85,10 +85,9 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 			}
 			return target
 		}, want: "restoring backup", is: func(err error) bool {
-			// Windows refuses removal before Rename; Unix fails replacement.
+			// Windows checks the target's type before moving it; Unix fails rename.
 			if runtime.GOOS == "windows" {
-				var pe *os.PathError
-				return errors.As(err, &pe)
+				return strings.Contains(err.Error(), "not a regular file")
 			}
 			var le *os.LinkError
 			return errors.As(err, &le)
@@ -149,7 +148,15 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 				if keptErr != nil || string(kept) != string(backupBytes) {
 					t.Fatalf("backup after successful rollback = %q (%v), want it kept as the recovery path", kept, keptErr)
 				}
-				assertDirEntries(t, filepath.Dir(target), "pipelock", "pipelock.bak")
+				if runtime.GOOS == "windows" {
+					assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), "current")
+					if err := cleanupReplacement(target, replacementOps{}); err != nil {
+						t.Fatalf("cleanup after rollback: %v", err)
+					}
+					assertDirEntries(t, filepath.Dir(target), "pipelock", "pipelock.bak", "pipelock"+replacementSuffix+".lock")
+				} else {
+					assertDirEntries(t, filepath.Dir(target), "pipelock", "pipelock.bak")
+				}
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -164,6 +171,9 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 			want := []string{"pipelock.bak"}
 			if tt.want == "restoring backup" {
 				want = []string{"pipelock", "pipelock.bak"}
+			}
+			if runtime.GOOS == "windows" {
+				want = append(want, "pipelock"+replacementSuffix+".lock")
 			}
 			assertDirEntries(t, filepath.Dir(target), want...)
 		})

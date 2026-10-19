@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -157,7 +158,12 @@ func TestCopyFile_RoundTrip(t *testing.T) {
 		t.Fatalf("dst = %q", got)
 	}
 	info, _ := os.Stat(dst)
-	if info.Mode().Perm() != 0o755 {
+	// os.Chmod on Windows only controls the owner's write bit.
+	if runtime.GOOS == "windows" {
+		if info.Mode().Perm()&0o200 == 0 {
+			t.Fatalf("copied file is read-only: %v", info.Mode().Perm())
+		}
+	} else if info.Mode().Perm() != 0o755 {
 		t.Fatalf("perm = %v", info.Mode().Perm())
 	}
 }

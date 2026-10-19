@@ -108,9 +108,9 @@ func (o *Options) Check(ctx context.Context) (*Status, error) {
 
 // Run performs the full verified update: resolve release -> verify the native
 // Ed25519 release manifest -> optionally verify legacy cosign material ->
-// download archive -> checksum match -> extract -> back up -> atomic replace.
-// FAIL-CLOSED at every step: any error aborts and leaves the installed binary
-// untouched.
+// download archive -> checksum match -> extract -> back up -> platform replace.
+// Verification failures leave the installed binary untouched. Replacement errors
+// report whether the original is intact, restored, or needs manual recovery.
 //
 // The cobra layer is responsible for any interactive confirmation before
 // calling Run; Run itself always proceeds (it is the "yes" path).
@@ -226,9 +226,9 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	if err != nil {
 		return st, err
 	}
-	// From here, any failure must delete tmpPath and leave target untouched.
+	// The replacement helper owns restoration if installation fails.
 
-	// --- 6. back up current + atomic replace ---
+	// --- 6. back up current + platform replacement ---
 	backup, err := installBinary(o.TargetPath, tmpPath)
 	if err != nil {
 		_ = removeQuiet(tmpPath)

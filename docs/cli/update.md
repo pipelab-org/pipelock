@@ -3,8 +3,8 @@
 Update Pipelock to the latest verified release (alias: `pipelock upgrade`).
 
 `pipelock update` checks GitHub Releases for a newer build, downloads the
-archive for the current OS/architecture, verifies it, and atomically replaces
-the running binary in place. The previous binary is saved next to the new one
+archive for the current OS/architecture, verifies it, and replaces
+the running binary in place using the platform procedure below. The previous binary is saved next to the new one
 as `<binary>.bak` so a bad update can be rolled back.
 
 The command is **fail-closed**: any failure in the verification chain aborts
@@ -72,9 +72,41 @@ installed binary unchanged**:
    `..` traversal segment or an absolute path is rejected (zip-slip /
    tar-traversal protection).
 6. **Install.** Back up the current binary to `<binary>.bak` (overwriting any
-   prior backup), then atomically rename the verified temp binary into place.
-   On Linux, renaming over a running executable is allowed. If the rename fails,
-   the binary is restored from the backup.
+   prior backup), then install the verified temp binary. Once the backup is
+   copied, it contains the binary from this attempt even if replacement fails;
+   the older backup is no longer retained. Verification failures, a busy update
+   lock, and retained recovery state are rejected before this backup rotation.
+   On Linux and macOS, renaming over a running executable is allowed, and a
+   failed rename leaves the original untouched.
+
+   Windows cannot delete a running executable but can rename it. There the
+   updater moves the running image into a recovery directory named
+   `<binary>.pipelock-update`, then moves the verified binary into place. These
+   are two renames, not one atomic step. If the second fails, the original is
+   moved back; the error states whether the original is intact, restored, or
+   needs manual recovery and where the saved image is. The next start of the
+   new binary removes the recovery directory once it can prove it holds only
+   the files the updater recorded; anything else is kept, with a warning. If
+   the process or machine stops between the two renames, the binary is missing:
+   move `previous.exe` from the recovery directory back, or copy `<binary>.bak`
+   into place. Update, rollback, and cleanup share an exclusive lock; an update
+   that encounters a busy lock stops before changing the binary or its backup.
+   The `<binary>.pipelock-update.lock` file remains between runs and must not
+   be deleted while a command is running.
+   A retained recovery directory blocks the next update before it changes
+   `<binary>.bak`. Rollback can reuse a valid retained directory when the backup
+   matches the recorded original. It keeps `previous.exe` and moves the updated
+   image to the fixed `replaced.exe` slot before restoring the backup. Both
+   images may stay mapped by running processes; neither is overwritten. Repeated
+   rollback uses the same state. Cleanup verifies both images against the
+   original record; later startups retry after the processes exit. Malformed records,
+   changed images, or unknown entries block rollback and remain for inspection.
+   If rollback stops between its two renames, restore `replaced.exe` to the
+   missing binary path to keep the updated version, or copy `<binary>.bak` to
+   restore the original. After confirming the installed binary works, stop
+   processes still running either saved image before removing the directory;
+   Windows won't delete an image while a process maps it. `<binary>.bak` is
+   never touched by cleanup.
 
 ### Authenticity model (native vs cosign)
 
@@ -99,7 +131,8 @@ check.
 ## Rollback
 
 `pipelock update --rollback` restores `<binary>.bak` over the current binary
-using the same atomic rename. If no backup exists, it reports a clear error.
+using the same replacement as an update (the Windows recovery directory
+applies here too). If no backup exists, it reports a clear error.
 
 ## Privileged install paths
 
@@ -109,8 +142,8 @@ It probes the directory because that is what the atomic replace actually
 requires; a writable binary in a non-writable directory could not be replaced
 anyway. If Pipelock is installed to a root-owned location (for example
 `/usr/local/bin`), the update aborts early with a message to re-run with
-appropriate privileges (for example via `sudo`). The update is never partially
-applied.
+appropriate privileges (for example via `sudo`). This permission check happens
+before installation starts.
 
 ## Unsupported platforms
 
