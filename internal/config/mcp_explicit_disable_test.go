@@ -253,6 +253,7 @@ func TestMCPCompatibilityWarnings(t *testing.T) {
 		{name: "false", section: "{enabled: false}", want: true},
 		{name: "empty action", section: `{enabled: false, action: ""}`, want: true},
 		{name: "null action", section: "{enabled: false, action: null}", want: true},
+		{name: "merged false", section: "{<<: {enabled: false}}", want: true},
 		{name: "disabled", section: "{enabled: false, action: warn}"},
 		{name: "enabled", section: "{enabled: true}"},
 	} {
@@ -310,6 +311,22 @@ func TestMCPCompatibilityWarnings(t *testing.T) {
 				t.Fatalf("validation returned %d compatibility warnings, want %d", found, want)
 			}
 		})
+	}
+}
+
+func TestMCPCompatibilityWarningsAliases(t *testing.T) {
+	cfg, err := LoadBytes([]byte("mcp_input_scanning: &off {enabled: false}\nmcp_tool_scanning: *off\nmcp_tool_policy: {<<: *off}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnings := cfg.MCPCompatibilityWarnings()
+	if len(warnings) != 3 {
+		t.Fatalf("aliased ambiguous sections: warnings = %+v, want 3", warnings)
+	}
+	for i, field := range []string{"mcp_input_scanning", "mcp_tool_scanning", "mcp_tool_policy"} {
+		if warnings[i].Field != field {
+			t.Fatalf("warning %d names %q, want %q", i, warnings[i].Field, field)
+		}
 	}
 }
 

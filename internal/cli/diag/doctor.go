@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/certgen"
+	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
@@ -517,9 +518,9 @@ func checkDoctorMCPWrapperFeatures(cfg *config.Config) doctorReportCheck {
 		{"MCP listener", config.RuntimeForwardWithMCPListener},
 		{"MCP scan", config.RuntimeMCPScan},
 	} {
-		effective, _ := cfg.ResolveRuntime(config.RuntimeResolveOpts{
+		effective, _ := runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 			Mode: mode.mode, DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
-		})
+		}, nil, mode.name)
 		var enabled []string
 		if mode.mode != config.RuntimeMCPScan && effective.MCPInputScanning.Enabled {
 			enabled = append(enabled, "mcp_input_scanning")
