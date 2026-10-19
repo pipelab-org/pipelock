@@ -1618,7 +1618,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-amd64.exe ./cmd/pipelock
           GOOS=windows GOARCH=arm64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-arm64.exe ./cmd/pipelock
 
-  # The /agent-review caller calls a reusable workflow in pipelab-org/agent-review,
+  # The /review caller calls a reusable workflow in pipelab-org/agent-review,
   # so without this job nothing here notices the caller drifting: inherited or
   # extra secrets, a branch instead of a commit, another repository, or wider
   # permissions. It runs the pinned engine revision's own caller contract against
