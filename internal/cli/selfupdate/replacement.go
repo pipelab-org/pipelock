@@ -98,7 +98,8 @@ func replaceRunningBinary(candidate, target string, ops replacementOps) error {
 			// Cleanup never removes state it cannot prove it owns, so this
 			// stays blocked until the operator inspects it.
 			return fmt.Errorf("recovery directory %q remains from an earlier update; original unchanged. "+
-				"After confirming %q runs correctly, remove that directory and retry: %w", dir, target, err)
+				"After confirming %q runs correctly, stop processes still running the previous executable, "+
+				"then remove that directory and retry: %w", dir, target, err)
 		}
 		return fmt.Errorf("reserving recovery directory %q; original unchanged: %w", dir, err)
 	}

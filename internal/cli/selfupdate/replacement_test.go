@@ -474,6 +474,9 @@ func TestReplacementRetainedRecoveryBlocksUpdate(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "remove that directory and retry") || !errors.Is(err, os.ErrExist) {
 		t.Fatalf("update error=%v, want operator remedy wrapping ErrExist", err)
 	}
+	if !strings.Contains(err.Error(), "stop processes still running the previous executable") {
+		t.Fatalf("update error=%v, want mapped-image remedy before directory removal", err)
+	}
 	assertReplacementBytes(t, target, changedBytes)
 	assertReplacementBytes(t, target+backupSuffix, "rollback")
 	assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)

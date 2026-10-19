@@ -90,8 +90,11 @@ installed binary unchanged**:
    that encounters a busy lock stops before changing the binary or its backup.
    The `<binary>.pipelock-update.lock` file remains between runs and must not
    be deleted while a command is running.
-   A retained recovery directory blocks the next update until you
-   remove it. `<binary>.bak` is never touched by this cleanup.
+   A retained recovery directory blocks the next update or rollback. After
+   confirming the installed binary works, stop processes still running the
+   previous executable before removing that directory; Windows won't delete
+   an image while a process maps it. `<binary>.bak` is never touched by this
+   cleanup.
 
 ### Authenticity model (native vs cosign)
 

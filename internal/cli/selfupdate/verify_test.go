@@ -333,6 +333,9 @@ func TestVersionTagPreservesPrerelease(t *testing.T) {
 }
 
 func TestRun_TargetNotWritableAborts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory write permissions aren't controlled by os.Chmod on Windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: permission bits don't gate writes")
 	}
