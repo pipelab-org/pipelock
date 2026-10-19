@@ -2859,7 +2859,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
+			plwsutil.WriteCloseFrame(r.clientConn, closeCode,
+				blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return
@@ -3453,7 +3454,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, closeCode, closeReason)
+			plwsutil.WriteCloseFrame(r.clientConn, closeCode,
+				blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
 			blocked = true
 			return

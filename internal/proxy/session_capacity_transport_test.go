@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -199,7 +200,13 @@ func TestSessionCapacityWebSocketAdmissionBeforeAndAfterUpgrade(t *testing.T) {
 					t.Fatalf("upgrade result: status=%d err=%v", resp.StatusCode, err)
 				}
 				if !released {
-					if header.OpCode != ws.OpClose || !strings.Contains(string(body), sessionCapacityLayer) || calls.Load() != 0 {
+					code, payload := ws.ParseCloseFrameData(body)
+					var fields map[string]string
+					if err := json.Unmarshal([]byte(payload), &fields); err != nil {
+						t.Fatalf("post-upgrade refusal isn't structured: %q: %v", payload, err)
+					}
+					if header.OpCode != ws.OpClose || code != ws.StatusPolicyViolation ||
+						fields["block_reason"] != string(blockreason.DataBudget) || fields["request_id"] == "" || calls.Load() != 0 {
 						t.Fatalf("post-upgrade refusal: opcode=%d body=%s upstream=%d", header.OpCode, body, calls.Load())
 					}
 				} else if header.OpCode != ws.OpText || string(body) != capacityDeliveryWitness || calls.Load() != 1 {

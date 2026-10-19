@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -336,6 +337,76 @@ func TestInterceptFullResponseRequestID(t *testing.T) {
 					t.Fatalf("malformed ID or origin metadata escaped: %v", w.Header())
 				}
 			})
+		}
+	}
+}
+
+func TestWebSocketFragmentCloseRequestID(t *testing.T) {
+	for _, clientDirection := range []bool{false, true} {
+		for _, tc := range []struct {
+			name   string
+			frames []ws.Frame
+			code   ws.StatusCode
+			reason string
+		}{
+			{name: "orphan_continuation", frames: []ws.Frame{ws.NewFrame(ws.OpContinuation, true, []byte("hello"))}, code: ws.StatusProtocolError, reason: "unexpected continuation frame"},
+			{name: "oversized_fragments", frames: []ws.Frame{ws.NewFrame(ws.OpText, false, []byte("abcdefghij")), ws.NewFrame(ws.OpContinuation, true, []byte("klmnopqrst"))}, code: ws.StatusMessageTooBig, reason: "message too large"},
+		} {
+			for _, id := range []string{"req-42", "", "invalid-id"} {
+				t.Run(fmt.Sprintf("client=%t/%s/%s", clientDirection, tc.name, id), func(t *testing.T) {
+					cfg := config.Defaults()
+					p := newTestProxyWithConfig(t, cfg)
+					var wire bytes.Buffer
+					for _, frame := range tc.frames {
+						frame.Payload = bytes.Clone(frame.Payload)
+						if clientDirection {
+							frame = ws.MaskFrameInPlace(frame)
+						}
+						if err := ws.WriteFrame(&wire, frame); err != nil {
+							t.Fatal(err)
+						}
+					}
+					client := &receiptFrameConn{input: bytes.NewReader(nil)}
+					upstream := &receiptFrameConn{input: bytes.NewReader(nil)}
+					pump := (*wsRelay).upstreamToClient
+					if clientDirection {
+						client.input = bytes.NewReader(wire.Bytes())
+						pump = (*wsRelay).clientToUpstream
+					} else {
+						upstream.input = bytes.NewReader(wire.Bytes())
+					}
+					r := &wsRelay{
+						proxy: p, cfg: cfg, scanner: p.scannerPtr.Load(), maxMsg: 16,
+						clientConn: client, upstreamConn: upstream, requestID: id,
+						targetURL: "wss://api.vendor.example/chat",
+					}
+					ctx, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					if _, _, _, blocked := pump(r, ctx, cancel, time.Second); !blocked {
+						t.Fatal("malformed fragments weren't blocked")
+					}
+					frame, err := ws.ReadFrame(bytes.NewReader(client.output.Bytes()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					code, payload := ws.ParseCloseFrameData(frame.Payload)
+					var fields map[string]string
+					if err := json.Unmarshal([]byte(payload), &fields); err != nil {
+						t.Fatalf("client close isn't structured: %q: %v", payload, err)
+					}
+					wantID := id
+					if !receiptcontent.ValidRequestID(id) {
+						wantID = ""
+					}
+					if frame.Header.OpCode != ws.OpClose || code != tc.code || len(payload) > 123 ||
+						fields["block_reason"] != string(blockreason.ParseError) || fields["request_id"] != wantID {
+						t.Fatalf("client close opcode=%v code=%v payload=%s", frame.Header.OpCode, code, payload)
+					}
+					if got := closeFrameText(t, upstream.output.Bytes()); got != tc.reason {
+						t.Fatalf("upstream close = %q, want %q", got, tc.reason)
+					}
+				})
+			}
 		}
 	}
 }

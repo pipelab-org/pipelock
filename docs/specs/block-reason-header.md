@@ -209,6 +209,7 @@ MCP stdio is not covered. There is no HTTP layer to attach headers to; MCP-stdio
 
 ## Compatibility
 
+- Client-facing WebSocket block paths that previously sent plain-text reasons now send the v1 JSON payload documented above. Clients must read `block_reason` instead of matching strings such as `kill switch active` or `injection detected`. The policy-violation close status remains 1008; upstream-facing close reasons remain plain text.
 - Agents that ignore the header continue to work. The 403 status code and existing JSON body are unchanged.
 - Agents that read the header but don't recognize a code or severity should fall back to "generic block" handling.
 - Adding a new reason code is an additive change. Removing or renaming a code is a breaking change requiring a version bump.
