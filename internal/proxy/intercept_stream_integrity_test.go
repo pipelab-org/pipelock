@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -18,9 +19,248 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/net/http2"
+
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+// Record decrypted upstream bytes without changing HTTP/2 framing or handling.
+type interceptFrameConn struct {
+	net.Conn
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (c *interceptFrameConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.mu.Lock()
+	_, _ = c.buf.Write(p[:n])
+	c.mu.Unlock()
+	return n, err
+}
+
+func (c *interceptFrameConn) requestFrames() (bool, int, error) {
+	c.mu.Lock()
+	data := bytes.Clone(c.buf.Bytes())
+	c.mu.Unlock()
+	if !bytes.HasPrefix(data, []byte(http2.ClientPreface)) {
+		return false, 0, fmt.Errorf("missing HTTP/2 client preface")
+	}
+	f := http2.NewFramer(nil, bytes.NewReader(data[len(http2.ClientPreface):]))
+	var endStream bool
+	var dataFrames int
+	for {
+		frame, err := f.ReadFrame()
+		if err != nil {
+			return endStream, dataFrames, err
+		}
+		if frame.Header().StreamID != 1 {
+			continue
+		}
+		switch frame := frame.(type) {
+		case *http2.HeadersFrame:
+			endStream = frame.StreamEnded()
+			if endStream {
+				return true, dataFrames, nil
+			}
+		case *http2.DataFrame:
+			dataFrames++
+			if frame.StreamEnded() {
+				return endStream, dataFrames, nil
+			}
+		}
+	}
+}
+
+func TestInterceptTunnelRequestBodyFraming(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		proto         int
+		method        string
+		body          string
+		unknownLength bool
+		scan          bool
+		bodyHeader    bool
+	}{
+		{name: "h2_empty_get", proto: 2, method: http.MethodGet},
+		{name: "h1_empty_get", proto: 1, method: http.MethodGet},
+		{name: "h2_empty_get_scanned", proto: 2, method: http.MethodGet, scan: true},
+		{name: "h2_get_body_header", proto: 2, method: http.MethodGet, bodyHeader: true},
+		{name: "h2_post", proto: 2, method: http.MethodPost, body: "ordinary request bytes"},
+		{name: "h2_post_scanned", proto: 2, method: http.MethodPost, body: "ordinary request bytes", scan: true},
+		{name: "h2_post_unknown_length", proto: 2, method: http.MethodPost, body: "ordinary request bytes", unknownLength: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			type observation struct {
+				body         string
+				lengthHeader string
+				endStream    bool
+				dataFrames   int
+				err          error
+			}
+			seen := make(chan observation, 1)
+			upstream := httptest.NewUnstartedServer(nil)
+			upstream.EnableHTTP2 = true
+			upstream.Config.TLSNextProto = map[string]func(*http.Server, *tls.Conn, http.Handler){
+				"h2": func(_ *http.Server, conn *tls.Conn, _ http.Handler) {
+					recorded := &interceptFrameConn{Conn: conn}
+					// net/http does not expose decrypted HTTP/2 frames. ServeConn
+					// lets this test observe framing without replacing the protocol.
+					server := &http2.Server{} //nolint:staticcheck // Frame observation requires ServeConn.
+					//nolint:staticcheck // Frame observation requires ServeConn.
+					server.ServeConn(recorded, &http2.ServeConnOpts{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						body, err := io.ReadAll(r.Body)
+						endStream, frames, frameErr := recorded.requestFrames()
+						if err == nil {
+							err = frameErr
+						}
+						seen <- observation{body: string(body), lengthHeader: r.Header.Get("Content-Length"), endStream: endStream, dataFrames: frames, err: err}
+						if r.ProtoMajor != 2 || (r.Method == http.MethodGet && (!endStream || frames != 0 || r.Header.Get("Content-Length") != "")) {
+							http.Error(w, "unexpected request body framing", http.StatusBadRequest)
+							return
+						}
+						_, _ = io.WriteString(w, "accepted")
+					})})
+				},
+			}
+			upstream.StartTLS()
+			t.Cleanup(upstream.Close)
+			upstreamTransport := upstream.Client().Transport.(*http.Transport)
+			upstreamTransport.TLSClientConfig.ServerName = upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			upstreamTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, upstream.Listener.Addr().String())
+			}
+			t.Cleanup(upstreamTransport.CloseIdleConnections)
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.RequestBodyScanning.Enabled = tc.scan
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			clientConn, proxyConn := net.Pipe()
+			t.Cleanup(func() { _ = clientConn.Close(); _ = proxyConn.Close() })
+			tunnelDone := make(chan error, 1)
+			go func() {
+				tunnelDone <- interceptTunnel(t.Context(), proxyConn, &InterceptContext{
+					TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc,
+					CertCache: cache, Logger: logger, Metrics: m,
+					UpstreamRT: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+						if tc.method == http.MethodGet && (r.Body != nil || r.GetBody != nil) {
+							t.Error("zero-length GET must have no Body or GetBody at round trip")
+						}
+						if tc.unknownLength && r.ContentLength != -1 {
+							t.Errorf("unknown body length=%d, want -1", r.ContentLength)
+						}
+						return upstreamTransport.RoundTrip(r)
+					}), RequestID: "request-body-framing",
+				})
+			}()
+			tr := &http.Transport{
+				TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+				ForceAttemptHTTP2: tc.proto == 2,
+				DialContext:       func(context.Context, string, string) (net.Conn, error) { return clientConn, nil },
+			}
+			t.Cleanup(tr.CloseIdleConnections)
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			var body io.Reader
+			if tc.body != "" {
+				body = strings.NewReader(tc.body)
+				if tc.unknownLength {
+					body = struct{ io.Reader }{body}
+				}
+			}
+			req, err := http.NewRequestWithContext(ctx, tc.method, "https://api.vendor.example/payload", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.bodyHeader {
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Content-Length", "0")
+			}
+			resp, err := (&http.Client{Transport: tr}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			responseBody, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case got := <-seen:
+				t.Logf("upstream h2: HEADERS END_STREAM=%t DATA frames=%d content-length=%q body=%q", got.endStream, got.dataFrames, got.lengthHeader, got.body)
+				if got.err != nil {
+					t.Fatal(got.err)
+				}
+				if got.body != tc.body {
+					t.Errorf("upstream body=%q, want %q", got.body, tc.body)
+				}
+				if tc.method == http.MethodGet && (!got.endStream || got.dataFrames != 0 || got.lengthHeader != "") {
+					t.Errorf("empty GET must end on HEADERS without DATA or content-length")
+				}
+				if tc.method == http.MethodPost && (got.endStream || got.dataFrames == 0) {
+					t.Error("POST body must be sent in DATA frames")
+				}
+			case <-ctx.Done():
+				t.Fatal("upstream request not observed")
+			}
+			if resp.ProtoMajor != tc.proto || resp.StatusCode != http.StatusOK || string(responseBody) != "accepted" {
+				t.Errorf("response=%s/%d body=%q", resp.Proto, resp.StatusCode, responseBody)
+			}
+			tr.CloseIdleConnections()
+			_ = clientConn.Close()
+			select {
+			case err := <-tunnelDone:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-ctx.Done():
+				t.Fatal("intercept tunnel did not end")
+			}
+		})
+	}
+}
+
+type interceptUnreadBody struct {
+	closed bool
+}
+
+func (*interceptUnreadBody) Read([]byte) (int, error) {
+	panic("known zero-length body must not be read")
+}
+
+func (b *interceptUnreadBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestInterceptHandlerClosesEmptyBodyBeforeRoundTrip(t *testing.T) {
+	_, _, cfg, sc, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = false
+	body := &interceptUnreadBody{}
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/payload", nil)
+	req.Body = body
+	req.GetBody = func() (io.ReadCloser, error) {
+		panic("zero-length body must not be restored")
+	}
+	called := false
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg,
+		Scanner: sc, Logger: logger, Metrics: m,
+	}, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if !body.closed || r.Body != nil || r.GetBody != nil {
+			t.Errorf("closed=%t Body=%v GetBody absent=%t", body.closed, r.Body, r.GetBody == nil)
+		}
+		return (&interceptMockRT{body: "accepted", contentType: "text/plain"}).RoundTrip(r)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if !called || w.Code != http.StatusOK {
+		t.Fatalf("round trip called=%t status=%d body=%q", called, w.Code, w.Body.String())
+	}
+}
 
 // Exercise the actual TLS server inside a hijacked CONNECT connection. Its
 // net/http handler must turn the abort panic into a TLS close or an h2 reset.
