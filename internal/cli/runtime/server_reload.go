@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,7 +41,9 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	s.reloadMu.Lock()
 	fireReloadLockHook(true)
 	defer s.reloadMu.Unlock()
-	return s.reloadLocked(newCfg)
+	err = s.reloadLocked(newCfg)
+	s.notifyReloadStatusLocked()
+	return err
 }
 
 // reloadLocked applies a validated runtime configuration while reloadMu is
@@ -53,10 +56,20 @@ func (s *Server) reloadLocked(newCfg *config.Config) (err error) {
 }
 
 func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringPriorPolicy bool) (err error) {
+	attempt := &reloadAttempt{before: s.liveConfig()}
+	if newCfg != nil {
+		attempt.sourceHash = newCfg.Hash()
+		newCfg = newCfg.Clone()
+	}
+	defer func() { s.finishReloadLocked(attempt, err) }()
+	return s.executeReloadLocked(newCfg, restoringPriorPolicy, attempt)
+}
+
+func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy bool, attempt *reloadAttempt) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			ReloadPanicHandler(r, s.sentry, s.logger, s.opts.ConfigFile)
-			err = fmt.Errorf("scanner construction panic during config reload: %v", r)
+			err = fmt.Errorf("panic during config reload: %v", r)
 		}
 	}()
 
@@ -148,6 +161,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		if oldCfg.FetchProxy.Listen != newCfg.FetchProxy.Listen {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: fetch_proxy.listen changed from %q to %q - requires restart, ignoring\n",
 				oldCfg.FetchProxy.Listen, newCfg.FetchProxy.Listen)
+			attempt.restart = append(attempt.restart, "fetch_proxy.listen")
 			newCfg.FetchProxy.Listen = oldCfg.FetchProxy.Listen
 		}
 		// Block enabling forward proxy via reload. WriteTimeout is set
@@ -170,13 +184,20 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		if oldCfg.KillSwitch.APIListen != newCfg.KillSwitch.APIListen {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: kill_switch.api_listen changed from %q to %q — requires restart, ignoring\n",
 				oldCfg.KillSwitch.APIListen, newCfg.KillSwitch.APIListen)
+			attempt.restart = append(attempt.restart, "kill_switch.api_listen")
 			newCfg.KillSwitch.APIListen = oldCfg.KillSwitch.APIListen
+		}
+		// The authenticated handler and its routes are built only at startup.
+		// A first token cannot make that absent control plane live on reload.
+		if s.proxy.SessionAPI() == nil && newCfg.EffectiveKillSwitchAPIToken() != "" {
+			attempt.restart = append(attempt.restart, "kill_switch.api_token")
 		}
 		// Block metrics_listen changes via reload. The metrics server
 		// binds at startup and can't rebind at runtime.
 		if oldCfg.MetricsListen != newCfg.MetricsListen {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: metrics_listen changed from %q to %q — requires restart, ignoring\n",
 				oldCfg.MetricsListen, newCfg.MetricsListen)
+			attempt.restart = append(attempt.restart, "metrics_listen")
 			newCfg.MetricsListen = oldCfg.MetricsListen
 			if s.containmentManaged {
 				newCfg.Containment.MetricsExposure = oldCfg.Containment.MetricsExposure
@@ -186,6 +207,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// reload cannot switch those resources; contain install does that.
 		if !reflect.DeepEqual(oldCfg.Containment.Display, newCfg.Containment.Display) {
 			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: containment.display changed — run `pipelock contain install`; ignoring until install")
+			attempt.restart = append(attempt.restart, "containment.display")
 			newCfg.Containment.Display = oldCfg.Containment.Display
 		}
 		// Config reload only swaps the in-memory Config.Containment.LoopbackServices
@@ -210,6 +232,14 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// equally untouched by a config reload.
 		publishedServicesChanged = s.containmentManaged &&
 			!reflect.DeepEqual(oldCfg.Containment.PublishedServices, newCfg.Containment.PublishedServices)
+		// The daemon has no acknowledgement from external firewall
+		// reconciliation. A repeated candidate cannot erase that uncertainty.
+		if loopbackServicesChanged || slices.Contains(s.reloadOutcome.RestartRequiredFields, "containment.loopback_services") {
+			attempt.restart = append(attempt.restart, "containment.loopback_services")
+		}
+		if publishedServicesChanged || slices.Contains(s.reloadOutcome.RestartRequiredFields, "containment.published_services") {
+			attempt.restart = append(attempt.restart, "containment.published_services")
+		}
 		// Emit sinks own live workers, queues, network connections and, for the
 		// durable forwarder, exclusive spool/cursor locks. Replacing them after
 		// the proxy publishes a candidate can make Reload return an error after
@@ -223,6 +253,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			attemptedHash := newCfg.Emit.Fingerprint()
 			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: emit settings changed — live sink workers require restart, ignoring")
 			s.logger.LogConfigReload("ignored", "emit settings restart-only", attemptedHash)
+			attempt.restart = append(attempt.restart, "emit")
 			newCfg.Emit = oldCfg.Emit
 		}
 		// Block scan_api listener setting changes via reload. The Scan
@@ -233,6 +264,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			oldCfg.ScanAPI.Timeouts.Read != newCfg.ScanAPI.Timeouts.Read ||
 			oldCfg.ScanAPI.Timeouts.Write != newCfg.ScanAPI.Timeouts.Write {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: scan_api listener settings changed — requires restart, ignoring\n")
+			attempt.restart = append(attempt.restart, "scan_api")
 			newCfg.ScanAPI.Listen = oldCfg.ScanAPI.Listen
 			newCfg.ScanAPI.ConnectionLimit = oldCfg.ScanAPI.ConnectionLimit
 			newCfg.ScanAPI.Timeouts = oldCfg.ScanAPI.Timeouts
@@ -246,6 +278,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			// operator (or attacker with config write) attempting the
 			// change should leave a record an SOC tool can find.
 			s.logger.LogConfigReload("ignored", "conductor settings restart-only", attemptedHash)
+			attempt.restart = append(attempt.restart, "conductor")
 			newCfg.Conductor = oldCfg.Conductor
 		}
 		// The contract loader owns the roster root, active-store watcher, and
@@ -258,10 +291,12 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			attemptedHash := newCfg.Hash()
 			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: learn_lock settings changed — contract loader trust and watcher require restart, ignoring")
 			s.logger.LogConfigReload("ignored", "learn_lock settings restart-only", attemptedHash)
+			attempt.restart = append(attempt.restart, "learn_lock")
 			newCfg.LearnLock = oldCfg.LearnLock
 		}
 		if oldCfg.EvidenceProvenance != newCfg.EvidenceProvenance {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: evidence_provenance.commitment_keyring_path changed — keyring is loaded at startup, ignoring (restart required)\n")
+			attempt.restart = append(attempt.restart, "evidence_provenance")
 			newCfg.EvidenceProvenance = oldCfg.EvidenceProvenance
 		}
 		// Block recorder-binding changes via reload. The recorder (and its
@@ -301,6 +336,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			requireReceipts := newCfg.FlightRecorder.RequireReceipts
 			evidenceHealth := newCfg.FlightRecorder.EvidenceHealth
 			anchorCfg := newCfg.FlightRecorder.Anchor
+			attempt.restart = append(attempt.restart, "flight_recorder")
 			newCfg.FlightRecorder = oldCfg.FlightRecorder
 			newCfg.FlightRecorder.RequireReceipts = requireReceipts
 			newCfg.FlightRecorder.EvidenceHealth.SelfAuditInterval = evidenceHealth.SelfAuditInterval
@@ -339,6 +375,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 				// able to see that from a monitoring tool, not only from a
 				// process's stderr.
 				s.logger.LogConfigReload("ignored", "require_receipts enable without live receipt emitter restart-only", attemptedHash)
+				attempt.restart = append(attempt.restart, "flight_recorder.require_receipts")
 				newCfg.FlightRecorder.RequireReceipts = oldCfg.FlightRecorder.RequireReceipts
 			}
 		}
@@ -348,11 +385,38 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// config reported the new ones. Restart to apply.
 		if !reflect.DeepEqual(oldCfg.FileSentry, newCfg.FileSentry) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: file_sentry settings changed — watcher cannot rebind at runtime, ignoring (restart required)\n")
+			attempt.restart = append(attempt.restart, "file_sentry")
 			newCfg.FileSentry = oldCfg.FileSentry
 		}
 		if !reflect.DeepEqual(oldCfg.DashboardSnapshot, newCfg.DashboardSnapshot) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: dashboard_snapshot settings changed — writer is built at startup and cannot rebind at runtime, ignoring (restart required)\n")
+			attempt.restart = append(attempt.restart, "dashboard_snapshot")
 			newCfg.DashboardSnapshot = oldCfg.DashboardSnapshot
+		}
+		// These blocks are startup-only, so a changed value is pending restart,
+		// not an activation. Preserve the running value so the drift is
+		// recomputed on every reload; preserving before ValidateReload means this
+		// branch owns the operator warning, like its siblings above.
+		if !reflect.DeepEqual(oldCfg.HealthWatchdog, newCfg.HealthWatchdog) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: health_watchdog config changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "health_watchdog")
+			newCfg.HealthWatchdog = oldCfg.HealthWatchdog
+		}
+		if !reflect.DeepEqual(oldCfg.Sandbox, newCfg.Sandbox) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sandbox config changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "sandbox")
+			newCfg.Sandbox = oldCfg.Sandbox
+		}
+		if oldCfg.Sentry.DSN != newCfg.Sentry.DSN {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sentry.dsn changes require restart — ignored on reload")
+			attempt.restart = append(attempt.restart, "sentry.dsn")
+			newCfg.Sentry.DSN = oldCfg.Sentry.DSN
+		}
+
+		if !reflect.DeepEqual(oldCfg.Sentry, newCfg.Sentry) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sentry settings require restart; preserving the startup client settings")
+			attempt.restart = append(attempt.restart, "sentry")
+			newCfg.Sentry = oldCfg.Sentry
 		}
 
 		// Dedupe identical-hash reload EVENTS within a short window.
@@ -367,7 +431,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// Hash() identifies source-file bytes, not the effective in-memory
 		// candidate. Direct reload callers can change policy while retaining
 		// the same raw bytes, so only deduplicate an identical candidate.
-		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged && reflect.DeepEqual(oldCfg, newCfg) {
+		if !restoringPriorPolicy && (s.killswitch == nil || !s.killswitch.ConductorApplyFailure()) && s.shouldSkipReload(newCfg.Hash()) && !flightRecorderAnchorChanged && oldCfg.Hash() == newCfg.Hash() && sameRuntimeConfig(oldCfg, newCfg) {
 			return nil
 		}
 
@@ -382,6 +446,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		// restart-required warning in reloadwarn.go.
 		if !reflect.DeepEqual(oldCfg.ReverseProxy, newCfg.ReverseProxy) {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: reverse_proxy settings changed — requires restart, ignoring\n")
+			attempt.restart = append(attempt.restart, "reverse_proxy")
 			newCfg.ReverseProxy = oldCfg.ReverseProxy
 		}
 		// Block agent listener changes via reload. Listener sockets
@@ -449,6 +514,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			// mandatory; otherwise the new values commit to the live config and a
 			// later unrelated reload sees no diff and silently applies the staged
 			// license.
+			attempt.restart = append(attempt.restart, "license")
 			preserveLicenseInputsRestartOnly(newCfg, oldCfg)
 			if agentsRevokedByLicense {
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: new license inputs could not be verified (unreadable/malformed CRL, intermediate, or token); effective license unchanged, preserving licensed surfaces — requires restart for license re-verification\n")
@@ -457,6 +523,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 			}
 		case AgentListenersChanged(oldCfg, newCfg):
 			_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload: agents[*].listeners changed — requires restart, ignoring listener changes\n")
+			attempt.restart = append(attempt.restart, "agents.listeners")
 			PreserveAgentListeners(oldCfg, newCfg)
 		}
 
@@ -627,7 +694,7 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 				_, _ = fmt.Fprintf(s.opts.Stderr, "WARNING: config reload rejected: %v; previous configuration remains active; restart Pipelock to apply this change\n", rejectErr)
 			}
 			s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), auditErr)
-			return rejectErr
+			return auditErr
 		}
 		// Bundle load failures are warning-only at startup because there is no
 		// previous live bundle coverage to preserve. At reload there is: a fresh
@@ -705,6 +772,10 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reloaded to HITL ask mode but approver was not initialized at startup; detections will be blocked")
 	}
 	reloadHash := newCfg.Hash()
+	if s.reloadDurablePending {
+		s.logger.LogConfigReload("pending", "awaiting durable Conductor activation", reloadHash)
+		return nil
+	}
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
 	s.recordReloadSuccess(reloadHash)
 	return nil

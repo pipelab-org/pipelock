@@ -7,7 +7,6 @@
 package runtime
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
@@ -71,10 +70,10 @@ func TestReloadConductorBundleConflictsPreserveActiveState(t *testing.T) {
 			if err := s.reloadConductorPolicyBundle(candidate, raw); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("reloadConductorPolicyBundle() = %v, want %q", err, tt.want)
 			}
-			if s.proxy.CurrentConfig() != active || !reflect.DeepEqual(active, before) {
+			if s.proxy.CurrentConfig() != active || !sameRuntimeConfig(active, before) {
 				t.Fatal("rejected bundle changed the active proxy configuration")
 			}
-			if s.currentConfig() != runtimeCfg || !reflect.DeepEqual(runtimeCfg, before) {
+			if s.currentConfig() != runtimeCfg || !sameRuntimeConfig(runtimeCfg, before) {
 				t.Fatal("rejected bundle changed the active runtime configuration")
 			}
 			if s.proxy.ScannerPtr().Load() != scanner {

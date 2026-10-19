@@ -138,12 +138,14 @@ type rateLimiterState struct {
 // (authenticate returns 503), matching the "service not configured"
 // bootstrap path.
 type SessionAPIHandler struct {
-	smPtr       *atomic.Pointer[SessionManager]
-	etPtr       *atomic.Pointer[scanner.EntropyTracker]
-	fbPtr       *atomic.Pointer[scanner.FragmentBuffer]
-	metrics     *metrics.Metrics
-	logger      *audit.Logger
-	apiTokenPtr atomic.Pointer[string]
+	configStatus func() ReloadOutcome
+	configReload func() ReloadOutcome
+	smPtr        *atomic.Pointer[SessionManager]
+	etPtr        *atomic.Pointer[scanner.EntropyTracker]
+	fbPtr        *atomic.Pointer[scanner.FragmentBuffer]
+	metrics      *metrics.Metrics
+	logger       *audit.Logger
+	apiTokenPtr  atomic.Pointer[string]
 
 	// deferred is the live held-action manager for the operator deferred
 	// surface, or nil when this process runs no deferrable MCP transport.

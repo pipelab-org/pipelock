@@ -396,7 +396,10 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		go func() {
 			defer reloadWG.Done()
 			if err := reloader.Start(ctx); err != nil {
+				s.setReloadWatcherState("failed")
 				s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
+			} else {
+				s.setReloadWatcherState("stopped")
 			}
 		}()
 
@@ -408,6 +411,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// on a watcher-setup failure (the error is logged above).
 		select {
 		case <-reloader.Ready():
+			if reloader.WatchEstablished() {
+				s.setReloadWatcherState("watching")
+			}
 		case <-ctx.Done():
 		}
 
@@ -712,6 +718,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// configured - in that case we skip registration and the
 		// admin routes simply don't exist on the listener.
 		if sessionAPI := s.proxy.SessionAPI(); sessionAPI != nil {
+			apiMux.HandleFunc("/api/v1/config/status", sessionAPI.HandleConfigStatus)
+			apiMux.HandleFunc("/api/v1/config/reload", sessionAPI.HandleConfigReload)
 			apiMux.HandleFunc("/api/v1/adaptive/status", sessionAPI.HandleAdaptiveStatus)
 			apiMux.HandleFunc("/api/v1/adaptive/flush", sessionAPI.HandleAdaptiveFlush)
 			apiMux.HandleFunc("/api/v1/adaptive/whoami", sessionAPI.HandleAdaptiveWhoami)
@@ -1303,6 +1311,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	sdNotifyOrLog(s.opts.Stderr, "READY=1")
 	readyNotified = true
 	s.markStartupNotified()
+	s.reloadMu.Lock()
+	s.notifyReloadStatusLocked()
+	s.reloadMu.Unlock()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
 		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
 			return groupErr
@@ -1415,17 +1426,21 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	if notifySystemd {
 		sdNotifyReloading(s.opts.Stderr)
 	}
-	err := event.Err
-	if err == nil {
-		err = s.Reload(event.Config)
+	trigger := "fsnotify"
+	if event.Trigger == config.ReloadTriggerSignal {
+		trigger = "signal"
 	}
-	if err != nil {
-		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), err)
-		s.revokeUnavailableAckKey()
-	}
+	s.reloadMu.Lock()
+	s.reloadEventLocked(event, trigger)
 	if notifySystemd {
-		sdNotifyReloadComplete(s.opts.Stderr, err)
+		// READY ends the notify-reload handshake; it cannot communicate a
+		// rejected transaction. STATUS carries the daemon's actual outcome.
+		sdNotifyConfigComplete(s.opts.Stderr, s.reloadSystemdStatusLocked())
+	} else {
+		s.notifyReloadStatusLocked()
 	}
+	s.reloadMu.Unlock()
+
 	// Signal reload-cycle completion for tests (no-op in production). Fires per
 	// delivered config so reload tests can block on the event instead of polling
 	// stderr on a deadline.

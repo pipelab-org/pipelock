@@ -68,6 +68,10 @@ func sdNotifyReloadComplete(stderr io.Writer, reloadErr error) {
 	if reloadErr != nil {
 		status = "config reload rejected: " + sdNotifyStatusReason(reloadErr)
 	}
+	sdNotifyConfigComplete(stderr, status)
+}
+
+func sdNotifyConfigComplete(stderr io.Writer, status string) {
 	if _, err := sdNotify("READY=1\nSTATUS=" + status); err != nil {
 		_, _ = fmt.Fprintf(stderr, "pipelock: systemd notification failed: %v\n", err)
 		// Belt and braces: retry the completion on its own. Whatever made the
@@ -80,7 +84,11 @@ func sdNotifyReloadComplete(stderr io.Writer, reloadErr error) {
 // sdNotifyStatusReason renders an error as one bounded, control-character-free
 // line fit for a systemd status field.
 func sdNotifyStatusReason(err error) string {
-	reason := strings.SplitN(err.Error(), "\n", 2)[0]
+	return sdNotifySafeStatus(err.Error())
+}
+
+func sdNotifySafeStatus(text string) string {
+	reason := strings.SplitN(text, "\n", 2)[0]
 	reason = strings.TrimPrefix(reason, "rejected: ")
 	// Printability, not a byte range. A range check that keeps everything at or
 	// above 0x20 lets the C1 controls through (U+0080-U+009F, including the

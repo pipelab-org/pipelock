@@ -56,7 +56,7 @@ func TestReloadPanicHandler_LogsError(t *testing.T) {
 		t.Fatalf("reading log: %v", err)
 	}
 	logOutput := string(data)
-	if !strings.Contains(logOutput, "scanner construction panic") {
+	if !strings.Contains(logOutput, "panic during config reload") {
 		t.Errorf("expected panic logged, got: %q", logOutput)
 	}
 	if !strings.Contains(logOutput, "test panic value") {
@@ -140,7 +140,7 @@ func TestReloadPanicHandler_EndToEnd(t *testing.T) {
 	if !strings.Contains(logOutput, "simulated scanner panic") {
 		t.Errorf("expected panic message in log, got: %q", logOutput)
 	}
-	if !strings.Contains(logOutput, "scanner construction panic") {
+	if !strings.Contains(logOutput, "panic during config reload") {
 		t.Errorf("expected error context in log, got: %q", logOutput)
 	}
 }
