@@ -21,6 +21,15 @@ type reloadAttempt struct {
 	restart    []string
 }
 
+const reloadSentryScrubberField = "sentry.scrubber"
+
+func (s *Server) sentryRestartFields(fields []string, cfg *config.Config) []string {
+	if s.sentry.ScrubberNeedsRestart(cfg) {
+		fields = append(fields, reloadSentryScrubberField)
+	}
+	return fields
+}
+
 // liveConfig tolerates a manually constructed Server that has no proxy yet;
 // such a server can still reject a candidate before anything is published.
 func (s *Server) liveConfig() *config.Config {
@@ -147,6 +156,7 @@ func (s *Server) finishReloadLocked(attempt *reloadAttempt, err error) {
 		// those omitted fields is ownership resolution, not restart drift.
 		attempt.restart = nil
 	}
+	attempt.restart = s.sentryRestartFields(attempt.restart, live)
 	out.RestartRequiredFields = append([]string{}, attempt.restart...)
 	out.PendingRestart = len(attempt.restart) != 0
 	if out.PendingRestart {

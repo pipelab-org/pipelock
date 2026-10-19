@@ -405,6 +405,12 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			newCfg.Sentry.DSN = oldCfg.Sentry.DSN
 		}
 
+		if !reflect.DeepEqual(oldCfg.Sentry, newCfg.Sentry) {
+			_, _ = fmt.Fprintln(s.opts.Stderr, "WARNING: config reload: sentry settings require restart; preserving the startup client settings")
+			attempt.restart = append(attempt.restart, "sentry")
+			newCfg.Sentry = oldCfg.Sentry
+		}
+
 		// Dedupe identical-hash reload EVENTS within a short window.
 		// fsnotify + SIGHUP stack up so a single `echo cfg > path;
 		// kill -HUP` sequence triggers two reload Changes() events in

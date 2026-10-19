@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -1082,8 +1083,11 @@ func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, publish
 	out := &s.reloadOutcome
 	out.Trigger = "conductor"
 	// Enforcement-only bundles do not reconcile follower-local restart drift.
-	out.PendingRestart = before.PendingRestart
-	out.RestartRequiredFields = before.RestartRequiredFields
+	fields := slices.DeleteFunc(append([]string{}, before.RestartRequiredFields...), func(field string) bool {
+		return field == reloadSentryScrubberField
+	})
+	out.RestartRequiredFields = s.sentryRestartFields(fields, s.liveConfig())
+	out.PendingRestart = len(out.RestartRequiredFields) != 0
 	if err != nil {
 		out.Reason = "Conductor transaction rejected; inspect daemon logs for details"
 		out.Verdict = proxy.ReloadRejected

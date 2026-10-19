@@ -10,12 +10,67 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"github.com/getsentry/sentry-go"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestReloadOutcomeConductorSentryScrubberDrift(t *testing.T) {
+	t.Setenv("SENTRY_DSN", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	s, signer := newConductorApplyTestServerWithConfig(t, "sentry:\n  enabled: true\n  dsn: https://k@o.vendor.example/1\n")
+	beforeSend := sentry.CurrentHub().Client().Options().BeforeSend
+	const sample = "CobaltHazelnut48372"
+	if got := beforeSend(&sentry.Event{Message: sample}, nil); got == nil || got.Message != sample {
+		t.Fatal("startup scrubber already covers the sample")
+	}
+	bundle := signedRuntimePolicyBundle(t, signer, "scrubber", 1, "", "mode: balanced\ndlp:\n  patterns:\n    - name: Custom sample\n      regex: CobaltHazelnut[0-9]{5}\n      severity: high\n")
+	if _, err := s.ApplyConductorPolicyBundle(bundle, ConductorApplyOptions{Resolver: signer.resolver()}); err != nil {
+		t.Fatal(err)
+	}
+	if s.proxy.ScannerPtr().Load().ScanTextForDLP(t.Context(), sample).Clean {
+		t.Fatal("Conductor strengthening did not reach the scanner")
+	}
+	out := s.ReloadStatus()
+	if out.Verdict != proxy.ReloadRestartRequired || !slices.Contains(out.RestartRequiredFields, reloadSentryScrubberField) || out.AcceptedSourceHash != "" {
+		t.Fatalf("durable finality hid scrubber drift: %+v", out)
+	}
+
+	// Cached-policy recovery must make restart a real scrubber remedy.
+	s.cleanup()
+	restarted, err := NewServer(ServerOpts{ConfigFile: s.opts.ConfigFile, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(restarted.cleanup)
+	got := sentry.CurrentHub().Client().Options().BeforeSend(&sentry.Event{Message: sample}, nil)
+	if got == nil || strings.Contains(got.Message, sample) || restarted.sentry.ScrubberNeedsRestart(restarted.liveConfig()) {
+		t.Fatal("restart did not bind the scrubber to the recovered policy")
+	}
+	s = restarted
+	// Other follower-local pending fields survive; the scrubber observation is
+	// recomputed against the actual restored policy at the final boundary.
+	s.reloadMu.Lock()
+	before := s.reloadSnapshotLocked()
+	before.RestartRequiredFields = []string{reloadSentryScrubberField, "metrics_listen"}
+	before.PendingRestart = true
+	cfg := s.liveConfig().Clone()
+	s.reloadDurablePending = true
+	err = s.reloadLockedRestoringPriorPolicy(cfg)
+	s.reloadDurablePending = false
+	s.finishConductorReloadLocked(before, true, err)
+	out = s.reloadSnapshotLocked()
+	s.reloadMu.Unlock()
+	if err != nil || slices.Contains(out.RestartRequiredFields, reloadSentryScrubberField) || !slices.Contains(out.RestartRequiredFields, "metrics_listen") {
+		t.Fatalf("restored policy retained stale scrubber drift or lost local drift: err=%v out=%+v", err, out)
+	}
+}
 
 func TestReloadOutcomeConductorFinality(t *testing.T) {
 	for _, failRestore := range []bool{false, true} {

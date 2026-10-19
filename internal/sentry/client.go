@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -58,33 +59,10 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 		return &Client{enabled: false}, nil
 	}
 
-	// Build scrubber from DLP patterns + safety-net + env secrets + file secrets.
-	var literalSecrets []string
-	if cfg.DLP.ScanEnv {
-		for _, kv := range os.Environ() {
-			for i := range len(kv) {
-				if kv[i] == '=' {
-					val := kv[i+1:]
-					if len(val) >= 8 {
-						literalSecrets = append(literalSecrets, val)
-					}
-					break
-				}
-			}
-		}
+	scrubber, scrubberErr := configScrubber(cfg)
+	if scrubberErr != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: sentry scrubber could not load secrets_file: %v\n", scrubberErr)
 	}
-
-	// Load file-backed explicit secrets (same file the scanner uses).
-	if cfg.DLP.SecretsFile != "" {
-		fileSecrets, err := loadFileSecrets(cfg.DLP.SecretsFile)
-		if err != nil {
-			_, _ = fmt.Fprintf(os.Stderr, "pipelock: warning: sentry scrubber could not load secrets_file: %v\n", err)
-		} else {
-			literalSecrets = append(literalSecrets, fileSecrets...)
-		}
-	}
-
-	scrubber := NewScrubber(cfg.DLP.Patterns, literalSecrets)
 
 	opts := sentry.ClientOptions{
 		Dsn:              dsn,
@@ -124,6 +102,55 @@ func initClient(cfg *config.Config, version string, transport sentry.Transport) 
 	_, _ = fmt.Fprintln(os.Stderr, "pipelock: Sentry crash reporting enabled; crash reports go to the configured Sentry DSN and payloads are minimized without request bodies, headers, user, hostname, breadcrumbs, or local variables.")
 
 	return &Client{scrubber: scrubber, enabled: true}, nil
+}
+
+// ScrubberNeedsRestart compares the requested inputs with the scrubber that
+// actually protects outgoing events. It does not replace that startup client.
+// Read failures cannot establish agreement and therefore remain pending.
+func (c *Client) ScrubberNeedsRestart(cfg *config.Config) bool {
+	if c == nil || !c.enabled || cfg == nil {
+		return false
+	}
+	want, err := configScrubber(cfg)
+	if err != nil || c.scrubber == nil || !slices.Equal(c.scrubber.secrets, want.secrets) || len(c.scrubber.patterns) != len(want.patterns) {
+		return true
+	}
+	for i, pattern := range c.scrubber.patterns {
+		if pattern.String() != want.patterns[i].String() {
+			return true
+		}
+	}
+	return false
+}
+
+func configScrubber(cfg *config.Config) (*Scrubber, error) {
+	var literalSecrets []string
+	if cfg.DLP.ScanEnv {
+		for _, kv := range os.Environ() {
+			for i := range len(kv) {
+				if kv[i] == '=' {
+					val := kv[i+1:]
+					if len(val) >= 8 {
+						literalSecrets = append(literalSecrets, val)
+					}
+					break
+				}
+			}
+		}
+	}
+
+	// Load file-backed explicit secrets (same file the scanner uses).
+	var loadErr error
+	if cfg.DLP.SecretsFile != "" {
+		fileSecrets, err := loadFileSecrets(cfg.DLP.SecretsFile)
+		if err != nil {
+			loadErr = err
+		} else {
+			literalSecrets = append(literalSecrets, fileSecrets...)
+		}
+	}
+
+	return NewScrubber(cfg.DLP.Patterns, literalSecrets), loadErr
 }
 
 func disableGlobalClient() {

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -801,6 +802,24 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if err := s.recoverActiveConductorPolicy(); err != nil {
 		s.cleanup()
 		return nil, fmt.Errorf("recovering active conductor policy bundle: %w", err)
+	}
+	// Bundle resolution and cached-policy recovery can add DLP inputs after
+	// Sentry's first initialization. Bind the startup client to the final
+	// policy before serving, so restarting actually reconciles scrubber drift.
+	if s.sentry.ScrubberNeedsRestart(s.liveConfig()) {
+		s.sentry.Close()
+		s.sentry, sentryErr = plsentry.Init(s.liveConfig(), cliutil.Version)
+		if sentryErr != nil {
+			_, _ = fmt.Fprintf(opts.Stderr, "warning: sentry init failed: %v\n", sentryErr)
+		}
+		s.reloadOutcome.RestartRequiredFields = slices.DeleteFunc(s.reloadOutcome.RestartRequiredFields, func(field string) bool {
+			return field == reloadSentryScrubberField
+		})
+		s.reloadOutcome.PendingRestart = len(s.reloadOutcome.RestartRequiredFields) != 0
+		if s.reloadOutcome.Verdict == proxy.ReloadRestartRequired && !s.reloadOutcome.PendingRestart {
+			s.reloadOutcome.Verdict = proxy.ReloadAccepted
+			s.reloadOutcome.Reason = ""
+		}
 	}
 
 	return s, nil
