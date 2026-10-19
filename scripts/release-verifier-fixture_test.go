@@ -1093,14 +1093,13 @@ func TestReleaseVerifierNPMAttestationToolchain(t *testing.T) {
 		{version: "11.12.0", exit: 1, want: "could not read npm version"},
 	} {
 		t.Run(tt.version+"/"+strconv.Itoa(tt.exit), func(t *testing.T) {
-			cmd := exec.Command("bash", "-c", `
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", `
 set -euo pipefail
-source "$1"
-version="$2"
-version_exit="$3"
-npm() { printf '%s' "$version"; return "$version_exit"; }
+source ./release-verifier-install-gate-lib.sh
+npm() { printf '%s' "$TEST_NPM_VERSION"; return "$TEST_NPM_EXIT"; }
 require_npm_attestations
-`, "npm-toolchain-test", "release-verifier-install-gate-lib.sh", tt.version, strconv.Itoa(tt.exit))
+`)
+			cmd.Env = append(os.Environ(), "TEST_NPM_VERSION="+tt.version, "TEST_NPM_EXIT="+strconv.Itoa(tt.exit))
 			output, err := cmd.CombinedOutput()
 			if tt.want == "" {
 				if err != nil {
