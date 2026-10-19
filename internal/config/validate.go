@@ -594,6 +594,16 @@ func (c *Config) MCPCompatibilityWarnings() []Warning {
 	return append([]Warning(nil), c.mcpCompatibilityWarnings...)
 }
 
+// CopyMCPCompatibilityWarningsFrom preserves loaded-source advisories across
+// config transformations, independently of the effective profile settings.
+func (c *Config) CopyMCPCompatibilityWarningsFrom(src *Config) {
+	if src == nil {
+		c.mcpCompatibilityWarnings = nil
+		return
+	}
+	c.mcpCompatibilityWarnings = src.MCPCompatibilityWarnings()
+}
+
 // ValidateWithWarnings validates the config and returns any non-fatal
 // advisory warnings alongside the first hard error. Dispatch order matches
 // Validate() exactly. Warnings are returned even when err is non-nil, so

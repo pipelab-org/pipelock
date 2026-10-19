@@ -15,6 +15,30 @@ import (
 
 const disabledMCPSections = "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"
 
+func TestCopyMCPCompatibilityWarningsFrom(t *testing.T) {
+	src := &Config{mcpCompatibilityWarnings: []Warning{{Field: "mcp_input_scanning", Message: "loaded source"}}}
+	var dst Config
+	dst.CopyMCPCompatibilityWarningsFrom(src)
+	src.mcpCompatibilityWarnings[0].Message = "mutated source"
+	if got := dst.MCPCompatibilityWarnings(); len(got) != 1 || got[0].Message != "loaded source" {
+		t.Fatalf("copy shared source warnings: %v", got)
+	}
+	got := dst.MCPCompatibilityWarnings()
+	got[0].Message = "mutated caller"
+	if dst.MCPCompatibilityWarnings()[0].Message != "loaded source" {
+		t.Fatal("getter exposed mutable warnings")
+	}
+	dst.CopyMCPCompatibilityWarningsFrom(nil)
+	if len(dst.MCPCompatibilityWarnings()) != 0 {
+		t.Fatal("nil source retained stale warnings")
+	}
+	dst.CopyMCPCompatibilityWarningsFrom(src)
+	dst.CopyMCPCompatibilityWarningsFrom(&Config{})
+	if len(dst.MCPCompatibilityWarnings()) != 0 {
+		t.Fatal("empty source retained stale warnings")
+	}
+}
+
 func TestResolveRuntimeMCPYAMLIntent(t *testing.T) {
 	for _, tc := range []struct {
 		name, section  string

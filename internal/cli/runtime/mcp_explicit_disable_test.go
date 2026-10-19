@@ -21,6 +21,36 @@ import (
 
 const disabledMCPYAML = "mcp_input_scanning: {enabled: false, action: warn}\nmcp_tool_scanning: {enabled: false, action: warn}\nmcp_tool_policy: {enabled: false, action: warn}\n"
 
+func TestServerMCPCompatibilityWarningsOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "server.yaml")
+	body := strings.ReplaceAll(disabledMCPYAML, ", action: warn", "")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, output := newTestServer(t, func(o *ServerOpts) { o.ConfigFile = path })
+	check := func(t *testing.T, log string) {
+		t.Helper()
+		for _, section := range []string{"mcp_input_scanning", "mcp_tool_scanning", "mcp_tool_policy"} {
+			if got := strings.Count(log, section+": enabled: false with an empty action is ambiguous"); got != 1 {
+				t.Errorf("%s warning count = %d, want 1; output=%s", section, got, log)
+			}
+		}
+	}
+	check(t, output.String())
+	for range 2 {
+		before := len(output.String())
+		s.lastReloadAt = time.Time{}
+		updated, err := config.Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Reload(updated); err != nil {
+			t.Fatal(err)
+		}
+		check(t, output.String()[before:])
+	}
+}
+
 func TestMCPCommandsExplicitDisable(t *testing.T) {
 	for _, tc := range []struct {
 		name, action string

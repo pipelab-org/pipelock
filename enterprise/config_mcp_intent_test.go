@@ -2,14 +2,49 @@
 
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Elastic-2.0
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package enterprise
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestMergeAgentProfileMCPCompatibilityWarnings(t *testing.T) {
+	base, err := config.LoadPolicyBundleBytes([]byte("mcp_input_scanning: {enabled: false}\nmcp_tool_policy: {enabled: false}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := base.MCPCompatibilityWarnings()
+	if len(want) != 2 {
+		t.Fatalf("base warnings = %v", want)
+	}
+	for _, tc := range []struct {
+		name    string
+		profile *config.AgentProfile
+	}{
+		{name: "nil"},
+		{name: "configured", profile: &config.AgentProfile{Mode: config.ModeAudit}},
+		{name: "policy override", profile: &config.AgentProfile{MCPToolPolicy: &config.MCPToolPolicy{Enabled: false, Action: config.ActionWarn}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			merged, mergeErr := MergeAgentProfile(base, tc.profile)
+			if mergeErr != nil {
+				t.Fatal(mergeErr)
+			}
+			if got := merged.MCPCompatibilityWarnings(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("loaded-source warnings = %v, want %v", got, want)
+			}
+			resolved, _ := merged.ResolveRuntime(config.RuntimeResolveOpts{Mode: config.RuntimeMCPProxy})
+			if !reflect.DeepEqual(resolved.MCPCompatibilityWarnings(), want) {
+				t.Fatal("runtime resolution lost loaded-source warnings")
+			}
+		})
+	}
+}
 
 func TestMergeAgentProfileMCPExplicitDisable(t *testing.T) {
 	for _, tc := range []struct {
