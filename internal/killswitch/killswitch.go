@@ -214,6 +214,7 @@ func (c *Controller) IsActiveHTTP(r *http.Request) Decision {
 	// cannot reach the API to self-deactivate the kill switch.
 	if rt.apiExempt && !c.separatePort.Load() &&
 		(path == "/api/v1/killswitch" || path == "/api/v1/killswitch/status" ||
+			path == "/api/v1/config/status" || path == "/api/v1/config/reload" ||
 			path == "/api/v1/sessions" ||
 			IsSessionKeyPath(path) ||
 			IsSessionActionPath(path, "reset") ||
