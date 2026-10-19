@@ -279,7 +279,7 @@ func inspectRecovery(target string, ops replacementOps) (state recoveryState, er
 			return state, errors.New("images differ from recovery record; retaining rollback images")
 		}
 	} else if state.prior {
-		if prior != old || state.current != next {
+		if prior != old || state.current != next && state.current != old {
 			return state, errors.New("images differ from recovery record; retaining prior image")
 		}
 	} else if state.current != next && state.current != old {
@@ -353,8 +353,9 @@ func rollbackRetained(candidate, target string, ops replacementOps) error {
 	if err != nil || restored != state.old {
 		return fmt.Errorf("backup differs from recorded prior image; original unchanged: %w", errors.Join(err, errors.New("rollback requires the recorded original")))
 	}
-	// Already rolled back; do not grow recovery state.
-	if state.displaced {
+	// Already restored, including a manual copy from the documented backup.
+	// Keep the existing recovery images for cleanup without growing state.
+	if state.current == state.old {
 		return nil
 	}
 	aside := filepath.Join(target+replacementSuffix, rollbackImageName)

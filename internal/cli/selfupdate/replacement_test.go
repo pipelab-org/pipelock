@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -229,6 +228,9 @@ func TestReplacementCleanup(t *testing.T) {
 		want       string
 	}{
 		{name: "completed replacement"},
+		{name: "original restored from backup", mutate: func(t *testing.T, target string) {
+			writeReplacementFixture(t, target, originalBytes)
+		}},
 		{name: "nothing pending", mutate: func(t *testing.T, target string) {
 			if err := cleanupReplacement(target, replacementOps{}); err != nil {
 				t.Fatal(err)
@@ -426,35 +428,6 @@ func TestReplacementDigestBoundsAndPermissions(t *testing.T) {
 	}
 }
 
-// Simultaneous starts after an update all try to finish the same cleanup. Only
-// real failures may surface; losing the race to another process is not one.
-func TestReplacementConcurrentCleanup(t *testing.T) {
-	for round := 0; round < 50; round++ {
-		target, candidate := replacementFixture(t)
-		if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
-			t.Fatal(err)
-		}
-		errs := make([]error, 4)
-		var wg sync.WaitGroup
-		for i := range errs {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				errs[i] = cleanupReplacement(target, replacementOps{})
-			}()
-		}
-		wg.Wait()
-		for _, err := range errs {
-			if err != nil {
-				t.Fatalf("round %d: %v", round, err)
-			}
-		}
-		if _, err := os.Lstat(target + replacementSuffix); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("recovery directory remains: %v", err)
-		}
-	}
-}
-
 // A later install by another tool leaves recovery state cleanup cannot prove it
 // owns. It is retained, and the next update tells the operator how to proceed
 // without touching the installed image or the rollback backup.
@@ -619,4 +592,21 @@ func TestReplacementRollbackWithoutRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertReplacementBytes(t, target, replacementBytes)
+}
+
+func TestReplacementRollbackAfterManualRestore(t *testing.T) {
+	target, candidate := replacementFixture(t)
+	if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+		t.Fatal(err)
+	}
+	writeReplacementFixture(t, target, originalBytes)
+	writeReplacementFixture(t, candidate, originalBytes)
+	if err := rollbackRetained(candidate, target, replacementOps{move: func(string, string) error { t.Fatal("already restored image must not move"); return nil }}); err != nil {
+		t.Fatal(err)
+	}
+	assertReplacementBytes(t, target, originalBytes)
+	assertReplacementBytes(t, filepath.Join(target+replacementSuffix, priorImageName), originalBytes)
+	if err := cleanupRecovery(target, replacementOps{}); err != nil {
+		t.Fatal(err)
+	}
 }

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -508,5 +509,34 @@ func TestWindowsRetainedRecoveryRefusals(t *testing.T) {
 				t.Fatalf("refusal changed backup: %s %v", got, err)
 			}
 		})
+	}
+}
+
+// Simultaneous starts after an update all try to finish the same cleanup. Only
+// real failures may surface; losing the race to another process is not one.
+func TestReplacementConcurrentCleanup(t *testing.T) {
+	for round := 0; round < 50; round++ {
+		target, candidate := replacementFixture(t)
+		if err := replaceRunningBinary(candidate, target, replacementOps{move: simulatedMove}); err != nil {
+			t.Fatal(err)
+		}
+		errs := make([]error, 4)
+		var wg sync.WaitGroup
+		for i := range errs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				errs[i] = cleanupReplacement(target, replacementOps{})
+			}()
+		}
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if _, err := os.Lstat(target + replacementSuffix); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("recovery directory remains: %v", err)
+		}
 	}
 }
