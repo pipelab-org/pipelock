@@ -1511,6 +1511,10 @@ Key-free evidence capture:
 				cmd.PrintErrf("  Capture: %s (key-free evidence)\n", captureOutput)
 			}
 
+			inputAction := "disabled"
+			if inputCfg.Enabled {
+				inputAction = inputCfg.Action
+			}
 			toolAction := "disabled"
 			if toolCfg != nil {
 				toolAction = toolCfg.Action
@@ -1599,7 +1603,7 @@ Key-free evidence capture:
 					listenerOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1652,7 +1656,7 @@ Key-free evidence capture:
 					wsOpts.ReceiptGroup = receiptGroup
 					respAction, respTrust, respServer := mcpResponseLogFields(wsOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying WS upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-						RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+						RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
 					if err := mcp.RunWSProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, wsOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 							return heartbeatErr
@@ -1709,7 +1713,7 @@ Key-free evidence capture:
 				httpOpts.ReceiptGroup = receiptGroup
 				respAction, respTrust, respServer := mcpResponseLogFields(httpOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying upstream %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-					RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+					RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
 				if err := mcp.RunHTTPProxy(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), upstreamURL, extraHeaders, httpOpts); err != nil {
 					if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
 						return heartbeatErr
@@ -1903,7 +1907,7 @@ Key-free evidence capture:
 				respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 					"pipelock: proxying MCP server %v [SANDBOXED] (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s, workspace=%s)\n",
-					serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction, workspace)
+					serverCmd, respAction, respTrust, respServer, inputAction, toolAction, policyAction, workspace)
 				// Report orphan-cleanup availability once, before the server
 				// launches, so the operator learns it up front. The proxy path
 				// still runs the authoritative strict refusal against the same
@@ -2065,7 +2069,7 @@ Key-free evidence capture:
 			}
 			respAction, respTrust, respServer := mcpResponseLogFields(proxyOpts)
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: proxying MCP server %v (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
-				serverCmd, respAction, respTrust, respServer, inputCfg.Action, toolAction, policyAction)
+				serverCmd, respAction, respTrust, respServer, inputAction, toolAction, policyAction)
 			// Report orphan-cleanup availability once, before the server
 			// launches. The plain stdio path has no strict mode, so this is
 			// informational, with no strict-mode remedy hint.

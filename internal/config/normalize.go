@@ -69,6 +69,7 @@ func normalizeConductor(c *Conductor) {
 // distinguish "field omitted" (should default to true, fail-closed) from "field
 // explicitly set to false" (user intent). We unmarshal into a raw map to detect
 // which fields are actually present with a non-nil value, then default the rest.
+// It also normalizes explicit MCP opt-outs for the runtime mode resolver.
 func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 	var raw map[string]interface{}
 	if err := yaml.Unmarshal(rawYAML, &raw); err != nil {
@@ -90,6 +91,22 @@ func applySecurityDefaults(rawYAML []byte, cfg *Config) {
 			*target = true
 		}
 	}
+
+	// Runtime MCP defaults use false plus an empty action for an unset
+	// section. Preserve explicit YAML opt-outs using the existing disabled
+	// representation: false plus the documented warn action default.
+	setDisabledMCPAction := func(section map[string]interface{}, enabled bool, action *string) {
+		val, present := section["enabled"]
+		if present && val != nil && !enabled && *action == "" {
+			*action = ActionWarn
+		}
+	}
+	input, _ := raw["mcp_input_scanning"].(map[string]interface{})
+	setDisabledMCPAction(input, cfg.MCPInputScanning.Enabled, &cfg.MCPInputScanning.Action)
+	tool, _ := raw["mcp_tool_scanning"].(map[string]interface{})
+	setDisabledMCPAction(tool, cfg.MCPToolScanning.Enabled, &cfg.MCPToolScanning.Action)
+	toolPolicy, _ := raw["mcp_tool_policy"].(map[string]interface{})
+	setDisabledMCPAction(toolPolicy, cfg.MCPToolPolicy.Enabled, &cfg.MCPToolPolicy.Action)
 
 	dlp, _ := raw["dlp"].(map[string]interface{})
 	setBoolDefault(dlp, "scan_env", &cfg.DLP.ScanEnv)
