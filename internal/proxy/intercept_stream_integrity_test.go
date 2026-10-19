@@ -277,6 +277,32 @@ func (b *interceptUnreadBody) Close() error {
 	return nil
 }
 
+func TestInterceptHandlerClearsScannedEmptyBodyBeforeRoundTrip(t *testing.T) {
+	_, _, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.RequestBodyScanning.Enabled = true
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/payload", nil)
+	req.Body = io.NopCloser(strings.NewReader(""))
+	req.ContentLength = 0
+	called := false
+	handler := newInterceptHandler(&InterceptContext{
+		TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg,
+		Scanner: sc, Logger: logger, Metrics: m,
+	}, roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if r.Body != nil || r.GetBody != nil {
+			t.Errorf("scanned empty body retained: Body=%v GetBody absent=%t", r.Body, r.GetBody == nil)
+		}
+		return (&interceptMockRT{body: "accepted", contentType: "text/plain"}).RoundTrip(r)
+	}))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if !called || w.Code != http.StatusOK {
+		t.Fatalf("round trip called=%t status=%d body=%q", called, w.Code, w.Body.String())
+	}
+}
+
 func TestInterceptHandlerClosesEmptyBodyBeforeRoundTrip(t *testing.T) {
 	_, _, cfg, sc, logger, m := testInterceptSetup(t)
 	cfg.RequestBodyScanning.Enabled = false
