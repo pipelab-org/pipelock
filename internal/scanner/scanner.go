@@ -4753,7 +4753,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	// high-entropy REST resource ids. This is path-only: it never affects
 	// query entropy (below), subdomain entropy, DLP, or SSRF.
 	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path) ||
-		s.isPathEntropyExcluded(parsed)
+		s.isPathEntropyExcludedAt(parsed, now)
 
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
@@ -4815,7 +4815,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			}
 			if dohQuery && key == dnsQueryParam {
 				if finding, blocked := s.dnsMessageEntropy(dohMsg); blocked {
-					if s.isQueryEntropyParamExcluded(parsed, key) {
+					if s.isQueryEntropyParamExcludedAt(parsed, key, now) {
 						continue
 					}
 					return s.queryEntropyParamResult(key, finding)
@@ -4823,7 +4823,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 				continue
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
-				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) ||
+				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
 					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) {
 					continue
 				}
@@ -4987,6 +4987,10 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 // encoded separator in a prefix, so a configured prefix and an escaped path
 // are compared in the same alphabet.
 func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
+	return s.isPathEntropyExcludedAt(parsed, s.currentTime())
+}
+
+func (s *Scanner) isPathEntropyExcludedAt(parsed *url.URL, now time.Time) bool {
 	if len(s.pathEntropyExclusions) == 0 || parsed == nil {
 		return false
 	}
@@ -4994,7 +4998,7 @@ func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
 	host := parsed.Hostname()
 	path := parsed.EscapedPath()
 	for _, ex := range s.pathEntropyExclusions {
-		if ex.scheme != scheme || !config.ScannerExceptionActive(ex.expires, s.currentTime()) {
+		if ex.scheme != scheme || !config.ScannerExceptionActive(ex.expires, now) {
 			continue
 		}
 		if !MatchDomain(host, ex.host) {
@@ -5028,6 +5032,10 @@ func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusio
 }
 
 func (s *Scanner) isQueryEntropyParamExcluded(parsed *url.URL, param string) bool {
+	return s.isQueryEntropyParamExcludedAt(parsed, param, s.currentTime())
+}
+
+func (s *Scanner) isQueryEntropyParamExcludedAt(parsed *url.URL, param string, now time.Time) bool {
 	if len(s.queryParamExclusions) == 0 || parsed.User != nil {
 		return false
 	}
@@ -5045,7 +5053,7 @@ func (s *Scanner) isQueryEntropyParamExcluded(parsed *url.URL, param string) boo
 		path:   parsed.EscapedPath(),
 		param:  param,
 	}
-	if expires, ok := s.queryParamExclusions[key]; !ok || !config.ScannerExceptionActive(expires, s.currentTime()) {
+	if expires, ok := s.queryParamExclusions[key]; !ok || !config.ScannerExceptionActive(expires, now) {
 		return false
 	}
 	return rawQueryHasSingleExactDecodedKey(parsed.RawQuery, param)

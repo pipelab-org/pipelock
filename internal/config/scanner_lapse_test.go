@@ -112,6 +112,7 @@ func TestExpiredScannerExceptionsValidateBeforeLapse(t *testing.T) {
 		name string
 		edit func(*Config)
 	}{
+		// clock-literal-ok: invalid calendar date is a syntax-rejection sentinel.
 		{"path malformed date", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].Expires = "2026-02-30" }},
 		{"path invalid host", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].Host = "*.com" }},
 		{"path invalid prefix", func(c *Config) { c.FetchProxy.Monitoring.PathEntropyExclusions[0].PathPrefix = "/" }},
@@ -193,6 +194,10 @@ func TestScannerLapseDefaultsCopiesAndHash(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()
 			cfg.FetchProxy.Monitoring.PathEntropyExclusions = tc.paths
+			// Exercise raw candidates as well as already-defaulted load paths.
+			if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+				t.Fatal(err)
+			}
 			cfg.ApplyDefaults()
 			cfg = cfg.Clone()
 			_ = cfg.CanonicalPolicyHash() // lapse must invalidate a previously warmed cache
@@ -212,6 +217,13 @@ func TestScannerLapseDefaultsCopiesAndHash(t *testing.T) {
 			clean.ApplyDefaults()
 			if cfg.CanonicalPolicyHash() != clean.CanonicalPolicyHash() {
 				t.Fatal("lapse retained stale policy hash or hashed diagnostics")
+			}
+			beforeWarnings := cfg.LapsedScannerExceptionWarnings()
+			if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(beforeWarnings, cfg.LapsedScannerExceptionWarnings()) || cfg.CanonicalPolicyHash() != clean.CanonicalPolicyHash() {
+				t.Fatal("repeated lapse changed defaults, opt-out, or diagnostics")
 			}
 		})
 	}

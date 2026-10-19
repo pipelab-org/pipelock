@@ -5,12 +5,40 @@ package runtime
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestServerScannerExceptionRejectedReloadAudited(t *testing.T) {
+	t.Parallel()
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	s := &Server{logger: logger, opts: ServerOpts{ConfigFile: "policy.yaml"}}
+	invalid := config.Defaults()
+	invalid.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{{Host: "*.com", PathPrefix: "/files/"}}
+	if err := s.Reload(invalid); err == nil {
+		t.Fatal("invalid scanner exception accepted")
+	}
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{configReloadAuditMethod, "path_entropy_exclusions", "policy.yaml", "rejected: invalid config reload"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("audit log missing %q: %s", want, data)
+		}
+	}
+}
 
 func scannerLapseYAML() string {
 	past := time.Now().UTC().AddDate(0, 0, -1).Format(time.DateOnly)

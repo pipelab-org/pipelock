@@ -6,7 +6,50 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestEntropyExclusionExpiryReloadDirection(t *testing.T) {
+	t.Parallel()
+	soon := time.Now().UTC().AddDate(0, 0, 1).Format(time.DateOnly)
+	later := time.Now().UTC().AddDate(0, 0, 2).Format(time.DateOnly)
+	for _, tc := range []struct {
+		name, before, after string
+		widened             bool
+	}{
+		{"unchanged", soon, soon, false},
+		{"shorter", later, soon, false},
+		{"permanent to temporary", "", soon, false},
+		{"extension", soon, later, true},
+		{"temporary to permanent", soon, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := Defaults()
+			old.Mode = ModeStrict
+			old.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{{Host: "api.vendor.example", PathPrefix: "/files/", Expires: tc.before}}
+			old.FetchProxy.Monitoring.QueryEntropyParamExclusions = []QueryEntropyParamExclusion{{Host: "api.vendor.example", Path: "/files", Param: "id", Expires: tc.before}}
+			next := old.Clone()
+			next.FetchProxy.Monitoring.PathEntropyExclusions[0].Expires = tc.after
+			next.FetchProxy.Monitoring.QueryEntropyParamExclusions[0].Expires = tc.after
+			warnings := ValidateReload(old, next)
+			want := 0
+			if tc.widened {
+				want = 2
+			}
+			if len(warnings) != want {
+				t.Fatalf("warnings = %+v, want %d", warnings, want)
+			}
+			for _, warning := range warnings {
+				if warning.Disposition != "" || !strings.Contains(warning.Message, "added") {
+					t.Fatalf("extension must remain a rejectable downgrade: %+v", warning)
+				}
+			}
+			if (old.CanonicalPolicyHash() == next.CanonicalPolicyHash()) != (tc.before == tc.after) {
+				t.Fatal("expiry change lost its policy identity")
+			}
+		})
+	}
+}
 
 // A reload that adds an exemption reduces detection coverage, and an operator
 // running strict mode needs that surfaced rather than applied silently. A
