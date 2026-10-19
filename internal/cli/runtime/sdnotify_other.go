@@ -7,6 +7,8 @@ package runtime
 
 import "io"
 
+func sdNotifySafeStatus(text string) string { return text }
+
 func sdNotify(_ string) (bool, error) { return false, nil }
 
 func sdNotifyOrLog(_ io.Writer, _ string) {}
@@ -14,3 +16,5 @@ func sdNotifyOrLog(_ io.Writer, _ string) {}
 func sdNotifyReloading(_ io.Writer) {}
 
 func sdNotifyReloadComplete(_ io.Writer, _ error) {}
+
+func sdNotifyConfigComplete(_ io.Writer, _ string) {}

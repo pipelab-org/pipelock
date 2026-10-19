@@ -249,7 +249,9 @@ type Server struct {
 	// refresh. proxy.Reload has its own lock, but that only covers lower-level
 	// pointer publication; the server-level gates also depend on s.stateMu-backed
 	// mirrors such as mcpToolExtraPoison.
-	reloadMu sync.Mutex
+	reloadMu             sync.Mutex
+	reloadOutcome        proxy.ReloadOutcome // guarded by reloadMu
+	reloadDurablePending bool                // Conductor owns final success until durable activation
 
 	stateMu            sync.RWMutex
 	toolPolicyCfg      *policy.Config
@@ -782,6 +784,10 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		return nil, fmt.Errorf("creating proxy: %w", pErr)
 	}
 	s.proxy = p
+	s.initReloadIdentity()
+	if api := p.SessionAPI(); api != nil {
+		api.SetConfigControl(s.ReloadStatus, s.ReloadFile)
+	}
 
 	if err := p.LoadCertCache(cfg); err != nil {
 		if sentryClient != nil {

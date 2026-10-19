@@ -263,6 +263,7 @@ func TestServer_Reload_RejectedDowngradeNamesTriggeringField(t *testing.T) {
 		Expires: expires,
 	}}
 	s.lastReloadAt = time.Time{} // exercise the rejection, not reload dedupe
+	beforeIdentity := s.ReloadStatus()
 
 	reloadErr := s.Reload(candidate)
 	if reloadErr == nil {
@@ -271,7 +272,14 @@ func TestServer_Reload_RejectedDowngradeNamesTriggeringField(t *testing.T) {
 	if !strings.Contains(reloadErr.Error(), "flight_recorder.require_receipts") {
 		t.Fatalf("rejection = %q, want it to still name the contract in force", reloadErr)
 	}
+	if !strings.Contains(reloadErr.Error(), "fetch_proxy.monitoring.query_entropy_param_exclusions") {
+		t.Fatalf("returned rejection omits triggering field: %v", reloadErr)
+	}
 	assertRejectedReloadKeptConfig(t, s, before)
+	afterIdentity := s.ReloadStatus()
+	if afterIdentity.Generation != beforeIdentity.Generation || afterIdentity.CanonicalPolicyHash != beforeIdentity.CanonicalPolicyHash || afterIdentity.AcceptedSourceHash != beforeIdentity.AcceptedSourceHash {
+		t.Fatalf("rejected required-receipt downgrade changed active identity: before=%+v after=%+v", beforeIdentity, afterIdentity)
+	}
 	if !s.proxy.CurrentConfig().FlightRecorder.RequireReceipts {
 		t.Fatal("require_receipts was cleared despite the reload being rejected")
 	}

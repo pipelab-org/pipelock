@@ -5135,6 +5135,8 @@ func (p *Proxy) buildMux() *http.ServeMux {
 	}
 	// Register session admin API routes only when NOT on a separate port.
 	if p.sessionAPI != nil && cfg.KillSwitch.APIListen == "" {
+		mux.HandleFunc("/api/v1/config/status", p.sessionAPI.HandleConfigStatus)
+		mux.HandleFunc("/api/v1/config/reload", p.sessionAPI.HandleConfigReload)
 		mux.HandleFunc("/api/v1/adaptive/status", p.sessionAPI.HandleAdaptiveStatus)
 		mux.HandleFunc("/api/v1/adaptive/flush", p.sessionAPI.HandleAdaptiveFlush)
 		mux.HandleFunc("/api/v1/adaptive/whoami", p.sessionAPI.HandleAdaptiveWhoami)

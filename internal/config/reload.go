@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -19,15 +20,16 @@ import (
 // configs on a channel. It supports fsnotify file watching and
 // signal-based reload (SIGHUP on Unix).
 type Reloader struct {
-	path      string
-	onChange  chan *Config
-	reloads   chan ReloadEvent
-	done      chan struct{}
-	ready     chan struct{}
-	readyOnce sync.Once
-	closeOnce sync.Once
-	startMu   sync.Mutex
-	started   bool
+	path             string
+	onChange         chan *Config
+	reloads          chan ReloadEvent
+	done             chan struct{}
+	ready            chan struct{}
+	readyOnce        sync.Once
+	closeOnce        sync.Once
+	startMu          sync.Mutex
+	started          bool
+	watchEstablished atomic.Bool
 }
 
 // ReloadTrigger identifies what requested a configuration reload.
@@ -43,9 +45,10 @@ const (
 // ReloadEvent reports the outcome of one reload attempt. Config is nil when
 // loading failed; Err then describes why the active configuration was kept.
 type ReloadEvent struct {
-	Config  *Config
-	Trigger ReloadTrigger
-	Err     error
+	Config     *Config
+	SourceHash string
+	Trigger    ReloadTrigger
+	Err        error
 }
 
 // NewReloader creates a config reloader that watches path for changes.
@@ -80,6 +83,9 @@ func (r *Reloader) Reloads() <-chan ReloadEvent {
 func (r *Reloader) Ready() <-chan struct{} {
 	return r.ready
 }
+
+// WatchEstablished distinguishes watch setup from Ready's failure backstop.
+func (r *Reloader) WatchEstablished() bool { return r.watchEstablished.Load() }
 
 // Start watches the config file and listens for reload signals (SIGHUP on Unix). It blocks until
 // ctx is cancelled or Close is called. When Start returns, the onChange
@@ -120,6 +126,8 @@ func (r *Reloader) Start(ctx context.Context) error {
 	if err := watcher.Add(dir); err != nil {
 		return fmt.Errorf("watching directory %s: %w", dir, err)
 	}
+	r.watchEstablished.Store(true)
+	defer r.watchEstablished.Store(false)
 
 	sigCh := make(chan os.Signal, 1)
 	notifyReloadSignal(sigCh) // SIGHUP on Unix, no-op on Windows
@@ -168,13 +176,13 @@ func (r *Reloader) Start(ctx context.Context) error {
 // onChange channel on success. On failure it logs to stderr and keeps the
 // old config.
 func (r *Reloader) tryReload(trigger ReloadTrigger) {
-	cfg, err := Load(r.path)
+	cfg, sourceHash, err := LoadReload(r.path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pipelock: config reload failed: %v\n", err)
-		r.sendReload(ReloadEvent{Trigger: trigger, Err: err})
+		r.sendReload(ReloadEvent{Trigger: trigger, SourceHash: sourceHash, Err: err})
 		return
 	}
-	r.sendReload(ReloadEvent{Config: cfg, Trigger: trigger})
+	r.sendReload(ReloadEvent{Config: cfg, SourceHash: sourceHash, Trigger: trigger})
 
 	// Coalesce-to-latest: the buffer holds one pending config. If the consumer
 	// has not drained the previous reload, replace it with this fresher one

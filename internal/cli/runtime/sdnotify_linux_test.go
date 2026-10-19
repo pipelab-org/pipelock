@@ -179,6 +179,9 @@ func TestServerSystemdNotifications(t *testing.T) {
 		if got := receiveNotify(t, messages); got != "READY=1" {
 			t.Fatalf("startup notification = %q, want READY=1", got)
 		}
+		if got := receiveNotify(t, messages); !strings.Contains(got, "STATUS=config accepted instance=") || !strings.Contains(got, "generation=1") {
+			t.Fatalf("startup status = %q", got)
+		}
 		waitForServerCancel(t, s)
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown: %v", err)
@@ -206,7 +209,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 		if !strings.HasPrefix(first, "RELOADING=1\nMONOTONIC_USEC=") || !monotonicUsec(first) {
 			t.Fatalf("first reload notification = %q, want monotonic RELOADING", first)
 		}
-		if second != "READY=1\nSTATUS=config reload applied" {
+		if !strings.HasPrefix(second, "READY=1\nSTATUS=config accepted instance=") && !strings.HasPrefix(second, "READY=1\nSTATUS=config unchanged instance=") {
 			t.Fatalf("completion notification = %q", second)
 		}
 	})
@@ -223,7 +226,7 @@ func TestServerSystemdNotifications(t *testing.T) {
 		candidate.Mode = config.ModeBalanced
 		s.handleConfigReload(config.ReloadEvent{Config: candidate, Trigger: config.ReloadTriggerSignal})
 		_ = receiveNotify(t, messages)
-		if got := receiveNotify(t, messages); !strings.Contains(got, "READY=1\nSTATUS=config reload rejected:") {
+		if got := receiveNotify(t, messages); !strings.Contains(got, "READY=1\nSTATUS=config rejected instance=") {
 			t.Fatalf("rejected completion notification = %q", got)
 		}
 		if s.proxy.CurrentConfig() != old {
@@ -249,7 +252,7 @@ func TestSDNotifyReloadEventErrorBypassesReload(t *testing.T) {
 		t.Fatalf("first notification = %q, want the reloading envelope", got)
 	}
 	got := receiveNotify(t, messages)
-	if !strings.HasPrefix(got, "READY=1") || !strings.Contains(got, "STATUS=config reload rejected: invalid config reload: bad yaml") {
+	if !strings.HasPrefix(got, "READY=1") || !strings.Contains(got, "STATUS=config rejected instance=") || !strings.Contains(got, "configuration loading or validation failed") {
 		t.Fatalf("completion = %q, want a rejected verdict", got)
 	}
 	if s.proxy.CurrentConfig() != before {

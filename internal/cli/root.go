@@ -160,6 +160,7 @@ Quick start:
 		session.AdaptiveCmd(),
 		session.BaselineCmd(),
 		session.Cmd(),
+		session.ReloadCmd(),
 		// Setup (IDE integrations)
 		// One registration list, shared with the MCP wrapping-capability
 		// declaration, so a new setup command cannot reach the binary

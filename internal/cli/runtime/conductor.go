@@ -9,6 +9,7 @@ package runtime
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -33,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/tlsfile"
 )
@@ -101,7 +103,7 @@ func (s *Server) applyCache() *applycache.Cache {
 	return cache
 }
 
-func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts ConductorApplyOptions) (applycache.AppliedBundle, error) {
+func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts ConductorApplyOptions) (applied applycache.AppliedBundle, applyErr error) {
 	if s == nil {
 		return applycache.AppliedBundle{}, errors.New("nil runtime server")
 	}
@@ -124,6 +126,15 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	// candidate and restoration of the exact pre-apply live configuration.
 	s.reloadMu.Lock()
 	defer s.reloadMu.Unlock()
+	beforeOutcome := s.reloadSnapshotLocked()
+	beforePolicy := s.proxy.CurrentConfig()
+	s.reloadDurablePending = true
+	defer func() {
+		s.reloadDurablePending = false
+		s.reloadOutcome.CandidateSourceHash = fmt.Sprintf("%x", sha256.Sum256([]byte(bundle.Payload.ConfigYAML)))
+		s.finishConductorReloadLocked(beforeOutcome, s.proxy.CurrentConfig() != beforePolicy, applyErr)
+	}()
+
 	// Re-check under the apply lock: teardownConductor runs concurrently (CRL
 	// watcher / expiry timer / reload) and sets conductorDown without taking
 	// this lock (taking it would deadlock the poller's own
@@ -205,7 +216,7 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 // signature, audience, lifetime, and minimum-version requirements.
 // NewServer calls it synchronously before returning the Server; Start has not
 // launched the follower pollers or license/CRL watchers at this point.
-func (s *Server) recoverActiveConductorPolicy() error {
+func (s *Server) recoverActiveConductorPolicy() (recoverErr error) {
 	if s == nil {
 		return errors.New("nil runtime server")
 	}
@@ -241,6 +252,14 @@ func (s *Server) recoverActiveConductorPolicy() error {
 	if err != nil {
 		return fmt.Errorf("building conductor recovery trust resolver: %w", err)
 	}
+	beforeOutcome := s.reloadSnapshotLocked()
+	beforePolicy := s.proxy.CurrentConfig()
+	s.reloadDurablePending = true
+	defer func() {
+		s.reloadDurablePending = false
+		s.reloadOutcome.CandidateSourceHash = fmt.Sprintf("%x", sha256.Sum256([]byte(active.Bundle.Payload.ConfigYAML)))
+		s.finishConductorReloadLocked(beforeOutcome, s.proxy.CurrentConfig() != beforePolicy, recoverErr)
+	}()
 	_, err = (applycache.Boundary{
 		Cache: cache,
 		Identity: applycache.Identity{
@@ -1057,4 +1076,35 @@ func conductorAppliedStateHeartbeatCallback(
 		}
 		return reporter.reportCurrentAppliedStateHeartbeat(ctx)
 	}
+}
+
+func (s *Server) finishConductorReloadLocked(before proxy.ReloadOutcome, published bool, err error) {
+	out := &s.reloadOutcome
+	out.Trigger = "conductor"
+	// Enforcement-only bundles do not reconcile follower-local restart drift.
+	out.PendingRestart = before.PendingRestart
+	out.RestartRequiredFields = before.RestartRequiredFields
+	if err != nil {
+		out.Reason = "Conductor transaction rejected; inspect daemon logs for details"
+		out.Verdict = proxy.ReloadRejected
+		if s.conductorApplyConsistencyError() != nil || (s.killswitch != nil && s.killswitch.ConductorApplyFailure()) {
+			out.Verdict = proxy.ReloadUncertain
+			out.Reason = conductorApplyUncertainMessage
+			out.AcceptedSourceHash = ""
+		} else if published {
+			out.Verdict = proxy.ReloadCompensated
+			out.Reason = "Conductor transaction failed; previous policy restored"
+			out.AcceptedSourceHash = before.AcceptedSourceHash
+		}
+	} else {
+		// A bundle is enforcement-only input, not a full daemon source file.
+		out.AcceptedSourceHash = ""
+		if out.PendingRestart {
+			out.Verdict = proxy.ReloadRestartRequired
+			out.Reason = "Conductor policy committed; follower-local fields still require restart or their documented reconciliation"
+		}
+		s.logger.LogConfigReload("success", "Conductor policy established at durable boundary", out.CandidateSourceHash)
+		s.recordReloadSuccess(out.CandidateSourceHash)
+	}
+	s.notifyReloadStatusLocked()
 }
