@@ -394,12 +394,11 @@ func TestWebSocketFragmentCloseRequestID(t *testing.T) {
 					if err := json.Unmarshal([]byte(payload), &fields); err != nil {
 						t.Fatalf("client close isn't structured: %q: %v", payload, err)
 					}
-					wantID := id
-					if !receiptcontent.ValidRequestID(id) {
-						wantID = ""
-					}
+					gotID, hasID := fields["request_id"]
+					validID := receiptcontent.ValidRequestID(id)
 					if frame.Header.OpCode != ws.OpClose || code != tc.code || len(payload) > 123 ||
-						fields["block_reason"] != string(blockreason.ParseError) || fields["request_id"] != wantID {
+						fields["block_reason"] != string(blockreason.ParseError) ||
+						(validID && gotID != id) || (!validID && hasID) {
 						t.Fatalf("client close opcode=%v code=%v payload=%s", frame.Header.OpCode, code, payload)
 					}
 					if got := closeFrameText(t, upstream.output.Bytes()); got != tc.reason {
