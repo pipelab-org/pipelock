@@ -140,6 +140,60 @@ func TestConfigurationEnvironmentPrecedence(t *testing.T) {
 	}
 }
 
+func TestEnvironmentFileCommentUsesRunningManagerVersion(t *testing.T) {
+	// NEWS v254 records the EnvironmentFile comment-escape change. This is
+	// env-file.c COMMENT_ESCAPE, not systemd.syntax(7)'s unit-file continuation.
+	// https://github.com/systemd/systemd/blob/v254/NEWS
+	// https://github.com/systemd/systemd/blob/v254/man/systemd.syntax.xml
+	for _, version := range []int{252, 253, 254, 257} {
+		t.Run(fmt.Sprint(version), func(t *testing.T) {
+			f := newFixture(t)
+			f.properties["manager:Version"] = typed("s", fmt.Sprintf("%d (vendor build)", version))
+			f.properties["Environment"] = typed("as", []string{config.EnvKillSwitchAPIToken + "=unit-token"})
+			f.properties["EnvironmentFiles"] = typed("a(sb)", []any{[]any{"/run/comment.env", false}})
+			// The systemd 257 VM received an empty token from these exact file
+			// bytes, overriding the nonempty unit assignment. Validation must
+			// reject a configured kill-switch API with that empty token.
+			f.files["/run/comment.env"] = []byte("# ignored\\\n" + config.EnvKillSwitchAPIToken + "=\nCONTROL=kept\n")
+			t.Setenv(config.EnvKillSwitchAPIToken, "")
+			f.b.execute = func(_ context.Context, _ CheckOptions, env []string, _ identity, _ []byte) error {
+				f.executions++
+				f.environment = slices.Clone(env)
+				for _, assignment := range env {
+					if name, value, ok := strings.Cut(assignment, "="); ok && name == config.EnvKillSwitchAPIToken {
+						t.Setenv(name, value)
+					}
+				}
+				cfg := config.Defaults()
+				cfg.KillSwitch.APIListen = "127.0.0.1:9090"
+				return cfg.Validate()
+			}
+			err := check(t.Context(), fixtureOptions(), f.b)
+			want := config.EnvKillSwitchAPIToken + "="
+			if version < 254 {
+				want += "unit-token"
+			}
+			if f.executions != 1 || !slices.Contains(f.environment, want) || (err != nil) != (version >= 254) {
+				t.Fatalf("manager %d: expected token override/validation mismatch, got environment %q, error %v", version, f.environment, err)
+			}
+		})
+	}
+}
+
+func TestEnvironmentFileUnresolvedManagerRefusesValidation(t *testing.T) {
+	for _, version := range []string{"", "unknown", "0"} {
+		t.Run(version, func(t *testing.T) {
+			f := newFixture(t)
+			f.properties["manager:Version"] = typed("s", version)
+			f.properties["EnvironmentFiles"] = typed("a(sb)", []any{[]any{"/run/comment.env", false}})
+			f.files["/run/comment.env"] = []byte("# ignored\\\n" + config.EnvKillSwitchAPIToken + "=\n")
+			if err := check(t.Context(), fixtureOptions(), f.b); err == nil || f.executions != 0 {
+				t.Fatal("unknown manager semantics reached the validator")
+			}
+		})
+	}
+}
+
 func TestCandidateUsesItsOwnReader(t *testing.T) {
 	f := newFixture(t)
 	var delivered []byte
@@ -281,7 +335,7 @@ func TestServiceFilesFailClosed(t *testing.T) {
 }
 
 func TestServiceSnapshotChanges(t *testing.T) {
-	for _, change := range []string{"manager", "unit", "environment file", "candidate", "identity"} {
+	for _, change := range []string{"manager", "manager version", "unit", "environment file", "candidate", "identity"} {
 		t.Run(change, func(t *testing.T) {
 			f := newFixture(t)
 			identityChanged := false
@@ -298,6 +352,8 @@ func TestServiceSnapshotChanges(t *testing.T) {
 				switch change {
 				case "manager":
 					f.properties["manager:Environment"] = typed("as", []string{"A=after"})
+				case "manager version":
+					f.properties["manager:Version"] = typed("s", "252")
 				case "unit":
 					f.properties["Environment"] = typed("as", []string{"A=after"})
 				case "environment file":

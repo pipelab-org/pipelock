@@ -373,7 +373,7 @@ func observeLoaded(ctx context.Context, opts CheckOptions, b backend, s *snapsho
 			return errors.New("cannot read stable regular service environment file")
 		}
 		s.Files[file.Path] = image.Stamp
-		assignments, err := parseEnvironmentFile(image.Data)
+		assignments, err := parseEnvironmentFile(image.Data, version)
 		if err != nil {
 			return err
 		}

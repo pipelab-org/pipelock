@@ -13,7 +13,10 @@ import (
 // systemd.exec(5), not shell or dotenv syntax. Unsupported malformed input
 // fails closed; errors deliberately contain no input bytes.
 // https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#EnvironmentFile=
-func parseEnvironmentFile(body []byte) ([]string, error) {
+func parseEnvironmentFile(body []byte, managerVersion int) ([]string, error) {
+	if managerVersion <= 0 {
+		return nil, errors.New("environment file requires a resolved system manager version")
+	}
 	if !utf8.Valid(body) {
 		return nil, errors.New("environment file is not UTF-8")
 	}
@@ -31,27 +34,36 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 		if pos == len(s) {
 			break
 		}
-		// Upstream env-file.c COMMENT_ESCAPE consumes the next byte, including
-		// a newline, and remains in COMMENT. A continued comment hides that line.
+		// NEWS v254 changes EnvironmentFile comment escapes: an escaped
+		// newline ends the comment in v254+, while v252 stays in COMMENT.
+		// This is env-file.c's COMMENT_ESCAPE, not systemd.syntax(7)'s
+		// unit-file grammar (which replaces continued newlines with spaces).
+		// https://github.com/systemd/systemd/blob/v254/NEWS
+		// https://github.com/systemd/systemd/blob/v254/man/systemd.syntax.xml
+		// https://github.com/systemd/systemd/blob/v257/src/basic/env-file.c
 		if s[pos] == '#' || s[pos] == ';' {
 			for pos < len(s) {
 				c := s[pos]
 				pos++
 				if c == '\\' && pos < len(s) {
+					next := s[pos]
 					pos++
+					if managerVersion >= 254 && environmentFileNewline(next) {
+						break
+					}
 					continue
 				}
-				if c == '\n' {
+				if environmentFileNewline(c) {
 					break
 				}
 			}
 			continue
 		}
 		start := pos
-		for pos < len(s) && s[pos] != '=' && s[pos] != '\n' {
+		for pos < len(s) && s[pos] != '=' && !environmentFileNewline(s[pos]) {
 			pos++
 		}
-		if pos == len(s) || s[pos] == '\n' {
+		if pos == len(s) || environmentFileNewline(s[pos]) {
 			continue
 		}
 		key := strings.TrimRight(s[start:pos], " \t\r")
@@ -70,9 +82,9 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 			switch state {
 			case 0:
 				switch c {
-				case ' ', '\t', '\r':
+				case ' ', '\t':
 					continue
-				case '\n':
+				case '\n', '\r':
 					goto complete
 				case '\'', '"':
 					state = c
@@ -110,7 +122,7 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 				}
 				continue
 			}
-			if c == '\n' {
+			if environmentFileNewline(c) {
 				goto complete
 			}
 			if c == '\\' {
@@ -119,7 +131,7 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 				}
 				c = s[pos]
 				pos++
-				if c == '\n' {
+				if environmentFileNewline(c) {
 					continue
 				}
 				value.WriteByte(c)
@@ -142,6 +154,11 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 	}
 	return out, nil
 }
+
+// env-file.c uses NEWLINE from string-util.h for comments and unquoted values.
+// Double-quoted escapes use SHELL_NEED_ESCAPE instead and only consume LF.
+// https://github.com/systemd/systemd/blob/v257/src/basic/string-util.h
+func environmentFileNewline(c byte) bool { return c == '\n' || c == '\r' }
 
 // Variable-name syntax is specified by systemd.exec(5), Environment=.
 func validName(s string) bool {
