@@ -31,7 +31,8 @@ import (
 // struct literal with their own hooks.
 type installEnv struct {
 	// rfbSocketPath is an isolated test path; production uses the fixed /run path.
-	rfbSocketPath string
+	rfbSocketPath       string
+	displayTmpfilesPath string
 	// runCmd shells out. Returns merged stdout+stderr (bounded), the
 	// process exit code, and a startup error (nil if the binary ran even
 	// when it exited non-zero). Same contract as verify.go's runCommand.
@@ -294,6 +295,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
 		displayUnitPath:               defaultDisplayUnitPath,
+		displayTmpfilesPath:           defaultDisplayTmpfilesPath,
 		displayAuthorityPath:          defaultDisplayAuthorityPath,
 		xvfbPath:                      defaultXvfbPath,
 		ownLeafNoFollow:               applyAgentOwnershipNoFollow,

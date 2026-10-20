@@ -182,7 +182,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	runner := newFakeRunner()
 	out := &bytes.Buffer{}
 	env := &installEnv{
-		runCmd: runner.run,
+		displayTmpfilesPath: filepath.Join(root, "etc", "tmpfiles.d", "pipelock-agent-display.conf"),
+		rfbSocketPath:       filepath.Join(root, "run", "pipelock-agent-display", "rfb.sock"),
+		runCmd:              runner.run,
 		dialCtx: func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 			client, server := net.Pipe()
 			_ = server.Close()

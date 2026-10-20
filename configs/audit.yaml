@@ -1,5 +1,7 @@
 # Pipelock config — audit preset
-# Detects anomalies and logs them, but never blocks. For evaluation.
+# Logs ordinary findings; core and transport safety protections still block.
+# Malformed MCP messages are refused (mcp_input_scanning.on_parse_error: block).
+# Binary WebSocket frames are refused (websocket_proxy.allow_binary_frames: false).
 #
 # Use this for: understanding what your agent does before enforcing
 # restrictions. See what domains it contacts, what URLs it fetches.
@@ -63,7 +65,7 @@ websocket_proxy:
   max_message_bytes: 1048576
   max_concurrent_connections: 128
   scan_text_frames: true
-  allow_binary_frames: true
+  allow_binary_frames: false
   forward_cookies: false
   strip_compression: true
   max_connection_seconds: 3600
@@ -73,7 +75,7 @@ websocket_proxy:
 
 dlp:
   scan_env: true
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Anthropic API Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -288,7 +290,7 @@ response_scanning:
   # proxy", for the entry shape and what it does and does not relax.
   enabled: true
   action: warn
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
@@ -306,7 +308,7 @@ response_scanning:
       regex: '(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+'
     - name: "Encoded Payload"
       regex: '(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()'
-    - name: "Tool Invocation"
+    - name: "Preset Tool Invocation"
       regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
     - name: "External Data Transfer Directive"
       regex: '(?im)(?:^|[.!?:]\s+)\s*(?:[-*]\s+)?(?:(?:please|must|required\s+to|need\s+to|you\s+(?:must|should|need\s+to))\s+)?(?:(?:send|upload|post|transmit|forward|email|exfiltrat\w*)\b(?:[^.\n!?;|&]|\.[^\s]){0,120}\b(?:(?:session|user|customer|workspace|diagnostic)[_ -]+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?)|credentials?|secrets?|tokens?|cookies?|passwords?|passwd|api[_ -]?keys?|private[_ -]?keys?|ssh[_ -]?keys?)\b(?:[^.\n!?;|&]|\.[^\s]){0,80}\b(?:to|via|using|through|at)\s+(?:(?:the|this|an?)\s+)?(?:(?:external|remote|upload|collection)\s+)?(?:url|endpoint|server|address)?\s*(?:at|:)?\s*https?://|(?:call|invoke|execute|run|fetch|curl|wget)\b(?:[^.\n!?;|&]|\.[^\s]){0,180}\bhttps?://[^\s;|&?]{0,240}(?:\?[^\s;|&]{0,240}(?:&[^\s;|&]{0,240})*)?[?&](?:(?:s|%73)ession(?:(?:[_-]|%5f|%2d)+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id))?|(?:user|customer|workspace|diagnostic)(?:[_-]|%5f|%2d)+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?)|sessionid|token|secret|credentials?|password|passwd|cookies?|auth(?:orization)?|jwt|api(?:(?:[_-]|%5f|%2d))?key|(?:access|refresh|id|api)(?:[_-]|%5f|%2d)token)=|(?:(?:execute|run|call|invoke)\s+)?(?:curl\b(?:[^.\n!?;|&]|\.[^\s]){0,120}(?-i:--data(?:-ascii|-binary|-raw|-urlencode)?|-d|--upload-file|-T|-F|--form|-b|--cookie)|wget\b(?:[^.\n!?;|&]|\.[^\s]){0,120}(?-i:--post-data|--post-file|--body-data|--body-file))\b\s?[^\s;|&]{0,120}\b(?:session(?:[_ .-]+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id))?|diagnostic(?:[_ .-]+data)?|(?:credentials?|secrets?|tokens?|password|passwd|cookies?|api[_ .-]?key)\s*[=@])\b(?:[^.\n!?;|&]|\.[^\s]){0,120}\bhttps?://|(?:(?:execute|run|call|invoke)\s+)?(?:curl\b(?:[^.\n!?;|&]|\.[^\s]){0,120}\bhttps?://[^\s;|&?]{1,240}(?:\?[^\s;|&]{0,240}(?:&[^\s;|&]{0,240})*)?(?:[^.\n!?;|&]|\.[^\s]){0,120}(?-i:--data(?:-ascii|-binary|-raw|-urlencode)?|-d|--upload-file|-T|-F|--form|-b|--cookie)|wget\b(?:[^.\n!?;|&]|\.[^\s]){0,120}\bhttps?://[^\s;|&?]{1,240}(?:\?[^\s;|&]{0,240}(?:&[^\s;|&]{0,240})*)?(?:[^.\n!?;|&]|\.[^\s]){0,120}(?-i:--post-data|--post-file|--body-data|--body-file))\b\s?[^\s;|&]{0,120}\b(?:session(?:[_ .-]+(?:data|details|context|information|secrets?|tokens?|cookies?|keys?|credentials?|id))?|diagnostic(?:[_ .-]+data)?|(?:credentials?|secrets?|tokens?|password|passwd|cookies?|api[_ .-]?key)\s*[=@])\b)'
@@ -318,9 +320,9 @@ response_scanning:
       regex: '(?i)(\{GODMODE\s*:\s*(ENABLED|ON|TRUE)\}|!OMNI\b|RESET_CORTEX|LIBERTAS\s+FACTOR|ENABLE\s+DEV(ELOPER)?\s+MODE|JAILBREAK\s+(ENABLED|ACTIVATED|ON))'
     - name: "Roleplay Framing"
       regex: '(?i)(let''?s\s+play\s+a\s+game\s+where\s+you|pretend\s+you\s+are\s+an?\s+(character|person|AI)\s+(who|that)\s+(has\s+no|doesn''?t\s+have|ignores?|bypasses?)|(in\s+this\s+)?(hypothetical|fictional|imaginary)\s+scenario\s+(where\s+)?you\s+(are|have|can|must))'
-    - name: "Instruction Boundary"
+    - name: "Preset Instruction Boundary"
       regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<</?SYS>>)'
-    - name: "Covert Action Directive"
+    - name: "Preset Covert Action Directive"
       regex: '(?i)(secretly|silently|covertly|quietly|without\s+(?:the\s+user\s+)?(?:knowing|noticing|seeing))\s+.{0,40}\b(execut\w*|run|call|invoke|send|fetch|curl|wget|download|upload|post)\b'
     - name: "Output Format Forcing"
       regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
@@ -328,13 +330,13 @@ response_scanning:
       regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions)|(disclose|expose|dump|divulge)\s+(your|the)\s+(hidden\s+|secret\s+|internal\s+)*(system\s+|initialization\s+)*(prompt|instructions|rules|directives))'
     - name: "Instruction Invalidation"
       regex: '(?i)(treat|consider|regard)\s+(all\s+)?(earlier|prior|previous|preceding|above)\s+(directions|instructions|guidelines|rules|prompts?)\s+as\s+(obsolete|void|invalid|superseded|overridden|null|cancelled|revoked|inapplicable)'
-    - name: "Instruction Dismissal"
+    - name: "Preset Instruction Dismissal"
       regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints|safeguards|policies|guardrails)\s+(aside|away|to\s+(one|the)\s+side)'
     - name: "Instruction Downgrade"
       regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)'
     - name: "Safety Reclassification Directive"
       regex: '(?i)(reclassif\w*|recategoriz\w*|redefin\w*|relabel\w*|downgrad\w*|deprecat\w*|treat|consider|regard|reinterpret)\s+((?:the|all|any|these|those|my|your|our)\s+)?(previous|prior|above|earlier|system|safety|security|original)\s+((?:\w+\s+){0,2})(instructions?|directives?|rules?|guardrails?|policies|constraints?|prompt|protocols?)\s+((as|to|into)\s+)?(?:\w+\s+){0,2}(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)\b[\s\S]{0,50}?\b(then|and|so|now|,|;)\s+\w*\s*(execut\w*|run|follow|perform|carry\s+out|proceed|comply\s+with|obey|do)\b[\s\S]{0,25}?\b(following|attached|below|user''?s?|these|this)\b'
-    - name: "Priority Override"
+    - name: "Preset Priority Override"
       regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
     - name: "Markdown Link Credential Exfiltration"
       regex: '(?is)(?:(?:\b(?:send|upload|post|submit|paste|append|put|exfiltrat\w*|leak)\b(?:[^\n.!?]|\.\S){0,80}\b(?:a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*(?:the\s+following\s+|(?:(?:this|that|our|my|their|a|an|the)\s+)?(?:(?:secure|external|collection|upload|remote)\s+)*(?:link|url|endpoint|server|form|page|address)\b\s*[:,-]?\s*)?|\b(?:collect|copy|include)\b(?:[^\n.!?]|\.\S){0,80}\b(?:a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)\b(?:[^\n.!?]|\.\S){0,120}\b(?:send|upload|post|submit|paste|append|put|exfiltrat\w*|leak)\b(?:[^\n.!?]|\.\S){0,80}\b(?:it|them|that|those|these|a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)\b(?:[^\n.!?]|\.\S){0,80}\b(?:to|into|onto|in|at|via|using|through|here|there)\b\s*(?:the\s+following\s+|(?:(?:this|that|our|my|their|a|an|the)\s+)?(?:(?:secure|external|collection|upload|remote)\s+)*(?:link|url|endpoint|server|form|page|address)\b\s*[:,-]?\s*)?)(?:\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\](?:[^\n]|\n[ \t]*){0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+)|(?:\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\](?:[^\n]|\n[ \t]*){0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+)(?:[^\n.!?]|\.\S){0,80}\bto\s+(?:send|upload|post|submit|paste|append|put|exfiltrat\w*|leak)\b(?:[^\n.!?]|\.\S){0,80}\b(?:a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)\b(?:\s*(?:[.!?]|$)|\s+(?:here|there)\b)|(?:\[[^\n]{1,160}\]\(\s*https?://[^)\s]+|<\s*https?://[^>\s]+>|\[[^\n]{1,160}\]\s*\[[^\]\n]{1,80}\](?:[^\n]|\n[ \t]*){0,240}\[[^\]\n]{1,80}\]:\s*https?://[^\s]+)(?:[^\n.!?]|\.\S){0,120}\b(?:send|upload|post|submit|paste|append|put|exfiltrat\w*|leak)\b(?:[^\n.!?]|\.\S){0,80}\b(?:a[\s_-]*p[\s_-]*i[\s_-]*keys?|t[\s_-]*o[\s_-]*k[\s_-]*e[\s_-]*n[\s_-]*s?|s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?|c[\s_-]*r[\s_-]*e[\s_-]*d[\s_-]*e[\s_-]*n[\s_-]*t[\s_-]*i[\s_-]*a[\s_-]*l[\s_-]*s?|p[\s_-]*a[\s_-]*s[\s_-]*s[\s_-]*w[\s_-]*o[\s_-]*r[\s_-]*d[\s_-]*s?|s[\s_-]*e[\s_-]*s[\s_-]*s[\s_-]*i[\s_-]*o[\s_-]*n[\s_-]*s[\s_-]*e[\s_-]*c[\s_-]*r[\s_-]*e[\s_-]*t[\s_-]*s?)\b(?:[^\n.!?]|\.\S){0,80}\b(?:here|there)\b)'
@@ -347,7 +349,7 @@ response_scanning:
 mcp_input_scanning:
   enabled: true
   action: warn
-  on_parse_error: forward
+  on_parse_error: block
 
 mcp_tool_scanning:
   enabled: true
@@ -544,6 +546,7 @@ tls_interception:
 
 tool_chain_detection:
   enabled: true
+  window_seconds: 300
   action: warn
 
 # Cross-request exfiltration detection (opt-in)
@@ -628,7 +631,7 @@ airlock:
     drain_timeout_seconds: 30
 
 # Exposure-based policy escalation (v2.2.0)
-# Permissive policy: observe and log taint events without enforcement.
+# Observe taint without refusing ordinary audit operations.
 taint:
   enabled: true
   policy: permissive
