@@ -4060,6 +4060,7 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 }
 
 type shieldResponseContext struct {
+	admittedScanLimit                              int
 	scanOriginal                                   func([]byte, http.Header) *scanner.ResponseScanResult
 	retainedScan                                   *scanner.ResponseScanResult
 	hostname                                       string
@@ -4108,7 +4109,12 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 	// admitted to the bounded whole-buffer path can reuse that path's larger
 	// ceiling. Over-cap bodies retain the inflight reservation until this work
 	// finishes; under-cap bodies remain bounded by the normal scan ceiling.
-	shieldMaxBytes := shieldMaxBytesForResponse(cfg, hostname, transport)
+	var shieldMaxBytes int
+	if response.admittedScanLimit > 0 {
+		shieldMaxBytes = shieldMaxBytesForAdmittedResponse(cfg, hostname, transport, response.admittedScanLimit)
+	} else {
+		shieldMaxBytes = shieldMaxBytesForResponse(cfg, hostname, transport)
+	}
 	if pipeline == shield.PipelineSVG && shieldMaxBytes > 0 && len(body) > shieldMaxBytes {
 		p.logger.LogBlocked(actx, "media_policy", svgIncompleteValidationReason)
 		return nil, nil, false, svgValidationBlock(svgIncompleteValidationReason)

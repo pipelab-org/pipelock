@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -226,6 +227,12 @@ func explainResponseReadLimit(cfg *config.Config) int {
 	}
 	if n := int64(cfg.ResponseScanning.SizeExemptScanMaxBytes); n > int64(limit) {
 		limit = clampExplainResponseLimit(n)
+	}
+	now := time.Now()
+	for _, entry := range cfg.ResponseScanning.SizeExemptScanLimits {
+		if n := int64(cfg.ResponseScanning.SizeExemptScanLimitForHost(entry.Host, now)); n > int64(limit) {
+			limit = clampExplainResponseLimit(n)
+		}
 	}
 	if limit <= 0 {
 		return explainFileReadLimitBytes

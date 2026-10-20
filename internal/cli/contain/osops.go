@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/serviceenv"
 )
 
 // installEnv is the OS-facing dependency surface used by every mutating
@@ -30,13 +31,17 @@ import (
 // struct literal with their own hooks.
 type installEnv struct {
 	// rfbSocketPath is an isolated test path; production uses the fixed /run path.
-	rfbSocketPath string
+	rfbSocketPath       string
+	displayTmpfilesPath string
 	// runCmd shells out. Returns merged stdout+stderr (bounded), the
 	// process exit code, and a startup error (nil if the binary ran even
 	// when it exited non-zero). Same contract as verify.go's runCommand.
-	runCmd  runCommand
-	dialCtx dialFunc
-	wait    waitFunc
+	runCmd runCommand
+	// Config validation has its own environment/identity boundary. Never
+	// replace it with runCmd, which inherits the installer's environment.
+	checkServiceConfig func(context.Context, serviceenv.CheckOptions) error
+	dialCtx            dialFunc
+	wait               waitFunc
 
 	// stat / readFile / writeFile / removeFile mirror the os package. They
 	// are abstracted only so tests can run on a tmpdir without sudo. Path
@@ -250,6 +255,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 	platform := detectContainPlatform(os.ReadFile, os.Stat, exec.LookPath)
 	return &installEnv{
 		runCmd:                        realRunCommand,
+		checkServiceConfig:            serviceenv.Check,
 		runViewerACL:                  runViewerACLCommand,
 		dialCtx:                       realDial,
 		wait:                          waitForReadiness,
@@ -289,6 +295,7 @@ func defaultInstallEnv(out io.Writer) *installEnv {
 		nftExpiryServicePath:          defaultNFTExpiryServicePath,
 		nftExpiryTimerPath:            defaultNFTExpiryTimerPath,
 		displayUnitPath:               defaultDisplayUnitPath,
+		displayTmpfilesPath:           defaultDisplayTmpfilesPath,
 		displayAuthorityPath:          defaultDisplayAuthorityPath,
 		xvfbPath:                      defaultXvfbPath,
 		ownLeafNoFollow:               applyAgentOwnershipNoFollow,

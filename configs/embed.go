@@ -9,13 +9,16 @@ import "embed"
 var presetFiles embed.FS
 
 var filePresets = map[string]string{
+	"strict":        "strict.yaml",
+	"balanced":      "balanced.yaml",
+	"audit":         "audit.yaml",
 	"claude-code":   "claude-code.yaml",
 	"cursor":        "cursor.yaml",
 	"generic-agent": "generic-agent.yaml",
 	"hostile-model": "hostile-model.yaml",
 }
 
-// Preset returns the embedded YAML bytes for file-backed presets.
+// Preset returns the embedded YAML bytes for a built-in preset.
 func Preset(name string) ([]byte, bool) {
 	filename, ok := filePresets[name]
 	if !ok {

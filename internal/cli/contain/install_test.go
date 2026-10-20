@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/serviceenv"
 )
 
 type fakeFileInfo struct {
@@ -37,7 +38,7 @@ func (f fakeFileInfo) Sys() any           { return f.sys }
 
 func TestDefaultInstallEnvWiresContainmentDefaults(t *testing.T) {
 	env := defaultInstallEnv(io.Discard)
-	if env.runCmd == nil || env.stat == nil || env.lstat == nil || env.writeFile == nil || env.lookupUser == nil {
+	if env.runCmd == nil || env.checkServiceConfig == nil || env.stat == nil || env.lstat == nil || env.writeFile == nil || env.lookupUser == nil {
 		t.Fatal("default env has nil OS hooks")
 	}
 	if env.proxyUserName != defaultProxyUser || env.agentUserName != defaultAgentUser {
@@ -181,7 +182,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	runner := newFakeRunner()
 	out := &bytes.Buffer{}
 	env := &installEnv{
-		runCmd: runner.run,
+		displayTmpfilesPath: filepath.Join(root, "etc", "tmpfiles.d", "pipelock-agent-display.conf"),
+		rfbSocketPath:       filepath.Join(root, "run", "pipelock-agent-display", "rfb.sock"),
+		runCmd:              runner.run,
 		dialCtx: func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 			client, server := net.Pipe()
 			_ = server.Close()
@@ -350,6 +353,18 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 		args = append([]string(nil), args...)
 		args[len(args)-1] = file.Name()
 		return runner.run(ctx, name, args...)
+	}
+	env.checkServiceConfig = func(ctx context.Context, opts serviceenv.CheckOptions) error {
+		// Isolate installer tests from the actual manager and child process.
+		// Resolver/identity/secret behavior is tested in serviceenv itself.
+		_, code, err := env.runCmd(ctx, opts.Binary, "check", "--config", opts.ConfigFile, "--require-build-compatibility")
+		if err != nil {
+			return errors.New("validator command failed")
+		}
+		if code != 0 {
+			return fmt.Errorf("pipelock check exited %d; validator output withheld", code)
+		}
+		return nil
 	}
 	return env, runner, out
 }
