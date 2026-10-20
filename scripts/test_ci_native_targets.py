@@ -25,7 +25,7 @@ NATIVE_TARGETS = {
     "test-macos-intel": ("macos-26-intel", "X64", "darwin/amd64", "bash"),
     "test-windows": ("windows-latest", "X64", "windows/amd64", "pwsh"),
     "test-windows-arm64": ("windows-11-arm", "ARM64", "windows/arm64", "pwsh"),
-    "test-linux-arm64": ("ubuntu-24.04-arm", "ARM64", "linux/arm64", "bash"),
+    "test-linux-arm64": ("ubuntu-26.04-arm", "ARM64", "linux/arm64", "bash"),
 }
 
 
@@ -85,6 +85,19 @@ def native_target_errors(workflow: dict) -> list[str]:
         ):
             errors.append(f"{name} overrides or obscures native proof environment")
 
+    missing = object()
+
+    # GitHub workflow syntax: the most specific defaults.run.shell wins.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#defaultsrun
+    def default_shell(scope: dict) -> object:
+        defaults = scope.get("defaults", {})
+        if not isinstance(defaults, dict):
+            return None
+        run = defaults.get("run", {})
+        if not isinstance(run, dict):
+            return None
+        return run.get("shell", missing)
+
     check_environment(workflow, "workflow")
     for job_name, (runner, runner_arch, go_target, shell) in NATIVE_TARGETS.items():
         job = jobs.get(job_name)
@@ -117,6 +130,14 @@ def native_target_errors(workflow: dict) -> list[str]:
             continue
         if any(key in proof_steps[0] for key in ("if", "continue-on-error", "env")):
             errors.append(f"{job_name} does not require unmodified architecture proof")
+        effective_shell = proof_steps[0].get("shell", missing)
+        for inherited in (job, workflow):
+            if effective_shell is missing:
+                effective_shell = default_shell(inherited)
+        if effective_shell is missing:
+            effective_shell = shell
+        if effective_shell != shell:
+            errors.append(f"{job_name} overrides the architecture proof shell")
         proof = proof_steps[0].get("run", "")
         actual_lines = executable_lines(proof)
         expected_lines = expected_proof_lines(shell, runner_arch, go_target)
@@ -152,12 +173,17 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_runner_label_drift_fails_the_contract(self):
         """Reject a runner label that no longer proves the claimed pair."""
-        for runner in ("macos-latest", "macos-15-intel"):
-            with self.subTest(runner=runner):
+        for job_name, wrong_runner, expected_runner in (
+            ("test-macos-intel", "macos-latest", "macos-26-intel"),
+            ("test-macos-intel", "macos-15-intel", "macos-26-intel"),
+            ("test-linux-arm64", "ubuntu-24.04-arm", "ubuntu-26.04-arm"),
+            ("test-linux-arm64", "ubuntu-26.04", "ubuntu-26.04-arm"),
+        ):
+            with self.subTest(job=job_name, runner=wrong_runner):
                 broken = copy.deepcopy(self.workflow)
-                broken["jobs"]["test-macos-intel"]["runs-on"] = runner
+                broken["jobs"][job_name]["runs-on"] = wrong_runner
                 self.assertIn(
-                    "test-macos-intel does not use macos-26-intel",
+                    f"{job_name} does not use {expected_runner}",
                     native_target_errors(broken),
                 )
 
@@ -245,6 +271,69 @@ class NativeTargetWorkflowTest(unittest.TestCase):
             workflow["jobs"][job_name]["env"] = {"EXAMPLE_SETTING": "value"}
             workflow["jobs"][job_name]["if"] = DOCS_SKIP_CONDITION.replace(" && ", "  &&  ")
         self.assertEqual(native_target_errors(workflow), [])
+
+    def test_effective_shell_overrides_fail_the_contract(self):
+        """Reject inert, incompatible and malformed shells at every scope."""
+        for job_name, (_, _, go_target, shell) in NATIVE_TARGETS.items():
+            for scope in ("workflow", "job", "step"):
+                for value in ("cat {0}", "python", "", None, False, [], {}):
+                    with self.subTest(job=job_name, scope=scope, value=value):
+                        workflow = copy.deepcopy(self.workflow)
+                        job = workflow["jobs"][job_name]
+                        proof = next(step for step in job["steps"]
+                                     if step.get("name") == f"Verify native target is {go_target}")
+                        proof.pop("shell", None)
+                        if scope == "step":
+                            proof["shell"] = value
+                        else:
+                            target = job if scope == "job" else workflow
+                            target["defaults"] = {"run": {"shell": value}}
+                        self.assertIn(
+                            f"{job_name} overrides the architecture proof shell",
+                            native_target_errors(workflow),
+                        )
+
+    def test_shell_precedence_and_defaults(self):
+        """Accept the expected shell and harmless inherited settings."""
+        for job_name, (_, _, go_target, shell) in NATIVE_TARGETS.items():
+            for scope in ("workflow", "job", "step"):
+                with self.subTest(job=job_name, scope=scope):
+                    workflow = copy.deepcopy(self.workflow)
+                    # Other lanes explicitly retain their required shells.
+                    for name, (_, _, target, expected) in NATIVE_TARGETS.items():
+                        proof = next(step for step in workflow["jobs"][name]["steps"]
+                                     if step.get("name") == f"Verify native target is {target}")
+                        proof["shell"] = expected
+                    job = workflow["jobs"][job_name]
+                    proof = next(step for step in job["steps"]
+                                 if step.get("name") == f"Verify native target is {go_target}")
+                    workflow["defaults"] = {"run": {"shell": "cat {0}"}}
+                    if scope == "workflow":
+                        proof.pop("shell")
+                        workflow["defaults"]["run"]["shell"] = shell
+                    elif scope == "job":
+                        proof.pop("shell")
+                        job["defaults"] = {"run": {"shell": shell}}
+                    else:
+                        job["defaults"] = {"run": {"shell": "cat {0}"}}
+                    self.assertEqual(native_target_errors(workflow), [])
+        workflow = copy.deepcopy(self.workflow)
+        workflow["defaults"] = {"run": {"working-directory": "."}}
+        self.assertEqual(native_target_errors(workflow), [])
+
+    def test_malformed_shell_defaults_fail_the_contract(self):
+        """Malformed inherited settings must not become an absent shell."""
+        for scope in ("workflow", "job"):
+            for value in (None, False, [], {"run": None}, {"run": []}):
+                with self.subTest(scope=scope, value=value):
+                    workflow = copy.deepcopy(self.workflow)
+                    job = workflow["jobs"]["test-macos-intel"]
+                    target = workflow if scope == "workflow" else job
+                    target["defaults"] = value
+                    self.assertIn(
+                        "test-macos-intel overrides the architecture proof shell",
+                        native_target_errors(workflow),
+                    )
 
     def test_inverted_predicates_fail_the_contract(self):
         """Reject success predicates whose direction is reversed."""
