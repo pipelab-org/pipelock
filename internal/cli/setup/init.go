@@ -552,23 +552,21 @@ func buildConfig(preset string, report *discover.Report) (*config.Config, error)
 }
 
 func buildConfigFromPreset(cfg *config.Config, report *discover.Report) (*config.Config, error) {
+	// Loaded policy is immutable and may already have a cached policy hash.
+	cfg = cfg.Clone()
 	// Enable MCP scanning if MCP servers were discovered.
 	if report != nil && report.Summary.TotalServers > 0 {
-		cfg.MCPInputScanning.Enabled = true
-		cfg.MCPInputScanning.Action = config.ActionWarn
-		cfg.MCPToolScanning.Enabled = true
-		cfg.MCPToolScanning.Action = config.ActionWarn
-		cfg.MCPToolScanning.DetectDrift = true
-	}
-
-	// Enable tool chain detection for larger MCP installations.
-	if report != nil && report.Summary.TotalServers > 3 {
-		cfg.ToolChainDetection.Enabled = true
-		cfg.ToolChainDetection.Action = config.ActionWarn
-		cfg.ToolChainDetection.WindowSize = 20
-		cfg.ToolChainDetection.WindowSeconds = 300
-		maxGap := 3
-		cfg.ToolChainDetection.MaxGap = &maxGap
+		// Match the runtime's unconfigured-section convention. A nonempty
+		// action preserves configured scanning, including explicit disables.
+		if !cfg.MCPInputScanning.Enabled && cfg.MCPInputScanning.Action == "" {
+			cfg.MCPInputScanning.Enabled = true
+			cfg.MCPInputScanning.Action = config.ActionWarn
+		}
+		if !cfg.MCPToolScanning.Enabled && cfg.MCPToolScanning.Action == "" {
+			cfg.MCPToolScanning.Enabled = true
+			cfg.MCPToolScanning.Action = config.ActionWarn
+			cfg.MCPToolScanning.DetectDrift = true
+		}
 	}
 
 	return cfg, nil

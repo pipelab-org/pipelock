@@ -2394,6 +2394,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if c.ResponseScanning.SizeExemptScanMaxBytes <= 0 {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must be > 0")
 	}
+	if int64(c.ResponseScanning.SizeExemptScanMaxBytes) == math.MaxInt64 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must leave room for one probe byte")
+	}
 	if c.ResponseScanning.SizeExemptScanMaxInflightBytes <= 0 {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be > 0")
 	}
@@ -2401,6 +2404,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes")
 	}
 	if err := validateUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	if err := c.ResponseScanning.validateSizeExemptScanLimits(warnings, time.Now()); err != nil {
 		return err
 	}
 	if err := validateCoreObserveExceptions(c.ResponseScanning.CoreObserveExceptions); err != nil {
@@ -5058,6 +5064,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 // | Field | Class | Maximum / reason |
 // | sandbox.best_effort_expiry | temporary | 30 days: cooperative proxy-only egress cannot replace kernel isolation for a release cycle. |
 // | response_scanning.unscannable_passthrough[].expires | temporary | 90 days: an opaque download needs a scanned or authenticated delivery path. |
+// | response_scanning.size_exempt_scan_limits[].expires | temporary | 90 days: a larger fully scanned download needs a bounded remediation window, matching unscannable_passthrough without relaxing a detection floor. |
 // | fetch_proxy.monitoring.path_entropy_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the narrow route or move to policy. |
 // | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
 // | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
@@ -5071,6 +5078,7 @@ const (
 	MaxBestEffortConfigHorizon = 30 * 24 * time.Hour
 
 	MaxUnscannablePassthroughHorizon          = 90 * 24 * time.Hour
+	MaxResponseSizeScanLimitHorizon           = MaxUnscannablePassthroughHorizon
 	MaxPathEntropyExclusionHorizon            = 180 * 24 * time.Hour
 	MaxQueryEntropyParamExclusionHorizon      = 180 * 24 * time.Hour
 	MaxRequestBodyEntropyWarnRouteHorizon     = 90 * 24 * time.Hour
@@ -5114,6 +5122,17 @@ func (c *Config) ValidateExpiryAuthorizations() error {
 		return err
 	}
 	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	if err := validateResponseSizeScanLimitExpiryHorizons(c.ResponseScanning.SizeExemptScanLimits, now); err != nil {
+		return err
+	}
+	// Direct reload callers bypass Load, so validate grant shape before any
+	// runtime state can change. Validation normalizes entries; keep the caller
+	// unchanged if an entry is malformed.
+	grantCandidate := c.Clone()
+	var grantWarnings []Warning
+	if err := grantCandidate.ResponseScanning.validateSizeExemptScanLimits(&grantWarnings, now); err != nil {
 		return err
 	}
 	// Validate on a private copy: normalization and nested route sorting must

@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/serviceenv"
 )
 
 // installOpts collects the flag-derived state for runInstall. Mirrored as
@@ -1695,29 +1696,36 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules",
 			target.unitPath, env.pipelockBinary, err)
 	}
-	out, code, err := env.runCmd(ctx, env.pipelockBinary, "check", "--config", target.checkPath, "--require-build-compatibility")
+	if env.checkServiceConfig == nil {
+		return errors.New("contain install requires service configuration validation; refusing installer-environment fallback")
+	}
+	// The validator opens its executable without following a leaf symlink, but
+	// install itself hashes and copies through one. Hand it the resolved regular
+	// file so a symlinked --pipelock-binary is not refused with a message that
+	// blames the config; the before/after hashes still bind the same content.
+	validatorPath, err := filepath.Abs(env.pipelockBinary)
+	if err == nil {
+		validatorPath, err = filepath.EvalSymlinks(validatorPath)
+	}
 	if err != nil {
+		return errors.New("cannot resolve selected service validator path")
+	}
+	candidatePath, err := filepath.Abs(target.checkPath)
+	if err != nil {
+		return errors.New("cannot resolve service candidate configuration path")
+	}
+	if err := env.checkServiceConfig(ctx, serviceenv.CheckOptions{
+		Binary: validatorPath, ConfigFile: candidatePath, Service: serviceenv.Unit,
+		RequireBuildCompatibility: true, AllowMissing: true, PlannedUser: env.proxyUserName,
+		PlannedEnvironment: managedServiceEnvironment(env),
+	}); err != nil {
+		if dryRun && errors.Is(err, serviceenv.ErrUnavailable) {
+			_, _ = fmt.Fprintln(env.out, "  [DEFERRED] service environment validation unavailable; configuration not validated. The privileged install must validate after creating the service identity and again before service start.")
+			return requireContainForwardProxy(env, target.checkPath, target.unitPath)
+		}
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",
 			target.unitPath, env.pipelockBinary, err)
-	}
-	if code != 0 {
-		detail := strings.TrimSpace(out)
-		if detail == "" {
-			detail = fmt.Sprintf("pipelock check exited %d", code)
-		}
-		// The binary reports the path it was handed, which during a --config
-		// install is the staging path. An operator has no such file to edit and
-		// no reason to know staging exists, so report the managed path the
-		// candidate was destined for instead.
-		// Dry run checks the operator's own --config file, which is the path
-		// they should see, so the rewrite applies only to the staging path.
-		if !target.drySource && target.checkPath != target.unitPath {
-			detail = strings.ReplaceAll(detail, target.checkPath, target.unitPath)
-		}
-		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %s. "+
-			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; remove the unsupported or invalid field from the config and rerun install",
-			target.unitPath, env.pipelockBinary, oneLine(detail))
 	}
 	binaryHashAfter, err := env.hashFile(env.pipelockBinary)
 	if err != nil {
@@ -2182,13 +2190,21 @@ func leadingVersionNumber(field string) int {
 	return version
 }
 
+// managedServiceEnvironment is shared by the provisional observer and unit.
+// XDG_STATE_HOME keeps writable runtime state under the service data directory.
+func managedServiceEnvironment(env *installEnv) []string {
+	return []string{config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue, "XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state")}
+}
+
+func managedServiceArgv(env *installEnv) []string {
+	return []string{env.pipelockTarget, "run", "--config", managedPipelockConfigPath(env), "--capture-output", filepath.Join(env.dataDir, "captures")}
+}
+
 // renderSystemUnit produces the pipelock.service body. Inline here so tests
 // can call it directly without a tmpdir. The hardening directives mirror
 // the runbook; the firewall is the real boundary, these are defense in
 // depth.
 func renderSystemUnit(env *installEnv) string {
-	configPath := managedPipelockConfigPath(env)
-	capturePath := filepath.Join(env.dataDir, "captures")
 	// On systemd 253+ the unit is Type=notify-reload: systemd sends SIGHUP
 	// itself and `systemctl reload` waits for the daemon's own verdict. No
 	// ExecReload there, because one that also sends SIGHUP would run every
@@ -2212,15 +2228,12 @@ func renderSystemUnit(env *installEnv) string {
 		serviceType,
 		"User=" + env.proxyUserName,
 		"Group=" + env.proxyUserName,
-		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
-		// Runtime state (issuer-bound cookie evidence) follows the XDG state
-		// convention. The service can write only under ReadWritePaths, and the
-		// service user's home is outside it, so the state home is placed in
-		// the data directory; otherwise every save would fail and the state
-		// would silently reset on each restart.
-		"Environment=XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state"),
-		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
 	}
+	// Use the same declarations for provisional validation and rendering.
+	for _, assignment := range managedServiceEnvironment(env) {
+		lines = append(lines, "Environment="+assignment)
+	}
+	lines = append(lines, "ExecStart="+strings.Join(managedServiceArgv(env), " "))
 	lines = append(lines, reloadLines...)
 	lines = append(lines,
 		"Restart=on-failure",
@@ -2290,6 +2303,12 @@ func stepEnableSystemUnit() step {
 			if err := runOrErr(ctx, env, "systemctl", "daemon-reload"); err != nil {
 				return false, err
 			}
+			// This is the prospective unit after its replacement and reload.
+			// Checking the previous unit's environment before writing it cannot
+			// prove that an upgrade will still resolve its configuration inputs.
+			if err := validateProspectivePipelockConfig(ctx, env); err != nil {
+				return false, err
+			}
 			activeOut, _, _ := env.runCmd(ctx, "systemctl", "is-active", "pipelock")
 			enabledOut, _, _ := env.runCmd(ctx, "systemctl", "is-enabled", "pipelock")
 			wasActive = strings.TrimSpace(activeOut) == systemctlActive
@@ -2343,6 +2362,31 @@ func stepEnableSystemUnit() step {
 			return nil
 		},
 	}
+}
+
+func validateProspectivePipelockConfig(ctx context.Context, env *installEnv) error {
+	if env.checkServiceConfig == nil {
+		return errors.New("prospective unit configuration validator is unavailable; refusing service start")
+	}
+	if env.preflightBinaryHash == "" {
+		return errors.New("config-preflight binary identity is missing; refusing service start")
+	}
+	hash, err := env.hashFile(env.pipelockTarget)
+	if err != nil || hash != env.preflightBinaryHash {
+		return errors.New("installed binary differs from config-preflight binary; refusing service start")
+	}
+	if err := env.checkServiceConfig(ctx, serviceenv.CheckOptions{
+		Binary: env.pipelockTarget, ConfigFile: managedPipelockConfigPath(env), Service: serviceenv.Unit,
+		RequireBuildCompatibility: true, ExpectedFragmentPath: env.systemUnitPath,
+		ExpectedExecStart: managedServiceArgv(env),
+	}); err != nil {
+		return fmt.Errorf("prospective pipelock.service configuration validation failed before service start: %w", err)
+	}
+	hash, err = env.hashFile(env.pipelockTarget)
+	if err != nil || hash != env.preflightBinaryHash {
+		return errors.New("installed binary changed during prospective config validation; refusing service start")
+	}
+	return nil
 }
 
 func restartRestoredServiceIfNeeded(ctx context.Context, env *installEnv) error {

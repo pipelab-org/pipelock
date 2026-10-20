@@ -884,15 +884,16 @@ type ResponseScanning struct {
 	AskTimeoutSeconds              int                           `yaml:"ask_timeout_seconds"` // timeout for HITL prompt (default 30)
 	IncludeDefaults                *bool                         `yaml:"include_defaults"`    // nil/true: merge user patterns with defaults; false: user patterns only
 	Patterns                       []ResponseScanPattern         `yaml:"patterns"`
-	ExemptDomains                  []string                      `yaml:"exempt_domains"`                      // responses from these hosts skip injection scanning (DLP still applies)
-	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                 // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
-	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`          // per-response in-memory ceiling for over-cap size-exempt responses
-	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"` // per-proxy-instance in-flight memory budget for size-exempt response scans
-	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`             // explicit audited stream-unscanned allowlist for opaque responses
-	AuthenticatedArtifacts         []AuthenticatedArtifactEntry  `yaml:"authenticated_artifacts"`             // exact signed artifacts the proxy may release after its own verification
-	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                       // generic text/event-stream inline scanning (LLM SSE)
-	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                         // per-server MCP response trust overrides
-	CoreObserveExceptions          []CoreObserveException        `yaml:"core_observe_exceptions"`             // declared, expiring per-host observe entries for one named core response pattern
+	ExemptDomains                  []string                      `yaml:"exempt_domains"`                                      // responses from these hosts skip injection scanning (DLP still applies)
+	SizeExemptDomains              []string                      `yaml:"size_exempt_domains"`                                 // trusted hosts whose oversized responses get a larger bounded whole-buffer scan
+	SizeExemptScanMaxBytes         int                           `yaml:"size_exempt_scan_max_bytes"`                          // per-response in-memory ceiling for over-cap size-exempt responses
+	SizeExemptScanLimits           []ResponseSizeScanLimit       `yaml:"size_exempt_scan_limits,omitempty" json:",omitempty"` // expiring exact-host ceilings; all response scans still run
+	SizeExemptScanMaxInflightBytes int                           `yaml:"size_exempt_scan_max_inflight_bytes"`                 // per-proxy-instance in-flight memory budget for size-exempt response scans
+	UnscannablePassthrough         []UnscannablePassthroughEntry `yaml:"unscannable_passthrough"`                             // explicit audited stream-unscanned allowlist for opaque responses
+	AuthenticatedArtifacts         []AuthenticatedArtifactEntry  `yaml:"authenticated_artifacts"`                             // exact signed artifacts the proxy may release after its own verification
+	SSEStreaming                   GenericSSEScanning            `yaml:"sse_streaming"`                                       // generic text/event-stream inline scanning (LLM SSE)
+	MCPServers                     []MCPResponseServerTrust      `yaml:"mcp_servers"`                                         // per-server MCP response trust overrides
+	CoreObserveExceptions          []CoreObserveException        `yaml:"core_observe_exceptions"`                             // declared, expiring per-host observe entries for one named core response pattern
 }
 
 // CoreObserveException declares that one exact host may OBSERVE, rather than

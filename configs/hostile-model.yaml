@@ -553,6 +553,7 @@ adaptive_enforcement:
 # Tool chain detection
 tool_chain_detection:
   enabled: true
+  window_seconds: 300
   action: block
 
 # Cross-request exfiltration detection

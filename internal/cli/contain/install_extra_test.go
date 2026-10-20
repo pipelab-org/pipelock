@@ -339,8 +339,21 @@ func TestStepStopUserService_StopsWhenActive(t *testing.T) {
 	}
 }
 
+func seedProspectiveServiceBinary(t *testing.T, env *installEnv) {
+	t.Helper()
+	body, err := env.readFile(env.pipelockBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(env.pipelockTarget, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.preflightBinaryHash = mustHashFile(t, env, env.pipelockTarget)
+}
+
 func TestStepEnableSystemUnit_SkipsWhenActive(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "enabled\n", 0, nil)
@@ -365,6 +378,7 @@ func TestStepEnableSystemUnit_RestartsActiveServiceAfterRuntimeChange(t *testing
 	} {
 		t.Run(changed.name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
+			seedProspectiveServiceBinary(t, env)
 			changed.apply(env)
 			runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 			runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
@@ -384,6 +398,7 @@ func TestStepEnableSystemUnit_RestartsActiveServiceAfterRuntimeChange(t *testing
 
 func TestStepEnableSystemUnit_ActiveDisabledChangeEnablesAndRestarts(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	env.serviceBinaryChanged = true
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
@@ -403,6 +418,7 @@ func TestStepEnableSystemUnit_ActiveDisabledChangeEnablesAndRestarts(t *testing.
 
 func TestStepEnableSystemUnit_ActiveDisabledReportsEnableFailure(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	env.serviceBinaryChanged = true
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
@@ -742,6 +758,7 @@ func runnerSawSystemctl(runner *fakeRunner, args ...string) bool {
 
 func TestStepEnableSystemUnit_EnablesWhenActiveButDisabled(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "disabled\n", 1, nil)
@@ -766,6 +783,7 @@ func TestStepEnableSystemUnit_EnablesWhenActiveButDisabled(t *testing.T) {
 
 func TestStepEnableSystemUnit_EnablesWhenInactive(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	s := stepEnableSystemUnit()
 	if _, err := s.apply(context.Background(), env); err != nil {
 		t.Fatalf("apply: %v", err)
@@ -800,6 +818,7 @@ func TestStepEnableSystemUnit_UndoDisables(t *testing.T) {
 
 func TestStepEnableSystemUnit_UndoRestoresPreviouslyEnabledInactive(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "inactive\n", 3, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "enabled\n", 0, nil)
@@ -833,6 +852,7 @@ func TestStepEnableSystemUnit_UndoRestoresPreviouslyEnabledInactive(t *testing.T
 
 func TestStepEnableSystemUnit_UndoRestoresPreviouslyActiveDisabled(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
+	seedProspectiveServiceBinary(t, env)
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-active", "pipelock"), "active\n", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", "pipelock"), "disabled\n", 1, nil)
