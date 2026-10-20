@@ -478,7 +478,7 @@ func TestPredicateValidateRejectsEdgeCases(t *testing.T) {
 		{
 			name: "schema_version",
 			edit: func(p *Predicate) {
-				p.SchemaVersion = 2
+				p.SchemaVersion = 99
 			},
 			want: "schemaVersion",
 		},

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -47,6 +48,8 @@ type EvidenceSource interface {
 }
 
 type Options struct {
+	// ReportVersion defaults to v2; v1 retains per-follower overlap refusal.
+	ReportVersion    int
 	OrgID            string
 	FleetID          string
 	ReportID         string
@@ -70,6 +73,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	if source == nil {
 		return Result{}, errors.New("fleet report: evidence source is required")
 	}
+	if opts.ReportVersion == 0 {
+		opts.ReportVersion = fleetreceipt.SchemaVersionV2
+	}
 	if err := validateOptions(opts); err != nil {
 		return Result{}, err
 	}
@@ -92,8 +98,10 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	}
 	agg := newAggregator()
 	var sourceBatches []fleetreceipt.SourceBatch
-	var subjects []fleetreceipt.Subject
 	for _, ev := range evidence {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if err := validateEvidence(opts, ev); err != nil {
 			return Result{}, err
 		}
@@ -124,11 +132,28 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 			return Result{}, err
 		}
 		batch := sourceBatch(ev)
+		if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+			if len(auditKey.PublicKey) != ed25519.PublicKeySize {
+				return Result{}, fmt.Errorf("fleet report: no enrolled audit key available for namespace in batch %s", ev.Envelope.BatchID)
+			}
+			identity, err := deriveChainIdentity(ctx, ev.Envelope, entries)
+			if err != nil {
+				return Result{}, fmt.Errorf("fleet report: batch %s namespace: %w", ev.Envelope.BatchID, err)
+			}
+			batch.Chain = &identity
+		}
 		sourceBatches = append(sourceBatches, batch)
-		subjects = append(subjects, fleetreceipt.Subject{
-			Name:   sourceBatchSubjectName(batch),
-			Digest: fleetreceipt.Digest{SHA256: batch.EnvelopeHash},
-		})
+	}
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		slices.SortFunc(sourceBatches, fleetreceipt.CompareSourceBatches)
+	}
+	subjects := make([]fleetreceipt.Subject, 0, len(sourceBatches))
+	for _, batch := range sourceBatches {
+		subjects = append(subjects, fleetreceipt.Subject{Name: sourceBatchSubjectName(batch), Digest: fleetreceipt.Digest{SHA256: batch.EnvelopeHash}})
+	}
+	predicateType := fleetreceipt.PredicateType
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		predicateType = fleetreceipt.PredicateTypeV2
 	}
 	if agg.totalActions == 0 {
 		return Result{}, ErrNoActionReceipts
@@ -144,9 +169,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	statement := fleetreceipt.Statement{
 		Type:          fleetreceipt.StatementType,
 		Subject:       subjects,
-		PredicateType: fleetreceipt.PredicateType,
+		PredicateType: predicateType,
 		Predicate: fleetreceipt.Predicate{
-			SchemaVersion:     1,
+			SchemaVersion:     opts.ReportVersion,
 			ReportID:          id,
 			GeneratedAt:       opts.GeneratedAt.UTC().Format(time.RFC3339),
 			OrgID:             opts.OrgID,
@@ -188,6 +213,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 }
 
 func validateOptions(opts Options) error {
+	if opts.ReportVersion != 0 && opts.ReportVersion != fleetreceipt.SchemaVersionV1 && opts.ReportVersion != fleetreceipt.SchemaVersionV2 {
+		return errors.New("fleet report: unsupported report version; use 1 or 2")
+	}
 	if strings.TrimSpace(opts.OrgID) == "" {
 		return errors.New("fleet report: org id is required")
 	}
@@ -330,6 +358,33 @@ func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []
 		}
 	}
 	return nil
+}
+
+// deriveChainIdentity joins verifySegment and the recorder's hash projection.
+// Call only after authenticating the envelope and checking its payload digest.
+func deriveChainIdentity(ctx context.Context, env conductorcore.AuditBatchEnvelope, entries []recorder.Entry) (fleetreceipt.ChainIdentity, error) {
+	first := entries[0] // verifySegment has already rejected empty payloads.
+	identity := fleetreceipt.ChainIdentity{EntryVersion: first.Version, SessionID: first.SessionID, ChainKind: first.ChainKind, WriterInstanceID: first.WriterInstanceID}
+	if err := identity.Validate(); err != nil {
+		return identity, err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return identity, err
+		}
+		if entry.SessionID != identity.SessionID || recorder.ComputeHash(entry) != entry.Hash {
+			return identity, errors.New("mixed session or recorder hash mismatch")
+		}
+	}
+	last := entries[len(entries)-1]
+	if last.Type != "checkpoint" || last.Sequence != env.Chain.CheckpointSeq || last.Hash != env.Chain.CheckpointHash {
+		return identity, errors.New("checkpoint binding mismatch")
+	}
+	var checkpoint recorder.CheckpointDetail
+	if json.Unmarshal(last.RawDetail, &checkpoint) != nil || checkpoint.Signature == "" || conductorcore.SignaturePrefixEd25519+strings.TrimPrefix(checkpoint.Signature, conductorcore.SignaturePrefixEd25519) != env.Chain.CheckpointSignature {
+		return identity, errors.New("checkpoint signature binding mismatch")
+	}
+	return identity, nil
 }
 
 func (a *aggregator) addReceipt(instanceID string, ar receipt.ActionRecord) {

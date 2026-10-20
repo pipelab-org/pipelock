@@ -31,6 +31,7 @@ import (
 )
 
 type fleetReportOptions struct {
+	reportVersion    int
 	storageDir       string
 	orgID            string
 	fleetID          string
@@ -48,7 +49,8 @@ type fleetReportOptions struct {
 
 func fleetReportCmd() *cobra.Command {
 	opts := fleetReportOptions{
-		conductorID: "conductor",
+		conductorID:   "conductor",
+		reportVersion: 2,
 	}
 	cmd := &cobra.Command{
 		Use:   "report",
@@ -72,9 +74,13 @@ into the offline verifier:
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
+			if opts.reportVersion != 1 && opts.reportVersion != 2 {
+				return errors.New("--report-version must be 1 or 2")
+			}
 			return runFleetReport(cmd, opts)
 		},
 	}
+	cmd.Flags().IntVar(&opts.reportVersion, "report-version", opts.reportVersion, "report predicate version: 2 groups verified recorder namespaces; 1 retains per-follower overlap refusal")
 	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit store")
 	cmd.Flags().StringVar(&opts.orgID, "org-id", "", "org id to report (required)")
 	cmd.Flags().StringVar(&opts.fleetID, "fleet-id", "", "fleet id to report (required)")
@@ -139,6 +145,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	defer func() { _ = store.Close() }()
 
 	result, err := fleetreport.Build(cmd.Context(), store, fleetreport.Options{
+		ReportVersion:    opts.reportVersion,
 		OrgID:            opts.orgID,
 		FleetID:          opts.fleetID,
 		WindowStart:      start,
@@ -202,6 +209,9 @@ func openFleetReportAuditStore(cmd *cobra.Command, storageDir string) (*controlp
 }
 
 func validateFleetReportOptions(opts fleetReportOptions) error {
+	if opts.reportVersion != 0 && opts.reportVersion != 1 && opts.reportVersion != 2 {
+		return errors.New("--report-version must be 1 or 2")
+	}
 	for _, item := range []struct {
 		flag  string
 		value string
