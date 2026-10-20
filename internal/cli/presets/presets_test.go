@@ -38,6 +38,13 @@ func TestYAMLProducesLoadableConfigForEveryPreset(t *testing.T) {
 			if got, want := cfg.Mode, expectedMode(name); got != want {
 				t.Fatalf("mode = %q, want %q", got, want)
 			}
+			parsed, err := Config(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !isNamedPreset(name) && cfg.CanonicalPolicyHash() != parsed.CanonicalPolicyHash() {
+				t.Fatal("portable preset differs from runtime file loading")
+			}
 		})
 	}
 }
@@ -125,7 +132,7 @@ func TestCmdListsEveryPreset(t *testing.T) {
 func TestFilePresetYAMLMatchesEmbeddedBytes(t *testing.T) {
 	t.Parallel()
 
-	for _, name := range []string{PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel} {
+	for _, name := range All {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -139,6 +146,28 @@ func TestFilePresetYAMLMatchesEmbeddedBytes(t *testing.T) {
 			}
 			if !bytes.Equal(got, want) {
 				t.Fatalf("YAML(%q) changed embedded bytes", name)
+			}
+			shipped, err := os.ReadFile(filepath.Clean(filepath.Join("..", "..", "..", "configs", name+".yaml")))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, shipped) {
+				t.Fatalf("YAML(%q) differs from shipped file", name)
+			}
+			parsed, err := Config(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			load := config.LoadPolicyBundleBytes
+			if isNamedPreset(name) {
+				load = parseFilePreset
+			}
+			loaded, err := load(shipped)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if parsed.CanonicalPolicyHash() != loaded.CanonicalPolicyHash() {
+				t.Fatal("parsed preset differs from effective shipped config")
 			}
 		})
 	}
@@ -176,14 +205,6 @@ func TestFilePresetRejectsUnembeddedName(t *testing.T) {
 	}
 }
 
-func TestValidatedConfigRejectsInvalidConfig(t *testing.T) {
-	t.Parallel()
-
-	if _, err := validatedConfig("bad", &config.Config{Mode: "bad"}); err == nil {
-		t.Fatal("expected validation error")
-	}
-}
-
 func TestParseConfigRejectsInvalidPresetYAML(t *testing.T) {
 	t.Parallel()
 
@@ -198,16 +219,31 @@ func TestParseConfigRejectsInvalidPresetYAML(t *testing.T) {
 		{name: "multiple documents", data: []byte("mode: balanced\n---\nmode: audit\n")},
 		{name: "decode error", data: []byte("mode: [\n")},
 		{name: "invalid mode", data: []byte("mode: permissive\n")},
+		{name: "unknown top-level field", data: []byte("mode: balanced\nunknown: true\n")},
+		{name: "unknown nested field", data: []byte("response_scanning: {unknown: true}\n")},
+		{name: "trailing malformed document", data: []byte("mode: balanced\n---\n[\n")},
+		{name: "duplicate field", data: []byte("mode: balanced\nmode: strict\n")},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if _, err := parseConfig(tt.data); err == nil {
-				t.Fatal("expected error")
+			for name, parse := range map[string]func([]byte) (*config.Config, error){"mode": parseConfig, "named": parseFilePreset} {
+				if _, err := parse(tt.data); err == nil {
+					t.Errorf("%s parser: expected error", name)
+				}
 			}
 		})
+	}
+}
+
+func isNamedPreset(name string) bool {
+	switch name {
+	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -224,7 +260,7 @@ func expectedMode(name string) string {
 	}
 }
 
-func TestProgrammaticPresetValues(t *testing.T) {
+func TestModePresetValues(t *testing.T) {
 	t.Parallel()
 
 	strict, err := Config(config.ModeStrict)

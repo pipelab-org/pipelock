@@ -602,6 +602,7 @@ tls_interception:
 
 tool_chain_detection:
   enabled: true
+  window_seconds: 300
   action: warn
 
 # Cross-request exfiltration detection (opt-in)

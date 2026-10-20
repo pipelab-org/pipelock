@@ -2786,13 +2786,16 @@ them.
 ## Presets
 
 Seven starter configs are selectable with `pipelock generate config --preset <name>`.
+All presets use the bundled files in `configs/`. The `strict`, `balanced`, and `audit` presets apply the configuration loader's security defaults and inherit built-in DLP and response patterns. Supplemental response patterns with different expressions use `Preset` names so both sets remain active. These names appear in findings; a suppression for the original name does not suppress its supplemental pattern. Core patterns remain unsuppressible. The four named presets retain their existing parsing defaults for `init` and sidecar generation.
+
+Each preset sets a five-minute tool-chain window. `pipelock init` preserves preset scanning actions, disabled sections, drift settings, and tool-chain windows when it discovers MCP servers. Audit mode logs ordinary policy findings; core, transport safety, and explicitly blocking tool-policy rules can still block. MCP input scanning blocks findings in the `strict`, `balanced`, and `audit` presets. The response and default tool-policy actions in the table below describe those separate scanning paths; individual tool rules can override that default.
 Run `pipelock presets` or `pipelock generate config --list` to list the current built-in names with mode, default action, and reachability posture:
 
 | Preset | Mode | Response Action | MCP Policy | Best For |
 |--------|------|----------------|------------|----------|
 | `balanced` | balanced | warn | warn | General purpose |
 | `strict` | strict | block | block | High-security |
-| `audit` | audit | warn | warn | Log-only monitoring |
+| `audit` | audit | warn | warn | Evaluate ordinary policy; safety protections can block |
 | `claude-code` | balanced | block | warn | Claude Code (unattended) |
 | `cursor` | balanced | block | warn | Cursor IDE |
 | `generic-agent` | balanced | warn | warn | New agents (tuning) |

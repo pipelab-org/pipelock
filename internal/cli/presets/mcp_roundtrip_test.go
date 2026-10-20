@@ -9,9 +9,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-// A preset written to disk is loaded again by the operator. Its unset MCP
-// sections must stay unconfigured so the MCP proxy still enables them.
-func TestPresetYAMLKeepsMCPSectionsUnconfigured(t *testing.T) {
+// A preset written to disk is loaded again by the operator. Explicit MCP
+// settings and runtime defaults must retain the same intent.
+func TestPresetYAMLPreservesMCPRuntimeIntent(t *testing.T) {
 	for _, info := range List() {
 		t.Run(info.Name, func(t *testing.T) {
 			data, err := YAML(info.Name)
