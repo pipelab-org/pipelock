@@ -408,14 +408,22 @@ func ExtractVisibleStringsFromJSONResultWithMediaBudget(raw json.RawMessage, bud
 }
 
 func extractVisibleStrings(raw json.RawMessage, budget *MediaTextBudget) ExtractStringsResult {
-	if budget == nil {
-		budget = &MediaTextBudget{}
-	}
 	var parsed interface{}
 	if err := extract.DecodeJSON(raw, &parsed); err != nil {
 		return ExtractStringsResult{}
 	}
+	return ExtractVisibleStringsFromValueResult(parsed, budget)
+}
 
+// ExtractVisibleStringsFromValueResult walks a value already decoded by
+// extract.DecodeJSON, optionally drawing on a shared response media budget.
+// The value must contain only the decoder's JSON types, including json.Number,
+// with any removed fields replaced by nil. It must not be mutated during the
+// walk. This skips parsing, not the extraction depth or media limits.
+func ExtractVisibleStringsFromValueResult(parsed any, budget *MediaTextBudget) ExtractStringsResult {
+	if budget == nil {
+		budget = &MediaTextBudget{}
+	}
 	var result []string
 	var atoms []extract.DLPAtom
 	var positions []int
@@ -933,6 +941,20 @@ func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 // ignores keys because they are normally structural. Callers that surface a
 // JSON object as agent-visible tool metadata can opt into scanning its keys.
 func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
+	var parsed interface{}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err != nil || !json.Valid(raw) {
+		return ExtractKeysResult{}
+	}
+	return ExtractKeysFromValueResult(parsed)
+}
+
+// ExtractKeysFromValueResult walks a value already decoded by extract.DecodeJSON
+// (or the equivalent complete-document, UseNumber decoder above). The value
+// must contain only JSON decoder types, with any removed fields replaced by nil,
+// and must not be mutated during the walk. Depth and key limits still apply.
+func ExtractKeysFromValueResult(parsed any) ExtractKeysResult {
 	var result []string
 	truncated := false
 	var extract func(v interface{}, depth int)
@@ -975,11 +997,6 @@ func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
 			}
 		}
 	}
-	var parsed interface{}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&parsed); err == nil && json.Valid(raw) {
-		extract(parsed, 0)
-	}
+	extract(parsed, 0)
 	return ExtractKeysResult{Keys: result, Truncated: truncated}
 }

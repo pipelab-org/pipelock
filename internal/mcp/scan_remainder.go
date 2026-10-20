@@ -76,12 +76,8 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *json
 			}
 		}
 	}
-	encoded, err := json.Marshal(envelope)
-	if err != nil {
-		return responseEnvelopeViews{}, false
-	}
-	values := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, budget)
-	keys := jsonrpc.ExtractKeysFromJSONResult(encoded)
+	values := jsonrpc.ExtractVisibleStringsFromValueResult(envelope, budget)
+	keys := jsonrpc.ExtractKeysFromValueResult(envelope)
 	if values.Truncated || keys.Truncated {
 		return responseEnvelopeViews{}, false
 	}
