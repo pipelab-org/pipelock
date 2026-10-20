@@ -148,6 +148,35 @@ func TestSupplementalPresetYAMLAssociations(t *testing.T) {
 					t.Errorf("suppressing %s hid %s for %q: %+v", tc.suppressed, tc.want, tc.text, result)
 				}
 			}
+			const supplemental = "Preset Instruction Dismissal"
+			controlled := s.ScanResponseWithSuppress(t.Context(), fixtures[supplemental], target, []config.SuppressEntry{{
+				Rule: supplemental, Path: target, Reason: "positive suppression control",
+			}})
+			for _, match := range controlled.Matches {
+				if match.PatternName == supplemental {
+					t.Errorf("suppression retained %s: %+v", supplemental, controlled)
+				}
+			}
+			suppressed := false
+			for _, match := range controlled.SuppressedMatches {
+				suppressed = suppressed || match.PatternName == supplemental
+			}
+			if !suppressed {
+				t.Errorf("suppression did not record the matching %s fixture: %+v", supplemental, controlled)
+			}
+
+			const core = "Instruction Boundary"
+			protected := s.ScanResponseWithSuppress(t.Context(), "<|im_start|>", target, []config.SuppressEntry{
+				{Rule: supplemental, Path: target, Reason: "positive suppression control"},
+				{Rule: core, Path: target, Reason: "core suppression must be ignored"},
+			})
+			retained := false
+			for _, match := range protected.Matches {
+				retained = retained || match.PatternName == core
+			}
+			if protected.Clean || !retained {
+				t.Errorf("suppression hid the immutable %s finding: %+v", core, protected)
+			}
 		})
 	}
 }
