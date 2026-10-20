@@ -472,10 +472,16 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 		return result
 	}
 	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return unknown("inspect RFB socket: "+err.Error(), displayInspectionRootRemedy)
+		}
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
 	}
 	info, err := env.lstat(path)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return unknown("inspect RFB socket: "+err.Error(), displayInspectionRootRemedy)
+		}
 		return fail(classInfra, "RFB socket: "+err.Error(), "rerun contain install")
 	}
 	if env.lookupUser == nil {

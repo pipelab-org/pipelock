@@ -15,6 +15,8 @@ import (
 
 const defaultDisplayTmpfilesPath = "/etc/tmpfiles.d/pipelock-agent-display.conf"
 
+const displayInspectionRootRemedy = "rerun this command as root to inspect the managed display state"
+
 // systemd tmpfiles.d(5): d creates a directory without removing its contents;
 // mode, user and group apply at boot before systemd-tmpfiles-setup.service ends.
 func renderDisplayRuntimeRule(socket string) []byte {
@@ -157,10 +159,16 @@ func checkDisplayRuntime(stat func(string) (os.FileInfo, error), read func(strin
 	missing := errors.Is(dirErr, os.ErrNotExist)
 	if !missing {
 		if err := checkRFBRuntimeDirectory(stat, lookup, socket); err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return unknown(err.Error(), displayInspectionRootRemedy)
+			}
 			return fail(classInfra, err.Error(), displayRuntimeRepair(socket))
 		}
 	}
 	if err := checkDisplayRuntimeRule(stat, read, rule, socket); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return unknown(err.Error(), displayInspectionRootRemedy)
+		}
 		return fail(classInfra, err.Error(), "restore a regular root:root 0600 managed rule at "+rule+"; rerun contain install")
 	}
 	if missing {

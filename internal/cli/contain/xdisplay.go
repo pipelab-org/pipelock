@@ -979,6 +979,9 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	body, err := env.readFile(env.displayUnitPath)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusUnknown, fmt.Sprintf("read display unit: %v; %s", err, displayInspectionRootRemedy)
+		}
 		return statusFail, fmt.Sprintf("read display unit: %v", err)
 	}
 	path := displayRFBPath(env.rfbSocketPath)
@@ -998,6 +1001,9 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	info, err := lstat(path)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusUnknown, fmt.Sprintf("inspect RFB socket: %v; %s", err, displayInspectionRootRemedy)
+		}
 		return statusFail, fmt.Sprintf("RFB socket missing; rerun contain install: %v", err)
 	}
 	mode := os.FileMode(0o600)
