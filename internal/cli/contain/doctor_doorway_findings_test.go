@@ -6,6 +6,7 @@ package contain
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -119,5 +120,100 @@ func TestDoorwayUnverifiedDefinitionsDoNotSuggestUnitCommands(t *testing.T) {
 	got := doctorDoorwayState(t.Context(), env, nil)
 	if got.status != statusFail || got.class != classInfra || got.remediation != installRemedy || strings.Contains(got.remediation, "systemctl") {
 		t.Fatalf("unverified definitions acquired recovery commands: %+v", got)
+	}
+}
+
+func TestDoorwayUnknownRelayRetainsDefiniteFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name, unit string
+		state      fakeUnitState
+		missing    bool
+	}{
+		{"disabled socket", testDoorwayProxySocket, fakeUnitState{"disabled", "inactive"}, false},
+		{"inactive socket", testDoorwayProxySocket, fakeUnitState{systemctlEnabled, "inactive"}, false},
+		{"missing pathname", "", fakeUnitState{}, true},
+		{"inactive forwarder", containedNamespaceForwarderUnit, fakeUnitState{systemctlEnabled, "inactive"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := diagnosticDoorwayEnv(map[string]fakeUnitState{
+				testDoorwayProxyRelay: {"future-state", systemctlActive}, tc.unit: tc.state,
+			})
+			if tc.missing {
+				env.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+			}
+			got := doctorDoorwayState(t.Context(), env, nil)
+			if got.status != statusFail || !strings.Contains(got.detail, "future-state") {
+				t.Fatalf("unknown relay hid definite failure: %+v", got)
+			}
+			if status, _ := probeManagedDoorwaySockets(t.Context(), env, nil); status != statusFail {
+				t.Fatalf("verification failed open: %s", status)
+			}
+		})
+	}
+}
+
+func TestDoorwayDefinitionFailureRetainsVerifiedSiblingRuntime(t *testing.T) {
+	for _, unreadable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "drift", true: "unreadable"}[unreadable], func(t *testing.T) {
+			env := covNSProbeBase(t)
+			service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+			writeLoopbackProbeUnits(t, env, service)
+			unit := loopbackForwarderUnitBase(service.Host, service.Port)
+			read := env.readFile
+			env.readFile = func(path string) ([]byte, error) {
+				if filepath.Base(path) == unit+".service" {
+					if unreadable {
+						return nil, os.ErrPermission
+					}
+					return []byte("operator override"), nil
+				}
+				return read(path)
+			}
+			run := env.runCmd
+			env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+				if len(args) == 2 && strings.HasPrefix(args[1], unit) {
+					t.Fatal("unverified doorway reached runtime inspection")
+				}
+				if len(args) == 2 && args[1] == testDoorwayProxySocket && args[0] == "is-active" {
+					return "inactive", 3, nil
+				}
+				return run(ctx, name, args...)
+			}
+			got := doctorDoorwayState(t.Context(), env, []config.ContainmentLoopbackService{service})
+			if got.status != statusFail || !strings.Contains(got.detail, unit+".service") || !strings.Contains(got.detail, testDoorwayProxySocket+" is inactive") || !strings.Contains(got.remediation, installRemedy) || !strings.Contains(got.remediation, "systemctl start "+testDoorwayProxySocket) {
+				t.Fatalf("definition gate hid verified sibling failure: %+v", got)
+			}
+			if strings.Contains(got.remediation, "systemctl stop "+unit) {
+				t.Fatalf("unverified doorway acquired runtime remedy: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDoorwaySocketAndForwarderTransitions(t *testing.T) {
+	for _, unit := range []string{testDoorwayProxySocket, containedNamespaceForwarderUnit} {
+		for _, state := range []string{"activating", "deactivating", "reloading"} {
+			t.Run(unit+"/"+state, func(t *testing.T) {
+				env := diagnosticDoorwayEnv(map[string]fakeUnitState{unit: {systemctlEnabled, state}})
+				got := doctorDoorwayState(t.Context(), env, nil)
+				if got.status != statusUnknown || !strings.Contains(got.detail, unit) || strings.Contains(got.remediation, "systemctl") {
+					t.Fatalf("transition suggested disruptive repair: %+v", got)
+				}
+				if status, _ := probeManagedDoorwaySockets(t.Context(), env, nil); status != statusFail {
+					t.Fatalf("transition verification failed open: %s", status)
+				}
+			})
+		}
+	}
+}
+
+func TestDoorwaySocketFailureDoesNotRestartTransitioningForwarder(t *testing.T) {
+	env := diagnosticDoorwayEnv(map[string]fakeUnitState{
+		testDoorwayProxySocket:          {systemctlEnabled, "inactive"},
+		containedNamespaceForwarderUnit: {systemctlEnabled, "activating"},
+	})
+	got := doctorDoorwayState(t.Context(), env, nil)
+	if got.status != statusFail || strings.Contains(got.remediation, "systemctl restart "+containedNamespaceForwarderUnit) || !strings.Contains(got.detail, "activating") {
+		t.Fatalf("socket repair interrupted transitioning forwarder: %+v", got)
 	}
 }

@@ -461,12 +461,8 @@ func TestDoorwayRuntimeMaskRecovery(t *testing.T) {
 	for _, base := range []string{containedProxyForwarderUnit, loopbackForwarderUnitBase(service.Host, service.Port)} {
 		for _, suffix := range []string{".socket", ".service", "-netns.service"} {
 			unit := base + suffix
-			forwarder := base + "-netns.service"
-			if base == containedProxyForwarderUnit {
-				forwarder = containedNamespaceForwarderUnit
-				if suffix == "-netns.service" {
-					unit = forwarder
-				}
+			if base == containedProxyForwarderUnit && suffix == "-netns.service" {
+				unit = containedNamespaceForwarderUnit
 			}
 			t.Run(unit, func(t *testing.T) {
 				env := covNSProbeBase(t)

@@ -55,37 +55,28 @@ func combineDoorwayResults(results []doctorResult) doctorResult {
 }
 
 // observeManagedDoorwayDefinitions admits only the rendered managed units before
-// their names can appear in recovery commands. Operator definitions need install.
+// their names can appear in recovery commands. Each verified doorway remains
+// inspectable even when another doorway needs its definitions restored by install.
 func observeManagedDoorwayDefinitions(env *probeEnv, services []config.ContainmentLoopbackService) ([]managedDoorway, doctorResult) {
 	if filepath.Base(env.proxyForwarderSocketPath) != containedProxyForwarderUnit+".socket" ||
 		filepath.Base(env.proxyForwarderServicePath) != containedProxyForwarderUnit+".service" ||
 		filepath.Base(env.namespaceForwarderServicePath) != containedNamespaceForwarderUnit {
 		return nil, fail(classInfra, "managed doorway unit paths are not canonical", installRemedy)
 	}
-	type definition struct{ path, want string }
-	definitions := []definition{
+	definitions := map[string][]doorwayDefinition{containedProxyForwarderUnit + ".socket": {
 		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
 		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
-	}
+	}}
 	doorways := []managedDoorway{{containedProxyForwarderUnit + ".socket", containedProxyForwarderUnit + ".service", containedNamespaceForwarderUnit, containedDoorwaySocketPath}}
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 	for _, service := range services {
 		unit := loopbackForwarderUnitBase(service.Host, service.Port)
 		doorways = append(doorways, managedDoorway{unit + ".socket", unit + ".service", unit + "-netns.service", declaredLoopbackDoorwayPath(service.Host, service.Port)})
-		definitions = append(definitions,
-			definition{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service)},
-			definition{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service)},
-			definition{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service)},
-		)
-	}
-	for _, definition := range definitions {
-		body, err := env.readFile(filepath.Clean(definition.path))
-		if err != nil {
-			return nil, fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), installRemedy)
-		}
-		if string(body) != definition.want {
-			return nil, fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), installRemedy)
+		definitions[unit+".socket"] = []doorwayDefinition{
+			{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service)},
+			{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service)},
+			{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service)},
 		}
 	}
 	bySocket := make(map[string]managedDoorway, len(doorways))
@@ -93,8 +84,29 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 		bySocket[doorway.socket] = doorway
 	}
 	ordered := make([]managedDoorway, 0, len(doorways))
+	var results []doctorResult
 	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
-		ordered = append(ordered, bySocket[socket])
+		result := observeDoorwayDefinitions(env, definitions[socket])
+		if result.status == statusPass {
+			ordered = append(ordered, bySocket[socket])
+		} else {
+			results = append(results, result)
+		}
 	}
-	return ordered, pass("managed doorway definitions match installation")
+	return ordered, combineDoorwayResults(results)
+}
+
+type doorwayDefinition struct{ path, want string }
+
+func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition) doctorResult {
+	for _, definition := range definitions {
+		body, err := env.readFile(filepath.Clean(definition.path))
+		if err != nil {
+			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), installRemedy)
+		}
+		if string(body) != definition.want {
+			return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), installRemedy)
+		}
+	}
+	return pass("managed doorway definitions match installation")
 }
