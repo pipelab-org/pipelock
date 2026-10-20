@@ -227,7 +227,10 @@ func TestModePresetsDoNotDowngradeDefaultPolicy(t *testing.T) {
 			before.Mode = name
 			if name == config.ModeAudit {
 				enforce := false
+				// Apply the audit observation contract to the default baseline.
 				before.Enforce = &enforce
+				before.MCPInputScanning.Action = config.ActionWarn
+				before.Taint.Policy = config.ModePermissive
 			}
 			after, err := Config(name)
 			if err != nil {
@@ -282,6 +285,48 @@ func TestModePresetsScanBuiltInAndSupplementalPatterns(t *testing.T) {
 			}
 			if result := s.ScanResponse(context.Background(), "The documentation describes how the command works."); !result.Clean {
 				t.Fatalf("ordinary prose matched: %+v", result)
+			}
+		})
+	}
+}
+
+func TestAuditPresetOrdinaryFindingsWarn(t *testing.T) {
+	data, err := YAML(config.ModeAudit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := &config.Config{}
+	if err := yaml.Unmarshal(data, raw); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := Config(config.ModeAudit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.LoadBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialized, err := yaml.Marshal(parsed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roundtrip, err := config.LoadBytes(serialized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, cfg := range map[string]*config.Config{"raw YAML": raw, "preset": parsed, "loader": loaded, "roundtrip": roundtrip} {
+		t.Run(name, func(t *testing.T) {
+			if cfg.Enforce == nil || *cfg.Enforce || cfg.MCPInputScanning.Action != config.ActionWarn || cfg.MCPToolScanning.Action != config.ActionWarn || cfg.MCPToolPolicy.Action != config.ActionWarn || cfg.ResponseScanning.Action != config.ActionWarn || cfg.ToolChainDetection.Action != config.ActionWarn || cfg.Taint.Policy != config.ModePermissive {
+				t.Fatal("audit ordinary findings must remain observe-only")
+			}
+			for _, rule := range cfg.MCPToolPolicy.Rules {
+				if rule.Action != "" && rule.Action != config.ActionWarn {
+					t.Errorf("audit rule %q action = %q, want warn", rule.Name, rule.Action)
+				}
+			}
+			if cfg.MCPInputScanning.OnParseError != config.ActionBlock || cfg.WebSocketProxy.AllowBinaryFrames {
+				t.Fatal("audit lost transport safety protections")
 			}
 		})
 	}

@@ -37,7 +37,7 @@ func TestBuildConfigPreservesPresetPolicy(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got.ToolChainDetection.WindowSeconds != 300 || got.ToolChainDetection.WindowSize != 20 || got.ToolChainDetection.MaxGap == nil || *got.ToolChainDetection.MaxGap != config.DefaultMaxGap {
+				if !got.ToolChainDetection.Enabled || got.ToolChainDetection.WindowSeconds != 300 || got.ToolChainDetection.WindowSize != 20 || got.ToolChainDetection.MaxGap == nil || *got.ToolChainDetection.MaxGap != config.DefaultMaxGap {
 					t.Fatal("preset lost the tool-chain discovery window")
 				}
 				if got.CanonicalPolicyHash() != want.CanonicalPolicyHash() {
@@ -214,5 +214,26 @@ func TestSidecarPresetConfigRoundTrip(t *testing.T) {
 				t.Fatal("loaded runtime hash differs from independently loaded policy")
 			}
 		})
+	}
+}
+
+func TestBuildConfigPreservesToolChainIntent(t *testing.T) {
+	for _, section := range []string{"", "tool_chain_detection: {enabled: false}\n", "tool_chain_detection: {enabled: true, action: block, window_seconds: 120}\n"} {
+		for _, servers := range []int{0, 3, 4} {
+			t.Run(fmt.Sprintf("%s/%d", section, servers), func(t *testing.T) {
+				cfg, err := config.LoadBytes([]byte("mode: balanced\n" + section))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := cfg.ToolChainDetection
+				got, err := buildConfigFromPreset(cfg, discoveryReport(servers))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got.ToolChainDetection, want) {
+					t.Fatalf("discovery changed chain intent: got %+v, want %+v", got.ToolChainDetection, want)
+				}
+			})
+		}
 	}
 }

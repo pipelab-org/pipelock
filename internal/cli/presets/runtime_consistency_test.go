@@ -38,8 +38,15 @@ func TestModePresetsKeepRuntimeToolRules(t *testing.T) {
 					if action == "" {
 						action = cfg.MCPToolPolicy.Action
 					}
-					if original.Action == config.ActionBlock && action != config.ActionBlock {
-						t.Errorf("rule[%d] %q lost runtime block action", i, original.Name)
+					wantAction := original.Action
+					if wantAction == "" {
+						wantAction = cfg.MCPToolPolicy.Action
+					}
+					if name == config.ModeAudit {
+						wantAction = config.ActionWarn
+					}
+					if action != wantAction {
+						t.Errorf("rule[%d] %q action = %q, want %q", i, original.Name, action, wantAction)
 					}
 				}
 				if !found {
@@ -81,12 +88,20 @@ func TestPresetRuntimeDoesNotReduceProtection(t *testing.T) {
 		var old *config.Config
 		switch name {
 		case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
-			// Mode presets previously started from programmatic defaults.
+			// Baseline uses programmatic defaults, with the audit
+			// observation contract applied below.
 			old = config.Defaults()
 			old.Mode = name
 			if name == config.ModeAudit {
 				off := false
 				old.Enforce = &off
+				// Audit observes ordinary MCP findings while safety floors remain active.
+				old.MCPInputScanning.Action = config.ActionWarn
+				old.Taint.Policy = config.ModePermissive
+				old.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
+				for i := range old.MCPToolPolicy.Rules {
+					old.MCPToolPolicy.Rules[i].Action = config.ActionWarn
+				}
 			}
 		default:
 			// Named presets previously parsed YAML and applied only the
