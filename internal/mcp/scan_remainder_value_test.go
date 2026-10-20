@@ -64,6 +64,23 @@ func TestResponseEnvelopeValueViewsRejectDepthBeforePruning(t *testing.T) {
 	}
 }
 
+func TestResponseEnvelopeValueViewsRejectInvalidDocument(t *testing.T) {
+	for _, raw := range []string{
+		`{"note":"visible"} {}`,
+		`{"note":"visible"} trailing`,
+		`{"note":"visible"`,
+		`["visible"]`,
+		`"visible"`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			views, ok := responseEnvelopeRemainder([]byte(raw), jsonrpc.RPCResponse{}, &jsonrpc.MediaTextBudget{})
+			if ok || !reflect.DeepEqual(views, responseEnvelopeViews{}) {
+				t.Fatalf("invalid envelope accepted: %+v, %v", views, ok)
+			}
+		})
+	}
+}
+
 func BenchmarkResponseEnvelopeRemainder(b *testing.B) {
 	for _, tc := range []struct {
 		name string
