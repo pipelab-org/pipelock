@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
@@ -25,6 +26,18 @@ var fleetV2FixtureHashes = map[string]string{
 	"missing-chain":          "81223b1d4c4eca15a5c5266e4e29430913a7694f7a5727b0c94ab790c858a76a",
 	"mismatched-version":     "3e026c8d28973a2bc880a3f4ff89d8319af6091d7739167a7e5e7b5177038505",
 	"unknown-version":        "a06517f31437e43c6a50a320106f1a6ee5d59531367a231b9eff985798b81303",
+}
+
+// fleetV2RejectionReasons pins each negative fixture to the rule that must
+// refuse it. The fixtures reuse the valid report's signature over a changed
+// payload, so a verifier that skipped the named rule would still refuse them
+// for a bad signature or non-canonical bytes; an err != nil check alone would
+// not notice.
+var fleetV2RejectionReasons = map[string]string{
+	"same-namespace-overlap": "source batches overlap or are reordered",
+	"missing-chain":          "v2 source batch chain required",
+	"mismatched-version":     "predicateType/schemaVersion mismatch",
+	"unknown-version":        "predicateType/schemaVersion mismatch",
 }
 
 func fleetV2Statement() fleetreceipt.Statement {
@@ -115,6 +128,8 @@ func TestFleetReceiptV2Conformance(t *testing.T) {
 				}
 			} else if err == nil {
 				t.Fatal("invalid v2 report accepted")
+			} else if !strings.Contains(err.Error(), fleetV2RejectionReasons[name]) {
+				t.Fatalf("rejected for the wrong reason: %v, want %q", err, fleetV2RejectionReasons[name])
 			}
 		})
 	}

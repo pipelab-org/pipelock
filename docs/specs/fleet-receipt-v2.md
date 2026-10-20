@@ -67,9 +67,10 @@ v2 changes no receiver admission or fork-detection policy.
 
 ## Ordering and completeness
 
-Source batches sort lexicographically by `orgId`, `fleetId`, `instanceId`, then
+Source batches sort by `orgId`, `fleetId`, `instanceId`, then
 chain `entryVersion` (numeric), `sessionId`, `chainKind`, `writerInstanceId`,
-then `seqStart` and `seqEnd` (numeric), `receivedAt`, and `batchId`. Subjects are
+then `seqStart` and `seqEnd` (numeric), `receivedAt`, and `batchId`. String
+fields compare bytewise on their UTF-8 encoding, as Go's string comparison does. Subjects are
 emitted in the corresponding source-batch order. The verifier rejects reordered
 source batches and overlaps within one scoped namespace. Cross-namespace
 sequence overlap is permitted. Batch identity remains globally unique within

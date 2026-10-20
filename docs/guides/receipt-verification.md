@@ -159,8 +159,14 @@ Without `--key`, the verifier can check structure and self-consistency only. It
 prints `FLEET RECEIPT UNPINNED` and exits non-zero unless `--allow-unpinned` is
 passed.
 
-See [Fleet Receipt Report v1](../specs/fleet-receipt-v1.md) for the wire
-format.
+Fleet reports use v2 by default so independent recorder runs and v3 writers can
+reuse sequence numbers within one window. Use `--report-version 1` when a v1
+consumer is required; its original overlap checks still apply. Update older
+verifiers before producing v2. The report signer attests to payload-derived run
+grouping; offline L1 does not replay those payloads or prove an honest restart.
+See [the v2 contract](../specs/fleet-receipt-v2.md) and
+[v2 verification](../specs/fleet-receipt-v2-verification.md) for the v2 wire
+format, and [Fleet Receipt Report v1](../specs/fleet-receipt-v1.md) for v1.
 
 ## Verifying a receipt chain
 
@@ -950,11 +956,3 @@ file named by `flight_recorder.signing_key_path`.
 - [Mediation envelope guide](mediation-envelope.md) for receipt ID correlation
 - [Receipt transport coverage](receipt-transports.md) for the per-transport emission matrix and error-path receipt coverage
 - [Configuration reference](../configuration.md#flight-recorder-v21) for all recorder fields
-
-Fleet reports use v2 by default so independent recorder runs and v3 writers can
-reuse sequence numbers within one window. Use `--report-version 1` when a v1
-consumer is required; its original overlap checks still apply. Update older
-verifiers before producing v2. The report signer attests to payload-derived run
-grouping; offline L1 does not replay those payloads or prove an honest restart.
-See [the v2 contract](../specs/fleet-receipt-v2.md) and
-[v2 verification](../specs/fleet-receipt-v2-verification.md).
