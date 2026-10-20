@@ -190,6 +190,7 @@ func TestScannerLapseDefaultsCopiesAndHash(t *testing.T) {
 		{"omitted", nil, true},
 		{"opt out", []PathEntropyExclusion{}, false},
 		{"last expired entry", []PathEntropyExclusion{{Host: "api.vendor.example", PathPrefix: "/files/", Expires: past}}, true},
+		{"shipped routes survive sibling lapse", append(ShippedPathEntropyExclusions(), PathEntropyExclusion{Host: "api.vendor.example", PathPrefix: "/files/", Expires: past}), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()

@@ -2,6 +2,7 @@
 
 // Copyright 2026 Josh Waldrep
 // SPDX-License-Identifier: Elastic-2.0
+// Licensed under the Elastic License 2.0. See enterprise/LICENSE.
 
 package enterprise
 
