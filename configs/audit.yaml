@@ -1,5 +1,7 @@
 # Pipelock config — audit preset
 # Logs ordinary findings; core and transport safety protections still block.
+# Malformed MCP messages are refused (mcp_input_scanning.on_parse_error: block).
+# Binary WebSocket frames are refused (websocket_proxy.allow_binary_frames: false).
 #
 # Use this for: understanding what your agent does before enforcing
 # restrictions. See what domains it contacts, what URLs it fetches.
