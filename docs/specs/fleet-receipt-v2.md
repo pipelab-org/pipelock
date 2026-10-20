@@ -93,10 +93,12 @@ derivation. It does not prove honest restart, absence of bypass, or evidence
 outside the report window. `verificationLevel: "L2"` remains unsupported.
 
 L1 does not prove continuity between source batches, including batches in the
-same namespace. Source anchors include each segment tail hash but no head hash
-or previous-tail link, so gaps and lineage breaks between non-overlapping
-batches are not detected. Received-at windows can omit intervening batches.
-This limitation also applies to v1.
+same namespace. The builder checks sequence contiguity and hash linkage inside
+each batch's own segment, but the report's source anchors include only each
+segment tail hash, not its head hash or previous-tail link (the audit envelope
+carries them; the report does not copy them). Gaps and lineage breaks between
+non-overlapping batches are therefore not detected. Received-at windows can
+omit intervening batches. This limitation also applies to v1.
 
 A fixed recorder session combined with lost recorder state can reuse sequence
 numbers in the same namespace. These overlapping batches remain refused;
