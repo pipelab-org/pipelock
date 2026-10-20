@@ -235,7 +235,7 @@ func TestProbeAgentNetworkNamespaceFailsNamingExpiredEntryWhileCheckingSibling(t
 			t.Fatal(err)
 		}
 		status, detail := probeAgentNetworkNamespace(context.Background(), env)
-		if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, installRemedy) {
+		if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, loopbackDefinitionRemedy) {
 			t.Fatalf("probe = (%q, %q), want the unexpired sibling's drift reported", status, detail)
 		}
 		if !strings.Contains(detail, "127.0.0.1:9201") {

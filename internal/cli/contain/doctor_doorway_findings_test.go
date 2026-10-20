@@ -192,7 +192,7 @@ func TestDoorwayDefinitionFailureRetainsVerifiedSiblingRuntime(t *testing.T) {
 
 func TestDoorwaySocketAndForwarderTransitions(t *testing.T) {
 	for _, unit := range []string{testDoorwayProxySocket, containedNamespaceForwarderUnit} {
-		for _, state := range []string{"activating", "deactivating", "reloading"} {
+		for _, state := range []string{"activating", "deactivating", "reloading", "refreshing", "maintenance"} {
 			t.Run(unit+"/"+state, func(t *testing.T) {
 				env := diagnosticDoorwayEnv(map[string]fakeUnitState{unit: {systemctlEnabled, state}})
 				got := doctorDoorwayState(t.Context(), env, nil)

@@ -222,7 +222,7 @@ func TestCovNSProbeAgentNetworkNamespaceDeclaredUnitMissing(t *testing.T) {
 	// Deliberately do not write the per-service socket/service/ns unit files.
 	status, detail := probeAgentNetworkNamespace(context.Background(), env)
 	missingSocket := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), loopbackForwarderUnitBase(service.Host, service.Port)+".socket")
-	if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, installRemedy) {
+	if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, loopbackDefinitionRemedy) {
 		t.Fatalf("probeAgentNetworkNamespace() = (%q, %q), want missing declared unit failure", status, detail)
 	}
 }

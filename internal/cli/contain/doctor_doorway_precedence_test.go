@@ -82,7 +82,7 @@ func TestDoorwayUnreadableUnitRetainsOtherFailures(t *testing.T) {
 func TestDoorwayTransitionsNeverReceiveRuntimeRepair(t *testing.T) {
 	for _, unit := range []string{testDoorwayProxySocket, containedNamespaceForwarderUnit} {
 		for _, enabled := range []string{systemctlEnabled, "disabled", systemctlMasked, systemctlMasked + "-runtime", "enabled-runtime"} {
-			for _, active := range []string{"activating", "deactivating", "reloading"} {
+			for _, active := range []string{"activating", "deactivating", "reloading", "refreshing", "maintenance"} {
 				for _, socketFailed := range []bool{false, true} {
 					if unit == testDoorwayProxySocket && socketFailed {
 						continue
@@ -204,7 +204,7 @@ func TestDoorwaySocketRecoveryRestoresRequiredForwarder(t *testing.T) {
 }
 
 func TestDoorwaySocketRecoveryWaitsForRelayTransition(t *testing.T) {
-	for _, active := range []string{"activating", "deactivating", "reloading"} {
+	for _, active := range []string{"activating", "deactivating", "reloading", "refreshing", "maintenance"} {
 		t.Run(active, func(t *testing.T) {
 			env := diagnosticDoorwayEnv(map[string]fakeUnitState{
 				testDoorwayProxySocket: {systemctlEnabled, "inactive"},
@@ -214,6 +214,28 @@ func TestDoorwaySocketRecoveryWaitsForRelayTransition(t *testing.T) {
 			if got.status != statusFail || !strings.Contains(got.detail, active) || !strings.Contains(got.remediation, "relay finishes changing state") || strings.Contains(got.remediation, "systemctl stop") {
 				t.Fatalf("socket recovery interrupted relay transition: %+v", got)
 			}
+		})
+	}
+}
+
+func TestDoorwayRecoveryUnitFileStatesProduceCompleteCommands(t *testing.T) {
+	for _, enabled := range []string{"enabled-runtime", "linked", "static"} {
+		t.Run(enabled, func(t *testing.T) {
+			env := diagnosticDoorwayEnv(map[string]fakeUnitState{containedNamespaceForwarderUnit: {enabled, systemctlActive}})
+			env.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+			got := doctorDoorwayState(t.Context(), env, nil)
+			if got.status != statusFail {
+				t.Fatalf("nonpersistent forwarder and absent pathname passed: %+v", got)
+			}
+			for _, command := range strings.Split(got.remediation, " && ") {
+				if len(strings.Fields(command)) < 3 || !strings.HasPrefix(command, "systemctl ") {
+					t.Fatalf("incomplete recovery command %q: %+v", command, got)
+				}
+			}
+			if !strings.HasSuffix(got.remediation, "systemctl enable --now "+containedNamespaceForwarderUnit) {
+				t.Fatalf("forwarder repair omitted: %+v", got)
+			}
+			t.Logf("%s: %s", enabled, got.remediation)
 		})
 	}
 }

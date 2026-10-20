@@ -501,7 +501,7 @@ func TestDoorwayRuntimeMaskRecovery(t *testing.T) {
 }
 
 func TestDoorwayRelayTransitionsRemainInconclusive(t *testing.T) {
-	for _, state := range []string{"activating", "deactivating", "reloading"} {
+	for _, state := range []string{"activating", "deactivating", "reloading", "refreshing", "maintenance"} {
 		t.Run(state, func(t *testing.T) {
 			env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxyRelay: {"static", state}})
 			got := doctorDoorwayState(context.Background(), env, nil)

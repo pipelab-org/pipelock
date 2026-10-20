@@ -370,7 +370,11 @@ func doorwayRelayRemedy(unit string, state doorwayUnitState) string {
 // systemctl(1) defines these activity states as an in-progress unit change.
 // A transition cannot establish health or justify interrupting the unit.
 func doorwayStateChanging(active string) bool {
-	return active == "activating" || active == "deactivating" || active == "reloading"
+	switch active {
+	case "activating", "deactivating", "reloading", "refreshing", "maintenance":
+		return true
+	}
+	return false
 }
 
 func doorwayTransitionResult(kind, unit, active, subject string) doctorResult {
