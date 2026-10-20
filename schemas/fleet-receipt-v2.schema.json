@@ -368,17 +368,17 @@
         "sessionId": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[^\\u0000]+$"
+          "pattern": "^[^\u0000]+$"
         },
         "chainKind": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[^\\u0000]+$"
+          "pattern": "^[^\u0000]+$"
         },
         "writerInstanceId": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[^\\u0000]+$"
+          "pattern": "^[^\u0000]+$"
         }
       },
       "allOf": [

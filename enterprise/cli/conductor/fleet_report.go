@@ -77,6 +77,9 @@ into the offline verifier:
 			if opts.reportVersion != 1 && opts.reportVersion != 2 {
 				return errors.New("--report-version must be 1 or 2")
 			}
+			if !cmd.Flags().Changed("report-version") {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "notice: fleet receipt reports default to v2; older v1-only verifiers reject v2. Use --report-version 1 for v1 compatibility, or upgrade older verifiers.")
+			}
 			return runFleetReport(cmd, opts)
 		},
 	}
@@ -170,6 +173,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 		}
 		summary := cmd.ErrOrStderr()
 		_, _ = fmt.Fprintln(summary, "fleet receipt report written: <stdout>")
+		_, _ = fmt.Fprintf(summary, "  report_version: %d\n", result.Statement.Predicate.SchemaVersion)
 		_, _ = fmt.Fprintf(summary, "  report_id: %s\n", result.Statement.Predicate.ReportID)
 		_, _ = fmt.Fprintf(summary, "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 		_, _ = fmt.Fprintf(summary, "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
@@ -179,6 +183,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 		return err
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "fleet receipt report written: %s\n", opts.out)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  report_version: %d\n", result.Statement.Predicate.SchemaVersion)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  report_id: %s\n", result.Statement.Predicate.ReportID)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)

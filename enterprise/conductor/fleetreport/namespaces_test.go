@@ -158,8 +158,8 @@ func TestBuildNamespaceRejectsSameRunAndUnknownVersion(t *testing.T) {
 	a := namespaceEvidence(t, priv, "a", "same", "", 1)
 	b := namespaceEvidence(t, priv, "b", "same", "", 1)
 	opts := namespaceOptions(t, pub)
-	if _, err := Build(t.Context(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{a, b}}, opts); err == nil {
-		t.Fatal("same run overlap accepted")
+	if _, err := Build(t.Context(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{a, b}}, opts); err == nil || !strings.Contains(err.Error(), "overlap or are reordered") {
+		t.Fatalf("same run overlap: %v, want overlap or are reordered", err)
 	}
 	b = namespaceEvidence(t, priv, "b", "same", "", 3)
 	for _, version := range []int{1, 2} {
@@ -179,14 +179,22 @@ func TestBuildNamespaceDerivesActualPayload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"mixed session", "empty session", "bad hash", "checkpoint binding", "checkpoint signature", "unenrolled signer", "unsigned payload change"} {
-		t.Run(name, func(t *testing.T) {
+	for _, tc := range []struct{ name, reason string }{
+		{"mixed session", "mixed session or recorder hash mismatch"},
+		{"empty session", "chain sessionId"},
+		{"bad hash", "mixed session or recorder hash mismatch"},
+		{"checkpoint binding", "checkpoint binding mismatch"},
+		{"checkpoint signature", "checkpoint signature binding mismatch"},
+		{"unenrolled signer", "conductor signature verification failed"},
+		{"unsigned payload change", "payload_bytes envelope="},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ev := namespaceEvidence(t, priv, "payload-binding", "run", "", 1)
 			entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(ev.Payload))
 			if err != nil {
 				t.Fatal(err)
 			}
-			switch name {
+			switch tc.name {
 			case "mixed session":
 				entries[0].SessionID = "different"
 				entries[0].Hash = recorder.ComputeHash(entries[0])
@@ -206,8 +214,8 @@ func TestBuildNamespaceDerivesActualPayload(t *testing.T) {
 				entries[1].Hash = recorder.ComputeHash(entries[1])
 			}
 			ev = resignNamespaceEvidence(t, priv, ev, entries)
-			if name == "checkpoint binding" || name == "checkpoint signature" {
-				if name == "checkpoint binding" {
+			if tc.name == "checkpoint binding" || tc.name == "checkpoint signature" {
+				if tc.name == "checkpoint binding" {
 					ev.Envelope.Chain.CheckpointSeq = ev.Envelope.Chain.SeqStart
 				} else {
 					ev.Envelope.Chain.CheckpointSignature = conductorcore.SignaturePrefixEd25519 + strings.Repeat("3", 128)
@@ -222,18 +230,18 @@ func TestBuildNamespaceDerivesActualPayload(t *testing.T) {
 				}
 			}
 			opts := namespaceOptions(t, pub)
-			if name == "unenrolled signer" {
+			if tc.name == "unenrolled signer" {
 				wrong, _, e := ed25519.GenerateKey(rand.Reader)
 				if e != nil {
 					t.Fatal(e)
 				}
 				opts.AuditKeys = staticAuditKeyResolver(wrong)
 			}
-			if name == "unsigned payload change" {
+			if tc.name == "unsigned payload change" {
 				ev.Payload = append(ev.Payload, ' ')
 			}
-			if _, err := Build(t.Context(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{ev}}, opts); err == nil {
-				t.Fatal("unverified namespace accepted")
+			if _, err := Build(t.Context(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{ev}}, opts); err == nil || !strings.Contains(err.Error(), tc.reason) {
+				t.Fatalf("unverified namespace: %v, want %q", err, tc.reason)
 			}
 		})
 	}

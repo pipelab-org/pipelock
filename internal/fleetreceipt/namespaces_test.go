@@ -108,8 +108,8 @@ func TestV2SignedNamespaceTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.Payload = base64.StdEncoding.EncodeToString(raw)
-	if _, err := VerifyEnvelope(env, map[string]ed25519.PublicKey{"report-key": pub}); err == nil {
-		t.Fatal("tampered namespace accepted")
+	if _, err := VerifyEnvelope(env, map[string]ed25519.PublicKey{"report-key": pub}); err == nil || !strings.Contains(err.Error(), "signature verification failed") {
+		t.Fatalf("tampered namespace: %v, want signature verification failed", err)
 	}
 	// Unknown fields cannot become unsigned grouping advice after typed decoding.
 	var tree map[string]any
@@ -122,7 +122,7 @@ func TestV2SignedNamespaceTamper(t *testing.T) {
 		t.Fatal(err)
 	}
 	env.Payload = base64.StdEncoding.EncodeToString(raw)
-	if _, err := VerifyEnvelope(env, map[string]ed25519.PublicKey{"report-key": pub}); err == nil {
-		t.Fatal("unknown grouping field accepted")
+	if _, err := VerifyEnvelope(env, map[string]ed25519.PublicKey{"report-key": pub}); err == nil || !strings.Contains(err.Error(), "payload is not canonical JCS") {
+		t.Fatalf("unknown grouping field: %v, want payload is not canonical JCS", err)
 	}
 }

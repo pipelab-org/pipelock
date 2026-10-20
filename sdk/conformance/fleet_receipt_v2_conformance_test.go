@@ -4,14 +4,19 @@
 package conformance_test
 
 import (
+	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
@@ -103,8 +108,71 @@ func TestGenerateFleetReceiptV2Corpus(t *testing.T) {
 	}
 }
 
+func fleetReceiptV2Schema(t *testing.T) *jsonschema.Schema {
+	t.Helper()
+	schemaFile, err := os.Open("../../schemas/fleet-receipt-v2.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = schemaFile.Close() }()
+	schemaDoc, err := jsonschema.UnmarshalJSON(schemaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compiler := jsonschema.NewCompiler()
+	const schemaResource = "fleet-receipt-v2.json"
+	if err := compiler.AddResource(schemaResource, schemaDoc); err != nil {
+		t.Fatal(err)
+	}
+	schema, err := compiler.Compile(schemaResource)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return schema
+}
+
+func TestFleetReceiptV2NamespaceSchema(t *testing.T) {
+	schema := fleetReceiptV2Schema(t)
+	for _, field := range []string{"sessionId", "chainKind", "writerInstanceId"} {
+		for _, tc := range []struct {
+			name, value string
+			valid       bool
+		}{
+			{"ordinary", "namespace-a", true},
+			{"empty", "", false},
+			{"NUL", "before\x00after", false},
+		} {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				s := fleetV2Statement()
+				chain := &fleetreceipt.ChainIdentity{EntryVersion: 3, SessionID: "run-a", ChainKind: "recorder", WriterInstanceID: "writer-a"}
+				switch field {
+				case "sessionId":
+					chain.SessionID = tc.value
+				case "chainKind":
+					chain.ChainKind = tc.value
+				case "writerInstanceId":
+					chain.WriterInstanceID = tc.value
+				}
+				s.Predicate.SourceBatches[0].Chain = chain
+				raw, err := json.Marshal(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := schema.Validate(instance); (err == nil) != tc.valid {
+					t.Fatalf("schema validation=%v, want valid=%v", err, tc.valid)
+				}
+			})
+		}
+	}
+}
+
 func TestFleetReceiptV2Conformance(t *testing.T) {
 	pub, _ := keyFromSeed(seedFleetReportSigner)
+	schema := fleetReceiptV2Schema(t)
 	if len(fleetV2FixtureHashes) != 5 {
 		t.Fatal("v2 fixture manifest incomplete")
 	}
@@ -117,6 +185,28 @@ func TestFleetReceiptV2Conformance(t *testing.T) {
 			sum := sha256.Sum256(data)
 			if hex.EncodeToString(sum[:]) != pin {
 				t.Fatal("frozen fixture changed")
+			}
+			envelope, err := fleetreceipt.UnmarshalEnvelope(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := base64.StdEncoding.DecodeString(envelope.Payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			schemaErr := schema.Validate(instance)
+			// Overlap is structurally valid; cross-batch range comparisons belong
+			// to runtime validation, whose refusal reason is checked below.
+			wantSchemaValid := name == "valid-l1" || name == "same-namespace-overlap"
+			if (schemaErr == nil) != wantSchemaValid {
+				t.Fatalf("schema validation=%v, want valid=%v", schemaErr, wantSchemaValid)
+			}
+			if _, err := fleetreceipt.ParseStatement(payload); err != nil && schemaErr == nil {
+				t.Fatalf("typed decoder rejected schema-valid statement: %v", err)
 			}
 			result, err := fleetreceipt.Verify(data, fleetReceiptTrustedKeyMap(pub))
 			if name == "valid-l1" {

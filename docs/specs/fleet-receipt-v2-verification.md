@@ -8,8 +8,9 @@ pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-repor
 
 The command accepts both report versions. V2 requires the v2 predicate URI and
 `schemaVersion: 2`, and checks the signed source-batch namespace for every batch.
-Ordering and non-overlap apply within each follower's recorder namespace; batch
-uniqueness and report arithmetic still apply to the whole report. Unknown
+Source batches follow one canonical order across the whole report, as defined
+in the v2 contract. Sequence non-overlap applies within each follower's recorder
+namespace; batch uniqueness and report arithmetic apply to the whole report. Unknown
 versions, mixed version markers, missing chain identity, duplicates, and
 same-namespace overlaps are rejected. V1 keeps its original per-follower checks.
 
