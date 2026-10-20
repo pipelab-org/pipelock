@@ -177,7 +177,7 @@ main() {
 	local capture_dir benchstat_bin
 	capture_dir="$(mktemp -d "$TMPDIR/pipelock-bench-pair.XXXXXX")"
 	printf 'bench-regression: paired measurements retained in %s\n' "$capture_dir"
-	printf 'bench-regression: threshold=+%s%% count=%s benchtime=%s\n' "${BENCH_REGRESSION_THRESHOLD_PCT%\%}" "$BENCH_COUNT" "$BENCH_TIME"
+	printf 'bench-regression: threshold=+%s%% count=%s benchtime=%s order=alternating\n' "${BENCH_REGRESSION_THRESHOLD_PCT%\%}" "$BENCH_COUNT" "$BENCH_TIME"
 	capture_measurements --baseline "$BENCH_BASELINE_DIR" \
 		--candidate "$ROOT_DIR" --output "$capture_dir" -- "${bench_cmd[@]}" || return $?
 

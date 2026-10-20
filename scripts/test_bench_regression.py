@@ -24,10 +24,13 @@ SPEC.loader.exec_module(RUN)
 COMMAND = ["go", "test", "-bench=.", "-benchmem", "-count=6", "-benchtime=100ms", "-run=^$", "./internal/scanner/", "./internal/mcp/"]
 
 
-def inputs(source="baseline-source"):
+SAMPLE_COMMAND = [arg if not arg.startswith("-count=") else "-count=1" for arg in COMMAND]
+
+
+def inputs(source="baseline-source", command=None):
     return {
         "source": source, "go": "go version go1.27.0 linux/amd64",
-        "machine": "Linux synthetic-kernel x86_64 GNU/Linux", "command": list(COMMAND),
+        "machine": "Linux synthetic-kernel x86_64 GNU/Linux", "command": list(COMMAND if command is None else command),
         "go_env": {"GOOS": "linux", "GOARCH": "amd64", "GOFLAGS": "", "GOEXPERIMENT": "", "CGO_ENABLED": "1"},
     }
 
@@ -160,7 +163,7 @@ class PairTest(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="bench pair ")
         self.addCleanup(self.scratch.cleanup)
-        self.root = Path(self.scratch.name)
+        self.root = Path(self.scratch.name).resolve()
         self.base, self.cur, self.out = (self.root / name for name in ("base", "cur", "output"))
         for directory in (self.base, self.cur, self.out):
             directory.mkdir()
@@ -169,7 +172,7 @@ class PairTest(unittest.TestCase):
         self.failure = None
         self.raw_candidate = samples()
         self.source_patch = patch.object(RUN, "checkout_state", side_effect=lambda path: self.sources[path])
-        self.input_patch = patch.object(RUN, "run_inputs", side_effect=lambda path, source, command: inputs(source))
+        self.input_patch = patch.object(RUN, "run_inputs", side_effect=lambda path, source, command: inputs(source, command))
         self.process_patch = patch.object(RUN.subprocess, "run", side_effect=self.measurement)
         for mock in (self.source_patch, self.input_patch, self.process_patch):
             mock.start()
@@ -178,24 +181,88 @@ class PairTest(unittest.TestCase):
     def measurement(self, command, *, cwd, check, stdout, stderr):
         self.assertTrue(check)
         self.calls.append((cwd, list(command)))
+        if (self.out / "execution.jsonl").exists():
+            journal = [json.loads(line) for line in (self.out / "execution.jsonl").read_text().splitlines()]
+            self.assertEqual(len(journal), len(self.calls))
+            self.assertEqual(journal[-1]["side"], "baseline" if cwd == self.base else "candidate")
         stdout.write(samples() if cwd == self.base else self.raw_candidate)
         stderr.write("synthetic stderr\n")
         if cwd == self.failure:
             raise subprocess.CalledProcessError(9, command)
 
-    def capture(self):
-        RUN.capture_pair(self.base, self.cur, self.out, list(COMMAND))
+    def capture(self, command=None):
+        RUN.capture_pair(self.base, self.cur, self.out, list(COMMAND if command is None else command))
 
-    def test_sequential_identical_commands_and_retained_inputs(self):
+    def test_alternating_single_sample_commands_and_retained_inputs(self):
         self.capture()
-        self.assertEqual(self.calls, [(self.base, COMMAND), (self.cur, COMMAND)])
+        expected = [side for number in range(1, 7) for side in
+                    ((self.base, self.cur) if number % 2 else (self.cur, self.base))]
+        self.assertEqual(self.calls, [(side, SAMPLE_COMMAND) for side in expected])
+        execution = [json.loads(line) for line in (self.out / "execution.jsonl").read_text().splitlines()]
+        self.assertEqual([entry["side"] for entry in execution],
+                         ["baseline" if side == self.base else "candidate" for side in expected])
+        self.assertEqual([entry["round"] for entry in execution], [number for number in range(1, 7) for _ in range(2)])
+        for entry in execution:
+            self.assertEqual(entry["command"], SAMPLE_COMMAND)
+            for key in ("stdout", "stderr"):
+                self.assertEqual((self.out / entry[key]).stat().st_mode & 0o777, 0o600)
+        self.assertEqual((self.out / "baseline.txt").read_text().count("100 ns/op"), 6)
+        self.assertEqual((self.out / "current.txt").read_text().count("100 ns/op"), 6)
         recorded = json.loads((self.out / "inputs.json").read_text())
-        self.assertEqual(recorded["baseline"], inputs())
-        self.assertEqual(recorded["candidate"], inputs("candidate-source"))
-        for name in ("inputs.json", "baseline.txt", "current.txt", "baseline.stderr", "current.stderr"):
+        self.assertEqual(recorded["baseline"], inputs(command=SAMPLE_COMMAND))
+        self.assertEqual(recorded["candidate"], inputs("candidate-source", SAMPLE_COMMAND))
+        self.assertEqual(recorded["rounds"], 6)
+        self.assertEqual(recorded["requested_command"], COMMAND)
+        for name in ("inputs.json", "baseline.txt", "current.txt", "baseline.stderr", "current.stderr", "execution.jsonl"):
             path = self.out / name
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertIn("# Source: candidate-source", (self.out / "current.txt").read_text())
+
+    def test_one_and_odd_round_counts(self):
+        for count in (1, 3):
+            with self.subTest(count=count), tempfile.TemporaryDirectory(dir=self.root) as directory:
+                self.out, self.calls = Path(directory), []
+                command = [f"-count={count}" if arg.startswith("-count=") else arg for arg in COMMAND]
+                self.capture(command)
+                expected = [side for number in range(1, count + 1) for side in
+                            ((self.base, self.cur) if number % 2 else (self.cur, self.base))]
+                self.assertEqual(self.calls, [(side, SAMPLE_COMMAND) for side in expected])
+                self.assertEqual((self.out / "current.txt").read_text().count("100 ns/op"), count)
+
+    def test_invalid_count_is_refused_before_measurement(self):
+        for value in ("0", "-1", "1.5", "invalid", " 2", str(2**100)):
+            command = [f"-count={value}" if arg.startswith("-count=") else arg for arg in COMMAND]
+            with self.subTest(value=value), self.assertRaisesRegex(RUN.RunError, "positive Go integer"):
+                self.capture(command)
+        for command in ([arg for arg in COMMAND if not arg.startswith("-count=")], [*COMMAND, "-count=2"]):
+            with self.subTest(command=command), self.assertRaisesRegex(RUN.RunError, "one -count"):
+                self.capture(command)
+        self.assertEqual(self.calls, [])
+        self.assertFalse((self.out / "inputs.json").exists())
+
+    def test_each_round_is_validated_before_running_the_next(self):
+        original = self.measurement
+        def changed(command, **kwargs):
+            if kwargs["cwd"] == self.cur and any(path == self.cur for path, _ in self.calls):
+                self.raw_candidate = samples("BenchmarkExample-8")
+            return original(command, **kwargs)
+        with patch.object(RUN.subprocess, "run", side_effect=changed), self.assertRaisesRegex(RUN.RunError, "GOMAXPROCS"):
+            self.capture()
+        self.assertEqual(len(self.calls), 4)
+        self.assertTrue((self.out / "candidate-2.txt").exists())
+        self.assertFalse((self.out / "baseline.txt").exists())
+
+    def test_preexisting_sample_is_not_overwritten(self):
+        sentinel = self.root / "sentinel"
+        sentinel.write_text("keep")
+        for name in ("baseline-1.txt", "baseline-1.stderr", "execution.jsonl"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory(dir=self.root) as directory:
+                self.out = Path(directory)
+                (self.out / name).symlink_to(sentinel)
+                with self.assertRaises(FileExistsError):
+                    self.capture()
+                self.assertEqual(sentinel.read_text(), "keep")
+        self.assertEqual(self.calls, [])
 
     def test_same_source_refused_before_measurement(self):
         self.sources[self.cur] = self.sources[self.base]
@@ -251,13 +318,13 @@ class PairTest(unittest.TestCase):
             with self.subTest(key=key), tempfile.TemporaryDirectory(dir=self.root) as directory:
                 self.out = Path(directory)
                 self.sources[self.cur] = "candidate-source"
-                def measure(path, source, metadata, output, command):
-                    original(path, source, metadata, output, command)
+                def measure(path, source, metadata, output, command, **kwargs):
+                    original(path, source, metadata, output, command, **kwargs)
                     if key == "source":
                         self.sources[self.base] = "changed-source"
                 self.sources[self.base] = "baseline-source"
                 if key == "source":
-                    with patch.object(RUN, "measure", side_effect=measure), self.assertRaisesRegex(RUN.RunError, "source changed"):
+                    with patch.object(RUN, "measure", side_effect=measure), self.assertRaisesRegex(RUN.RunError, "changed"):
                         self.capture()
                 else:
                     real_inputs = inputs()
@@ -271,6 +338,21 @@ class PairTest(unittest.TestCase):
         answers = ["baseline-source", "changed-source"]
         with patch.object(RUN, "checkout_state", side_effect=answers), self.assertRaisesRegex(RUN.RunError, "inputs changed while"):
             RUN.measure(self.base, "baseline-source", inputs(), self.out / "sample.txt", COMMAND)
+
+
+class SymlinkPairTest(PairTest):
+    """Exercise the pair fixture with the same aliasing as macOS /var."""
+
+    def setUp(self):
+        scratch = tempfile.TemporaryDirectory(prefix="bench symlink ")
+        self.addCleanup(scratch.cleanup)
+        root = Path(scratch.name).resolve()
+        real = root / "real"
+        real.mkdir()
+        link = root / "link"
+        link.symlink_to(real, target_is_directory=True)
+        with patch.object(tempfile, "tempdir", str(link)):
+            super().setUp()
 
 
 class ShellTest(unittest.TestCase):

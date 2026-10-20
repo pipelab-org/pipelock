@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 
@@ -112,35 +113,82 @@ def exclusive_file(path: Path):
     return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w")
 
 
-def measure(path: Path, source: str, metadata: dict, output: Path, command: list[str]) -> None:
+def measure(path: Path, source: str, metadata: dict, output: Path, command: list[str], on_start=None) -> None:
     if checkout_state(path) != source or run_inputs(path, source, command) != metadata:
         raise RunError(f"measurement inputs changed before running: {path}")
     with exclusive_file(output) as stdout, exclusive_file(output.with_suffix(".stderr")) as stderr:
         stdout.write(f"# Source: {source}\n# Go: {metadata['go']}\n# Machine: {metadata['machine']}\n")
         stdout.write(f"# Command: {shlex.join(command)}\n")
         stdout.flush()
+        if on_start is not None:
+            on_start()
         subprocess.run(command, cwd=path, check=True, stdout=stdout, stderr=stderr)
     if checkout_state(path) != source or run_inputs(path, source, command) != metadata:
         raise RunError(f"measurement inputs changed while running: {path}")
+
+
+def single_sample_command(command: list[str]) -> tuple[int, list[str]]:
+    # The shell assembles one -count=N flag. Go documents -count as repetitions
+    # of each benchmark; preserve that count as rounds, each invoking -count=1.
+    indexes = [index for index, arg in enumerate(command) if arg.startswith("-count=")]
+    if len(indexes) != 1:
+        raise RunError("expected one -count=N benchmark argument")
+    index = indexes[0]
+    value = command[index].partition("=")[2]
+    try:
+        count = int(value)
+    except ValueError as exc:
+        raise RunError("benchmark count must be a positive Go integer") from exc
+    if not re.fullmatch(r"[+]?[0-9]+", value) or not 0 < count <= sys.maxsize:
+        raise RunError("benchmark count must be a positive Go integer")
+    sample = list(command)
+    sample[index] = "-count=1"
+    return count, sample
 
 
 def capture_pair(baseline: Path, current: Path, output: Path, command: list[str]) -> None:
     baseline, current, output = baseline.resolve(strict=True), current.resolve(strict=True), output.resolve(strict=True)
     if any(output.is_relative_to(path) for path in (baseline, current)):
         raise RunError("measurement output must be outside both checkouts")
+    count, sample_command = single_sample_command(command)
     base_source, cur_source = checkout_state(baseline), checkout_state(current)
     if base_source == cur_source:
         raise RunError("baseline and candidate must have distinct source commits")
-    base_inputs = run_inputs(baseline, base_source, command)
-    cur_inputs = run_inputs(current, cur_source, command)
+    base_inputs = run_inputs(baseline, base_source, sample_command)
+    cur_inputs = run_inputs(current, cur_source, sample_command)
     # Capture the exact inputs even if admission fails. Exclusive creation never
     # overwrites an earlier pair or follows an existing output symlink.
     with exclusive_file(output / "inputs.json") as stream:
-        json.dump({"baseline": base_inputs, "candidate": cur_inputs}, stream, indent=2)
+        json.dump({"baseline": base_inputs, "candidate": cur_inputs,
+                   "rounds": count, "requested_command": command}, stream, indent=2)
         stream.write("\n")
     validate_inputs(base_inputs, cur_inputs)
-    measure(baseline, base_source, base_inputs, output / "baseline.txt", command)
-    measure(current, cur_source, cur_inputs, output / "current.txt", command)
+    sides = {"baseline": (baseline, base_source, base_inputs), "candidate": (current, cur_source, cur_inputs)}
+    with exclusive_file(output / "execution.jsonl") as execution:
+        for number in range(1, count + 1):
+            order = ("baseline", "candidate") if number % 2 else ("candidate", "baseline")
+            for side in order:
+                path, source, metadata = sides[side]
+                sample = output / f"{side}-{number}.txt"
+
+                def started():
+                    # Record only admitted invocations, immediately before running
+                    # Go. Flush so a failed command still leaves its actual order.
+                    json.dump({"round": number, "side": side, "command": sample_command,
+                               "stdout": sample.name, "stderr": sample.with_suffix(".stderr").name}, execution)
+                    execution.write("\n")
+                    execution.flush()
+
+                measure(path, source, metadata, sample, sample_command, on_start=started)
+            validate_outputs(output / f"baseline-{number}.txt", output / f"candidate-{number}.txt", base_inputs)
+    # Keep the comparator's aggregate inputs without discarding any invocation's
+    # raw stdout/stderr. Exclusive creation retains the no-overwrite contract.
+    for side, name in (("baseline", "baseline"), ("candidate", "current")):
+        for suffix in (".txt", ".stderr"):
+            with exclusive_file(output / (name + suffix)) as aggregate:
+                for number in range(1, count + 1):
+                    with (output / f"{side}-{number}{suffix}").open() as sample:
+                        shutil.copyfileobj(sample, aggregate)
     if checkout_state(baseline) != base_source or checkout_state(current) != cur_source:
         raise RunError("source changed during paired measurement")
     validate_outputs(output / "baseline.txt", output / "current.txt", base_inputs)
