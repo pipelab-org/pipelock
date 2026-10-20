@@ -140,7 +140,7 @@ func TestTemporaryExpiryHorizons(t *testing.T) {
 				{name: "at horizon", validate: tt.atHorizon},
 				{name: "one day past horizon", validate: tt.oneDayPast, wantErr: true, wantField: true},
 				{name: "omitted", validate: tt.omitted},
-				{name: "already past", validate: tt.alreadyPast, wantErr: true},
+				{name: "already past", validate: tt.alreadyPast, wantErr: tt.name == "best effort sandbox" || tt.name == "unscannable passthrough"},
 			} {
 				t.Run(check.name, func(t *testing.T) {
 					err := check.validate()

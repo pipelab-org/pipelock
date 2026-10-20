@@ -984,18 +984,26 @@ func contentEntropyReloadConsumed(c *Config) bool {
 // reason on reload does not read as a policy downgrade, which matches how the
 // canonical policy hash treats the same fields.
 func pathEntropyExclusionTuple(entry PathEntropyExclusion) string {
+	return pathEntropyExclusionIdentity(entry) + scannerExceptionExpiryIdentity(entry.Expires)
+}
+
+func pathEntropyExclusionIdentity(entry PathEntropyExclusion) string {
 	return entry.Scheme + "://" + entry.Host + entry.PathPrefix
 }
 
+func scannerExceptionExpiryWidened(previous, updated string) bool {
+	return previous != "" && (updated == "" || updated > previous)
+}
+
 func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
-	oldSet := make(map[string]struct{}, len(old))
+	oldSet := make(map[string]string, len(old))
 	for _, entry := range canonicalPathEntropyExclusions(old) {
-		oldSet[pathEntropyExclusionTuple(entry)] = struct{}{}
+		oldSet[pathEntropyExclusionIdentity(entry)] = entry.Expires
 	}
 	var added []string
 	for _, entry := range canonicalPathEntropyExclusions(updated) {
 		tuple := pathEntropyExclusionTuple(entry)
-		if _, ok := oldSet[tuple]; !ok {
+		if previous, ok := oldSet[pathEntropyExclusionIdentity(entry)]; !ok || scannerExceptionExpiryWidened(previous, entry.Expires) {
 			added = append(added, tuple)
 		}
 	}
@@ -1006,12 +1014,12 @@ func pathEntropyExclusionsAdded(old, updated []PathEntropyExclusion) []string {
 func pathEntropyExclusionsRemoved(old, updated []PathEntropyExclusion) []string {
 	newSet := make(map[string]struct{}, len(updated))
 	for _, entry := range canonicalPathEntropyExclusions(updated) {
-		newSet[pathEntropyExclusionTuple(entry)] = struct{}{}
+		newSet[pathEntropyExclusionIdentity(entry)] = struct{}{}
 	}
 	var removed []string
 	for _, entry := range canonicalPathEntropyExclusions(old) {
 		tuple := pathEntropyExclusionTuple(entry)
-		if _, ok := newSet[tuple]; !ok {
+		if _, ok := newSet[pathEntropyExclusionIdentity(entry)]; !ok {
 			removed = append(removed, tuple)
 		}
 	}
@@ -1020,14 +1028,14 @@ func pathEntropyExclusionsRemoved(old, updated []PathEntropyExclusion) []string 
 }
 
 func queryEntropyParamExclusionsAdded(old, updated []QueryEntropyParamExclusion) []string {
-	oldSet := make(map[string]struct{}, len(old))
+	oldSet := make(map[string]string, len(old))
 	for _, entry := range canonicalQueryEntropyParamExclusions(old) {
-		oldSet[queryEntropyParamTuple(entry)] = struct{}{}
+		oldSet[queryEntropyParamIdentity(entry)] = entry.Expires
 	}
 	var added []string
 	for _, entry := range canonicalQueryEntropyParamExclusions(updated) {
 		tuple := queryEntropyParamTuple(entry)
-		if _, ok := oldSet[tuple]; !ok {
+		if previous, ok := oldSet[queryEntropyParamIdentity(entry)]; !ok || scannerExceptionExpiryWidened(previous, entry.Expires) {
 			added = append(added, tuple)
 		}
 	}
@@ -1038,12 +1046,12 @@ func queryEntropyParamExclusionsAdded(old, updated []QueryEntropyParamExclusion)
 func queryEntropyParamExclusionsRemoved(old, updated []QueryEntropyParamExclusion) []string {
 	updatedSet := make(map[string]struct{}, len(updated))
 	for _, entry := range canonicalQueryEntropyParamExclusions(updated) {
-		updatedSet[queryEntropyParamTuple(entry)] = struct{}{}
+		updatedSet[queryEntropyParamIdentity(entry)] = struct{}{}
 	}
 	var removed []string
 	for _, entry := range canonicalQueryEntropyParamExclusions(old) {
 		tuple := queryEntropyParamTuple(entry)
-		if _, ok := updatedSet[tuple]; !ok {
+		if _, ok := updatedSet[queryEntropyParamIdentity(entry)]; !ok {
 			removed = append(removed, tuple)
 		}
 	}
@@ -1052,6 +1060,10 @@ func queryEntropyParamExclusionsRemoved(old, updated []QueryEntropyParamExclusio
 }
 
 func queryEntropyParamTuple(entry QueryEntropyParamExclusion) string {
+	return queryEntropyParamIdentity(entry) + scannerExceptionExpiryIdentity(entry.Expires)
+}
+
+func queryEntropyParamIdentity(entry QueryEntropyParamExclusion) string {
 	scheme := entry.Scheme
 	if scheme == "" {
 		scheme = QueryEntropyParamDefaultScheme
@@ -1859,4 +1871,12 @@ func appendMCPAckReloadWarnings(warnings *[]ReloadWarning, old, updated []MCPAck
 				"acknowledgment removed for "+key+": its Credential Request Directive finding follows mcp_tool_scanning.action again"))
 		}
 	}
+}
+
+// Expiry changes the duration of effective enforcement. Metadata does not.
+func scannerExceptionExpiryIdentity(expires string) string {
+	if expires == "" {
+		return ""
+	}
+	return " expires=" + expires
 }

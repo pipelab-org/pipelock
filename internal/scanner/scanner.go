@@ -332,7 +332,7 @@ type Scanner struct {
 	coreObserveExceptions  []config.CoreObserveException
 	subdomainExclusions    []string // domains excluded from subdomain entropy checks
 	queryExclusions        []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
-	queryParamExclusions   map[queryEntropyParamExclusionKey]struct{}
+	queryParamExclusions   map[queryEntropyParamExclusionKey]string
 	pathEntropyExclusions  []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
 	scanNestedURLs         bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
 	nestedURLResolveBudget time.Duration          // shared deadline for all nested lookups in one request
@@ -4753,7 +4753,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	// high-entropy REST resource ids. This is path-only: it never affects
 	// query entropy (below), subdomain entropy, DLP, or SSRF.
 	routeExemptPath := s.pathEntropyExempt.PathEntropyExempt(hostname, parsed.Path) ||
-		s.isPathEntropyExcluded(parsed)
+		s.isPathEntropyExcludedAt(parsed, now)
 
 	// Check path segments (skipped for excluded domains).
 	if !excludedPath && !routeExemptPath {
@@ -4815,7 +4815,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			}
 			if dohQuery && key == dnsQueryParam {
 				if finding, blocked := s.dnsMessageEntropy(dohMsg); blocked {
-					if s.isQueryEntropyParamExcluded(parsed, key) {
+					if s.isQueryEntropyParamExcludedAt(parsed, key, now) {
 						continue
 					}
 					return s.queryEntropyParamResult(key, finding)
@@ -4823,7 +4823,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 				continue
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
-				if s.isQueryEntropyParamExcluded(parsed, key) || issuerQueryAllowed(ctx, key, v) ||
+				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
 					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) {
 					continue
 				}
@@ -4891,6 +4891,7 @@ type pathEntropyExclusion struct {
 	scheme     string
 	host       string
 	pathPrefix string
+	expires    string
 }
 
 // effectivePathEntropyExclusions adds the shipped vendor routes to an
@@ -4963,6 +4964,7 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 			scheme:     scheme,
 			host:       host,
 			pathPrefix: prefix,
+			expires:    strings.TrimSpace(entry.Expires),
 		})
 	}
 	if len(out) == 0 {
@@ -4985,6 +4987,10 @@ func buildPathEntropyExclusions(entries []config.PathEntropyExclusion) []pathEnt
 // encoded separator in a prefix, so a configured prefix and an escaped path
 // are compared in the same alphabet.
 func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
+	return s.isPathEntropyExcludedAt(parsed, s.currentTime())
+}
+
+func (s *Scanner) isPathEntropyExcludedAt(parsed *url.URL, now time.Time) bool {
 	if len(s.pathEntropyExclusions) == 0 || parsed == nil {
 		return false
 	}
@@ -4992,7 +4998,7 @@ func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
 	host := parsed.Hostname()
 	path := parsed.EscapedPath()
 	for _, ex := range s.pathEntropyExclusions {
-		if ex.scheme != scheme {
+		if ex.scheme != scheme || !config.ScannerExceptionActive(ex.expires, now) {
 			continue
 		}
 		if !MatchDomain(host, ex.host) {
@@ -5005,11 +5011,11 @@ func (s *Scanner) isPathEntropyExcluded(parsed *url.URL) bool {
 	return false
 }
 
-func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusion) map[queryEntropyParamExclusionKey]struct{} {
+func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusion) map[queryEntropyParamExclusionKey]string {
 	if len(entries) == 0 {
 		return nil
 	}
-	out := make(map[queryEntropyParamExclusionKey]struct{}, len(entries))
+	out := make(map[queryEntropyParamExclusionKey]string, len(entries))
 	for _, entry := range entries {
 		scheme := entry.Scheme
 		if scheme == "" {
@@ -5020,12 +5026,16 @@ func buildQueryEntropyParamExclusions(entries []config.QueryEntropyParamExclusio
 			host:   strings.TrimSuffix(strings.ToLower(entry.Host), "."),
 			path:   entry.Path,
 			param:  entry.Param,
-		}] = struct{}{}
+		}] = strings.TrimSpace(entry.Expires)
 	}
 	return out
 }
 
 func (s *Scanner) isQueryEntropyParamExcluded(parsed *url.URL, param string) bool {
+	return s.isQueryEntropyParamExcludedAt(parsed, param, s.currentTime())
+}
+
+func (s *Scanner) isQueryEntropyParamExcludedAt(parsed *url.URL, param string, now time.Time) bool {
 	if len(s.queryParamExclusions) == 0 || parsed.User != nil {
 		return false
 	}
@@ -5043,7 +5053,7 @@ func (s *Scanner) isQueryEntropyParamExcluded(parsed *url.URL, param string) boo
 		path:   parsed.EscapedPath(),
 		param:  param,
 	}
-	if _, ok := s.queryParamExclusions[key]; !ok {
+	if expires, ok := s.queryParamExclusions[key]; !ok || !config.ScannerExceptionActive(expires, now) {
 		return false
 	}
 	return rawQueryHasSingleExactDecodedKey(parsed.RawQuery, param)

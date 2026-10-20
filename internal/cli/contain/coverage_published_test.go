@@ -798,7 +798,7 @@ func TestCovPubDoctorDoorwaySocketReader(t *testing.T) {
 			e.configPath = "/etc/pipelock/pipelock.yaml"
 			e.readFile = func(string) ([]byte, error) { return []byte("containment:\n  loopback_services: not-a-list\n"), nil }
 		})
-		doctor := &doctorEnv{port: base.port}
+		doctor := &doctorEnv{port: base.port, agentUserName: base.agentUserName}
 		reader := doctorDoorwaySocketReader(base, doctor)
 		res := reader(context.Background())
 		if res.status != statusFail || !strings.Contains(res.detail, "cannot be honored") {
@@ -807,15 +807,20 @@ func TestCovPubDoctorDoorwaySocketReader(t *testing.T) {
 	})
 
 	t.Run("socket not enabled fails", func(t *testing.T) {
-		base := makeProbeEnv(t, func(e *probeEnv) {
-			e.configPath = "/etc/pipelock/pipelock.yaml"
-			e.proxyForwarderSocketPath = "/etc/systemd/system/pipelock-agent-proxy.socket"
-			e.readFile = func(string) ([]byte, error) { return []byte(body), nil }
-			e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-				return "disabled\n", 1, nil
+		base := covNSProbeBase(t)
+		if err := os.WriteFile(base.configPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+		writeLoopbackProbeUnits(t, base, service)
+		base.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
+			if args[0] == "is-enabled" {
+				return "disabled", 1, nil
 			}
-		})
-		doctor := &doctorEnv{port: base.port}
+			return "inactive", 1, nil
+		}
+
+		doctor := &doctorEnv{port: base.port, agentUserName: base.agentUserName}
 		reader := doctorDoorwaySocketReader(base, doctor)
 		res := reader(context.Background())
 		if res.status != statusFail || !strings.Contains(res.detail, "not persistently enabled") {
@@ -824,22 +829,14 @@ func TestCovPubDoctorDoorwaySocketReader(t *testing.T) {
 	})
 
 	t.Run("all sockets healthy passes", func(t *testing.T) {
-		base := makeProbeEnv(t, func(e *probeEnv) {
-			e.configPath = "/etc/pipelock/pipelock.yaml"
-			e.proxyForwarderSocketPath = "/etc/systemd/system/pipelock-agent-proxy.socket"
-			e.readFile = func(string) ([]byte, error) { return []byte(body), nil }
-			e.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
-				joined := strings.Join(args, " ")
-				switch {
-				case strings.Contains(joined, "is-enabled"):
-					return systemctlEnabled + "\n", 0, nil
-				case strings.Contains(joined, "is-active"):
-					return systemctlActive + "\n", 0, nil
-				}
-				return "", 1, errors.New("unexpected " + joined)
-			}
-		})
-		doctor := &doctorEnv{port: base.port}
+		base := covNSProbeBase(t)
+		if err := os.WriteFile(base.configPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+		writeLoopbackProbeUnits(t, base, service)
+
+		doctor := &doctorEnv{port: base.port, agentUserName: base.agentUserName}
 		reader := doctorDoorwaySocketReader(base, doctor)
 		res := reader(context.Background())
 		if res.status != statusPass || !strings.Contains(res.detail, "all managed doorway sockets") {
