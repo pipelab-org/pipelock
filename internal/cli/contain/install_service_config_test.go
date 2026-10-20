@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/serviceenv"
 )
 
@@ -42,16 +43,24 @@ func TestInstallServiceConfigOptionsAndOrdering(t *testing.T) {
 		t.Fatal("both validation phases did not run")
 	}
 	early, prospective := observed[0], observed[1]
-	if !slices.Equal(early.PlannedEnvironment, managedServiceEnvironment(env)) || !slices.Equal(prospective.ExpectedExecStart, managedServiceArgv(env)) {
-		t.Fatal("rendered declarations differ from validation inputs")
+	// Independent contracts: config/containment.go defines the managed marker,
+	// TestRenderSystemUnit_StateHomeIsWritable owns writable state placement,
+	// and scripts/e2e/browser_repro/managed.py checks the exact managed argv.
+	wantEnvironment := []string{"PIPELOCK_CONTAINMENT_MANAGED=1", "XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state")}
+	wantArgv := []string{env.pipelockTarget, "run", "--config", filepath.Join(env.configDir, "pipelock.yaml"), "--capture-output", filepath.Join(env.dataDir, "captures")}
+	if !slices.Equal(early.PlannedEnvironment, wantEnvironment) {
+		t.Fatal("planned environment differs from the managed service contract")
+	}
+	if !slices.Equal(prospective.ExpectedExecStart, wantArgv) {
+		t.Fatal("prospective command differs from the managed service contract")
 	}
 	unit := renderSystemUnit(env)
-	for _, assignment := range early.PlannedEnvironment {
+	for _, assignment := range wantEnvironment {
 		if !strings.Contains(unit, "Environment="+assignment+"\n") {
 			t.Fatal("planned environment missing from rendered unit")
 		}
 	}
-	if !strings.Contains(unit, "ExecStart="+strings.Join(prospective.ExpectedExecStart, " ")+"\n") {
+	if !strings.Contains(unit, "ExecStart="+strings.Join(wantArgv, " ")+"\n") {
 		t.Fatal("expected command missing from rendered unit")
 	}
 	if !early.AllowMissing || early.PlannedUser != env.proxyUserName || early.Binary != env.pipelockBinary || !early.RequireBuildCompatibility {
@@ -59,6 +68,68 @@ func TestInstallServiceConfigOptionsAndOrdering(t *testing.T) {
 	}
 	if prospective.AllowMissing || prospective.ExpectedFragmentPath != env.systemUnitPath || prospective.Binary != env.pipelockTarget || prospective.ConfigFile != managedPipelockConfigPath(env) || !prospective.RequireBuildCompatibility {
 		t.Fatal("incorrect prospective check options")
+	}
+}
+
+func TestInstallStagedRelativeCompanionUsesManagedDirectory(t *testing.T) {
+	for _, companionPresent := range []bool{true, false} {
+		name := "managed companion missing"
+		if companionPresent {
+			name = "managed companion present"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv(config.EnvLicenseKey, "")
+			env, _, _ := newPreflightInstallEnv(t)
+			src := writePreflightConfig(t, "candidate.yaml", "mode: balanced\nforward_proxy:\n  enabled: true\nmetrics_listen: 127.0.0.1:9091\nlicense_file: license.txt\n")
+			// A different token beside the source detects accidental use of
+			// the operator's source directory instead of the managed directory.
+			if err := os.WriteFile(filepath.Join(filepath.Dir(src), "license.txt"), []byte("source-token"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if companionPresent {
+				if err := os.WriteFile(filepath.Join(env.configDir, "license.txt"), []byte("managed-token"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			opts := installOpts{configSource: src}
+			if _, err := stepStagePipelockConfig(opts).apply(t.Context(), env); err != nil {
+				t.Fatal(err)
+			}
+			target, err := pipelockConfigPreflightTargetFor(env, opts, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if target.checkPath != filepath.Join(env.configDir, "pipelock.yaml.staged") || filepath.Dir(target.checkPath) != filepath.Dir(target.unitPath) {
+				t.Fatal("staged candidate does not share the managed configuration directory")
+			}
+			env.checkServiceConfig = func(_ context.Context, o serviceenv.CheckOptions) error {
+				cfg, err := config.Load(o.ConfigFile)
+				if err == nil && (cfg.LicenseFile != "license.txt" || cfg.LicenseKey != "managed-token") {
+					t.Fatal("staged loader did not resolve the managed relative companion")
+				}
+				return err
+			}
+			err = preflightPipelockConfig(t.Context(), env, opts, false)
+			if !companionPresent {
+				if err == nil {
+					t.Fatal("source-only companion passed managed preflight")
+				}
+				if _, err := os.Stat(target.unitPath); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("failed preflight promoted the candidate")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := stepPromotePipelockConfig(opts).apply(t.Context(), env); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(target.unitPath)
+			if err != nil || cfg.LicenseFile != "license.txt" || cfg.LicenseKey != "managed-token" {
+				t.Fatal("promotion changed relative companion resolution")
+			}
+		})
 	}
 }
 

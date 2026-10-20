@@ -89,10 +89,16 @@ func TestExecuteValidatorIsolatedAndRelativeCompanion(t *testing.T) {
 	}
 	t.Setenv("CALLER_ONLY", "caller-secret")
 	t.Setenv(config.EnvLicenseKey, "caller-license")
-	opts := CheckOptions{Binary: binary, ConfigFile: filepath.Join(dir, "candidate.yaml"), RequireBuildCompatibility: true}
+	opts := CheckOptions{Binary: binary, RequireBuildCompatibility: true}
 	id := currentIdentity(t)
-	if err := executeValidator(t.Context(), opts, []string{"HOME=" + dir}, id, []byte("mode: balanced\nlicense_file: license.txt\n")); err != nil {
-		t.Fatal(err)
+	// contain install stages a sibling named pipelock.yaml.staged, then
+	// promotes it to pipelock.yaml. Both child invocations must use that same
+	// directory for relative companions while reading candidate bytes on stdin.
+	for _, name := range []string{"pipelock.yaml.staged", "pipelock.yaml"} {
+		opts.ConfigFile = filepath.Join(dir, name)
+		if err := executeValidator(t.Context(), opts, []string{"HOME=" + dir}, id, []byte("mode: balanced\nlicense_file: license.txt\n")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := executeValidator(t.Context(), opts, nil, id, []byte("license_file: missing.txt\n")); err == nil || strings.Contains(err.Error(), "secret-sentinel") {
 		t.Fatal("child rejection was not safely reported")
