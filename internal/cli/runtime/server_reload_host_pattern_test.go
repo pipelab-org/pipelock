@@ -135,3 +135,59 @@ func TestServer_ReloadRejectsOverHorizonTemporaryExpiry(t *testing.T) {
 		t.Fatal("a rejected expiry reload changed the live config")
 	}
 }
+
+func TestServerReloadRejectsOverHorizonResponseScanLimit(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	newCfg := oldCfg.Clone()
+	now := time.Now().UTC()
+	newCfg.ResponseScanning.SizeExemptDomains = append(newCfg.ResponseScanning.SizeExemptDomains, "downloads.vendor.example")
+	newCfg.ResponseScanning.SizeExemptScanLimits = []config.ResponseSizeScanLimit{{
+		Host: "downloads.vendor.example", MaxBytes: newCfg.ResponseScanning.SizeExemptScanMaxBytes,
+		Owner: "operator", Reason: "temporary scanned download", Added: now.Format(time.RFC3339),
+		Expires: now.Add(config.MaxResponseSizeScanLimitHorizon + time.Hour).Format(time.RFC3339),
+	}}
+	err := s.Reload(newCfg)
+	if err == nil || !strings.Contains(err.Error(), "response_scanning.size_exempt_scan_limits[0].expires") || !strings.Contains(err.Error(), "maximum temporary horizon") {
+		t.Fatalf("reload must reject scan-cap horizon at the activation boundary: %v", err)
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("rejected grant changed live config")
+	}
+}
+
+func TestServerReloadRejectsMalformedActiveResponseScanLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name, field string
+		change      func(*config.ResponseSizeScanLimit)
+	}{
+		{"missing owner", ".owner", func(e *config.ResponseSizeScanLimit) { e.Owner = "" }},
+		{"wildcard host", ".host", func(e *config.ResponseSizeScanLimit) { e.Host = "*.vendor.example" }},
+		{"expired malformed", ".owner", func(e *config.ResponseSizeScanLimit) {
+			e.Owner = ""
+			e.Added = time.Now().Add(-2 * time.Hour).Format(time.RFC3339)
+			e.Expires = time.Now().Add(-time.Hour).Format(time.RFC3339)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := newTestServer(t, nil)
+			oldCfg := s.proxy.CurrentConfig()
+			newCfg := oldCfg.Clone()
+			now := time.Now().UTC()
+			newCfg.ResponseScanning.SizeExemptDomains = append(newCfg.ResponseScanning.SizeExemptDomains, "downloads.vendor.example")
+			newCfg.ResponseScanning.SizeExemptScanLimits = []config.ResponseSizeScanLimit{{
+				Host: "downloads.vendor.example", MaxBytes: newCfg.ResponseScanning.SizeExemptScanMaxBytes,
+				Owner: "operator", Reason: "temporary scanned download", Added: now.Add(-time.Hour).Format(time.RFC3339),
+				Expires: now.Add(time.Hour).Format(time.RFC3339),
+			}}
+			tc.change(&newCfg.ResponseScanning.SizeExemptScanLimits[0])
+			err := s.Reload(newCfg)
+			if err == nil || !strings.Contains(err.Error(), "response_scanning.size_exempt_scan_limits[0]"+tc.field) {
+				t.Fatalf("reload must reject malformed scan-cap grant: %v", err)
+			}
+			if s.proxy.CurrentConfig() != oldCfg {
+				t.Fatal("rejected grant changed live config")
+			}
+		})
+	}
+}

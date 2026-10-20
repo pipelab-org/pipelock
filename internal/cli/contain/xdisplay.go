@@ -207,10 +207,8 @@ func renderAgentDisplayUnit(env *installEnv) string {
 			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
 			strings.Join(runtimeSocketMountProperties(), "\n"),
 			"BindPaths=/run/pipelock-agent-display",
-			// RuntimeDirectory with User= would make the directory agent-owned.
-			// A privileged pre-start action owns it as root while Xvnc gets only
-			// group create/traverse access. Contained agent processes lack that gid.
-			"ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display",
+			// tmpfiles.d creates the root-owned bind source before boot startup.
+			// RuntimeDirectory with User= would make it agent-owned.
 			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode " + rfbMode + " -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
 			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
 			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
@@ -561,7 +559,7 @@ func checkRFBRuntimeDirectory(stat func(string) (os.FileInfo, error), lookup loo
 	if err != nil {
 		return fmt.Errorf("RFB runtime directory: %w", err)
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o730 {
+	if !info.IsDir() || info.Mode() != os.ModeDir|0o730 {
 		return fmt.Errorf("RFB runtime directory mode is %s, want 0730", info.Mode())
 	}
 	if lookup == nil {
@@ -621,11 +619,17 @@ func actionRemoveAgentDisplay() step {
 			if env.displayUnitPath == "" {
 				return removeViewerTraverseACL(ctx, env)
 			}
+			_, hadRuntimeRule, ruleErr := readDisplayRuntimeRule(env.lstat, env.readFile, displayRuntimeRulePath(env.displayTmpfilesPath), env.proxyPort)
 			env.prevDisplayStateKnown = false
 			restoreErr := restoreAgentDisplay(ctx, env)
 			authorityErr := removeDisplayAuthority(env)
 			aclErr := removeViewerTraverseACL(ctx, env)
-			return errors.Join(restoreErr, authorityErr, aclErr)
+			var runtimeCleanupErr error
+			if hadRuntimeRule && restoreErr == nil {
+				runtimeCleanupErr = removeEmptyDisplayRuntime(ctx, env)
+			}
+			runtimeErr := removeDisplayRuntimeRule(env)
+			return errors.Join(restoreErr, authorityErr, aclErr, ruleErr, runtimeErr, runtimeCleanupErr)
 		},
 	}
 }
@@ -975,6 +979,9 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	body, err := env.readFile(env.displayUnitPath)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusUnknown, fmt.Sprintf("read display unit: %v; %s", err, displayInspectionRootRemedy)
+		}
 		return statusFail, fmt.Sprintf("read display unit: %v", err)
 	}
 	path := displayRFBPath(env.rfbSocketPath)
@@ -989,8 +996,14 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	if lstat == nil {
 		lstat = env.stat
 	}
+	if result := checkDisplayRuntime(lstat, env.readFile, env.lookupUser, env.displayTmpfilesPath, path, env.port); result.status != statusPass {
+		return result.status, result.detail + "; " + result.remediation
+	}
 	info, err := lstat(path)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return statusUnknown, fmt.Sprintf("inspect RFB socket: %v; %s", err, displayInspectionRootRemedy)
+		}
 		return statusFail, fmt.Sprintf("RFB socket missing; %s: %v", installRemedyForPort(env.port), err)
 	}
 	mode := os.FileMode(0o600)

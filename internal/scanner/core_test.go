@@ -1030,8 +1030,8 @@ func TestResponsePatterns_MemoryPersistenceDirectiveRegexParity(t *testing.T) {
 	}
 	for surface, got := range surfaces {
 		t.Run(surface, func(t *testing.T) {
-			if got != config.MemoryPersistenceDirectiveRegex {
-				t.Errorf("regex drifted from config.MemoryPersistenceDirectiveRegex")
+			if got != config.MemoryPersistenceEffectiveRegex {
+				t.Errorf("regex drifted from config.MemoryPersistenceEffectiveRegex")
 			}
 		})
 	}
@@ -1070,7 +1070,7 @@ func TestResponsePatterns_LocalizedSystemPromptDisclosureRegexParity(t *testing.
 		name  string
 		regex string
 	}{
-		{name: "Spanish System Prompt Disclosure", regex: config.SpanishSystemPromptDisclosureRegex},
+		{name: "Spanish System Prompt Disclosure", regex: config.SpanishSystemPromptDisclosureEffectiveRegex},
 		{name: "Cross-Lingual System Prompt Disclosure", regex: config.CrossLingualSystemPromptDisclosureRegex},
 	}
 	for _, tc := range tests {
@@ -1124,8 +1124,8 @@ func TestResponsePatterns_SilentCredentialHandlingRegexParity(t *testing.T) {
 	t.Parallel()
 
 	for _, path := range []string{"../../configs/balanced.yaml", "../../configs/strict.yaml"} {
-		if got := yamlResponsePatternRegex(t, path, "Silent Credential Handling"); got != config.SilentCredentialHandlingRegex {
-			t.Errorf("%s drifted from config.SilentCredentialHandlingRegex", path)
+		if got := yamlResponsePatternRegex(t, path, "Silent Credential Handling"); got != config.SilentCredentialHandlingEffectiveRegex {
+			t.Errorf("%s drifted from config.SilentCredentialHandlingEffectiveRegex", path)
 		}
 	}
 }

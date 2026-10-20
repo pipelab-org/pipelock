@@ -169,6 +169,14 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 			Detail:  warning.Message,
 		})
 	}
+	for _, warning := range cfg.ResponseScanning.SizeExemptScanLimitWarnings(time.Now()) {
+		report.Checks = append(report.Checks, doctorReportCheck{
+			Name:    warning.Field,
+			Surface: doctorSurfaceConfig,
+			Status:  doctorStatusWarn,
+			Detail:  cfgLabel + ": " + warning.Message,
+		})
+	}
 	report.Checks = append(report.Checks, checkDoctorConfigSemantics(cfg)...)
 	report.Checks = append(report.Checks, checkDoctorAvailableKnobs(cfg)...)
 	report.Summary = retallyDoctorSummary(report.Checks)

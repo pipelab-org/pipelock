@@ -100,10 +100,7 @@ func List() []Info {
 
 func defaultAction(cfg *config.Config) string {
 	if cfg.Enforce != nil && !*cfg.Enforce {
-		return "warn (log-only)"
-	}
-	if cfg.Mode == config.ModeStrict {
-		return config.ActionBlock
+		return "warn (ordinary findings; safety rules still block)"
 	}
 	if cfg.ResponseScanning.Action != "" {
 		return cfg.ResponseScanning.Action
@@ -128,7 +125,7 @@ func description(name string) string {
 	case config.ModeBalanced:
 		return "General-purpose monitored browsing posture."
 	case config.ModeAudit:
-		return "Evaluation mode; detects and logs without enforcing."
+		return "Evaluation mode; logs ordinary policy findings while retaining core protections."
 	case PresetClaudeCode:
 		return "Coding-agent preset with stricter response handling."
 	case PresetCursor:
@@ -144,75 +141,50 @@ func description(name string) string {
 
 // YAML returns the config YAML bytes for a built-in preset.
 func YAML(name string) ([]byte, error) {
-	if isFilePreset(name) {
-		data, _, err := filePreset(name)
-		return data, err
-	}
-	cfg, err := Config(name)
-	if err != nil {
-		return nil, err
-	}
-	return marshal(cfg)
+	data, _, err := filePreset(name)
+	return data, err
 }
 
 // Config returns a parsed config for a built-in preset.
 func Config(name string) (*config.Config, error) {
-	switch name {
-	case config.ModeStrict:
-		return validatedConfig(name, strictPreset())
-	case config.ModeBalanced:
-		return validatedConfig(name, config.Defaults())
-	case config.ModeAudit:
-		return validatedConfig(name, auditPreset())
-	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		_, cfg, err := filePreset(name)
-		return cfg, err
-	default:
-		return nil, UnknownError(name)
-	}
+	_, cfg, err := filePreset(name)
+	return cfg, err
 }
 
 func UnknownError(name string) error {
 	return fmt.Errorf("unknown preset %q: choose %s", name, ValidNames)
 }
 
-func isFilePreset(name string) bool {
-	switch name {
-	case PresetClaudeCode, PresetCursor, PresetGenericAgent, PresetHostileModel:
-		return true
-	default:
-		return false
-	}
-}
-
 func filePreset(name string) ([]byte, *config.Config, error) {
 	data, ok := configs.Preset(name)
 	if !ok {
-		return nil, nil, fmt.Errorf("preset %q is not embedded", name)
+		return nil, nil, UnknownError(name)
 	}
-	cfg, err := parseConfig(data)
+	parse := parseFilePreset
+	switch name {
+	case config.ModeStrict, config.ModeBalanced, config.ModeAudit:
+		parse = parseConfig
+	}
+	cfg, err := parse(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("validating preset %q: %w", name, err)
 	}
 	return data, cfg, nil
 }
 
-func validatedConfig(name string, cfg *config.Config) (*config.Config, error) {
-	if err := cfg.Validate(); err != nil {
-		return nil, fmt.Errorf("validating preset %q: %w", name, err)
-	}
-	return cfg, nil
-}
-
-func marshal(cfg *config.Config) ([]byte, error) {
-	data, err := yaml.Marshal(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("marshaling config: %w", err)
-	}
-	return data, nil
-}
-
 func parseConfig(data []byte) (*config.Config, error) {
+	if err := requireMappingDocument(data); err != nil {
+		return nil, err
+	}
+	// Mode presets are portable policy: apply the runtime loader's security defaults
+	// without reading ambient licenses or resolving runtime-local file paths.
+	return config.LoadPolicyBundleBytes(data)
+}
+
+// parseFilePreset preserves the established omission semantics of the named
+// presets. Applying load-time defaults here would widen their generated trust
+// and adaptive-enforcement settings; that migration needs a separate policy.
+func parseFilePreset(data []byte) (*config.Config, error) {
 	cfg := &config.Config{}
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -250,28 +222,4 @@ func requireMappingDocument(data []byte) error {
 		return fmt.Errorf("preset YAML must be a non-empty mapping document")
 	}
 	return nil
-}
-
-func strictPreset() *config.Config {
-	cfg := config.Defaults()
-	cfg.Mode = config.ModeStrict
-	// In strict mode, the fetch proxy enforces the API allowlist.
-	cfg.FetchProxy.Monitoring.EntropyThreshold = 3.5
-	cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold = 3.5
-	cfg.FetchProxy.Monitoring.MaxURLLength = 500
-	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 30
-	return cfg
-}
-
-func auditPreset() *config.Config {
-	cfg := config.Defaults()
-	cfg.Mode = config.ModeAudit
-	// Audit mode: detect and log everything but never block.
-	// All DLP patterns, blocklists, and entropy checks stay active for
-	// visibility - enforce=false makes them log-only.
-	enforce := false
-	cfg.Enforce = &enforce
-	cfg.Logging.IncludeAllowed = true
-	cfg.Logging.IncludeBlocked = true
-	return cfg
 }

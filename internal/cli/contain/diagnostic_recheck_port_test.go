@@ -95,7 +95,7 @@ func TestDiagnosticViewerRemediesPreservePort(t *testing.T) {
 					t.Fatal(err)
 				}
 				env := &doctorEnv{
-					port: port, configPath: cfgPath, rfbSocketPath: filepath.Join(root, "rfb.sock"),
+					port: port, configPath: cfgPath, rfbSocketPath: filepath.Join(root, "rfb.sock"), agentUserName: testAgentUser,
 					stat: func(string) (os.FileInfo, error) { return fakeFileInfo{mode: 0o600}, nil },
 					lstat: func(string) (os.FileInfo, error) {
 						return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithOwner(testUID(), testGID())}, nil
@@ -105,6 +105,8 @@ func TestDiagnosticViewerRemediesPreservePort(t *testing.T) {
 					},
 					readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist },
 				}
+				addDisplayRuntimeDoctorFixture(t, env)
+				wantStatus, wantRemedy := statusFail, "`"+expectedDiagnosticInstallCommand(port)+"`"
 				check := checkDoctorDisplayRFB
 				switch defect {
 				case "legacy ACL":
@@ -115,13 +117,22 @@ func TestDiagnosticViewerRemediesPreservePort(t *testing.T) {
 				case "socket reader":
 					env.lstat = nil
 				case "socket absent":
-					env.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+					stat := env.lstat
+					env.lstat = func(path string) (os.FileInfo, error) {
+						if path == env.rfbSocketPath {
+							return nil, os.ErrNotExist
+						}
+						return stat(path)
+					}
 				case "socket reread":
+					wantStatus, wantRemedy = statusUnknown, displayInspectionRootRemedy
 					reads := 0
 					stat := env.lstat
 					env.lstat = func(path string) (os.FileInfo, error) {
-						reads++
-						if reads == 2 {
+						if path == env.rfbSocketPath {
+							reads++
+						}
+						if path == env.rfbSocketPath && reads == 2 {
 							return nil, os.ErrPermission
 						}
 						return stat(path)
@@ -129,20 +140,45 @@ func TestDiagnosticViewerRemediesPreservePort(t *testing.T) {
 				case "owner reader":
 					env.lookupUser = nil
 				case "owner lookup":
-					env.lookupUser = func(string) (*user.User, error) { return nil, os.ErrNotExist }
+					lookup := env.lookupUser
+					env.lookupUser = func(name string) (*user.User, error) {
+						if name == env.agentUserName {
+							return nil, os.ErrNotExist
+						}
+						return lookup(name)
+					}
 				case "owner parse":
-					env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "invalid"}, nil }
+					lookup := env.lookupUser
+					env.lookupUser = func(name string) (*user.User, error) {
+						if name == env.agentUserName {
+							return &user.User{Uid: "invalid"}, nil
+						}
+						return lookup(name)
+					}
 				case "owner mismatch":
-					env.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "4000000"}, nil }
-				case "runtime directory": // Socket-shaped parent fails the existing directory contract.
+					lookup := env.lookupUser
+					env.lookupUser = func(name string) (*user.User, error) {
+						if name == env.agentUserName {
+							return &user.User{Uid: "4000000"}, nil
+						}
+						return lookup(name)
+					}
+				case "runtime directory":
+					stat := env.lstat
+					env.lstat = func(path string) (os.FileInfo, error) {
+						if path == filepath.Dir(env.rfbSocketPath) {
+							return fakeFileInfo{mode: os.ModeSocket | 0o600}, nil
+						}
+						return stat(path)
+					}
 				case "viewer enabled", "viewer disabled":
 					check = checkDoctorViewerService
 				case "viewer access":
 					check = checkDoctorViewerRFBAccess
 				}
 				got := check(t.Context(), env)
-				if got.status != statusFail || got.class != classInfra || !strings.Contains(got.remediation, "`"+expectedDiagnosticInstallCommand(port)+"`") {
-					t.Fatalf("result = %+v, want fail/infra with install command", got)
+				if got.status != wantStatus || got.class != classInfra || !strings.Contains(got.remediation, wantRemedy) {
+					t.Fatalf("result = %+v, want %s/infra with %q", got, wantStatus, wantRemedy)
 				}
 			})
 		}
@@ -158,11 +194,13 @@ func TestDiagnosticRFBProbeRemedyPreservesPort(t *testing.T) {
 			}
 			doctor := &doctorEnv{
 				port: port, configPath: cfgPath, rfbSocketPath: "/fixture/rfb.sock",
+				lookupUser: func(string) (*user.User, error) { return &user.User{Uid: "123", Gid: "456"}, nil },
 				readFile: func(string) ([]byte, error) {
 					return []byte(" -rfbunixpath /fixture/rfb.sock -rfbunixmode 0600 -rfbport -1 "), nil
 				},
 				lstat: func(string) (os.FileInfo, error) { return nil, os.ErrNotExist },
 			}
+			addDisplayRuntimeDoctorFixture(t, doctor)
 			status, detail := probeAgentDisplayRFB(t.Context(), doctorViewerProbeEnv(doctor))
 			if status != statusFail || !strings.Contains(detail, "`"+expectedDiagnosticInstallCommand(port)+"`") {
 				t.Fatalf("RFB probe = %s %q", status, detail)
@@ -214,6 +252,69 @@ func TestDiagnosticChainAttributionRemediesPreservePort(t *testing.T) {
 				got := doctorChainStructureReader(base, &doctorEnv{port: port, agentUserName: testAgentUser})(t.Context())
 				if got.status != statusUnknown || !strings.Contains(got.remediation, "`"+expectedDiagnosticVerifyCommand(port)+"`") {
 					t.Fatalf("chain attribution = %+v", got)
+				}
+			})
+		}
+	}
+}
+
+func TestDiagnosticDisplayRuntimeRemediesPreservePort(t *testing.T) {
+	for _, port := range []int{0, defaultProxyPort, 9432} {
+		for _, defect := range []string{"missing rule", "drifted rule", "unsafe rule", "unsafe runtime", "unreadable rule"} {
+			t.Run(strconv.Itoa(port)+"/"+defect, func(t *testing.T) {
+				cfgPath := filepath.Join(t.TempDir(), "pipelock.yaml")
+				if err := os.WriteFile(cfgPath, []byte("containment:\n  display:\n    backend: xvnc\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				env := &doctorEnv{
+					port: port, configPath: cfgPath, rfbSocketPath: "/fixture/rfb.sock",
+					stat: func(string) (os.FileInfo, error) { return fakeFileInfo{mode: 0o755}, nil },
+					lstat: func(string) (os.FileInfo, error) {
+						return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithOwner(123, 456)}, nil
+					},
+					lookupUser: func(string) (*user.User, error) { return &user.User{Uid: "123", Gid: "456"}, nil },
+					readFile: func(string) ([]byte, error) {
+						return []byte(" -rfbunixpath /fixture/rfb.sock -rfbunixmode 0600 -rfbport -1 "), nil
+					},
+				}
+				addDisplayRuntimeDoctorFixture(t, env)
+				stat, read := env.lstat, env.readFile
+				env.lstat = func(path string) (os.FileInfo, error) {
+					if defect == "missing rule" && path == env.displayTmpfilesPath {
+						return nil, os.ErrNotExist
+					}
+					if defect == "unsafe rule" && path == env.displayTmpfilesPath {
+						return fakeFileInfo{mode: 0o644, sys: fakeFileSysWithOwner(0, 0)}, nil
+					}
+					if defect == "unsafe runtime" && path == filepath.Dir(env.rfbSocketPath) {
+						return fakeFileInfo{mode: os.ModeDir | 0o755, sys: fakeFileSysWithOwner(0, 456)}, nil
+					}
+					return stat(path)
+				}
+				env.readFile = func(path string) ([]byte, error) {
+					if path == env.displayTmpfilesPath {
+						switch defect {
+						case "drifted rule":
+							return []byte(displayUnitMarker + "\nd /fixture/wrong 0730 root root - -\n"), nil
+						case "unreadable rule":
+							return nil, os.ErrPermission
+						}
+					}
+					return read(path)
+				}
+				wantStatus, wantRemedy := statusFail, installRemedyForPort(port)
+				if defect == "unreadable rule" {
+					wantStatus, wantRemedy = statusUnknown, displayInspectionRootRemedy
+				}
+				got := checkDoctorDisplayRFB(t.Context(), env)
+				status, detail := probeAgentDisplayRFB(t.Context(), doctorViewerProbeEnv(env))
+				for _, message := range []string{got.detail, got.remediation, detail} {
+					if strings.Contains(message, "rerun contain install") || strings.Contains(message, "rerunning contain install") {
+						t.Fatalf("portless detail remains: %q", message)
+					}
+				}
+				if got.status != wantStatus || status != wantStatus || !strings.Contains(got.remediation, wantRemedy) || !strings.Contains(detail, wantRemedy) {
+					t.Fatalf("doctor=%+v verify=(%s,%q), want %s with %q", got, status, detail, wantStatus, wantRemedy)
 				}
 			})
 		}

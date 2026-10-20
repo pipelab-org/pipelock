@@ -74,18 +74,19 @@ type doctorEnv struct {
 	configPath     string
 	// displayUnitPath locates the managed display unit and, beside it, the
 	// viewer units. Empty means the installed default.
-	displayUnitPath    string
-	agentHome          string
-	rfbSocketPath      string
-	lookPath           func(string) (string, error)
-	platformFamily     string
-	filesystemProbe    func(context.Context, *probeEnv) (string, string)
-	runtimeSocketProbe func(context.Context, *doctorEnv) doctorResult
-	operatorUser       string
-	workspaceInvPath   string
-	configDir          string
-	groupIDs           groupIDsFunc
-	now                func() time.Time
+	displayUnitPath     string
+	agentHome           string
+	rfbSocketPath       string
+	displayTmpfilesPath string
+	lookPath            func(string) (string, error)
+	platformFamily      string
+	filesystemProbe     func(context.Context, *probeEnv) (string, string)
+	runtimeSocketProbe  func(context.Context, *doctorEnv) doctorResult
+	operatorUser        string
+	workspaceInvPath    string
+	configDir           string
+	groupIDs            groupIDsFunc
+	now                 func() time.Time
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -661,11 +662,20 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if env.lstat == nil {
 		return fail(classInfra, "RFB socket lstat unavailable", installRemedyForPort(env.port))
 	}
+	if result := checkDisplayRuntime(env.lstat, env.readFile, env.lookupUser, env.displayTmpfilesPath, path, env.port); result.status != statusPass {
+		return result
+	}
 	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return unknown("inspect RFB socket: "+err.Error(), displayInspectionRootRemedy)
+		}
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; "+installRemedyForPort(env.port))
 	}
 	info, err := env.lstat(path)
 	if err != nil {
+		if errors.Is(err, os.ErrPermission) {
+			return unknown("inspect RFB socket: "+err.Error(), displayInspectionRootRemedy)
+		}
 		return fail(classInfra, "RFB socket: "+err.Error(), installRemedyForPort(env.port))
 	}
 	if env.lookupUser == nil {
@@ -683,9 +693,6 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if !ok || uint64(ownerUID) != uid {
 		return fail(classInfra, "RFB socket is not owned by the contained agent uid", installRemedyForPort(env.port))
 	}
-	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
-		return fail(classInfra, err.Error(), installRemedyForPort(env.port))
-	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }
 
@@ -694,7 +701,7 @@ func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
 	if unitPath == "" {
 		unitPath = defaultDisplayUnitPath
 	}
-	return &probeEnv{port: env.port, configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+	return &probeEnv{port: env.port, configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, displayTmpfilesPath: env.displayTmpfilesPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
 }
 
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {

@@ -594,7 +594,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			}, true
 		case strings.Contains(lowerReason, "size-exempt response"):
 			return RemediationGuidance{
-				OperatorKnob: "Raise `response_scanning.size_exempt_scan_max_bytes` only to the largest whole response this trusted host needs. `response_scanning.unscannable_passthrough` is a broader, explicit visibility gap for deliberately opaque content.",
+				OperatorKnob: "Use `response_scanning.size_exempt_scan_limits` for an expiring exact-host scanned ceiling. Raising `response_scanning.size_exempt_scan_max_bytes` changes every size-exempt host. `response_scanning.unscannable_passthrough` is a broader, explicit visibility gap for deliberately opaque content.",
 				AgentReason:  protectiveCeilingAgentReason,
 			}, true
 		case strings.Contains(lowerReason, "response size"),

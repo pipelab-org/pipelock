@@ -95,7 +95,7 @@ func TestViewerDisplayRenderedUnitPassesVerify(t *testing.T) {
 	unitPath := filepath.Join(root, "display.service")
 	install := &installEnv{agentUserName: testAgentUser, proxyUserName: "proxy", agentHome: filepath.Join(root, "agent"), displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: cfg.Containment.Display}
 	unit := renderAgentDisplayUnit(install)
-	if !strings.Contains(unit, "Group="+viewerUserName) || !strings.Contains(unit, "ExecStartPre=+/usr/bin/install -d -o root -g "+viewerUserName+" -m 0730 /run/pipelock-agent-display") || strings.Contains(unit, "setfacl") {
+	if !strings.Contains(unit, "Group="+viewerUserName) || !strings.Contains(unit, "After=systemd-tmpfiles-setup.service") || strings.Contains(unit, "ExecStartPre=") || strings.Contains(unit, "setfacl") {
 		t.Fatal("viewer unit does not isolate RFB in the dedicated runtime group")
 	}
 	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
@@ -424,6 +424,7 @@ func TestProbeAgentDisplayRFBRejectsUnsafeSocket(t *testing.T) {
 			env := &probeEnv{configPath: cfgPath, displayUnitPath: unitPath, agentHome: agentHome, rfbSocketPath: rfb, agentUserName: testAgentUser, readFile: os.ReadFile, lstat: os.Lstat, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }, runCmd: func(context.Context, string, ...string) (string, int, error) {
 				return "user::rw-\ngroup::---\nother::---\n", 0, nil
 			}}
+			addDisplayRuntimeProbeFixture(t, env)
 			got, detail := probeAgentDisplayRFB(context.Background(), env)
 			if got != tc.want {
 				t.Fatalf("agent_display_rfb = %s (%s), want %s", got, detail, tc.want)
@@ -463,24 +464,51 @@ func TestProbeAgentDisplayRFBReportsFailedControl(t *testing.T) {
 	base := probeEnv{configPath: cfgPath, displayUnitPath: unitPath, agentHome: agentHome, rfbSocketPath: rfb, agentUserName: testAgentUser, readFile: os.ReadFile, lstat: os.Lstat, lookupUser: func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid())}, nil }, runCmd: func(context.Context, string, ...string) (string, int, error) {
 		return "user::rw-\ngroup::---\nother::---\n", 0, nil
 	}}
+	addDisplayRuntimeProbeFixture(t, &base)
 	for _, tc := range []struct {
 		name, want string
 		change     func(*probeEnv)
 	}{
 		{"config read", "read containment display config", func(e *probeEnv) { e.configPath = filepath.Join(root, "missing.yaml") }},
-		{"unit read", "read display unit", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission } }},
+		{"unit read", "read display unit", func(e *probeEnv) {
+			e.readFile = func(string) ([]byte, error) { return nil, errors.New("fixture read failure") }
+		}},
 		{"unit contract", "disable TCP RFB", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return []byte("[Service]\n"), nil } }},
 		{"wrong mode", "RFB socket mode", func(e *probeEnv) {
-			e.lstat = func(string) (os.FileInfo, error) { return fakeFileInfo{mode: os.ModeSocket | 0o666}, nil }
+			old := e.lstat
+			e.lstat = func(path string) (os.FileInfo, error) {
+				if path == e.rfbSocketPath {
+					return fakeFileInfo{mode: os.ModeSocket | 0o666}, nil
+				}
+				return old(path)
+			}
 		}},
 		{"owner lookup", "lookup RFB owner", func(e *probeEnv) {
-			e.lookupUser = func(string) (*user.User, error) { return nil, errors.New("identity unavailable") }
+			old := e.lookupUser
+			e.lookupUser = func(name string) (*user.User, error) {
+				if name == e.agentUserName {
+					return nil, errors.New("identity unavailable")
+				}
+				return old(name)
+			}
 		}},
 		{"owner parse", "parse RFB owner uid", func(e *probeEnv) {
-			e.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: "bad"}, nil }
+			old := e.lookupUser
+			e.lookupUser = func(name string) (*user.User, error) {
+				if name == e.agentUserName {
+					return &user.User{Uid: "bad"}, nil
+				}
+				return old(name)
+			}
 		}},
 		{"wrong owner", "not owned", func(e *probeEnv) {
-			e.lookupUser = func(string) (*user.User, error) { return &user.User{Uid: strconv.Itoa(os.Getuid() + 1)}, nil }
+			old := e.lookupUser
+			e.lookupUser = func(name string) (*user.User, error) {
+				if name == e.agentUserName {
+					return &user.User{Uid: strconv.Itoa(os.Getuid() + 1)}, nil
+				}
+				return old(name)
+			}
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -654,6 +682,7 @@ func TestDoctorDisplayRFBPassesWithViewerEnabled(t *testing.T) {
 		}
 		return os.Lstat(path)
 	}}
+	addDisplayRuntimeDoctorFixture(t, env)
 	result := checkDoctorDisplayRFB(context.Background(), env)
 	if result.status != statusPass || !strings.Contains(result.detail, "0660") {
 		t.Fatalf("viewer-enabled RFB socket should pass at 0660: %+v", result)
@@ -817,7 +846,7 @@ func TestXvncViewerUnitAndTraverseRevocation(t *testing.T) {
 	env.xvncPath = "/usr/bin/Xvnc"
 	env.displayConfig = config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes, Clipboard: &yes, OperatorUser: "operator"}}
 	unit := renderAgentDisplayUnit(env)
-	for _, want := range []string{"Group=" + viewerUserName, "ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
+	for _, want := range []string{"Group=" + viewerUserName, "After=systemd-tmpfiles-setup.service", "-rfbunixpath " + env.rfbSocketPath, "-rfbunixmode 0660"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("viewer unit missing %q: %s", want, unit)
 		}
@@ -1057,6 +1086,7 @@ func TestProbeAgentDisplayRFBViewerModeAndBackend(t *testing.T) {
 	env.lookupUser = func(string) (*user.User, error) {
 		return &user.User{Uid: strconv.Itoa(fakeDisplayUID), Gid: strconv.Itoa(fakeDisplayUID)}, nil
 	}
+	addDisplayRuntimeProbeFixture(t, env)
 	status, detail := probeAgentDisplayRFB(context.Background(), env)
 	if status != statusPass || !strings.Contains(detail, "private") {
 		t.Fatalf("viewer RFB probe = %s %q", status, detail)
@@ -1619,7 +1649,7 @@ func TestCheckDoctorLegacyViewerACL(t *testing.T) {
 func TestXvncRuntimeSocketDoesNotGrantProxyACL(t *testing.T) {
 	yes := true
 	unit := renderAgentDisplayUnit(&installEnv{agentHome: "/home/agent", agentUserName: "agent", proxyUserName: "proxy", displayNumber: 99, xvncPath: "/usr/bin/Xvnc", displayConfig: config.ContainmentDisplay{Backend: "xvnc", Viewer: config.ContainmentDisplayViewer{Enabled: &yes}}})
-	for _, want := range []string{"Group=" + viewerUserName, "ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
+	for _, want := range []string{"Group=" + viewerUserName, "After=systemd-tmpfiles-setup.service", "-rfbunixpath /run/pipelock-agent-display/rfb.sock", "-rfbunixmode 0660"} {
 		if !strings.Contains(unit, want) {
 			t.Fatalf("runtime socket unit missing %q", want)
 		}
