@@ -12,6 +12,11 @@ from pathlib import Path
 
 import yaml
 
+if __package__:
+    from .test_ci_workflow_topology import DOCS_SKIP_CONDITION
+else:
+    from test_ci_workflow_topology import DOCS_SKIP_CONDITION
+
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
@@ -24,9 +29,9 @@ NATIVE_TARGETS = {
 }
 
 
-def workflow_jobs() -> dict:
-    """Load CI jobs from the public workflow."""
-    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+def workflow_model() -> dict:
+    """Load the full workflow, including inherited environment."""
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def executable_lines(proof: str) -> list[str]:
@@ -64,9 +69,23 @@ def expected_proof_lines(shell: str, runner_arch: str, go_target: str) -> list[s
     ]
 
 
-def native_target_errors(jobs: dict) -> list[str]:
+def native_target_errors(workflow: dict) -> list[str]:
     """Return violations of the native target and architecture contract."""
     errors = []
+    jobs = workflow["jobs"]
+    # GitHub workflow syntax: workflow and job env are inherited by steps.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#env
+    # Reject overrides of the values used by the native proof, including the
+    # case-insensitive spellings accepted by the Windows environment.
+    def check_environment(scope: dict, name: str) -> None:
+        environment = scope.get("env", {})
+        if not isinstance(environment, dict) or any(
+            str(key).upper() in {"GOOS", "GOARCH", "RUNNER_ARCH"}
+            for key in environment
+        ):
+            errors.append(f"{name} overrides or obscures native proof environment")
+
+    check_environment(workflow, "workflow")
     for job_name, (runner, runner_arch, go_target, shell) in NATIVE_TARGETS.items():
         job = jobs.get(job_name)
         if job is None:
@@ -76,6 +95,17 @@ def native_target_errors(jobs: dict) -> list[str]:
             errors.append(f"{job_name} does not use {runner}")
         if job.get("continue-on-error") is not None:
             errors.append(f"{job_name} allows its native proof to fail")
+        # Join the topology check's existing docs-only skip contract. A job
+        # condition must not silently bypass the required native evidence.
+        condition = job.get("if")
+        if not isinstance(condition, str) or " ".join(condition.split()) != " ".join(
+            DOCS_SKIP_CONDITION.split()
+        ):
+            errors.append(f"{job_name} changes the docs-only skip condition")
+        needs = job.get("needs")
+        if not isinstance(needs, list) or set(needs) != {"security-scan", "changed-files"}:
+            errors.append(f"{job_name} changes native proof dependencies")
+        check_environment(job, job_name)
         steps = job.get("steps", [])
         proof_steps = [
             step
@@ -114,18 +144,18 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def setUp(self):
         """Load a fresh workflow model for each mutation test."""
-        self.jobs = workflow_jobs()
+        self.workflow = workflow_model()
 
     def test_native_targets_have_pinned_architecture_evidence(self):
         """Accept the checked-in native target contract."""
-        self.assertEqual(native_target_errors(self.jobs), [])
+        self.assertEqual(native_target_errors(self.workflow), [])
 
     def test_runner_label_drift_fails_the_contract(self):
         """Reject a runner label that no longer proves the claimed pair."""
         for runner in ("macos-latest", "macos-15-intel"):
             with self.subTest(runner=runner):
-                broken = copy.deepcopy(self.jobs)
-                broken["test-macos-intel"]["runs-on"] = runner
+                broken = copy.deepcopy(self.workflow)
+                broken["jobs"]["test-macos-intel"]["runs-on"] = runner
                 self.assertIn(
                     "test-macos-intel does not use macos-26-intel",
                     native_target_errors(broken),
@@ -133,10 +163,10 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_missing_runtime_architecture_check_fails_the_contract(self):
         """Reject a proof step replaced with inert output."""
-        broken = copy.deepcopy(self.jobs)
+        broken = copy.deepcopy(self.workflow)
         proof = next(
             step
-            for step in broken["test-windows-arm64"]["steps"]
+            for step in broken["jobs"]["test-windows-arm64"]["steps"]
             if step.get("name") == "Verify native target is windows/arm64"
         )
         proof["run"] = 'Write-Output "windows/arm64"'
@@ -154,9 +184,9 @@ class NativeTargetWorkflowTest(unittest.TestCase):
                 ("env", {"GOOS": "darwin", "GOARCH": "amd64"}),
             ):
                 with self.subTest(job=job_name, field=field):
-                    broken = copy.deepcopy(self.jobs)
+                    broken = copy.deepcopy(self.workflow)
                     proof = next(
-                        step for step in broken[job_name]["steps"]
+                        step for step in broken["jobs"][job_name]["steps"]
                         if step.get("name") == f"Verify native target is {go_target}"
                     )
                     proof[field] = value
@@ -164,19 +194,64 @@ class NativeTargetWorkflowTest(unittest.TestCase):
                         f"{job_name} does not require unmodified architecture proof",
                         native_target_errors(broken),
                     )
-            broken = copy.deepcopy(self.jobs)
-            broken[job_name]["continue-on-error"] = True
+            broken = copy.deepcopy(self.workflow)
+            broken["jobs"][job_name]["continue-on-error"] = True
             self.assertIn(
                 f"{job_name} allows its native proof to fail",
                 native_target_errors(broken),
             )
 
+    def test_job_skip_conditions_fail_the_contract(self):
+        """Allow only the existing topology docs carve-out for every native job."""
+        for job_name in NATIVE_TARGETS:
+            for condition in (False, None, "false", "${{ false }}",
+                              DOCS_SKIP_CONDITION.replace("!cancelled()", "false")):
+                with self.subTest(job=job_name, condition=condition):
+                    broken = copy.deepcopy(self.workflow)
+                    broken["jobs"][job_name]["if"] = condition
+                    self.assertIn(
+                        f"{job_name} changes the docs-only skip condition",
+                        native_target_errors(broken),
+                    )
+            broken = copy.deepcopy(self.workflow)
+            broken["jobs"][job_name]["needs"] = ["security-scan"]
+            self.assertIn(
+                f"{job_name} changes native proof dependencies",
+                native_target_errors(broken),
+            )
+
+    def test_inherited_target_environment_fails_the_contract(self):
+        """Reject forged target values at both inherited environment scopes."""
+        for scope in ("workflow", *NATIVE_TARGETS):
+            for environment in (
+                {"GOOS": "darwin"}, {"GOARCH": "amd64"},
+                {"RUNNER_ARCH": "X64"}, {"goarch": "amd64"},
+                "${{ inputs.environment }}", None,
+            ):
+                with self.subTest(scope=scope, environment=environment):
+                    broken = copy.deepcopy(self.workflow)
+                    target = broken if scope == "workflow" else broken["jobs"][scope]
+                    target["env"] = environment
+                    self.assertIn(
+                        f"{scope} overrides or obscures native proof environment",
+                        native_target_errors(broken),
+                    )
+
+    def test_unrelated_environment_and_condition_whitespace_are_allowed(self):
+        """Keep harmless env settings and the existing docs exception valid."""
+        workflow = copy.deepcopy(self.workflow)
+        workflow["env"] = {"CI": "true"}
+        for job_name in NATIVE_TARGETS:
+            workflow["jobs"][job_name]["env"] = {"EXAMPLE_SETTING": "value"}
+            workflow["jobs"][job_name]["if"] = DOCS_SKIP_CONDITION.replace(" && ", "  &&  ")
+        self.assertEqual(native_target_errors(workflow), [])
+
     def test_inverted_predicates_fail_the_contract(self):
         """Reject success predicates whose direction is reversed."""
-        broken = copy.deepcopy(self.jobs)
+        broken = copy.deepcopy(self.workflow)
         mac_proof = next(
             step
-            for step in broken["test-macos-intel"]["steps"]
+            for step in broken["jobs"]["test-macos-intel"]["steps"]
             if step.get("name") == "Verify native target is darwin/amd64"
         )
         mac_proof["run"] = mac_proof["run"].replace(
@@ -185,7 +260,7 @@ class NativeTargetWorkflowTest(unittest.TestCase):
         )
         windows_proof = next(
             step
-            for step in broken["test-windows-arm64"]["steps"]
+            for step in broken["jobs"]["test-windows-arm64"]["steps"]
             if step.get("name") == "Verify native target is windows/arm64"
         )
         windows_proof["run"] = windows_proof["run"].replace(
@@ -204,10 +279,10 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_commented_and_echoed_predicates_fail_the_contract(self):
         """Reject predicates that exist only as comments or log text."""
-        broken = copy.deepcopy(self.jobs)
+        broken = copy.deepcopy(self.workflow)
         mac_proof = next(
             step
-            for step in broken["test-macos-intel"]["steps"]
+            for step in broken["jobs"]["test-macos-intel"]["steps"]
             if step.get("name") == "Verify native target is darwin/amd64"
         )
         mac_proof["run"] = mac_proof["run"].replace(
@@ -216,7 +291,7 @@ class NativeTargetWorkflowTest(unittest.TestCase):
         )
         windows_proof = next(
             step
-            for step in broken["test-windows-arm64"]["steps"]
+            for step in broken["jobs"]["test-windows-arm64"]["steps"]
             if step.get("name") == "Verify native target is windows/arm64"
         )
         windows_proof["run"] = windows_proof["run"].replace(
@@ -235,10 +310,10 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_dead_control_flow_fails_the_contract(self):
         """Reject valid predicates wrapped in unreachable shell control flow."""
-        broken = copy.deepcopy(self.jobs)
+        broken = copy.deepcopy(self.workflow)
         proof = next(
             step
-            for step in broken["test-linux-arm64"]["steps"]
+            for step in broken["jobs"]["test-linux-arm64"]["steps"]
             if step.get("name") == "Verify native target is linux/arm64"
         )
         proof["run"] = f"if false; then\n{proof['run']}fi\n"
