@@ -43,9 +43,8 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 			env, runner, _ := newPreflightInstallEnv(t)
 			src := writePreflightConfig(t, "source.yaml", tt.body)
 			target := managedPipelockConfigPath(env)
-			// The candidate is checked at its staging path; the binary reports
-			// the path it was handed, and the installer rewrites it back to the
-			// managed path before the operator sees it.
+			// The candidate is checked at its staging path. Child diagnostics
+			// are withheld because they can contain configuration values.
 			staged := stagedPipelockConfigPath(env)
 			runner.on(argvFor(env.pipelockBinary, "check", "--config", staged, "--require-build-compatibility"), strings.ReplaceAll(tt.failureOut, "CONFIG", staged), 1, nil)
 

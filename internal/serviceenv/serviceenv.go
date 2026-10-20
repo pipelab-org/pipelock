@@ -131,7 +131,7 @@ func check(ctx context.Context, opts CheckOptions, b backend) error {
 		if errors.Is(err, errValidatorStart) {
 			return errValidatorStart
 		}
-		return errors.New("configuration validation failed for pipelock.service; validator output withheld; rerun the privileged service check after correcting the service configuration inputs")
+		return errors.New("configuration validation failed for pipelock.service; validator output withheld; for config diagnostics, run the selected binary's check --config command against the original candidate in an environment you control; its output can contain configuration values; then rerun the privileged service check")
 	}
 	after, err := observe(ctx, opts, b)
 	if err != nil {

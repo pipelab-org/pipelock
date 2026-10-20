@@ -453,6 +453,11 @@ func TestChildErrorDoesNotExposeValues(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "secret-sentinel") {
 		t.Fatal("child error was not withheld")
 	}
+	for _, want := range []string{"validator output withheld", "selected binary's check --config", "original candidate", "in an environment you control", "output can contain configuration values", "rerun the privileged service check"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("missing diagnostic guidance %q", want)
+		}
+	}
 }
 
 func TestConfigurationProjectionIgnoresCallerAndLoader(t *testing.T) {
