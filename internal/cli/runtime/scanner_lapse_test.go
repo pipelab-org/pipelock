@@ -67,6 +67,9 @@ func assertScannerLapse(t *testing.T, cfg *config.Config, stderr *syncBuffer) {
 		t.Fatalf("lapsed = %+v, want six families", got)
 	}
 	for _, warning := range cfg.LapsedScannerExceptionWarnings() {
+		if count := strings.Count(stderr.String(), "WARNING: "+warning.Field+": "+warning.Message+"\n"); count != 1 {
+			t.Fatalf("warning %s emitted %d times: %s", warning.Field, count, stderr.String())
+		}
 		if !stderr.contains(warning.Field) || !stderr.contains("normal scanning applies") {
 			t.Fatalf("missing warning %s: %s", warning.Field, stderr.String())
 		}

@@ -205,6 +205,9 @@ func TestScannerLapseDefaultsCopiesAndHash(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.ApplyDefaults()
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("lapse, defaults, clone and repeat lapse must remain valid: %v", err)
+			}
 			want := []PathEntropyExclusion{}
 			if tc.wantDefaults {
 				want = ShippedPathEntropyExclusions()
@@ -215,6 +218,9 @@ func TestScannerLapseDefaultsCopiesAndHash(t *testing.T) {
 			clean := Defaults()
 			clean.FetchProxy.Monitoring.PathEntropyExclusions = want
 			clean.ApplyDefaults()
+			if err := clean.Validate(); err != nil {
+				t.Fatal(err)
+			}
 			if cfg.CanonicalPolicyHash() != clean.CanonicalPolicyHash() {
 				t.Fatal("lapse retained stale policy hash or hashed diagnostics")
 			}
@@ -328,7 +334,21 @@ func TestExpiredScannerWarningsDescribeEffectivePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := cfg.LapseExpiredScannerExceptions(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		again, err := cfg.ValidateWithWarnings()
+		if err != nil || !reflect.DeepEqual(warnings, again) {
+			t.Fatalf("repeated validation changed warnings: %+v, %v", again, err)
+		}
+	}
+	seen := make(map[Warning]bool)
 	for _, warning := range warnings {
+		if seen[warning] {
+			t.Fatalf("duplicate lapse warning: %+v", warning)
+		}
+		seen[warning] = true
 		if warning.Field == "request_body_scanning.content_entropy_warn_routes" || warning.Field == "request_body_scanning.sigv4_credential_routes" {
 			t.Fatalf("lapsed exception reported as active: %+v", warning)
 		}
