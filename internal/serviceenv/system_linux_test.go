@@ -132,9 +132,10 @@ func TestServiceValidatorStartupFailureIsActionableAndClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{"missing", "not-directory", "permission"} {
+	for _, kind := range []string{"missing", "not-directory", "permission", "exec-format"} {
 		t.Run(kind, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "secret-sentinel")
+			selectedBinary := binary
 			switch kind {
 			case "not-directory":
 				if err := os.WriteFile(dir, nil, 0o600); err != nil {
@@ -147,23 +148,39 @@ func TestServiceValidatorStartupFailureIsActionableAndClosed(t *testing.T) {
 				if err := os.Mkdir(dir, 0o600); err != nil {
 					t.Fatal(err)
 				}
+			case "exec-format":
+				if err := os.Mkdir(dir, 0o750); err != nil {
+					t.Fatal(err)
+				}
+				selectedBinary = filepath.Join(dir, "invalid-executable")
+				if err := os.WriteFile(selectedBinary, []byte("secret-sentinel"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(selectedBinary, 0o700); err != nil { // #nosec G302 -- fixture needs owner execute permission to reach exec-format validation.
+					t.Fatal(err)
+				}
+				// Invalid executable bytes in a traversable directory reach the
+				// production cmd.Start failure without a directory-access error.
 			}
 			f := newFixture(t)
 			opts := fixtureOptions()
-			opts.Binary, opts.ConfigFile = binary, filepath.Join(dir, "candidate.yaml")
+			opts.Binary, opts.ConfigFile = selectedBinary, filepath.Join(dir, "candidate.yaml")
 			f.files[opts.ConfigFile] = []byte("mode: balanced\n")
 			id := currentIdentity(t)
 			id.Home = "/"
 			f.b.identity = func(string, string, []string) (identity, error) { return id, nil }
 			f.b.execute = executeValidator
 			err := check(t.Context(), opts, f.b)
-			if err == nil || errors.Is(err, ErrUnavailable) {
+			if err == nil || !errors.Is(err, errValidatorStart) || errors.Is(err, ErrUnavailable) {
 				t.Fatalf("validator startup failure did not refuse without deferral: %v", err)
 			}
 			if !strings.Contains(err.Error(), "service identity") || !strings.Contains(err.Error(), "configuration directory") {
 				t.Fatalf("validator startup failure lost actionable guidance: %v", err)
 			}
-			if strings.Contains(err.Error(), "secret-sentinel") || strings.Contains(err.Error(), binary) {
+			if kind == "exec-format" && !strings.Contains(err.Error(), "execution support") {
+				t.Fatal("non-directory startup failure lacks execution-support guidance")
+			}
+			if strings.Contains(err.Error(), "secret-sentinel") || strings.Contains(err.Error(), selectedBinary) {
 				t.Fatal("validator startup failure exposed an input path")
 			}
 		})

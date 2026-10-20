@@ -67,7 +67,7 @@ var ErrUnavailable = errors.New("service environment validation unavailable")
 var (
 	errObservationOverflow = errors.New("service observation exceeded its output bound")
 	errObservationPolicy   = errors.New("service observation exceeded its resource policy")
-	errValidatorStart      = errors.New("cannot start selected validator under the service identity; verify executable permissions and access to the configuration directory")
+	errValidatorStart      = errors.New("cannot start selected validator under the service identity; check execution support, executable permissions, identity-switch privileges, and configuration directory access")
 )
 
 // Check runs the normal config validator in a subprocess. Neither caller

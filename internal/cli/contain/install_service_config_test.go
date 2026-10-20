@@ -310,6 +310,55 @@ func TestInstallDryRunDefersUnavailableServiceEnvironment(t *testing.T) {
 	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
 }
 
+func TestInstallDryRunUnavailableValidationBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		body       string
+		wantRefuse bool
+		needsToken bool
+	}{
+		{name: "malformed YAML", body: "forward_proxy:\n  enabled: true\nbroken: [\n", wantRefuse: true},
+		{name: "invalid field type", body: "forward_proxy:\n  enabled: true\nmode: []\n", wantRefuse: true},
+		{name: "unknown schema field", body: "forward_proxy:\n  enabled: true\nunknown_option: true\n"},
+		{name: "invalid semantic value", body: "forward_proxy:\n  enabled: true\nmode: invalid\n"},
+		{name: "service environment dependency", body: "forward_proxy:\n  enabled: true\nkill_switch:\n  api_listen: 127.0.0.1:9090\n", needsToken: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(config.EnvKillSwitchAPIToken, "")
+			env, runner, out := newPreflightInstallEnv(t)
+			src := writePreflightConfig(t, "candidate.yaml", tc.body)
+			if _, err := config.Load(src); err == nil {
+				t.Fatal("actual config loader accepted the invalid caller-context fixture")
+			}
+			if tc.needsToken {
+				t.Setenv(config.EnvKillSwitchAPIToken, "service-fixture-token")
+				if _, err := config.Load(src); err != nil {
+					t.Fatal("environment-dependent fixture did not pass with its required input")
+				}
+				t.Setenv(config.EnvKillSwitchAPIToken, "")
+			}
+			checks := 0
+			env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error {
+				checks++
+				return serviceenv.ErrUnavailable
+			}
+			err := preflightPipelockConfig(t.Context(), env, installOpts{configSource: src}, true)
+			if (err != nil) != tc.wantRefuse || checks != 1 {
+				t.Fatal("dry-run did not preserve the parse-refusal/service-validation boundary")
+			}
+			if !strings.Contains(out.String(), "[DEFERRED]") || !strings.Contains(out.String(), "configuration not validated") || env.preflightBinaryHash != "" {
+				t.Fatal("dry-run incorrectly claimed service validation")
+			}
+			// A caller-context fallback would reject the environment-dependent
+			// fixture even though the actual service input makes it valid.
+			if len(runner.calls) != 0 {
+				t.Fatal("unavailable service validation invoked a caller-context fallback")
+			}
+			assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+		})
+	}
+}
+
 func TestInstallUnavailableEnvironmentStillRefusesRealMutation(t *testing.T) {
 	env, runner, _ := newPreflightInstallEnv(t)
 	seedManagedConfig(t, env)
