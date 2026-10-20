@@ -147,6 +147,14 @@ class OutputTest(unittest.TestCase):
             with self.subTest(text=text), self.assertRaises(RUN.RunError):
                 self.compare(text, samples())
 
+    def test_malformed_nsop_cannot_be_scored_as_zero(self):
+        for value in ("broken", "NaN", "-1", "1e3"):
+            with self.subTest(value=value), self.assertRaisesRegex(RUN.RunError, "invalid benchmark ns/op"):
+                self.compare(samples(), samples().replace("100 ns/op", f"{value} ns/op"))
+        for row in ("BenchmarkExample-4 0 100 ns/op", "BenchmarkExample-4 1000 extra 100 ns/op"):
+            with self.subTest(row=row), self.assertRaisesRegex(RUN.RunError, "invalid benchmark ns/op"):
+                self.compare(samples(), samples().replace("BenchmarkExample-4 1000 100 ns/op", row))
+
 
 class PairTest(unittest.TestCase):
     def setUp(self):

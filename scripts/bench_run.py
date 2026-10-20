@@ -73,6 +73,12 @@ def output_metadata(path: Path) -> dict:
         fields = line.split()
         if not fields or not fields[0].startswith("Benchmark") or "ns/op" not in fields:
             continue
+        # Go's testing.BenchmarkResult prints iterations, then a decimal ns/op.
+        # AWK coerces a malformed value to zero, which would look like a speedup.
+        if (len(fields) < 4 or fields[3] != "ns/op" or
+                not fields[1].isdecimal() or int(fields[1]) == 0 or
+                not re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", fields[2])):
+            raise RunError("invalid benchmark ns/op sample")
         if not package:
             raise RunError("benchmark sample has no package header")
         match = re.fullmatch(r"(.+)-([0-9]+)", fields[0])
