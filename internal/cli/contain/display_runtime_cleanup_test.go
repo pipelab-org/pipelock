@@ -66,6 +66,25 @@ func TestDisplayRuntimeCleanup(t *testing.T) {
 				return old(p)
 			}
 		}, true},
+
+		{"runtime stat error", func(_ *testing.T, e *installEnv) {
+			old := e.lstat
+			e.lstat = func(p string) (os.FileInfo, error) {
+				if p == filepath.Dir(e.rfbSocketPath) {
+					return nil, os.ErrPermission
+				}
+				return old(p)
+			}
+		}, true},
+		{"untrusted parent", func(_ *testing.T, e *installEnv) {
+			old := e.lstat
+			e.lstat = func(p string) (os.FileInfo, error) {
+				if p == filepath.Dir(filepath.Dir(e.rfbSocketPath)) {
+					return fakeFileInfo{mode: os.ModeDir | 0o750, sys: fakeFileSysWithOwner(123, 0)}, nil
+				}
+				return old(p)
+			}
+		}, true},
 		{"read error", func(_ *testing.T, e *installEnv) {
 			e.readDir = func(string) ([]os.DirEntry, error) { return nil, os.ErrPermission }
 		}, true},

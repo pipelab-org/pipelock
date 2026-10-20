@@ -2728,14 +2728,14 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 41 steps total after combining the runtime
+	// Sanity: the install flow has 40 steps total after combining the runtime
 	// contract steps, credential guard, operator evidence ACL, browser CA
 	// trust, agent-browser defaults, config-mode repair, published services,
 	// and final readiness gate. Changing this count changes documented dry-run
 	// output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 41 {
-		t.Errorf("installSteps count: got %d, want 41", len(steps))
+	if len(steps) != 40 {
+		t.Errorf("installSteps count: got %d, want 40", len(steps))
 	}
 }
 

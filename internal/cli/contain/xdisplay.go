@@ -1031,7 +1031,7 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 		return statusFail, err.Error()
 	}
 	if err := checkRFBRuntimeDirectory(lstat, env.lookupUser, path); err != nil {
-		return statusFail, fmt.Sprintf("%v; run systemd-tmpfiles --create %s; then restart the display service", err, displayRuntimeRulePath(env.displayTmpfilesPath))
+		return statusFail, fmt.Sprintf("%v; %s", err, displayRuntimeRepair(env.rfbSocketPath))
 	}
 	return statusPass, "agent-owned RFB Unix socket is private and TCP RFB is disabled"
 }

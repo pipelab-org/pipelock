@@ -102,15 +102,59 @@ func removeDisplayRuntimeRule(env *installEnv) error {
 	return env.removeFile(path)
 }
 
+// The runtime rule and display are one install transaction: rollback restores
+// prior rule bytes before an old display can restart. A removed or drifted
+// managed rule is still prior state, even when it differs from today's render.
+func stepProvisionDisplay() step {
+	runtime, display := stepProvisionDisplayRuntime(), stepProvisionAgentDisplay()
+	var runtimeChanged, displayChanged bool
+	return step{
+		name: display.name,
+		desc: "provision the optional agent display and its boot-time runtime directory",
+		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+			runtimeChanged, displayChanged = false, false
+			env.prevDisplayStateKnown = false
+			var err error
+			runtimeChanged, err = runtime.apply(ctx, env)
+			if err != nil {
+				return runtimeChanged, err
+			}
+			displayChanged, err = display.apply(ctx, env)
+			return runtimeChanged || displayChanged, err
+		},
+		undo: func(ctx context.Context, env *installEnv) error {
+			if displayChanged {
+				if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(env.displayUnitPath)); err != nil {
+					return err
+				}
+			}
+			if runtimeChanged {
+				if err := runtime.undo(ctx, env); err != nil {
+					return fmt.Errorf("restore display runtime before restarting display: %w", err)
+				}
+			}
+			if displayChanged {
+				return display.undo(ctx, env)
+			}
+			return nil
+		},
+	}
+}
+
+func displayRuntimeRepair(socket string) string {
+	return "inspect " + filepath.Dir(displayRFBPath(socket)) + ", move it aside if its contents are untrusted, then rerun contain install"
+}
+
 func stepProvisionDisplayRuntime() step {
 	var previous []byte
-	var existed, changed, runtimeCreated bool
+	var existed, changed, runtimeCreated, priorManagedXvnc bool
 	return step{
 		name: "provision-display-runtime",
 		desc: "persist the root-owned Xvnc runtime directory across reboot",
 		apply: func(ctx context.Context, env *installEnv) (bool, error) {
 			changed = false
 			runtimeCreated = false
+			priorManagedXvnc = false
 			cfg, err := loadContainmentDisplay(env)
 			if err != nil {
 				return false, err
@@ -148,10 +192,10 @@ func stepProvisionDisplayRuntime() step {
 					return false, err
 				}
 				if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, displayRFBPath(env.rfbSocketPath)); err != nil {
-					return false, fmt.Errorf("%w; inspect %s, move it aside if its contents are untrusted, then rerun contain install", err, runtime)
+					return false, fmt.Errorf("%w; %s", err, displayRuntimeRepair(env.rfbSocketPath))
 				}
 			}
-			body :=renderDisplayRuntimeRule(env.rfbSocketPath)
+			body := renderDisplayRuntimeRule(env.rfbSocketPath)
 			if !existed || !bytes.Equal(previous, body) {
 				if err := env.mkdirAll(filepath.Dir(path), 0o750); err != nil {
 					return false, err
@@ -165,6 +209,12 @@ func stepProvisionDisplayRuntime() step {
 				}
 			}
 			runtimeCreated = errors.Is(runtimeErr, os.ErrNotExist)
+			if runtimeCreated {
+				// renderAgentDisplayUnit's managed marker and RFB argument identify
+				// an old Xvnc display whose restored unit still needs this bind source.
+				oldUnit, readErr := env.readFile(env.displayUnitPath)
+				priorManagedXvnc = readErr == nil && strings.HasPrefix(string(oldUnit), displayUnitMarker+"\n") && strings.Contains(string(oldUnit), " -rfbunixpath "+displayRFBPath(env.rfbSocketPath)+" ")
+			}
 			if err := runOrErr(ctx, env, "systemd-tmpfiles", "--create", path); err != nil {
 				return changed || runtimeCreated, err
 			}
@@ -172,8 +222,14 @@ func stepProvisionDisplayRuntime() step {
 		},
 		undo: func(ctx context.Context, env *installEnv) error {
 			var cleanupErr error
+			// Retain a validated recreated bind source when rollback restores a
+			// previously active managed Xvnc. Fresh installs still remove their dir.
 			if runtimeCreated {
-				cleanupErr = removeEmptyDisplayRuntime(ctx, env)
+				if priorManagedXvnc && env.prevDisplayStateKnown && env.prevDisplayActive {
+					cleanupErr = checkRFBRuntimeDirectory(env.lstat, env.lookupUser, displayRFBPath(env.rfbSocketPath))
+				} else {
+					cleanupErr = removeEmptyDisplayRuntime(ctx, env)
+				}
 			}
 			if !changed {
 				return cleanupErr

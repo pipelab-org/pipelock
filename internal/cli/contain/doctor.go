@@ -500,7 +500,7 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra, err.Error(), "restore a regular root:root 0600 managed rule at "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; rerun contain install")
 	}
 	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
-		return fail(classInfra, err.Error(), "run systemd-tmpfiles --create "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; then restart the display service")
+		return fail(classInfra, err.Error(), displayRuntimeRepair(env.rfbSocketPath))
 	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }

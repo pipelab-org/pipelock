@@ -362,6 +362,16 @@ func TestDisplayRuntimeDoctorVerifyParity(t *testing.T) {
 				return old(p)
 			}
 		}},
+		{"missing runtime with missing rule", "rerun contain install", func(e *probeEnv) {
+			old := e.lstat
+			e.lstat = func(p string) (os.FileInfo, error) {
+				if p == e.displayTmpfilesPath || p == filepath.Dir(e.rfbSocketPath) || p == e.rfbSocketPath {
+					return nil, os.ErrNotExist
+				}
+				return old(p)
+			}
+		}},
+
 		{"runtime special mode", "want 0730", func(e *probeEnv) {
 			old := e.lstat
 			e.lstat = func(p string) (os.FileInfo, error) {
@@ -380,6 +390,16 @@ func TestDisplayRuntimeDoctorVerifyParity(t *testing.T) {
 				return old(p)
 			}
 		}},
+		{"runtime group", "wrong owner or group", func(e *probeEnv) {
+			old := e.lstat
+			e.lstat = func(p string) (os.FileInfo, error) {
+				if p == filepath.Dir(e.rfbSocketPath) {
+					return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, 999)}, nil
+				}
+				return old(p)
+			}
+		}},
+
 		{"runtime mode", "want 0730", func(e *probeEnv) {
 			old := e.lstat
 			e.lstat = func(p string) (os.FileInfo, error) {
@@ -400,11 +420,12 @@ func TestDisplayRuntimeDoctorVerifyParity(t *testing.T) {
 			if err := os.WriteFile(install.displayUnitPath, []byte(unit), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			installStat := install.lstat
 			probe := &probeEnv{configPath: managedPipelockConfigPath(install), displayUnitPath: install.displayUnitPath, displayTmpfilesPath: install.displayTmpfilesPath, rfbSocketPath: install.rfbSocketPath, agentUserName: install.agentUserName, lookupUser: install.lookupUser, readFile: install.readFile, lstat: func(p string) (os.FileInfo, error) {
 				if p == install.rfbSocketPath {
 					return fakeFileInfo{mode: os.ModeSocket | 0o600, sys: fakeFileSysWithOwner(123, 456)}, nil
 				}
-				return install.lstat(p)
+				return installStat(p)
 			}}
 			tc.change(probe)
 			status, detail := probeAgentDisplayRFB(context.Background(), probe)
@@ -416,6 +437,25 @@ func TestDisplayRuntimeDoctorVerifyParity(t *testing.T) {
 				}
 			} else if status != statusFail || result.status != statusFail || !strings.Contains(detail, tc.want) || !strings.Contains(result.detail+result.remediation, tc.want) {
 				t.Fatalf("verify=%s %s doctor=%+v want=%q", status, detail, result, tc.want)
+			}
+
+			if tc.want != "" {
+				for _, remedy := range []string{detail, result.detail + result.remediation} {
+					if strings.Contains(remedy, "systemd-tmpfiles --create") != (tc.name == "missing runtime") {
+						t.Fatalf("tmpfiles remedy must require absent runtime and verified good rule: %q", remedy)
+					}
+				}
+			}
+			if strings.HasPrefix(tc.name, "runtime ") {
+				for _, remedy := range []string{detail, result.remediation} {
+					if !strings.Contains(remedy, displayRuntimeRepair(probe.rfbSocketPath)) || strings.Contains(remedy, "systemd-tmpfiles --create") {
+						t.Fatalf("unsafe runtime remedy would modify an existing directory: %q", remedy)
+					}
+				}
+				install.lstat = probe.lstat
+				if _, err := stepProvisionDisplay().apply(context.Background(), install); err == nil || !strings.Contains(err.Error(), displayRuntimeRepair(probe.rfbSocketPath)) {
+					t.Fatalf("installer refusal/remedy differs: %v", err)
+				}
 			}
 		})
 	}
@@ -528,5 +568,104 @@ func TestDisplayRuntimeOperationalErrors(t *testing.T) {
 				t.Fatalf("changed=%v err=%v", changed, err)
 			}
 		})
+	}
+}
+
+func TestDisplayRuntimeAdditionalFailureBoundaries(t *testing.T) {
+	for _, scenario := range []string{"invalid config", "existing rule untrusted parent", "runtime untrusted parent", "rule read denied", "remove absent rule", "remove unsafe rule", "remove rule untrusted parent", "unchanged undo"} {
+		t.Run(scenario, func(t *testing.T) {
+			env, _ := displayRuntimeTestEnv(t)
+			ctx := context.Background()
+			if scenario == "invalid config" {
+				if err := os.WriteFile(managedPipelockConfigPath(env), []byte("containment:\n  display:\n    backend: invalid\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if changed, err := stepProvisionDisplayRuntime().apply(ctx, env); err == nil || changed {
+					t.Fatalf("invalid config changed=%v err=%v", changed, err)
+				}
+				return
+			}
+			if scenario == "remove absent rule" {
+				if err := removeDisplayRuntimeRule(env); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if _, err := stepProvisionDisplayRuntime().apply(ctx, env); err != nil {
+				t.Fatal(err)
+			}
+			oldStat := env.lstat
+			parent := filepath.Dir(env.displayTmpfilesPath)
+			if scenario == "runtime untrusted parent" {
+				parent = filepath.Dir(filepath.Dir(env.rfbSocketPath))
+			}
+			if strings.Contains(scenario, "untrusted parent") {
+				env.lstat = func(p string) (os.FileInfo, error) {
+					if p == parent {
+						return fakeFileInfo{mode: os.ModeDir | 0o750, sys: fakeFileSysWithOwner(123, 0)}, nil
+					}
+					return oldStat(p)
+				}
+			}
+			switch scenario {
+			case "rule read denied":
+				oldRead := env.readFile
+				env.readFile = func(p string) ([]byte, error) {
+					if p == env.displayTmpfilesPath {
+						return nil, os.ErrPermission
+					}
+					return oldRead(p)
+				}
+				if _, _, err := readDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath); !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("read error lost: %v", err)
+				}
+			case "remove unsafe rule":
+				env.lstat = func(p string) (os.FileInfo, error) {
+					if p == env.displayTmpfilesPath {
+						return fakeFileInfo{mode: 0o600, sys: fakeFileSysWithOwner(123, 0)}, nil
+					}
+					return oldStat(p)
+				}
+				if err := removeDisplayRuntimeRule(env); err == nil {
+					t.Fatal("unsafe rule removed")
+				}
+			case "remove rule untrusted parent":
+				if err := removeDisplayRuntimeRule(env); err == nil {
+					t.Fatal("rule removed through untrusted parent")
+				}
+			case "unchanged undo":
+				st := stepProvisionDisplayRuntime()
+				if changed, err := st.apply(ctx, env); err != nil || changed {
+					t.Fatalf("repeat changed=%v err=%v", changed, err)
+				}
+				if err := st.undo(ctx, env); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Stat(env.displayTmpfilesPath); err != nil {
+					t.Fatalf("unchanged rule removed by undo: %v", err)
+				}
+				if _, err := os.Stat(filepath.Dir(env.rfbSocketPath)); err != nil {
+					t.Fatalf("unchanged directory removed by undo: %v", err)
+				}
+			default:
+				if changed, err := stepProvisionDisplayRuntime().apply(ctx, env); err == nil || changed {
+					t.Fatalf("unsafe parent changed=%v err=%v", changed, err)
+				}
+			}
+		})
+	}
+}
+
+func TestDisplayRuntimeDefaultBindSourceContract(t *testing.T) {
+	if path := displayRuntimeRulePath(""); path != "/etc/tmpfiles.d/pipelock-agent-display.conf" {
+		t.Fatalf("default boot rule path: %s", path)
+	}
+	body := renderAgentDisplayUnit(&installEnv{displayConfig: config.ContainmentDisplay{Backend: "xvnc"}})
+	// tmpfiles.d(5) d has its directory in the second field. The first line is
+	// the managed comment, so parse the actual rule line separately.
+	lines := strings.Split(string(renderDisplayRuntimeRule("")), "\n")
+	fields := strings.Fields(lines[1])
+	if len(fields) < 2 || !strings.Contains(body, "BindPaths="+fields[1]+"\n") {
+		t.Fatalf("boot rule does not create display bind source: %q", body)
 	}
 }
