@@ -60,26 +60,29 @@ func (b *boundedOutput) Write(body []byte) (int, error) {
 }
 
 func systemCommand(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
-	if binary != "/usr/bin/systemctl" && binary != "/usr/bin/busctl" {
+	bounded, cancel := context.WithTimeout(ctx, commandBudget)
+	defer cancel()
+	var cmd *exec.Cmd
+	switch binary {
+	case "/usr/bin/systemctl":
+		cmd = exec.CommandContext(bounded, "/usr/bin/systemctl")
+	case "/usr/bin/busctl":
+		cmd = exec.CommandContext(bounded, "/usr/bin/busctl")
+	default:
 		return nil, -1, errors.New("unsupported service observation helper")
 	}
+	cmd.Args = append(cmd.Args, args...)
 	limit := maxObservationBytes
 	if binary == "/usr/bin/busctl" && slices.Contains(args, "--xml-interface") {
 		limit = maxCatalogBytes
 	}
-	return runObservationWithin(ctx, limit, binary, args...)
+	return runObservationWithin(bounded, limit, cmd)
 }
 
-// runObservation keeps the execution/resource contract independently testable
-// without contacting a live system manager. systemCommand admits the helpers.
-func runObservation(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
-	return runObservationWithin(ctx, maxObservationBytes, binary, args...)
-}
-
-func runObservationWithin(ctx context.Context, limit int, binary string, args ...string) ([]byte, int, error) {
-	bounded, cancel := context.WithTimeout(ctx, commandBudget)
-	defer cancel()
-	cmd := exec.CommandContext(bounded, binary, args...) //nolint:gosec // Fixed absolute helpers; no shell.
+// runObservationWithin keeps the execution/resource contract independently
+// testable without contacting a live system manager. systemCommand admits the
+// helpers and supplies the bounded command context.
+func runObservationWithin(ctx context.Context, limit int, cmd *exec.Cmd) ([]byte, int, error) {
 	cmd.Env = cleanHelperEnvironment()
 	cmd.WaitDelay = time.Second
 	out := boundedOutput{limit: limit}
@@ -89,7 +92,7 @@ func runObservationWithin(ctx context.Context, limit int, binary string, args ..
 	if out.overflow {
 		return nil, -1, errObservationOverflow
 	}
-	if bounded.Err() != nil {
+	if ctx.Err() != nil {
 		return nil, -1, errors.New("service observation exceeded its resource policy")
 	}
 	var exited *exec.ExitError

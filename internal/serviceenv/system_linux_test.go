@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"slices"
@@ -246,23 +247,27 @@ func TestBoundedOutputAndHelperPolicy(t *testing.T) {
 	}
 }
 
+func runTestObservation(ctx context.Context, limit int, args ...string) ([]byte, int, error) {
+	bounded, cancel := context.WithTimeout(ctx, commandBudget)
+	defer cancel()
+	cmd := exec.CommandContext(bounded, "/proc/self/exe")
+	cmd.Args = append(cmd.Args, args...)
+	return runObservationWithin(bounded, limit, cmd)
+}
+
 func TestObservationExecutionPolicy(t *testing.T) {
-	binary, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, code, err := runObservation(t.Context(), binary, "observe-success")
+	body, code, err := runTestObservation(t.Context(), maxObservationBytes, "observe-success")
 	if err != nil || code != 0 || string(body) != "observed" {
 		t.Fatal("successful observation not retained")
 	}
-	body, code, err = runObservation(t.Context(), binary, "observe-failure")
+	body, code, err = runTestObservation(t.Context(), maxObservationBytes, "observe-failure")
 	if err != nil || code != 7 || len(body) != 0 {
 		t.Fatal("helper failure output escaped")
 	}
-	if _, _, err := runObservation(t.Context(), binary, "observe-overflow"); err == nil {
+	if _, _, err := runTestObservation(t.Context(), maxObservationBytes, "observe-overflow"); err == nil {
 		t.Fatal("oversized observation accepted")
 	}
-	if _, _, err := runObservation(t.Context(), filepath.Join(t.TempDir(), "missing")); err == nil || strings.Contains(err.Error(), "secret-sentinel") {
+	if _, _, err := runObservationWithin(t.Context(), maxObservationBytes, exec.CommandContext(t.Context(), "/proc/self/exe/missing")); err == nil || strings.Contains(err.Error(), "secret-sentinel") {
 		t.Fatal("missing observation helper accepted")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -277,18 +282,14 @@ func TestObservationExecutionPolicy(t *testing.T) {
 }
 
 func TestCatalogOutputLimitAndRealOverflow(t *testing.T) {
-	binary, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	// The same helper output crosses the property limit but fits a D-Bus message.
-	body, code, err := runObservationWithin(t.Context(), maxCatalogBytes, binary, "observe-overflow")
+	body, code, err := runTestObservation(t.Context(), maxCatalogBytes, "observe-overflow")
 	if err != nil || code != 0 || len(body) != maxObservationBytes+1 {
 		t.Fatalf("catalog-sized helper output refused: %v", err)
 	}
 	// A smaller injected cap exercises genuine subprocess overflow without
 	// allocating a 128 MiB fixture just to cross the production bound.
-	if _, _, err := runObservationWithin(t.Context(), 4, binary, "observe-success"); err == nil {
+	if _, _, err := runTestObservation(t.Context(), 4, "observe-success"); err == nil {
 		t.Fatal("subprocess overflow accepted")
 	}
 }

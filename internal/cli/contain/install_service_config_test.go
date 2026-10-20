@@ -34,7 +34,7 @@ func TestInstallServiceConfigOptionsAndOrdering(t *testing.T) {
 	}
 	if err := os.WriteFile(env.pipelockTarget, []byte("fake pipelock binary"), 0o600); err != nil {
 		t.Fatal(err)
-	} //nolint:gosec // executable fixture.
+	}
 	if _, err := stepEnableSystemUnit().apply(t.Context(), env); err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestInstallServiceConfigRefusesMissingValidatorAndBinaryChanges(t *testing.
 			seedManagedConfig(t, env)
 			if err := os.WriteFile(env.pipelockTarget, []byte("fake pipelock binary"), 0o600); err != nil {
 				t.Fatal(err)
-			} //nolint:gosec // executable fixture.
+			}
 			env.preflightBinaryHash = mustHashFile(t, env, env.pipelockTarget)
 			switch phase {
 			case "missing early":
