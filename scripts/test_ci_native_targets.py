@@ -20,7 +20,7 @@ NATIVE_TARGETS = {
     "test-macos-intel": ("macos-15-intel", "X64", "darwin/amd64", "bash"),
     "test-windows": ("windows-latest", "X64", "windows/amd64", "pwsh"),
     "test-windows-arm64": ("windows-11-arm", "ARM64", "windows/arm64", "pwsh"),
-    "test-linux-arm64": ("ubuntu-24.04-arm", "ARM64", "linux/arm64", "bash"),
+    "test-linux-arm64": ("ubuntu-26.04-arm", "ARM64", "linux/arm64", "bash"),
 }
 
 
@@ -118,12 +118,18 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_runner_label_drift_fails_the_contract(self):
         """Reject a runner label that no longer proves the claimed pair."""
-        broken = copy.deepcopy(self.jobs)
-        broken["test-macos-intel"]["runs-on"] = "macos-latest"
-        self.assertIn(
-            "test-macos-intel does not use macos-15-intel",
-            native_target_errors(broken),
-        )
+        for job_name, wrong_runner, expected_runner in (
+            ("test-macos-intel", "macos-latest", "macos-15-intel"),
+            ("test-linux-arm64", "ubuntu-24.04-arm", "ubuntu-26.04-arm"),
+            ("test-linux-arm64", "ubuntu-26.04", "ubuntu-26.04-arm"),
+        ):
+            with self.subTest(job=job_name, runner=wrong_runner):
+                broken = copy.deepcopy(self.jobs)
+                broken[job_name]["runs-on"] = wrong_runner
+                self.assertIn(
+                    f"{job_name} does not use {expected_runner}",
+                    native_target_errors(broken),
+                )
 
     def test_missing_runtime_architecture_check_fails_the_contract(self):
         """Reject a proof step replaced with inert output."""
