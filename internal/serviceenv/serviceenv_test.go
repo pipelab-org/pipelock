@@ -731,7 +731,7 @@ func TestOversizedTypedObservationIsNotUnavailable(t *testing.T) {
 }
 
 func TestHelperPolicyFailuresCannotBeDeferred(t *testing.T) {
-	for _, phase := range []string{"identity overflow", "typed overflow", "identity canceled", "typed canceled", "child canceled"} {
+	for _, phase := range []string{"identity overflow", "typed overflow", "identity policy", "typed policy", "identity canceled", "typed canceled", "child canceled"} {
 		t.Run(phase, func(t *testing.T) {
 			f := newFixture(t)
 			ctx, cancel := context.WithCancel(t.Context())
@@ -741,7 +741,7 @@ func TestHelperPolicyFailuresCannotBeDeferred(t *testing.T) {
 				f.b.execute = func(context.Context, CheckOptions, []string, identity, []byte) error { cancel(); return ErrUnavailable }
 			} else {
 				f.b.command = func(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
-					fail := strings.HasPrefix(phase, "identity") || binary == "/usr/bin/busctl"
+					fail := strings.HasPrefix(phase, "identity") && binary == "/usr/bin/systemctl" || strings.HasPrefix(phase, "typed") && slices.Contains(args, "get-property")
 					if !fail {
 						return command(ctx, binary, args...)
 					}
@@ -749,11 +749,18 @@ func TestHelperPolicyFailuresCannotBeDeferred(t *testing.T) {
 						cancel()
 						return nil, -1, context.Canceled
 					}
+					if strings.HasSuffix(phase, "policy") {
+						return nil, -1, fmt.Errorf("secret-sentinel: %w", errObservationPolicy)
+					}
 					return nil, -1, errObservationOverflow
 				}
 			}
-			if err := check(ctx, fixtureOptions(), f.b); err == nil || errors.Is(err, ErrUnavailable) {
+			err := check(ctx, fixtureOptions(), f.b)
+			if err == nil || errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "secret-sentinel") {
 				t.Fatal("policy/cancellation failure could be deferred")
+			}
+			if strings.HasSuffix(phase, "policy") && !errors.Is(err, errObservationPolicy) {
+				t.Fatal("helper policy failure lost its classification")
 			}
 		})
 	}

@@ -121,6 +121,70 @@ func TestExecuteValidatorRejectsUnsafeBinary(t *testing.T) {
 	}
 }
 
+func TestServiceValidatorStartupFailureIsActionableAndClosed(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{"missing", "not-directory", "permission"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "secret-sentinel")
+			switch kind {
+			case "not-directory":
+				if err := os.WriteFile(dir, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "permission":
+				if os.Geteuid() == 0 {
+					t.Skip("root can traverse a directory without search permission")
+				}
+				if err := os.Mkdir(dir, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f := newFixture(t)
+			opts := fixtureOptions()
+			opts.Binary, opts.ConfigFile = binary, filepath.Join(dir, "candidate.yaml")
+			f.files[opts.ConfigFile] = []byte("mode: balanced\n")
+			id := currentIdentity(t)
+			id.Home = "/"
+			f.b.identity = func(string, string, []string) (identity, error) { return id, nil }
+			f.b.execute = executeValidator
+			err := check(t.Context(), opts, f.b)
+			if err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("validator startup failure did not refuse without deferral: %v", err)
+			}
+			if !strings.Contains(err.Error(), "service identity") || !strings.Contains(err.Error(), "configuration directory") {
+				t.Fatalf("validator startup failure lost actionable guidance: %v", err)
+			}
+			if strings.Contains(err.Error(), "secret-sentinel") || strings.Contains(err.Error(), binary) {
+				t.Fatal("validator startup failure exposed an input path")
+			}
+		})
+	}
+}
+
+func TestServiceHelperBudgetExpiryCannotDefer(t *testing.T) {
+	for _, phase := range []string{"identity", "property", "catalog"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFixture(t)
+			command := f.b.command
+			f.b.command = func(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
+				if phase == "identity" && binary == "/usr/bin/systemctl" || phase == "property" && slices.Contains(args, "get-property") || phase == "catalog" && slices.Contains(args, "introspect") {
+					expired, cancel := context.WithDeadline(ctx, time.Now())
+					defer cancel()
+					return runTestObservation(expired, maxObservationBytes, "observe-success")
+				}
+				return command(ctx, binary, args...)
+			}
+			err := check(t.Context(), fixtureOptions(), f.b)
+			if err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatalf("helper budget expiry could be deferred: %v", err)
+			}
+		})
+	}
+}
+
 func TestReadStableFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "input")

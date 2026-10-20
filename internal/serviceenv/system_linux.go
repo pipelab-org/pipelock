@@ -93,7 +93,7 @@ func runObservationWithin(ctx context.Context, limit int, cmd *exec.Cmd) ([]byte
 		return nil, -1, errObservationOverflow
 	}
 	if ctx.Err() != nil {
-		return nil, -1, errors.New("service observation exceeded its resource policy")
+		return nil, -1, errObservationPolicy
 	}
 	var exited *exec.ExitError
 	if errors.As(err, &exited) {
@@ -300,7 +300,10 @@ func executeValidator(ctx context.Context, opts CheckOptions, env []string, id i
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: credential}
-	if cmd.Run() != nil {
+	if cmd.Start() != nil {
+		return errValidatorStart
+	}
+	if cmd.Wait() != nil {
 		return errors.New("selected validator failed")
 	}
 	if unix.Fstat(fd, &after) != nil || unix.Lstat(opts.Binary, &named) != nil || fileMetadata(&before) != fileMetadata(&after) || fileMetadata(&after) != fileMetadata(&named) {

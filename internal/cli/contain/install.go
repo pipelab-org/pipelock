@@ -2368,11 +2368,12 @@ func validateProspectivePipelockConfig(ctx context.Context, env *installEnv) err
 	if env.checkServiceConfig == nil {
 		return errors.New("prospective unit configuration validator is unavailable; refusing service start")
 	}
-	if env.preflightBinaryHash != "" {
-		hash, err := env.hashFile(env.pipelockTarget)
-		if err != nil || hash != env.preflightBinaryHash {
-			return errors.New("installed binary differs from config-preflight binary; refusing service start")
-		}
+	if env.preflightBinaryHash == "" {
+		return errors.New("config-preflight binary identity is missing; refusing service start")
+	}
+	hash, err := env.hashFile(env.pipelockTarget)
+	if err != nil || hash != env.preflightBinaryHash {
+		return errors.New("installed binary differs from config-preflight binary; refusing service start")
 	}
 	if err := env.checkServiceConfig(ctx, serviceenv.CheckOptions{
 		Binary: env.pipelockTarget, ConfigFile: managedPipelockConfigPath(env), Service: serviceenv.Unit,
@@ -2381,11 +2382,9 @@ func validateProspectivePipelockConfig(ctx context.Context, env *installEnv) err
 	}); err != nil {
 		return fmt.Errorf("prospective pipelock.service configuration validation failed before service start: %w", err)
 	}
-	if env.preflightBinaryHash != "" {
-		hash, err := env.hashFile(env.pipelockTarget)
-		if err != nil || hash != env.preflightBinaryHash {
-			return errors.New("installed binary changed during prospective config validation; refusing service start")
-		}
+	hash, err = env.hashFile(env.pipelockTarget)
+	if err != nil || hash != env.preflightBinaryHash {
+		return errors.New("installed binary changed during prospective config validation; refusing service start")
 	}
 	return nil
 }

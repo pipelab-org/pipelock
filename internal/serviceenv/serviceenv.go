@@ -64,7 +64,11 @@ type CheckOptions struct {
 // or unsupported service definitions. Dry-run callers may defer this check.
 var ErrUnavailable = errors.New("service environment validation unavailable")
 
-var errObservationOverflow = errors.New("service observation exceeded its output bound")
+var (
+	errObservationOverflow = errors.New("service observation exceeded its output bound")
+	errObservationPolicy   = errors.New("service observation exceeded its resource policy")
+	errValidatorStart      = errors.New("cannot start selected validator under the service identity; verify executable permissions and access to the configuration directory")
+)
 
 // Check runs the normal config validator in a subprocess. Neither caller
 // environment nor child output is used as evidence or returned to the caller.
@@ -124,6 +128,9 @@ func check(ctx context.Context, opts CheckOptions, b backend) error {
 		if errors.Is(err, ErrUnavailable) {
 			return ErrUnavailable
 		}
+		if errors.Is(err, errValidatorStart) {
+			return errValidatorStart
+		}
 		return errors.New("configuration validation failed for pipelock.service; validator output withheld; rerun the privileged service check after correcting the service configuration inputs")
 	}
 	after, err := observe(ctx, opts, b)
@@ -144,6 +151,9 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 	}
 	if errors.Is(err, errObservationOverflow) {
 		return s, errObservationOverflow
+	}
+	if errors.Is(err, errObservationPolicy) {
+		return s, errObservationPolicy
 	}
 	if err != nil || code != 0 && len(out) == 0 {
 		return s, fmt.Errorf("cannot inspect local pipelock.service: %w", ErrUnavailable)
@@ -230,6 +240,9 @@ func readProperty(ctx context.Context, b backend, object, iface, property string
 	}
 	if errors.Is(err, errObservationOverflow) {
 		return nil, errObservationOverflow
+	}
+	if errors.Is(err, errObservationPolicy) {
+		return nil, errObservationPolicy
 	}
 	if err != nil || code != 0 {
 		return nil, fmt.Errorf("cannot read typed service property %s: %w", property, ErrUnavailable)

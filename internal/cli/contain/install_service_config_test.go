@@ -116,26 +116,56 @@ func TestInstallServiceConfigRefusesMissingValidatorAndBinaryChanges(t *testing.
 				t.Fatal(err)
 			}
 			env.preflightBinaryHash = mustHashFile(t, env, env.pipelockTarget)
+			var called, wantCalled bool
+			var want string
 			switch phase {
 			case "missing early":
 				env.checkServiceConfig = nil
-				if preflightPipelockConfig(t.Context(), env, installOpts{}, false) == nil {
-					t.Fatal("missing early validator accepted")
+				if err := preflightPipelockConfig(t.Context(), env, installOpts{}, false); err == nil || !strings.Contains(err.Error(), "requires service configuration validation") {
+					t.Fatalf("missing early validator did not refuse: %v", err)
 				}
 				return
 			case "missing prospective":
 				env.checkServiceConfig = nil
+				want = "validator is unavailable"
 			case "before":
 				env.preflightBinaryHash = "different"
+				env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error {
+					called = true
+					return nil
+				}
+				want = "differs from config-preflight binary"
 			case "after":
 				env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error {
+					called = true
 					return os.WriteFile(env.pipelockTarget, []byte("changed"), 0o600)
 				}
+				want = "changed during prospective config validation"
+				wantCalled = true
 			}
-			if validateProspectivePipelockConfig(t.Context(), env) == nil {
-				t.Fatal("unsafe prospective validation accepted")
+			if err := validateProspectivePipelockConfig(t.Context(), env); err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("wrong prospective refusal: got %v, want %q", err, want)
+			}
+			if called != wantCalled {
+				t.Fatalf("prospective validator called=%v, want %v", called, wantCalled)
 			}
 		})
+	}
+}
+
+func TestInstallProspectiveRequiresPreflightHash(t *testing.T) {
+	env, _, _ := newPreflightInstallEnv(t)
+	called := false
+	env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error {
+		called = true
+		return nil
+	}
+	err := validateProspectivePipelockConfig(t.Context(), env)
+	if err == nil || !strings.Contains(err.Error(), "preflight binary identity") {
+		t.Fatalf("missing preflight identity did not refuse service start: %v", err)
+	}
+	if called {
+		t.Fatal("prospective validator ran without preflight binary identity")
 	}
 }
 
