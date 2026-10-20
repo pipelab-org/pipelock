@@ -27,13 +27,13 @@ type responseEnvelopeViews struct {
 // allowance here. Callers must check budget.Reason() before using the text: an
 // exhausted budget leaves it partial.
 func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *jsonrpc.MediaTextBudget) (responseEnvelopeViews, bool) {
-	// Check the complete message before removing any consumed subtrees. In
-	// particular, pruning structuredContent must not relax the depth/key bound.
-	if jsonrpc.ExtractKeysFromJSONResult(raw).Truncated {
-		return responseEnvelopeViews{}, false
-	}
 	var envelope map[string]any
 	if extract.DecodeJSON(raw, &envelope) != nil {
+		return responseEnvelopeViews{}, false
+	}
+	// Check the complete decoded message before removing any consumed subtrees.
+	// In particular, pruning structuredContent must not relax the depth/key bound.
+	if jsonrpc.ExtractKeysFromValueResult(envelope).Truncated {
 		return responseEnvelopeViews{}, false
 	}
 	var uris []string
@@ -76,12 +76,8 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *json
 			}
 		}
 	}
-	encoded, err := json.Marshal(envelope)
-	if err != nil {
-		return responseEnvelopeViews{}, false
-	}
-	values := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, budget)
-	keys := jsonrpc.ExtractKeysFromJSONResult(encoded)
+	values := jsonrpc.ExtractVisibleStringsFromValueResult(envelope, budget)
+	keys := jsonrpc.ExtractKeysFromValueResult(envelope)
 	if values.Truncated || keys.Truncated {
 		return responseEnvelopeViews{}, false
 	}
