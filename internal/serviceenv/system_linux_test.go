@@ -295,14 +295,14 @@ func TestObservationMidRunCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer readyRead.Close()
-	defer readyWrite.Close()
+	defer func() { _ = readyRead.Close() }()
+	defer func() { _ = readyWrite.Close() }()
 	inputRead, inputWrite, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer inputRead.Close()
-	defer inputWrite.Close()
+	defer func() { _ = inputRead.Close() }()
+	defer func() { _ = inputWrite.Close() }()
 	ctx, cancel := context.WithTimeout(t.Context(), commandBudget)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "/proc/self/exe")
