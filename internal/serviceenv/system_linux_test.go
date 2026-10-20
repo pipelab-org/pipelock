@@ -156,6 +156,43 @@ func TestReadStableFile(t *testing.T) {
 	}
 }
 
+// config.Load follows a symlinked path and has no size cap, and shipped presets
+// sit within 4 KiB of the 64 KiB observation bound, so the candidate reader must
+// accept both while still refusing non-regular files.
+func TestReadStableCandidateMatchesLoaderInputs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pipelock.yaml")
+	body := make([]byte, 2*maxObservationBytes)
+	for i := range body {
+		body[i] = '#'
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.yaml")
+	if err := os.Symlink(path, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{path, link} {
+		image, err := readStableCandidate(name)
+		if err != nil || len(image.Data) != len(body) {
+			t.Fatalf("candidate %s not read: %v", filepath.Base(name), err)
+		}
+	}
+	if _, err := readStableFile(path); err == nil {
+		t.Fatal("environment-file reader lost its bound")
+	}
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{fifo, dir, filepath.Join(dir, "missing")} {
+		if _, err := readStableCandidate(name); err == nil {
+			t.Fatal("nonregular candidate accepted")
+		}
+	}
+}
+
 func TestStaticIdentity(t *testing.T) {
 	u, err := user.LookupId(strconv.Itoa(os.Geteuid()))
 	if err != nil {

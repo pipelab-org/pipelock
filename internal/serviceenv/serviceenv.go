@@ -72,6 +72,8 @@ type fileImage struct {
 type backend struct {
 	command  func(context.Context, string, ...string) ([]byte, int, error)
 	readFile func(string) (fileImage, error)
+	// readCandidate reads the configuration under validation; nil uses readFile.
+	readCandidate func(string) (fileImage, error)
 	identity func(string, string, []string) (identity, error)
 	execute  func(context.Context, CheckOptions, []string, identity, []byte) error
 }
@@ -171,7 +173,11 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 		}
 	}
 	s.Environment = configurationEnvironment(values)
-	s.Candidate, err = b.readFile(opts.ConfigFile)
+	readCandidate := b.readCandidate
+	if readCandidate == nil {
+		readCandidate = b.readFile
+	}
+	s.Candidate, err = readCandidate(opts.ConfigFile)
 	if err != nil {
 		return s, errors.New("cannot read stable regular candidate configuration")
 	}

@@ -1699,7 +1699,14 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	if env.checkServiceConfig == nil {
 		return errors.New("contain install requires service configuration validation; refusing installer-environment fallback")
 	}
+	// The validator opens its executable without following a leaf symlink, but
+	// install itself hashes and copies through one. Hand it the resolved regular
+	// file so a symlinked --pipelock-binary is not refused with a message that
+	// blames the config; the before/after hashes still bind the same content.
 	validatorPath, err := filepath.Abs(env.pipelockBinary)
+	if err == nil {
+		validatorPath, err = filepath.EvalSymlinks(validatorPath)
+	}
 	if err != nil {
 		return errors.New("cannot resolve selected service validator path")
 	}

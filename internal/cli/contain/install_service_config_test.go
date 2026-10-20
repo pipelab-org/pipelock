@@ -151,3 +151,30 @@ func TestInstallServiceConfigResolvesRelativeSelections(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// The validator refuses a leaf symlink, while install hashes and copies
+// through one, so the early check must receive the resolved regular file.
+func TestInstallServiceConfigResolvesSymlinkedValidator(t *testing.T) {
+	env, _, _ := newPreflightInstallEnv(t)
+	src := writePreflightConfig(t, "candidate.yaml", "forward_proxy:\n  enabled: true\n")
+	resolved, err := filepath.EvalSymlinks(env.pipelockBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "pipelock-link")
+	if err := os.Symlink(resolved, link); err != nil {
+		t.Fatal(err)
+	}
+	env.pipelockBinary = link
+	var got string
+	env.checkServiceConfig = func(_ context.Context, opts serviceenv.CheckOptions) error {
+		got = opts.Binary
+		return nil
+	}
+	if err := preflightPipelockConfig(t.Context(), env, installOpts{configSource: src}, true); err != nil {
+		t.Fatal(err)
+	}
+	if got != resolved {
+		t.Fatalf("validator received %q, want resolved regular file %q", got, resolved)
+	}
+}

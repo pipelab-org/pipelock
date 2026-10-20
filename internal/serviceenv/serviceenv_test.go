@@ -137,6 +137,27 @@ func TestConfigurationEnvironmentPrecedence(t *testing.T) {
 	}
 }
 
+func TestCandidateUsesItsOwnReader(t *testing.T) {
+	f := newFixture(t)
+	var delivered []byte
+	f.b.readCandidate = func(path string) (fileImage, error) {
+		if path != candidatePath {
+			t.Fatalf("candidate reader got %s", path)
+		}
+		return fileImage{Data: []byte("candidate-bytes"), Stamp: "candidate"}, nil
+	}
+	f.b.execute = func(_ context.Context, _ CheckOptions, _ []string, _ identity, candidate []byte) error {
+		delivered = slices.Clone(candidate)
+		return nil
+	}
+	if err := check(t.Context(), fixtureOptions(), f.b); err != nil {
+		t.Fatal(err)
+	}
+	if string(delivered) != "candidate-bytes" {
+		t.Fatal("validator did not receive the candidate reader's bytes")
+	}
+}
+
 func TestConfigurationEnvironmentUnsetMatchesExactAssignment(t *testing.T) {
 	for _, unset := range []string{config.EnvKillSwitchAPIToken, config.EnvKillSwitchAPIToken + "=token"} {
 		f := newFixture(t)

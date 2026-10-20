@@ -26,7 +26,7 @@ import (
 )
 
 func defaultBackend() backend {
-	return backend{command: systemCommand, readFile: readStableFile, identity: staticIdentity, execute: executeValidator}
+	return backend{command: systemCommand, readFile: readStableFile, readCandidate: readStableCandidate, identity: staticIdentity, execute: executeValidator}
 }
 
 // cleanHelperEnvironment follows containment's lifecycleManagerEnvironment.
@@ -94,6 +94,24 @@ func fileMetadata(st *unix.Stat_t) string {
 // O_NOFOLLOW rejects a substituted leaf symlink. The held inode and the name
 // must still agree after the bounded read.
 func readStableFile(path string) (fileImage, error) {
+	return readStableFileWithin(path, maxObservationBytes)
+}
+
+// readStableCandidate reads the candidate configuration the way config.Load
+// does: a symlinked path is followed and size is not capped (shipped presets
+// are already within 4 KiB of the 64 KiB observation bound). The resolved leaf
+// still gets the O_NOFOLLOW, regular-file and identity-stability checks.
+func readStableCandidate(path string) (fileImage, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fileImage{}, errors.New("cannot open regular validation input")
+	}
+	return readStableFileWithin(resolved, -1)
+}
+
+// readStableFileWithin bounds the read to limit bytes; a negative limit is
+// unbounded.
+func readStableFileWithin(path string, limit int64) (fileImage, error) {
 	var image fileImage
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if errors.Is(err, unix.ENOENT) {
@@ -105,11 +123,15 @@ func readStableFile(path string) (fileImage, error) {
 	file := os.NewFile(uintptr(fd), path)
 	defer func() { _ = file.Close() }()
 	var before, after, named unix.Stat_t
-	if unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Size > maxObservationBytes {
+	if unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || limit >= 0 && before.Size > limit {
 		return image, errors.New("validation input is not a bounded regular file")
 	}
-	body, err := io.ReadAll(io.LimitReader(file, maxObservationBytes+1))
-	if err != nil || len(body) > maxObservationBytes {
+	var reader io.Reader = file
+	if limit >= 0 {
+		reader = io.LimitReader(file, limit+1)
+	}
+	body, err := io.ReadAll(reader)
+	if err != nil || limit >= 0 && int64(len(body)) > limit {
 		return image, errors.New("cannot read bounded validation input")
 	}
 	if unix.Fstat(fd, &after) != nil || unix.Lstat(path, &named) != nil || fileMetadata(&before) != fileMetadata(&after) || fileMetadata(&after) != fileMetadata(&named) {
