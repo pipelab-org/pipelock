@@ -148,10 +148,10 @@ func stepProvisionDisplayRuntime() step {
 					return false, err
 				}
 				if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, displayRFBPath(env.rfbSocketPath)); err != nil {
-					return false, err
+					return false, fmt.Errorf("%w; inspect %s, move it aside if its contents are untrusted, then rerun contain install", err, runtime)
 				}
 			}
-			body := renderDisplayRuntimeRule(env.rfbSocketPath)
+			body :=renderDisplayRuntimeRule(env.rfbSocketPath)
 			if !existed || !bytes.Equal(previous, body) {
 				if err := env.mkdirAll(filepath.Dir(path), 0o750); err != nil {
 					return false, err
