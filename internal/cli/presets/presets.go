@@ -100,7 +100,7 @@ func List() []Info {
 
 func defaultAction(cfg *config.Config) string {
 	if cfg.Enforce != nil && !*cfg.Enforce {
-		return "warn (log-only)"
+		return "warn (ordinary findings; safety rules still block)"
 	}
 	if cfg.ResponseScanning.Action != "" {
 		return cfg.ResponseScanning.Action

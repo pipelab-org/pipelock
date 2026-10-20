@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/configs"
@@ -101,6 +102,19 @@ func TestDefaultActionUsesResponseAction(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditDefaultActionDoesNotClaimLogOnly(t *testing.T) {
+	for _, info := range List() {
+		if info.Name != config.ModeAudit {
+			continue
+		}
+		if strings.Contains(info.DefaultAction, "log-only") || !strings.Contains(info.DefaultAction, "still block") {
+			t.Fatalf("audit default action = %q, want a label that keeps blocking safety rules visible", info.DefaultAction)
+		}
+		return
+	}
+	t.Fatal("audit preset missing from List")
 }
 
 func TestParseConfigUsesSecurityDefaults(t *testing.T) {
