@@ -5,7 +5,6 @@ package config
 
 import (
 	"testing"
-	"time"
 )
 
 // The rich golden fixtures do NOT configure path_entropy_exclusions, so they
@@ -86,7 +85,7 @@ func TestPathEntropyExclusionsHashIsNormalizationInvariant(t *testing.T) {
 }
 
 // Governance metadata must not move the hash. This is the property that lets an
-// operator correct a reason, hand over ownership, or extend an expiry without
+// operator correct a reason or hand over ownership without
 // it reading as a policy change in signed evidence.
 func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 	t.Parallel()
@@ -99,10 +98,9 @@ func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 		PathPrefix: "/document/d/",
 		Reason:     "service-issued document identifier",
 		Owner:      "platform",
-		Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon),
 	})
 	if bare != annotated {
-		t.Fatalf("reason/owner/expires moved the policy hash:\n  bare      %s\n  annotated %s", bare, annotated)
+		t.Fatalf("reason/owner moved the policy hash:\n  bare      %s\n  annotated %s", bare, annotated)
 	}
 
 	changed := hashWithPathExclusions(t, PathEntropyExclusion{
@@ -110,7 +108,6 @@ func TestPathEntropyExclusionsHashIgnoresGovernanceMetadata(t *testing.T) {
 		PathPrefix: "/document/d/",
 		Reason:     "a different reason entirely",
 		Owner:      "someone else",
-		Expires:    temporaryExpiryDate(MaxPathEntropyExclusionHorizon - 24*time.Hour),
 	})
 	if changed != bare {
 		t.Fatalf("editing governance metadata moved the policy hash; an operator correcting a comment would look like a policy change")

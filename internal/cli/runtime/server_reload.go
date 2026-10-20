@@ -81,12 +81,20 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	if newCfg == nil {
 		return errors.New("rejected: invalid config reload: config is nil")
 	}
+	// Candidate normalization and lapse must never mutate an active or caller-
+	// owned config, including when the candidate is rejected later.
+	newCfg = newCfg.Clone()
 	if _, validationErr := newCfg.DestinationGrantSet(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
 	if validationErr := newCfg.ValidateExpiryAuthorizations(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
+	if _, validationErr := newCfg.LapseExpiredScannerExceptions(time.Now()); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr

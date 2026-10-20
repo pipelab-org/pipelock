@@ -75,7 +75,7 @@ func TestValidateRequestBodyEntropyWarnRoutesRejectsUnsafeOrInertEntries(t *test
 		{"invalid method", func(c *Config) { c.RequestBodyScanning.ContentEntropyWarnRoutes[0].Methods = []string{"UPLOAD"} }, "supported HTTP method"},
 		{"missing reason", func(c *Config) { c.RequestBodyScanning.ContentEntropyWarnRoutes[0].Reason = "" }, "reason is required"},
 		{"missing owner", func(c *Config) { c.RequestBodyScanning.ContentEntropyWarnRoutes[0].Owner = "" }, "owner is required"},
-		{"expired", func(c *Config) { c.RequestBodyScanning.ContentEntropyWarnRoutes[0].Expires = "2020-01-01" }, "already expired"},
+		{"malformed expiry", func(c *Config) { c.RequestBodyScanning.ContentEntropyWarnRoutes[0].Expires = "not-a-date" }, "YYYY-MM-DD"},
 		{"overlapping owner", func(c *Config) {
 			duplicate := c.RequestBodyScanning.ContentEntropyWarnRoutes[0]
 			duplicate.Methods = nil
