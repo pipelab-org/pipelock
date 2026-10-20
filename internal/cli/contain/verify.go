@@ -140,6 +140,7 @@ type dropCounterFunc func(ctx context.Context, env *probeEnv) (uint64, error)
 // directly without going through the cobra layer.
 type probeEnv struct {
 	rfbSocketPath                 string
+	displayTmpfilesPath           string
 	port                          int
 	operatorUser                  string
 	proxyUserName                 string

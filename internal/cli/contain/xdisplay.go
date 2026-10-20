@@ -207,10 +207,8 @@ func renderAgentDisplayUnit(env *installEnv) string {
 			"User=" + env.agentUserName, "Group=" + rfbGroup, "UMask=0077",
 			strings.Join(runtimeSocketMountProperties(), "\n"),
 			"BindPaths=/run/pipelock-agent-display",
-			// RuntimeDirectory with User= would make the directory agent-owned.
-			// A privileged pre-start action owns it as root while Xvnc gets only
-			// group create/traverse access. Contained agent processes lack that gid.
-			"ExecStartPre=+/usr/bin/install -d -o root -g " + viewerUserName + " -m 0730 /run/pipelock-agent-display",
+			// tmpfiles.d creates the root-owned bind source before boot startup.
+			// RuntimeDirectory with User= would make it agent-owned.
 			"ExecStart=" + xvnc + " " + displayName(number) + " -auth " + displayAuthorityPath(env) + " -geometry " + env.displayConfig.EffectiveGeometry() + " -depth 24 -nolisten tcp -nolisten local -listen unix -rfbunixpath " + rfbSocket + " -rfbunixmode " + rfbMode + " -rfbport -1 -SecurityTypes None -AlwaysShared" + clipboard,
 			"ExecStartPost=/usr/bin/bash -c 'for i in {1.." + strconv.Itoa(displaySocketWaitAttempts) + "}; do if [ -S \"$1\" ] && [ -S \"$2\" ]; then " + post + "; exit; fi; sleep " + displaySocketWaitInterval + "; done; exit 1' _ " + socket + " " + rfbSocket,
 			"Restart=on-failure", "RestartSec=2", "", "[Install]", "WantedBy=multi-user.target", "",
@@ -561,7 +559,7 @@ func checkRFBRuntimeDirectory(stat func(string) (os.FileInfo, error), lookup loo
 	if err != nil {
 		return fmt.Errorf("RFB runtime directory: %w", err)
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o730 {
+	if !info.IsDir() || info.Mode() != os.ModeDir|0o730 {
 		return fmt.Errorf("RFB runtime directory mode is %s, want 0730", info.Mode())
 	}
 	if lookup == nil {
@@ -621,11 +619,17 @@ func actionRemoveAgentDisplay() step {
 			if env.displayUnitPath == "" {
 				return removeViewerTraverseACL(ctx, env)
 			}
+			_, hadRuntimeRule, ruleErr := readDisplayRuntimeRule(env.lstat, env.readFile, displayRuntimeRulePath(env.displayTmpfilesPath))
 			env.prevDisplayStateKnown = false
 			restoreErr := restoreAgentDisplay(ctx, env)
 			authorityErr := removeDisplayAuthority(env)
 			aclErr := removeViewerTraverseACL(ctx, env)
-			return errors.Join(restoreErr, authorityErr, aclErr)
+			var runtimeCleanupErr error
+			if hadRuntimeRule && restoreErr == nil {
+				runtimeCleanupErr = removeEmptyDisplayRuntime(ctx, env)
+			}
+			runtimeErr := removeDisplayRuntimeRule(env)
+			return errors.Join(restoreErr, authorityErr, aclErr, ruleErr, runtimeErr, runtimeCleanupErr)
 		},
 	}
 }
@@ -991,6 +995,12 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	info, err := lstat(path)
 	if err != nil {
+		if _, dirErr := lstat(filepath.Dir(path)); errors.Is(dirErr, os.ErrNotExist) {
+			if ruleErr := checkDisplayRuntimeRule(lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); ruleErr != nil {
+				return statusFail, "RFB socket unavailable: " + ruleErr.Error()
+			}
+			return statusFail, "RFB runtime directory is missing; run systemd-tmpfiles --create " + displayRuntimeRulePath(env.displayTmpfilesPath) + "; then restart the display service"
+		}
 		return statusFail, fmt.Sprintf("RFB socket missing; rerun contain install: %v", err)
 	}
 	mode := os.FileMode(0o600)
@@ -1016,6 +1026,12 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	ownerUID, ok := fileOwnerUID(info)
 	if !ok || uint64(ownerUID) != uid {
 		return statusFail, "RFB socket is not owned by the contained agent uid"
+	}
+	if err := checkDisplayRuntimeRule(lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
+		return statusFail, err.Error()
+	}
+	if err := checkRFBRuntimeDirectory(lstat, env.lookupUser, path); err != nil {
+		return statusFail, fmt.Sprintf("%v; run systemd-tmpfiles --create %s; then restart the display service", err, displayRuntimeRulePath(env.displayTmpfilesPath))
 	}
 	return statusPass, "agent-owned RFB Unix socket is private and TCP RFB is disabled"
 }

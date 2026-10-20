@@ -188,6 +188,9 @@ func actionMaybeDeleteViewerUser(opts rollbackOpts) step {
 		if strings.TrimSpace(string(createdUID)) != account.Uid {
 			return fmt.Errorf("viewer account UID differs from its creation record; preserving account")
 		}
+		if err := removeEmptyDisplayRuntime(ctx, env); err != nil {
+			return fmt.Errorf("preserving viewer account: %w; stop the display, inspect and repair or move aside the runtime directory, then retry account removal", err)
+		}
 		if err := runOrErr(ctx, env, "userdel", "-r", viewerUserName); err != nil {
 			return err
 		}

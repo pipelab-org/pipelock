@@ -79,6 +79,9 @@ func stepCreateViewerUser() step {
 		} else if err != nil {
 			return err
 		}
+		if err := removeEmptyDisplayRuntime(ctx, env); err != nil {
+			return fmt.Errorf("preserving viewer account: %w; stop the display, inspect and repair or move aside the runtime directory, then retry account removal", err)
+		}
 		if err := runOrErr(ctx, env, "userdel", "-r", viewerUserName); err != nil {
 			return err
 		}

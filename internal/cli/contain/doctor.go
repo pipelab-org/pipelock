@@ -74,18 +74,19 @@ type doctorEnv struct {
 	configPath     string
 	// displayUnitPath locates the managed display unit and, beside it, the
 	// viewer units. Empty means the installed default.
-	displayUnitPath    string
-	agentHome          string
-	rfbSocketPath      string
-	lookPath           func(string) (string, error)
-	platformFamily     string
-	filesystemProbe    func(context.Context, *probeEnv) (string, string)
-	runtimeSocketProbe func(context.Context, *doctorEnv) doctorResult
-	operatorUser       string
-	workspaceInvPath   string
-	configDir          string
-	groupIDs           groupIDsFunc
-	now                func() time.Time
+	displayUnitPath     string
+	agentHome           string
+	rfbSocketPath       string
+	displayTmpfilesPath string
+	lookPath            func(string) (string, error)
+	platformFamily      string
+	filesystemProbe     func(context.Context, *probeEnv) (string, string)
+	runtimeSocketProbe  func(context.Context, *doctorEnv) doctorResult
+	operatorUser        string
+	workspaceInvPath    string
+	configDir           string
+	groupIDs            groupIDsFunc
+	now                 func() time.Time
 }
 
 // doctorEnvFactory builds the live doctor environment. It is a package var so
@@ -468,6 +469,12 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 		return fail(classInfra, "RFB socket lstat unavailable", "rerun contain install")
 	}
 	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
+		if _, dirErr := env.lstat(filepath.Dir(path)); errors.Is(dirErr, os.ErrNotExist) {
+			if ruleErr := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); ruleErr != nil {
+				return fail(classInfra, ruleErr.Error(), "restore a regular root:root 0600 managed rule at "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; rerun contain install")
+			}
+			return fail(classInfra, "RFB runtime directory is missing", "run systemd-tmpfiles --create "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; then restart the display service")
+		}
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
 	}
 	info, err := env.lstat(path)
@@ -489,8 +496,11 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if !ok || uint64(ownerUID) != uid {
 		return fail(classInfra, "RFB socket is not owned by the contained agent uid", "rerun contain install")
 	}
+	if err := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
+		return fail(classInfra, err.Error(), "restore a regular root:root 0600 managed rule at "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; rerun contain install")
+	}
 	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
-		return fail(classInfra, err.Error(), "rerun contain install")
+		return fail(classInfra, err.Error(), "run systemd-tmpfiles --create "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; then restart the display service")
 	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }
@@ -500,7 +510,7 @@ func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
 	if unitPath == "" {
 		unitPath = defaultDisplayUnitPath
 	}
-	return &probeEnv{configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+	return &probeEnv{configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, displayTmpfilesPath: env.displayTmpfilesPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
 }
 
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {

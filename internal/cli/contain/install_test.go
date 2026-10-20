@@ -181,7 +181,9 @@ func newFakeEnv(t *testing.T) (*installEnv, *fakeRunner, *bytes.Buffer) {
 	runner := newFakeRunner()
 	out := &bytes.Buffer{}
 	env := &installEnv{
-		runCmd: runner.run,
+		displayTmpfilesPath: filepath.Join(root, "etc", "tmpfiles.d", "pipelock-agent-display.conf"),
+		rfbSocketPath:       filepath.Join(root, "run", "pipelock-agent-display", "rfb.sock"),
+		runCmd:              runner.run,
 		dialCtx: func(_ context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
 			client, server := net.Pipe()
 			_ = server.Close()
@@ -2726,14 +2728,14 @@ func TestStepCreateDirRejectsSymlinkParent(t *testing.T) {
 }
 
 func TestInstallSteps_Count(t *testing.T) {
-	// Sanity: the install flow has 40 steps total after combining the runtime
+	// Sanity: the install flow has 41 steps total after combining the runtime
 	// contract steps, credential guard, operator evidence ACL, browser CA
 	// trust, agent-browser defaults, config-mode repair, published services,
 	// and final readiness gate. Changing this count changes documented dry-run
 	// output.
 	steps := installSteps(installOpts{})
-	if len(steps) != 40 {
-		t.Errorf("installSteps count: got %d, want 40", len(steps))
+	if len(steps) != 41 {
+		t.Errorf("installSteps count: got %d, want 41", len(steps))
 	}
 }
 

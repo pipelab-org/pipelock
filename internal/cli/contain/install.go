@@ -353,6 +353,7 @@ func installSteps(opts installOpts) []step {
 		// Resolves env.displayEnabled/displayNumber before either launch
 		// wrapper renders, so the wrappers bind the display socket that
 		// private /tmp would otherwise hide.
+		stepProvisionDisplayRuntime(),
 		stepProvisionAgentDisplay(),
 		stepProvisionViewer(),
 		stepWriteToolsList(),
