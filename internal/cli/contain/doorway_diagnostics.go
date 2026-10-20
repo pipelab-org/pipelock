@@ -46,7 +46,10 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 	}
 	for _, definition := range definitions {
 		body, err := env.readFile(filepath.Clean(definition.path))
-		if err != nil || string(body) != definition.want {
+		if err != nil {
+			return nil, fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), installRemedy)
+		}
+		if string(body) != definition.want {
 			return nil, fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), installRemedy)
 		}
 	}

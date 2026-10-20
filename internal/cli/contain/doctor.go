@@ -264,8 +264,11 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 			}
 		}
 		relayBroken := relayEnabled == systemctlMasked || relayEnabled == systemctlMasked+"-runtime" || relayState == systemctlFailed
-		if detail == "" && relayBroken {
-			detail = fmt.Sprintf("managed doorway relay %s is %s (%s)", relay, oneLine(relayState), oneLine(relayEnabled))
+		if relayBroken {
+			if detail != "" {
+				detail += "; "
+			}
+			detail += fmt.Sprintf("managed doorway relay %s is %s (%s)", relay, oneLine(relayState), oneLine(relayEnabled))
 		}
 		if detail != "" {
 			return fail(classInfra, detail, doorwayRecoveryRemedy(doorway, doorwayUnitState{enabled, active}, doorwayUnitState{relayEnabled, relayState}, forwarderStates[doorway.forwarder]))

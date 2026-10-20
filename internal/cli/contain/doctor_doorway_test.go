@@ -147,6 +147,61 @@ func TestDoctorDoorwayHealthyQueriesProxySocketAndForwarder(t *testing.T) {
 	}
 }
 
+func TestDoctorDoorwayReportsSocketAndRelayFailures(t *testing.T) {
+	for _, socket := range []fakeUnitState{{"disabled", "inactive"}, {systemctlEnabled, "inactive"}} {
+		for _, relay := range []fakeUnitState{{"static", systemctlFailed}, {systemctlMasked, "inactive"}, {systemctlMasked + "-runtime", "inactive"}} {
+			t.Run(socket.enabled+"/"+relay.enabled+"/"+relay.active, func(t *testing.T) {
+				env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxySocket: socket, testDoorwayProxyRelay: relay})
+				got := doctorDoorwayState(context.Background(), env, nil)
+				want := "systemctl stop " + testDoorwayProxySocket + " && systemctl stop " + testDoorwayProxyRelay + " && "
+				switch relay.enabled {
+				case systemctlMasked:
+					want = "systemctl unmask " + testDoorwayProxyRelay + " && " + want
+				case systemctlMasked + "-runtime":
+					want = "systemctl unmask --runtime " + testDoorwayProxyRelay + " && " + want
+				}
+				if relay.active == systemctlFailed {
+					want += "systemctl reset-failed " + testDoorwayProxyRelay + " && "
+				}
+				if socket.enabled == "disabled" {
+					want += "systemctl enable --now "
+				} else {
+					want += "systemctl start "
+				}
+				want += testDoorwayProxySocket + " && systemctl restart " + containedNamespaceForwarderUnit
+				if got.status != statusFail || got.class != classInfra || got.remediation != want {
+					t.Fatalf("result=%+v, want remedy %q", got, want)
+				}
+				for _, detail := range []string{"managed doorway socket " + testDoorwayProxySocket, "managed doorway relay " + testDoorwayProxyRelay, relay.active + " (" + relay.enabled + ")"} {
+					if !strings.Contains(got.detail, detail) {
+						t.Fatalf("detail=%q, want %q", got.detail, detail)
+					}
+				}
+				status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+				if status != statusFail || !strings.Contains(detail, got.detail) || !strings.Contains(detail, want) {
+					t.Fatalf("verify=(%s,%s), doctor=%+v", status, detail, got)
+				}
+			})
+		}
+	}
+}
+
+func TestDoctorUnitStateRealRunnerNonzeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("subprocess contract test uses /bin/sh")
+	}
+	env := &probeEnv{runCmd: func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name != "systemctl" || len(args) != 2 || args[1] != testDoorwayProxySocket {
+			t.Fatalf("unexpected command: %s %v", name, args)
+		}
+		return realRunCommand(ctx, "/bin/sh", "-c", `case "$1" in is-enabled) echo disabled; exit 1;; is-active) echo inactive; exit 3;; *) exit 99;; esac`, "unit-state-test", args[0])
+	}}
+	enabled, active, ok := doctorUnitState(context.Background(), env, testDoorwayProxySocket)
+	if !ok || enabled != "disabled" || active != "inactive" {
+		t.Fatalf("state=(%q,%q,%t), want disabled,inactive,true", enabled, active, ok)
+	}
+}
+
 // diagnosticDoorwayEnv models the installed definitions and a real socket type.
 func diagnosticDoorwayEnv(states map[string]fakeUnitState) *probeEnv {
 	env := &probeEnv{
@@ -295,6 +350,32 @@ func TestDoorwayDiagnosticsUnavailableAndDefinitions(t *testing.T) {
 				t.Fatalf("result=%+v", result)
 			}
 		})
+	}
+}
+
+func TestDoorwayDefinitionReadErrors(t *testing.T) {
+	for _, readErr := range []error{os.ErrPermission, errors.New("input/output error")} {
+		for _, unit := range []string{testDoorwayProxySocket, testDoorwayProxyRelay, containedNamespaceForwarderUnit} {
+			t.Run(unit+"/"+readErr.Error(), func(t *testing.T) {
+				env := diagnosticDoorwayEnv(nil)
+				read := env.readFile
+				env.readFile = func(path string) ([]byte, error) {
+					if filepath.Base(path) == unit {
+						return nil, readErr
+					}
+					return read(path)
+				}
+				got := doctorDoorwayState(context.Background(), env, nil)
+				want := "managed doorway definition /etc/systemd/system/" + unit + " could not be read: " + readErr.Error()
+				if got.status != statusFail || got.class != classInfra || got.detail != want || got.remediation != installRemedy {
+					t.Fatalf("result=%+v, want detail %q and install remedy", got, want)
+				}
+				status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+				if status != statusFail || !strings.Contains(detail, want) || !strings.Contains(detail, installRemedy) {
+					t.Fatalf("verify=(%s,%s)", status, detail)
+				}
+			})
+		}
 	}
 }
 
