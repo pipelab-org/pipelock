@@ -613,7 +613,7 @@ func TestDoctorDisplayRFBRemedies(t *testing.T) {
 		return os.Stat(path)
 	}}
 	result := checkDoctorDisplayRFB(context.Background(), env)
-	if result.status != statusFail || !strings.Contains(result.remediation, "rerun contain install") {
+	if result.status != statusFail || !strings.Contains(result.remediation, "rerun `pipelock contain install`") {
 		t.Fatalf("missing RFB remedy: %+v", result)
 	}
 	env.stat = func(path string) (os.FileInfo, error) { return nil, os.ErrNotExist }
@@ -730,7 +730,7 @@ func TestDoctorDisplayChecksFollowConfiguredViewer(t *testing.T) {
 		t.Fatalf("missing ACL tool: %+v", result)
 	}
 	result = checkDoctorViewerRFBAccess(context.Background(), env)
-	if result.status != statusFail || !strings.Contains(result.remediation, "rerun contain install") {
+	if result.status != statusFail || !strings.Contains(result.remediation, "rerun `pipelock contain install`") {
 		t.Fatalf("missing RFB ACL: %+v", result)
 	}
 }
@@ -749,7 +749,7 @@ func TestDoctorViewerChecksReportConfiguredRemedies(t *testing.T) {
 		t.Fatal(err)
 	}
 	result = checkDoctorViewerService(context.Background(), env)
-	if result.status != statusFail || !strings.Contains(result.detail, "viewer unit") || result.remediation != "rerun contain install" {
+	if result.status != statusFail || !strings.Contains(result.detail, "viewer unit") || result.remediation != "rerun `pipelock contain install`" {
 		t.Fatalf("missing viewer unit: %+v", result)
 	}
 	rfb := filepath.Join(root, "rfb.sock")

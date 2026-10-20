@@ -168,9 +168,9 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
 			return fail(classInfra, detail, "remove the offending nftables rule and "+installRemedyForPort(env.port))
 		case status == statusFail && !readErr:
-			return unknownInfra("managed chain structure could not establish containment: " + detail)
+			return unknownInfra("managed chain structure could not establish containment: "+detail, env.port)
 		default:
-			return unknownInfra("managed chain structure could not be read: " + detail)
+			return unknownInfra("managed chain structure could not be read: "+detail, env.port)
 		}
 	}
 }
@@ -211,6 +211,15 @@ func installCommandForPort(port int) string {
 // doctorCommandForPort keeps rechecks on the same proxy as the failed probe.
 func doctorCommandForPort(port int) string {
 	const command = "pipelock contain doctor"
+	if port == 0 || port == defaultProxyPort {
+		return command
+	}
+	return fmt.Sprintf("%s --port %d", command, port)
+}
+
+// verifyCommandForPort keeps verification on the same proxy as the failed probe.
+func verifyCommandForPort(port int) string {
+	const command = "pipelock contain verify"
 	if port == 0 || port == defaultProxyPort {
 		return command
 	}
@@ -519,8 +528,8 @@ func unknown(detail, remediation string) doctorResult {
 }
 
 // unknownInfra returns an inconclusive infrastructure-attribution result.
-func unknownInfra(detail string) doctorResult {
-	return unknown(detail, rawEgressAttributionRemediation)
+func unknownInfra(detail string, port int) doctorResult {
+	return unknown(detail, rawEgressAttributionRemediation(port))
 }
 
 type doctorCheck struct {
@@ -588,7 +597,7 @@ func checkFilesystemConfinement(ctx context.Context, env *doctorEnv) doctorResul
 	case statusFilesystemOff:
 		return doctorResult{status: statusFilesystemOff, detail: detail}
 	case statusSkip:
-		return skip(detail, "rerun pipelock contain verify on Linux as root")
+		return skip(detail, "rerun "+verifyCommandForPort(env.port)+" on Linux as root")
 	default:
 		return fail(classInfra, detail, filesystemDoctorRemediation(detail))
 	}
@@ -634,7 +643,7 @@ func checkDoctorLegacyViewerACL(ctx context.Context, env *doctorEnv) doctorResul
 		lstat = env.stat
 	}
 	if err := checkLegacyViewerACL(ctx, env.runCmd, lstat, env.agentHome, env.proxyUserName); err != nil {
-		return fail(classInfra, err.Error(), "rerun contain install")
+		return fail(classInfra, err.Error(), installRemedyForPort(env.port))
 	}
 	return pass("obsolete agent-home viewer access is absent")
 }
@@ -650,32 +659,32 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 		mode = 0o660
 	}
 	if env.lstat == nil {
-		return fail(classInfra, "RFB socket lstat unavailable", "rerun contain install")
+		return fail(classInfra, "RFB socket lstat unavailable", installRemedyForPort(env.port))
 	}
 	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
-		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
+		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; "+installRemedyForPort(env.port))
 	}
 	info, err := env.lstat(path)
 	if err != nil {
-		return fail(classInfra, "RFB socket: "+err.Error(), "rerun contain install")
+		return fail(classInfra, "RFB socket: "+err.Error(), installRemedyForPort(env.port))
 	}
 	if env.lookupUser == nil {
-		return fail(classInfra, "RFB owner lookup unavailable", "rerun contain install")
+		return fail(classInfra, "RFB owner lookup unavailable", installRemedyForPort(env.port))
 	}
 	agent, err := env.lookupUser(env.agentUserName)
 	if err != nil {
-		return fail(classInfra, "lookup RFB owner: "+err.Error(), "rerun contain install")
+		return fail(classInfra, "lookup RFB owner: "+err.Error(), installRemedyForPort(env.port))
 	}
 	uid, err := strconv.ParseUint(agent.Uid, 10, 32)
 	if err != nil {
-		return fail(classInfra, "parse RFB owner uid: "+err.Error(), "rerun contain install")
+		return fail(classInfra, "parse RFB owner uid: "+err.Error(), installRemedyForPort(env.port))
 	}
 	ownerUID, ok := fileOwnerUID(info)
 	if !ok || uint64(ownerUID) != uid {
-		return fail(classInfra, "RFB socket is not owned by the contained agent uid", "rerun contain install")
+		return fail(classInfra, "RFB socket is not owned by the contained agent uid", installRemedyForPort(env.port))
 	}
 	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
-		return fail(classInfra, err.Error(), "rerun contain install")
+		return fail(classInfra, err.Error(), installRemedyForPort(env.port))
 	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }
@@ -685,7 +694,7 @@ func doctorViewerProbeEnv(env *doctorEnv) *probeEnv {
 	if unitPath == "" {
 		unitPath = defaultDisplayUnitPath
 	}
-	return &probeEnv{configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
+	return &probeEnv{port: env.port, configPath: env.configPath, displayUnitPath: unitPath, agentHome: env.agentHome, rfbSocketPath: env.rfbSocketPath, agentUserName: env.agentUserName, proxyUserName: env.proxyUserName, pipelockTarget: env.pipelockTarget, lookupUser: env.lookupUser, stat: env.stat, lstat: env.lstat, readFile: env.readFile, runCmd: env.runCmd}
 }
 
 func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult {
@@ -696,7 +705,7 @@ func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult 
 	if !viewerRFBEnabled(cfg.Containment.Display) {
 		status, detail := probeViewerService(ctx, doctorViewerProbeEnv(env))
 		if status != statusPass {
-			return fail(classInfra, detail, "rerun contain install")
+			return fail(classInfra, detail, installRemedyForPort(env.port))
 		}
 		return pass(detail)
 	}
@@ -707,7 +716,7 @@ func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult 
 	}
 	status, detail := probeViewerService(ctx, doctorViewerProbeEnv(env))
 	if status != statusPass {
-		return fail(classInfra, detail, "rerun contain install")
+		return fail(classInfra, detail, installRemedyForPort(env.port))
 	}
 	return pass(detail)
 }
@@ -715,7 +724,7 @@ func checkDoctorViewerService(ctx context.Context, env *doctorEnv) doctorResult 
 func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResult {
 	status, detail := probeViewerRFBAccess(ctx, doctorViewerProbeEnv(env))
 	if status != statusPass {
-		return fail(classInfra, detail, "RFB access mismatch: rerun contain install")
+		return fail(classInfra, detail, "RFB access mismatch: "+installRemedyForPort(env.port))
 	}
 	return pass(detail)
 }
@@ -724,7 +733,9 @@ func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResul
 // Shared check helpers
 // ---------------------------------------------------------------------------
 
-const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
+func rawEgressAttributionRemediation(port int) string {
+	return "verify the managed nftables owner-match DROP counter is readable and increasing (`" + verifyCommandForPort(port) + "`)"
+}
 
 // sudoAgent prefixes a command so it runs as the contained agent. doctor is an
 // operator/root diagnostic; root can sudo to the agent without a password.
@@ -802,7 +813,7 @@ func checkGatewayHealth(ctx context.Context, env *doctorEnv) doctorResult {
 	if err != nil {
 		return fail(classInfra,
 			fmt.Sprintf("could not connect to the proxy at %s: %v", addr, err),
-			"start the service: systemctl status pipelock (or `pipelock contain verify`)")
+			"start the service: systemctl status pipelock (or `"+verifyCommandForPort(env.port)+"`)")
 	}
 	_ = conn.Close()
 	return pass(fmt.Sprintf("proxy accepting connections on %s", addr))
@@ -1008,14 +1019,14 @@ func formatObservedHTTPCode(code int, ok bool) string {
 // established exclusively by check 6's direct-egress canary.
 func checkManagedChainStructure(ctx context.Context, env *doctorEnv) doctorResult {
 	if env.chainStructure == nil {
-		return unknownInfra("managed chain structure reader is unavailable")
+		return unknownInfra("managed chain structure reader is unavailable", env.port)
 	}
 	return env.chainStructure(ctx)
 }
 
 func checkManagedDoorwaySockets(ctx context.Context, env *doctorEnv) doctorResult {
 	if env.doorwaySockets == nil {
-		return unknownInfra("managed doorway socket inspection is unavailable")
+		return unknownInfra("managed doorway socket inspection is unavailable", env.port)
 	}
 	return env.doorwaySockets(ctx)
 }
@@ -1055,7 +1066,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 			detail = fmt.Sprintf("CONTAINMENT HOLE: agent reached %s directly (HTTP %d), bypassing the proxy", directEgressCanaryURL, httpCode)
 		}
 		return fail(classInfra, detail,
-			"the nftables owner-match egress rule is missing or broken; run `pipelock contain verify` and re-install")
+			"the nftables owner-match egress rule is missing or broken; run `"+verifyCommandForPort(env.port)+"` and re-install")
 	}
 	dialCompletion := parseDirectCurlDialCompletion(out)
 	outcome, after, afterErr := classifyDirectEgressAttribution(code, dialCompletion, env.dropCounter != nil, before, beforeErr, func() (uint64, error) {
@@ -1065,19 +1076,19 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	case egressAttrFailPostConnect:
 		return fail(classInfra,
 			fmt.Sprintf("CONTAINMENT HOLE: direct egress reached the network before curl failed (exit %d): %s", code, oneLine(out)),
-			"verify the nftables owner-match drop is present (`pipelock contain verify`); a post-connect error means the outbound dial escaped containment")
+			"verify the nftables owner-match drop is present (`"+verifyCommandForPort(env.port)+"`); a post-connect error means the outbound dial escaped containment")
 	case egressAttrUnknownDialCompletion:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but probe-specific time_connect was missing or unparseable; refusing to claim containment", code), env.port)
 	case egressAttrUnknownNoCounter:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but no DROP counter reader is available; containment attribution is inconclusive", code))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but no DROP counter reader is available; containment attribution is inconclusive", code), env.port)
 	case egressAttrUnknownBeforeErr:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter before the probe failed: %v", code, beforeErr))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter before the probe failed: %v", code, beforeErr), env.port)
 	case egressAttrUnknownAfterErr:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter after the probe failed: %v", code, afterErr))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but reading the DROP counter after the probe failed: %v", code, afterErr), env.port)
 	case egressAttrUnknownNoDelta:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but the managed DROP counter did not increase (%d -> %d)", code, before, after))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed (exit %d), but the managed DROP counter did not increase (%d -> %d)", code, before, after), env.port)
 	case egressAttrUnknownUnexpectedExit:
-		return unknownInfra(fmt.Sprintf("direct egress curl failed with unexpected exit %d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code))
+		return unknownInfra(fmt.Sprintf("direct egress curl failed with unexpected exit %d despite a counter delta; the DNS-free HTTP canary expected a connect refusal or timeout", code), env.port)
 	case egressAttrPass:
 		return doctorResult{
 			status: statusPass,
@@ -1088,7 +1099,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 		}
 	default:
 		// Fail closed: an unhandled attribution outcome must never claim PASS.
-		return unknownInfra(fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit %d); refusing to claim containment", outcome, code))
+		return unknownInfra(fmt.Sprintf("unexpected direct-egress attribution outcome %d (exit %d); refusing to claim containment", outcome, code), env.port)
 	}
 }
 

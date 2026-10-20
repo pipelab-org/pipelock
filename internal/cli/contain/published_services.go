@@ -784,7 +784,7 @@ func probePublishedServicesFor(ctx context.Context, env *probeEnv, holderPID int
 		}
 	}
 	if len(pending) > 0 {
-		return statusPass, fmt.Sprintf("%d published service(s) wired; agent listener pending until the agent starts: %s (rerun `pipelock contain verify` once it is serving)", len(services), strings.Join(pending, ", "))
+		return statusPass, fmt.Sprintf("%d published service(s) wired; agent listener pending until the agent starts: %s (rerun `%s` once it is serving)", len(services), strings.Join(pending, ", "), verifyCommandForPort(env.port))
 	}
 	for _, service := range services {
 		if service.HostListen != "" {

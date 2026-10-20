@@ -991,7 +991,7 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	}
 	info, err := lstat(path)
 	if err != nil {
-		return statusFail, fmt.Sprintf("RFB socket missing; rerun contain install: %v", err)
+		return statusFail, fmt.Sprintf("RFB socket missing; %s: %v", installRemedyForPort(env.port), err)
 	}
 	mode := os.FileMode(0o600)
 	if viewerRFBEnabled(cfg.Containment.Display) {
