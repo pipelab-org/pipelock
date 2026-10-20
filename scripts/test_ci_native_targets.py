@@ -74,6 +74,8 @@ def native_target_errors(jobs: dict) -> list[str]:
             continue
         if job.get("runs-on") != runner:
             errors.append(f"{job_name} does not use {runner}")
+        if job.get("continue-on-error") is not None:
+            errors.append(f"{job_name} allows its native proof to fail")
         steps = job.get("steps", [])
         proof_steps = [
             step
@@ -83,6 +85,8 @@ def native_target_errors(jobs: dict) -> list[str]:
         if len(proof_steps) != 1:
             errors.append(f"{job_name} does not have one architecture proof step")
             continue
+        if any(key in proof_steps[0] for key in ("if", "continue-on-error", "env")):
+            errors.append(f"{job_name} does not require unmodified architecture proof")
         proof = proof_steps[0].get("run", "")
         actual_lines = executable_lines(proof)
         expected_lines = expected_proof_lines(shell, runner_arch, go_target)
@@ -140,6 +144,32 @@ class NativeTargetWorkflowTest(unittest.TestCase):
             "test-windows-arm64 does not verify runner architecture ARM64",
             native_target_errors(broken),
         )
+
+    def test_skipped_or_nonfatal_proof_fails_the_contract(self):
+        """Reject proof that CI may skip, ignore, or run with supplied target values."""
+        for job_name, (_, _, go_target, _) in NATIVE_TARGETS.items():
+            for field, value in (
+                ("if", False),
+                ("continue-on-error", True),
+                ("env", {"GOOS": "darwin", "GOARCH": "amd64"}),
+            ):
+                with self.subTest(job=job_name, field=field):
+                    broken = copy.deepcopy(self.jobs)
+                    proof = next(
+                        step for step in broken[job_name]["steps"]
+                        if step.get("name") == f"Verify native target is {go_target}"
+                    )
+                    proof[field] = value
+                    self.assertIn(
+                        f"{job_name} does not require unmodified architecture proof",
+                        native_target_errors(broken),
+                    )
+            broken = copy.deepcopy(self.jobs)
+            broken[job_name]["continue-on-error"] = True
+            self.assertIn(
+                f"{job_name} allows its native proof to fail",
+                native_target_errors(broken),
+            )
 
     def test_inverted_predicates_fail_the_contract(self):
         """Reject success predicates whose direction is reversed."""
