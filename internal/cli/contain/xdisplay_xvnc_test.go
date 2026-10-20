@@ -470,7 +470,9 @@ func TestProbeAgentDisplayRFBReportsFailedControl(t *testing.T) {
 		change     func(*probeEnv)
 	}{
 		{"config read", "read containment display config", func(e *probeEnv) { e.configPath = filepath.Join(root, "missing.yaml") }},
-		{"unit read", "read display unit", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission } }},
+		{"unit read", "read display unit", func(e *probeEnv) {
+			e.readFile = func(string) ([]byte, error) { return nil, errors.New("fixture read failure") }
+		}},
 		{"unit contract", "disable TCP RFB", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return []byte("[Service]\n"), nil } }},
 		{"wrong mode", "RFB socket mode", func(e *probeEnv) {
 			old := e.lstat

@@ -133,13 +133,16 @@ func TestDisplayFreshRollbackRuntimeCleanupRefusalRemovesUnit(t *testing.T) {
 			if enabled || restarted {
 				t.Fatalf("fresh display left enabled=%v restarted=%v", enabled, restarted)
 			}
-			for _, path := range []string{env.displayUnitPath, displayAuthorityPath(env), env.displayTmpfilesPath} {
+			for _, path := range []string{env.displayUnitPath, displayAuthorityPath(env)} {
 				if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("fresh install residue at %s: %v", path, err)
 				}
 			}
 			if _, err := os.Stat(runtime); err != nil {
 				t.Fatalf("refused runtime cleanup still removed directory: %v", err)
+			}
+			if err := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
+				t.Fatalf("refused runtime cleanup lost the managed boot rule: %v", err)
 			}
 		})
 	}
@@ -199,7 +202,7 @@ func TestDisplayInactiveRollbackRuntimeCleanupRefusalRestoresUnit(t *testing.T) 
 	if body, readErr := os.ReadFile(env.displayUnitPath); readErr != nil || string(body) != priorUnit {
 		t.Fatalf("replacement unit stranded: %q %v", body, readErr)
 	}
-	if _, statErr := os.Lstat(env.displayTmpfilesPath); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("fresh rule residue: %v", statErr)
+	if err := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
+		t.Fatalf("refused runtime cleanup lost the managed boot rule: %v", err)
 	}
 }

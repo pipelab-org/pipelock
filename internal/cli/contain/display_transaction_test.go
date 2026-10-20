@@ -273,3 +273,80 @@ func TestDisplayRuntimeTransactionDisabledNoChanges(t *testing.T) {
 		t.Fatalf("disabled installation changed=%v err=%v", changed, err)
 	}
 }
+
+func TestDisplayRuntimeTransactionDisablesOrReplacesActiveXvnc(t *testing.T) {
+	for _, disabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "disable", false: "replace with xvfb"}[disabled], func(t *testing.T) {
+			env, _ := displayRuntimeTestEnv(t)
+			prepareMigrationAuthority(t, env)
+			if _, err := stepProvisionDisplayRuntime().apply(t.Context(), env); err != nil {
+				t.Fatal(err)
+			}
+			env.displayConfig = config.ContainmentDisplay{Backend: "xvnc"}
+			env.displayNumber = 99
+			if err := os.WriteFile(env.displayUnitPath, []byte(renderAgentDisplayUnit(env)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			enabled := "true"
+			if disabled {
+				enabled = "false"
+			}
+			if err := os.WriteFile(managedPipelockConfigPath(env), []byte("containment:\n  display:\n    enabled: "+enabled+"\n    backend: xvfb\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			env.xvfbPath = filepath.Join(filepath.Dir(env.displayUnitPath), "Xvfb")
+			if err := os.WriteFile(env.xvfbPath, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			active, unitEnabled, restarted := true, true, false
+			env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+				if name == "getfacl" {
+					return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
+				}
+				if name != "systemctl" {
+					return "", 0, nil
+				}
+				switch args[0] {
+				case "is-enabled":
+					return "enabled", 0, nil
+				case "is-active":
+					return "active", 0, nil
+				case "disable":
+					if len(args) > 1 && args[1] == "--now" {
+						active, unitEnabled = false, false
+					}
+				case "restart":
+					body, err := os.ReadFile(env.displayUnitPath)
+					if err != nil || !strings.Contains(string(body), "ExecStart="+env.xvfbPath+" ") || strings.Contains(string(body), "-rfbunixpath") || strings.Contains(string(body), "BindPaths=/run/pipelock-agent-display") {
+						t.Fatalf("old Xvnc restarted after rule removal: %s %v", body, err)
+					}
+					restarted = true
+				}
+				return "", 0, nil
+			}
+			var selected []step
+			for _, s := range installSteps(installOpts{}) {
+				if s.name == "provision-agent-display" {
+					selected = append(selected, s)
+				}
+			}
+			if len(selected) != 1 {
+				t.Fatalf("installer display transaction count = %d", len(selected))
+			}
+			if _, err := runSteps(t.Context(), env, io.Discard, selected); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(env.displayTmpfilesPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("obsolete Xvnc rule remains: %v", err)
+			}
+			if disabled {
+				if _, err := os.Lstat(env.displayUnitPath); !errors.Is(err, os.ErrNotExist) || active || unitEnabled || restarted {
+					t.Fatalf("disabled Xvnc remains: active=%v enabled=%v restarted=%v unit=%v", active, unitEnabled, restarted, err)
+				}
+			} else if !restarted {
+				t.Fatal("active Xvnc was not replaced and restarted as Xvfb")
+			}
+			t.Logf("obsolete rule absent; active=%v enabled=%v replacement restarted=%v", active, unitEnabled, restarted)
+		})
+	}
+}

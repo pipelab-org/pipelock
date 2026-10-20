@@ -272,7 +272,11 @@ func stepProvisionDisplayRuntime() step {
 			}
 			path := displayRuntimeRulePath(env.displayTmpfilesPath)
 			if !existed {
-				return errors.Join(cleanupErr, removeDisplayRuntimeRule(env))
+				if cleanupErr != nil {
+					// A retained runtime may have been adopted by another install.
+					return cleanupErr
+				}
+				return removeDisplayRuntimeRule(env)
 			}
 			if err := env.writeFile(path, previous, 0o600); err != nil {
 				return errors.Join(cleanupErr, err)
