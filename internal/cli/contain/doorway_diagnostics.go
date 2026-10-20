@@ -6,6 +6,7 @@ package contain
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -17,6 +18,40 @@ type managedDoorway struct {
 	relay     string
 	forwarder string
 	path      string
+}
+
+// combineDoorwayResults follows runDoctor's result contract: retain every
+// finding, with fail taking precedence over unknown and unknown over pass.
+// The caller supplies the established sorted doorway order.
+func combineDoorwayResults(results []doctorResult) doctorResult {
+	combined := pass("all managed doorway sockets and namespace forwarders are enabled and active")
+	var findings []doctorResult
+	for _, result := range results {
+		if result.status == statusPass {
+			continue
+		}
+		findings = append(findings, result)
+		if result.status == statusFail || combined.status == statusPass {
+			combined.status = result.status
+		}
+	}
+	if len(findings) == 0 {
+		return combined
+	}
+	if len(findings) == 1 {
+		return findings[0]
+	}
+	var details, remedies []string
+	for _, result := range findings {
+		details = append(details, result.detail)
+		// Associate each independent instruction with its own observation.
+		// This is prose, not one shell command joining unrelated doorways.
+		remedies = append(remedies, result.detail+": "+result.remediation)
+	}
+	combined.class = classInfra
+	combined.detail = strings.Join(details, "; ")
+	combined.remediation = strings.Join(remedies, "; ")
+	return combined
 }
 
 // observeManagedDoorwayDefinitions admits only the rendered managed units before

@@ -869,7 +869,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			doorwayState:   "failed",
 			relayState:     "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
+			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket`",
 		},
 		{
 			name:           "running relay must be stopped before the socket can listen",
@@ -877,7 +877,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			boundaryStatus: statusPass,
 			doorwayState:   "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl start pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
+			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl start pipelock-agent-proxy.socket`",
 		},
 		{
 			name:           "masked doorway socket names the unmask remedy",
@@ -886,7 +886,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			doorwayEnabled: "masked",
 			relayState:     "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl unmask pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl enable --now pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
+			wantDetail:     "run `systemctl unmask pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl enable --now pipelock-agent-proxy.socket`",
 		},
 		{
 			name:           "missing doorway socket names the reinstall remedy",

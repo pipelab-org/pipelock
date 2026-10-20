@@ -124,7 +124,7 @@ func TestDoctorDoorwaySocketRemedyMatchesRelayState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			read, _ := doorwayReaderFor(map[string]fakeUnitState{testDoorwayProxySocket: tc.socket, testDoorwayProxyRelay: tc.relay}, nil)
 			got := read()
-			want := tc.prefix + "systemctl stop " + testDoorwayProxySocket + " && systemctl stop " + testDoorwayProxyRelay + " && " + tc.start + " && systemctl restart " + containedNamespaceForwarderUnit
+			want := tc.prefix + "systemctl stop " + testDoorwayProxySocket + " && systemctl stop " + testDoorwayProxyRelay + " && " + tc.start
 			if got.status != statusFail || got.remediation != want {
 				t.Fatalf("result=%+v want remediation %q", got, want)
 			}
@@ -168,7 +168,7 @@ func TestDoctorDoorwayReportsSocketAndRelayFailures(t *testing.T) {
 				} else {
 					want += "systemctl start "
 				}
-				want += testDoorwayProxySocket + " && systemctl restart " + containedNamespaceForwarderUnit
+				want += testDoorwayProxySocket
 				if got.status != statusFail || got.class != classInfra || got.remediation != want {
 					t.Fatalf("result=%+v, want remedy %q", got, want)
 				}
@@ -392,7 +392,7 @@ func TestDoorwayDiagnosticsLoopbackSibling(t *testing.T) {
 		return fakeFileInfo{mode: os.ModeSocket}, nil
 	}
 	result := doctorDoorwayState(context.Background(), env, services)
-	if result.status != statusFail || !strings.Contains(result.detail, "v6-9201") || !strings.Contains(result.remediation, "systemctl restart "+loopbackForwarderUnitBase("::1", 9201)+"-netns.service") {
+	if result.status != statusFail || !strings.Contains(result.detail, "v6-9201") || !strings.Contains(result.remediation, "systemctl start "+loopbackForwarderUnitBase("::1", 9201)+".socket") {
 		t.Fatalf("result=%+v", result)
 	}
 	if strings.Contains(result.remediation, "9200") {
@@ -491,7 +491,7 @@ func TestDoorwayRuntimeMaskRecovery(t *testing.T) {
 					} else {
 						want += "systemctl start "
 					}
-					want += base + ".socket && systemctl restart " + forwarder
+					want += base + ".socket"
 				}
 				services := []config.ContainmentLoopbackService{service}
 				got := doctorDoorwayState(context.Background(), env, services)
@@ -580,6 +580,9 @@ func TestDoorwayInconclusiveDoctorFailsVerification(t *testing.T) {
 		name   string
 		change func(*probeEnv)
 	}{
+		{"empty systemctl state", func(e *probeEnv) {
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) { return "", 3, nil }
+		}},
 		{"unreadable systemctl", func(e *probeEnv) {
 			e.runCmd = func(context.Context, string, ...string) (string, int, error) { return "", -1, os.ErrPermission }
 		}},
