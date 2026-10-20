@@ -381,6 +381,46 @@ func TestExpiredScannerWarningsDescribeEffectivePolicy(t *testing.T) {
 	}
 }
 
+// Validation must also remain stable when another entry expires after the
+// initial lapse, while retaining the diagnostics from that earlier lapse.
+func TestScannerLapseWarningsAcrossExpiry(t *testing.T) {
+	cfg := scannerExceptionConfig()
+	today := todayUTC()
+	cfg.RequestBodyScanning.ContentEntropyExclusions = []EntropyHostExclusion{
+		{Host: "first.vendor.example", Expires: today.AddDate(0, 0, -3).Format(time.DateOnly), Reason: "fixture", Owner: "operator"},
+		{Host: "second.vendor.example", Expires: today.AddDate(0, 0, -1).Format(time.DateOnly), Reason: "fixture", Owner: "operator"},
+	}
+	first, err := cfg.LapseExpiredScannerExceptions(today.AddDate(0, 0, -2))
+	if err != nil || len(first) != 1 {
+		t.Fatalf("initial lapse: %+v, %v", first, err)
+	}
+	before, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		after, err := cfg.ValidateWithWarnings()
+		if err != nil || !reflect.DeepEqual(before, after) {
+			t.Fatalf("validation accumulated diagnostics: %+v, %v", after, err)
+		}
+	}
+	for _, host := range []string{"first.vendor.example", "second.vendor.example"} {
+		if count := strings.Count(fmtWarnings(before), host); count != 1 {
+			t.Fatalf("warnings for %s: %d, want 1", host, count)
+		}
+	}
+	if len(cfg.LapsedScannerExceptionWarnings()) != 1 || len(cfg.RequestBodyScanning.ContentEntropyExclusions) != 1 {
+		t.Fatal("validation mutated retained diagnostics or effective lists")
+	}
+	if _, err := cfg.LapseExpiredScannerExceptions(today); err != nil {
+		t.Fatal(err)
+	}
+	after, err := cfg.ValidateWithWarnings()
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Fatalf("subsequent lapse changed diagnostics: %+v, %v", after, err)
+	}
+}
+
 func TestScannerExceptionDiagnosticCopies(t *testing.T) {
 	src := allScannerExceptions(todayUTC().AddDate(0, 0, -1).Format(time.DateOnly))
 	if _, err := src.LapseExpiredScannerExceptions(time.Now()); err != nil {
