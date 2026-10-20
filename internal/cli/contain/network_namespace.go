@@ -300,7 +300,7 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 			return statusFail, fmt.Sprintf("read contained network namespace unit %s: %v", unit.path, err)
 		}
 		if string(body) != unit.want {
-			return statusFail, fmt.Sprintf("contained network namespace unit %s does not match the managed definition; rerun `pipelock contain install`", unit.path)
+			return statusFail, fmt.Sprintf("contained network namespace unit %s does not match the managed definition; %s", unit.path, installRemedyForPort(env.port))
 		}
 	}
 	services := decl.services

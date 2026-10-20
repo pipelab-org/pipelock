@@ -64,7 +64,7 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 	if filepath.Base(env.proxyForwarderSocketPath) != containedProxyForwarderUnit+".socket" ||
 		filepath.Base(env.proxyForwarderServicePath) != containedProxyForwarderUnit+".service" ||
 		filepath.Base(env.namespaceForwarderServicePath) != containedNamespaceForwarderUnit {
-		return nil, fail(classInfra, "managed doorway unit paths are not canonical", installRemedy)
+		return nil, fail(classInfra, "managed doorway unit paths are not canonical", installRemedyForPort(env.port))
 	}
 	definitions := map[string][]doorwayDefinition{containedProxyForwarderUnit + ".socket": {
 		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
@@ -91,7 +91,7 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
 		remedy := loopbackDefinitionRemedy
 		if socket == containedProxyForwarderUnit+".socket" {
-			remedy = installRemedy
+			remedy = installRemedyForPort(env.port)
 		}
 		result := observeDoorwayDefinitions(env, definitions[socket], remedy)
 		if result.status == statusPass {

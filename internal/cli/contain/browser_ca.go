@@ -49,8 +49,14 @@ func certutilPackageForFamily(family string) string {
 	}
 }
 
+var errCertutilMissing = errors.New("certutil not found")
+
 func missingCertutilError(family string) error {
-	return fmt.Errorf("certutil not found; install %s and rerun pipelock contain install so the contained agent browser trusts the Pipelock CA", certutilPackageForFamily(family))
+	return missingCertutilErrorForPort(family, defaultProxyPort)
+}
+
+func missingCertutilErrorForPort(family string, port int) error {
+	return fmt.Errorf("%w; install %s and rerun %s so the contained agent browser trusts the Pipelock CA", errCertutilMissing, certutilPackageForFamily(family), installCommandForPort(port))
 }
 
 func nssDBRelLegacy() string { return filepath.Join(".pki", "nssdb") }
@@ -423,7 +429,7 @@ func probeBrowserCATrustState(ctx context.Context, env *probeEnv) (string, strin
 		return env.browserCATrust(ctx, env)
 	}
 	if err := resolveCertutil(env.lookPath); err != nil {
-		return statusFail, missingCertutilError(env.platformFamily).Error()
+		return statusFail, missingCertutilErrorForPort(env.platformFamily, env.port).Error()
 	}
 	home := env.agentHome
 	if home == "" {
@@ -435,7 +441,7 @@ func probeBrowserCATrustState(ctx context.Context, env *probeEnv) (string, strin
 	}
 	db := agentNSSDatabaseDir(home, env.stat)
 	if !nssDatabaseExists(env.stat, db) {
-		return statusFail, fmt.Sprintf("contained agent NSS database %s is missing (control: certutil -L -d sql:%s); rerun pipelock contain install", db, db)
+		return statusFail, fmt.Sprintf("contained agent NSS database %s is missing (control: certutil -L -d sql:%s); rerun %s", db, db, installCommandForPort(env.port))
 	}
 	caPath := filepath.Clean(env.caExportPath)
 	caPEM, err := env.readFile(caPath)
@@ -448,14 +454,17 @@ func probeBrowserCATrustState(ctx context.Context, env *probeEnv) (string, strin
 	}
 	state, err := inspectBrowserCA(ctx, env.runCmd, env.platformFamily, db, fingerprint)
 	if err != nil {
+		if errors.Is(err, errCertutilMissing) {
+			return statusFail, missingCertutilErrorForPort(env.platformFamily, env.port).Error()
+		}
 		return statusFail, err.Error()
 	}
 	control := fmt.Sprintf("certutil -L -d sql:%s", db)
 	if !state.present || !state.exact {
-		return statusFail, fmt.Sprintf("Pipelock CA is not listed in NSS database %s (control: %s); rerun pipelock contain install", db, control)
+		return statusFail, fmt.Sprintf("Pipelock CA is not listed in NSS database %s (control: %s); rerun %s", db, control, installCommandForPort(env.port))
 	}
 	if !state.serverTrust {
-		return statusFail, fmt.Sprintf("Pipelock CA has SSL trust %q, not C, in NSS database %s (control: %s); rerun pipelock contain install", state.trust, db, control)
+		return statusFail, fmt.Sprintf("Pipelock CA has SSL trust %q, not C, in NSS database %s (control: %s); rerun %s", state.trust, db, control, installCommandForPort(env.port))
 	}
 	return statusPass, fmt.Sprintf("NSS database %s lists %q with SSL CA trust C (control: %s)", db, browserCANSSNickname, control)
 }

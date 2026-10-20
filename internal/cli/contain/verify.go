@@ -811,11 +811,11 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	// extra. Both directions fail: a missing variable breaks the proxy/CA
 	// contract, an extra one is an operator-environment passthrough.
 	if plainExecEnvLine(script) {
-		return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `pipelock contain install`"
+		return statusFail, "plk-launch execs the tool with plain `env`; operator environment (DISPLAY, XAUTHORITY, SUDO_*, ...) leaks into the contained agent - reinstall with `" + installCommandForPort(env.port) + "`"
 	}
 	blocks, malformed := parseLaunchExecEnvBlocks(script)
 	if malformed {
-		return statusFail, fmt.Sprintf("plk-launch at %s has an `exec env -i` block that does not match the installed launcher grammar (a token before \"$TARGET\" is not a NAME=VALUE assignment, or a line is missing its trailing continuation), so the launcher may not start the agent under the runtime contract - reinstall with `pipelock contain install`", env.launchPath)
+		return statusFail, fmt.Sprintf("plk-launch at %s has an `exec env -i` block that does not match the installed launcher grammar (a token before \"$TARGET\" is not a NAME=VALUE assignment, or a line is missing its trailing continuation), so the launcher may not start the agent under the runtime contract - reinstall with `%s`", env.launchPath, installCommandForPort(env.port))
 	}
 	switch len(blocks) {
 	case 0:
@@ -826,8 +826,8 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 		// means the block this probe reads is not necessarily the one the shell
 		// reaches, so a canonical decoy could stand in front of a leaky block
 		// that actually runs. Refuse to guess which is effective.
-		return statusFail, fmt.Sprintf("plk-launch at %s contains %d `exec env -i` blocks; exactly one is expected, so the effective launch environment is ambiguous - reinstall with `pipelock contain install`",
-			env.launchPath, len(blocks))
+		return statusFail, fmt.Sprintf("plk-launch at %s contains %d `exec env -i` blocks; exactly one is expected, so the effective launch environment is ambiguous - reinstall with `%s`",
+			env.launchPath, len(blocks), installCommandForPort(env.port))
 	}
 	assigns := blocks[0]
 	names := make([]string, 0, len(assigns))
@@ -837,13 +837,13 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	if dup := firstDuplicateName(names); dup != "" {
 		// env applies the LAST assignment of a repeated name, so a duplicate
 		// makes the effective value differ from the one a reader sees first.
-		return statusFail, fmt.Sprintf("plk-launch env -i block assigns %s more than once; the effective value is not the one it appears to set - reinstall with `pipelock contain install`", dup)
+		return statusFail, fmt.Sprintf("plk-launch env -i block assigns %s more than once; the effective value is not the one it appears to set - reinstall with `%s`", dup, installCommandForPort(env.port))
 	}
 	expected := expectedLaunchEnvNames()
 	missing, extra := diffNameSets(expected, names)
 	if len(missing) > 0 || len(extra) > 0 {
-		return statusFail, fmt.Sprintf("plk-launch env -i block does not match the runtime contract (missing: %s; unexpected: %s); reinstall with `pipelock contain install`",
-			listOrNone(missing), listOrNone(extra))
+		return statusFail, fmt.Sprintf("plk-launch env -i block does not match the runtime contract (missing: %s; unexpected: %s); reinstall with `%s`",
+			listOrNone(missing), listOrNone(extra), installCommandForPort(env.port))
 	}
 	// Names alone are not the contract. A wrapper that assigns every expected
 	// name and points HTTPS_PROXY somewhere else, or SSL_CERT_FILE at an
@@ -855,8 +855,8 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 	// on install-time paths this probe does not rediscover, so demanding a value
 	// for them would refuse legitimate non-default installs.
 	if name, want, got, ok := firstLaunchEnvValueMismatch(assigns, env); !ok {
-		return statusFail, fmt.Sprintf("plk-launch env -i block sets %s=%s, expected %s; the contained agent would not be bound to this install's %s - reinstall with `pipelock contain install`",
-			name, got, want, launchEnvValueSubject(name))
+		return statusFail, fmt.Sprintf("plk-launch env -i block sets %s=%s, expected %s; the contained agent would not be bound to this install's %s - reinstall with `%s`",
+			name, got, want, launchEnvValueSubject(name), installCommandForPort(env.port))
 	}
 	return statusPass, fmt.Sprintf("plk-launch clears the environment (env -i) and rebuilds exactly the %d-variable runtime contract, with the proxy, no-proxy, CA and identity values bound to this install", len(expected))
 }
@@ -867,7 +867,7 @@ func probeLaunchEnvAllowList(_ context.Context, env *probeEnv) (string, string) 
 func probeCurrentCAExport(ctx context.Context, env *probeEnv) (string, string) {
 	exported, err := os.ReadFile(filepath.Clean(env.caExportPath))
 	if err != nil {
-		return statusFail, fmt.Sprintf("read exported Pipelock CA %s: %v; run `pipelock contain install` or `pipelock contain ca-refresh`", env.caExportPath, err)
+		return statusFail, fmt.Sprintf("read exported Pipelock CA %s: %v; run `%s` or `pipelock contain ca-refresh`", env.caExportPath, err, installCommandForPort(env.port))
 	}
 	if err := validateSingleCAPEM(exported); err != nil {
 		return statusFail, fmt.Sprintf("exported Pipelock CA %s is invalid: %v; run `pipelock contain ca-refresh`", env.caExportPath, err)
@@ -1396,6 +1396,9 @@ type verifyOpts struct {
 	workspacePaths  []string
 }
 
+// Match doctor's injectable environment so command tests need no host probes.
+var verifyEnvFactory = defaultProbeEnv
+
 func verifyCmd() *cobra.Command {
 	var opts verifyOpts
 
@@ -1438,7 +1441,7 @@ Exit codes:
 			if err := validatePort(opts.port); err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
-			env := defaultProbeEnv()
+			env := verifyEnvFactory()
 			env.port = opts.port
 			env.workspacePaths = append([]string(nil), opts.workspacePaths...)
 			// Load recorded grants so the workspace probe checks readability and
@@ -1792,7 +1795,7 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
 	}
 	if handles := legacyOwnedLoopbackMarkRuleHandles(out, current.agentUID); len(handles) > 0 {
-		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; rerun `pipelock contain install`", len(handles), legacyOwnedLoopbackMark), false
+		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; %s", len(handles), legacyOwnedLoopbackMark, installRemedyForPort(env.port)), false
 	}
 	// Within a hooked chain that has the drop, a definite bypass outranks every
 	// missing canonical rule: reporting "proxy accept rule missing" for a chain
@@ -2085,7 +2088,7 @@ func verifyNFTPersistence(env *probeEnv, current containmentUIDs) error {
 		AgentListener:    agentListener,
 	})
 	if string(rules) != want {
-		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun pipelock contain install before reboot", env.nftRulesPath)
+		return fmt.Errorf("persisted nftables rules file %s does not match the canonical containment boundary; rerun %s before reboot", env.nftRulesPath, installCommandForPort(env.port))
 	}
 	return nil
 }
@@ -2147,10 +2150,10 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 	}
 	timerState = strings.TrimSpace(timerState)
 	if timerState == "masked" {
-		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", timerUnit)
+		return fmt.Errorf("%s is masked; unmask the affected unit and %s", timerUnit, installRemedyForPort(env.port))
 	}
 	if code != 0 || timerState != systemctlEnabled {
-		return fmt.Errorf("%s is not enabled (%s); rerun `pipelock contain install`", timerUnit, oneLine(timerState))
+		return fmt.Errorf("%s is not enabled (%s); %s", timerUnit, oneLine(timerState), installRemedyForPort(env.port))
 	}
 	activeState, activeCode, err := env.runCmd(ctx, "systemctl", "is-active", timerUnit)
 	if err != nil {
@@ -2158,7 +2161,7 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 	}
 	activeState = strings.TrimSpace(activeState)
 	if activeCode != 0 || activeState != systemctlActive {
-		return fmt.Errorf("%s is not active (%s); rerun `pipelock contain install`", timerUnit, oneLine(activeState))
+		return fmt.Errorf("%s is not active (%s); %s", timerUnit, oneLine(activeState), installRemedyForPort(env.port))
 	}
 
 	serviceUnit := filepath.Base(env.nftExpiryServicePath)
@@ -2168,7 +2171,7 @@ func verifyNFTExpiryTimer(ctx context.Context, env *probeEnv) error {
 	}
 	serviceState = strings.TrimSpace(serviceState)
 	if serviceState == "masked" {
-		return fmt.Errorf("%s is masked; unmask the affected unit and rerun `pipelock contain install`", serviceUnit)
+		return fmt.Errorf("%s is masked; unmask the affected unit and %s", serviceUnit, installRemedyForPort(env.port))
 	}
 	if serviceCode != 0 || serviceState != "static" {
 		return fmt.Errorf("systemctl is-enabled %s exit=%d: %s", serviceUnit, serviceCode, oneLine(serviceState))

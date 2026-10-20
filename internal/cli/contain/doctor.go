@@ -166,7 +166,7 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 		case status == statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
 		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
-			return fail(classInfra, detail, "remove the offending nftables rule and rerun `pipelock contain install`")
+			return fail(classInfra, detail, "remove the offending nftables rule and "+installRemedyForPort(env.port))
 		case status == statusFail && !readErr:
 			return unknownInfra("managed chain structure could not establish containment: " + detail)
 		default:
@@ -180,7 +180,7 @@ func doctorDoorwaySocketReader(base *probeEnv, env *doctorEnv) func(context.Cont
 		probe := doctorCounterProbeEnv(base, env)
 		services, problem, unusable := declaredContainmentLoopbackServicesForVerify(&probe, probe.port)
 		if unusable {
-			return fail(classInfra, "containment.loopback_services cannot be honored: "+problem, "correct the managed containment configuration and rerun `pipelock contain install`")
+			return fail(classInfra, "containment.loopback_services cannot be honored: "+problem, "correct the managed containment configuration and "+installRemedyForPort(env.port))
 		}
 		if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
 			return unknown("containment.loopback_services could not be determined: "+problem, "restore access to the managed containment configuration and rerun `pipelock contain doctor`")
@@ -195,6 +195,25 @@ const (
 	systemctlFailed   = "failed"
 	installRemedy     = "rerun `pipelock contain install`"
 )
+
+// Diagnostic commands validate --port before constructing their environments.
+// Only the numeric port is added to the fixed install command, never a path or
+// other caller-supplied shell text. Zero is an unset internal probe environment;
+// the CLI rejects it before running diagnostics. Preserve default-port wording.
+func installCommandForPort(port int) string {
+	const command = "pipelock contain install"
+	if port == 0 || port == defaultProxyPort {
+		return command
+	}
+	return fmt.Sprintf("%s --proxy-port %d", command, port)
+}
+
+func installRemedyForPort(port int) string {
+	if port == 0 || port == defaultProxyPort {
+		return installRemedy
+	}
+	return "rerun `" + installCommandForPort(port) + "`"
+}
 
 // doctorUnitState reads one unit's enablement and activity through the same
 // systemctl seam the other contain probes use. An execution error or empty
@@ -252,7 +271,7 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 		}
 	}
 	if len(missing) != 0 {
-		results = append(results, fail(classInfra, "managed doorway unit is missing: "+strings.Join(missing, ", ")+" ("+systemctlNotFound+")", installRemedy))
+		results = append(results, fail(classInfra, "managed doorway unit is missing: "+strings.Join(missing, ", ")+" ("+systemctlNotFound+")", installRemedyForPort(env.port)))
 		return combineDoorwayResults(results)
 	}
 	// systemctl(1), "is-enabled output", distinguishes unit-file state
@@ -264,7 +283,7 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 		switch relayEnabled {
 		case systemctlEnabled, "enabled-runtime", "linked", "linked-runtime", "alias", "static", "indirect", "disabled", "generated", "transient", systemctlMasked, systemctlMasked + "-runtime":
 		case "bad":
-			results = append(results, fail(classInfra, "managed doorway relay "+relay+" has invalid or unreadable unit-file state (bad)", installRemedy))
+			results = append(results, fail(classInfra, "managed doorway relay "+relay+" has invalid or unreadable unit-file state (bad)", installRemedyForPort(env.port)))
 		default:
 			results = append(results, unknown("managed doorway relay "+relay+" has unrecognized unit-file state "+oneLine(relayEnabled), doorwayInspectionRemedy))
 		}
@@ -297,7 +316,7 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 			case err != nil:
 				results = append(results, unknown("managed doorway socket pathname "+doorway.path+" could not be read: "+err.Error(), doorwayInspectionRemedy))
 			case info.Mode()&os.ModeSocket == 0:
-				results = append(results, fail(classInfra, "managed doorway socket pathname "+doorway.path+" is not a socket", "inspect and remove the unexpected pathname, then "+installRemedy))
+				results = append(results, fail(classInfra, "managed doorway socket pathname "+doorway.path+" is not a socket", "inspect and remove the unexpected pathname, then "+installRemedyForPort(env.port)))
 			}
 		}
 	}
@@ -334,12 +353,12 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 		}
 		remedy := doorwayInspectionRemedy
 		if relayOK {
-			remedy = doorwayRecoveryRemedy(doorway, doorwayUnitState{enabled, active}, doorwayUnitState{relayEnabled, relayState}, forwarder)
+			remedy = doorwayRecoveryRemedy(doorway, doorwayUnitState{enabled, active}, doorwayUnitState{relayEnabled, relayState}, forwarder, env.port)
 		} else if forwarderDetail != "" {
 			// Repairing the socket requires a relay observation first, but
 			// that does not hide an independently observed forwarder repair.
 			details = []string{socketDetail}
-			results = append(results, fail(classInfra, forwarderDetail, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active)))
+			results = append(results, fail(classInfra, forwarderDetail, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active, env.port)))
 		}
 		results = append(results, fail(classInfra, strings.Join(details, "; "), remedy))
 	} else {
@@ -347,7 +366,7 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 			results = append(results, fail(classInfra, relayDetail, doorwayRelayRemedy(relay, doorwayUnitState{relayEnabled, relayState})))
 		}
 		if forwarderDetail != "" {
-			results = append(results, fail(classInfra, forwarderDetail, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active)))
+			results = append(results, fail(classInfra, forwarderDetail, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active, env.port)))
 		}
 	}
 	return combineDoorwayResults(results)
@@ -385,10 +404,10 @@ type doorwayUnitState struct{ enabled, active string }
 
 // doorwayRecoveryRemedy follows the install lifecycle: close the socket before
 // stopping its relay so incoming connections cannot activate the relay again.
-func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder doorwayUnitState) string {
+func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder doorwayUnitState, port int) string {
 	enabled, active, relayEnabled, relayState := socketState.enabled, socketState.active, relay.enabled, relay.active
 	if forwarder.enabled == systemctlNotFound {
-		return installRemedy
+		return installRemedyForPort(port)
 	}
 	if doorwayStateChanging(relay.active) {
 		return doorwayTransitionResult("managed doorway relay", doorway.relay, relay.active, "relay").remediation
@@ -424,7 +443,7 @@ func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder
 	if forwarder.enabled == systemctlEnabled && forwarder.active == systemctlActive {
 		steps = append(steps, "systemctl start "+doorway.forwarder)
 	} else {
-		steps = append(steps, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active))
+		steps = append(steps, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active, port))
 	}
 	return strings.Join(steps, " && ")
 }
@@ -440,9 +459,9 @@ func doorwayUnmaskCommand(unit, enabled string) string {
 
 // namespaceForwarderRemedy names the commands that restore an in-namespace
 // forwarder service for the state doctor observed.
-func namespaceForwarderRemedy(unit, enabled, active string) string {
+func namespaceForwarderRemedy(unit, enabled, active string, port int) string {
 	if enabled == systemctlNotFound {
-		return "the unit is missing; " + installRemedy
+		return "the unit is missing; " + installRemedyForPort(port)
 	}
 	var steps []string
 	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
@@ -698,8 +717,6 @@ func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResul
 
 const remediationRunAsRoot = "re-run as root: sudo pipelock contain doctor"
 
-const remediationInstall = "run `pipelock contain install` first"
-
 const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
 
 // sudoAgent prefixes a command so it runs as the contained agent. doctor is an
@@ -711,7 +728,7 @@ func (env *doctorEnv) sudoAgent(args ...string) (string, []string) {
 // classifyAgentRun maps the generic sudo/agent failure modes to a skip result.
 // Returns (result, true) when the run could not proceed and the caller should
 // return that skip; (zero, false) when the command actually executed.
-func classifyAgentRun(out string, err error, tool string) (doctorResult, bool) {
+func classifyAgentRun(out string, err error, tool string, port int) (doctorResult, bool) {
 	if err != nil {
 		return skip(fmt.Sprintf("%s could not be launched: %v", tool, err), remediationRunAsRoot), true
 	}
@@ -719,7 +736,7 @@ func classifyAgentRun(out string, err error, tool string) (doctorResult, bool) {
 		return skip("sudo refused without a password", remediationRunAsRoot), true
 	}
 	if isSudoUserMissing(out) {
-		return skip(fmt.Sprintf("agent user %q is not present", "pipelock-agent"), remediationInstall), true
+		return skip(fmt.Sprintf("agent user %q is not present", "pipelock-agent"), "run `"+installCommandForPort(port)+"` first"), true
 	}
 	return doctorResult{}, false
 }
@@ -794,7 +811,7 @@ func checkCurlThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 	}
 	name, args := env.sudoAgent(env.curlProxyArgs(env.canaryURL)...)
 	out, code, err := env.runCmd(ctx, name, args...)
-	if res, done := classifyAgentRun(out, err, "curl"); done {
+	if res, done := classifyAgentRun(out, err, "curl", env.port); done {
 		return res
 	}
 	if isSudoTargetCommandMissing(out) {
@@ -848,7 +865,7 @@ func checkPythonThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 	wrapper := filepath.Join(env.wrapperDir, "pipelock-python")
 	name, args := env.sudoAgent(wrapper, "-c", pythonProbeScript, env.canaryURL)
 	out, code, err := env.runCmd(ctx, name, args...)
-	if res, done := classifyAgentRun(out, err, "python"); done {
+	if res, done := classifyAgentRun(out, err, "python", env.port); done {
 		return res
 	}
 	if code == 127 || isSudoTargetCommandMissing(out) {
@@ -885,12 +902,12 @@ func checkNodeThroughProxy(ctx context.Context, env *doctorEnv) doctorResult {
 	// The shim is what makes node's fetch() honor HTTPS_PROXY; surface a clear
 	// remediation if it is missing rather than letting node fail on --require.
 	if _, err := env.stat(env.undiciShimPath); err != nil {
-		return skip(fmt.Sprintf("undici shim missing at %s", env.undiciShimPath), "re-run `pipelock contain install` to write the shim")
+		return skip(fmt.Sprintf("undici shim missing at %s", env.undiciShimPath), "re-run `"+installCommandForPort(env.port)+"` to write the shim")
 	}
 	wrapper := filepath.Join(env.wrapperDir, "pipelock-node")
 	name, args := env.sudoAgent(wrapper, "-e", nodeProbeScript, env.canaryURL)
 	out, code, err := env.runCmd(ctx, name, args...)
-	if res, done := classifyAgentRun(out, err, "node"); done {
+	if res, done := classifyAgentRun(out, err, "node", env.port); done {
 		return res
 	}
 	if code == 127 || isSudoTargetCommandMissing(out) {
@@ -934,7 +951,7 @@ func checkDNSFailure(ctx context.Context, env *doctorEnv) doctorResult {
 	// transport error.
 	name, args := env.sudoAgent(env.curlProxyArgsWithWriteOut("https://"+dnsFailureHost+"/", "%{http_connect}")...)
 	out, code, err := env.runCmd(ctx, name, args...)
-	if res, done := classifyAgentRun(out, err, "curl"); done {
+	if res, done := classifyAgentRun(out, err, "curl", env.port); done {
 		return res
 	}
 	if isSudoTargetCommandMissing(out) {
@@ -964,7 +981,7 @@ func checkDisabledForwardProxy(env *doctorEnv) (doctorResult, bool) {
 	}
 	return fail(classInfra,
 		"managed config disables forwarding; contained clients require CONNECT and absolute-URI requests",
-		"set forward_proxy.enabled: true in "+env.configPath+" and rerun `pipelock contain install`, then rerun `pipelock contain doctor`"), true
+		"set forward_proxy.enabled: true in "+env.configPath+" and "+installRemedyForPort(env.port)+", then rerun `pipelock contain doctor`"), true
 }
 
 // formatObservedHTTPCode renders a parsed status or an explicit parse failure.
@@ -1013,7 +1030,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 
 	name, args := env.sudoAgent(env.curlDirectArgs()...)
 	out, code, err := env.runCmd(ctx, name, args...)
-	if res, done := classifyAgentRun(out, err, "curl"); done {
+	if res, done := classifyAgentRun(out, err, "curl", env.port); done {
 		return res
 	}
 	if isSudoTargetCommandMissing(out) {
@@ -1022,7 +1039,7 @@ func checkRawEgressBlocked(ctx context.Context, env *doctorEnv) doctorResult {
 	if rule, ok := definiteContainmentBypassRule(beforeErr); ok {
 		return fail(classInfra,
 			fmt.Sprintf(containmentBypassDetailFormat, rule),
-			"remove the offending nftables rule and rerun `pipelock contain install`")
+			"remove the offending nftables rule and "+installRemedyForPort(env.port))
 	}
 	if code == 0 {
 		httpCode, ok := trailingHTTPCode(out)

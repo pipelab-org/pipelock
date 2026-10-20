@@ -224,7 +224,7 @@ func TestEnforcedLaunchPropertiesStayOnTheCanaryProfile(t *testing.T) {
 
 func TestLaunchPropertiesMissingConfigNamesInstallRemedy(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "pipelock.yaml")
-	want := missingManagedConfigError(missing).Error()
+	want := missingManagedConfigError(missing, 0).Error()
 	env := &probeEnv{
 		configPath:    missing,
 		agentUserName: "pipelock-agent",

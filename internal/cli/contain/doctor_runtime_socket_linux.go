@@ -26,18 +26,18 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 	wrapperPath := filepath.Join(wrapperDir, "plk-contained-launch")
 	body, err := env.readFile(wrapperPath)
 	if os.IsNotExist(err) {
-		return fail(classInfra, "managed contained-launch wrapper is missing", installRemedy)
+		return fail(classInfra, "managed contained-launch wrapper is missing", installRemedyForPort(env.port))
 	}
 	if err != nil {
-		return unknown("managed contained-launch wrapper could not be read", "restore access to the managed wrapper and rerun `pipelock contain install`")
+		return unknown("managed contained-launch wrapper could not be read", "restore access to the managed wrapper and "+installRemedyForPort(env.port))
 	}
 	if !doctorContainedLaunchWrapperMatches(body, wrapperDir, env) {
-		return fail(classInfra, "managed contained-launch wrapper differs from the installed template; runtime socket isolation cannot be established", installRemedy)
+		return fail(classInfra, "managed contained-launch wrapper differs from the installed template; runtime socket isolation cannot be established", installRemedyForPort(env.port))
 	}
 	probe := filesystemProbeEnvForDoctor(env)
 	services, problem, unusable := declaredContainmentLoopbackServicesForVerify(probe, probe.port)
 	if unusable {
-		return fail(classInfra, "managed runtime socket units cannot be determined: "+problem, installRemedy)
+		return fail(classInfra, "managed runtime socket units cannot be determined: "+problem, installRemedyForPort(env.port))
 	}
 	if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
 		return unknown("managed runtime socket units cannot be determined: "+problem, "restore access and rerun `pipelock contain doctor`")
@@ -56,7 +56,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 	if env.configPath != "" {
 		cfg, loadErr := config.LoadForInspection(env.configPath)
 		if loadErr != nil && !os.IsNotExist(loadErr) {
-			return unknown("managed display runtime mounts cannot be determined from the configuration", "repair the managed configuration and rerun `pipelock contain install`")
+			return unknown("managed display runtime mounts cannot be determined from the configuration", "repair the managed configuration and "+installRemedyForPort(env.port))
 		}
 		if loadErr == nil && cfg.Containment.Display.IsEnabled(true) {
 			displayUnit := env.displayUnitPath
@@ -72,7 +72,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 			return unknown("runtime mounts for "+unit+" could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
 		}
 		if err := sameLifecyclePathList(strings.TrimSpace(out), runtimeSocketTemporaryFileSystems()); err != nil {
-			return fail(classInfra, "managed unit "+unit+" lacks runtime socket isolation", installRemedy)
+			return fail(classInfra, "managed unit "+unit+" lacks runtime socket isolation", installRemedyForPort(env.port))
 		}
 		if expected, forwarder := expectedBinds[unit]; forwarder {
 			out, code, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=BindReadOnlyPaths", "--value")
@@ -81,7 +81,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 			}
 			binds, parseErr := parseSystemdBindShow(strings.TrimSpace(out))
 			if parseErr != nil || !sameBindList(binds, []string{expected}) {
-				return fail(classInfra, "managed unit "+unit+" lacks its runtime doorway bind", installRemedy)
+				return fail(classInfra, "managed unit "+unit+" lacks its runtime doorway bind", installRemedyForPort(env.port))
 			}
 		}
 	}

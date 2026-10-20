@@ -520,7 +520,7 @@ func TestProbeFilesystemConfinement_MissingConfigIsError(t *testing.T) {
 			return nil, os.ErrNotExist
 		},
 	}
-	want := missingManagedConfigError(missing).Error()
+	want := missingManagedConfigError(missing, 0).Error()
 	status, detail := probeFilesystemConfinement(context.Background(), env)
 	if status != statusFail || detail != want {
 		t.Fatalf("verify status=%s detail=%s", status, detail)
