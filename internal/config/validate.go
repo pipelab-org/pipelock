@@ -5127,6 +5127,14 @@ func (c *Config) ValidateExpiryAuthorizations() error {
 	if err := validateResponseSizeScanLimitExpiryHorizons(c.ResponseScanning.SizeExemptScanLimits, now); err != nil {
 		return err
 	}
+	// Direct reload callers bypass Load, so validate grant shape before any
+	// runtime state can change. Validation normalizes entries; keep the caller
+	// unchanged if an entry is malformed.
+	grantCandidate := c.Clone()
+	var grantWarnings []Warning
+	if err := grantCandidate.ResponseScanning.validateSizeExemptScanLimits(&grantWarnings, now); err != nil {
+		return err
+	}
 	// Validate on a private copy: normalization and nested route sorting must
 	// not mutate the caller when a later declaration is malformed.
 	if err := c.Clone().validateScannerExceptions(); err != nil {
