@@ -55,9 +55,9 @@ func displayRuntimeTestEnv(t *testing.T) (*installEnv, *int) {
 			t.Fatalf("unexpected command %s %q", name, args)
 		}
 		*calls++
-		err := os.MkdirAll(filepath.Dir(env.rfbSocketPath), 0o730) //nolint:gosec // Match the managed root:viewer directory contract.
+		err := os.MkdirAll(filepath.Dir(env.rfbSocketPath), 0o730) // #nosec G301 -- isolated fixture requires the managed 0730 root:viewer directory mode.
 		if err == nil {
-			err = os.Chmod(filepath.Dir(env.rfbSocketPath), 0o730) //nolint:gosec // Match the managed root:viewer directory contract.
+			err = os.Chmod(filepath.Dir(env.rfbSocketPath), 0o730) // #nosec G302 -- isolated fixture requires the managed 0730 root:viewer directory mode.
 		}
 		return "", 0, err
 	}
@@ -123,7 +123,7 @@ func TestDisplayRuntimeRejectsUnsafeState(t *testing.T) {
 			}
 		}},
 		{"runtime mode", func(t *testing.T, e *installEnv) {
-			if err := os.MkdirAll(filepath.Dir(e.rfbSocketPath), 0o777); err != nil { //nolint:gosec // Unsafe directory fixture must be rejected.
+			if err := os.MkdirAll(filepath.Dir(e.rfbSocketPath), 0o777); err != nil { // #nosec G301 -- unsafe 0777 directory fixture must be rejected.
 				t.Fatal(err)
 			}
 		}},
@@ -256,12 +256,13 @@ func addDisplayRuntimeProbeFixture(t *testing.T, env *probeEnv) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gid := uint32(group)
 	env.lstat = func(path string) (os.FileInfo, error) {
 		if path == env.displayTmpfilesPath {
 			return fakeFileInfo{mode: 0o600, sys: fakeFileSysWithOwner(0, 0)}, nil
 		}
 		if path == filepath.Dir(displayRFBPath(env.rfbSocketPath)) {
-			return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, uint32(group))}, nil //nolint:gosec // ParseUint above enforces 32 bits.
+			return fakeFileInfo{mode: os.ModeDir | 0o730, sys: fakeFileSysWithOwner(0, gid)}, nil
 		}
 		return oldStat(path)
 	}

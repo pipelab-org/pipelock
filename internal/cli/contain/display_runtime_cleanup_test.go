@@ -53,7 +53,7 @@ func TestDisplayRuntimeCleanup(t *testing.T) {
 			}
 		}, true},
 		{"mode", func(t *testing.T, e *installEnv) {
-			if err := os.Chmod(filepath.Dir(e.rfbSocketPath), 0o700); err != nil { //nolint:gosec // Directory permission drift fixture.
+			if err := os.Chmod(filepath.Dir(e.rfbSocketPath), 0o700); err != nil { // #nosec G302 -- directory permission drift must preserve the runtime.
 				t.Fatal(err)
 			}
 		}, true},
@@ -144,7 +144,7 @@ func TestDisplayRuntimeViewerAccountRemoval(t *testing.T) {
 						t.Fatal(err)
 					}
 				case "mode":
-					if err := os.Chmod(runtime, 0o700); err != nil { //nolint:gosec // Directory permission drift fixture.
+					if err := os.Chmod(runtime, 0o700); err != nil { // #nosec G302 -- directory permission drift must preserve the runtime.
 						t.Fatal(err)
 					}
 				}

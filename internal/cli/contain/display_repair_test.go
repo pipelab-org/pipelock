@@ -27,7 +27,7 @@ func TestDisplayAbsentSocketRuntimeDiagnostics(t *testing.T) {
 				t.Fatal(err)
 			}
 			if scenario == "runtime mode" {
-				if err := os.Chmod(filepath.Dir(install.rfbSocketPath), 0o755); err != nil { //nolint:gosec // Unsafe runtime fixture must be refused.
+				if err := os.Chmod(filepath.Dir(install.rfbSocketPath), 0o755); err != nil { // #nosec G302 -- invalid 0755 runtime-directory fixture must be rejected.
 					t.Fatal(err)
 				}
 			}

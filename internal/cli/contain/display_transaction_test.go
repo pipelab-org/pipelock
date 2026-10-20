@@ -24,10 +24,10 @@ func TestDisplayRuntimeTransactionRestoresBeforeRestart(t *testing.T) {
 			env.displayNumber = 99
 			if scenario != "xvnc missing runtime" && scenario != "recreated bind drift" {
 				runtime := filepath.Dir(env.rfbSocketPath)
-				if err := os.MkdirAll(runtime, 0o730); err != nil { //nolint:gosec // Existing runtime contract fixture.
+				if err := os.MkdirAll(runtime, 0o730); err != nil { // #nosec G301 -- prior runtime fixture requires the managed 0730 root:viewer directory mode.
 					t.Fatal(err)
 				}
-				if err := os.Chmod(runtime, 0o730); err != nil { //nolint:gosec // Existing runtime contract fixture.
+				if err := os.Chmod(runtime, 0o730); err != nil { // #nosec G302 -- prior runtime fixture requires the managed 0730 root:viewer directory mode.
 					t.Fatal(err)
 				}
 			}
@@ -151,7 +151,7 @@ func TestDisplayRuntimeTransactionRestoresBeforeRestart(t *testing.T) {
 			}
 			selected = append(selected, step{name: "later-failure", apply: func(context.Context, *installEnv) (bool, error) {
 				if scenario == "recreated bind drift" {
-					if err := os.Chmod(filepath.Dir(env.rfbSocketPath), 0o750); err != nil { //nolint:gosec // Directory drift must prevent restart.
+					if err := os.Chmod(filepath.Dir(env.rfbSocketPath), 0o750); err != nil { // #nosec G302 -- invalid 0750 runtime-directory drift must prevent display restart.
 						t.Fatal(err)
 					}
 				}
