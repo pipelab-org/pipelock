@@ -2895,7 +2895,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 					var scanFailure *sizeExemptResponseReadError
 					var releaseSizeExemptScan sizeExemptScanRelease
-					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(cfg, resp.Header, false))
+					respBody, releaseSizeExemptScan, scanFailure = p.sizeExemptScanBudget.readBoundedSizeExemptResponse(fwdRespHost, respBody, resp.Body, cfg.ResponseScanning.SizeExemptScanLimitForHost(fwdRespHost, time.Now()), cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(cfg, resp.Header, false))
 					if scanFailure != nil {
 						if scanFailure.Err != nil {
 							p.logger.LogError(actx, scanFailure.Err)

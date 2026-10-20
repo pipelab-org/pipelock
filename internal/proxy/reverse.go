@@ -3138,7 +3138,7 @@ responseScanning:
 	if len(body) > maxBytes && shieldOnly && revRespSizeExempt {
 		var scanFailure *sizeExemptResponseReadError
 		var releaseSizeExemptScan sizeExemptScanRelease
-		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
+		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now()), cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 		if scanFailure != nil {
 			_ = resp.Body.Close()
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
@@ -3252,7 +3252,7 @@ responseScanning:
 			}
 			var scanFailure *sizeExemptResponseReadError
 			var releaseSizeExemptScan sizeExemptScanRelease
-			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
+			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now()), cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 			if scanFailure != nil {
 				_ = resp.Body.Close()
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")

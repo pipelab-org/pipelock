@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -26,8 +27,8 @@ func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) i
 
 	switch transport {
 	case TransportForward, TransportConnect, TransportReverse:
-		if cfg.ResponseScanning.SizeExemptScanMaxBytes > limit {
-			return cfg.ResponseScanning.SizeExemptScanMaxBytes
+		if capBytes := cfg.ResponseScanning.SizeExemptScanLimitForHost(hostname, time.Now()); capBytes > limit {
+			return capBytes
 		}
 	}
 	return limit
@@ -162,7 +163,7 @@ func responseSizeExemptObservedScanBlockReason(host string, size, limit int64, e
 	if !exact {
 		sizeText = fmt.Sprintf("at least %d bytes", size)
 	}
-	return fmt.Sprintf("size-exempt response from %s is %s, exceeding bounded scan ceiling %d bytes; raise response_scanning.size_exempt_scan_max_bytes or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content%s", host, sizeText, limit, unscannedRemedies(rem, ", or for a trusted artifact host whose downloads exceed that bound use "))
+	return fmt.Sprintf("size-exempt response from %s is %s, exceeding bounded scan ceiling %d bytes; configure response_scanning.size_exempt_scan_limits for this exact host, raise response_scanning.size_exempt_scan_max_bytes for all size-exempt hosts, or configure response_scanning.unscannable_passthrough for deliberately unscannable opaque content%s", host, sizeText, limit, unscannedRemedies(rem, ", or for a trusted artifact host whose downloads exceed that bound use "))
 }
 
 // shieldOversizeBlockReason explains a browser-shield oversize block the way

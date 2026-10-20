@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -196,6 +197,12 @@ func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix
 	ceiling := int64(scanMaxBytes)
 	if ceiling <= 0 {
 		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
+	}
+	if ceiling == math.MaxInt64 {
+		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
+			Kind:   sizeExemptReadFailureReadError,
+			Reason: "size-exempt response scan ceiling must leave room for one probe byte",
+		}
 	}
 	inflightLimit := int64(inflightMaxBytes)
 	if inflightLimit <= 0 {

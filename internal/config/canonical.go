@@ -286,6 +286,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.A2AScanning.TrustedAgentCardKeys = canonicalA2ATrustedCardKeys(view.A2AScanning.TrustedAgentCardKeys)
 	view.ResponseScanning.ExemptDomains = canonicalHostSet(view.ResponseScanning.ExemptDomains)
 	view.ResponseScanning.SizeExemptDomains = canonicalHostSet(view.ResponseScanning.SizeExemptDomains)
+	view.ResponseScanning.SizeExemptScanLimits = canonicalResponseSizeScanLimits(view.ResponseScanning.SizeExemptScanLimits)
 	view.ResponseScanning.UnscannablePassthrough = canonicalUnscannablePassthrough(view.ResponseScanning.UnscannablePassthrough)
 	view.ResponseScanning.AuthenticatedArtifacts = canonicalAuthenticatedArtifacts(view.ResponseScanning.AuthenticatedArtifacts)
 	view.ResponseScanning.MCPServers = canonicalMCPResponseServers(view.ResponseScanning.MCPServers)

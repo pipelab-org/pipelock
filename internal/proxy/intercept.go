@@ -2594,7 +2594,7 @@ func newInterceptHandler(
 				}
 				var scanFailure *sizeExemptResponseReadError
 				var releaseSizeExemptScan sizeExemptScanRelease
-				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanMaxBytes, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanLimitForHost(ic.TargetHost, time.Now()), ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)

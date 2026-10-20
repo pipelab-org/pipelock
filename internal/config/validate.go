@@ -2394,6 +2394,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 	if c.ResponseScanning.SizeExemptScanMaxBytes <= 0 {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must be > 0")
 	}
+	if int64(c.ResponseScanning.SizeExemptScanMaxBytes) == math.MaxInt64 {
+		return fmt.Errorf("response_scanning.size_exempt_scan_max_bytes must leave room for one probe byte")
+	}
 	if c.ResponseScanning.SizeExemptScanMaxInflightBytes <= 0 {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be > 0")
 	}
@@ -2401,6 +2404,9 @@ func (c *Config) validateResponseScanning(warnings *[]Warning) error {
 		return fmt.Errorf("response_scanning.size_exempt_scan_max_inflight_bytes must be >= response_scanning.size_exempt_scan_max_bytes")
 	}
 	if err := validateUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough); err != nil {
+		return err
+	}
+	if err := c.ResponseScanning.validateSizeExemptScanLimits(warnings, time.Now()); err != nil {
 		return err
 	}
 	if err := validateCoreObserveExceptions(c.ResponseScanning.CoreObserveExceptions); err != nil {
