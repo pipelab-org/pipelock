@@ -12,6 +12,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// responseScanNow supplies the admission clock; tests replace it before starting requests.
+var responseScanNow = time.Now
+
 // shieldMaxBytesForResponse returns the whole-body Browser Shield ceiling for
 // a response that has already been buffered. Forward, CONNECT, and reverse
 // responses are bounded by the normal scan cap; when a size-exempt response
@@ -19,7 +22,7 @@ import (
 // finishes. Both cases can safely reuse the response-scanning ceiling. Fetch
 // has no size-exempt bounded-buffer path and keeps the ordinary shield ceiling.
 func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) int {
-	return shieldMaxBytesForAdmittedResponse(cfg, hostname, transport, cfg.ResponseScanning.SizeExemptScanLimitForHost(hostname, time.Now()))
+	return shieldMaxBytesForAdmittedResponse(cfg, hostname, transport, cfg.ResponseScanning.SizeExemptScanLimitForHost(hostname, responseScanNow()))
 }
 
 // Buffered transports pin the limit once, before reading the response. Reuse

@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +22,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func responseHostCapTestPolicy(c *config.Config, host, mode string) {
@@ -268,16 +268,31 @@ func TestResponseHostCapLapsesMidResponse(t *testing.T) {
 		`<img src="https://tracker.vendor.example/p.gif" width="1" height="1"></body></html>`
 	for _, transport := range []string{TransportForward, TransportConnect, TransportReverse} {
 		t.Run(transport, func(t *testing.T) {
-			var expiresNanos atomic.Int64
+			now := time.Now().UTC()
+			expires := now.Add(time.Hour)
+			var clock atomic.Int64
+			clock.Store(now.UnixNano())
+			admitted := make(chan struct{})
+			var once sync.Once
+			priorClock := responseScanNow
+			responseScanNow = func() time.Time {
+				value := time.Unix(0, clock.Load())
+				once.Do(func() { close(admitted) })
+				return value
+			}
+			t.Cleanup(func() { responseScanNow = priorClock })
 			handler := func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "text/html")
 				_, _ = io.WriteString(w, page[:600])
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
-				testwait.For(t, 10*time.Second, func() bool {
-					return time.Now().UnixNano() > expiresNanos.Load()
-				}, "response grant did not expire while the upstream held the body")
+				select {
+				case <-admitted:
+					clock.Store(expires.Add(time.Second).UnixNano())
+				case <-t.Context().Done():
+					return
+				}
 				_, _ = io.WriteString(w, page[600:])
 			}
 			shape := func(c *config.Config, host string) {
@@ -288,12 +303,9 @@ func TestResponseHostCapLapsesMidResponse(t *testing.T) {
 				c.BrowserShield.MaxShieldBytes = 1024
 				c.BrowserShield.OversizeAction = config.ShieldOversizeBlock
 			}
-			// Set just before the request so setup time cannot lapse the grant
-			// before admission; the request then crosses expiry mid-body.
+			// The controlled clock crosses expiry only after admission.
 			arm := func(c *config.Config) {
-				expires := time.Now().Add(1500 * time.Millisecond)
 				c.ResponseScanning.SizeExemptScanLimits[0].Expires = expires.UTC().Format(time.RFC3339Nano)
-				expiresNanos.Store(expires.UnixNano())
 			}
 			if len(page) <= 2048 || len(page) >= 8192 {
 				t.Fatalf("page size %d must sit between the shared and host ceilings", len(page))

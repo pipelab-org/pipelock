@@ -4,6 +4,7 @@
 package config
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -301,4 +302,27 @@ func TestResponseSizeScanLimitDocumentedHorizon(t *testing.T) {
 		}
 	}
 	t.Fatal("scanned grant documentation row is missing")
+}
+
+func TestResponseSizeScanLimitDuplicateExpiryOrder(t *testing.T) {
+	now := time.Now().UTC()
+	for _, expiredFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(expiredFirst), func(t *testing.T) {
+			c := responseSizeLimitTestConfig(now)
+			live := c.ResponseScanning.SizeExemptScanLimits[0]
+			expired := live
+			expired.Added = now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+			expired.Expires = now.Add(-time.Hour).Format(time.RFC3339Nano)
+			c.ResponseScanning.SizeExemptScanLimits = []ResponseSizeScanLimit{live, expired}
+			if expiredFirst {
+				c.ResponseScanning.SizeExemptScanLimits = []ResponseSizeScanLimit{expired, live}
+			}
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates") {
+				t.Fatalf("duplicate expiry ordering accepted: %v", err)
+			}
+			if expiredFirst && c.ResponseScanning.SizeExemptScanLimitForHost(sizeLimitTestHost, now) != c.ResponseScanning.SizeExemptScanMaxBytes {
+				t.Fatal("unvalidated ambiguous grant failed to use shared cap")
+			}
+		})
+	}
 }

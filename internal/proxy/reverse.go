@@ -2388,7 +2388,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// Scan all responses when enabled. Exempt domains are still scanned for
 	// visibility but findings are pinned to warn with no adaptive scoring.
 	revHost := resp.Request.URL.Hostname()
-	admittedScanLimit := cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now())
+	admittedScanLimit := cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, responseScanNow())
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
 	isSVGResponse := isSVGContentType(responseContentType(resp.Header)) || responseHeadersDeclareSVG(resp.Header)

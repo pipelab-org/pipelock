@@ -2399,7 +2399,7 @@ func newInterceptHandler(
 		// falls through to the buffered path below, which still runs media
 		// policy. Preserves the "media policy runs even when response scanning
 		// is disabled" invariant and matches the exempt_domains validator warning.
-		admittedScanLimit := ic.Config.ResponseScanning.SizeExemptScanLimitForHost(ic.TargetHost, time.Now())
+		admittedScanLimit := ic.Config.ResponseScanning.SizeExemptScanLimitForHost(ic.TargetHost, responseScanNow())
 		maxResp := ic.Config.TLSInterception.MaxResponseBytes
 		if maxResp <= 0 {
 			maxResp = interceptDefaultMaxResp

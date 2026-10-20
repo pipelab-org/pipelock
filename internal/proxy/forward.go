@@ -2452,7 +2452,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fwdRespHost := resp.Request.URL.Hostname()
-	admittedScanLimit := cfg.ResponseScanning.SizeExemptScanLimitForHost(fwdRespHost, time.Now())
+	admittedScanLimit := cfg.ResponseScanning.SizeExemptScanLimitForHost(fwdRespHost, responseScanNow())
 	fwdRespExempt := isResponseScanExempt(fwdRespHost, cfg.ResponseScanning.ExemptDomains)
 	fwdRespSizeExempt := isResponseSizeExempt(fwdRespHost, cfg.ResponseScanning.SizeExemptDomains)
 
