@@ -27,14 +27,14 @@ func TestRunInstall_ConfigPreflightRefusesBeforeServiceMutation(t *testing.T) {
 			body: "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_retries_per_endpoint: 2\n",
 			failureOut: "Config validation FAILED: parsing config CONFIG: max_retries_per_endpoint was removed because it was not enforced; " +
 				"remove it from the config: yaml: unmarshal errors: field max_retries_per_endpoint not found in type config.BudgetConfig\n",
-			want: []string{"max_retries_per_endpoint", "removed because it was not enforced", "remove it from the config"},
+			want: []string{"validator output withheld"},
 		},
 		{
 			name: "reserved concurrent tool limit validation failure",
 			body: "forward_proxy:\n  enabled: true\nagents:\n  _default:\n    budget:\n      max_concurrent_tool_calls: 3\n",
 			failureOut: "Config validation FAILED: invalid config: agents._default.budget: " +
 				"max_concurrent_tool_calls is not yet enforced; it is reserved for future lease-based concurrency control. Unset it\n",
-			want: []string{"max_concurrent_tool_calls", "not yet enforced", "Unset it"},
+			want: []string{"validator output withheld"},
 		},
 	}
 
@@ -112,7 +112,7 @@ func TestRunInstall_ConfigPreflightCoversUpgradeWithoutConfigFlag(t *testing.T) 
 	if err == nil {
 		t.Fatal("runInstall succeeded, want config preflight failure")
 	}
-	for _, want := range []string{target, "fan_out_limit", "remove it from the config"} {
+	for _, want := range []string{target, "validator output withheld"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want substring %q", err, want)
 		}
@@ -163,7 +163,7 @@ func TestRunInstall_ConfigPreflightDryRunReportsWithoutMutation(t *testing.T) {
 	if err == nil {
 		t.Fatal("dry-run succeeded, want config preflight failure")
 	}
-	for _, want := range []string{target, "max_retries_per_endpoint", "remove it from the config"} {
+	for _, want := range []string{target, "validator output withheld"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want substring %q", err, want)
 		}
@@ -327,7 +327,7 @@ func TestPreflightPipelockConfigReportsHelperFailures(t *testing.T) {
 				runner.on(argvFor(env.pipelockBinary, "check", "--config", target, "--require-build-compatibility"), "", -1, errors.New("exec failed"))
 				return preflightPipelockConfig(context.Background(), env, installOpts{}, false)
 			},
-			want: "exec failed",
+			want: "validator command failed",
 		},
 		{
 			name: "selected binary nonzero with empty output",
