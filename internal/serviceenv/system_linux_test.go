@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/user"
@@ -17,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -34,6 +36,13 @@ func TestMain(m *testing.M) {
 			os.Exit(7)
 		case "observe-overflow":
 			_, _ = fmt.Fprint(os.Stdout, strings.Repeat("x", maxObservationBytes+1))
+			os.Exit(0)
+		case "observe-wait":
+			ready := os.NewFile(3, "ready")
+			_, _ = ready.Write([]byte("ready"))
+			_ = ready.Close()
+			var input [1]byte
+			_, _ = os.Stdin.Read(input[:])
 			os.Exit(0)
 		}
 		os.Exit(33)
@@ -278,6 +287,50 @@ func TestObservationExecutionPolicy(t *testing.T) {
 	// Exercise the public wiring without reading the actual manager.
 	if Check(t.Context(), CheckOptions{Service: "unrelated"}) == nil {
 		t.Fatal("public checker accepted unrelated unit")
+	}
+}
+
+func TestObservationMidRunCancellation(t *testing.T) {
+	readyRead, readyWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readyRead.Close()
+	defer readyWrite.Close()
+	inputRead, inputWrite, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inputRead.Close()
+	defer inputWrite.Close()
+	ctx, cancel := context.WithTimeout(t.Context(), commandBudget)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/proc/self/exe")
+	cmd.Args = append(cmd.Args, "observe-wait")
+	cmd.ExtraFiles = []*os.File{readyWrite}
+	cmd.Stdin = inputRead
+	type result struct {
+		body []byte
+		code int
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		body, code, runErr := runObservationWithin(ctx, maxObservationBytes, cmd)
+		_ = readyWrite.Close()
+		done <- result{body, code, runErr}
+	}()
+	if err := readyRead.SetReadDeadline(time.Now().Add(commandBudget)); err != nil {
+		t.Fatal(err)
+	}
+	var ready [5]byte
+	if _, err := io.ReadFull(readyRead, ready[:]); err != nil || string(ready[:]) != "ready" {
+		t.Fatalf("helper did not reach its blocking read: %q, %v", ready, err)
+	}
+	cancel()
+	got := <-done
+	if got.err == nil || got.err.Error() != "service observation exceeded its resource policy" || got.code != -1 || len(got.body) != 0 {
+		t.Fatalf("cancelled running helper returned (%q, %d, %v)", got.body, got.code, got.err)
 	}
 }
 
