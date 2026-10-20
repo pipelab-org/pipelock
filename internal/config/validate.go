@@ -359,7 +359,7 @@ func validateRequestBodyEntropyWarnRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
+		if err := validateLapsingExpiryDate(field+".expires", entry.Expires, MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
 			return err
 		}
 
@@ -445,7 +445,7 @@ func validateRequestBodySigV4CredentialRoutes(cfg *RequestBodyScanning) error {
 		}
 
 		entry.Expires = strings.TrimSpace(entry.Expires)
-		if err := validateTemporaryExpiryDate(field+".expires", entry.Expires, MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
+		if err := validateLapsingExpiryDate(field+".expires", entry.Expires, MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
 			return err
 		}
 
@@ -673,16 +673,28 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateRequestBodyScanning(&warnings); err != nil {
 		return warnings, err
 	}
-	if len(c.RequestBodyScanning.SigV4CredentialRoutes) > 0 {
+	activeSigV4, activeWarn := 0, 0
+	now := time.Now()
+	for _, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
+		if ScannerExceptionActive(entry.Expires, now) {
+			activeSigV4++
+		}
+	}
+	for _, entry := range c.RequestBodyScanning.ContentEntropyWarnRoutes {
+		if ScannerExceptionActive(entry.Expires, now) {
+			activeWarn++
+		}
+	}
+	if activeSigV4 > 0 {
 		warnings = append(warnings, Warning{
 			Field:   "request_body_scanning.sigv4_credential_routes",
-			Message: fmt.Sprintf("%d exact HTTPS route(s) allow request bodies to carry structurally valid SigV4 presigned URLs; all malformed, bare, and out-of-route credentials remain blocked", len(c.RequestBodyScanning.SigV4CredentialRoutes)),
+			Message: fmt.Sprintf("%d exact HTTPS route(s) allow request bodies to carry structurally valid SigV4 presigned URLs; all malformed, bare, and out-of-route credentials remain blocked", activeSigV4),
 		})
 	}
-	if len(c.RequestBodyScanning.ContentEntropyWarnRoutes) > 0 {
+	if activeWarn > 0 {
 		warnings = append(warnings, Warning{
 			Field:   "request_body_scanning.content_entropy_warn_routes",
-			Message: fmt.Sprintf("%d HTTPS route(s) downgrade request-body entropy findings from block to warn; DLP, injection, address, size, and redirect controls remain enforced", len(c.RequestBodyScanning.ContentEntropyWarnRoutes)),
+			Message: fmt.Sprintf("%d HTTPS route(s) downgrade request-body entropy findings from block to warn; DLP, injection, address, size, and redirect controls remain enforced", activeWarn),
 		})
 	}
 	if err := c.validateRequestPolicy(&warnings); err != nil {
@@ -822,6 +834,11 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	// Advisory only, and last: it reads across sections that the validators
 	// above have already accepted, and it can never fail a config.
 	c.validateActionDivergence(&warnings)
+	// Retain warnings after a loader has already removed the expired entries.
+	// The private copy lets validation report lapses without mutating policy.
+	candidate := c.Clone()
+	candidate.partitionScannerExceptions(time.Now())
+	warnings = append(warnings, candidate.LapsedScannerExceptionWarnings()...)
 	return warnings, nil
 }
 
@@ -2127,7 +2144,7 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxPathEntropyExclusionHorizon); err != nil {
+			if err := validateLapsingExpiryDate(field+".expires", expires, MaxPathEntropyExclusionHorizon); err != nil {
 				return err
 			}
 		}
@@ -2177,7 +2194,7 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 		}
 		expires := strings.TrimSpace(entry.Expires)
 		if expires != "" {
-			if err := validateTemporaryExpiryDate(field+".expires", expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
+			if err := validateLapsingExpiryDate(field+".expires", expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
 				return err
 			}
 		}
@@ -5099,39 +5116,10 @@ func (c *Config) ValidateExpiryAuthorizations() error {
 	if err := validateUnscannablePassthroughExpiryHorizons(c.ResponseScanning.UnscannablePassthrough); err != nil {
 		return err
 	}
-	for i, entry := range c.FetchProxy.Monitoring.PathEntropyExclusions {
-		if expires := strings.TrimSpace(entry.Expires); expires != "" {
-			field := fmt.Sprintf("fetch_proxy.monitoring.path_entropy_exclusions[%d].expires", i)
-			if err := validateTemporaryExpiryDate(field, expires, MaxPathEntropyExclusionHorizon); err != nil {
-				return err
-			}
-		}
-	}
-	for i, entry := range c.FetchProxy.Monitoring.QueryEntropyParamExclusions {
-		if expires := strings.TrimSpace(entry.Expires); expires != "" {
-			field := fmt.Sprintf("fetch_proxy.monitoring.query_entropy_param_exclusions[%d].expires", i)
-			if err := validateTemporaryExpiryDate(field, expires, MaxQueryEntropyParamExclusionHorizon); err != nil {
-				return err
-			}
-		}
-	}
-	for i, entry := range c.RequestBodyScanning.ContentEntropyWarnRoutes {
-		field := fmt.Sprintf("request_body_scanning.content_entropy_warn_routes[%d].expires", i)
-		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodyEntropyWarnRouteHorizon); err != nil {
-			return err
-		}
-	}
-	if err := validateEntropyExclusionExpiry("request_body_scanning.content_entropy_exclusions", c.RequestBodyScanning.ContentEntropyExclusions); err != nil {
+	// Validate on a private copy: normalization and nested route sorting must
+	// not mutate the caller when a later declaration is malformed.
+	if err := c.Clone().validateScannerExceptions(); err != nil {
 		return err
-	}
-	if err := validateEntropyExclusionExpiry("websocket_proxy.content_entropy_exclusions", c.WebSocketProxy.ContentEntropyExclusions); err != nil {
-		return err
-	}
-	for i, entry := range c.RequestBodyScanning.SigV4CredentialRoutes {
-		field := fmt.Sprintf("request_body_scanning.sigv4_credential_routes[%d].expires", i)
-		if err := validateTemporaryExpiryDate(field, strings.TrimSpace(entry.Expires), MaxRequestBodySigV4CredentialRouteHorizon); err != nil {
-			return err
-		}
 	}
 	for i, entry := range c.ResponseScanning.CoreObserveExceptions {
 		field := fmt.Sprintf("response_scanning.core_observe_exceptions[%d].expires", i)

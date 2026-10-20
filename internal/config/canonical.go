@@ -492,9 +492,8 @@ func canonicalMCPResponseServers(entries []MCPResponseServerTrust) []MCPResponse
 // canonicalPathEntropyExclusions keeps only the fields that change DETECTION
 // and drops the governance metadata. Scheme, host and path prefix decide
 // whether the path gate runs, so they belong in the policy hash a receipt
-// carries. Reason, owner and expiry are for the operator reading the config
-// later and must not move the hash, or editing a comment would look like a
-// policy change in the evidence.
+// carries. Expiry ends enforcement and belongs in identity. Reason and owner are
+// governance metadata and do not change the effective policy.
 func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntropyExclusion {
 	if len(entries) == 0 {
 		return nil
@@ -509,6 +508,7 @@ func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntrop
 			Scheme:     strings.ToLower(scheme),
 			Host:       strings.TrimSuffix(strings.ToLower(entry.Host), "."),
 			PathPrefix: entry.PathPrefix,
+			Expires:    entry.Expires,
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -519,7 +519,10 @@ func canonicalPathEntropyExclusions(entries []PathEntropyExclusion) []PathEntrop
 		if a.Host != b.Host {
 			return a.Host < b.Host
 		}
-		return a.PathPrefix < b.PathPrefix
+		if a.PathPrefix != b.PathPrefix {
+			return a.PathPrefix < b.PathPrefix
+		}
+		return a.Expires < b.Expires
 	})
 	return out
 }
@@ -535,10 +538,11 @@ func canonicalQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) 
 			scheme = QueryEntropyParamDefaultScheme
 		}
 		out[i] = QueryEntropyParamExclusion{
-			Scheme: strings.ToLower(scheme),
-			Host:   strings.TrimSuffix(strings.ToLower(entry.Host), "."),
-			Path:   entry.Path,
-			Param:  entry.Param,
+			Scheme:  strings.ToLower(scheme),
+			Host:    strings.TrimSuffix(strings.ToLower(entry.Host), "."),
+			Path:    entry.Path,
+			Param:   entry.Param,
+			Expires: entry.Expires,
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -552,7 +556,10 @@ func canonicalQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) 
 		if a.Path != b.Path {
 			return a.Path < b.Path
 		}
-		return a.Param < b.Param
+		if a.Param != b.Param {
+			return a.Param < b.Param
+		}
+		return a.Expires < b.Expires
 	})
 	return out
 }

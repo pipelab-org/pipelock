@@ -100,6 +100,7 @@ func covNSProbeBase(t *testing.T) *probeEnv {
 		configPath:                    filepath.Join(root, "pipelock.yaml"),
 		procRoot:                      filepath.Join(root, "proc"),
 		readFile:                      os.ReadFile,
+		lstat:                         func(string) (os.FileInfo, error) { return fakeFileInfo{mode: os.ModeSocket}, nil },
 	}
 	for path, body := range map[string]string{
 		env.networkNamespaceUnitPath:      renderContainedNetworkNamespaceUnit(),
@@ -220,7 +221,8 @@ func TestCovNSProbeAgentNetworkNamespaceDeclaredUnitMissing(t *testing.T) {
 	}
 	// Deliberately do not write the per-service socket/service/ns unit files.
 	status, detail := probeAgentNetworkNamespace(context.Background(), env)
-	if status != statusFail || !strings.Contains(detail, "is missing or drifted") {
+	missingSocket := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), loopbackForwarderUnitBase(service.Host, service.Port)+".socket")
+	if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, loopbackDefinitionRemedy) {
 		t.Fatalf("probeAgentNetworkNamespace() = (%q, %q), want missing declared unit failure", status, detail)
 	}
 }
