@@ -216,10 +216,11 @@ AMD Ryzen 7 7800X3D (8 cores / 16 threads) / Linux/amd64. Scanner and MCP tables
 # Released-tag scanner and MCP suite
 GOMAXPROCS=4 make bench
 
-# Advisory scanner/MCP regression guard against bench/scanner-baseline.txt
-make bench-regression
+# Example: compare this clean checkout with the previous commit on this host
+git worktree add --detach ../pipelock-bench-base HEAD~1
+BENCH_BASELINE_DIR=../pipelock-bench-base make bench-regression
 
-# Regenerate the moving local baseline after an intentional benchmark refresh
+# Separate utility: refresh a saved historical measurement file intentionally
 make bench-baseline
 
 # Parallel scaling
@@ -233,15 +234,17 @@ PIPELOCK_BENCH_SCALING=1 go test -v -run=TestConcurrentThroughputScaling ./inter
 go test -bench=BenchmarkSeed -benchmem ./internal/seedprotect/
 ```
 
-`make bench-regression` runs the scanner and MCP benchmarks with fixed `-count`
-and `-benchtime`, then compares the fastest (min) `ns/op` per benchmark against
-`bench/scanner-baseline.txt` straight from the raw `go test` output, and fails
-when any benchmark regresses beyond `BENCH_REGRESSION_THRESHOLD_PCT` (default
-`50`). The pass/fail decision does not depend on `benchstat`; if `benchstat` is
-installed it is used only to print a readable summary. Set `BENCH_BASELINE` to
-compare against a different baseline. This guard is an advisory maintainer/pre-tag
-check, not a machine-independent CI gate, so it is intentionally not wired into
-blocking CI.
+`make bench-regression` requires `BENCH_BASELINE_DIR`, a prepared clean checkout at a different commit. The current checkout must also be clean. Choose the reference revision deliberately; the example above uses the previous commit. The command doesn't fetch, check out a ref, or select a release automatically. Before a release freeze, run it from the freshly verified main commit against the intended reference commit and retain both source IDs with the result.
+
+The gate runs sequential rounds on the same host, with identical benchmark arguments: baseline then candidate in odd rounds, candidate then baseline in even rounds. Each invocation uses `-count=1`; the requested `BENCH_COUNT` sets the number of rounds. This preserves the repetition count documented by [Go’s test flags](https://pkg.go.dev/cmd/go#hdr-Testing_flags) while alternating which side runs first. It reduces consistent order bias but does not eliminate changing host conditions. Defaults remain six samples, `100ms` per sample, and all scanner/MCP benchmarks. `BENCH_PATTERN`, `BENCH_PACKAGES`, `BENCH_COUNT` and `BENCH_TIME` select the same workload for both sides. Use the same benchmark definitions and fixtures on both revisions; equal benchmark names alone don't prove equal workloads. Run sequentially on an uncontended host. The gate doesn't measure host contention.
+
+Both modules must resolve the same actual Go version, target OS/architecture, Go build flags/experiments and CGO setting. If automatic toolchain selection differs between the modules, select a compatible shared `GOTOOLCHAIN` and retry. The captured outputs must agree on OS, architecture, CPU model and effective `GOMAXPROCS` for shared benchmarks. Missing or incompatible metadata refuses the comparison. Same-host provenance comes from the paired local execution; recorded machine metadata isn't authenticated host identity.
+
+Each invocation’s raw measurements and stderr, the exact source/build inputs and requested repetition count, and an `execution.jsonl` journal of invocation order are retained in a unique directory under `TMPDIR` (default `$HOME/.cache/pipelock-tmp`), whose path the command prints. Keep that directory outside both checkouts. The journal records each admitted invocation immediately before Go starts, including an invocation that later fails. Successful rounds must pass the metadata checks before the next round starts. After all rounds pass, `baseline.txt` and `current.txt` aggregate the per-invocation outputs for the existing comparator. Existing captures aren't overwritten. These files are diagnostic evidence, not files to commit.
+
+The gate compares the fastest (minimum) `ns/op` for each benchmark using the existing raw-output comparator. It fails for regressions strictly above `BENCH_REGRESSION_THRESHOLD_PCT` (default `50` percent), for missing baseline names on a full run, or when no names overlap. Narrowed runs report omitted names. `benchstat` remains optional display only. This is an advisory maintainer/pre-tag check; real benchmark runs aren't wired into blocking CI.
+
+Historical files such as `bench/scanner-baseline.txt` aren't comparison inputs. An imported file can't establish a matched local pair. `make bench-baseline` (or `--update-baseline`) is a separate explicit utility that writes one measurement to `BENCH_BASELINE`, defaulting to that historical file. It doesn't run the regression gate. A failed comparison never refreshes that file or falls back to its values.
 
 ## BIP-39 Seed Phrase Detection (`seedprotect.Detect()`)
 
