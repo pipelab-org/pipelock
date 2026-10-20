@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 NATIVE_TARGETS = {
     "test-macos": ("macos-latest", "ARM64", "darwin/arm64", "bash"),
-    "test-macos-intel": ("macos-15-intel", "X64", "darwin/amd64", "bash"),
+    "test-macos-intel": ("macos-26-intel", "X64", "darwin/amd64", "bash"),
     "test-windows": ("windows-latest", "X64", "windows/amd64", "pwsh"),
     "test-windows-arm64": ("windows-11-arm", "ARM64", "windows/arm64", "pwsh"),
     "test-linux-arm64": ("ubuntu-24.04-arm", "ARM64", "linux/arm64", "bash"),
@@ -118,12 +118,14 @@ class NativeTargetWorkflowTest(unittest.TestCase):
 
     def test_runner_label_drift_fails_the_contract(self):
         """Reject a runner label that no longer proves the claimed pair."""
-        broken = copy.deepcopy(self.jobs)
-        broken["test-macos-intel"]["runs-on"] = "macos-latest"
-        self.assertIn(
-            "test-macos-intel does not use macos-15-intel",
-            native_target_errors(broken),
-        )
+        for runner in ("macos-latest", "macos-15-intel"):
+            with self.subTest(runner=runner):
+                broken = copy.deepcopy(self.jobs)
+                broken["test-macos-intel"]["runs-on"] = runner
+                self.assertIn(
+                    "test-macos-intel does not use macos-26-intel",
+                    native_target_errors(broken),
+                )
 
     def test_missing_runtime_architecture_check_fails_the_contract(self):
         """Reject a proof step replaced with inert output."""

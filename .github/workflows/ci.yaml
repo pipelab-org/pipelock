@@ -1026,6 +1026,7 @@ jobs:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
     if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
+    # GitHub's x64 image labels: https://github.com/actions/runner-images#available-images
     runs-on: macos-26-intel
     timeout-minutes: 10
     steps:
