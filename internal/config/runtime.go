@@ -3,7 +3,10 @@
 
 package config
 
-import "os"
+import (
+	"os"
+	"slices"
+)
 
 // RuntimeMode selects which runtime-time defaults ResolveRuntime applies.
 // It is an explicit CLI-surface value: the same loaded Config can produce
@@ -262,6 +265,11 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	clone := *c
+	clone.lapsedScannerExceptions = slices.Clone(c.lapsedScannerExceptions)
+	clone.FetchProxy.Monitoring.PathEntropyExclusions = slices.Clone(c.FetchProxy.Monitoring.PathEntropyExclusions)
+	clone.FetchProxy.Monitoring.QueryEntropyParamExclusions = slices.Clone(c.FetchProxy.Monitoring.QueryEntropyParamExclusions)
+	clone.RequestBodyScanning.ContentEntropyExclusions = slices.Clone(c.RequestBodyScanning.ContentEntropyExclusions)
+	clone.WebSocketProxy.ContentEntropyExclusions = slices.Clone(c.WebSocketProxy.ContentEntropyExclusions)
 	clone.DestinationGrants = append([]DestinationGrant(nil), c.DestinationGrants...)
 
 	// The field is a *canonicalHashCacheHolder so the struct copy above
@@ -385,16 +393,16 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 	for i := range src {
 		dst[i] = src[i]
 		if src[i].ExemptDomains != nil {
-			dst[i].ExemptDomains = append([]string(nil), src[i].ExemptDomains...)
+			dst[i].ExemptDomains = slices.Clone(src[i].ExemptDomains)
 		}
 		if src[i].CredentialAudienceHosts != nil {
-			dst[i].CredentialAudienceHosts = append([]string(nil), src[i].CredentialAudienceHosts...)
+			dst[i].CredentialAudienceHosts = slices.Clone(src[i].CredentialAudienceHosts)
 		}
 		if src[i].CredentialAudienceGitHosts != nil {
-			dst[i].CredentialAudienceGitHosts = append([]string(nil), src[i].CredentialAudienceGitHosts...)
+			dst[i].CredentialAudienceGitHosts = slices.Clone(src[i].CredentialAudienceGitHosts)
 		}
 		if src[i].CredentialAudienceRegistryHosts != nil {
-			dst[i].CredentialAudienceRegistryHosts = append([]string(nil), src[i].CredentialAudienceRegistryHosts...)
+			dst[i].CredentialAudienceRegistryHosts = slices.Clone(src[i].CredentialAudienceRegistryHosts)
 		}
 	}
 	return dst

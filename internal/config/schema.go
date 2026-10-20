@@ -582,6 +582,9 @@ type Config struct {
 	// Load-time advisories only; never participate in effective policy identity.
 	mcpCompatibilityWarnings []Warning
 
+	// Expired scanner declarations retained only for lifecycle diagnostics.
+	lapsedScannerExceptions []Warning
+
 	// allowEphemeralListeners is test-only provenance for in-process runtime
 	// harnesses that need the kernel to choose collision-free ports. Operator
 	// YAML can never set it.
