@@ -126,6 +126,10 @@ func parseEnvironmentFile(body []byte, managerVersion int) ([]string, error) {
 				goto complete
 			}
 			if c == '\\' {
+				// VALUE clears its whitespace marker before VALUE_ESCAPE,
+				// including when the escaped byte is a consumed newline.
+				// https://github.com/systemd/systemd/blob/v257/src/basic/env-file.c
+				trailing = 0
 				if pos == len(s) {
 					return nil, errors.New("environment file has an incomplete escape")
 				}
@@ -135,7 +139,6 @@ func parseEnvironmentFile(body []byte, managerVersion int) ([]string, error) {
 					continue
 				}
 				value.WriteByte(c)
-				trailing = 0
 			} else {
 				value.WriteByte(c)
 				if strings.ContainsRune(" \t\r", rune(c)) {

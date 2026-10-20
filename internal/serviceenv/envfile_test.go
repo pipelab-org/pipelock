@@ -121,6 +121,34 @@ func TestEnvironmentFileCommentAndNewlineBoundaries(t *testing.T) {
 	}
 }
 
+func TestEnvironmentFileContinuationPreservesPrecedingWhitespace(t *testing.T) {
+	// env-file.c clears last_value_whitespace in VALUE on the backslash,
+	// before VALUE_ESCAPE consumes the newline. Only later whitespace trims.
+	// https://github.com/systemd/systemd/blob/v252/src/basic/env-file.c
+	// https://github.com/systemd/systemd/blob/v257/src/basic/env-file.c
+	for _, version := range []int{252, 254, 257} {
+		for _, newline := range []string{"\n", "\r"} {
+			for _, tc := range []struct {
+				name, suffix, want string
+			}{
+				{"EOF", "", "A=x \t"},
+				{"blank line", newline, "A=x \t"},
+				{"later whitespace EOF", " \t", "A=x \t"},
+				{"later whitespace newline", " \t" + newline, "A=x \t"},
+				{"later text", " y \t" + newline, "A=x \t y"},
+			} {
+				t.Run(fmt.Sprintf("%d/%q/%s", version, newline, tc.name), func(t *testing.T) {
+					input := "A=x \t\\" + newline + tc.suffix
+					got, err := parseEnvironmentFile([]byte(input), version)
+					if err != nil || !slices.Equal(got, []string{tc.want}) {
+						t.Fatalf("input %q: got %q, %v; want %q", input, got, err, tc.want)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestVariableNames(t *testing.T) {
 	for _, name := range []string{"A", "_", "a_B9"} {
 		if !validName(name) {
