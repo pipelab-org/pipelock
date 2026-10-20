@@ -993,14 +993,11 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	if lstat == nil {
 		lstat = env.stat
 	}
+	if result := checkDisplayRuntime(lstat, env.readFile, env.lookupUser, env.displayTmpfilesPath, path); result.status != statusPass {
+		return result.status, result.detail + "; " + result.remediation
+	}
 	info, err := lstat(path)
 	if err != nil {
-		if _, dirErr := lstat(filepath.Dir(path)); errors.Is(dirErr, os.ErrNotExist) {
-			if ruleErr := checkDisplayRuntimeRule(lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); ruleErr != nil {
-				return statusFail, "RFB socket unavailable: " + ruleErr.Error()
-			}
-			return statusFail, "RFB runtime directory is missing; run systemd-tmpfiles --create " + displayRuntimeRulePath(env.displayTmpfilesPath) + "; then restart the display service"
-		}
 		return statusFail, fmt.Sprintf("RFB socket missing; rerun contain install: %v", err)
 	}
 	mode := os.FileMode(0o600)
@@ -1026,12 +1023,6 @@ func probeAgentDisplayRFB(ctx context.Context, env *probeEnv) (string, string) {
 	ownerUID, ok := fileOwnerUID(info)
 	if !ok || uint64(ownerUID) != uid {
 		return statusFail, "RFB socket is not owned by the contained agent uid"
-	}
-	if err := checkDisplayRuntimeRule(lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
-		return statusFail, err.Error()
-	}
-	if err := checkRFBRuntimeDirectory(lstat, env.lookupUser, path); err != nil {
-		return statusFail, fmt.Sprintf("%v; %s", err, displayRuntimeRepair(env.rfbSocketPath))
 	}
 	return statusPass, "agent-owned RFB Unix socket is private and TCP RFB is disabled"
 }

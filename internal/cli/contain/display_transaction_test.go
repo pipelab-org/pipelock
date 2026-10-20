@@ -145,7 +145,7 @@ func TestDisplayRuntimeTransactionRestoresBeforeRestart(t *testing.T) {
 			}
 			var selected []step
 			for _, s := range installSteps(installOpts{}) {
-				if s.name == "provision-agent-display" || s.name == "provision-display-runtime" {
+				if s.name == "provision-agent-display" {
 					selected = append(selected, s)
 				}
 			}

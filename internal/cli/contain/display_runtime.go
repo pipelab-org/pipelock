@@ -130,7 +130,13 @@ func stepProvisionDisplay() step {
 			}
 			if runtimeChanged {
 				if err := runtime.undo(ctx, env); err != nil {
-					return fmt.Errorf("restore display runtime before restarting display: %w", err)
+					restoreErr := fmt.Errorf("restore display runtime before restarting display: %w", err)
+					// A confirmed fresh display has no prior service to restart.
+					// Remove its new unit even when runtime cleanup is refused.
+					if displayChanged && env.prevDisplayStateKnown && !env.prevDisplayUnitExisted && !env.prevDisplayActive {
+						return errors.Join(restoreErr, display.undo(ctx, env))
+					}
+					return restoreErr
 				}
 			}
 			if displayChanged {
@@ -139,6 +145,27 @@ func stepProvisionDisplay() step {
 			return nil
 		},
 	}
+}
+
+// Runtime prerequisites remain inspectable while the display is stopped and
+// its socket is absent. Only a verified rule may recreate an absent directory.
+func checkDisplayRuntime(stat func(string) (os.FileInfo, error), read func(string) ([]byte, error), lookup lookupUserFunc, rule, socket string) doctorResult {
+	socket = displayRFBPath(socket)
+	rule = displayRuntimeRulePath(rule)
+	_, dirErr := stat(filepath.Dir(socket))
+	missing := errors.Is(dirErr, os.ErrNotExist)
+	if !missing {
+		if err := checkRFBRuntimeDirectory(stat, lookup, socket); err != nil {
+			return fail(classInfra, err.Error(), displayRuntimeRepair(socket))
+		}
+	}
+	if err := checkDisplayRuntimeRule(stat, read, rule, socket); err != nil {
+		return fail(classInfra, err.Error(), "restore a regular root:root 0600 managed rule at "+rule+"; rerun contain install")
+	}
+	if missing {
+		return fail(classInfra, "RFB runtime directory is missing", "run systemd-tmpfiles --create "+rule+"; then restart the display service")
+	}
+	return pass("RFB runtime directory and managed rule are valid")
 }
 
 func displayRuntimeRepair(socket string) string {

@@ -468,13 +468,10 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	if env.lstat == nil {
 		return fail(classInfra, "RFB socket lstat unavailable", "rerun contain install")
 	}
+	if result := checkDisplayRuntime(env.lstat, env.readFile, env.lookupUser, env.displayTmpfilesPath, path); result.status != statusPass {
+		return result
+	}
 	if err := checkDisplaySocket(env.lstat, path, mode); err != nil {
-		if _, dirErr := env.lstat(filepath.Dir(path)); errors.Is(dirErr, os.ErrNotExist) {
-			if ruleErr := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); ruleErr != nil {
-				return fail(classInfra, ruleErr.Error(), "restore a regular root:root 0600 managed rule at "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; rerun contain install")
-			}
-			return fail(classInfra, "RFB runtime directory is missing", "run systemd-tmpfiles --create "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; then restart the display service")
-		}
 		return fail(classInfra, "RFB socket missing or unsafe: "+err.Error(), "RFB socket missing; rerun contain install")
 	}
 	info, err := env.lstat(path)
@@ -495,12 +492,6 @@ func checkDoctorDisplayRFB(_ context.Context, env *doctorEnv) doctorResult {
 	ownerUID, ok := fileOwnerUID(info)
 	if !ok || uint64(ownerUID) != uid {
 		return fail(classInfra, "RFB socket is not owned by the contained agent uid", "rerun contain install")
-	}
-	if err := checkDisplayRuntimeRule(env.lstat, env.readFile, env.displayTmpfilesPath, env.rfbSocketPath); err != nil {
-		return fail(classInfra, err.Error(), "restore a regular root:root 0600 managed rule at "+displayRuntimeRulePath(env.displayTmpfilesPath)+"; rerun contain install")
-	}
-	if err := checkRFBRuntimeDirectory(env.lstat, env.lookupUser, path); err != nil {
-		return fail(classInfra, err.Error(), displayRuntimeRepair(env.rfbSocketPath))
 	}
 	return pass(fmt.Sprintf("RFB socket is available with mode %04o", mode))
 }
