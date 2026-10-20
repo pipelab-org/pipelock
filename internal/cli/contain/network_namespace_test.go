@@ -825,9 +825,14 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 		doorwayState         string
 		relayState           string
 		doorwayEnabled       string
+		missingDoorwayPath   bool
+		forwarderState       string
 		wantStatus           string
 		wantDetail           string
 	}{
+		{name: "active socket missing pathname", agentNamespace: "net:[200]", boundaryStatus: statusPass, missingDoorwayPath: true, wantStatus: statusFail, wantDetail: "missing despite an active socket unit"},
+		{name: "active socket failed relay", agentNamespace: "net:[200]", boundaryStatus: statusPass, relayState: systemctlFailed, wantStatus: statusFail, wantDetail: "managed doorway relay"},
+		{name: "failed namespace forwarder", agentNamespace: "net:[200]", boundaryStatus: statusPass, forwarderState: systemctlFailed, wantStatus: statusFail, wantDetail: "namespace forwarder"},
 		{
 			name:           "private and boundary passes",
 			agentNamespace: "net:[200]",
@@ -864,7 +869,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			doorwayState:   "failed",
 			relayState:     "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket`",
+			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl reset-failed pipelock-agent-proxy.socket && systemctl start pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
 		},
 		{
 			name:           "running relay must be stopped before the socket can listen",
@@ -872,7 +877,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			boundaryStatus: statusPass,
 			doorwayState:   "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl stop pipelock-agent-proxy.service && systemctl start pipelock-agent-proxy.socket`",
+			wantDetail:     "run `systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl start pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
 		},
 		{
 			name:           "masked doorway socket names the unmask remedy",
@@ -881,7 +886,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			doorwayEnabled: "masked",
 			relayState:     "inactive",
 			wantStatus:     statusFail,
-			wantDetail:     "run `systemctl unmask pipelock-agent-proxy.socket && systemctl enable --now pipelock-agent-proxy.socket`",
+			wantDetail:     "run `systemctl unmask pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.socket && systemctl stop pipelock-agent-proxy.service && systemctl enable --now pipelock-agent-proxy.socket && systemctl restart pipelock-agent-netns-forward.service`",
 		},
 		{
 			name:           "missing doorway socket names the reinstall remedy",
@@ -889,7 +894,7 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			boundaryStatus: statusPass,
 			doorwayEnabled: "not-found",
 			wantStatus:     statusFail,
-			wantDetail:     "not persistently enabled (not-found); the unit is missing; rerun `pipelock contain install`",
+			wantDetail:     "managed doorway unit is missing:",
 		},
 		{
 			name:           "disabled doorway socket names the enable remedy",
@@ -920,6 +925,12 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 				namespaceForwarderServicePath: filepath.Join(root, containedNamespaceForwarderUnit),
 				loopbackForwarderInvPath:      filepath.Join(root, "loopback-forwarders.json"),
 				readFile:                      os.ReadFile,
+				lstat: func(string) (os.FileInfo, error) {
+					if tt.missingDoorwayPath {
+						return nil, os.ErrNotExist
+					}
+					return fakeFileInfo{mode: os.ModeSocket}, nil
+				},
 			}
 			for path, body := range map[string]string{
 				env.networkNamespaceUnitPath:      renderContainedNetworkNamespaceUnit(),
@@ -953,6 +964,9 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 					}
 					return systemctlEnabled + "\n", 0, nil
 				case strings.HasPrefix(joined, "is-active "):
+					if tt.forwarderState != "" && strings.HasSuffix(joined, containedNamespaceForwarderUnit) {
+						return tt.forwarderState, 3, nil
+					}
 					if tt.doorwayState != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderSocketPath)) {
 						return tt.doorwayState + "\n", 3, nil
 					}

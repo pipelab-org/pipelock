@@ -3966,6 +3966,12 @@ func containsArg(args []string, needle string) bool {
 func allPassEnv(t *testing.T) *probeEnv {
 	t.Helper()
 	env := makeProbeEnv(t)
+	env.lstat = func(path string) (os.FileInfo, error) {
+		if path == containedDoorwaySocketPath {
+			return fakeFileInfo{mode: os.ModeSocket | 0o600}, nil
+		}
+		return os.Lstat(path)
+	}
 	env.privateTmpProbe = func(context.Context, *probeEnv) (string, string) {
 		return statusPass, "test private temporary-directory canary passed"
 	}

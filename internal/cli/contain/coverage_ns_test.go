@@ -100,6 +100,7 @@ func covNSProbeBase(t *testing.T) *probeEnv {
 		configPath:                    filepath.Join(root, "pipelock.yaml"),
 		procRoot:                      filepath.Join(root, "proc"),
 		readFile:                      os.ReadFile,
+		lstat:                         func(string) (os.FileInfo, error) { return fakeFileInfo{mode: os.ModeSocket}, nil },
 	}
 	for path, body := range map[string]string{
 		env.networkNamespaceUnitPath:      renderContainedNetworkNamespaceUnit(),

@@ -290,9 +290,6 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 		want string
 	}{
 		{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit()},
-		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
-		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
-		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}
 	for _, unit := range units {
 		if strings.TrimSpace(unit.path) == "" {
@@ -321,23 +318,6 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 	}
 	if string(gotInventory) != string(wantInventory) {
 		return statusFail, "loopback forwarder inventory does not match containment.loopback_services; run `pipelock contain reload-nft-rules`"
-	}
-	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
-	for _, service := range services {
-		unit := loopbackForwarderUnitBase(service.Host, service.Port)
-		socketPath := filepath.Join(unitDir, unit+".socket")
-		servicePath := filepath.Join(unitDir, unit+".service")
-		nsPath := filepath.Join(unitDir, unit+"-netns.service")
-		for path, want := range map[string]string{
-			socketPath:  renderDeclaredLoopbackSocketUnit(env.agentUserName, service),
-			servicePath: renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service),
-			nsPath:      renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service),
-		} {
-			body, readErr := env.readFile(path)
-			if readErr != nil || string(body) != want {
-				return statusFail, fmt.Sprintf("declared loopback forwarder %s is missing or drifted; run `pipelock contain reload-nft-rules`", path)
-			}
-		}
 	}
 
 	if socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services); socketStatus != statusPass {
@@ -406,31 +386,19 @@ func managedDoorwaySocketNames(proxySocketPath string, services []config.Contain
 // containment failure. Socket-activated forwarder services can be inactive
 // between connections; the socket is the continuously active doorway.
 func probeManagedDoorwaySockets(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) (string, string) {
-	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
-		enabled, active, ok := doctorUnitState(ctx, env, socket)
-		if !ok {
-			return statusFail, fmt.Sprintf("managed doorway socket %s state could not be read", socket)
-		}
-		if enabled == systemctlEnabled && active == systemctlActive {
-			continue
-		}
-		// Same remedy doctor gives: a masked unit needs unmasking and a
-		// still-running relay keeps the socket from listening.
-		relay := strings.TrimSuffix(socket, ".socket") + ".service"
-		relayActive := true
-		if _, relayState, relayOK := doctorUnitState(ctx, env, relay); relayOK {
-			relayActive = relayState == systemctlActive
-		}
-		remedy := "run `" + doorwaySocketRemedy(socket, relay, enabled, active, relayActive) + "`"
-		if enabled == systemctlNotFound {
-			remedy = doorwaySocketRemedy(socket, relay, enabled, active, relayActive)
-		}
-		if enabled != systemctlEnabled {
-			return statusFail, fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s); %s", socket, oneLine(enabled), remedy)
-		}
-		return statusFail, fmt.Sprintf("managed doorway socket %s is %s; %s", socket, oneLine(active), remedy)
+	result := doctorDoorwayState(ctx, env, services)
+	if result.status == statusPass {
+		return statusPass, result.detail
 	}
-	return statusPass, "all managed doorway sockets are enabled and active"
+	detail := result.detail
+	if result.remediation != "" {
+		if strings.HasPrefix(result.remediation, "systemctl ") {
+			detail += "; run `" + result.remediation + "`"
+		} else {
+			detail += "; " + result.remediation
+		}
+	}
+	return statusFail, detail
 }
 
 // probeAgentProcessNamespaces catches services installed before the namespace

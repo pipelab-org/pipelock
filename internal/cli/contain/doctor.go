@@ -208,7 +208,8 @@ func doctorUnitState(ctx context.Context, env *probeEnv, unit string) (enabled, 
 	if err != nil {
 		return "", "", false
 	}
-	return strings.TrimSpace(enabledOut), strings.TrimSpace(activeOut), true
+	enabled, active = strings.TrimSpace(enabledOut), strings.TrimSpace(activeOut)
+	return enabled, active, enabled != "" && active != ""
 }
 
 // doctorDoorwayState inspects every managed doorway socket and every
@@ -217,36 +218,66 @@ func doctorUnitState(ctx context.Context, env *probeEnv, unit string) (enabled, 
 // the agent's proxy traffic takes, and a stopped one leaves every check green
 // while the agent launch is refused.
 func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) doctorResult {
-	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
+	doorways, result := observeManagedDoorwayDefinitions(env, services)
+	if result.status != statusPass {
+		return result
+	}
+	forwarderStates := make(map[string]doorwayUnitState)
+	for _, doorway := range doorways {
+		socket, relay := doorway.socket, doorway.relay
 		enabled, active, ok := doctorUnitState(ctx, env, socket)
 		if !ok {
-			return unknown("managed doorway socket "+socket+" state could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+			return unknown("managed doorway socket "+socket+" state could not be read", doorwayInspectionRemedy)
 		}
-		if enabled == systemctlEnabled && active == systemctlActive {
-			continue
+		relayEnabled, relayState, relayOK := doctorUnitState(ctx, env, relay)
+		if !relayOK {
+			return unknown("managed doorway relay "+relay+" state could not be read", doorwayInspectionRemedy)
 		}
-		relay := strings.TrimSuffix(socket, ".socket") + ".service"
-		// A socket refuses to listen while its relay service is still running,
-		// so the relay state decides which commands can work.
-		relayActive := true
-		if _, relayState, relayOK := doctorUnitState(ctx, env, relay); relayOK {
-			relayActive = relayState == systemctlActive
+		forwarderEnabled, forwarderActive, forwarderOK := doctorUnitState(ctx, env, doorway.forwarder)
+		if !forwarderOK {
+			return unknown("namespace forwarder "+doorway.forwarder+" state could not be read", doorwayInspectionRemedy)
 		}
-		detail := fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s)", socket, oneLine(enabled))
-		if enabled == systemctlEnabled {
+		forwarderStates[doorway.forwarder] = doorwayUnitState{forwarderEnabled, forwarderActive}
+
+		if enabled == systemctlNotFound || relayEnabled == systemctlNotFound {
+			return fail(classInfra, "managed doorway unit is missing: "+socket+" or "+relay, installRemedy)
+		}
+		detail := ""
+		switch {
+		case enabled != systemctlEnabled:
+			detail = fmt.Sprintf("managed doorway socket %s is not persistently enabled (%s)", socket, oneLine(enabled))
+		case active != systemctlActive:
 			detail = fmt.Sprintf("managed doorway socket %s is %s", socket, oneLine(active))
 		}
-		return fail(classInfra, detail, doorwaySocketRemedy(socket, relay, enabled, active, relayActive))
-	}
-	units := []string{containedNamespaceForwarderUnit}
-	for _, service := range services {
-		units = append(units, loopbackForwarderUnitBase(service.Host, service.Port)+"-netns.service")
-	}
-	for _, unit := range units {
-		enabled, active, ok := doctorUnitState(ctx, env, unit)
-		if !ok {
-			return unknown("namespace forwarder "+unit+" state could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+		if detail == "" {
+			if env.lstat == nil {
+				return unknown("managed doorway socket pathname inspection is unavailable", doorwayInspectionRemedy)
+			}
+			info, err := env.lstat(doorway.path)
+			switch {
+			case errors.Is(err, os.ErrNotExist):
+				detail = "managed doorway socket pathname " + doorway.path + " is missing despite an active socket unit"
+			case err != nil:
+				return unknown("managed doorway socket pathname "+doorway.path+" could not be read: "+err.Error(), doorwayInspectionRemedy)
+			case info.Mode()&os.ModeSocket == 0:
+				return fail(classInfra, "managed doorway socket pathname "+doorway.path+" is not a socket", "inspect and remove the unexpected pathname, then "+installRemedy)
+			}
 		}
+		relayBroken := relayEnabled == systemctlMasked || relayEnabled == systemctlMasked+"-runtime" || relayState == systemctlFailed
+		if detail == "" && relayBroken {
+			detail = fmt.Sprintf("managed doorway relay %s is %s (%s)", relay, oneLine(relayState), oneLine(relayEnabled))
+		}
+		if detail != "" {
+			return fail(classInfra, detail, doorwayRecoveryRemedy(doorway, doorwayUnitState{enabled, active}, doorwayUnitState{relayEnabled, relayState}, forwarderStates[doorway.forwarder]))
+		}
+		if relayState != systemctlActive && relayState != "inactive" {
+			return unknown("managed doorway relay "+relay+" has unrecognized state "+oneLine(relayState), doorwayInspectionRemedy)
+		}
+	}
+	for _, doorway := range doorways {
+		unit := doorway.forwarder
+		state := forwarderStates[unit]
+		enabled, active := state.enabled, state.active
 		if enabled == systemctlEnabled && active == systemctlActive {
 			continue
 		}
@@ -256,28 +287,35 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 	return pass("all managed doorway sockets and namespace forwarders are enabled and active")
 }
 
-// doorwaySocketRemedy names the ordered commands that restore a socket that is
-// not enabled and active. The relay is stopped first when it is still running,
-// because systemd refuses to start a socket whose service is already active.
-func doorwaySocketRemedy(socket, relay, enabled, active string, relayActive bool) string {
-	if enabled == systemctlNotFound {
-		return "the unit is missing; " + installRemedy
+type doorwayUnitState struct{ enabled, active string }
+
+// doorwayRecoveryRemedy follows the install lifecycle: close the socket before
+// stopping its relay so incoming connections cannot activate the relay again.
+func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder doorwayUnitState) string {
+	enabled, active, relayEnabled, relayState := socketState.enabled, socketState.active, relay.enabled, relay.active
+	if forwarder.enabled == systemctlNotFound {
+		return installRemedy
 	}
 	var steps []string
 	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
-		steps = append(steps, "systemctl unmask "+socket)
+		steps = append(steps, "systemctl unmask "+doorway.socket)
 	}
-	if relayActive {
-		steps = append(steps, "systemctl stop "+relay)
+	if relayEnabled == systemctlMasked || relayEnabled == systemctlMasked+"-runtime" {
+		steps = append(steps, "systemctl unmask "+doorway.relay)
 	}
+	steps = append(steps, "systemctl stop "+doorway.socket, "systemctl stop "+doorway.relay)
 	if active == systemctlFailed {
-		steps = append(steps, "systemctl reset-failed "+socket)
+		steps = append(steps, "systemctl reset-failed "+doorway.socket)
+	}
+	if relayState == systemctlFailed {
+		steps = append(steps, "systemctl reset-failed "+doorway.relay)
 	}
 	if enabled == systemctlEnabled {
-		steps = append(steps, "systemctl start "+socket)
+		steps = append(steps, "systemctl start "+doorway.socket)
 	} else {
-		steps = append(steps, "systemctl enable --now "+socket)
+		steps = append(steps, "systemctl enable --now "+doorway.socket)
 	}
+	steps = append(steps, namespaceForwarderRemedy(doorway.forwarder, forwarder.enabled, forwarder.active))
 	return strings.Join(steps, " && ")
 }
 
