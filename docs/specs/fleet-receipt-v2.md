@@ -92,6 +92,17 @@ verify follower audit signatures, or independently reproduce namespace
 derivation. It does not prove honest restart, absence of bypass, or evidence
 outside the report window. `verificationLevel: "L2"` remains unsupported.
 
+L1 does not prove continuity between source batches, including batches in the
+same namespace. Source anchors include each segment tail hash but no head hash
+or previous-tail link, so gaps and lineage breaks between non-overlapping
+batches are not detected. Received-at windows can omit intervening batches.
+This limitation also applies to v1.
+
+A fixed recorder session combined with lost recorder state can reuse sequence
+numbers in the same namespace. These overlapping batches remain refused;
+operators must preserve recorder state or use per-run sessions. The report does
+not exclude the affected follower.
+
 The schema is [fleet-receipt-v2.schema.json](../../schemas/fleet-receipt-v2.schema.json).
 The frozen Go conformance corpus is `sdk/conformance/testdata/fleet-receipt-v2/`;
 the v1 corpus remains unchanged. Namespace derivation and malformed signed
