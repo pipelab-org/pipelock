@@ -85,6 +85,31 @@ func TestLoadExpiredScannerExceptions(t *testing.T) {
 	}
 }
 
+func TestLoadExpiredScannerExceptionsRetainsSameHostSibling(t *testing.T) {
+	now := todayUTC()
+	active := PathEntropyExclusion{Scheme: "https", Host: "vendor.example", PathPrefix: "/active/", Expires: now.AddDate(0, 0, 1).Format(time.DateOnly)}
+	cfg := scannerExceptionConfig()
+	cfg.FetchProxy.Monitoring.PathEntropyExclusions = []PathEntropyExclusion{
+		{Host: active.Host, PathPrefix: "/expired/", Expires: now.AddDate(0, 0, -1).Format(time.DateOnly)},
+		active,
+	}
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.FetchProxy.Monitoring.PathEntropyExclusions; !reflect.DeepEqual(got, []PathEntropyExclusion{active}) {
+		t.Fatalf("same-host siblings after lapse = %+v, want only %+v", got, active)
+	}
+}
+
 func fmtWarnings(warnings []Warning) string {
 	var messages []string
 	for _, warning := range warnings {
