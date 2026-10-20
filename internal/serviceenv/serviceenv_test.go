@@ -408,6 +408,42 @@ func TestServiceOptionsAndMissingUnit(t *testing.T) {
 	}
 }
 
+func TestMissingUnitHomeMatchesLoadedUnit(t *testing.T) {
+	// USER_CREDS_CLEAN omits an account home of "/", leaving any manager
+	// HOME intact. The provisional managed unit must use that same rule.
+	// https://github.com/systemd/systemd/blob/v252/src/core/execute.c
+	for _, tc := range []struct {
+		name, home string
+		baseline   []string
+		want       []string
+	}{
+		{"root home omitted", "/", []string{}, nil},
+		{"root home preserves manager", "/", []string{"HOME=/manager/home"}, []string{"HOME=/manager/home"}},
+		{"ordinary home replaces manager", "/var/lib/pipelock-proxy", []string{"HOME=/manager/home"}, []string{"HOME=/var/lib/pipelock-proxy"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.b.identity = func(string, string, []string) (identity, error) {
+				return identity{Home: tc.home}, nil
+			}
+			f.properties["manager:Environment"] = typed("as", tc.baseline)
+			opts := fixtureOptions()
+			if err := check(t.Context(), opts, f.b); err != nil {
+				t.Fatal(err)
+			}
+			loaded := slices.Clone(f.environment)
+			f.show = "Id=pipelock.service\nLoadState=not-found\nNeedDaemonReload=no\nTransient=no\n"
+			opts.AllowMissing, opts.PlannedUser = true, "pipelock-proxy"
+			if err := check(t.Context(), opts, f.b); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(loaded, tc.want) || !slices.Equal(f.environment, loaded) {
+				t.Fatalf("loaded %q, provisional %q; want %q", loaded, f.environment, tc.want)
+			}
+		})
+	}
+}
+
 func TestChildErrorDoesNotExposeValues(t *testing.T) {
 	f := newFixture(t)
 	f.b.execute = func(context.Context, CheckOptions, []string, identity, []byte) error {

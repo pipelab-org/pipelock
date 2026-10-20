@@ -195,7 +195,10 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 			}
 			return s, errors.New("cannot resolve planned service identity")
 		}
-		values["HOME"] = s.Identity.Home
+		// Match observeLoaded's USER_CREDS_CLEAN home omission rule.
+		if s.Identity.Home != "/" {
+			values["HOME"] = s.Identity.Home
+		}
 		if err := applyAssignments(values, opts.PlannedEnvironment); err != nil {
 			return s, err
 		}
