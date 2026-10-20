@@ -221,7 +221,7 @@ func TestDoorwayDiagnosticsObservations(t *testing.T) {
 		{"masked forwarder", containedNamespaceForwarderUnit, systemctlMasked, "inactive", "unmask " + containedNamespaceForwarderUnit, statusFail},
 		{"failed forwarder", containedNamespaceForwarderUnit, systemctlEnabled, systemctlFailed, "reset-failed " + containedNamespaceForwarderUnit, statusFail},
 		{"missing forwarder", containedNamespaceForwarderUnit, systemctlNotFound, "inactive", "pipelock contain install", statusFail},
-		{"unknown relay", testDoorwayProxyRelay, "static", "activating", "unrecognized state", statusUnknown},
+		{"unknown relay", testDoorwayProxyRelay, "static", "future-state", "unrecognized state", statusUnknown},
 		{"empty state", testDoorwayProxySocket, "", "", "could not be read", statusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -372,5 +372,67 @@ func TestDoorwaySocketPath(t *testing.T) {
 	result := doctorDoorwayState(context.Background(), env, nil)
 	if result.status != statusFail || !strings.Contains(result.detail, "missing despite an active socket unit") {
 		t.Fatalf("unlinked live listener=%+v", result)
+	}
+}
+
+func TestDoorwayRuntimeMaskRecovery(t *testing.T) {
+	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9200}
+	for _, base := range []string{containedProxyForwarderUnit, loopbackForwarderUnitBase(service.Host, service.Port)} {
+		for _, suffix := range []string{".socket", ".service", "-netns.service"} {
+			unit := base + suffix
+			forwarder := base + "-netns.service"
+			if base == containedProxyForwarderUnit {
+				forwarder = containedNamespaceForwarderUnit
+				if suffix == "-netns.service" {
+					unit = forwarder
+				}
+			}
+			t.Run(unit, func(t *testing.T) {
+				env := covNSProbeBase(t)
+				writeLoopbackProbeUnits(t, env, service)
+				run := env.runCmd
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					if args[1] == unit {
+						if args[0] == "is-enabled" {
+							return systemctlMasked + "-runtime", 1, nil
+						}
+						return systemctlInactive, 3, nil
+					}
+					return run(ctx, name, args...)
+				}
+				want := "systemctl unmask --runtime " + unit + " && "
+				if suffix == "-netns.service" {
+					want += "systemctl enable --now " + unit
+				} else {
+					want += "systemctl stop " + base + ".socket && systemctl stop " + base + ".service && "
+					if suffix == ".socket" {
+						want += "systemctl enable --now "
+					} else {
+						want += "systemctl start "
+					}
+					want += base + ".socket && systemctl restart " + forwarder
+				}
+				services := []config.ContainmentLoopbackService{service}
+				got := doctorDoorwayState(context.Background(), env, services)
+				status, detail := probeManagedDoorwaySockets(context.Background(), env, services)
+				if got.status != statusFail || got.remediation != want || status != statusFail || !strings.Contains(detail, want) {
+					t.Fatalf("doctor=%+v verify=(%s,%s), want %q", got, status, detail, want)
+				}
+			})
+		}
+	}
+}
+
+func TestDoorwayRelayTransitionsRemainInconclusive(t *testing.T) {
+	for _, state := range []string{"activating", "deactivating", "reloading"} {
+		t.Run(state, func(t *testing.T) {
+			env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxyRelay: {"static", state}})
+			got := doctorDoorwayState(context.Background(), env, nil)
+			status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+			want := "rerun the diagnostic after the relay finishes changing state"
+			if got.status != statusUnknown || got.remediation != want || !strings.Contains(got.detail, state) || status != statusFail || !strings.Contains(detail, want) {
+				t.Fatalf("doctor=%+v verify=(%s,%s)", got, status, detail)
+			}
+		})
 	}
 }

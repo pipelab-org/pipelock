@@ -271,6 +271,10 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 			return fail(classInfra, detail, doorwayRecoveryRemedy(doorway, doorwayUnitState{enabled, active}, doorwayUnitState{relayEnabled, relayState}, forwarderStates[doorway.forwarder]))
 		}
 		if relayState != systemctlActive && relayState != "inactive" {
+			switch relayState {
+			case "activating", "deactivating", "reloading":
+				return unknown("managed doorway relay "+relay+" is "+relayState, "rerun the diagnostic after the relay finishes changing state")
+			}
 			return unknown("managed doorway relay "+relay+" has unrecognized state "+oneLine(relayState), doorwayInspectionRemedy)
 		}
 	}
@@ -298,10 +302,10 @@ func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder
 	}
 	var steps []string
 	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
-		steps = append(steps, "systemctl unmask "+doorway.socket)
+		steps = append(steps, doorwayUnmaskCommand(doorway.socket, enabled))
 	}
 	if relayEnabled == systemctlMasked || relayEnabled == systemctlMasked+"-runtime" {
-		steps = append(steps, "systemctl unmask "+doorway.relay)
+		steps = append(steps, doorwayUnmaskCommand(doorway.relay, relayEnabled))
 	}
 	steps = append(steps, "systemctl stop "+doorway.socket, "systemctl stop "+doorway.relay)
 	if active == systemctlFailed {
@@ -319,6 +323,15 @@ func doorwayRecoveryRemedy(doorway managedDoorway, socketState, relay, forwarder
 	return strings.Join(steps, " && ")
 }
 
+// doorwayUnmaskCommand selects the configuration layer reported by systemd.
+// systemctl(1) --runtime changes /run rather than the persistent /etc layer.
+func doorwayUnmaskCommand(unit, enabled string) string {
+	if enabled == systemctlMasked+"-runtime" {
+		return "systemctl unmask --runtime " + unit
+	}
+	return "systemctl unmask " + unit
+}
+
 // namespaceForwarderRemedy names the commands that restore an in-namespace
 // forwarder service for the state doctor observed.
 func namespaceForwarderRemedy(unit, enabled, active string) string {
@@ -327,7 +340,7 @@ func namespaceForwarderRemedy(unit, enabled, active string) string {
 	}
 	var steps []string
 	if enabled == systemctlMasked || enabled == systemctlMasked+"-runtime" {
-		steps = append(steps, "systemctl unmask "+unit)
+		steps = append(steps, doorwayUnmaskCommand(unit, enabled))
 	}
 	if active == systemctlFailed {
 		steps = append(steps, "systemctl reset-failed "+unit)
