@@ -144,16 +144,7 @@ func TestFleetReceiptV2NamespaceSchema(t *testing.T) {
 		} {
 			t.Run(field+"/"+tc.name, func(t *testing.T) {
 				s := fleetV2Statement()
-				chain := &fleetreceipt.ChainIdentity{EntryVersion: 3, SessionID: "run-a", ChainKind: "recorder", WriterInstanceID: "writer-a"}
-				switch field {
-				case "sessionId":
-					chain.SessionID = tc.value
-				case "chainKind":
-					chain.ChainKind = tc.value
-				case "writerInstanceId":
-					chain.WriterInstanceID = tc.value
-				}
-				s.Predicate.SourceBatches[0].Chain = chain
+				s.Predicate.SourceBatches[0].Chain = &fleetreceipt.ChainIdentity{EntryVersion: 3, SessionID: "run-a", ChainKind: "recorder", WriterInstanceID: "writer-a"}
 				raw, err := json.Marshal(s)
 				if err != nil {
 					t.Fatal(err)
@@ -162,6 +153,11 @@ func TestFleetReceiptV2NamespaceSchema(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				// Set the JSON property after marshaling so omitempty cannot turn
+				// an explicit empty string into a missing required property.
+				predicate := instance.(map[string]any)["predicate"].(map[string]any)
+				batch := predicate["sourceBatches"].([]any)[0].(map[string]any)
+				batch["chain"].(map[string]any)[field] = tc.value
 				if err := schema.Validate(instance); (err == nil) != tc.valid {
 					t.Fatalf("schema validation=%v, want valid=%v", err, tc.valid)
 				}
