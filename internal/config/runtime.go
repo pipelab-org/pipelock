@@ -330,6 +330,9 @@ func (c *Config) Clone() *Config {
 	if c.ResponseScanning.SizeExemptDomains != nil {
 		clone.ResponseScanning.SizeExemptDomains = append([]string(nil), c.ResponseScanning.SizeExemptDomains...)
 	}
+	if c.ResponseScanning.SizeExemptScanLimits != nil {
+		clone.ResponseScanning.SizeExemptScanLimits = append([]ResponseSizeScanLimit(nil), c.ResponseScanning.SizeExemptScanLimits...)
+	}
 	if c.ResponseScanning.UnscannablePassthrough != nil {
 		clone.ResponseScanning.UnscannablePassthrough = cloneUnscannablePassthrough(c.ResponseScanning.UnscannablePassthrough)
 	}
