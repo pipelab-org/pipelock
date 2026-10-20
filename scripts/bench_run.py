@@ -67,6 +67,8 @@ def output_metadata(path: Path) -> dict:
     package = ""
     for line in path.read_text().splitlines():
         key, separator, value = line.partition(": ")
+        if line.rstrip() == "cpu:":
+            headers["cpu"].add("")
         if separator and key in headers:
             headers[key].add(value.strip())
         if key == "pkg" and separator:
@@ -87,11 +89,15 @@ def output_metadata(path: Path) -> dict:
         name, procs = (match[1], int(match[2])) if match else (fields[0], 1)
         processors.setdefault((package, name), set()).add(procs)
     for key, values in headers.items():
+        # testing/benchmark.go omits cpu when sysinfo.CPUName() is empty.
+        # An explicitly empty header is still invalid, unlike an absent one.
+        if key == "cpu" and not values:
+            continue
         if len(values) != 1 or not next(iter(values)):
             raise RunError(f"missing or inconsistent benchmark header: {key}")
     if not processors:
         raise RunError("no benchmark samples captured")
-    return {**{key: next(iter(value)) for key, value in headers.items()}, "processors": processors}
+    return {**{key: next(iter(value), "") for key, value in headers.items()}, "processors": processors}
 
 
 def validate_outputs(baseline: Path, current: Path, inputs: dict) -> None:

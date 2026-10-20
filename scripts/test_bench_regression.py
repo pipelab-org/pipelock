@@ -123,6 +123,26 @@ class OutputTest(unittest.TestCase):
                 with self.assertRaisesRegex(RUN.RunError, "header mismatch"):
                     self.compare(text, text.replace(old, f"{key}: {new_value}"))
 
+    def test_cpu_header_omitted_when_go_has_no_cpu_name(self):
+        # testing/benchmark.go prints CPUName only when it is nonempty.
+        text = (samples() + samples(package="mcp")).replace("cpu: Synthetic Processor\n", "")
+        self.compare(text, text)
+        self.assertEqual(RUN.output_metadata(self.base)["cpu"], "")
+
+    def test_cpu_header_omission_must_match_both_sides(self):
+        present = samples()
+        absent = present.replace("cpu: Synthetic Processor\n", "")
+        for base, cur in ((present, absent), (absent, present)):
+            with self.subTest(base=base), self.assertRaisesRegex(RUN.RunError, "header mismatch: cpu"):
+                self.compare(base, cur)
+
+    def test_explicit_empty_or_conflicting_cpu_headers_are_refused(self):
+        for header in ("cpu:", "cpu: ", "cpu:\t", "cpu:   ", "cpu: Other Processor\ncpu: Synthetic Processor"):
+            text = samples().replace("cpu: Synthetic Processor", header)
+            for base, cur in ((text, text), (samples(), text), (text, samples())):
+                with self.subTest(header=header), self.assertRaisesRegex(RUN.RunError, "missing or inconsistent benchmark header: cpu"):
+                    self.compare(base, cur)
+
     def test_headers_must_match_resolved_target(self):
         text = samples().replace("goos: linux", "goos: other-os")
         with self.assertRaisesRegex(RUN.RunError, "resolved Go environment"):
@@ -132,7 +152,10 @@ class OutputTest(unittest.TestCase):
         for key in ("goos", "goarch", "cpu"):
             text = samples()
             header = next(line for line in text.splitlines() if line.startswith(key + ":"))
-            for bad in (text.replace(header + "\n", ""), text + f"{key}: other\n", text.replace(header, f"{key}: ")):
+            bad_headers = [text + f"{key}: other\n", text.replace(header, f"{key}: ")]
+            if key != "cpu":
+                bad_headers.append(text.replace(header + "\n", ""))
+            for bad in bad_headers:
                 with self.subTest(key=key, bad=bad), self.assertRaisesRegex(RUN.RunError, "missing or inconsistent"):
                     self.compare(bad, samples())
 
