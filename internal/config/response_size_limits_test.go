@@ -5,12 +5,48 @@ package config
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 )
 
 const sizeLimitTestHost = "downloads.vendor.example"
+
+func TestResponseSizeScanLimitHorizon(t *testing.T) {
+	now := time.Now().UTC()
+	for _, tc := range []struct {
+		name           string
+		added, expires time.Time
+		valid          bool
+	}{
+		{"approved", now, now.Add(14 * 24 * time.Hour), true},
+		{"century", now, now.AddDate(100, 0, 0), false},
+		{"boundary", now, now.Add(MaxResponseSizeScanLimitHorizon), true},
+		{"over", now, now.Add(MaxResponseSizeScanLimitHorizon + time.Second), false},
+		{"ancient-start", now.Add(-MaxResponseSizeScanLimitHorizon), now.Add(time.Hour), false},
+		{"future-start", now.Add(MaxResponseSizeScanLimitHorizon), now.Add(2 * MaxResponseSizeScanLimitHorizon), false},
+		{"lapsed", now.Add(-2 * MaxResponseSizeScanLimitHorizon), now.Add(-time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := responseSizeLimitTestConfig(now)
+			entry := &c.ResponseScanning.SizeExemptScanLimits[0]
+			entry.Added, entry.Expires = tc.added.Format(time.RFC3339Nano), tc.expires.Format(time.RFC3339Nano)
+			if err := validateResponseSizeScanLimitExpiryHorizons(c.ResponseScanning.SizeExemptScanLimits, now); (err == nil) != tc.valid {
+				t.Fatalf("horizon: %v", err)
+			}
+			if err := c.Validate(); (err == nil) != tc.valid {
+				t.Fatalf("startup: %v", err)
+			}
+			if err := c.ValidateExpiryAuthorizations(); (err == nil) != tc.valid {
+				t.Fatalf("reload: %v", err)
+			}
+			if !tc.valid && c.ResponseScanning.SizeExemptScanLimitForHost(sizeLimitTestHost, now) != c.ResponseScanning.SizeExemptScanMaxBytes {
+				t.Fatal("invalid runtime grant selected")
+			}
+		})
+	}
+}
 
 func responseSizeLimitTestConfig(now time.Time) *Config {
 	c := Defaults()
@@ -77,7 +113,7 @@ func TestResponseSizeScanLimitSelection(t *testing.T) {
 
 func TestResponseSizeScanLimitValidation(t *testing.T) {
 	now := time.Now().UTC()
-	for _, mode := range []string{"empty", "wildcard", "port", "url", "unlisted", "duplicate", "zero", "lower", "budget", "owner", "reason", "control", "long", "added", "expiry", "order", "probe"} {
+	for _, mode := range []string{"empty", "wildcard", "wildcard-listed", "zero-expired", "port", "url", "unlisted", "duplicate", "zero", "lower", "budget", "owner", "reason", "control", "long", "added", "expiry", "order", "probe"} {
 		t.Run(mode, func(t *testing.T) {
 			c := responseSizeLimitTestConfig(now)
 			r := &c.ResponseScanning
@@ -87,6 +123,16 @@ func TestResponseSizeScanLimitValidation(t *testing.T) {
 				e.Host = ""
 			case "wildcard":
 				e.Host = "*.vendor.example"
+			case "wildcard-listed":
+				// The wildcard is itself an admitted size-exempt pattern, so
+				// only the exact-host rule can refuse the entry.
+				r.SizeExemptDomains = append(r.SizeExemptDomains, "*.vendor.example")
+				e.Host = "*.vendor.example"
+			case "zero-expired":
+				// A lapsed entry stays loadable, but a malformed one does not.
+				e.MaxBytes = 0
+				e.Added = now.Add(-2 * time.Hour).Format(time.RFC3339Nano)
+				e.Expires = now.Add(-time.Hour).Format(time.RFC3339Nano)
 			case "port":
 				e.Host += ":443"
 			case "url":
@@ -164,6 +210,18 @@ func TestResponseSizeScanLimitValidation(t *testing.T) {
 	}
 }
 
+func TestResponseSizeScanMaxBytesLeavesProbeByte(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("probe overflow needs a 64-bit int")
+	}
+	c := Defaults()
+	c.ResponseScanning.SizeExemptScanMaxBytes = math.MaxInt
+	c.ResponseScanning.SizeExemptScanMaxInflightBytes = math.MaxInt
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "probe byte") {
+		t.Fatalf("shared ceiling without probe room accepted: %v", err)
+	}
+}
+
 func TestResponseSizeScanLimitCloneAndHash(t *testing.T) {
 	now := time.Now().UTC()
 	c := responseSizeLimitTestConfig(now)
@@ -193,5 +251,31 @@ func TestResponseSizeScanLimitCloneAndHash(t *testing.T) {
 	b.ResponseScanning.SizeExemptScanLimits[0].Host = "OTHER.VENDOR.EXAMPLE."
 	if a.CanonicalPolicyHash() != b.CanonicalPolicyHash() {
 		t.Fatal("entry order or host spelling changed policy")
+	}
+}
+
+func TestResponseSizeScanLimitYAMLLoad(t *testing.T) {
+	now := time.Now().UTC()
+	added, expires := now.Add(-time.Hour).Format(time.RFC3339), now.Add(24*time.Hour).Format(time.RFC3339)
+	for _, quote := range []string{"", `"`} {
+		doc := "response_scanning:\n  size_exempt_domains: [downloads.vendor.example, other.vendor.example]\n  size_exempt_scan_limits:\n" +
+			"    - host: Downloads.Vendor.Example.\n      max_bytes: 134217728\n      owner: operator\n      reason: bounded scanned download\n" +
+			"      added: " + quote + added + quote + "\n      expires: " + quote + expires + quote + "\n"
+		c, err := LoadBytes([]byte(doc))
+		if err != nil {
+			t.Fatalf("quote=%q: %v", quote, err)
+		}
+		if got := c.ResponseScanning.SizeExemptScanLimitForHost(sizeLimitTestHost, now); got != 128<<20 {
+			t.Fatalf("quote=%q: loaded grant cap %d", quote, got)
+		}
+		if got := c.ResponseScanning.SizeExemptScanLimitForHost("other.vendor.example", now); got != DefaultSizeExemptScanMaxBytes {
+			t.Fatalf("quote=%q: neighbor cap %d", quote, got)
+		}
+	}
+	// A date without a time or zone names no instant and must be refused.
+	day, later := now.Format(time.DateOnly), now.Add(24*time.Hour).Format(time.DateOnly)
+	dateOnly := "response_scanning:\n  size_exempt_domains: [downloads.vendor.example]\n  size_exempt_scan_limits:\n    - {host: downloads.vendor.example, max_bytes: 134217728, owner: o, reason: r, added: " + day + ", expires: " + later + "}\n"
+	if _, err := LoadBytes([]byte(dateOnly)); err == nil {
+		t.Fatal("date-only grant loaded")
 	}
 }

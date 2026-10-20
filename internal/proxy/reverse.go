@@ -2388,6 +2388,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// Scan all responses when enabled. Exempt domains are still scanned for
 	// visibility but findings are pinned to warn with no adaptive scoring.
 	revHost := resp.Request.URL.Hostname()
+	admittedScanLimit := cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now())
 	revRespExempt := isResponseScanExempt(revHost, cfg.ResponseScanning.ExemptDomains)
 	revRespSizeExempt := isResponseSizeExempt(revHost, cfg.ResponseScanning.SizeExemptDomains)
 	isSVGResponse := isSVGContentType(responseContentType(resp.Header)) || responseHeadersDeclareSVG(resp.Header)
@@ -3138,7 +3139,7 @@ responseScanning:
 	if len(body) > maxBytes && shieldOnly && revRespSizeExempt {
 		var scanFailure *sizeExemptResponseReadError
 		var releaseSizeExemptScan sizeExemptScanRelease
-		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now()), cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
+		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, admittedScanLimit, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 		if scanFailure != nil {
 			_ = resp.Body.Close()
 			rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
@@ -3252,7 +3253,7 @@ responseScanning:
 			}
 			var scanFailure *sizeExemptResponseReadError
 			var releaseSizeExemptScan sizeExemptScanRelease
-			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, cfg.ResponseScanning.SizeExemptScanLimitForHost(revHost, time.Now()), cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
+			body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, admittedScanLimit, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
 			if scanFailure != nil {
 				_ = resp.Body.Close()
 				rp.metrics.RecordReverseProxyRequest(resp.Request.Method, "403")
@@ -3343,7 +3344,7 @@ responseScanning:
 		// read up to size_exempt_scan_max_bytes (64 MiB by default), well
 		// past the 5 MiB shield cap, so precisely the hosts trusted enough
 		// to scan whole were the ones losing the scrub.
-		shieldMaxBytes := shieldMaxBytesForResponse(cfg, revHost, TransportReverse)
+		shieldMaxBytes := shieldMaxBytesForAdmittedResponse(cfg, revHost, TransportReverse, admittedScanLimit)
 		oversize := shieldMaxBytes > 0 && len(body) > shieldMaxBytes
 		if oversize {
 			decision := applyShieldOversize(body, true, shieldMaxBytes)

@@ -43,7 +43,7 @@ func (r ResponseScanning) SizeExemptScanLimitForHost(host string, now time.Time)
 		}
 		added, addedErr := time.Parse(time.RFC3339, entry.Added)
 		expires, expiryErr := time.Parse(time.RFC3339, entry.Expires)
-		if addedErr != nil || expiryErr != nil || !added.Before(expires) || now.Before(added) || !now.Before(expires) ||
+		if addedErr != nil || expiryErr != nil || !added.Before(expires) || expires.Sub(added) > MaxResponseSizeScanLimitHorizon || now.Before(added) || !now.Before(expires) ||
 			entry.MaxBytes < limit || entry.MaxBytes > r.SizeExemptScanMaxInflightBytes || int64(entry.MaxBytes) == math.MaxInt64 ||
 			!validResponseSizeGrantText(entry.Owner) || !validResponseSizeGrantText(entry.Reason) {
 			return limit
@@ -54,6 +54,9 @@ func (r ResponseScanning) SizeExemptScanLimitForHost(host string, now time.Time)
 }
 
 func (r *ResponseScanning) validateSizeExemptScanLimits(warnings *[]Warning, now time.Time) error {
+	if err := validateResponseSizeScanLimitExpiryHorizons(r.SizeExemptScanLimits, now); err != nil {
+		return err
+	}
 	seen := make(map[string]int, len(r.SizeExemptScanLimits))
 	for i := range r.SizeExemptScanLimits {
 		entry := &r.SizeExemptScanLimits[i]
@@ -107,6 +110,29 @@ func (r *ResponseScanning) validateSizeExemptScanLimits(warnings *[]Warning, now
 		}
 		if entry.MaxBytes < r.SizeExemptScanMaxBytes || entry.MaxBytes > r.SizeExemptScanMaxInflightBytes || int64(entry.MaxBytes) == math.MaxInt64 {
 			return fmt.Errorf("%s.max_bytes must be >= response_scanning.size_exempt_scan_max_bytes, <= response_scanning.size_exempt_scan_max_inflight_bytes, and leave room for one probe byte", field)
+		}
+	}
+	return nil
+}
+
+func validateResponseSizeScanLimitExpiryHorizons(entries []ResponseSizeScanLimit, now time.Time) error {
+	for i, entry := range entries {
+		field := fmt.Sprintf("response_scanning.size_exempt_scan_limits[%d]", i)
+		added, err := time.Parse(time.RFC3339, strings.TrimSpace(entry.Added))
+		if err != nil {
+			return fmt.Errorf("%s.added must be an RFC3339 timestamp: %w", field, err)
+		}
+		expires, err := time.Parse(time.RFC3339, strings.TrimSpace(entry.Expires))
+		if err != nil {
+			return fmt.Errorf("%s.expires must be an RFC3339 timestamp: %w", field, err)
+		}
+		if !added.Before(expires) {
+			return fmt.Errorf("%s.expires must be after added", field)
+		}
+		// Expired entries are inactive and retain the lapse-with-warning
+		// contract. Active grants cannot renew their horizon merely by reload.
+		if now.Before(expires) && (expires.Sub(added) > MaxResponseSizeScanLimitHorizon || expires.After(now.Add(MaxResponseSizeScanLimitHorizon))) {
+			return fmt.Errorf("%s.expires exceeds the maximum temporary horizon of %d days; shorten the grant", field, int(MaxResponseSizeScanLimitHorizon.Hours()/24))
 		}
 	}
 	return nil

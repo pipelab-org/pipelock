@@ -11,11 +11,16 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
 func responseHostCapTestPolicy(c *config.Config, host, mode string) {
@@ -38,6 +43,27 @@ func responseHostCapTestPolicy(c *config.Config, host, mode string) {
 	}
 	c.ResponseScanning.SizeExemptScanLimits = []config.ResponseSizeScanLimit{e}
 	c.FetchProxy.Monitoring.MaxDataPerMinute = 0
+}
+
+func TestResponseHostCapPinnedShieldAdmission(t *testing.T) {
+	const host = "downloads.vendor.example"
+	cfg := config.Defaults()
+	responseHostCapTestPolicy(cfg, host, "expired")
+	cfg.BrowserShield.MaxShieldBytes = 1024
+	// This response was admitted while the grant was active. Simulate the
+	// later Shield phase after expiry without sleeping or changing the clock.
+	admitted := cfg.ResponseScanning.SizeExemptScanLimitForHost(host, time.Now().Add(-90*time.Minute))
+	if admitted != 8192 {
+		t.Fatalf("admission limit=%d", admitted)
+	}
+	for _, transport := range []string{TransportForward, TransportConnect, TransportReverse} {
+		if got := shieldMaxBytesForAdmittedResponse(cfg, host, transport, admitted); got != admitted {
+			t.Fatalf("%s pinned cap=%d", transport, got)
+		}
+		if got := shieldMaxBytesForResponse(cfg, host, transport); got != cfg.ResponseScanning.SizeExemptScanMaxBytes {
+			t.Fatalf("%s new admission cap=%d", transport, got)
+		}
+	}
 }
 
 func TestResponseHostCapTransports(t *testing.T) {
@@ -140,6 +166,65 @@ func TestResponseHostCapShield(t *testing.T) {
 				t.Fatalf("%s/%s limit=%d want=%d", transport, host, got, want)
 			}
 		}
+	}
+}
+
+// With the optional response layer disabled the immutable core floor still
+// scans, so the bounded read is the scanned reverse call site. This proves the
+// Browser Shield whole-body ceiling follows the same host selector end to end:
+// a live grant yields one whole shielded body, a neighbor or lapsed grant does
+// not. The shield-only read branch is unreachable while the core floor exists.
+func TestResponseHostCapReverseShieldOnly(t *testing.T) {
+	const shieldCap = 1024
+	page := "<html><body>" + strings.Repeat("safe document text ", 4000/19+1) +
+		`<img src="https://tracker.vendor.example/p.gif" width="1" height="1"></body></html>`
+	for _, mode := range []string{"clean", "neighbor", "expired"} {
+		t.Run(mode, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, page)
+			}))
+			t.Cleanup(upstream.Close)
+			upstreamURL, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := reverseTestConfig()
+			responseHostCapTestPolicy(cfg, "127.0.0.1", mode)
+			cfg.ResponseScanning.Enabled = false
+			cfg.BrowserShield.Enabled = true
+			cfg.BrowserShield.Strictness = config.ShieldStrictnessStandard
+			cfg.BrowserShield.StripTrackingPixels = true
+			cfg.BrowserShield.MaxShieldBytes = shieldCap
+			cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+			if len(page) <= cfg.ResponseScanning.SizeExemptScanMaxBytes || len(page) >= 8192 {
+				t.Fatalf("page size %d must sit between the shared and host ceilings", len(page))
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			var cfgPtr atomic.Pointer[config.Config]
+			var scPtr atomic.Pointer[scanner.Scanner]
+			cfgPtr.Store(cfg)
+			scPtr.Store(sc)
+			logger, _ := audit.New("json", "stdout", "", false, false)
+			t.Cleanup(logger.Close)
+			handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+			proxySrv := httptest.NewServer(handler)
+			t.Cleanup(proxySrv.Close)
+			resp := testGet(t, proxySrv.URL+"/page")
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "clean" {
+				if resp.StatusCode != http.StatusOK || strings.Contains(string(body), "tracker.vendor.example") || !strings.Contains(string(body), "</body></html>") {
+					t.Fatalf("host cap did not yield a whole shielded body: status=%d bytes=%d", resp.StatusCode, len(body))
+				}
+			} else if resp.StatusCode != http.StatusForbidden || strings.Contains(string(body), "safe document text") {
+				t.Fatalf("shield-only read ignored the shared ceiling: status=%d bytes=%d", resp.StatusCode, len(body))
+			}
+		})
 	}
 }
 

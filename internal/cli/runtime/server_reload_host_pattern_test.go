@@ -135,3 +135,23 @@ func TestServer_ReloadRejectsOverHorizonTemporaryExpiry(t *testing.T) {
 		t.Fatal("a rejected expiry reload changed the live config")
 	}
 }
+
+func TestServerReloadRejectsOverHorizonResponseScanLimit(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	oldCfg := s.proxy.CurrentConfig()
+	newCfg := oldCfg.Clone()
+	now := time.Now().UTC()
+	newCfg.ResponseScanning.SizeExemptDomains = append(newCfg.ResponseScanning.SizeExemptDomains, "downloads.vendor.example")
+	newCfg.ResponseScanning.SizeExemptScanLimits = []config.ResponseSizeScanLimit{{
+		Host: "downloads.vendor.example", MaxBytes: newCfg.ResponseScanning.SizeExemptScanMaxBytes,
+		Owner: "operator", Reason: "temporary scanned download", Added: now.Format(time.RFC3339),
+		Expires: now.Add(config.MaxResponseSizeScanLimitHorizon + time.Hour).Format(time.RFC3339),
+	}}
+	err := s.Reload(newCfg)
+	if err == nil || !strings.Contains(err.Error(), "response_scanning.size_exempt_scan_limits[0].expires") || !strings.Contains(err.Error(), "maximum temporary horizon") {
+		t.Fatalf("reload must reject scan-cap horizon at the activation boundary: %v", err)
+	}
+	if s.proxy.CurrentConfig() != oldCfg {
+		t.Fatal("rejected grant changed live config")
+	}
+}

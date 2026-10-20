@@ -2399,6 +2399,7 @@ func newInterceptHandler(
 		// falls through to the buffered path below, which still runs media
 		// policy. Preserves the "media policy runs even when response scanning
 		// is disabled" invariant and matches the exempt_domains validator warning.
+		admittedScanLimit := ic.Config.ResponseScanning.SizeExemptScanLimitForHost(ic.TargetHost, time.Now())
 		maxResp := ic.Config.TLSInterception.MaxResponseBytes
 		if maxResp <= 0 {
 			maxResp = interceptDefaultMaxResp
@@ -2594,7 +2595,7 @@ func newInterceptHandler(
 				}
 				var scanFailure *sizeExemptResponseReadError
 				var releaseSizeExemptScan sizeExemptScanRelease
-				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, ic.Config.ResponseScanning.SizeExemptScanLimitForHost(ic.TargetHost, time.Now()), ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
+				respBody, releaseSizeExemptScan, scanFailure = interceptSizeExemptScanBudget(ic).readBoundedSizeExemptResponse(ic.TargetHost, respBody, resp.Body, admittedScanLimit, ic.Config.ResponseScanning.SizeExemptScanMaxInflightBytes, responseStreamingSizeRemedies(ic.Config, resp.Header, true))
 				if scanFailure != nil {
 					if scanFailure.Err != nil {
 						ic.Logger.LogError(actx, scanFailure.Err)
@@ -2660,7 +2661,7 @@ func newInterceptHandler(
 			var shieldSummary *receipt.ShieldSummary
 			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
 			if shieldBlocked == nil {
-				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{scanOriginal: scanOriginal, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{admittedScanLimit: admittedScanLimit, scanOriginal: scanOriginal, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
 			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)

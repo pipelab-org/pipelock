@@ -19,6 +19,12 @@ import (
 // finishes. Both cases can safely reuse the response-scanning ceiling. Fetch
 // has no size-exempt bounded-buffer path and keeps the ordinary shield ceiling.
 func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) int {
+	return shieldMaxBytesForAdmittedResponse(cfg, hostname, transport, cfg.ResponseScanning.SizeExemptScanLimitForHost(hostname, time.Now()))
+}
+
+// Buffered transports pin the limit once, before reading the response. Reuse
+// that admission for Shield even when the grant expires during the body read.
+func shieldMaxBytesForAdmittedResponse(cfg *config.Config, hostname, transport string, scanLimit int) int {
 	limit := cfg.BrowserShield.MaxShieldBytes
 	if limit <= 0 || transport == TransportFetch ||
 		!isResponseSizeExempt(hostname, cfg.ResponseScanning.SizeExemptDomains) {
@@ -27,8 +33,8 @@ func shieldMaxBytesForResponse(cfg *config.Config, hostname, transport string) i
 
 	switch transport {
 	case TransportForward, TransportConnect, TransportReverse:
-		if capBytes := cfg.ResponseScanning.SizeExemptScanLimitForHost(hostname, time.Now()); capBytes > limit {
-			return capBytes
+		if scanLimit > limit {
+			return scanLimit
 		}
 	}
 	return limit
