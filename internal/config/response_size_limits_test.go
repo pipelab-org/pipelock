@@ -320,7 +320,7 @@ func TestResponseSizeScanLimitDuplicateExpiryOrder(t *testing.T) {
 			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates") {
 				t.Fatalf("duplicate expiry ordering accepted: %v", err)
 			}
-			if expiredFirst && c.ResponseScanning.SizeExemptScanLimitForHost(sizeLimitTestHost, now) != c.ResponseScanning.SizeExemptScanMaxBytes {
+			if c.ResponseScanning.SizeExemptScanLimitForHost(sizeLimitTestHost, now) != c.ResponseScanning.SizeExemptScanMaxBytes {
 				t.Fatal("unvalidated ambiguous grant failed to use shared cap")
 			}
 		})

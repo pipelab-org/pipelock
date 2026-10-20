@@ -37,10 +37,21 @@ func (r ResponseScanning) SizeExemptScanLimitForHost(host string, now time.Time)
 	if host == "" || !hostMatchesResponseSizeExemptDomain(host, r.SizeExemptDomains) {
 		return limit
 	}
-	for _, entry := range r.SizeExemptScanLimits {
+	var selected *ResponseSizeScanLimit
+	for i := range r.SizeExemptScanLimits {
+		entry := &r.SizeExemptScanLimits[i]
 		if canonicalCoreObserveHost(entry.Host) != host {
 			continue
 		}
+		// Validation rejects duplicate hosts even when an entry has expired.
+		// Direct callers must use the shared cap for the same ambiguity.
+		if selected != nil {
+			return limit
+		}
+		selected = entry
+	}
+	if selected != nil {
+		entry := selected
 		added, addedErr := time.Parse(time.RFC3339, entry.Added)
 		expires, expiryErr := time.Parse(time.RFC3339, entry.Expires)
 		if addedErr != nil || expiryErr != nil || !added.Before(expires) || expires.Sub(added) > MaxResponseSizeScanLimitHorizon || now.Before(added) || !now.Before(expires) ||
