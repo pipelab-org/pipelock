@@ -517,3 +517,85 @@ func TestDoorwayRelayTransitionsRemainInconclusive(t *testing.T) {
 		})
 	}
 }
+
+func TestDoorwayMissingForwarderReportsInstallationFailure(t *testing.T) {
+	for _, socket := range []fakeUnitState{{systemctlEnabled, systemctlActive}, {"disabled", "inactive"}, {systemctlEnabled, systemctlFailed}, {systemctlNotFound, "inactive"}} {
+		t.Run(socket.enabled+"/"+socket.active, func(t *testing.T) {
+			env := diagnosticDoorwayEnv(map[string]fakeUnitState{
+				testDoorwayProxySocket:          socket,
+				containedNamespaceForwarderUnit: {systemctlNotFound, "inactive"},
+			})
+			got := doctorDoorwayState(context.Background(), env, nil)
+			if got.status != statusFail || got.class != classInfra || got.remediation != installRemedy || !strings.Contains(got.detail, containedNamespaceForwarderUnit) || !strings.Contains(got.detail, systemctlNotFound) {
+				t.Fatalf("missing forwarder diagnosis=%+v", got)
+			}
+			status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+			if status != statusFail || !strings.Contains(detail, got.detail) || !strings.Contains(detail, installRemedy) {
+				t.Fatalf("verify=(%s,%s), doctor=%+v", status, detail, got)
+			}
+		})
+	}
+}
+
+func TestDoorwayRelayUnitFileStates(t *testing.T) {
+	// systemctl(1), "is-enabled output": these states do not prohibit starting
+	// the relay through its socket, even when is-enabled exits nonzero.
+	for _, enabled := range []string{systemctlEnabled, "enabled-runtime", "linked", "linked-runtime", "alias", "static", "indirect", "disabled", "generated", "transient"} {
+		for _, active := range []string{systemctlActive, "inactive"} {
+			t.Run(enabled+"/"+active, func(t *testing.T) {
+				env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxyRelay: {enabled, active}})
+				got := doctorDoorwayState(context.Background(), env, nil)
+				status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+				if got.status != statusPass || status != statusPass {
+					t.Fatalf("startable relay: doctor=%+v verify=(%s,%s)", got, status, detail)
+				}
+			})
+		}
+	}
+	for _, tc := range []struct {
+		enabled, status, remedy string
+	}{
+		{"bad", statusFail, installRemedy},
+		{"future-state", statusUnknown, doorwayInspectionRemedy},
+		{"Failed to get unit file state: Input/output error", statusUnknown, doorwayInspectionRemedy},
+	} {
+		for _, active := range []string{systemctlActive, "inactive"} {
+			t.Run(tc.enabled+"/"+active, func(t *testing.T) {
+				env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxyRelay: {tc.enabled, active}})
+				got := doctorDoorwayState(context.Background(), env, nil)
+				if got.status != tc.status || got.remediation != tc.remedy || !strings.Contains(got.detail, testDoorwayProxyRelay) || !strings.Contains(got.detail, tc.enabled) {
+					t.Fatalf("unusable relay: doctor=%+v", got)
+				}
+				status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+				if status != statusFail || !strings.Contains(detail, got.detail) || !strings.Contains(detail, tc.remedy) {
+					t.Fatalf("unusable relay must fail verification: verify=(%s,%s), doctor=%+v", status, detail, got)
+				}
+			})
+		}
+	}
+}
+
+func TestDoorwayInconclusiveDoctorFailsVerification(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change func(*probeEnv)
+	}{
+		{"unreadable systemctl", func(e *probeEnv) {
+			e.runCmd = func(context.Context, string, ...string) (string, int, error) { return "", -1, os.ErrPermission }
+		}},
+		{"missing pathname reader", func(e *probeEnv) { e.lstat = nil }},
+		{"unreadable pathname", func(e *probeEnv) {
+			e.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := diagnosticDoorwayEnv(nil)
+			tc.change(env)
+			got := doctorDoorwayState(context.Background(), env, nil)
+			status, detail := probeManagedDoorwaySockets(context.Background(), env, nil)
+			if got.status != statusUnknown || status != statusFail || !strings.Contains(detail, got.detail) || !strings.Contains(detail, got.remediation) {
+				t.Fatalf("inconclusive doorway must fail verification: doctor=%+v verify=(%s,%s)", got, status, detail)
+			}
+		})
+	}
+}

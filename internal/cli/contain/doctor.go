@@ -239,8 +239,26 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 		}
 		forwarderStates[doorway.forwarder] = doorwayUnitState{forwarderEnabled, forwarderActive}
 
-		if enabled == systemctlNotFound || relayEnabled == systemctlNotFound {
-			return fail(classInfra, "managed doorway unit is missing: "+socket+" or "+relay, installRemedy)
+		var missing []string
+		for _, unit := range []struct{ name, enabled string }{{socket, enabled}, {relay, relayEnabled}, {doorway.forwarder, forwarderEnabled}} {
+			if unit.enabled == systemctlNotFound {
+				missing = append(missing, unit.name)
+			}
+		}
+		if len(missing) != 0 {
+			return fail(classInfra, "managed doorway unit is missing: "+strings.Join(missing, ", ")+" ("+systemctlNotFound+")", installRemedy)
+		}
+		// systemctl(1), "is-enabled output", distinguishes unit-file state
+		// from activity. Disabled/static and the other startable states can
+		// still be socket-activated; masked units cannot start. "bad" means
+		// an invalid unit or another error, and unrecognized output is not
+		// evidence that the relay can start.
+		switch relayEnabled {
+		case systemctlEnabled, "enabled-runtime", "linked", "linked-runtime", "alias", "static", "indirect", "disabled", "generated", "transient", systemctlMasked, systemctlMasked + "-runtime":
+		case "bad":
+			return fail(classInfra, "managed doorway relay "+relay+" has invalid or unreadable unit-file state (bad)", installRemedy)
+		default:
+			return unknown("managed doorway relay "+relay+" has unrecognized unit-file state "+oneLine(relayEnabled), doorwayInspectionRemedy)
 		}
 		detail := ""
 		switch {

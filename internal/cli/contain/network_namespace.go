@@ -385,6 +385,8 @@ func managedDoorwaySocketNames(proxySocketPath string, services []config.Contain
 // probeManagedDoorwaySockets makes a failed or inactive socket an explicit
 // containment failure. Socket-activated forwarder services can be inactive
 // between connections; the socket is the continuously active doorway.
+// An inconclusive doctor observation also fails verification: without a
+// confirmed doorway, the namespace boundary cannot pass this prerequisite.
 func probeManagedDoorwaySockets(ctx context.Context, env *probeEnv, services []config.ContainmentLoopbackService) (string, string) {
 	result := doctorDoorwayState(ctx, env, services)
 	if result.status == statusPass {

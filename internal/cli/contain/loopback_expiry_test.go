@@ -230,11 +230,12 @@ func TestProbeAgentNetworkNamespaceFailsNamingExpiredEntryWhileCheckingSibling(t
 	t.Run("a drifted sibling is still reported next to the expired entry", func(t *testing.T) {
 		env := setup(t, true)
 		unit := loopbackForwarderUnitBase(sibling.Host, sibling.Port)
-		if err := os.Remove(filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), unit+".socket")); err != nil {
+		missingSocket := filepath.Join(filepath.Dir(env.proxyForwarderSocketPath), unit+".socket")
+		if err := os.Remove(missingSocket); err != nil {
 			t.Fatal(err)
 		}
 		status, detail := probeAgentNetworkNamespace(context.Background(), env)
-		if status != statusFail || !strings.Contains(detail, "is missing or drifted") {
+		if status != statusFail || !strings.Contains(detail, "managed doorway definition "+missingSocket+" could not be read:") || !strings.Contains(detail, installRemedy) {
 			t.Fatalf("probe = (%q, %q), want the unexpired sibling's drift reported", status, detail)
 		}
 		if !strings.Contains(detail, "127.0.0.1:9201") {
