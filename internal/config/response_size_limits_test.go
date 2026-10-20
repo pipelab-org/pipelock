@@ -5,6 +5,8 @@ package config
 
 import (
 	"math"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -278,4 +280,25 @@ func TestResponseSizeScanLimitYAMLLoad(t *testing.T) {
 	if _, err := LoadBytes([]byte(dateOnly)); err == nil {
 		t.Fatal("date-only grant loaded")
 	}
+}
+
+func TestResponseSizeScanLimitDocumentedHorizon(t *testing.T) {
+	if MaxResponseSizeScanLimitHorizon != MaxUnscannablePassthroughHorizon {
+		t.Fatal("scanned grants no longer match the documented temporary download tier")
+	}
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "configuration.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const prefix = "| `size_exempt_scan_limits` |"
+	for _, line := range strings.Split(string(doc), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			want := "for at most " + strconv.Itoa(int(MaxResponseSizeScanLimitHorizon/(24*time.Hour))) + " days."
+			if !strings.Contains(line, want) {
+				t.Fatalf("scanned grant documentation must state %q", want)
+			}
+			return
+		}
+	}
+	t.Fatal("scanned grant documentation row is missing")
 }

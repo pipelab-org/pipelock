@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func responseHostCapTestPolicy(c *config.Config, host, mode string) {
@@ -254,5 +255,130 @@ func TestResponseHostCapProbeLimitRejectsOverflow(t *testing.T) {
 	release()
 	if body != nil || failure == nil || budget.inflightBytes.Load() != 0 {
 		t.Fatal("invalid probe ceiling yielded a completed response")
+	}
+}
+
+// A grant that lapses while a response body is still arriving must not change
+// the ceiling that response was admitted under. The upstream sends the head,
+// holds the rest until the grant has expired, then finishes. Every buffered
+// consumer (bounded read and Browser Shield) has to keep the admitted ceiling,
+// so the whole page is shielded instead of being blocked by the shared one.
+func TestResponseHostCapLapsesMidResponse(t *testing.T) {
+	page := "<html><body>" + strings.Repeat("safe document text ", 4000/19+1) +
+		`<img src="https://tracker.vendor.example/p.gif" width="1" height="1"></body></html>`
+	for _, transport := range []string{TransportForward, TransportConnect, TransportReverse} {
+		t.Run(transport, func(t *testing.T) {
+			var expiresNanos atomic.Int64
+			handler := func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				_, _ = io.WriteString(w, page[:600])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				testwait.For(t, 10*time.Second, func() bool {
+					return time.Now().UnixNano() > expiresNanos.Load()
+				}, "response grant did not expire while the upstream held the body")
+				_, _ = io.WriteString(w, page[600:])
+			}
+			shape := func(c *config.Config, host string) {
+				responseHostCapTestPolicy(c, host, "clean")
+				c.BrowserShield.Enabled = true
+				c.BrowserShield.Strictness = config.ShieldStrictnessStandard
+				c.BrowserShield.StripTrackingPixels = true
+				c.BrowserShield.MaxShieldBytes = 1024
+				c.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+			}
+			// Set just before the request so setup time cannot lapse the grant
+			// before admission; the request then crosses expiry mid-body.
+			arm := func(c *config.Config) {
+				expires := time.Now().Add(1500 * time.Millisecond)
+				c.ResponseScanning.SizeExemptScanLimits[0].Expires = expires.UTC().Format(time.RFC3339Nano)
+				expiresNanos.Store(expires.UnixNano())
+			}
+			if len(page) <= 2048 || len(page) >= 8192 {
+				t.Fatalf("page size %d must sit between the shared and host ceilings", len(page))
+			}
+			var status int
+			var got string
+			switch transport {
+			case TransportForward:
+				upstream := newIPv4Server(t, http.HandlerFunc(handler))
+				t.Cleanup(upstream.Close)
+				u, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, p, cleanup := setupForwardProxyWithInstance(t, func(c *config.Config) { shape(c, u.Hostname()) })
+				t.Cleanup(cleanup)
+				p.responseBodyLimit = 1024
+				arm(p.CurrentConfig())
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+				req.RemoteAddr = "127.0.0.1:12345"
+				w := httptest.NewRecorder()
+				p.handleForwardHTTP(w, req)
+				status, got = w.Code, w.Body.String()
+			case TransportConnect:
+				upstream := httptest.NewTLSServer(http.HandlerFunc(handler))
+				t.Cleanup(upstream.Close)
+				cache, pool, c, _, logger, m := testInterceptSetup(t)
+				u, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				shape(c, u.Hostname())
+				c.TLSInterception.MaxResponseBytes = 1024
+				sc := scanner.MustNew(c)
+				t.Cleanup(sc.Close)
+				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				p, err := New(c, audit.NewNop(), sc, m)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { p.Close() })
+				arm(c)
+				resp := interceptAndRequestWithProxy(t, upstream, cache, pool, c, sc, logger, m, req, p)
+				t.Cleanup(func() { _ = resp.Body.Close() })
+				payload, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				status, got = resp.StatusCode, string(payload)
+			case TransportReverse:
+				upstream := httptest.NewServer(http.HandlerFunc(handler))
+				t.Cleanup(upstream.Close)
+				upstreamURL, err := url.Parse(upstream.URL)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cfg := reverseTestConfig()
+				shape(cfg, "127.0.0.1")
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				var cfgPtr atomic.Pointer[config.Config]
+				var scPtr atomic.Pointer[scanner.Scanner]
+				cfgPtr.Store(cfg)
+				scPtr.Store(sc)
+				logger, _ := audit.New("json", "stdout", "", false, false)
+				t.Cleanup(logger.Close)
+				rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, shield.NewEngine(nil))
+				rp.responseBodyLimit = 1024
+				proxySrv := httptest.NewServer(rp)
+				t.Cleanup(proxySrv.Close)
+				arm(cfg)
+				resp := testGet(t, proxySrv.URL+"/page")
+				t.Cleanup(func() { _ = resp.Body.Close() })
+				payload, err := io.ReadAll(resp.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				status, got = resp.StatusCode, string(payload)
+			}
+			if status != http.StatusOK || strings.Contains(got, "tracker.vendor.example") || !strings.Contains(got, "</body></html>") {
+				t.Fatalf("admitted ceiling not kept across expiry: status=%d bytes=%d tail=%q", status, len(got), got[max(0, len(got)-120):])
+			}
+		})
 	}
 }
