@@ -553,7 +553,7 @@ Checks:
 
 Compatibility note: doorway definition failures in `contain verify` now use the same `managed doorway definition ...` detail as `contain doctor`. An unreadable definition reports `could not be read`; readable content that differs from the managed definition reports `is missing or drifted`. Declared loopback definitions retain the `contain reload-nft-rules` remedy. These details can include several independent findings. Automation that matches the previous diagnostic text needs updating; use the JSON record's `name` and `status` fields to identify the probe and its result.
 
-Install remedies from `contain verify --port 9432` and `contain doctor --port 9432` include `pipelock contain install --proxy-port 9432`, preserving the selected proxy port. Diagnostics using the default port keep the bare install command. Both diagnostics suggest repairs without running them.
+Install remedies from `contain verify --port 9432` and `contain doctor --port 9432` include `pipelock contain install --proxy-port 9432`, preserving the selected proxy port. Doctor retry advice also retains `--port 9432`, including the recheck after reinstalling for disabled forwarding. Diagnostics using the default port keep the bare commands. Both diagnostics suggest repairs without running them.
 
 When the effective managed config confirms disabled forwarding, checks 2–5 fail with a remedy that names `forward_proxy.enabled: true` and the config path. Set that field, rerun `contain install`, then rerun `doctor`. A CONNECT `405` alone does not establish disabled forwarding: if the config enables forwarding or cannot be inspected, doctor preserves the live probe diagnostics rather than attributing the response to that setting.
 

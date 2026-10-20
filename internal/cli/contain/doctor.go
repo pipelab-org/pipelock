@@ -183,7 +183,7 @@ func doctorDoorwaySocketReader(base *probeEnv, env *doctorEnv) func(context.Cont
 			return fail(classInfra, "containment.loopback_services cannot be honored: "+problem, "correct the managed containment configuration and "+installRemedyForPort(env.port))
 		}
 		if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
-			return unknown("containment.loopback_services could not be determined: "+problem, "restore access to the managed containment configuration and rerun `pipelock contain doctor`")
+			return unknown("containment.loopback_services could not be determined: "+problem, "restore access to the managed containment configuration and rerun `"+doctorCommandForPort(env.port)+"`")
 		}
 		return doctorDoorwayState(ctx, &probe, services)
 	}
@@ -206,6 +206,15 @@ func installCommandForPort(port int) string {
 		return command
 	}
 	return fmt.Sprintf("%s --proxy-port %d", command, port)
+}
+
+// doctorCommandForPort keeps rechecks on the same proxy as the failed probe.
+func doctorCommandForPort(port int) string {
+	const command = "pipelock contain doctor"
+	if port == 0 || port == defaultProxyPort {
+		return command
+	}
+	return fmt.Sprintf("%s --port %d", command, port)
 }
 
 func installRemedyForPort(port int) string {
@@ -715,8 +724,6 @@ func checkDoctorViewerRFBAccess(ctx context.Context, env *doctorEnv) doctorResul
 // Shared check helpers
 // ---------------------------------------------------------------------------
 
-const remediationRunAsRoot = "re-run as root: sudo pipelock contain doctor"
-
 const rawEgressAttributionRemediation = "verify the managed nftables owner-match DROP counter is readable and increasing (`pipelock contain verify`)"
 
 // sudoAgent prefixes a command so it runs as the contained agent. doctor is an
@@ -730,10 +737,10 @@ func (env *doctorEnv) sudoAgent(args ...string) (string, []string) {
 // return that skip; (zero, false) when the command actually executed.
 func classifyAgentRun(out string, err error, tool string, port int) (doctorResult, bool) {
 	if err != nil {
-		return skip(fmt.Sprintf("%s could not be launched: %v", tool, err), remediationRunAsRoot), true
+		return skip(fmt.Sprintf("%s could not be launched: %v", tool, err), "re-run as root: sudo "+doctorCommandForPort(port)), true
 	}
 	if isSudoRefusal(out) {
-		return skip("sudo refused without a password", remediationRunAsRoot), true
+		return skip("sudo refused without a password", "re-run as root: sudo "+doctorCommandForPort(port)), true
 	}
 	if isSudoUserMissing(out) {
 		return skip(fmt.Sprintf("agent user %q is not present", "pipelock-agent"), "run `"+installCommandForPort(port)+"` first"), true
@@ -981,7 +988,7 @@ func checkDisabledForwardProxy(env *doctorEnv) (doctorResult, bool) {
 	}
 	return fail(classInfra,
 		"managed config disables forwarding; contained clients require CONNECT and absolute-URI requests",
-		"set forward_proxy.enabled: true in "+env.configPath+" and "+installRemedyForPort(env.port)+", then rerun `pipelock contain doctor`"), true
+		"set forward_proxy.enabled: true in "+env.configPath+" and "+installRemedyForPort(env.port)+", then rerun `"+doctorCommandForPort(env.port)+"`"), true
 }
 
 // formatObservedHTTPCode renders a parsed status or an explicit parse failure.

@@ -255,16 +255,62 @@ func TestDiagnosticLaunchEnvRemediesPreservePort(t *testing.T) {
 	}
 }
 
-func TestDiagnosticDisabledForwardingRemedyPreservesPort(t *testing.T) {
-	env := allPassDoctorEnv(t)
-	env.port = 9432
-	env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
-	if err := os.WriteFile(env.configPath, []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
-		t.Fatal(err)
+func expectedDiagnosticDoctorCommand(port int) string {
+	if port == 0 || port == defaultProxyPort {
+		return "pipelock contain doctor"
 	}
-	got, done := checkDisabledForwardProxy(env)
-	if !done || got.status != statusFail || got.remediation != "set forward_proxy.enabled: true in "+env.configPath+" and rerun `pipelock contain install --proxy-port 9432`, then rerun `pipelock contain doctor`" {
-		t.Fatalf("disabled forwarding result = %+v, done=%t", got, done)
+	return "pipelock contain doctor --port " + strconv.Itoa(port)
+}
+
+func TestDiagnosticDisabledForwardingRemedyPreservesPort(t *testing.T) {
+	for _, port := range []int{defaultProxyPort, 1, 9432, 65535} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			env := allPassDoctorEnv(t)
+			env.port = port
+			env.configPath = filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(env.configPath, []byte("forward_proxy:\n  enabled: false\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got, done := checkDisabledForwardProxy(env)
+			want := "set forward_proxy.enabled: true in " + env.configPath + " and rerun `" + expectedDiagnosticInstallCommand(port) + "`, then rerun `" + expectedDiagnosticDoctorCommand(port) + "`"
+			if !done || got.status != statusFail || got.class != classInfra || got.remediation != want {
+				t.Fatalf("disabled forwarding result = %+v, done=%t; want remediation %q", got, done, want)
+			}
+		})
+	}
+}
+
+func TestDiagnosticDoctorCommandPreservesPort(t *testing.T) {
+	for _, port := range []int{0, defaultProxyPort, 1, 9432, 65535} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			if got, want := doctorCommandForPort(port), expectedDiagnosticDoctorCommand(port); got != want {
+				t.Fatalf("doctor command = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestDiagnosticDoctorRechecksPreservePort(t *testing.T) {
+	for _, port := range []int{defaultProxyPort, 9432} {
+		t.Run(strconv.Itoa(port), func(t *testing.T) {
+			base := diagnosticDoorwayEnv(nil)
+			base.readFile = func(string) ([]byte, error) { return nil, os.ErrPermission }
+			got := doctorDoorwaySocketReader(base, &doctorEnv{port: port})(t.Context())
+			want := "restore access to the managed containment configuration and rerun `" + expectedDiagnosticDoctorCommand(port) + "`"
+			if got.status != statusUnknown || got.class != classInfra || got.remediation != want {
+				t.Fatalf("declaration recheck = %+v; want %q", got, want)
+			}
+			for _, input := range []struct {
+				out string
+				err error
+			}{{err: os.ErrPermission}, {out: "sudo: a password is required"}} {
+				got, done := classifyAgentRun(input.out, input.err, "curl", port)
+				want := "re-run as root: sudo " + expectedDiagnosticDoctorCommand(port)
+				if !done || got.status != statusSkip || got.remediation != want {
+					t.Fatalf("root recheck = %+v, done=%t; want %q", got, done, want)
+				}
+			}
+		})
 	}
 }
 

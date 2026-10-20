@@ -17,7 +17,7 @@ import (
 
 func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult {
 	if env.readFile == nil || env.runCmd == nil {
-		return unknown("runtime socket isolation could not be read", "restore access and rerun `pipelock contain doctor`")
+		return unknown("runtime socket isolation could not be read", "restore access and rerun `"+doctorCommandForPort(env.port)+"`")
 	}
 	wrapperDir := env.wrapperDir
 	if wrapperDir == "" {
@@ -40,7 +40,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		return fail(classInfra, "managed runtime socket units cannot be determined: "+problem, installRemedyForPort(env.port))
 	}
 	if problem != "" && !strings.HasPrefix(problem, "no managed config was found at ") {
-		return unknown("managed runtime socket units cannot be determined: "+problem, "restore access and rerun `pipelock contain doctor`")
+		return unknown("managed runtime socket units cannot be determined: "+problem, "restore access and rerun `"+doctorCommandForPort(env.port)+"`")
 	}
 	units := []string{containedNamespaceForwarderUnit}
 	proxyParent := filepath.Dir(containedDoorwaySocketPath)
@@ -69,7 +69,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 	for _, unit := range units {
 		out, code, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=TemporaryFileSystem", "--value")
 		if showErr != nil || code != 0 {
-			return unknown("runtime mounts for "+unit+" could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+			return unknown("runtime mounts for "+unit+" could not be read", "restore access to systemctl and rerun `"+doctorCommandForPort(env.port)+"`")
 		}
 		if err := sameLifecyclePathList(strings.TrimSpace(out), runtimeSocketTemporaryFileSystems()); err != nil {
 			return fail(classInfra, "managed unit "+unit+" lacks runtime socket isolation", installRemedyForPort(env.port))
@@ -77,7 +77,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		if expected, forwarder := expectedBinds[unit]; forwarder {
 			out, code, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=BindReadOnlyPaths", "--value")
 			if showErr != nil || code != 0 {
-				return unknown("runtime doorway bind for "+unit+" could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
+				return unknown("runtime doorway bind for "+unit+" could not be read", "restore access to systemctl and rerun `"+doctorCommandForPort(env.port)+"`")
 			}
 			binds, parseErr := parseSystemdBindShow(strings.TrimSpace(out))
 			if parseErr != nil || !sameBindList(binds, []string{expected}) {
