@@ -4,44 +4,78 @@
 package serviceenv
 
 import (
+	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
+	"io"
 	"strconv"
-	"strings"
 )
 
-// busctl(1) introspect documents NAME TYPE SIGNATURE RESULT/VALUE FLAGS.
-// Upstream v249 src/busctl/busctl.c:introspect prints the first three columns
-// without abbreviation. JSON mode does not change this command's table.
-// Only availability/signatures come from this table; values always use the
-// strict typed get-property path. Introspection cannot silently turn a denied
-// property getter into an absent property.
+// busctl(1) --xml-interface returns the Introspect metadata without the
+// property GetAll performed by its human-readable table (upstream v249
+// src/busctl/busctl.c:introspect). Values still require strict typed reads.
+// https://www.freedesktop.org/software/systemd/man/busctl.html#--xml-interface
 func serviceCatalog(ctx context.Context, b backend) (map[string]string, error) {
-	out, code, err := b.command(ctx, "/usr/bin/busctl", "--system", "--no-pager", "--no-legend", "--allow-interactive-authorization=no", "--auto-start=no", "introspect", "org.freedesktop.systemd1", unitObject, serviceInterface)
-	if err != nil || code != 0 || len(out) == 0 || len(out) > maxObservationBytes {
+	out, code, err := b.command(ctx, "/usr/bin/busctl", "--system", "--no-pager", "--xml-interface", "--allow-interactive-authorization=no", "--auto-start=no", "introspect", "org.freedesktop.systemd1", unitObject, serviceInterface)
+	if err != nil || code != 0 || len(out) == 0 || len(out) > maxCatalogBytes {
 		return nil, errors.New("cannot inspect service property availability")
 	}
-	properties := make(map[string]string)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 5 || !strings.HasPrefix(fields[0], ".") {
-			return nil, errors.New("invalid service property catalog")
+	var node struct {
+		XMLName    xml.Name `xml:"node"`
+		Interfaces []struct {
+			Name       string `xml:"name,attr"`
+			Properties []struct {
+				Name   string `xml:"name,attr"`
+				Type   string `xml:"type,attr"`
+				Access string `xml:"access,attr"`
+			} `xml:"property"`
+		} `xml:"interface"`
+	}
+	decoder := xml.NewDecoder(bytes.NewReader(out))
+	if decoder.Decode(&node) != nil {
+		return nil, errors.New("invalid service property catalog XML")
+	}
+	// Decode permits one root; refuse another root or trailing non-whitespace.
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
 		}
-		switch fields[1] {
-		case "method", "signal":
+		if err != nil {
+			return nil, errors.New("invalid trailing service catalog XML")
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if len(bytes.TrimSpace(value)) == 0 {
+				continue
+			}
+		case xml.Comment:
 			continue
-		case "property":
-		default:
-			return nil, errors.New("invalid service catalog member")
 		}
-		name := strings.TrimPrefix(fields[0], ".")
-		if !validName(name) {
-			return nil, errors.New("invalid service catalog property")
+		return nil, errors.New("unexpected trailing service catalog XML")
+	}
+	var properties map[string]string
+	for _, iface := range node.Interfaces {
+		if iface.Name != serviceInterface {
+			continue
 		}
-		if _, duplicate := properties[name]; duplicate {
-			return nil, errors.New("duplicate service catalog property")
+		if properties != nil {
+			return nil, errors.New("duplicate service catalog interface")
 		}
-		properties[name] = fields[2]
+		properties = make(map[string]string)
+		for _, property := range iface.Properties {
+			if !validName(property.Name) || property.Type == "" || property.Access != "read" && property.Access != "readwrite" {
+				return nil, errors.New("invalid service catalog property")
+			}
+			if _, duplicate := properties[property.Name]; duplicate {
+				return nil, errors.New("duplicate service catalog property")
+			}
+			properties[property.Name] = property.Type
+		}
+	}
+	if properties == nil {
+		return nil, errors.New("missing service catalog interface")
 	}
 	return properties, nil
 }

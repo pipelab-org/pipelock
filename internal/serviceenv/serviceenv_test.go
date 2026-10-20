@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -72,6 +73,7 @@ func newFixture(t *testing.T) *fixture {
 		}
 		if slices.Contains(args, "introspect") {
 			var out strings.Builder
+			out.WriteString(`<node><interface name="` + serviceInterface + `">`)
 			for name, body := range f.properties {
 				if strings.HasPrefix(name, "manager:") || name == "FragmentPath" || name == "DropInPaths" {
 					continue
@@ -80,8 +82,9 @@ func newFixture(t *testing.T) *fixture {
 					Type string `json:"type"`
 				}
 				_ = json.Unmarshal(body, &envelope)
-				_, _ = fmt.Fprintf(&out, ".%s property %s - const\n", name, envelope.Type)
+				_, _ = fmt.Fprintf(&out, `<property name="%s" type="%s" access="read"/>`, name, envelope.Type)
 			}
+			out.WriteString(`</interface></node>`)
 			return []byte(out.String()), 0, nil
 		}
 		name := args[len(args)-1]
@@ -415,6 +418,250 @@ func TestMalformedConfigurationInputsRefuse(t *testing.T) {
 			}
 			if err := check(t.Context(), opts, f.b); err == nil || strings.Contains(err.Error(), "secret-sentinel") {
 				t.Fatal("uncertain observation accepted or exposed")
+			}
+		})
+	}
+}
+
+func TestProspectiveInvocationBinding(t *testing.T) {
+	expected := []string{"/usr/local/bin/pipelock", "run", "--config", candidatePath, "--capture-output", "/var/lib/pipelock/captures"}
+	for _, variant := range []string{"executable", "candidate", "argv0", "flags", "multiple"} {
+		t.Run(variant, func(t *testing.T) {
+			f := newFixture(t)
+			opts := fixtureOptions()
+			opts.ExpectedExecStart = expected
+			argv := slices.Clone(expected)
+			path := expected[0]
+			flags := []string{}
+			switch variant {
+			case "executable":
+				path = "/bin/other"
+			case "candidate":
+				argv[3] = "/other.yaml"
+			case "argv0":
+				argv[0] = "/other"
+			case "flags":
+				flags = []string{"privileged"}
+			}
+			row := []any{path, argv, false, 0, 0, 0, 0, 0, 0, 0}
+			rows := []any{row}
+			if variant == "multiple" {
+				rows = append(rows, row)
+			}
+			f.properties["ExecStart"] = typed("a(sasbttttuii)", rows)
+			f.properties["ExecStartEx"] = typed("a(sasasttttuii)", []any{[]any{path, argv, flags, 0, 0, 0, 0, 0, 0, 0}})
+			if err := check(t.Context(), opts, f.b); err == nil || f.executions != 0 {
+				t.Fatal("mismatched loaded invocation reached validator")
+			}
+		})
+	}
+}
+
+func TestOptionalUnreadableEnvironmentFile(t *testing.T) {
+	f := newFixture(t)
+	f.properties["EnvironmentFiles"] = typed("a(sb)", []any{[]any{"/run/optional", true}})
+	read := f.b.readFile
+	f.b.readFile = func(path string) (fileImage, error) {
+		if path == "/run/optional" {
+			return fileImage{}, os.ErrPermission
+		}
+		return read(path)
+	}
+	if err := check(t.Context(), fixtureOptions(), f.b); err != nil {
+		t.Fatalf("optional unreadable file refused: %v", err)
+	}
+}
+
+func prospectiveFixture(t *testing.T) (*fixture, CheckOptions) {
+	t.Helper()
+	f := newFixture(t)
+	opts := fixtureOptions()
+	opts.ExpectedExecStart = []string{opts.Binary, "run", "--config", candidatePath, "--capture-output", "/var/lib/pipelock/captures"}
+	f.properties["ExecStart"] = typed("a(sasbttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, false, 0, 0, 0, 0, 0, 0, 0}})
+	f.properties["ExecStartEx"] = typed("a(sasasttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, []string{}, 0, 0, 0, 0, 0, 0, 0}})
+	return f, opts
+}
+
+func TestProspectiveInvocationSuccessAndReobservation(t *testing.T) {
+	f, opts := prospectiveFixture(t)
+	if err := check(t.Context(), opts, f.b); err != nil || f.executions != 1 {
+		t.Fatalf("matching invocation refused: %v", err)
+	}
+	for _, changed := range []string{"ExecStart", "ExecStartEx"} {
+		t.Run(changed, func(t *testing.T) {
+			f, opts := prospectiveFixture(t)
+			execute := f.b.execute
+			f.b.execute = func(ctx context.Context, opts CheckOptions, env []string, id identity, candidate []byte) error {
+				_ = execute(ctx, opts, env, id, candidate)
+				// Runtime timestamps are part of the stable observation too.
+				if changed == "ExecStart" {
+					f.properties[changed] = typed("a(sasbttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, false, 1, 0, 0, 0, 0, 0, 0}})
+				} else {
+					f.properties[changed] = typed("a(sasasttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, []string{}, 1, 0, 0, 0, 0, 0, 0}})
+				}
+				return nil
+			}
+			if err := check(t.Context(), opts, f.b); err == nil || !strings.Contains(err.Error(), "changed during validation") {
+				t.Fatal("changed invocation accepted")
+			}
+		})
+	}
+}
+
+func TestProspectiveInvocationMalformedAndFlags(t *testing.T) {
+	for _, body := range [][]byte{
+		typed("a(sasasttttuii)", nil), typed("a(sasasttttuii)", []any{}),
+		typed("a(sasasttttuii)", []any{[]any{"/usr/local/bin/pipelock"}}),
+		typed("as", []string{}),
+	} {
+		f, opts := prospectiveFixture(t)
+		f.properties["ExecStartEx"] = body
+		if err := check(t.Context(), opts, f.b); err == nil || f.executions != 0 {
+			t.Fatal("malformed invocation accepted")
+		}
+	}
+	for _, flags := range []any{nil, []string{"ignore-failure"}, []string{"privileged"}, []string{"no-setuid"}, []string{"no-env-expand"}, []string{"ambient"}, []any{nil}} {
+		f, opts := prospectiveFixture(t)
+		f.properties["ExecStartEx"] = typed("a(sasasttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, flags, 0, 0, 0, 0, 0, 0, 0}})
+		if err := check(t.Context(), opts, f.b); err == nil || f.executions != 0 {
+			t.Fatal("nonempty or malformed command flags accepted")
+		}
+	}
+	f, opts := prospectiveFixture(t)
+	f.properties["ExecStart"] = typed("a(sasbttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, true, 0, 0, 0, 0, 0, 0, 0}})
+	if check(t.Context(), opts, f.b) == nil || f.executions != 0 {
+		t.Fatal("ignore-failure command accepted")
+	}
+}
+
+func TestServiceUnavailableClassification(t *testing.T) {
+	for _, phase := range []string{"manager", "planned identity", "static identity", "credential"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFixture(t)
+			opts := fixtureOptions()
+			switch phase {
+			case "manager":
+				f.b.command = func(context.Context, string, ...string) ([]byte, int, error) {
+					return nil, -1, errors.New("secret-sentinel")
+				}
+			case "planned identity":
+				f.show = "Id=pipelock.service\nLoadState=not-found\nNeedDaemonReload=no\nTransient=no\n"
+				opts.AllowMissing = true
+				opts.PlannedUser = "not-created"
+				f.b.identity = func(string, string, []string) (identity, error) { return identity{}, ErrUnavailable }
+			case "static identity":
+				f.b.identity = func(string, string, []string) (identity, error) { return identity{}, ErrUnavailable }
+			case "credential":
+				f.b.execute = func(context.Context, CheckOptions, []string, identity, []byte) error { return ErrUnavailable }
+			}
+			err := check(t.Context(), opts, f.b)
+			if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), "secret-sentinel") {
+				t.Fatal("unavailable environment lost its safe classification")
+			}
+		})
+	}
+}
+
+func TestOptionalEnvironmentFileAvailabilityChanges(t *testing.T) {
+	for _, initialReadable := range []bool{false, true} {
+		f := newFixture(t)
+		f.properties["EnvironmentFiles"] = typed("a(sb)", []any{[]any{"/run/optional", true}})
+		read := f.b.readFile
+		readable := initialReadable
+		f.b.readFile = func(path string) (fileImage, error) {
+			if path != "/run/optional" {
+				return read(path)
+			}
+			if !readable {
+				return fileImage{}, errUnreadableFile
+			}
+			return fileImage{Data: []byte("A=value\n"), Stamp: "readable"}, nil
+		}
+		f.b.execute = func(context.Context, CheckOptions, []string, identity, []byte) error {
+			readable = !readable
+			return nil
+		}
+		if err := check(t.Context(), fixtureOptions(), f.b); err == nil || !strings.Contains(err.Error(), "changed during validation") {
+			t.Fatal("optional file availability change accepted")
+		}
+	}
+}
+
+func TestProspectiveInvocationObservationFailures(t *testing.T) {
+	for _, failure := range []string{"expected binary", "missing extended", "denied getter", "runtime null", "runtime type"} {
+		t.Run(failure, func(t *testing.T) {
+			f, opts := prospectiveFixture(t)
+			switch failure {
+			case "expected binary":
+				opts.ExpectedExecStart[0] = "/wrong/binary"
+			case "missing extended":
+				delete(f.properties, "ExecStartEx")
+			case "denied getter":
+				command := f.b.command
+				f.b.command = func(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
+					if args[len(args)-1] == "ExecStartEx" {
+						return nil, 1, nil
+					}
+					return command(ctx, binary, args...)
+				}
+			case "runtime null", "runtime type":
+				var invalid any
+				if failure == "runtime type" {
+					invalid = "not-numeric"
+				}
+				f.properties["ExecStartEx"] = typed("a(sasasttttuii)", []any{[]any{opts.Binary, opts.ExpectedExecStart, []string{}, invalid, 0, 0, 0, 0, 0, 0}})
+			}
+			if err := check(t.Context(), opts, f.b); err == nil || f.executions != 0 {
+				t.Fatal("uncertain invocation reached validator")
+			}
+		})
+	}
+}
+
+func TestCanceledServiceCheckIsNotUnavailable(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	err := check(ctx, fixtureOptions(), f.b)
+	if err == nil || errors.Is(err, ErrUnavailable) || f.executions != 0 {
+		t.Fatal("canceled check could be deferred as unavailable")
+	}
+}
+
+func TestOversizedTypedObservationIsNotUnavailable(t *testing.T) {
+	f := newFixture(t)
+	f.b.command = func(context.Context, string, ...string) ([]byte, int, error) {
+		return []byte(strings.Repeat("x", maxObservationBytes+1)), 0, nil
+	}
+	if _, err := readProperty(t.Context(), f.b, unitObject, serviceInterface, "User"); err == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatal("oversized typed input could be deferred as unavailable")
+	}
+}
+
+func TestHelperPolicyFailuresCannotBeDeferred(t *testing.T) {
+	for _, phase := range []string{"identity overflow", "typed overflow", "identity canceled", "typed canceled", "child canceled"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newFixture(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			command := f.b.command
+			if phase == "child canceled" {
+				f.b.execute = func(context.Context, CheckOptions, []string, identity, []byte) error { cancel(); return ErrUnavailable }
+			} else {
+				f.b.command = func(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
+					fail := strings.HasPrefix(phase, "identity") || binary == "/usr/bin/busctl"
+					if !fail {
+						return command(ctx, binary, args...)
+					}
+					if strings.HasSuffix(phase, "canceled") {
+						cancel()
+						return nil, -1, context.Canceled
+					}
+					return nil, -1, errObservationOverflow
+				}
+			}
+			if err := check(ctx, fixtureOptions(), f.b); err == nil || errors.Is(err, ErrUnavailable) {
+				t.Fatal("policy/cancellation failure could be deferred")
 			}
 		})
 	}

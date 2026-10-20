@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -40,6 +42,18 @@ func TestInstallServiceConfigOptionsAndOrdering(t *testing.T) {
 		t.Fatal("both validation phases did not run")
 	}
 	early, prospective := observed[0], observed[1]
+	if !slices.Equal(early.PlannedEnvironment, managedServiceEnvironment(env)) || !slices.Equal(prospective.ExpectedExecStart, managedServiceArgv(env)) {
+		t.Fatal("rendered declarations differ from validation inputs")
+	}
+	unit := renderSystemUnit(env)
+	for _, assignment := range early.PlannedEnvironment {
+		if !strings.Contains(unit, "Environment="+assignment+"\n") {
+			t.Fatal("planned environment missing from rendered unit")
+		}
+	}
+	if !strings.Contains(unit, "ExecStart="+strings.Join(prospective.ExpectedExecStart, " ")+"\n") {
+		t.Fatal("expected command missing from rendered unit")
+	}
 	if !early.AllowMissing || early.PlannedUser != env.proxyUserName || early.Binary != env.pipelockBinary || !early.RequireBuildCompatibility {
 		t.Fatal("incorrect early check options")
 	}
@@ -176,5 +190,72 @@ func TestInstallServiceConfigResolvesSymlinkedValidator(t *testing.T) {
 	}
 	if got != resolved {
 		t.Fatalf("validator received %q, want resolved regular file %q", got, resolved)
+	}
+}
+
+func TestInstallDryRunDefersUnavailableServiceEnvironment(t *testing.T) {
+	env, runner, out := newPreflightInstallEnv(t)
+	src := writePreflightConfig(t, "candidate.yaml", "forward_proxy:\n  enabled: true\n")
+	env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error { return serviceenv.ErrUnavailable }
+	if err := runInstall(t.Context(), env, installOpts{dryRun: true, configSource: src}); err != nil {
+		t.Fatalf("plan inspection refused unavailable environment: %v", err)
+	}
+	if !strings.Contains(out.String(), "[DEFERRED]") || !strings.Contains(out.String(), "not validated") {
+		t.Fatal("deferred validation was not disclosed")
+	}
+	if env.preflightBinaryHash != "" {
+		t.Fatal("deferred validation recorded an assurance hash")
+	}
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+}
+
+func TestInstallUnavailableEnvironmentStillRefusesRealMutation(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	seedManagedConfig(t, env)
+	env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error { return serviceenv.ErrUnavailable }
+	if err := preflightPipelockConfig(t.Context(), env, installOpts{}, false); !errors.Is(err, serviceenv.ErrUnavailable) {
+		t.Fatalf("real preflight accepted unavailable environment: %v", err)
+	}
+	if env.preflightBinaryHash != "" {
+		t.Fatal("unavailable environment recorded assurance hash")
+	}
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+}
+
+func TestInstallFreshIdentityExistsBeforeServiceValidation(t *testing.T) {
+	env, runner, _ := newPreflightInstallEnv(t)
+	src := writePreflightConfig(t, "candidate.yaml", "forward_proxy:\n  enabled: true\n")
+	created := false
+	lookup := env.lookupUser
+	env.lookupUser = func(name string) (*user.User, error) {
+		if name == env.proxyUserName && !created {
+			return nil, user.UnknownUserError(name)
+		}
+		return lookup(name)
+	}
+	run := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "useradd" && slices.Contains(args, env.proxyUserName) {
+			created = true
+		}
+		return run(ctx, name, args...)
+	}
+	checks := 0
+	env.checkServiceConfig = func(context.Context, serviceenv.CheckOptions) error {
+		if !created {
+			t.Fatal("service validation preceded planned identity creation")
+		}
+		checks++
+		return errors.New("stop before config promotion")
+	}
+	if err := runInstall(t.Context(), env, installOpts{configSource: src}); err == nil || checks != 1 || !created {
+		t.Fatal("fresh identity sequence did not reach service validation")
+	}
+	for _, call := range runner.calls {
+		for _, action := range []string{"start", "restart", "enable"} {
+			if call.name == "systemctl" && len(call.args) > 0 && call.args[0] == action {
+				t.Fatal("service activated before validation")
+			}
+		}
 	}
 }

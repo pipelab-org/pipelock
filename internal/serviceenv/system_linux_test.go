@@ -275,3 +275,30 @@ func TestObservationExecutionPolicy(t *testing.T) {
 		t.Fatal("public checker accepted unrelated unit")
 	}
 }
+
+func TestCatalogOutputLimitAndRealOverflow(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same helper output crosses the property limit but fits a D-Bus message.
+	body, code, err := runObservationWithin(t.Context(), maxCatalogBytes, binary, "observe-overflow")
+	if err != nil || code != 0 || len(body) != maxObservationBytes+1 {
+		t.Fatalf("catalog-sized helper output refused: %v", err)
+	}
+	// A smaller injected cap exercises genuine subprocess overflow without
+	// allocating a 128 MiB fixture just to cross the production bound.
+	if _, _, err := runObservationWithin(t.Context(), 4, binary, "observe-success"); err == nil {
+		t.Fatal("subprocess overflow accepted")
+	}
+}
+
+func TestStableFileAccessFailureClassification(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "regular")
+	if err := os.WriteFile(parent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readStableFile(filepath.Join(parent, "child")); !errors.Is(err, errUnreadableFile) {
+		t.Fatal("OS open failure lost optional-file classification")
+	}
+}

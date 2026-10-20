@@ -38,6 +38,7 @@ func cleanHelperEnvironment() []string {
 type boundedOutput struct {
 	buffer   bytes.Buffer
 	overflow bool
+	limit    int
 }
 
 func (b *boundedOutput) Len() int      { return b.buffer.Len() }
@@ -45,7 +46,11 @@ func (b *boundedOutput) Bytes() []byte { return b.buffer.Bytes() }
 
 func (b *boundedOutput) Write(body []byte) (int, error) {
 	n := len(body)
-	remaining := maxObservationBytes - b.Len()
+	limit := b.limit
+	if limit == 0 {
+		limit = maxObservationBytes
+	}
+	remaining := limit - b.Len()
 	if len(body) > remaining {
 		body = body[:remaining]
 		b.overflow = true
@@ -58,22 +63,33 @@ func systemCommand(ctx context.Context, binary string, args ...string) ([]byte, 
 	if binary != "/usr/bin/systemctl" && binary != "/usr/bin/busctl" {
 		return nil, -1, errors.New("unsupported service observation helper")
 	}
-	return runObservation(ctx, binary, args...)
+	limit := maxObservationBytes
+	if binary == "/usr/bin/busctl" && slices.Contains(args, "--xml-interface") {
+		limit = maxCatalogBytes
+	}
+	return runObservationWithin(ctx, limit, binary, args...)
 }
 
 // runObservation keeps the execution/resource contract independently testable
 // without contacting a live system manager. systemCommand admits the helpers.
 func runObservation(ctx context.Context, binary string, args ...string) ([]byte, int, error) {
+	return runObservationWithin(ctx, maxObservationBytes, binary, args...)
+}
+
+func runObservationWithin(ctx context.Context, limit int, binary string, args ...string) ([]byte, int, error) {
 	bounded, cancel := context.WithTimeout(ctx, commandBudget)
 	defer cancel()
 	cmd := exec.CommandContext(bounded, binary, args...) //nolint:gosec // Fixed absolute helpers; no shell.
 	cmd.Env = cleanHelperEnvironment()
 	cmd.WaitDelay = time.Second
-	var out boundedOutput
+	out := boundedOutput{limit: limit}
 	cmd.Stdout = &out
 	cmd.Stderr = io.Discard
 	err := cmd.Run()
-	if out.overflow || bounded.Err() != nil {
+	if out.overflow {
+		return nil, -1, errObservationOverflow
+	}
+	if bounded.Err() != nil {
 		return nil, -1, errors.New("service observation exceeded its resource policy")
 	}
 	var exited *exec.ExitError
@@ -118,7 +134,10 @@ func readStableFileWithin(path string, limit int64) (fileImage, error) {
 		return image, errMissingFile
 	}
 	if err != nil {
-		return image, errors.New("cannot open regular validation input")
+		if errors.Is(err, unix.ELOOP) {
+			return image, errors.New("validation input leaf symlink is unsupported")
+		}
+		return image, errUnreadableFile
 	}
 	file := os.NewFile(uintptr(fd), path)
 	defer func() { _ = file.Close() }()
@@ -131,7 +150,10 @@ func readStableFileWithin(path string, limit int64) (fileImage, error) {
 		reader = io.LimitReader(file, limit+1)
 	}
 	body, err := io.ReadAll(reader)
-	if err != nil || limit >= 0 && int64(len(body)) > limit {
+	if err != nil {
+		return image, errUnreadableFile
+	}
+	if limit >= 0 && int64(len(body)) > limit {
 		return image, errors.New("cannot read bounded validation input")
 	}
 	if unix.Fstat(fd, &after) != nil || unix.Lstat(path, &named) != nil || fileMetadata(&before) != fileMetadata(&after) || fileMetadata(&after) != fileMetadata(&named) {
@@ -170,7 +192,7 @@ func staticIdentity(name, group string, additional []string) (identity, error) {
 	var id identity
 	u, err := lookupStaticUser(name)
 	if err != nil {
-		return id, errors.New("service user unavailable")
+		return id, fmt.Errorf("service user unavailable: %w", ErrUnavailable)
 	}
 	id.UID, err = numericID(u.Uid)
 	if err != nil {
@@ -183,7 +205,7 @@ func staticIdentity(name, group string, additional []string) (identity, error) {
 	if group != "" {
 		configured, lookupErr := lookupStaticGroup(group)
 		if lookupErr != nil {
-			return id, errors.New("service group unavailable")
+			return id, fmt.Errorf("service group unavailable: %w", ErrUnavailable)
 		}
 		// os/user.GroupIds uses the account's primary gid. It cannot express
 		// getgrouplist with a replacement primary gid, so do not guess the
@@ -196,7 +218,7 @@ func staticIdentity(name, group string, additional []string) (identity, error) {
 	// membership, including when Group= overrides the primary group.
 	groups, err := u.GroupIds()
 	if err != nil {
-		return id, errors.New("service supplementary groups unavailable")
+		return id, fmt.Errorf("service supplementary groups unavailable: %w", ErrUnavailable)
 	}
 	for _, text := range groups {
 		gid, err := numericID(text)
@@ -208,7 +230,7 @@ func staticIdentity(name, group string, additional []string) (identity, error) {
 	for _, text := range additional {
 		gid, err := lookupStaticGroup(text)
 		if err != nil {
-			return id, errors.New("additional service group unavailable")
+			return id, fmt.Errorf("additional service group unavailable: %w", ErrUnavailable)
 		}
 		id.Groups = append(id.Groups, gid)
 	}
@@ -227,7 +249,7 @@ func validatorCredential(id identity) (*syscall.Credential, error) {
 	}
 	groups, err := os.Getgroups()
 	if err != nil || int64(os.Geteuid()) != int64(id.UID) || int64(os.Getegid()) != int64(id.GID) {
-		return nil, errors.New("validation requires service identity privileges")
+		return nil, fmt.Errorf("validation requires service identity privileges: %w", ErrUnavailable)
 	}
 	actual := make([]uint32, 0, len(groups))
 	for _, group := range groups {
@@ -239,7 +261,7 @@ func validatorCredential(id identity) (*syscall.Credential, error) {
 	slices.Sort(actual)
 	actual = slices.Compact(actual)
 	if !slices.Equal(actual, id.Groups) {
-		return nil, errors.New("validation requires service supplementary groups")
+		return nil, fmt.Errorf("validation requires service supplementary groups: %w", ErrUnavailable)
 	}
 	return nil, nil
 }

@@ -1717,11 +1717,12 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	if err := env.checkServiceConfig(ctx, serviceenv.CheckOptions{
 		Binary: validatorPath, ConfigFile: candidatePath, Service: serviceenv.Unit,
 		RequireBuildCompatibility: true, AllowMissing: true, PlannedUser: env.proxyUserName,
-		PlannedEnvironment: []string{
-			config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
-			"XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state"),
-		},
+		PlannedEnvironment: managedServiceEnvironment(env),
 	}); err != nil {
+		if dryRun && errors.Is(err, serviceenv.ErrUnavailable) {
+			_, _ = fmt.Fprintln(env.out, "  [DEFERRED] service environment validation unavailable; configuration not validated. The privileged install must validate after creating the service identity and again before service start.")
+			return requireContainForwardProxy(env, target.checkPath, target.unitPath)
+		}
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",
 			target.unitPath, env.pipelockBinary, err)
@@ -2189,13 +2190,21 @@ func leadingVersionNumber(field string) int {
 	return version
 }
 
+// managedServiceEnvironment is shared by the provisional observer and unit.
+// XDG_STATE_HOME keeps writable runtime state under the service data directory.
+func managedServiceEnvironment(env *installEnv) []string {
+	return []string{config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue, "XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state")}
+}
+
+func managedServiceArgv(env *installEnv) []string {
+	return []string{env.pipelockTarget, "run", "--config", managedPipelockConfigPath(env), "--capture-output", filepath.Join(env.dataDir, "captures")}
+}
+
 // renderSystemUnit produces the pipelock.service body. Inline here so tests
 // can call it directly without a tmpdir. The hardening directives mirror
 // the runbook; the firewall is the real boundary, these are defense in
 // depth.
 func renderSystemUnit(env *installEnv) string {
-	configPath := managedPipelockConfigPath(env)
-	capturePath := filepath.Join(env.dataDir, "captures")
 	// On systemd 253+ the unit is Type=notify-reload: systemd sends SIGHUP
 	// itself and `systemctl reload` waits for the daemon's own verdict. No
 	// ExecReload there, because one that also sends SIGHUP would run every
@@ -2219,15 +2228,12 @@ func renderSystemUnit(env *installEnv) string {
 		serviceType,
 		"User=" + env.proxyUserName,
 		"Group=" + env.proxyUserName,
-		"Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue,
-		// Runtime state (issuer-bound cookie evidence) follows the XDG state
-		// convention. The service can write only under ReadWritePaths, and the
-		// service user's home is outside it, so the state home is placed in
-		// the data directory; otherwise every save would fail and the state
-		// would silently reset on each restart.
-		"Environment=XDG_STATE_HOME=" + filepath.Join(env.dataDir, "state"),
-		"ExecStart=" + env.pipelockTarget + " run --config " + configPath + " --capture-output " + capturePath,
 	}
+	// Use the same declarations for provisional validation and rendering.
+	for _, assignment := range managedServiceEnvironment(env) {
+		lines = append(lines, "Environment="+assignment)
+	}
+	lines = append(lines, "ExecStart="+strings.Join(managedServiceArgv(env), " "))
 	lines = append(lines, reloadLines...)
 	lines = append(lines,
 		"Restart=on-failure",
@@ -2371,6 +2377,7 @@ func validateProspectivePipelockConfig(ctx context.Context, env *installEnv) err
 	if err := env.checkServiceConfig(ctx, serviceenv.CheckOptions{
 		Binary: env.pipelockTarget, ConfigFile: managedPipelockConfigPath(env), Service: serviceenv.Unit,
 		RequireBuildCompatibility: true, ExpectedFragmentPath: env.systemUnitPath,
+		ExpectedExecStart: managedServiceArgv(env),
 	}); err != nil {
 		return fmt.Errorf("prospective pipelock.service configuration validation failed before service start: %w", err)
 	}

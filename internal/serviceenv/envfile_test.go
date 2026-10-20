@@ -30,7 +30,7 @@ func TestEnvironmentFileGrammar(t *testing.T) {
 		{"inline comment is data", "A=value # comment; data\n", []string{"A=value # comment; data"}},
 		{"quoted spaces", "A='  x  '\n", []string{"A=  x  "}},
 		{"quoted concatenation", "A='one' \"two\" three\n", []string{"A=onetwothree"}},
-		{"comment continuation", "# ignored\\\nA=value\n", []string{"A=value"}},
+		{"comment continuation", "# ignored\\\nA=value\nB=kept\n", []string{"B=kept"}},
 		{"duplicates retained", "A=one\nA=two\n", []string{"A=one", "A=two"}},
 		{"unicode and controls", "A=\"café\t\x01\"", []string{"A=café\t\x01"}},
 		{"no final newline", "A=x", []string{"A=x"}},

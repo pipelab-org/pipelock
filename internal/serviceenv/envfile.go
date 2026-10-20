@@ -31,14 +31,27 @@ func parseEnvironmentFile(body []byte) ([]string, error) {
 		if pos == len(s) {
 			break
 		}
+		// Upstream env-file.c COMMENT_ESCAPE consumes the next byte, including
+		// a newline, and remains in COMMENT. A continued comment hides that line.
+		if s[pos] == '#' || s[pos] == ';' {
+			for pos < len(s) {
+				c := s[pos]
+				pos++
+				if c == '\\' && pos < len(s) {
+					pos++
+					continue
+				}
+				if c == '\n' {
+					break
+				}
+			}
+			continue
+		}
 		start := pos
 		for pos < len(s) && s[pos] != '=' && s[pos] != '\n' {
 			pos++
 		}
-		if s[start] == '#' || s[start] == ';' || pos == len(s) || s[pos] == '\n' {
-			for pos < len(s) && s[pos] != '\n' {
-				pos++
-			}
+		if pos == len(s) || s[pos] == '\n' {
 			continue
 		}
 		key := strings.TrimRight(s[start:pos], " \t\r")

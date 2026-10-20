@@ -64,7 +64,7 @@ func TestCatalogNeverHidesPropertyFailures(t *testing.T) {
 						case "malformed catalog":
 							return []byte("bad table"), 0, nil
 						case "duplicate catalog":
-							return []byte(".User property s - const\n.User property s - const\n"), 0, nil
+							return []byte(`<node><interface name="` + serviceInterface + `"><property name="User" type="s" access="read"/><property name="User" type="s" access="read"/></interface></node>`), 0, nil
 						}
 					}
 					if failure == "denied getter" && args[len(args)-1] == "SetLoginEnvironment" {
@@ -111,7 +111,7 @@ func TestLoginHomeCleanAndAmbiguous255(t *testing.T) {
 }
 
 func TestCatalogMalformedMembersAndVersion(t *testing.T) {
-	for _, body := range []string{".Thing method - - -\n.Thing signal - - -\n.bad-name property s - const\n", ".Thing invalid s - const\n", strings.Repeat("x", maxObservationBytes+1)} {
+	for _, body := range []string{`<node><interface name="` + serviceInterface + `"><property name="bad-name" type="s" access="read"/></interface></node>`, `<node><interface name="` + serviceInterface + `"><property name="User" type="s" access="invalid"/></interface></node>`, `<node></node><node/>`, `<node></node>trailing`, `<node><interface name="` + serviceInterface + `"/><interface name="` + serviceInterface + `"/></node>`, `malformed XML`} {
 		f := newFixture(t)
 		f.b.command = func(context.Context, string, ...string) ([]byte, int, error) { return []byte(body), 0, nil }
 		if _, err := serviceCatalog(t.Context(), f.b); err == nil {
@@ -129,5 +129,43 @@ func TestCatalogMalformedMembersAndVersion(t *testing.T) {
 	delete(f.properties, "manager:Version")
 	if _, _, err := managerVersion(t.Context(), f.b); err == nil {
 		t.Fatal("missing manager version accepted")
+	}
+}
+
+func TestCatalogMetadataXMLLargerThanPropertyBound(t *testing.T) {
+	const observedSize = 106723
+	body := `<node><interface name="` + serviceInterface + `"><property name="Environment" type="as" access="read"/></interface><!--`
+	body += strings.Repeat("x", observedSize-len(body)-len(`--></node>`)) + `--></node>`
+	f := newFixture(t)
+	f.b.command = func(_ context.Context, _ string, args ...string) ([]byte, int, error) {
+		if !slices.Contains(args, "--xml-interface") {
+			t.Error("introspection must request metadata-only XML")
+		}
+		return []byte(body), 0, nil
+	}
+	got, err := serviceCatalog(t.Context(), f.b)
+	if err != nil || got["Environment"] != "as" {
+		t.Fatalf("valid %d-byte metadata rejected: %v", len(body), err)
+	}
+}
+
+func TestCatalogXMLMetadataShape(t *testing.T) {
+	for _, body := range []string{
+		`<node><interface name="other.interface"><property name="Ignored" type="s" access="read"/></interface><interface name="` + serviceInterface + `"><method name="Ignored"/><signal name="Ignored"/><property name="User" type="s" access="read"/></interface></node><!--trailing comment-->`,
+		`<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd"><node><interface name="` + serviceInterface + `"><property name="User" type="s" access="read"/></interface></node>`,
+	} {
+		f := newFixture(t)
+		f.b.command = func(context.Context, string, ...string) ([]byte, int, error) { return []byte(body), 0, nil }
+		got, err := serviceCatalog(t.Context(), f.b)
+		if err != nil || got["User"] != "s" || len(got) != 1 {
+			t.Fatalf("valid metadata XML rejected: %v", err)
+		}
+	}
+	for _, body := range []string{`<node><interface name="` + serviceInterface + `"/></node><`, `<node><interface name="` + serviceInterface + `"><property name="User" access="read"/></interface></node>`, `<node><interface name="` + serviceInterface + `"><property name="User" type="s" access="read"/><property name="User" type="s" access="read"/></interface></node>`} {
+		f := newFixture(t)
+		f.b.command = func(context.Context, string, ...string) ([]byte, int, error) { return []byte(body), 0, nil }
+		if _, err := serviceCatalog(t.Context(), f.b); err == nil {
+			t.Fatal("invalid metadata accepted")
+		}
 	}
 }

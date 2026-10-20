@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -26,7 +27,12 @@ const (
 	// These are local observation policies shared with containment's typed
 	// systemd readers (lifecycle_linux.go, verify.go), not systemd limits.
 	maxObservationBytes = 64 << 10
-	commandBudget       = 2 * time.Second
+	// D-Bus specification, Message Protocol: maximum complete message is
+	// 2^27 bytes. Introspect XML is a string within that message; its header
+	// exceeds the newline busctl adds. This is not a property-value limit.
+	// https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol
+	maxCatalogBytes = 1 << 27
+	commandBudget   = 2 * time.Second
 	// Unit is intentionally fixed; this is not an arbitrary-unit env reader.
 	Unit             = "pipelock.service"
 	unitObject       = "/org/freedesktop/systemd1/unit/pipelock_2eservice"
@@ -49,7 +55,16 @@ type CheckOptions struct {
 	PlannedUser               string
 	PlannedEnvironment        []string
 	ExpectedFragmentPath      string
+	// ExpectedExecStart binds installer validation to the loaded managed command.
+	// Unset for standalone checks, which may validate a different candidate.
+	ExpectedExecStart []string
 }
+
+// ErrUnavailable identifies missing manager/identity privileges, not invalid config
+// or unsupported service definitions. Dry-run callers may defer this check.
+var ErrUnavailable = errors.New("service environment validation unavailable")
+
+var errObservationOverflow = errors.New("service observation exceeded its output bound")
 
 // Check runs the normal config validator in a subprocess. Neither caller
 // environment nor child output is used as evidence or returned to the caller.
@@ -74,8 +89,8 @@ type backend struct {
 	readFile func(string) (fileImage, error)
 	// readCandidate reads the configuration under validation; nil uses readFile.
 	readCandidate func(string) (fileImage, error)
-	identity func(string, string, []string) (identity, error)
-	execute  func(context.Context, CheckOptions, []string, identity, []byte) error
+	identity      func(string, string, []string) (identity, error)
+	execute       func(context.Context, CheckOptions, []string, identity, []byte) error
 }
 
 type snapshot struct {
@@ -93,14 +108,23 @@ func check(ctx context.Context, opts CheckOptions, b backend) error {
 	if opts.ConfigFile == "" || opts.ConfigFile == "-" || !filepath.IsAbs(opts.ConfigFile) || !filepath.IsAbs(opts.Binary) {
 		return errors.New("service configuration validation requires absolute binary and config paths")
 	}
+	if ctx.Err() != nil {
+		return errors.New("service configuration validation canceled")
+	}
 	before, err := observe(ctx, opts, b)
 	if err != nil {
 		return err
 	}
 	if err := b.execute(ctx, opts, before.Environment, before.Identity, before.Candidate.Data); err != nil {
+		if ctx.Err() != nil {
+			return errors.New("service configuration validation canceled")
+		}
 		// Never wrap arbitrary child/start errors: values may occur in output,
 		// executable paths, loader diagnostics, or environment-derived paths.
-		return errors.New("configuration validation failed for pipelock.service; validator output withheld")
+		if errors.Is(err, ErrUnavailable) {
+			return ErrUnavailable
+		}
+		return errors.New("configuration validation failed for pipelock.service; validator output withheld; rerun the privileged service check after correcting the service configuration inputs")
 	}
 	after, err := observe(ctx, opts, b)
 	if err != nil {
@@ -115,8 +139,17 @@ func check(ctx context.Context, opts CheckOptions, b backend) error {
 func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error) {
 	s := snapshot{Properties: make(map[string]string), Files: make(map[string]string)}
 	out, code, err := b.command(ctx, "/usr/bin/systemctl", "--system", "--no-ask-password", "--no-pager", "show", "--all", "--property=Id,LoadState,NeedDaemonReload,Transient", Unit)
-	if err != nil || len(out) > maxObservationBytes {
-		return s, errors.New("cannot inspect local pipelock.service")
+	if ctx.Err() != nil {
+		return s, errors.New("service configuration validation canceled")
+	}
+	if errors.Is(err, errObservationOverflow) {
+		return s, errObservationOverflow
+	}
+	if err != nil || code != 0 && len(out) == 0 {
+		return s, fmt.Errorf("cannot inspect local pipelock.service: %w", ErrUnavailable)
+	}
+	if len(out) > maxObservationBytes {
+		return s, errors.New("service identity observation exceeds bound")
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		key, value, ok := strings.Cut(line, "=")
@@ -157,13 +190,16 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 		}
 		s.Identity, err = b.identity(opts.PlannedUser, "", nil)
 		if err != nil {
+			if errors.Is(err, ErrUnavailable) {
+				return s, ErrUnavailable
+			}
 			return s, errors.New("cannot resolve planned service identity")
 		}
 		values["HOME"] = s.Identity.Home
 		if err := applyAssignments(values, opts.PlannedEnvironment); err != nil {
 			return s, err
 		}
-	} else if err := observeLoaded(ctx, b, &s, values); err != nil {
+	} else if err := observeLoaded(ctx, opts, b, &s, values); err != nil {
 		return s, err
 	}
 	if opts.ExpectedFragmentPath != "" {
@@ -186,13 +222,22 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 
 func readProperty(ctx context.Context, b backend, object, iface, property string) ([]byte, error) {
 	out, code, err := b.command(ctx, "/usr/bin/busctl", "--system", "--json=short", "--allow-interactive-authorization=no", "--auto-start=no", "get-property", "org.freedesktop.systemd1", object, iface, property)
-	if err != nil || code != 0 || len(out) > maxObservationBytes {
-		return nil, fmt.Errorf("cannot read typed service property %s", property)
+	if ctx.Err() != nil {
+		return nil, errors.New("service configuration validation canceled")
+	}
+	if errors.Is(err, errObservationOverflow) {
+		return nil, errObservationOverflow
+	}
+	if err != nil || code != 0 {
+		return nil, fmt.Errorf("cannot read typed service property %s: %w", property, ErrUnavailable)
+	}
+	if len(out) > maxObservationBytes {
+		return nil, errors.New("typed service property exceeds bound")
 	}
 	return out, nil
 }
 
-func observeLoaded(ctx context.Context, b backend, s *snapshot, values map[string]string) error {
+func observeLoaded(ctx context.Context, opts CheckOptions, b backend, s *snapshot, values map[string]string) error {
 	catalog, err := serviceCatalog(ctx, b)
 	if err != nil {
 		return err
@@ -268,6 +313,11 @@ func observeLoaded(ctx context.Context, b backend, s *snapshot, values map[strin
 		}
 		return fmt.Errorf("service configuration validation does not support %s", property.name)
 	}
+	if len(opts.ExpectedExecStart) > 0 {
+		if err := observeInvocation(ctx, opts, b, s, catalog); err != nil {
+			return err
+		}
+	}
 	var unitUser, unitGroup string
 	if decodeProperty([]byte(s.Properties["User"]), "s", &unitUser) != nil || decodeProperty([]byte(s.Properties["Group"]), "s", &unitGroup) != nil {
 		return errors.New("invalid static service identity")
@@ -278,6 +328,9 @@ func observeLoaded(ctx context.Context, b backend, s *snapshot, values map[strin
 	}
 	s.Identity, err = b.identity(unitUser, unitGroup, groups)
 	if err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			return ErrUnavailable
+		}
 		return errors.New("cannot resolve static service identity")
 	}
 	// Before SetLoginEnvironment (255), systemd sets HOME only for explicit
@@ -313,8 +366,8 @@ func observeLoaded(ctx context.Context, b backend, s *snapshot, values map[strin
 		}
 		image, err := b.readFile(file.Path)
 		if err != nil {
-			if file.Optional && errors.Is(err, errMissingFile) {
-				s.Files[file.Path] = "missing"
+			if file.Optional && (errors.Is(err, errMissingFile) || errors.Is(err, errUnreadableFile) || errors.Is(err, os.ErrPermission)) {
+				s.Files[file.Path] = "unavailable"
 				continue
 			}
 			return errors.New("cannot read stable regular service environment file")
@@ -361,7 +414,10 @@ func observeLoaded(ctx context.Context, b backend, s *snapshot, values map[strin
 	return nil
 }
 
-var errMissingFile = errors.New("file is missing")
+var (
+	errMissingFile    = errors.New("file is missing")
+	errUnreadableFile = errors.New("file cannot be read")
+)
 
 func applyAssignments(values map[string]string, assignments []string) error {
 	for _, assignment := range assignments {
