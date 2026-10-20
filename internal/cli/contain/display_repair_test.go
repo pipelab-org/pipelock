@@ -144,3 +144,62 @@ func TestDisplayFreshRollbackRuntimeCleanupRefusalRemovesUnit(t *testing.T) {
 		})
 	}
 }
+
+// A prior unit that existed but was not active never restarts during rollback,
+// so a refused runtime cleanup must not strand the replacement unit either.
+func TestDisplayInactiveRollbackRuntimeCleanupRefusalRestoresUnit(t *testing.T) {
+	env, _ := displayRuntimeTestEnv(t)
+	prepareMigrationAuthority(t, env)
+	env.xvncPath = filepath.Join(t.TempDir(), "Xvnc")
+	if err := os.WriteFile(env.xvncPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	priorUnit := displayUnitMarker + "\n[Service]\nExecStart=/usr/bin/true\n# prior release\n"
+	if err := os.WriteFile(env.displayUnitPath, []byte(priorUnit), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := filepath.Dir(env.rfbSocketPath)
+	oldRun := env.runCmd
+	rolling, started := false, false
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if name == "systemd-tmpfiles" {
+			return oldRun(ctx, name, args...)
+		}
+		if name == "getfacl" {
+			return "user::rwx\ngroup::r-x\nother::---\n", 0, nil
+		}
+		if name != "systemctl" {
+			return "", 0, nil
+		}
+		switch args[0] {
+		case "is-active":
+			return "failed", 3, nil
+		case "is-enabled":
+			return "enabled", 0, nil
+		case "enable":
+			if len(args) > 1 && args[1] == "--now" && !rolling {
+				rolling = true
+				if err := os.WriteFile(filepath.Join(runtime, "stale.socket"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return "display start failed", 1, nil
+			}
+		case "start", "restart":
+			started = true
+		}
+		return "", 0, nil
+	}
+	_, err := runSteps(context.Background(), env, io.Discard, []step{stepProvisionDisplay()})
+	if err == nil || !strings.Contains(err.Error(), "preserve nonempty display runtime directory") {
+		t.Fatalf("runtime cleanup refusal was not reported: %v", err)
+	}
+	if started {
+		t.Fatal("previously inactive display started during rollback")
+	}
+	if body, readErr := os.ReadFile(env.displayUnitPath); readErr != nil || string(body) != priorUnit {
+		t.Fatalf("replacement unit stranded: %q %v", body, readErr)
+	}
+	if _, statErr := os.Lstat(env.displayTmpfilesPath); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("fresh rule residue: %v", statErr)
+	}
+}

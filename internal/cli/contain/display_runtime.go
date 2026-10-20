@@ -131,9 +131,10 @@ func stepProvisionDisplay() step {
 			if runtimeChanged {
 				if err := runtime.undo(ctx, env); err != nil {
 					restoreErr := fmt.Errorf("restore display runtime before restarting display: %w", err)
-					// A confirmed fresh display has no prior service to restart.
-					// Remove its new unit even when runtime cleanup is refused.
-					if displayChanged && env.prevDisplayStateKnown && !env.prevDisplayUnitExisted && !env.prevDisplayActive {
+					// A display confirmed not active before this attempt is never
+					// restarted by its undo, so it needs no bind source. Restore or
+					// remove its unit even when runtime cleanup is refused.
+					if displayChanged && env.prevDisplayStateKnown && !env.prevDisplayActive {
 						return errors.Join(restoreErr, display.undo(ctx, env))
 					}
 					return restoreErr
