@@ -13,14 +13,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-func TestDoorwayRecoveryPreservesHealthyNamespaceForwarder(t *testing.T) {
+func TestDoorwayRecoveryRestoresDependentNamespaceForwarder(t *testing.T) {
 	env := diagnosticDoorwayEnv(map[string]fakeUnitState{testDoorwayProxySocket: {systemctlEnabled, "inactive"}})
 	got := doctorDoorwayState(t.Context(), env, nil)
 	if got.status != statusFail || !strings.Contains(got.remediation, "systemctl stop "+testDoorwayProxySocket+" && systemctl stop "+testDoorwayProxyRelay) {
 		t.Fatalf("socket-before-relay repair lost: %+v", got)
 	}
-	if strings.Contains(got.remediation, containedNamespaceForwarderUnit) {
-		t.Fatalf("healthy namespace forwarder would be interrupted: %+v", got)
+	if !strings.HasSuffix(got.remediation, "systemctl start "+testDoorwayProxySocket+" && systemctl start "+containedNamespaceForwarderUnit) || strings.Contains(got.remediation, "systemctl restart "+containedNamespaceForwarderUnit) {
+		t.Fatalf("namespace forwarder stopped by its socket dependency would not be restored: %+v", got)
 	}
 }
 
@@ -180,7 +180,7 @@ func TestDoorwayDefinitionFailureRetainsVerifiedSiblingRuntime(t *testing.T) {
 				return run(ctx, name, args...)
 			}
 			got := doctorDoorwayState(t.Context(), env, []config.ContainmentLoopbackService{service})
-			if got.status != statusFail || !strings.Contains(got.detail, unit+".service") || !strings.Contains(got.detail, testDoorwayProxySocket+" is inactive") || !strings.Contains(got.remediation, installRemedy) || !strings.Contains(got.remediation, "systemctl start "+testDoorwayProxySocket) {
+			if got.status != statusFail || !strings.Contains(got.detail, unit+".service") || !strings.Contains(got.detail, testDoorwayProxySocket+" is inactive") || !strings.Contains(got.remediation, loopbackDefinitionRemedy) || !strings.Contains(got.remediation, "systemctl start "+testDoorwayProxySocket) {
 				t.Fatalf("definition gate hid verified sibling failure: %+v", got)
 			}
 			if strings.Contains(got.remediation, "systemctl stop "+unit) {

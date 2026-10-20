@@ -124,7 +124,7 @@ func TestDoctorDoorwaySocketRemedyMatchesRelayState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			read, _ := doorwayReaderFor(map[string]fakeUnitState{testDoorwayProxySocket: tc.socket, testDoorwayProxyRelay: tc.relay}, nil)
 			got := read()
-			want := tc.prefix + "systemctl stop " + testDoorwayProxySocket + " && systemctl stop " + testDoorwayProxyRelay + " && " + tc.start
+			want := tc.prefix + "systemctl stop " + testDoorwayProxySocket + " && systemctl stop " + testDoorwayProxyRelay + " && " + tc.start + " && systemctl start " + containedNamespaceForwarderUnit
 			if got.status != statusFail || got.remediation != want {
 				t.Fatalf("result=%+v want remediation %q", got, want)
 			}
@@ -168,7 +168,7 @@ func TestDoctorDoorwayReportsSocketAndRelayFailures(t *testing.T) {
 				} else {
 					want += "systemctl start "
 				}
-				want += testDoorwayProxySocket
+				want += testDoorwayProxySocket + " && systemctl start " + containedNamespaceForwarderUnit
 				if got.status != statusFail || got.class != classInfra || got.remediation != want {
 					t.Fatalf("result=%+v, want remedy %q", got, want)
 				}
@@ -477,17 +477,17 @@ func TestDoorwayRuntimeMaskRecovery(t *testing.T) {
 					}
 					return run(ctx, name, args...)
 				}
-				want := "systemctl unmask --runtime " + unit + " && "
-				if suffix == "-netns.service" {
-					want += "systemctl enable --now " + unit
-				} else {
-					want += "systemctl stop " + base + ".socket && systemctl stop " + base + ".service && "
-					if suffix == ".socket" {
-						want += "systemctl enable --now "
-					} else {
-						want += "systemctl start "
+				want := "systemctl unmask --runtime " + unit
+				switch suffix {
+				case "-netns.service":
+					want += " && systemctl enable --now " + unit
+				case ".socket":
+					want += " && systemctl stop " + base + ".socket && systemctl stop " + base + ".service && systemctl enable --now " + base + ".socket"
+					forwarder := base + "-netns.service"
+					if base == containedProxyForwarderUnit {
+						forwarder = containedNamespaceForwarderUnit
 					}
-					want += base + ".socket"
+					want += " && systemctl start " + forwarder
 				}
 				services := []config.ContainmentLoopbackService{service}
 				got := doctorDoorwayState(context.Background(), env, services)

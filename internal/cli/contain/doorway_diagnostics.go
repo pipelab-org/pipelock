@@ -11,7 +11,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
-const doorwayInspectionRemedy = "restore access to the managed containment state and rerun the diagnostic"
+const (
+	doorwayInspectionRemedy  = "restore access to the managed containment state and rerun the diagnostic"
+	loopbackDefinitionRemedy = "rerun `pipelock contain reload-nft-rules`"
+)
 
 type managedDoorway struct {
 	socket    string
@@ -56,7 +59,7 @@ func combineDoorwayResults(results []doctorResult) doctorResult {
 
 // observeManagedDoorwayDefinitions admits only the rendered managed units before
 // their names can appear in recovery commands. Each verified doorway remains
-// inspectable even when another doorway needs its definitions restored by install.
+// inspectable even when another doorway needs its definitions reconciled.
 func observeManagedDoorwayDefinitions(env *probeEnv, services []config.ContainmentLoopbackService) ([]managedDoorway, doctorResult) {
 	if filepath.Base(env.proxyForwarderSocketPath) != containedProxyForwarderUnit+".socket" ||
 		filepath.Base(env.proxyForwarderServicePath) != containedProxyForwarderUnit+".service" ||
@@ -86,7 +89,11 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 	ordered := make([]managedDoorway, 0, len(doorways))
 	var results []doctorResult
 	for _, socket := range managedDoorwaySocketNames(env.proxyForwarderSocketPath, services) {
-		result := observeDoorwayDefinitions(env, definitions[socket])
+		remedy := loopbackDefinitionRemedy
+		if socket == containedProxyForwarderUnit+".socket" {
+			remedy = installRemedy
+		}
+		result := observeDoorwayDefinitions(env, definitions[socket], remedy)
 		if result.status == statusPass {
 			ordered = append(ordered, bySocket[socket])
 		} else {
@@ -98,14 +105,14 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 
 type doorwayDefinition struct{ path, want string }
 
-func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition) doctorResult {
+func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition, remedy string) doctorResult {
 	for _, definition := range definitions {
 		body, err := env.readFile(filepath.Clean(definition.path))
 		if err != nil {
-			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), installRemedy)
+			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), remedy)
 		}
 		if string(body) != definition.want {
-			return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), installRemedy)
+			return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), remedy)
 		}
 	}
 	return pass("managed doorway definitions match installation")
