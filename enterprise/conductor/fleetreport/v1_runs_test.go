@@ -34,6 +34,9 @@ func TestBuildV1RefusesMultipleRecorderRuns(t *testing.T) {
 		// run it can't establish.
 		v2MultipleSessions bool
 		v2Refuses          bool
+		// remedy is the control the refusal must name; it has to be one that
+		// can succeed for this window.
+		remedy string
 	}{
 		{
 			// Ranges don't overlap, so the v1 overlap check alone accepts this.
@@ -43,6 +46,7 @@ func TestBuildV1RefusesMultipleRecorderRuns(t *testing.T) {
 				namespaceEvidence(t, priv, "batch-run-a-late", "run-a", "", 50),
 			},
 			v2MultipleSessions: true,
+			remedy:             "--report-version 2",
 		},
 		{
 			name: "same session with two v3 writers",
@@ -50,6 +54,7 @@ func TestBuildV1RefusesMultipleRecorderRuns(t *testing.T) {
 				namespaceEvidence(t, priv, "batch-writer-a", "run-a", "writer-a", 1),
 				namespaceEvidence(t, priv, "batch-writer-b", "run-a", "writer-b", 50),
 			},
+			remedy: "--report-version 2",
 		},
 		{
 			name: "legacy and session-bearing recorder",
@@ -58,6 +63,7 @@ func TestBuildV1RefusesMultipleRecorderRuns(t *testing.T) {
 				namespaceEvidence(t, priv, "batch-session", "run-a", "", 50),
 			},
 			v2Refuses: true,
+			remedy:    "narrow --from and --to",
 		},
 	}
 	for _, tc := range cases {
@@ -68,8 +74,8 @@ func TestBuildV1RefusesMultipleRecorderRuns(t *testing.T) {
 			if !errors.Is(err, ErrV1MultipleRuns) {
 				t.Fatalf("v1 Build err = %v, want ErrV1MultipleRuns", err)
 			}
-			if !strings.Contains(err.Error(), "--report-version 2") {
-				t.Fatalf("v1 refusal %q does not name the v2 remedy", err)
+			if !strings.Contains(err.Error(), tc.remedy) {
+				t.Fatalf("v1 refusal %q does not name remedy %q", err, tc.remedy)
 			}
 
 			opts.ReportVersion = fleetreceipt.SchemaVersionV2

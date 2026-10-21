@@ -380,11 +380,16 @@ func (s v1RunSet) add(instanceID string, entries []recorder.Entry) error {
 	first := entries[0]
 	for _, entry := range entries[1:] {
 		if entry.SessionID != first.SessionID {
-			return fmt.Errorf("%w: follower %s has mixed recorder sessions within an audit batch; neither report version can represent this batch", ErrV1MultipleRuns, instanceID)
+			return fmt.Errorf("%w: follower %s has mixed recorder sessions within an audit batch; neither report version can represent this batch, so narrow --from and --to to exclude it", ErrV1MultipleRuns, instanceID)
 		}
 	}
 	run := v1Run{entryVersion: first.Version, sessionID: first.SessionID, chainKind: first.ChainKind, writerID: first.WriterInstanceID}
 	if prev, ok := s[instanceID]; ok && prev != run {
+		// V2 can't group a session-less batch by run either, so only a
+		// narrower window resolves a mix that includes one.
+		if prev.sessionID == "" || run.sessionID == "" {
+			return fmt.Errorf("%w: follower %s has session-less and session-bearing audit batches in this window; neither report version can group a session-less batch by recorder run, so narrow --from and --to to one recorder run", ErrV1MultipleRuns, instanceID)
+		}
 		return fmt.Errorf("%w: follower %s has audit batches from more than one recorder run in this window; use --report-version 2, which records each run separately", ErrV1MultipleRuns, instanceID)
 	}
 	s[instanceID] = run
