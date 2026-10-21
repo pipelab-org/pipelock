@@ -66,6 +66,8 @@ suppress:
 | Basename glob | `*.generated.go` | `pkg/api/types.generated.go` |
 | URL suffix | `robots.txt` | `https://example.com/robots.txt` |
 
+A complete URL without wildcards matches that URL, with standard-port normalization. To match a URL prefix, end the entry with `/` or use an explicit wildcard. Scheme-qualified entries are not URL path suffixes; the suffix form uses a path tail such as `robots.txt`. A URL glob matches the whole target, including its query string, and `*` can cross path separators.
+
 The `reason` field is optional but recommended. It appears in audit logs and helps future maintainers understand why the suppression exists.
 
 **When to use:** Directories with known false positives, third-party code, generated files, documentation directories.

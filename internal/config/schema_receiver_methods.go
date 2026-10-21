@@ -90,7 +90,10 @@ func matchesPath(target, pattern string) bool {
 	}
 	// URL suffix match: pattern without leading slash matches URL path suffix.
 	// e.g., "robots.txt" matches "https://example.com/robots.txt"
-	if !strings.HasPrefix(p, "/") && strings.HasSuffix(normalized, "/"+p) {
+	// A scheme-qualified pattern names a destination, not a path tail: letting
+	// it match as a suffix would let a request to another host inherit the
+	// entry just by ending its agent-chosen path with the approved URL.
+	if !strings.HasPrefix(p, "/") && !strings.Contains(p, "://") && strings.HasSuffix(normalized, "/"+p) {
 		return true
 	}
 	return false
@@ -124,6 +127,13 @@ func matchGlobSubstring(s, pattern string) bool {
 	}
 	// Convert glob to a simple check: split on "*" and verify all parts
 	// appear in order in the string.
+	// A literal pattern was already compared for equality by the caller. Without
+	// a wildcard the prefix/suffix rules below would match any string that both
+	// starts and ends with the pattern, such as an approved URL followed by a
+	// query that repeats it.
+	if !strings.Contains(pattern, "*") {
+		return s == pattern
+	}
 	parts := strings.Split(pattern, "*")
 	if len(parts) == 0 {
 		return false

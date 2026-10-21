@@ -2585,7 +2585,7 @@ suppress:
 | Field | Description |
 |-------|-------------|
 | `rule` | Non-core pattern/rule name to suppress (required). Core floor names fail validation. |
-| `path` | Exact path, glob, or URL suffix (required) |
+| `path` | Exact path or URL, trailing-slash prefix, glob, or scheme-less URL path suffix (required) |
 | `reason` | Human-readable justification |
 
 **Path matching:** exact (`foo.txt`), glob (`*.txt`, `vendor/**`), directory prefix (`vendor/`), basename glob (`*.txt` matches `dir/foo.txt`).
