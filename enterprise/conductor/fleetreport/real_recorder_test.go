@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -107,8 +108,8 @@ func TestBuildRealRecorderRestartAcrossRuns(t *testing.T) {
 	opts := namespaceOptions(t, pub)
 
 	opts.ReportVersion = fleetreceipt.SchemaVersionV1
-	if _, err := Build(t.Context(), staticEvidenceSource{evidence: evidence}, opts); err == nil || !strings.Contains(err.Error(), "overlap or are reordered") {
-		t.Fatalf("v1 restart window: %v", err)
+	if _, err := Build(t.Context(), staticEvidenceSource{evidence: evidence}, opts); !errors.Is(err, ErrV1MultipleRuns) {
+		t.Fatalf("v1 restart window: %v, want ErrV1MultipleRuns", err)
 	}
 
 	opts.ReportVersion = 0

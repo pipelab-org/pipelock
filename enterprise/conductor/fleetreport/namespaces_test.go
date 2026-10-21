@@ -13,6 +13,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -143,8 +144,8 @@ func TestBuildNamespacesPreserveWholeFleet(t *testing.T) {
 				t.Fatal(err)
 			}
 			opts.ReportVersion = 1
-			if _, err := Build(t.Context(), staticEvidenceSource{evidence: evidence}, opts); err == nil || !strings.Contains(err.Error(), "overlap or are reordered") {
-				t.Fatalf("v1 did not preserve refusal: %v", err)
+			if _, err := Build(t.Context(), staticEvidenceSource{evidence: evidence}, opts); !errors.Is(err, ErrV1MultipleRuns) {
+				t.Fatalf("v1 did not refuse multiple recorder runs: %v", err)
 			}
 		})
 	}

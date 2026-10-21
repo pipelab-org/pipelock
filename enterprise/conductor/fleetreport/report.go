@@ -40,7 +40,11 @@ var (
 	ErrNoEvidence          = errors.New("fleet report: no audit-batch evidence matched the query")
 	ErrNoActionReceipts    = errors.New("fleet report: no action_receipt records found in matched evidence")
 	ErrNonTerminatingRatio = errors.New("fleet report: mediated fraction is not representable as an exact decimal")
-	newReportUUID          = uuid.NewV7
+	// ErrV1MultipleRuns refuses a v1 window that holds more than one recorder
+	// chain for a follower. V1 has no field to state that continuity between
+	// runs is unproven, so a signed v1 report would present them as one history.
+	ErrV1MultipleRuns = errors.New("fleet report: v1 cannot represent more than one recorder run per follower")
+	newReportUUID     = uuid.NewV7
 )
 
 type EvidenceSource interface {
@@ -48,7 +52,8 @@ type EvidenceSource interface {
 }
 
 type Options struct {
-	// ReportVersion defaults to v2; v1 retains per-follower overlap refusal.
+	// ReportVersion defaults to v2; v1 retains per-follower overlap refusal and
+	// refuses more than one recorder run per follower.
 	ReportVersion    int
 	OrgID            string
 	FleetID          string
@@ -108,6 +113,7 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		return Result{}, ErrNoEvidence
 	}
 	agg := newAggregator()
+	v1Runs := v1RunSet{}
 	var sourceBatches []fleetreceipt.SourceBatch
 	for _, ev := range evidence {
 		if err := ctx.Err(); err != nil {
@@ -141,6 +147,11 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		}
 		if err := agg.addBatch(ev, entries, auditKey); err != nil {
 			return Result{}, err
+		}
+		if opts.ReportVersion == fleetreceipt.SchemaVersionV1 {
+			if err := v1Runs.add(ev.Envelope.InstanceID, entries[0]); err != nil {
+				return Result{}, err
+			}
 		}
 		batch := sourceBatch(ev)
 		if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
@@ -351,6 +362,28 @@ func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []
 
 // deriveChainIdentity joins verifySegment and the recorder's hash projection.
 // Call only after authenticating the envelope and checking its payload digest.
+// v1Run is the recorder chain a v1 report attributes to one follower, keyed by
+// the same namespace fields the receivers compare. Entries without a session
+// share one value, so legacy recorders keep v1's original overlap checks.
+type v1Run struct {
+	entryVersion int
+	sessionID    string
+	chainKind    string
+	writerID     string
+}
+
+type v1RunSet map[string]v1Run
+
+// add runs after verifySegment, which has rejected empty and mixed-namespace segments.
+func (s v1RunSet) add(instanceID string, first recorder.Entry) error {
+	run := v1Run{entryVersion: first.Version, sessionID: first.SessionID, chainKind: first.ChainKind, writerID: first.WriterInstanceID}
+	if prev, ok := s[instanceID]; ok && prev != run {
+		return fmt.Errorf("%w: follower %s has audit batches from more than one recorder run in this window; use --report-version 2, which records each run separately", ErrV1MultipleRuns, instanceID)
+	}
+	s[instanceID] = run
+	return nil
+}
+
 func deriveChainIdentity(ctx context.Context, env conductorcore.AuditBatchEnvelope, entries []recorder.Entry) (fleetreceipt.ChainIdentity, error) {
 	first := entries[0] // verifySegment has already rejected empty payloads.
 	identity := fleetreceipt.ChainIdentity{EntryVersion: first.Version, SessionID: first.SessionID, ChainKind: first.ChainKind, WriterInstanceID: first.WriterInstanceID}

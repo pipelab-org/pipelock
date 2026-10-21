@@ -14,8 +14,10 @@ statement type remains `https://in-toto.io/Statement/v1`, and the DSSE payload t
 remains `application/vnd.in-toto+json`. Unknown report versions are rejected.
 
 `pipelock conductor fleet report` mints v2 by default. `--report-version 1` mints
-v1 with its original per-follower ordering and overlap checks; it refuses a
-window containing overlapping recorder runs. It does not omit sources or
+v1 with its original per-follower ordering and overlap checks. V1 has no field
+for recorder-run identity or the continuity limit, so it refuses a window in
+which any follower has batches from more than one recorder run, whether or not
+their sequence ranges overlap. It does not omit sources or
 silently switch versions. `--report-version 2` explicitly selects v2. Minting
 still requires Enterprise; offline verification remains free:
 

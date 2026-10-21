@@ -161,7 +161,9 @@ passed.
 
 Fleet reports use v2 by default so independent recorder runs and v3 writers can
 reuse sequence numbers within one window. Use `--report-version 1` when a v1
-consumer is required; its original overlap checks still apply. Update older
+consumer is required; its original overlap checks still apply, and it refuses
+a window in which a follower has batches from more than one recorder run,
+because v1 can't record which run each batch came from. Update older
 verifiers before producing v2. The report signer attests to payload-derived run
 grouping; offline L1 does not replay those payloads or prove an honest restart.
 See [the v2 contract](../specs/fleet-receipt-v2.md) and

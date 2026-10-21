@@ -84,7 +84,7 @@ into the offline verifier:
 			return runFleetReport(cmd, opts)
 		},
 	}
-	cmd.Flags().IntVar(&opts.reportVersion, "report-version", opts.reportVersion, "report predicate version: 2 groups verified recorder namespaces; 1 retains per-follower overlap refusal")
+	cmd.Flags().IntVar(&opts.reportVersion, "report-version", opts.reportVersion, "report predicate version: 2 groups verified recorder namespaces; 1 retains per-follower overlap refusal and refuses more than one recorder run per follower")
 	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit store")
 	cmd.Flags().StringVar(&opts.orgID, "org-id", "", "org id to report (required)")
 	cmd.Flags().StringVar(&opts.fleetID, "fleet-id", "", "fleet id to report (required)")
