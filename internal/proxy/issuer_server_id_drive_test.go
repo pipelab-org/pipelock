@@ -30,10 +30,10 @@ func TestInterceptServerIssuedDirectoryID(t *testing.T) {
 	}{
 		{"operator bound", "", envelope.ActorAuthBound, http.StatusOK, http.StatusOK, nil},
 		{"configured default", "directory-agent", envelope.ActorAuthConfigDefault, http.StatusOK, http.StatusOK, nil},
-		{"header with configured default", "directory-agent", envelope.ActorAuthSelfDeclared, http.StatusOK, http.StatusOK, nil},
-		{"anonymous", "", envelope.ActorAuthUnknown, http.StatusOK, http.StatusForbidden, nil},
-		{"self declared", "", envelope.ActorAuthSelfDeclared, http.StatusOK, http.StatusForbidden, nil},
-		{"matched header", "", envelope.ActorAuthMatched, http.StatusOK, http.StatusForbidden, nil},
+		{"header with configured default", "directory-agent", envelope.ActorAuthSelfDeclared, http.StatusForbidden, http.StatusOK, nil},
+		{"anonymous", "", envelope.ActorAuthUnknown, http.StatusForbidden, http.StatusForbidden, nil},
+		{"self declared", "", envelope.ActorAuthSelfDeclared, http.StatusForbidden, http.StatusForbidden, nil},
+		{"matched header", "", envelope.ActorAuthMatched, http.StatusForbidden, http.StatusForbidden, nil},
 		{"feature disabled", "", envelope.ActorAuthUnknown, http.StatusForbidden, http.StatusForbidden, func(c *config.Config) { c.RequestBodyScanning.IssuerBoundSessionCookies = false }},
 		{"TLS interception disabled", "", envelope.ActorAuthUnknown, http.StatusForbidden, http.StatusForbidden, func(c *config.Config) { c.TLSInterception.Enabled = false }},
 		{"body scanning disabled", "", envelope.ActorAuthUnknown, http.StatusForbidden, http.StatusForbidden, func(c *config.Config) { c.RequestBodyScanning.Enabled = false }},
@@ -137,8 +137,9 @@ func TestInterceptServerIssuedIDSharedClientAddress(t *testing.T) {
 	}))
 	t.Cleanup(upstream.Close)
 	// Each call opens a new tunnel; the helper gives both callers the same
-	// client address. Their self-declared names do not isolate issuer state.
-	do := func(path, agent, criteria string, want int) {
+	// client address. Untrusted names confer no allowance; bound identities
+	// keep independent evidence even though their address is identical.
+	do := func(path, agent, criteria string, auth envelope.ActorAuth, want int) {
 		t.Helper()
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+path, nil)
 		if err != nil {
@@ -150,7 +151,7 @@ func TestInterceptServerIssuedIDSharedClientAddress(t *testing.T) {
 		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
 			Upstream: upstream, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
 			Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
-			Agent: agent, ActorAuth: envelope.ActorAuthSelfDeclared,
+			Agent: agent, ActorAuth: auth,
 		})
 		defer func() { _ = resp.Body.Close() }()
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -158,9 +159,16 @@ func TestInterceptServerIssuedIDSharedClientAddress(t *testing.T) {
 			t.Fatalf("%s as %s = %d, want %d", path, agent, resp.StatusCode, want)
 		}
 	}
-	do("/items/"+serverIDListed, "caller-b", "", http.StatusForbidden)
-	do("/submit", "caller-a", agentBlob, http.StatusNoContent)
-	do("/listing", "caller-a", "", http.StatusOK)
-	do("/items/"+serverIDListed, "caller-b", "", http.StatusOK)
-	do("/items/"+agentBlob, "caller-b", "", http.StatusForbidden)
+	do("/items/"+serverIDListed, "caller-b", "", envelope.ActorAuthSelfDeclared, http.StatusForbidden)
+	do("/submit", "caller-a", agentBlob, envelope.ActorAuthSelfDeclared, http.StatusNoContent)
+	do("/listing", "caller-a", "", envelope.ActorAuthSelfDeclared, http.StatusOK)
+	do("/items/"+serverIDListed, "caller-b", "", envelope.ActorAuthSelfDeclared, http.StatusForbidden)
+	do("/items/"+agentBlob, "caller-b", "", envelope.ActorAuthSelfDeclared, http.StatusForbidden)
+	do("/listing", "caller-a", "", envelope.ActorAuthBound, http.StatusOK)
+	do("/items/"+serverIDListed, "caller-a", "", envelope.ActorAuthBound, http.StatusOK)
+	do("/items/"+serverIDListed, "caller-a", "", envelope.ActorAuthUnknown, http.StatusForbidden)
+	do("/items/"+serverIDListed, "caller-a", "", envelope.ActorAuthMatched, http.StatusForbidden)
+	do("/items/"+serverIDListed, "caller-b", "", envelope.ActorAuthBound, http.StatusForbidden)
+	do("/listing", "caller-b", "", envelope.ActorAuthBound, http.StatusOK)
+	do("/items/"+serverIDListed, "caller-b", "", envelope.ActorAuthBound, http.StatusOK)
 }

@@ -53,6 +53,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/posturebinding"
+	"github.com/luckyPipewrench/pipelock/internal/proxyhealth"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -7290,20 +7291,21 @@ func extractRawURLParam(rawQuery string) string {
 // map; when disabled, Subsystems is omitted and Status is always "healthy"
 // (preserving the legacy shape).
 type healthResponse struct {
-	Status                 string          `json:"status"`
-	Version                string          `json:"version"`
-	Mode                   string          `json:"mode"`
-	UptimeSeconds          float64         `json:"uptime_seconds"`
-	DLPPatterns            int             `json:"dlp_patterns"`
-	ResponseScanEnabled    bool            `json:"response_scan_enabled"`
-	GitProtectionEnabled   bool            `json:"git_protection_enabled"`
-	RateLimitEnabled       bool            `json:"rate_limit_enabled"`
-	ForwardProxyEnabled    bool            `json:"forward_proxy_enabled"`
-	WebSocketProxyEnabled  bool            `json:"websocket_proxy_enabled"`
-	RequestBodyScanEnabled bool            `json:"request_body_scan_enabled"`
-	TLSInterceptionEnabled bool            `json:"tls_interception_enabled"`
-	KillSwitchActive       bool            `json:"kill_switch_active"`
-	Subsystems             map[string]bool `json:"subsystems,omitempty"`
+	Status                 string                `json:"status"`
+	Version                string                `json:"version"`
+	Mode                   string                `json:"mode"`
+	UptimeSeconds          float64               `json:"uptime_seconds"`
+	DLPPatterns            int                   `json:"dlp_patterns"`
+	ResponseScanEnabled    bool                  `json:"response_scan_enabled"`
+	GitProtectionEnabled   bool                  `json:"git_protection_enabled"`
+	RateLimitEnabled       bool                  `json:"rate_limit_enabled"`
+	ForwardProxyEnabled    bool                  `json:"forward_proxy_enabled"`
+	WebSocketProxyEnabled  bool                  `json:"websocket_proxy_enabled"`
+	RequestBodyScanEnabled bool                  `json:"request_body_scan_enabled"`
+	TLSInterceptionEnabled bool                  `json:"tls_interception_enabled"`
+	KillSwitchActive       bool                  `json:"kill_switch_active"`
+	Subsystems             map[string]bool       `json:"subsystems,omitempty"`
+	Identity               *proxyhealth.Identity `json:"identity,omitempty"`
 }
 
 const (
@@ -7318,7 +7320,22 @@ const (
 // signal even if the HTTP handler itself is fine.
 func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 	cfg := p.cfgPtr.Load()
+	var identity *proxyhealth.Identity
+	if _, requested := r.URL.Query()["identity"]; requested {
+		query, err := url.ParseQuery(r.URL.RawQuery)
+		if err != nil || len(query["identity"]) != 1 || query.Get("identity") != "1" {
+			http.Error(w, "invalid identity diagnostic query", http.StatusBadRequest)
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		identity = p.requestIdentityStatus(r)
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	resp := healthResponse{
+		Identity:      identity,
 		Status:        healthStatusHealthy,
 		Version:       Version,
 		UptimeSeconds: time.Since(p.startTime).Seconds(),

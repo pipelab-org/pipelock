@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -46,171 +45,100 @@ func newSentIssuerProxy(t *testing.T) (*Proxy, *config.Config) {
 	return p, cfg
 }
 
-func TestIssuerSentUntrustedInterceptCannotMintAcrossSessions(t *testing.T) {
-	for _, auth := range []envelope.ActorAuth{
-		envelope.ActorAuthBound, envelope.ActorAuthUnknown, envelope.ActorAuthSelfDeclared,
-	} {
-		t.Run(string(auth), func(t *testing.T) {
-			p, cfg := newSentIssuerProxy(t)
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/filters", nil)
-			if err != nil {
-				t.Fatal(err)
+// No untrusted grade may read or mutate learned IDs, even when the default
+// state projection would place it in the same bucket as a configured agent.
+func TestIssuerSentIdentityIsolation(t *testing.T) {
+	for _, defaultName := range []string{"", "recipient"} {
+		for _, auth := range []envelope.ActorAuth{envelope.ActorAuthUnknown, envelope.ActorAuthSelfDeclared, envelope.ActorAuthMatched, envelope.ActorAuthBound, envelope.ActorAuthConfigDefault} {
+			for _, transport := range []string{"intercept", "forward", "fetch", "websocket"} {
+				t.Run(defaultName+"/"+string(auth)+"/"+transport, func(t *testing.T) {
+					p, cfg := newSentIssuerProxy(t)
+					cfg.DefaultAgentIdentity = defaultName
+					origin, _ := url.Parse("https://api.vendor.example/items")
+					s := p.issuerStoreForUnmediatedSend()
+					const agent = "recipient"
+					const client = "192.0.2.1"
+					trusted := sessionKeyFor(cfg, agent, client, envelope.ActorAuthBound)
+					s.mintServerID(trusted, origin, serverIDListed, time.Now())
+					if !s.serverIDIssued(trusted, origin, serverIDListed) {
+						t.Fatal("positive control missing")
+					}
+					req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, origin.String(), strings.NewReader(agentBlob))
+					req.Header.Set("X-Criteria", agentBlob)
+					ic := &InterceptContext{Proxy: p, Config: cfg, Agent: agent, ClientIP: client, ActorAuth: auth}
+					if got := ic.issuerServerIDStore() != nil; got != auth.TrustedForIdentity() {
+						t.Fatalf("accessor eligibility = %v", got)
+					}
+					switch transport {
+					case "intercept":
+						recordIssuerRequestSent(ic, req, nil)
+					case "forward":
+						p.recordIssuerForwardSent(cfg, agent, client, auth, req, nil)
+					case "fetch":
+						u := *origin
+						u.Path += "/" + agentBlob
+						p.recordIssuerFetchSent(cfg, agent, client, auth, &u)
+					case "websocket":
+						p.taintIssuerSessionForStream(cfg, agent, client, auth, origin)
+					}
+					if transport != "fetch" && s.serverIDIssued(trusted, origin, serverIDListed) == auth.TrustedForIdentity() {
+						t.Fatal("own taint or untrusted DoS isolation failed")
+					}
+					s.mintServerID(trusted, origin, agentBlob, time.Now())
+					if s.serverIDIssued(trusted, origin, agentBlob) == auth.TrustedForIdentity() {
+						t.Fatal("send history crossed trust boundary or own reflection minted")
+					}
+					peer := sessionKeyFor(cfg, "peer", client, envelope.ActorAuthBound)
+					s.mintServerID(peer, origin, serverIDOther, time.Now())
+					if !s.serverIDIssued(peer, origin, serverIDOther) {
+						t.Fatal("taint crossed bound identities on shared IP")
+					}
+				})
 			}
-			req.Header.Set("X-Criteria", agentBlob)
-			ic := &InterceptContext{Proxy: p, Config: cfg, ClientIP: "127.0.0.1", Agent: "sender", ActorAuth: auth}
-			recordIssuerRequestSent(ic, req, nil)
-			store := p.issuerStoreForUnmediatedSend()
-			recipient := sessionKeyFor(cfg, "recipient", "127.0.0.1", envelope.ActorAuthBound)
-			store.mintServerID(recipient, req.URL, agentBlob, time.Now())
-			if store.serverIDIssued(recipient, req.URL, agentBlob) {
-				t.Fatal("a value sent through interception minted as another session's server-issued ID")
-			}
-			control := "Z" + agentBlob[1:]
-			store.mintServerID(recipient, req.URL, control, time.Now())
-			if !store.serverIDIssued(recipient, req.URL, control) {
-				t.Fatal("an unsent value did not mint for the same recipient and origin")
-			}
-		})
+		}
 	}
 }
 
-func TestInterceptUntrustedReflectionCannotIssueID(t *testing.T) {
-	h := newWebPlatformHarness(t)
-	var mu sync.Mutex
-	var supplied string
-	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		if r.URL.Path == "/submit" {
-			supplied = r.Header.Get("X-Criteria")
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"value":[{"id":"`+supplied+`"},{"id":"`+serverIDOther+`"}]}`)
-	}))
-	t.Cleanup(api.Close)
-	do := func(path, value string, auth envelope.ActorAuth) int {
-		t.Helper()
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, api.URL+path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if value != "" {
-			req.Header.Set("X-Criteria", value)
-		}
-		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
-			Upstream: api, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
-			Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
-			Agent: "recipient", ActorAuth: auth,
-		})
-		defer func() { _ = resp.Body.Close() }()
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return resp.StatusCode
-	}
-	if got := do("/submit", agentBlob, envelope.ActorAuthUnknown); got != http.StatusNoContent {
-		t.Fatalf("untrusted sender = %d, want 204", got)
-	}
-	if got := do("/filters", "", envelope.ActorAuthBound); got != http.StatusOK {
-		t.Fatalf("trusted recipient listing = %d, want 200", got)
-	}
-	if got := do("/filters/"+agentBlob, "", envelope.ActorAuthBound); got != http.StatusForbidden {
-		t.Fatalf("reflected ID = %d, want 403", got)
-	}
-	if got := do("/filters/"+serverIDOther, "", envelope.ActorAuthBound); got != http.StatusOK {
-		t.Fatalf("unsent listed ID = %d, want 200", got)
-	}
-}
-
-func TestIssuerSentIncompleteAcrossSessions(t *testing.T) {
-	origin, err := url.Parse("https://api.vendor.example/filters")
-	if err != nil {
-		t.Fatal(err)
-	}
-	other, err := url.Parse("https://other.vendor.example/filters")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, cause := range []string{"unread body", "unread http", "unread other port", "request limit", "session limit", "websocket"} {
+func TestIssuerSentIncompleteCallerLocal(t *testing.T) {
+	origin, _ := url.Parse("https://api.vendor.example/items")
+	for _, cause := range []string{"unread body", "request limit", "session limit", "websocket"} {
 		t.Run(cause, func(t *testing.T) {
 			p, cfg := newSentIssuerProxy(t)
 			s := p.issuerStoreForUnmediatedSend()
-			now := time.Now()
-			recipient := sessionKeyFor(cfg, "recipient", "127.0.0.1", envelope.ActorAuthUnknown)
-			s.mintServerID(recipient, origin, serverIDListed, now)
-			if !s.serverIDIssued(recipient, origin, serverIDListed) {
-				t.Fatal("positive control: recipient did not learn the ID")
+			sender := sessionKeyFor(cfg, "sender", "192.0.2.1", envelope.ActorAuthBound)
+			peer := sessionKeyFor(cfg, "peer", "192.0.2.1", envelope.ActorAuthBound)
+			for _, key := range []string{sender, peer} {
+				s.mintServerID(key, origin, serverIDListed, time.Now())
 			}
 			var body []byte
 			known := true
-			target := *origin
 			switch cause {
 			case "unread body":
 				known = false
-			case "unread http":
-				known = false
-				target.Scheme = "http"
-			case "unread other port":
-				known = false
-				target.Host += ":8443"
 			case "request limit":
 				body = []byte(strings.Repeat(serverIDOther+" ", issuerSentMaxTokensPerRequest+1))
 			case "session limit":
-				s.sent["sender"] = make(map[[32]byte]struct{})
 				for i := 0; i < issuerSentMaxEntries; i++ {
 					var digest [32]byte
 					digest[0], digest[1] = byte(i), byte(i>>8)
-					s.sent["sender"][digest] = struct{}{}
+					s.sent[sender][digest] = struct{}{}
 				}
-				body = []byte(serverIDOther + " " + agentBlob)
+				body = []byte(agentBlob)
 			}
 			if cause == "websocket" {
-				target.Scheme = "wss"
-				p.taintIssuerSessionForStream(cfg, "sender", "192.0.2.1", envelope.ActorAuthBound, &target)
+				p.taintIssuerSessionForStream(cfg, "sender", "192.0.2.1", envelope.ActorAuthBound, origin)
 			} else {
-				s.recordSent("sender", &target, nil, body, known, now)
+				s.recordSent(sender, origin, nil, body, known, time.Now())
 			}
-			if s.serverIDIssued(recipient, origin, serverIDListed) {
-				t.Fatal("recipient kept an ID after another caller's incomplete send")
+			if s.serverIDIssued(sender, origin, serverIDListed) {
+				t.Fatal("own ID survived incomplete history")
 			}
-			s.mintServerID("fresh-recipient", origin, agentBlob, now)
-			if s.serverIDIssued("fresh-recipient", origin, agentBlob) {
-				t.Fatal("another caller minted after incomplete send history")
+			s.mintServerID(sender, origin, serverIDOther, time.Now())
+			if s.serverIDIssued(sender, origin, serverIDOther) {
+				t.Fatal("own taint failed open on later listing")
 			}
-			s.mintServerID(recipient, other, serverIDListed, now)
-			if !s.serverIDIssued(recipient, other, serverIDListed) {
-				t.Fatal("incomplete history for one host blocked a different host")
-			}
-		})
-	}
-}
-
-func TestIssuerSentHostUncertaintyFailsClosed(t *testing.T) {
-	origin, err := url.Parse("https://api.vendor.example/filters")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, cause := range []string{"missing target", "missing host", "history full"} {
-		t.Run(cause, func(t *testing.T) {
-			s := newTestServerIDStore(t)
-			s.mu.Lock()
-			switch cause {
-			case "missing target":
-				s.taintSentHostLocked(nil)
-			case "missing host":
-				s.taintSentHostLocked(&url.URL{})
-			case "history full":
-				for i := 0; i < issuerSentAllMaxEntries; i++ {
-					var digest [32]byte
-					digest[0], digest[1], digest[2] = byte(i), byte(i>>8), byte(i>>16)
-					s.sentAll[digest] = struct{}{}
-				}
-				s.taintSentHostLocked(origin)
-			}
-			s.mu.Unlock()
-			s.mintServerID("recipient", origin, serverIDListed, time.Now())
-			if s.serverIDIssued("recipient", origin, serverIDListed) {
-				t.Fatal("uncertainty failed open")
+			if !s.serverIDIssued(peer, origin, serverIDListed) {
+				t.Fatal("peer lost allowance")
 			}
 		})
 	}

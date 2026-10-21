@@ -872,8 +872,8 @@ func newInterceptHandler(
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
 				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
-			if idStore := ic.issuerServerIDStore(); idStore != nil {
-				store := ic.issuerQueryStore()
+			store, idStore := ic.issuerQueryStore(), ic.issuerServerIDStore()
+			if store != nil || idStore != nil {
 				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				allowed := false
 				// The receipt names the widest rule that admitted a value:

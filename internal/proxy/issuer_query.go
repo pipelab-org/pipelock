@@ -71,19 +71,15 @@ type issuerQueryStore struct {
 	ids            map[string][][32]byte
 	sent           map[string]map[[32]byte]struct{}
 	sentUnreadable map[string]bool
-	// sentAll holds sent digests across every session, so one agent's value
-	// cannot mint as an ID for another. An empty-token digest marks a host
-	// whose history is incomplete for all recipients.
-	sentAll map[[32]byte]struct{}
-	// mintDisabled stops all minting once incomplete sent history can no
-	// longer be remembered per session.
-	mintDisabled bool
-	// observeIDBlock reports transitions only; host logs are coalesced for
-	// this store's lifetime while every new host remains counted.
-	observeIDBlock    func(scope string, log bool)
-	hostBlockReported bool
-	used              map[string]time.Time
-	disabled          bool
+	// ID history is retained independently of query-evidence LRU eviction.
+	// Capacity denies new buckets or taints only the caller adding history;
+	// it never revokes an existing peer's IDs.
+	sentEntries        int
+	observeIDBlock     func(scope string, log bool)
+	idBlockReported    bool
+	idCapacityReported bool
+	used               map[string]time.Time
+	disabled           bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
@@ -101,7 +97,6 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		used:      make(map[string]time.Time),
 
 		sentUnreadable: make(map[string]bool),
-		sentAll:        make(map[[32]byte]struct{}),
 	}
 	if _, err := io.ReadFull(reader, s.key[:]); err != nil {
 		s.disabled = true
@@ -113,16 +108,21 @@ func (ic *InterceptContext) issuerQueryStore() *issuerQueryStore {
 	if ic == nil || !ic.stateTrusted() {
 		return nil
 	}
-	return ic.issuerServerIDStore()
+	return ic.issuerEvidenceRuntimeStore()
 }
 
-// issuerServerIDStore keeps the runtime and scanning prerequisites of issuer
-// evidence without treating a caller's identity as proof of an object ID.
-// An ID instead requires this origin's delivered response and complete sent
-// history across every caller. Untrusted callers use the existing IP-folded
-// state key; declaring a different agent name cannot create a fresh bucket.
-// Cookies, linked paths and query values still use the trusted accessor above.
+// issuerServerIDStore admits only the request's resolved trusted grade.
+// stateIdentity's default projection is for detection state: a caller-supplied
+// header must not turn an untrusted grade into learned-ID authority.
+
 func (ic *InterceptContext) issuerServerIDStore() *issuerQueryStore {
+	if ic == nil || !ic.ActorAuth.TrustedForIdentity() {
+		return nil
+	}
+	return ic.issuerEvidenceRuntimeStore()
+}
+
+func (ic *InterceptContext) issuerEvidenceRuntimeStore() *issuerQueryStore {
 	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) {
 		return nil
 	}
@@ -180,10 +180,9 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
 	delete(s.documents, oldest)
-	// An evicted session's sent history is lost, so if it returns it must
-	// not mint as though it had sent nothing: the tombstone outlives eviction.
-	delete(s.sent, oldest)
-	s.taintSentLocked(oldest)
+	// ID history has its own bounded admission and must outlive query LRU
+	// eviction. Losing query evidence cannot erase reflection history or
+	// revoke another caller's IDs.
 	delete(s.used, oldest)
 }
 
@@ -542,7 +541,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	}
 	store := ic.issuerQueryStore()
 	idStore := ic.issuerServerIDStore()
-	if idStore == nil {
+	if store == nil && idStore == nil {
 		return
 	}
 	issuerHost, issuerPort, ok := issuerCookieOrigin(response.Request.URL)

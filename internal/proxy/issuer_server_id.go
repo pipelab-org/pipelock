@@ -47,11 +47,11 @@ const (
 	// issuerSentMaxTokensPerRequest bounds the tokens one request records. A
 	// request over the bound marks the session unreadable.
 	issuerSentMaxTokensPerRequest = 4096
-	// issuerUnreadableMaxSessions bounds the sessions remembered as having
-	// incomplete sent history. Past it the whole store stops minting.
+	// issuerUnreadableMaxSessions bounds retained ID-history buckets, including
+	// incomplete-history tombstones. New buckets are refused at capacity.
 	issuerUnreadableMaxSessions = 4096
-	// issuerSentAllMaxEntries bounds the sent digests kept across all
-	// sessions. Past it the whole store stops minting.
+	// issuerSentAllMaxEntries bounds the total sent digests across buckets.
+	// An addition past it taints only the bucket making that addition.
 	issuerSentAllMaxEntries = 1 << 17
 )
 
@@ -145,65 +145,36 @@ func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value strin
 	return s.digestFields(tag, strings.ToLower(target.Scheme), host, port, value), true
 }
 
-// taintSentLocked stops minting for a session whose outgoing traffic could
-// not be fully recorded.
+// admitIDSessionLocked retains history without eviction. An unremembered
+// caller cannot mint: refusing new buckets at capacity preserves both the
+// negative evidence and the allowances of existing callers.
+func (s *issuerQueryStore) admitIDSessionLocked(session string) bool {
+	if _, exists := s.sent[session]; exists {
+		return true
+	}
+	if len(s.sent) >= issuerUnreadableMaxSessions {
+		if !s.idCapacityReported && s.observeIDBlock != nil {
+			s.observeIDBlock(metrics.IssuerIDBlockCapacity, true)
+		}
+		s.idCapacityReported = true
+		return false
+	}
+	s.sent[session] = make(map[[32]byte]struct{})
+	return true
+}
+
+// taintSentLocked revokes only this caller's IDs when its outgoing history
+// is incomplete. Neither hosts nor other callers acquire this taint.
 func (s *issuerQueryStore) taintSentLocked(session string) {
+	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] {
+		return
+	}
 	delete(s.ids, session)
-	if s.sentUnreadable[session] {
-		return
-	}
-	if len(s.sentUnreadable) >= issuerUnreadableMaxSessions {
-		s.disableMintLocked()
-		return
-	}
 	s.sentUnreadable[session] = true
-}
-
-// rememberSentLocked keeps cross-session history without evicting evidence.
-func (s *issuerQueryStore) rememberSentLocked(digest [32]byte) {
-	if _, exists := s.sentAll[digest]; exists {
-		return
-	}
-	if len(s.sentAll) >= issuerSentAllMaxEntries {
-		s.disableMintLocked()
-		return
-	}
-	s.sentAll[digest] = struct{}{}
-}
-
-// taintSentHostLocked propagates incomplete history to every recipient of
-// this host. The empty token is a reserved marker: recorded tokens are always
-// at least issuerServerIDMinLen bytes. It shares the existing history bound
-// and lifetime, so session eviction cannot forget the uncertainty.
-func (s *issuerQueryStore) taintSentHostLocked(target *url.URL) {
-	if target == nil {
-		s.disableMintLocked()
-		return
-	}
-	digest, ok := s.sentDigest(target, "")
-	if !ok {
-		s.disableMintLocked()
-		return
-	}
-	if _, exists := s.sentAll[digest]; exists || s.mintDisabled {
-		return
-	}
-	s.rememberSentLocked(digest)
-	if !s.mintDisabled && s.observeIDBlock != nil {
-		s.observeIDBlock(metrics.IssuerIDBlockHost, !s.hostBlockReported)
-		s.hostBlockReported = true
-	}
-}
-
-// disableMintLocked reports only the transition into global blocking.
-func (s *issuerQueryStore) disableMintLocked() {
-	if s.mintDisabled {
-		return
-	}
-	s.mintDisabled = true
 	if s.observeIDBlock != nil {
-		s.observeIDBlock(metrics.IssuerIDBlockGlobal, true)
+		s.observeIDBlock(metrics.IssuerIDBlockSession, !s.idBlockReported)
 	}
+	s.idBlockReported = true
 }
 
 // newObservedIssuerQueryStore joins issuer-history transitions to the proxy's
@@ -214,25 +185,23 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 		p.metrics.RecordIssuerIDBlock(scope)
 		if log && p.logger != nil {
 			p.logger.LogAnomaly(audit.NewMethodLogContext("ISSUER_ID"), "",
-				"server-issued ID evidence blocked ("+scope+"); path entropy remains enforced; restart or disable and re-enable issuer evidence to clear IDs and history; additional host transitions are counted in pipelock_issuer_id_blocks_total", 0)
+				"server-issued ID evidence blocked ("+scope+"); affected caller buckets retain path entropy enforcement; restart or disable and re-enable issuer evidence to clear IDs and history; additional caller transitions are counted in pipelock_issuer_id_blocks_total", 0)
 		}
 	}
 	return s
 }
 
-// mintBlockedLocked applies both session and cross-session host uncertainty
-// when minting or using IDs.
+// mintBlockedLocked never turns missing or incomplete history into authority.
 func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
-	digest, ok := s.sentDigest(target, "")
-	_, unreadableHost := s.sentAll[digest]
-	return s.mintDisabled || s.sentUnreadable[session] || !ok || unreadableHost
+	_, ok := s.sentDigest(target, "")
+	return !ok || s.sentUnreadable[session] || !s.admitIDSessionLocked(session)
 }
 
 // recordSent records every token a request carries to its origin: path
 // segments, query keys and values, and the body, both raw and decoded. A
 // body that was sent but not buffered, or a request over the bound, marks the
 // session unreadable.
-func (s *issuerQueryStore) recordSent(session string, target *url.URL, header http.Header, body []byte, bodyKnown bool, now time.Time) {
+func (s *issuerQueryStore) recordSent(session string, target *url.URL, header http.Header, body []byte, bodyKnown bool, _ time.Time) {
 	if s == nil || s.disabled || session == "" || target == nil {
 		return
 	}
@@ -288,31 +257,24 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.admitSessionLocked(session)
-	s.used[session] = now
+	if !s.admitIDSessionLocked(session) || s.sentUnreadable[session] {
+		return
+	}
 	if !bodyKnown || overflow {
 		s.taintSentLocked(session)
-		s.taintSentHostLocked(originTarget)
 		return
 	}
 	sent := s.sent[session]
-	if sent == nil {
-		sent = make(map[[32]byte]struct{})
-		s.sent[session] = sent
-	}
 	for _, digest := range digests {
-		// Every session's sends count: a value one agent handed a host must
-		// not mint as an ID that host issued to another agent.
-		s.rememberSentLocked(digest)
 		if _, exists := sent[digest]; exists {
 			continue
 		}
-		if len(sent) >= issuerSentMaxEntries {
+		if len(sent) >= issuerSentMaxEntries || s.sentEntries >= issuerSentAllMaxEntries {
 			s.taintSentLocked(session)
-			s.taintSentHostLocked(originTarget)
 			return
 		}
 		sent[digest] = struct{}{}
+		s.sentEntries++
 	}
 }
 
@@ -413,7 +375,7 @@ func appendJSONStrings(texts []string, body []byte) []string {
 // mintServerID records value as an ID the origin in target issued, unless
 // the session sent that exact value to the origin or its sent traffic is
 // unreadable.
-func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value string, now time.Time) {
+func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value string, _ time.Time) {
 	if s == nil || s.disabled || session == "" || !issuerServerIDShaped(value) {
 		return
 	}
@@ -430,17 +392,12 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	if s.mintBlockedLocked(session, target) {
 		return
 	}
-	if _, reflectedAny := s.sentAll[sentDigest]; reflectedAny {
-		return
-	}
 	if _, reflected := s.sent[session][sentDigest]; reflected {
 		return
 	}
-	s.admitSessionLocked(session)
 	issued := s.ids[session]
 	for _, existing := range issued {
 		if hmac.Equal(existing[:], idDigest[:]) {
-			s.used[session] = now
 			return
 		}
 	}
@@ -448,7 +405,6 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 		issued = issued[1:]
 	}
 	s.ids[session] = append(issued, idDigest)
-	s.used[session] = now
 }
 
 // serverIDIssued reports whether the origin in target issued segment to the
@@ -468,7 +424,6 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	}
 	for _, existing := range s.ids[session] {
 		if hmac.Equal(existing[:], digest[:]) {
-			s.used[session] = time.Now()
 			return true
 		}
 	}
@@ -479,12 +434,11 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 // upstream. It runs before forwarding, so a response to a later request can
 // never mint a value this request carried, even when the two overlap.
 func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte) {
-	if ic == nil || ic.Proxy == nil || r == nil || r.URL == nil {
+	if ic == nil || ic.Proxy == nil || !ic.ActorAuth.TrustedForIdentity() || r == nil || r.URL == nil {
 		return
 	}
-	// Every sender can supply a reflected value, including callers that may
-	// not receive issuer allowances. Record into the live store even when a
-	// tunnel is pinned to an older runtime, just as forward and fetch do.
+	// Trusted callers record into the live store even when an enabled reload
+	// replaced a tunnel's snapshot. Untrusted callers never mutate this state.
 	store := ic.Proxy.issuerStoreForUnmediatedSend()
 	if store == nil {
 		return
@@ -495,9 +449,8 @@ func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte)
 }
 
 // issuerStoreForUnmediatedSend returns the live issuer store whatever
-// configuration snapshot or identity grade the sender holds. All sends can
-// reach an origin the store holds IDs for, so they must be recorded or taint
-// the session even when the snapshots differ. This grants no allowance.
+// configuration snapshot the trusted sender holds. Callers must check the
+// resolved actor grade before accessing it. This grants no allowance.
 func (p *Proxy) issuerStoreForUnmediatedSend() *issuerQueryStore {
 	if p == nil {
 		return nil
@@ -512,6 +465,9 @@ func (p *Proxy) issuerStoreForUnmediatedSend() *issuerQueryStore {
 // recordIssuerForwardSent records a plain-HTTP forward-proxy request as sent.
 // A body Pipelock did not buffer stops minting for the session.
 func (p *Proxy) recordIssuerForwardSent(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, r *http.Request, body []byte) {
+	if !actorAuth.TrustedForIdentity() {
+		return
+	}
 	store := p.issuerStoreForUnmediatedSend()
 	if store == nil || r == nil || r.URL == nil {
 		return
@@ -523,6 +479,9 @@ func (p *Proxy) recordIssuerForwardSent(cfg *config.Config, agent, clientIP stri
 // recordIssuerFetchSent records a /fetch request's URL as sent. It carries no
 // body, so its tokens are complete.
 func (p *Proxy) recordIssuerFetchSent(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, target *url.URL) {
+	if !actorAuth.TrustedForIdentity() {
+		return
+	}
 	store := p.issuerStoreForUnmediatedSend()
 	if store == nil || target == nil {
 		return
@@ -532,7 +491,10 @@ func (p *Proxy) recordIssuerFetchSent(cfg *config.Config, agent, clientIP string
 
 // taintIssuerSessionForStream marks a session whose traffic now includes a
 // stream Pipelock does not record token by token, such as WebSocket frames.
-func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, target *url.URL) {
+func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, _ *url.URL) {
+	if !actorAuth.TrustedForIdentity() {
+		return
+	}
 	store := p.issuerStoreForUnmediatedSend()
 	if store == nil || store.disabled {
 		return
@@ -544,5 +506,4 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.taintSentLocked(session)
-	store.taintSentHostLocked(target)
 }

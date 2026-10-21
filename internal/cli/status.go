@@ -4,9 +4,12 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -17,17 +20,20 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/proxyhealth"
 )
 
 type statusReport struct {
-	ConfigFile string                 `json:"config_file"`
-	Version    string                 `json:"version"`
-	Mode       string                 `json:"mode"`
-	Enforce    bool                   `json:"enforce"`
-	Listeners  []statusListener       `json:"listeners"`
-	Scanners   []statusScanner        `json:"scanners"`
-	License    statusLicense          `json:"license"`
-	KillSwitch statusKillSwitchReport `json:"kill_switch"`
+	ConfigurationSource string                 `json:"configuration_source,omitempty"`
+	Identity            *proxyhealth.Identity  `json:"identity,omitempty"`
+	ConfigFile          string                 `json:"config_file"`
+	Version             string                 `json:"version"`
+	Mode                string                 `json:"mode"`
+	Enforce             bool                   `json:"enforce"`
+	Listeners           []statusListener       `json:"listeners"`
+	Scanners            []statusScanner        `json:"scanners"`
+	License             statusLicense          `json:"license"`
+	KillSwitch          statusKillSwitchReport `json:"kill_switch"`
 }
 
 type statusListener struct {
@@ -60,6 +66,7 @@ type statusKillSwitchReport struct {
 func statusCmd() *cobra.Command {
 	var configFile string
 	var jsonOutput bool
+	var identityURL, identityAgent string
 
 	cmd := &cobra.Command{
 		Use:   "status",
@@ -67,7 +74,9 @@ func statusCmd() *cobra.Command {
 		Long: `Print a read-only summary of the effective local configuration: mode,
 listeners, scanner switches, license state, and kill-switch sources. This
 command loads config and stats any configured kill-switch sentinel file, but it
-does not mutate runtime state or contact the proxy.`,
+does not mutate runtime state. By default it does not contact the proxy.
+--identity-url adds a live caller-only identity probe of that listener; all
+other fields describe the local configuration, not loaded runtime state.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Args:          cobra.NoArgs,
@@ -76,7 +85,24 @@ does not mutate runtime state or contact the proxy.`,
 			if err != nil {
 				return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 			}
+			if identityAgent != "" && identityURL == "" {
+				return errors.New("--identity-agent requires --identity-url")
+			}
 			report := buildStatusReport(cfg, cfgLabel)
+			if identityURL != "" {
+				ctx, cancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+				defer cancel()
+				transport := http.DefaultTransport.(*http.Transport).Clone()
+				transport.Proxy = nil // Connect to the chosen listener itself, as exec readiness does.
+				defer transport.CloseIdleConnections()
+				client := &http.Client{Transport: transport, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+				identity, err := proxyhealth.GetIdentity(ctx, client, identityURL, identityAgent)
+				if err != nil {
+					return err
+				}
+				report.Identity = identity
+				report.ConfigurationSource = "local-configuration"
+			}
 			if jsonOutput {
 				enc := json.NewEncoder(cmd.OutOrStdout())
 				enc.SetIndent("", "  ")
@@ -90,6 +116,8 @@ does not mutate runtime state or contact the proxy.`,
 		},
 	}
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path (default: built-in defaults)")
+	cmd.Flags().StringVar(&identityURL, "identity-url", "", "probe live caller identity at this HTTP(S) listener origin")
+	cmd.Flags().StringVar(&identityAgent, "identity-agent", "", "optional self-declared X-Pipelock-Agent header for the live probe")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "output report as JSON")
 	return cmd
 }
@@ -208,6 +236,13 @@ func killSwitchDetail(cfg *config.Config) string {
 
 func printStatusReport(w io.Writer, report statusReport) {
 	_, _ = fmt.Fprintln(w, "Pipelock Status")
+	if report.Identity != nil {
+		id := report.Identity
+		_, _ = fmt.Fprintf(w, "Identity (loaded runtime; this request): grade=%s trusted=%t issuer_id_evidence_eligible=%t\n", id.ActorAuth, id.TrustedForIdentity, id.IssuerIDEvidenceEligible)
+		_, _ = fmt.Fprintf(w, "  default_identity_configured=%t bind_default_agent_identity=%t\n", id.DefaultIdentityConfigured, id.BindDefaultAgentIdentity)
+		_, _ = fmt.Fprintf(w, "  tls_interception_enabled=%t request_body_scan_enabled=%t scan_headers=%t issuer_bound_session_cookies=%t\n", id.TLSInterceptionEnabled, id.RequestBodyScanEnabled, id.ScanHeaders, id.IssuerBoundSessionCookies)
+		_, _ = fmt.Fprintln(w, "Local configured state (does not prove loaded runtime):")
+	}
 	_, _ = fmt.Fprintln(w, "===============")
 	_, _ = fmt.Fprintf(w, "Config:  %s\n", terminalDisplay(report.ConfigFile))
 	_, _ = fmt.Fprintf(w, "Mode:    %s\n", terminalDisplay(report.Mode))

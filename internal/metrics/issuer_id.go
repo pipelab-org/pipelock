@@ -5,10 +5,10 @@ package metrics
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// Issuer ID block scopes describe the existing host and global history gates.
+// Issuer ID block scopes describe the caller-local history and new-bucket capacity gates.
 const (
-	IssuerIDBlockHost   = "host"
-	IssuerIDBlockGlobal = "global"
+	IssuerIDBlockSession  = "session"
+	IssuerIDBlockCapacity = "capacity"
 )
 
 func (m *Metrics) registerIssuerIDMetrics(reg *prometheus.Registry) {
@@ -20,9 +20,9 @@ func (m *Metrics) registerIssuerIDMetrics(reg *prometheus.Registry) {
 	reg.MustRegister(m.issuerIDBlocks)
 }
 
-// RecordIssuerIDBlock counts a newly blocked host or global history gate.
+// RecordIssuerIDBlock counts a newly tainted caller bucket or new-bucket capacity gate.
 func (m *Metrics) RecordIssuerIDBlock(scope string) {
-	if m == nil || (scope != IssuerIDBlockHost && scope != IssuerIDBlockGlobal) {
+	if m == nil || (scope != IssuerIDBlockSession && scope != IssuerIDBlockCapacity) {
 		return
 	}
 	m.issuerIDBlocks.WithLabelValues(scope).Inc()
