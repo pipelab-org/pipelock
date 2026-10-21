@@ -193,7 +193,8 @@ func Discover(home string) (*Report, error) {
 }
 
 // DiscoverWithOptions is Discover plus the explicitly supplied configuration
-// roots in opts. A file reachable from more than one root is reported once.
+// roots in opts. A file reachable from more than one root for the same client
+// and parser is reported once.
 func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 	paths := configPaths(home)
 	var rootErrors []ClientConfig
@@ -302,17 +303,30 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 }
 
 // dedupeConfigPaths drops a config path that names the same existing file as
-// an earlier one (for example CLAUDE_CONFIG_DIR set to the home directory, or
-// a symlinked root), so one file's servers are never counted twice.
+// an earlier one for the same client and parser (for example CLAUDE_CONFIG_DIR
+// set to the home directory, or a symlinked root). Different clients or parsers
+// can read different servers from one file and must retain their own views.
 func dedupeConfigPaths(paths []clientPath) []clientPath {
-	var seen []os.FileInfo
+	type seenPath struct {
+		path clientPath
+		info os.FileInfo
+	}
+	var seen []seenPath
 	out := make([]clientPath, 0, len(paths))
 	for _, cp := range paths {
 		info, err := os.Stat(cp.Path)
 		if err == nil {
 			duplicate := false
 			for _, prior := range seen {
-				if os.SameFile(prior, info) {
+				if cp.Client != prior.path.Client || cp.Key != prior.path.Key || cp.Scope != prior.path.Scope {
+					continue
+				}
+				// Continue dispatches by extension: YAML and JSON views of
+				// the same file can have different results, including errors.
+				if cp.Client == "continue" && IsContinueConfigExtension(filepath.Ext(cp.Path)) != IsContinueConfigExtension(filepath.Ext(prior.path.Path)) {
+					continue
+				}
+				if os.SameFile(prior.info, info) {
 					duplicate = true
 					break
 				}
@@ -320,7 +334,7 @@ func dedupeConfigPaths(paths []clientPath) []clientPath {
 			if duplicate {
 				continue
 			}
-			seen = append(seen, info)
+			seen = append(seen, seenPath{path: cp, info: info})
 		}
 		out = append(out, cp)
 	}

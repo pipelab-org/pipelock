@@ -122,3 +122,50 @@ func TestDiscoverWithOptionsMissingOverrideFile(t *testing.T) {
 		t.Fatalf("summary = %+v", report.Summary)
 	}
 }
+
+// Shared files can expose different server maps to different clients. Only
+// aliases inspected by the same client and parser are duplicate inventories.
+func TestDiscoverWithOptionsPreservesClientViews(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		content     string
+		first       []string
+		second      []string
+		override    bool
+		wantServers int
+		wantErrors  int
+	}{
+		{"different keys", `{"servers":{"vscode-only":{"command":"node"}}}`, []string{".claude.json"}, []string{appDataDir(""), "Code", "User", "mcp.json"}, false, 1, 0},
+		{"same keys different clients", `{"mcpServers":{"shared":{"command":"node"}}}`, []string{".claude.json"}, []string{".cursor", "mcp.json"}, false, 2, 0},
+		{"Claude project parser", `{"projects":{"/workspace":{"mcpServers":{"project-only":{"command":"node"}}}}}`, []string{".cursor", "mcp.json"}, []string{"override", ".claude.json"}, true, 1, 0},
+		{"Continue parser formats", "mcpServers:\n  - name: yaml-only\n    command: node\n", []string{".continue", "config.yaml"}, []string{".continue", "config.json"}, false, 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			first := filepath.Join(append([]string{home}, tc.first...)...)
+			second := filepath.Join(append([]string{home}, tc.second...)...)
+			for _, path := range []string{first, second} {
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(first, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(first, second); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			var opts Options
+			if tc.override {
+				opts.ClaudeConfigDirs = []string{filepath.Dir(second)}
+			}
+			report, err := DiscoverWithOptions(home, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.TotalServers != tc.wantServers || report.Summary.ParseErrors != tc.wantErrors {
+				t.Fatalf("summary = %+v, want %d servers and %d errors", report.Summary, tc.wantServers, tc.wantErrors)
+			}
+		})
+	}
+}
