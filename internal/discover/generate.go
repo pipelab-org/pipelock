@@ -29,6 +29,21 @@ func generateWrapper(s MCPServer, pipelockBin string) string {
 		return "  (cannot suggest a verified wrapper because the current pipelock executable path is unavailable)"
 	}
 
+	if s.Transport == TransportStdio && s.Command != "" && isProxyShaped(s.Args) {
+		// Already an mcp proxy wrapper whose executable is not this one
+		// (missing, relative, or a different file). Wrapping it again would
+		// launch the same broken command as the child, so point the command
+		// at this executable and keep its arguments.
+		_, _ = fmt.Fprintf(&b, "  This entry already runs mcp proxy, but not through this pipelock executable.\n")
+		_, _ = fmt.Fprintf(&b, "  Point its command at this executable in your %s config:\n\n", s.Client)
+		_, _ = fmt.Fprintf(&b, "  Before:\n")
+		_, _ = fmt.Fprintf(&b, "    \"command\": %q,\n\n", s.Command)
+		_, _ = fmt.Fprintf(&b, "  After:\n")
+		_, _ = fmt.Fprintf(&b, "    \"command\": %q,\n", pipelockBin)
+		_, _ = fmt.Fprintf(&b, "    (keep \"args\" unchanged; check that any --config file it names exists)\n")
+		return b.String()
+	}
+
 	if s.Transport == TransportStdio && s.Command != "" {
 		_, _ = fmt.Fprintf(&b, "  Replace in your %s config:\n\n", s.Client)
 
@@ -66,6 +81,11 @@ func generateWrapper(s MCPServer, pipelockBin string) string {
 	}
 
 	return "  (no suggestion available for this transport type)"
+}
+
+// isProxyShaped reports whether args begin with the mcp proxy subcommand.
+func isProxyShaped(args []string) bool {
+	return len(args) >= 2 && args[0] == wrapperArgMCP && args[1] == wrapperArgProxy
 }
 
 // sortedEnvKeys returns the keys from a map in sorted order for deterministic output.

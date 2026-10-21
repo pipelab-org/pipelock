@@ -125,3 +125,28 @@ func TestGenerateWrapperUnavailableExecutable(t *testing.T) {
 		t.Fatalf("generateWrapper resolver error = %q", got)
 	}
 }
+
+// TestGenerateWrapperRepointsBrokenWrapper proves a proxy-shaped entry whose
+// executable is not this one gets a command repair, not a second wrap that
+// would launch the same broken executable as its child.
+func TestGenerateWrapperRepointsBrokenWrapper(t *testing.T) {
+	server := MCPServer{
+		ServerName: "everything",
+		Client:     clientCursor,
+		Command:    "/tmp/pipelock-dev",
+		Args:       []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "/tmp/pipelock.yaml", "--", testCmdNpx, "-y", "server-everything"},
+		Transport:  TransportStdio,
+		Protection: Unprotected,
+	}
+
+	suggestion := generateWrapper(server, "/opt/pipelock")
+	if strings.Count(suggestion, "/tmp/pipelock-dev") != 1 {
+		t.Fatalf("broken executable should appear only in Before, got:\n%s", suggestion)
+	}
+	if !strings.Contains(suggestion, `"command": "/opt/pipelock"`) {
+		t.Fatalf("suggestion should point command at this executable:\n%s", suggestion)
+	}
+	if strings.Contains(suggestion, `"--", "/tmp/pipelock-dev"`) {
+		t.Fatalf("suggestion double-wraps the broken wrapper:\n%s", suggestion)
+	}
+}

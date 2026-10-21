@@ -329,12 +329,18 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		}
 	}
 
-	// Count parse errors across clients.
+	// Count parse errors. Persisted evidence redacts each client's
+	// ParseError text (it can embed local paths) and keeps the count in
+	// the summary, so the summary is authoritative; per-client text is
+	// counted too for reports built in memory, taking the larger.
 	parseErrors := 0
 	for _, c := range disc.Clients {
 		if c.ParseError != "" {
 			parseErrors++
 		}
+	}
+	if disc.Summary.ParseErrors > parseErrors {
+		parseErrors = disc.Summary.ParseErrors
 	}
 
 	totalServers := len(disc.Servers)

@@ -917,3 +917,28 @@ func TestAuditRemediation(t *testing.T) {
 		})
 	}
 }
+
+// TestScoreMCPProtection_RedactedParseErrorsAreNotClean proves the scorer
+// reads the summary's parse-error count. Persisted evidence blanks each
+// client's ParseError text, so counting only that text scored an unreadable
+// config as a perfect, clean scan.
+func TestScoreMCPProtection_RedactedParseErrorsAreNotClean(t *testing.T) {
+	report, err := discover.DiscoverWithOptions(t.TempDir(), discover.Options{ClaudeConfigDirs: []string{"relative/claude"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.ParseErrors != 1 {
+		t.Fatalf("precondition: want 1 parse error, got %+v", report.Summary)
+	}
+	wrapped := wrapDiscoverReport(report, "")
+	for _, c := range wrapped.Clients {
+		if c.ParseError != "" {
+			t.Fatalf("precondition: redaction kept parse error text %q", c.ParseError)
+		}
+	}
+
+	section := scoreMCPProtection(&wrapped)
+	if section.Score == 100 || section.Grade == assessGradeA {
+		t.Fatalf("unreadable config scored as clean: score=%d grade=%s detail=%q", section.Score, section.Grade, section.Detail)
+	}
+}

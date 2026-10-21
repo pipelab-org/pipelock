@@ -169,3 +169,48 @@ func TestDiscoverWithOptionsPreservesClientViews(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscoverReportsUninspectableConfigPaths proves only proven absence means
+// "no config". A config path that exists but cannot be read as a file is a
+// visible parse error, never an empty, clean inventory.
+func TestDiscoverReportsUninspectableConfigPaths(t *testing.T) {
+	t.Run("symlink loop", func(t *testing.T) {
+		dir := t.TempDir()
+		loop := filepath.Join(dir, claudeGlobalConfigName)
+		if err := os.Symlink(loop, loop); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		assertSingleInspectionError(t, dir, errConfigUninspectable)
+	})
+	t.Run("directory in place of file", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(filepath.Join(dir, claudeGlobalConfigName), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		assertSingleInspectionError(t, dir, errConfigNotFile)
+	})
+	t.Run("permission denied", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root bypasses directory permissions")
+		}
+		parent := t.TempDir()
+		dir := filepath.Join(parent, "locked")
+		writeClaudeConfig(t, dir, "hidden")
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // restore for TempDir cleanup
+		assertSingleInspectionError(t, dir, errConfigUninspectable)
+	})
+}
+
+func assertSingleInspectionError(t *testing.T, claudeDir string, want error) {
+	t.Helper()
+	report, err := DiscoverWithOptions(t.TempDir(), Options{ClaudeConfigDirs: []string{claudeDir}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.ParseErrors != 1 || len(report.Clients) != 1 || report.Clients[0].ParseError != want.Error() {
+		t.Fatalf("want one %q parse error, got summary %+v clients %+v", want, report.Summary, report.Clients)
+	}
+}

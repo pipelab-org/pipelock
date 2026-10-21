@@ -5,6 +5,7 @@ package discover
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -221,7 +222,20 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 	var servers []MCPServer
 
 	for _, cp := range paths {
-		if !fileExists(cp.Path) {
+		present, inspectErr := inspectConfigPath(cp.Path)
+		if inspectErr != nil {
+			// The path exists in some form but cannot be read as a config
+			// file: report it rather than presenting an unread config as
+			// an empty, clean scan.
+			clients = append(clients, ClientConfig{
+				Client:     cp.Client,
+				ConfigPath: cp.Path,
+				Scope:      cp.Scope,
+				ParseError: inspectErr.Error(),
+			})
+			continue
+		}
+		if !present {
 			continue
 		}
 
@@ -380,9 +394,28 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 	return s
 }
 
-func fileExists(path string) bool {
+// Errors for a config path that exists but cannot be inspected as a file.
+// The messages carry no path or OS error text: the path is already on the
+// ClientConfig, and shareable reports redact it there.
+var (
+	errConfigUninspectable = errors.New("config path exists but could not be inspected")
+	errConfigNotFile       = errors.New("config path is not a regular file")
+)
+
+// inspectConfigPath reports whether a config file is present. Only proven
+// absence (fs.ErrNotExist) means "no config"; every other failure, such as a
+// permission error or a symlink loop, is returned so the caller reports it.
+func inspectConfigPath(path string) (bool, error) {
 	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, errConfigUninspectable
+	case !info.Mode().IsRegular():
+		return false, errConfigNotFile
+	}
+	return true, nil
 }
 
 // configPaths returns all known MCP client config paths for the given home directory.
