@@ -356,7 +356,7 @@ func readManifest(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close() //nolint:errcheck // read-only file
+	defer func() { _ = f.Close() }()
 	data, err := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
 	if err != nil {
 		return nil, err
