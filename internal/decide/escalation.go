@@ -60,6 +60,17 @@ func UpgradeAction(baseAction string, level int, cfg *config.AdaptiveEnforcement
 	return baseAction
 }
 
+// UpgradedWarningSignal keeps an adaptively refused warning observational.
+// baseAction is the action immediately before UpgradeAction, after any core
+// floor has imposed its block. Other actions retain the caller's signal so
+// explicit blocks, failed strips and fail-closed ask actions keep scoring.
+func UpgradedWarningSignal(baseAction string, sig session.SignalType) session.SignalType {
+	if baseAction == config.ActionWarn {
+		return session.SignalWarning
+	}
+	return sig
+}
+
 // EscalationParams holds the observability context needed to record an
 // adaptive escalation transition. Construct once per request and reuse
 // across multiple RecordEscalation calls with different signal types.

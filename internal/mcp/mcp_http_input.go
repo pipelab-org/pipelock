@@ -895,6 +895,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	originalAction := effectiveAction
+	scoringAction := originalAction
 	if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 	}
@@ -915,6 +916,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if baselineDecision.Action != "" {
 			reasons = append(reasons, baselineDecision.Detail)
 			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+			scoringAction = mergeAction(scoringAction, baselineDecision.Action)
 			if baselineDecision.Action == config.ActionAsk {
 				errCode = -32001
 				errMsg = "pipelock: MCP request blocked by behavioral baseline"
@@ -990,7 +992,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		if !entropyOnlyDecision {
-			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+			recordAdaptiveFinding(decide.UpgradedWarningSignal(scoringAction, session.SignalBlock), "mcp_input", joinStrings(reasons))
 		}
 		receiptVerdict = effectiveAction
 		blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")

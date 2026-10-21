@@ -1202,6 +1202,7 @@ func ForwardScannedInput(
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 		entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		originalAction := effectiveAction
+		scoringAction := originalAction
 		numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
@@ -1222,6 +1223,7 @@ func ForwardScannedInput(
 				// deviation detail (reasonStr was built before this append).
 				reasonStr = joinStrings(reasons)
 				effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+				scoringAction = mergeAction(scoringAction, baselineDecision.Action)
 				if baselineDecision.Action == config.ActionAsk {
 					errCode = -32001
 					errMsg = "pipelock: MCP request blocked by behavioral baseline"
@@ -1769,7 +1771,7 @@ func ForwardScannedInput(
 		case entropyOnlyDecision || numberOnlyDecision:
 			// Heuristic findings do not affect the adaptive score.
 		case effectiveAction == config.ActionBlock:
-			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+			recordAdaptiveFinding(decide.UpgradedWarningSignal(scoringAction, session.SignalBlock), "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case len(reasons) > 0:

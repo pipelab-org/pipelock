@@ -1026,10 +1026,9 @@ func TestForwardScannedInput_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if strings.Contains(output, secret) {
 		t.Error("DLP secret was forwarded to server instead of being blocked after escalation upgrade")
 	}
-	// The block must have recorded SignalBlock on the session.
-	wantPoints := session.SignalPoints[session.SignalBlock]
-	if rec.ThreatScore() < wantPoints {
-		t.Errorf("ThreatScore = %.1f, want >= %.1f after warn->block upgrade", rec.ThreatScore(), wantPoints)
+	// The refusal is caused by the existing level, not new enforced evidence.
+	if rec.ThreatScore() != 0 {
+		t.Errorf("ThreatScore = %.1f, want 0 after warn->block upgrade", rec.ThreatScore())
 	}
 }
 

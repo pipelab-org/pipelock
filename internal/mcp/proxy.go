@@ -687,7 +687,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					}
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
+						recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(preAdaptiveToolAction, session.SignalBlock), decide.EscalationParams{
 							Threshold:     adaptiveCfg.EscalationThreshold,
 							Logger:        opts.AuditLogger,
 							Metrics:       m,
@@ -1076,7 +1076,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			switch effectiveAction {
 			case config.ActionBlock:
-				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, ep)
+				recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), ep)
 			case config.ActionStrip:
 				recordMCPAdaptiveSignal(opts, rec, session.SignalStrip, ep)
 			default:

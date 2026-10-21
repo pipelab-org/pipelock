@@ -2105,7 +2105,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if effectiveAction == config.ActionBlock {
 			receiptPattern := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			reason := diagnostic.withAudienceExplanation(receiptPattern)
-			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, receiptPattern)
+			r.recordFinding(session.SignalWarning, log, scanner.ScannerDLP, receiptPattern)
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
 			log.LogWSBlocked(audit.WSBlockedEvent{
@@ -2168,7 +2168,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: originalAddrAction, ToAction: addrAction, Scanner: scannerLabelAddressProtection, ClientIP: r.clientIP, RequestID: r.requestID})
 		}
 		if r.cfg.EnforceEnabled() && addrAction == config.ActionBlock {
-			r.recordFinding(session.SignalBlock, log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s", strings.Join(names, ", ")))
+			r.recordFinding(decide.UpgradedWarningSignal(originalAddrAction, session.SignalBlock), log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s", strings.Join(names, ", ")))
 			var blockExplanation string
 			for _, f := range addrFindings {
 				if f.Action == config.ActionBlock {
@@ -2202,7 +2202,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			return true
 		}
 		if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
-			r.recordFinding(session.SignalBlock, log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s (escalated)", names[0]))
+			r.recordFinding(decide.UpgradedWarningSignal(originalAddrAction, session.SignalBlock), log, scannerLabelAddressProtection, fmt.Sprintf("address poisoning: %s (escalated)", names[0]))
 			reason := fmt.Sprintf("address poisoning: %s (escalated)", names[0])
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabelAddressProtection,
@@ -2512,7 +2512,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			return false
 		}
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
-			r.recordFinding(session.SignalBlock, log, scannerLabel, receiptPattern)
+			r.recordFinding(decide.UpgradedWarningSignal(originalAction, session.SignalBlock), log, scannerLabel, receiptPattern)
 		}
 		blockReason := reason
 		blockPattern := receiptPattern

@@ -7071,11 +7071,12 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	// overrides adaptive escalation. This prevents death spirals where LLM
 	// responses naturally contain instruction-like text.
 	action := sc.ResponseAction()
+	originalAction := action
 	if !in.refusing {
 		if exempt {
 			action = config.ActionWarn
 		}
-		originalAction := action
+		originalAction = action
 		if !exempt {
 			action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
 		}
@@ -7127,7 +7128,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 
 	switch action {
 	case config.ActionBlock:
-		recordResponseSignal(session.SignalBlock)
+		recordResponseSignal(decide.UpgradedWarningSignal(originalAction, session.SignalBlock))
 		reason := fmt.Sprintf("response contains prompt injection: %s", strings.Join(patternNames, ", "))
 		log.LogBlocked(newHTTPAuditContext(reqCtx, p.logger, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), responseScanLayer, reason)
 		emitResponseReceipt(receipt.EmitOpts{
