@@ -102,6 +102,13 @@
       "matchPackageNames": ["sha2", "sha2_10", "hmac", "p256"],
       "matchUpdateTypes": ["minor", "major"],
       "enabled": false
+    },
+    {
+      "description": "Hold the Gauntlet workflow's Ubuntu runner for review.",
+      "matchManagers": ["github-actions"],
+      "matchFileNames": [".github/workflows/continuous-gauntlet.yaml"],
+      "matchDepNames": ["ubuntu"],
+      "enabled": false
     }
   ]
 }
