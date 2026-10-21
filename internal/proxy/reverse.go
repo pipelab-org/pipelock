@@ -1126,20 +1126,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 	// Scan request headers for DLP patterns (secret exfiltration via headers).
 	if cfg.RequestBodyScanning.Enabled && cfg.RequestBodyScanning.ScanHeaders {
-		// Pass the full upstream destination (scheme://host[:port]/path) so
-		// destination-scoped suppress globs (e.g. "https://api.example.com/*")
-		// resolve against the URL the request will actually reach, not the
-		// path-only r.URL.String() the reverse proxy sees from the client.
-		dlpTarget := *rp.upstream
-		dlpTarget.Path = joinReversePaths(rp.upstream.Path, r.URL.Path)
-		dlpTarget.RawPath = ""
-		headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, cfg, sc, dlpTarget.String(), func(match scanner.TextDLPMatch, reason string) {
+		// Use the same complete upstream destination as body DLP, including
+		// configured and incoming query parameters.
+		headerResult := scanRequestHeadersForTargetWithAudience(r.Context(), r.Header, cfg, sc, targetURL, func(match scanner.TextDLPMatch, reason string) {
 			if rp.logger != nil {
 				rp.logger.LogDLPDropped(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), match.PatternName, match.Severity, "header", reason)
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "header", reason)
 		}, func(allow scanner.CredentialAudienceAllow) error {
-			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, dlpTarget.String(), requestID, agent, receiptShardFromContext(r.Context()))
+			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
 		})
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
 			blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)

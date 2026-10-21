@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -65,5 +67,63 @@ func TestExactURLSuppressionRequestBoundaries(t *testing.T) {
 	urlResult := sc.Scan(t.Context(), exactSuppressTarget+"?credential="+key)
 	if urlResult.Allowed {
 		t.Fatal("body/header suppression silenced URL DLP")
+	}
+}
+
+func TestReverseHeaderSuppressionDestination(t *testing.T) {
+	for _, tc := range []struct {
+		name, upstreamQuery, requestQuery, suppressQuery string
+		wantStatus                                       int
+	}{
+		{"route", "", "", "", http.StatusOK},
+		{"request query", "", "mode=refresh", "", http.StatusForbidden},
+		{"configured query", "fixed=1", "", "[?]fixed=1", http.StatusOK},
+		{"combined query", "fixed=1", "mode=refresh", "[?]fixed=1", http.StatusForbidden},
+		{"complete request query", "", "mode=refresh", "[?]mode=refresh", http.StatusOK},
+		{"complete combined query", "fixed=1", "mode=refresh", "[?]fixed=1&mode=refresh", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := reverseTestConfig()
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.HeaderMode = "all"
+			var reached atomic.Bool
+			proxy, handler := reverseTestSetupWithHandler(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				reached.Store(true)
+				w.WriteHeader(http.StatusOK)
+			})
+			handler.upstream.RawQuery = tc.upstreamQuery
+			cfg.Suppress = []config.SuppressEntry{{
+				Rule:   "Anthropic API Key",
+				Path:   handler.upstream.Scheme + "://" + handler.upstream.Host + "/api/data" + tc.suppressQuery,
+				Reason: "approved destination",
+			}}
+			target := proxy.URL + "/api/data"
+			if tc.requestQuery != "" {
+				target += "?" + tc.requestQuery
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer sk-"+"ant-"+strings.Repeat("a", 24))
+			resp, err := proxy.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != tc.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", resp.StatusCode, tc.wantStatus, body)
+			}
+			if reached.Load() != (tc.wantStatus == http.StatusOK) {
+				t.Fatalf("upstream reached=%v status=%d", reached.Load(), resp.StatusCode)
+			}
+			if tc.wantStatus == http.StatusForbidden && !strings.Contains(string(body), "header DLP: Anthropic API Key") {
+				t.Fatalf("expected header DLP block, got %s", body)
+			}
+		})
 	}
 }
