@@ -32,6 +32,8 @@ which MCP servers are configured, their protection status, and risk level.
 
 Claude Code configs under CLAUDE_CONFIG_DIR (<dir>/.claude.json) are included
 when that variable is set and --home is not, and for every --claude-config-dir.
+Codex configs under CODEX_HOME (<dir>/config.toml) are included when that
+variable is set and --home is not.
 
 Exit codes:
   0  All servers protected (or none found)

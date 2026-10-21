@@ -1639,3 +1639,25 @@ func TestCollectDiscoverEvidenceIncludesClaudeConfigDir(t *testing.T) {
 		t.Fatalf("capsule discover evidence = %+v, want the 1 server under CLAUDE_CONFIG_DIR", evidence)
 	}
 }
+
+// TestCollectDiscoverEvidenceIncludesCodexHome proves the signed capsule
+// counts servers under the current user's CODEX_HOME, where Codex reads and
+// writes its MCP servers in place of ~/.codex.
+func TestCollectDiscoverEvidenceIncludesCodexHome(t *testing.T) {
+	home := t.TempDir()
+	defer patchUserHomeDir(func() (string, error) { return home, nil })()
+	altDir := t.TempDir()
+	content := "[mcp_servers.alt]\ncommand = 'node'\nargs = ['alt.js']\n"
+	if err := os.WriteFile(filepath.Join(altDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", altDir)
+
+	evidence, err := collectDiscoverEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.TotalServers != 1 || evidence.Unprotected != 1 {
+		t.Fatalf("capsule discover evidence = %+v, want the 1 unprotected server under CODEX_HOME", evidence)
+	}
+}

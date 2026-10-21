@@ -203,7 +203,23 @@ type Options struct {
 	// ClaudeConfigDirs are CLAUDE_CONFIG_DIR values. Each contributes
 	// <dir>/.claude.json as an additional Claude Code config.
 	ClaudeConfigDirs []string
+	// CodexHomes are CODEX_HOME values. Each contributes <dir>/config.toml as
+	// an additional Codex config.
+	CodexHomes []string
 }
+
+// EnvCodexHome is Codex's documented home-directory override
+// (https://developers.openai.com/codex/config-reference names $CODEX_HOME as
+// the directory holding config.toml). With it set, Codex reads and writes its
+// MCP servers in <dir>/config.toml instead of ~/.codex/config.toml.
+const EnvCodexHome = "CODEX_HOME"
+
+// codexConfigName is the config file inside Codex's home directory.
+const codexConfigName = "config.toml"
+
+// errCodexHomeNotAbsolute is reported for a CODEX_HOME value that is not
+// absolute, for the same reason as errClaudeConfigDirNotAbsolute.
+var errCodexHomeNotAbsolute = errors.New(EnvCodexHome + " must be an absolute path")
 
 // AmbientOptions returns the documented overrides set in the given
 // environment lookup, normally os.Getenv.
@@ -211,6 +227,9 @@ func AmbientOptions(getenv func(string) string) Options {
 	var opts Options
 	if dir := getenv(EnvClaudeConfigDir); dir != "" {
 		opts.ClaudeConfigDirs = append(opts.ClaudeConfigDirs, dir)
+	}
+	if dir := getenv(EnvCodexHome); dir != "" {
+		opts.CodexHomes = append(opts.CodexHomes, dir)
 	}
 	return opts
 }
@@ -243,6 +262,23 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			Key:    configKeyMCPServers,
 			Scope:  scopeUser,
 		}, claudeLegacyPath(filepath.Clean(dir)))
+	}
+	for _, dir := range opts.CodexHomes {
+		if !filepath.IsAbs(dir) {
+			rootErrors = append(rootErrors, ClientConfig{
+				Client:     clientCodex,
+				ConfigPath: dir,
+				Scope:      scopeUser,
+				ParseError: errCodexHomeNotAbsolute.Error(),
+			})
+			continue
+		}
+		paths = append(paths, clientPath{
+			Client: clientCodex,
+			Path:   filepath.Join(filepath.Clean(dir), codexConfigName),
+			Key:    tomlKeyServers,
+			Scope:  scopeUser,
+		})
 	}
 	paths = dedupeConfigPaths(paths)
 
@@ -474,9 +510,9 @@ func configPathsForOS(home, goos string) []clientPath {
 		},
 		claudeLegacyPath(filepath.Join(home, ".claude")),
 		// OpenAI Codex config reference: https://developers.openai.com/codex/config-reference
-		{Client: clientCodex, Path: filepath.Join(home, ".codex", "config.toml"), Key: "mcp_servers", Scope: scopeUser},
+		{Client: clientCodex, Path: filepath.Join(home, ".codex", codexConfigName), Key: tomlKeyServers, Scope: scopeUser},
 		// xAI MCP servers guide: https://docs.x.ai/build/features/mcp-servers
-		{Client: clientGrok, Path: filepath.Join(home, ".grok", "config.toml"), Key: "mcp_servers", Scope: scopeUser},
+		{Client: clientGrok, Path: filepath.Join(home, ".grok", "config.toml"), Key: tomlKeyServers, Scope: scopeUser},
 		{
 			Client: clientClaudeDesktop,
 			Path:   filepath.Join(appData, "Claude", "claude_desktop_config.json"),

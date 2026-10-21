@@ -585,6 +585,7 @@ func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+	t.Setenv(discover.EnvCodexHome, "") // an operator's own value must not add servers
 
 	run := func(args ...string) discover.Report {
 		t.Helper()
@@ -612,5 +613,40 @@ func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
 	}
 	if got := run("--home", t.TempDir(), "--claude-config-dir", altDir); got.Summary.TotalServers != 1 {
 		t.Fatalf("--claude-config-dir not inspected: %+v", got.Summary)
+	}
+}
+
+// TestDiscoverCmd_CodexHomeSource proves the CLI boundary applies the same
+// rule to CODEX_HOME: the default run inspects it, --home does not.
+func TestDiscoverCmd_CodexHomeSource(t *testing.T) {
+	altDir := t.TempDir()
+	content := "[mcp_servers.alt]\ncommand = 'node'\nargs = ['alt.js']\n"
+	if err := os.WriteFile(filepath.Join(altDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvCodexHome, altDir)
+	t.Setenv(discover.EnvClaudeConfigDir, "")
+
+	run := func(args ...string) discover.Report {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--json"}, args...))
+		_ = cmd.Execute() // exit code 1 is expected when servers are unprotected
+		var report discover.Report
+		if err := json.NewDecoder(&buf).Decode(&report); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return report
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	if got := run(); got.Summary.TotalServers != 1 {
+		t.Fatalf("default run ignored the ambient CODEX_HOME: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir()); got.Summary.TotalServers != 0 {
+		t.Fatalf("--home inspected the ambient CODEX_HOME: %+v", got.Summary)
 	}
 }

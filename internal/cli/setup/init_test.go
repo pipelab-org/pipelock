@@ -887,6 +887,7 @@ func TestInitCmd_ClaudeConfigDirSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+	t.Setenv(discover.EnvCodexHome, "") // an operator's own value must not add servers
 
 	serversFound := func(args ...string) int {
 		t.Helper()
