@@ -158,7 +158,23 @@ fetch_proxy:
 
 This lifts only path entropy on the matching route. Query entropy, subdomain entropy, DLP and SSRF still run. Every filename under that prefix receives the same path-entropy exclusion, so confirm an agent cannot place a chosen opaque segment there and later read it back. A package-shaped filename alone does not establish that it is safe.
 
-The default threshold is `4.5` (balanced preset). Raising `fetch_proxy.monitoring.entropy_threshold` reduces sensitivity for every destination. The broader `fetch_proxy.monitoring.subdomain_entropy_exclusions` host list lifts both path and subdomain entropy across the host; prefer a path-scoped entry when only a download route needs relief.
+The default threshold is `4.5` (balanced preset). Raising `fetch_proxy.monitoring.entropy_threshold` reduces sensitivity for every destination. For example:
+
+```yaml
+fetch_proxy:
+  monitoring:
+    entropy_threshold: 5.0
+```
+
+The broader `fetch_proxy.monitoring.subdomain_entropy_exclusions` host list lifts both path and subdomain entropy across the host; prefer a path-scoped entry when only a download route needs relief. This example replaces the shipped host list, so include any shipped exclusions you still need:
+
+```yaml
+fetch_proxy:
+  monitoring:
+    subdomain_entropy_exclusions:
+      - "api.example.com"
+      - "cdn.example.com"
+```
 
 The [monitoring configuration reference](configuration.md#fetch-proxy) includes threshold and whole-host exclusion examples. For a trusted publisher that uses high-entropy URLs by design, choose the narrowest exclusion that covers its routes. For an untrusted destination, keep the threshold and investigate the findings.
 
