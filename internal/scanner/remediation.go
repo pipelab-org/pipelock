@@ -21,6 +21,7 @@ const (
 	// of truth.
 	AuditResponseScan         = "response_scan"
 	AuditHeaderDLP            = "header_dlp"
+	AuditReverseURLDLP        = "dlp_reverse_url"
 	AuditBodyPromptInjection  = "body_prompt_injection"
 	AuditAddressProtection    = "address_protection"
 	AuditChainDetection       = "chain_detection"
@@ -291,6 +292,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 	},
 	AuditResponseScan:         {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
 	AuditHeaderDLP:            {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditReverseURLDLP:        {OperatorKnob: "Remove the credential from the request URL. Reverse-proxy URL text scanning does not consult top-level `suppress:` entries or per-pattern `exempt_domains`. Core DLP matches cannot be exempted; a genuine false positive requires a pattern-precision fix.", AgentReason: secretAgentReason},
 	AuditBodyPromptInjection:  {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
 	AuditAddressProtection:    {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
 	AuditChainDetection:       {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},

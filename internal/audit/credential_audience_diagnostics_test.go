@@ -15,7 +15,7 @@ import (
 )
 
 func TestLogCredentialAudienceMismatches(t *testing.T) {
-	for _, surface := range []string{"body", "header"} {
+	for _, surface := range []string{"body", "header", "url"} {
 		for _, present := range []bool{false, true} {
 			t.Run(surface+"/"+map[bool]string{false: "absent", true: "present"}[present], func(t *testing.T) {
 				var buf bytes.Buffer
@@ -39,9 +39,12 @@ func TestLogCredentialAudienceMismatches(t *testing.T) {
 					mismatches = scanner.TextDLPCredentialAudienceMismatches(matches, "https://api.vendor.example/v1", surface)
 				}
 				ctx := LogContext{method: "POST", target: "https://api.vendor.example/v1"}
-				if surface == "body" {
+				switch surface {
+				case "body":
 					logger.LogBodyDLP(ctx, actionBlock, 1, []string{"Provider Key"}, nil, mismatches...)
-				} else {
+				case "url":
+					logger.LogReverseURLDLP(ctx, actionBlock, 1, []string{"Provider Key"}, nil, mismatches...)
+				default:
 					logger.LogHeaderDLP(ctx, "Authorization", actionBlock, []string{"Provider Key"}, nil, mismatches...)
 				}
 				var entry map[string]json.RawMessage
@@ -55,6 +58,20 @@ func TestLogCredentialAudienceMismatches(t *testing.T) {
 				defer sink.mu.Unlock()
 				if len(sink.events) != 1 {
 					t.Fatalf("emitted %d events, want 1", len(sink.events))
+				}
+				var hint string
+				if err := json.Unmarshal(entry["remediation_hint"], &hint); err != nil {
+					t.Fatal(err)
+				}
+				if sink.events[0].Fields["remediation_hint"] != hint {
+					t.Fatal("audit and emitter guidance differ")
+				}
+				if surface == "url" {
+					if string(entry["event"]) != `"body_dlp"` || !strings.Contains(hint, "Remove the credential from the request URL") || !strings.Contains(hint, "does not consult") {
+						t.Fatalf("reverse URL event=%s hint=%q", entry["event"], hint)
+					}
+				} else if !strings.Contains(hint, "path-scoped") {
+					t.Fatalf("body/header guidance changed: %q", hint)
 				}
 				emitted, emittedPresent := sink.events[0].Fields["credential_audience_mismatches"]
 				if emittedPresent != present {

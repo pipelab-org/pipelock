@@ -36,6 +36,7 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		ScannerDenialOfWallet,
 		AuditResponseScan,
 		AuditHeaderDLP,
+		AuditReverseURLDLP,
 		AuditBodyPromptInjection,
 		AuditAddressProtection,
 		AuditChainDetection,

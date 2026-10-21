@@ -4,6 +4,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -187,7 +189,12 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			var scPtr atomic.Pointer[scanner.Scanner]
 			cfgPtr.Store(cfg)
 			scPtr.Store(sc)
-			rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+			var auditLog bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &auditLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
 			key := "sk-" + "ant-" + strings.Repeat("a", 24)
 			body := "benign"
 			if surface == "body" {
@@ -209,6 +216,18 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			}
 			if got := upstreamCalls.Load(); got != 0 {
 				t.Fatalf("blocked request reached upstream %d times", got)
+			}
+			if surface == "url" {
+				var entry struct {
+					Event string `json:"event"`
+					Hint  string `json:"remediation_hint"`
+				}
+				if err := json.NewDecoder(&auditLog).Decode(&entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry.Event != "body_dlp" || !strings.Contains(entry.Hint, "Remove the credential from the request URL") || !strings.Contains(entry.Hint, "does not consult") {
+					t.Fatalf("reverse URL audit event=%+v", entry)
+				}
 			}
 		})
 	}

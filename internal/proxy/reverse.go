@@ -1090,7 +1090,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(pathDLP.Matches)
 			mismatches := scanner.TextDLPCredentialAudienceMismatches(pathDLP.Matches, targetURL, "url")
-			rp.logger.LogBodyDLP(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}),
+			rp.logger.LogReverseURLDLP(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}),
 				action,
 				len(patternNames), patternNames, nil, mismatches...)
 

@@ -1087,6 +1087,34 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 // LogBodyDLP logs a request body DLP scan detection.
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
 func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit, mismatches ...scannerpkg.CredentialAudienceMismatch) {
+	l.logRequestDLP(ctx, requestDLPLog{
+		action: action, matchCount: matchCount, patternNames: patternNames,
+		bundleRules: bundleRules, mismatches: mismatches,
+		guidanceLabel: scannerpkg.ScannerBodyDLP, message: "request body DLP scan hit",
+	})
+}
+
+// LogReverseURLDLP preserves the historical body_dlp event while selecting
+// guidance for the reverse proxy's URL text scan rather than its body scan.
+func (l *Logger) LogReverseURLDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit, mismatches ...scannerpkg.CredentialAudienceMismatch) {
+	l.logRequestDLP(ctx, requestDLPLog{
+		action: action, matchCount: matchCount, patternNames: patternNames,
+		bundleRules: bundleRules, mismatches: mismatches,
+		guidanceLabel: scannerpkg.AuditReverseURLDLP, message: "reverse proxy URL DLP scan hit",
+	})
+}
+
+type requestDLPLog struct {
+	action        string
+	matchCount    int
+	patternNames  []string
+	bundleRules   []BundleRuleHit
+	mismatches    []scannerpkg.CredentialAudienceMismatch
+	guidanceLabel string
+	message       string
+}
+
+func (l *Logger) logRequestDLP(ctx LogContext, info requestDLPLog) {
 	technique := TechniqueForScanner(ScannerDLP)
 	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, string(EventBodyDLP))
 
@@ -1095,23 +1123,23 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		optStr("url", loggedURL).
 		optStr("target", loggedTarget).
 		optStr("resource", loggedResource).
-		str("action", action).
+		str("action", info.action).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
 		agentField(ctx.agent, ctx.agentAuth).
-		intField("match_count", matchCount).
-		strs("patterns", patternNames).
-		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(scannerpkg.ScannerBodyDLP, patternNames)).
+		intField("match_count", info.matchCount).
+		strs("patterns", info.patternNames).
+		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(info.guidanceLabel, info.patternNames)).
 		str("mitre_technique", technique)
-	if len(bundleRules) > 0 {
-		e.bundleRulesField(bundleRules)
+	if len(info.bundleRules) > 0 {
+		e.bundleRulesField(info.bundleRules)
 	}
-	if len(mismatches) > 0 {
-		e.event = e.event.Interface("credential_audience_mismatches", mismatches)
-		e.fields["credential_audience_mismatches"] = mismatches
+	if len(info.mismatches) > 0 {
+		e.event = e.event.Interface("credential_audience_mismatches", info.mismatches)
+		e.fields["credential_audience_mismatches"] = info.mismatches
 	}
-	e.msg("request body DLP scan hit")
+	e.msg(info.message)
 
 	if l.emitter != nil {
 		l.emitEvent(string(EventBodyDLP), e.fields)
