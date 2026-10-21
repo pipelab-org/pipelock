@@ -59,6 +59,7 @@ type Metrics struct {
 	dlpWarnMatches              *prometheus.CounterVec
 	dlpDroppedMatches           *prometheus.CounterVec
 	dlpCredentialAudienceAllows *prometheus.CounterVec
+	issuerIDBlocks              *prometheus.CounterVec
 	AddressFindings             *prometheus.CounterVec
 	FileSentryFindings          *prometheus.CounterVec
 
@@ -253,6 +254,7 @@ func New() *Metrics {
 	m.registerProxyMetrics(reg)
 	m.registerWSMetrics(reg)
 	m.registerDLPMetrics(reg)
+	m.registerIssuerIDMetrics(reg)
 	m.registerSessionMetrics(reg)
 	m.registerTLSMetrics(reg)
 	m.registerAirlockMetrics(reg)

@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -15,7 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 // Synthetic IDs in the shape mail and directory APIs return: long, mixed
@@ -28,6 +31,67 @@ const (
 	// agentBlob is the value an agent smuggles: ID-shaped, high entropy.
 	agentBlob = "Kd93JqWm2Xv7RbLp4TzNy8HsQf6GcUaE1Vo5Mi"
 )
+
+func TestIssuerIDBlockObservation(t *testing.T) {
+	var logs bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	p := &Proxy{metrics: metrics.New(), logger: logger}
+	s := p.newObservedIssuerQueryStore()
+	first, _ := url.Parse("https://api.vendor.example/items")
+	second, _ := url.Parse("https://other.vendor.example/items")
+	type event struct {
+		scope string
+		log   bool
+	}
+	var got []event
+	observe := s.observeIDBlock
+	s.observeIDBlock = func(scope string, log bool) {
+		got = append(got, event{scope, log})
+		observe(scope, log)
+	}
+	s.mu.Lock()
+	s.taintSentHostLocked(first)
+	s.taintSentHostLocked(first)
+	s.taintSentHostLocked(second)
+	s.taintSentHostLocked(nil)
+	s.disableMintLocked()
+	s.mu.Unlock()
+	want := []event{{metrics.IssuerIDBlockHost, true}, {metrics.IssuerIDBlockHost, false}, {metrics.IssuerIDBlockGlobal, true}}
+	if len(got) != len(want) {
+		t.Fatalf("block events = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("block event %d = %v, want %v", i, got[i], want[i])
+		}
+	}
+	if strings.Count(logs.String(), "anomaly detected") != 2 || strings.Contains(logs.String(), first.Host) {
+		t.Fatalf("expected two coalesced warnings without hosts, got %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "restart or disable and re-enable") {
+		t.Fatal("warning omitted recovery guidance")
+	}
+	response := httptest.NewRecorder()
+	p.metrics.PrometheusHandler().ServeHTTP(response, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	for _, wantMetric := range []string{`pipelock_issuer_id_blocks_total{scope="host"} 2`, `pipelock_issuer_id_blocks_total{scope="global"} 1`} {
+		if !strings.Contains(response.Body.String(), wantMetric) {
+			t.Fatalf("missing metric %q", wantMetric)
+		}
+	}
+	// A fresh store resets both history and the coalesced host log.
+	fresh := p.newObservedIssuerQueryStore()
+	if fresh.mintBlockedLocked("recipient", first) || fresh.hostBlockReported {
+		t.Fatal("fresh store retained history uncertainty or log coalescing")
+	}
+	// Observability is optional for directly constructed stores and proxies.
+	plain := (&Proxy{}).newObservedIssuerQueryStore()
+	plain.taintSentHostLocked(first)
+	plain.disableMintLocked()
+}
 
 func (h *webPlatformHarness) send(upstream *httptest.Server, method, path, agent, contentType, body string) int {
 	h.t.Helper()

@@ -12,8 +12,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
 // A server-issued ID is an opaque object identifier an origin returned in a
@@ -151,7 +153,7 @@ func (s *issuerQueryStore) taintSentLocked(session string) {
 		return
 	}
 	if len(s.sentUnreadable) >= issuerUnreadableMaxSessions {
-		s.mintDisabled = true
+		s.disableMintLocked()
 		return
 	}
 	s.sentUnreadable[session] = true
@@ -163,7 +165,7 @@ func (s *issuerQueryStore) rememberSentLocked(digest [32]byte) {
 		return
 	}
 	if len(s.sentAll) >= issuerSentAllMaxEntries {
-		s.mintDisabled = true
+		s.disableMintLocked()
 		return
 	}
 	s.sentAll[digest] = struct{}{}
@@ -175,15 +177,47 @@ func (s *issuerQueryStore) rememberSentLocked(digest [32]byte) {
 // and lifetime, so session eviction cannot forget the uncertainty.
 func (s *issuerQueryStore) taintSentHostLocked(target *url.URL) {
 	if target == nil {
-		s.mintDisabled = true
+		s.disableMintLocked()
 		return
 	}
 	digest, ok := s.sentDigest(target, "")
 	if !ok {
-		s.mintDisabled = true
+		s.disableMintLocked()
+		return
+	}
+	if _, exists := s.sentAll[digest]; exists || s.mintDisabled {
 		return
 	}
 	s.rememberSentLocked(digest)
+	if !s.mintDisabled && s.observeIDBlock != nil {
+		s.observeIDBlock(metrics.IssuerIDBlockHost, !s.hostBlockReported)
+		s.hostBlockReported = true
+	}
+}
+
+// disableMintLocked reports only the transition into global blocking.
+func (s *issuerQueryStore) disableMintLocked() {
+	if s.mintDisabled {
+		return
+	}
+	s.mintDisabled = true
+	if s.observeIDBlock != nil {
+		s.observeIDBlock(metrics.IssuerIDBlockGlobal, true)
+	}
+}
+
+// newObservedIssuerQueryStore joins issuer-history transitions to the proxy's
+// existing operational audit and metrics. Neither sink receives hosts or IDs.
+func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
+	s := newIssuerQueryStore()
+	s.observeIDBlock = func(scope string, log bool) {
+		p.metrics.RecordIssuerIDBlock(scope)
+		if log && p.logger != nil {
+			p.logger.LogAnomaly(audit.NewMethodLogContext("ISSUER_ID"), "",
+				"server-issued ID evidence blocked ("+scope+"); path entropy remains enforced; restart or disable and re-enable issuer evidence to clear IDs and history; additional host transitions are counted in pipelock_issuer_id_blocks_total", 0)
+		}
+	}
+	return s
 }
 
 // mintBlockedLocked applies both session and cross-session host uncertainty

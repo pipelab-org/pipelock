@@ -882,7 +882,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			logger.LogError(audit.NewMethodLogContext("ISSUER_COOKIE"), fmt.Errorf("issuer cookie state reset failed: %w", removeErr))
 		}
 	}
-	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: newIssuerQueryStore()})
+	p.issuerCookieRuntime.Store(&issuerCookieRuntime{cfg: cfg, store: issuerStore, query: p.newObservedIssuerQueryStore()})
 	p.scannerPtr.Store(sc)
 	p.refreshMetricsDialTarget(cfg.MetricsListen)
 
@@ -2728,7 +2728,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 			issuerStore.flush(time.Now(), true)
 		}
 	}
-	queryStore := newIssuerQueryStore()
+	queryStore := p.newObservedIssuerQueryStore()
 	if issuerCookieEnabled(cfg) && oldIssuer != nil && issuerCookieEnabled(oldIssuer.cfg) {
 		queryStore = oldIssuer.query
 	}

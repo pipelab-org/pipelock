@@ -594,8 +594,9 @@ func TestWSProxyIssuerHistoryUncertainty(t *testing.T) {
 	if conn != nil {
 		_ = conn.Close()
 	}
-	if err == nil {
-		t.Fatal("unissued high-entropy WebSocket target passed admission")
+	var statusErr ws.StatusError
+	if !errors.As(err, &statusErr) || int(statusErr) != http.StatusForbidden {
+		t.Fatalf("unissued high-entropy WebSocket target error = %v, want HTTP 403", err)
 	}
 	if !store.serverIDIssued("recipient", origin, serverIDListed) {
 		t.Fatal("a blocked WebSocket request tainted the host")
@@ -610,6 +611,50 @@ func TestWSProxyIssuerHistoryUncertainty(t *testing.T) {
 	}
 	if store.serverIDIssued("recipient", origin, serverIDListed) {
 		t.Fatal("another caller kept an ID after WebSocket traffic reached the host")
+	}
+}
+
+func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
+	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.TLSInterception.Enabled = true
+	})
+	defer cleanup()
+	store := p.issuerStoreForUnmediatedSend()
+	if store == nil {
+		t.Fatal("issuer history store unavailable")
+	}
+	type evidence struct{ retained, minted bool }
+	observed := make(chan evidence, 1)
+	var origin *url.URL
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		// This runs concurrently with the proxy at the first upstream HTTP
+		// request, before any upgrade response or WebSocket frame exists.
+		retained := store.serverIDIssued("recipient", origin, serverIDListed)
+		store.mintServerID("recipient", origin, serverIDOther, time.Now())
+		observed <- evidence{retained, store.serverIDIssued("recipient", origin, serverIDOther)}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer upstream.Close()
+	var err error
+	origin, err = url.Parse(strings.Replace(upstream.URL, "http://", "https://", 1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mintServerID("recipient", origin, serverIDListed, time.Now())
+	if !store.serverIDIssued("recipient", origin, serverIDListed) {
+		t.Fatal("positive control: recipient did not learn the ID")
+	}
+	conn, _ := dialWSConnToTarget(proxyAddr, strings.Replace(upstream.URL, "http://", "ws://", 1))
+	if conn != nil {
+		defer func() { _ = conn.Close() }()
+	}
+	select {
+	case got := <-observed:
+		if got.retained || got.minted {
+			t.Fatalf("upstream handshake saw usable issuer evidence: %+v", got)
+		}
+	case <-t.Context().Done():
+		t.Fatal("upstream handshake was not observed")
 	}
 }
 

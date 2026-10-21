@@ -78,8 +78,12 @@ type issuerQueryStore struct {
 	// mintDisabled stops all minting once incomplete sent history can no
 	// longer be remembered per session.
 	mintDisabled bool
-	used         map[string]time.Time
-	disabled     bool
+	// observeIDBlock reports transitions only; host logs are coalesced for
+	// this store's lifetime while every new host remains counted.
+	observeIDBlock    func(scope string, log bool)
+	hostBlockReported bool
+	used              map[string]time.Time
+	disabled          bool
 }
 
 func newIssuerQueryStore() *issuerQueryStore {
