@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1108,6 +1109,13 @@ func TestInterceptTunnel_CredentialOutsideAudienceStillBlocks(t *testing.T) {
 
 	if resp.StatusCode == http.StatusOK {
 		t.Fatal("credential sent outside its declared audience over CONNECT was allowed")
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "credential audience mismatch") || !strings.Contains(string(body), "127.0.0.1") || strings.Contains(string(body), "Bearer tstaud-") {
+		t.Fatalf("intercepted header explanation = %s", body)
 	}
 }
 

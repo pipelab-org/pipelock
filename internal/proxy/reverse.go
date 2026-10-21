@@ -1155,10 +1155,10 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(headerResult.DLPMatches)
 			rp.logger.LogHeaderDLP(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), headerResult.HeaderName,
-				action, patternNames, nil)
+				action, patternNames, nil, headerResult.CredentialAudienceMismatches...)
 
 			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-				reason := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
+				reason := headerResult.withAudienceExplanation(fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", ")))
 				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
@@ -2103,6 +2103,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" {
 		reason = "request body contains secret patterns"
 	}
+	reason = result.withAudienceExplanation(reason)
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
 	actx := newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
@@ -2111,7 +2112,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	}
 	recordBodyRedactionMetrics(rp.metrics, "reverse", "", result.RedactionReport)
 	if len(patternNames) > 0 {
-		rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil)
+		rp.logger.LogBodyDLP(actx, action, len(patternNames), patternNames, nil, result.CredentialAudienceMismatches...)
 	}
 	if result.EntropyFinding != nil {
 		rp.metrics.RecordBodyEntropy(action, "")

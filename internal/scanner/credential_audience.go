@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/url"
 	"path"
@@ -675,6 +676,44 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 		Destination: host,
 		Hosts:       append([]string(nil), pattern.credentialAudienceHosts...),
 	}, true
+}
+
+// TextDLPCredentialAudienceMismatches explains surviving text findings using
+// their compiled audience metadata. It never scans content or grants an allow.
+// Callers must pass the proxy-owned target after suppression and other filters.
+func TextDLPCredentialAudienceMismatches(matches []TextDLPMatch, target, surface string) []CredentialAudienceMismatch {
+	if len(matches) == 0 {
+		return nil
+	}
+	host, ok := canonicalCredentialAudienceDestination(target)
+	if !ok {
+		return nil
+	}
+	var mismatches []CredentialAudienceMismatch
+	seen := make(map[string]bool)
+	for _, match := range matches {
+		if len(match.credentialAudienceHosts) == 0 || destination.MatchesDomainList(host, match.credentialAudienceHosts) || seen[match.PatternName] {
+			continue
+		}
+		seen[match.PatternName] = true
+		mismatches = append(mismatches, CredentialAudienceMismatch{
+			PatternName: match.PatternName,
+			Surface:     surface,
+			Destination: host,
+			Hosts:       append([]string(nil), match.credentialAudienceHosts...),
+		})
+	}
+	return mismatches
+}
+
+// CredentialAudienceMismatchExplanation contains only pattern metadata and
+// canonical hostnames, never credential values, URL paths or query strings.
+func CredentialAudienceMismatchExplanation(mismatches []CredentialAudienceMismatch) string {
+	parts := make([]string, 0, len(mismatches))
+	for _, mismatch := range mismatches {
+		parts = append(parts, fmt.Sprintf("credential audience mismatch (pattern %s, surface %s, canonical destination %s, immutable audience hosts %s)", mismatch.PatternName, mismatch.Surface, mismatch.Destination, strings.Join(mismatch.Hosts, ", ")))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // FilterTextDLPMatchesForDestination applies the compiled-only audience rule

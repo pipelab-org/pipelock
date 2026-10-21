@@ -5762,7 +5762,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Request header DLP scanning (fetch is GET-only, no body to scan).
 	// hadFinding is true even in audit/warn mode so RecordClean is not applied
 	// when a header DLP match was detected.
-	headerBlocked, headerHadFinding, headerReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
+	headerBlocked, headerHadFinding, headerReason, headerReceiptErr := p.evalHeaderDLP(r.Context(), headerDLPParams{
 		headers: r.Header, cfg: cfg, sc: sc, logger: log, actx: actx,
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
@@ -5865,7 +5865,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: "request header contains secret",
+				BlockReason: headerReason,
 			})
 		return
 	}

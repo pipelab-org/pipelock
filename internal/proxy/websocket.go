@@ -1420,12 +1420,13 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			names[i] = m.PatternName
 		}
 		result := &BodyScanResult{
-			Action:     requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
-			DLPMatches: allMatches,
-			HeaderName: wsHeaderDLPSource(matchedHeaders),
+			Action:                       requestBodyDLPAction(allMatches, cfg.RequestBodyScanning.Action, cfg.RequestBodyScanning.PatternActions),
+			DLPMatches:                   allMatches,
+			HeaderName:                   wsHeaderDLPSource(matchedHeaders),
+			CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, targetURL, "header"),
 		}
 		action, hardBlock := headerDLPDecision(result, cfg)
-		return true, hardBlock, action, fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", ")), nil
+		return true, hardBlock, action, result.withAudienceExplanation(fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))), nil
 	}
 	return false, false, "", "", nil
 }
@@ -2056,10 +2057,11 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			names[i] = m.PatternName
 		}
 		wsBundleRules := dlpBundleRules(dlpMatches)
+		diagnostic := BodyScanResult{CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(dlpMatches, r.targetURL, "websocket_frame")}
 		hardBlock := shouldHardBlockCriticalDLP(dlpMatches, r.cfg.EnforceEnabled())
 		numberOnly := scanner.OnlyInformational(dlpMatches)
 		if hardBlock || (r.cfg.EnforceEnabled() && !numberOnly) {
-			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
+			reason := diagnostic.withAudienceExplanation(fmt.Sprintf("DLP match: %s", strings.Join(names, ", ")))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
@@ -2090,7 +2092,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			effectiveAction = decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 		}
 		if effectiveAction == config.ActionBlock {
-			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
+			reason := diagnostic.withAudienceExplanation(fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", ")))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
@@ -2414,6 +2416,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		reason = "request body contains secret patterns"
 	}
 
+	reason = result.withAudienceExplanation(reason)
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
 	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)

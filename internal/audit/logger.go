@@ -1086,7 +1086,7 @@ func (l *Logger) LogKillSwitchDeny(transport, endpoint, source, message, clientI
 
 // LogBodyDLP logs a request body DLP scan detection.
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
-func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit) {
+func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patternNames []string, bundleRules []BundleRuleHit, mismatches ...scannerpkg.CredentialAudienceMismatch) {
 	technique := TechniqueForScanner(ScannerDLP)
 	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, string(EventBodyDLP))
 
@@ -1106,6 +1106,10 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
+	}
+	if len(mismatches) > 0 {
+		e.event = e.event.Interface("credential_audience_mismatches", mismatches)
+		e.fields["credential_audience_mismatches"] = mismatches
 	}
 	e.msg("request body DLP scan hit")
 
@@ -1142,7 +1146,7 @@ func (l *Logger) LogBodyScan(ctx LogContext, eventType EventType, action string,
 
 // LogHeaderDLP logs a request header DLP scan detection.
 // When bundleRules is non-empty, bundle provenance is included in the audit event.
-func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, patternNames []string, bundleRules []BundleRuleHit) {
+func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, patternNames []string, bundleRules []BundleRuleHit, mismatches ...scannerpkg.CredentialAudienceMismatch) {
 	technique := TechniqueForScanner(ScannerDLP)
 
 	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
@@ -1161,6 +1165,10 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)
+	}
+	if len(mismatches) > 0 {
+		e.event = e.event.Interface("credential_audience_mismatches", mismatches)
+		e.fields["credential_audience_mismatches"] = mismatches
 	}
 	e.msg("request header DLP scan hit")
 

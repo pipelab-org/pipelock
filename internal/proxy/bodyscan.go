@@ -626,6 +626,22 @@ type BodyScanResult struct {
 	// be Clean; callers MUST check this field before forwarding and block
 	// the request (never send upstream bytes) when it is non-nil.
 	CredentialAudienceReceiptErr error
+	// CredentialAudienceMismatches explains only the surviving DLP findings.
+	CredentialAudienceMismatches []scanner.CredentialAudienceMismatch
+}
+
+func (r BodyScanResult) withAudienceExplanation(reason string) string {
+	if explanation := scanner.CredentialAudienceMismatchExplanation(r.CredentialAudienceMismatches); explanation != "" {
+		return reason + "; " + explanation
+	}
+	return reason
+}
+
+func (r BodyScanRequest) audienceSurface() string {
+	if r.AudienceSurface != "" {
+		return r.AudienceSurface
+	}
+	return "body"
 }
 
 // ContentEntropyFinding describes an opaque high-entropy body/frame value.
@@ -738,6 +754,7 @@ type BodyScanRequest struct {
 func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final BodyScanResult) {
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
+		final.CredentialAudienceMismatches = scanner.TextDLPCredentialAudienceMismatches(final.DLPMatches, req.suppressTarget(), req.audienceSurface())
 		// An audience allow is evidence that a credential was delivered. A
 		// pre-redaction DLP pass can collect one before redaction, content
 		// entropy, or injection scanning blocks the body, so emit only for a
@@ -2434,10 +2451,11 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		return nil
 	}
 	return &BodyScanResult{
-		Clean:      false,
-		Action:     requestBodyDLPAction(allMatches, bodyCfg.Action, bodyCfg.PatternActions),
-		DLPMatches: allMatches,
-		HeaderName: headerDLPMatchSource(matchedHeaders),
+		Clean:                        false,
+		Action:                       requestBodyDLPAction(allMatches, bodyCfg.Action, bodyCfg.PatternActions),
+		DLPMatches:                   allMatches,
+		HeaderName:                   headerDLPMatchSource(matchedHeaders),
+		CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, target, "header"),
 	}
 }
 
@@ -2463,25 +2481,26 @@ func headerDLPMatchSource(headers map[string]struct{}) string {
 // count within convention now that a bounded metric-label agent is threaded
 // through the header DLP path.
 type headerDLPParams struct {
-	headers     http.Header
-	cfg         *config.Config
-	sc          *scanner.Scanner
-	logger      *audit.Logger
-	actx        audit.LogContext
-	hostname    string
-	target      string
-	metricAgent string
-	start       time.Time
+	headers      http.Header
+	cfg          *config.Config
+	sc           *scanner.Scanner
+	logger       *audit.Logger
+	actx         audit.LogContext
+	hostname     string
+	target       string
+	metricAgent  string
+	start        time.Time
+	reasonPrefix string
 }
 
-// evalHeaderDLP's third return value is the require_receipts credential
+// evalHeaderDLP's last return value is the require_receipts credential
 // audience receipt confirmation failure, if any. It takes priority over the
 // DLP block decision: the caller must block on it before evaluating
 // blocked/hadFinding, since a non-nil receiptErr means the allow could not be
 // durably confirmed and the request must never be forwarded.
-func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool, receiptErr error) {
+func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool, reason string, receiptErr error) {
 	if !e.cfg.RequestBodyScanning.Enabled || !e.cfg.RequestBodyScanning.ScanHeaders {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	metricAgent := e.metricAgent
 	if metricAgent == "" {
@@ -2496,24 +2515,29 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		return p.recordCredentialAudienceAllow(e.cfg, e.actx, allow, TransportForward, e.actx.Method(), e.target, e.actx.RequestID(), e.actx.Agent(), receiptShardFromContext(ctx))
 	})
 	if headerResult == nil {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	if headerResult.CredentialAudienceReceiptErr != nil {
-		return false, false, headerResult.CredentialAudienceReceiptErr
+		return false, false, "", headerResult.CredentialAudienceReceiptErr
 	}
 	if headerResult.Clean {
-		return false, false, nil
+		return false, false, "", nil
 	}
 	action, headerHardBlock := headerDLPDecision(headerResult, e.cfg)
 	patternNames := dlpMatchNames(headerResult.DLPMatches)
 	bundleRules := dlpBundleRules(headerResult.DLPMatches)
 
-	e.logger.LogHeaderDLP(e.actx, headerResult.HeaderName, action, patternNames, bundleRules)
+	e.logger.LogHeaderDLP(e.actx, headerResult.HeaderName, action, patternNames, bundleRules, headerResult.CredentialAudienceMismatches...)
 	p.metrics.RecordHeaderDLP(action, metricAgent)
 
+	reason = e.reasonPrefix
+	if reason == "" {
+		reason = "request header contains secret"
+	}
+	reason = headerResult.withAudienceExplanation(reason)
 	if headerHardBlock || (action == config.ActionBlock && e.cfg.EnforceEnabled()) {
 		p.metrics.RecordBlocked(e.hostname, "header_dlp", time.Since(e.start), metricAgent)
-		return true, true, nil
+		return true, true, reason, nil
 	}
-	return false, true, nil
+	return false, true, reason, nil
 }

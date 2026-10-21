@@ -1418,6 +1418,8 @@ func newInterceptHandler(
 					}
 				}
 
+				reason = result.withAudienceExplanation(reason)
+
 				// DLP-only exemption: DLP pattern findings on adaptive-exempt
 				// destinations should not feed escalation scoring or get action
 				// upgrades. Separate from api_allowlist (reachability) to avoid
@@ -1686,8 +1688,8 @@ func newInterceptHandler(
 						RequestID:  ic.RequestID,
 					})
 				}
-				ic.Logger.LogHeaderDLP(actx, headerResult.HeaderName, action, dlpMatchNames(headerResult.DLPMatches), dlpBundleRules(headerResult.DLPMatches))
-				reason := "request header contains secret"
+				ic.Logger.LogHeaderDLP(actx, headerResult.HeaderName, action, dlpMatchNames(headerResult.DLPMatches), dlpBundleRules(headerResult.DLPMatches), headerResult.CredentialAudienceMismatches...)
+				reason := headerResult.withAudienceExplanation("request header contains secret")
 				if escalatedBlock && !ic.Config.EnforceEnabled() {
 					reason += " (escalated)"
 				}
