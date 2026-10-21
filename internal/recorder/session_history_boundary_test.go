@@ -216,6 +216,7 @@ var allowedDisplayBudgetCallers = map[displayBudgetCaller]string{
 	{"internal/cli/evidence/inspect_epochs.go", "inspectEpochSourceNames", "recorder.ReadEvidenceLocationEntriesBounded"}: "offline compaction input inspection",
 
 	// Ingress of one artifact with its own size contract, not session history.
+	{"enterprise/conductor/audit_segment.go", "PayloadNamespace", "recorder.ReadEntriesFromReader"}:                                          "one audit batch payload capped by conductor.MaxAuditPayloadBytes",
 	{"enterprise/conductor/fleetreport/report.go", "Build", "recorder.ReadEntriesFromReader"}:                                                "one fleet sink payload",
 	{"internal/cli/evidence/legacy_epoch_inventory.go", "runVerifyLegacyEpochInventory", "recorder.MaxEvidenceReadFileBytes"}:                "operator --inventory file size",
 	{"internal/receipt/chain_set.go", "readClaimFile", "recorder.ReadEvidenceFileBounded"}:                                                   "restart-link sidecar with its own size bound",

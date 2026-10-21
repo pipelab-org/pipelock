@@ -89,6 +89,11 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 		t.Fatalf("post-prune status=%d", got)
 	}
 	check(2, 2)
+	// Pruned payloads no longer supply same-chain conflict comparisons. Arrival
+	// observations survive, but don't prove the deleted sequence history.
+	if got := post("a-pruned-overlap", "run-a", 0, 2); got != http.StatusAccepted {
+		t.Fatalf("pruned overlap status=%d", got)
+	}
 }
 
 func TestSessionObservationsConcurrentBatches(t *testing.T) {
