@@ -1774,7 +1774,8 @@ func ForwardScannedInput(
 		switch {
 		case entropyOnlyDecision || numberOnlyDecision:
 			// Heuristic findings do not affect the adaptive score.
-		case effectiveAction == config.ActionBlock:
+		case effectiveAction == config.ActionBlock || effectiveAction == config.ActionAsk:
+			// Input ask falls back to refusal, so it retains block scoring.
 			recordAdaptiveFinding(decide.UpgradedWarningSignal(scoringAction, session.SignalBlock), "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))

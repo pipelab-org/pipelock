@@ -130,7 +130,7 @@ func TestAdaptiveBaselineBlockStillScores(t *testing.T) {
 // independent behavioral-baseline refusal on the same request.
 func TestAdaptiveBaselineRefusalAlongsideInformationalCardsScores(t *testing.T) {
 	for _, mode := range []string{"stdio", "http"} {
-		for _, baselineAction := range []string{config.ActionWarn, config.ActionBlock} {
+		for _, baselineAction := range []string{config.ActionWarn, config.ActionBlock, config.ActionAsk} {
 			for _, level := range []int{0, 1} {
 				t.Run(fmt.Sprintf("%s/%s/level=%d", mode, baselineAction, level), func(t *testing.T) {
 					cfg := config.Defaults()
