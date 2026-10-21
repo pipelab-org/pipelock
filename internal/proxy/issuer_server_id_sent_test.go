@@ -65,6 +65,11 @@ func TestIssuerSentUntrustedInterceptCannotMintAcrossSessions(t *testing.T) {
 			if store.serverIDIssued(recipient, req.URL, agentBlob) {
 				t.Fatal("a value sent through interception minted as another session's server-issued ID")
 			}
+			control := "Z" + agentBlob[1:]
+			store.mintServerID(recipient, req.URL, control, time.Now())
+			if !store.serverIDIssued(recipient, req.URL, control) {
+				t.Fatal("an unsent value did not mint for the same recipient and origin")
+			}
 		})
 	}
 }
@@ -82,7 +87,7 @@ func TestInterceptUntrustedReflectionCannotIssueID(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"value":[{"id":"`+supplied+`"}]}`)
+		_, _ = io.WriteString(w, `{"value":[{"id":"`+supplied+`"},{"id":"`+serverIDOther+`"}]}`)
 	}))
 	t.Cleanup(api.Close)
 	do := func(path, value string, auth envelope.ActorAuth) int {
@@ -111,6 +116,9 @@ func TestInterceptUntrustedReflectionCannotIssueID(t *testing.T) {
 	}
 	if got := do("/filters/"+agentBlob, "", envelope.ActorAuthBound); got != http.StatusForbidden {
 		t.Fatalf("reflected ID = %d, want 403", got)
+	}
+	if got := do("/filters/"+serverIDOther, "", envelope.ActorAuthBound); got != http.StatusOK {
+		t.Fatalf("unsent listed ID = %d, want 200", got)
 	}
 }
 
