@@ -596,7 +596,9 @@ the kill/resume state.
 ## 9. Roll back a bad bundle
 
 `pipelock conductor rollback` authorizes a signed revert to a prior bundle
-version:
+version for the policy stream selected by the current and target bundle pair.
+Other policy streams in the same organization and fleet remain unchanged.
+Per-instance and per-label rollback within that stream are not supported.
 
 ```bash
 pipelock conductor rollback \
