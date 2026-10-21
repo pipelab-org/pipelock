@@ -601,7 +601,7 @@ version:
 ```bash
 pipelock conductor rollback \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
-  --org org-acme --fleet prod --instance '*' \
+  --org org-acme --fleet prod \
   --current-bundle-id bundle-v2 --current-version 2 \
   --target-bundle-id bundle-v1 --target-version 1 \
   --signing-key /etc/pipelock/fleet-keys/rollback-approver-1.json \
