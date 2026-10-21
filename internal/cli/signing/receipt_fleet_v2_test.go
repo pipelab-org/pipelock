@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
@@ -44,6 +45,34 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "FLEET RECEIPT OK") || !strings.Contains(out.String(), fleetLimitL1NoReplay) {
 		t.Fatal("missing assurance limits")
+	}
+	if !strings.Contains(out.String(), "cross_session_continuity_unproven (receiver observations unavailable)") {
+		t.Fatal("archived v2 must display unavailable history")
+	}
+	s.Predicate.History = &fleetreceipt.History{
+		Continuity: fleetreceipt.ContinuityUnproven,
+		Sessions:   []fleetreceipt.ObservedChain{{InstanceID: s.Predicate.SourceBatches[0].InstanceID, Chain: *s.Predicate.SourceBatches[0].Chain, FirstReceived: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), LastReceived: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339), SeqStart: s.Predicate.SourceBatches[0].SeqStart, SeqEnd: s.Predicate.SourceBatches[0].SeqEnd}},
+		Gaps:       []fleetreceipt.SequenceGap{}, Retention: fleetreceipt.RetentionCoverage{HistoryUnknown: true, PrunedBefore: "2026-01-01T00:00:00Z"},
+	}
+	env, err = fleetreceipt.SignStatement(s, "report-key", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = fleetreceipt.MarshalEnvelope(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err = verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(pub)}, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range []string{fleetreceipt.ContinuityUnproven, "Multiple sessions: false", "Sequence gaps:    0", "History unknown:  true", "Pruned before:    2026-01-01T00:00:00Z"} {
+		if !strings.Contains(out.String(), fact) {
+			t.Fatalf("missing signed history fact %q: %s", fact, out.String())
+		}
 	}
 	wrong, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

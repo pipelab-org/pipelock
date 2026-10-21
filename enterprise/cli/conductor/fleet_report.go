@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -177,6 +178,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 		_, _ = fmt.Fprintf(summary, "  report_id: %s\n", result.Statement.Predicate.ReportID)
 		_, _ = fmt.Fprintf(summary, "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 		_, _ = fmt.Fprintf(summary, "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
+		printHistorySummary(summary, result.Statement.Predicate.History)
 		return nil
 	}
 	if err := writeFleetReportEnvelope(opts.out, result.Envelope); err != nil {
@@ -187,6 +189,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  report_id: %s\n", result.Statement.Predicate.ReportID)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
+	printHistorySummary(cmd.OutOrStdout(), result.Statement.Predicate.History)
 	return nil
 }
 
@@ -317,4 +320,11 @@ func writeFleetReportEnvelopeTo(w io.Writer, envelope any) error {
 		return fmt.Errorf("write fleet report to stdout: %w", err)
 	}
 	return nil
+}
+
+func printHistorySummary(out io.Writer, h *fleetreceipt.History) {
+	if h == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  continuity: %s\n  multiple_sessions: %t\n  selected_sequence_gaps: %d\n  history_unknown: %t\n  pruned_before: %s\n", h.Continuity, h.MultipleSessions, len(h.Gaps), h.Retention.HistoryUnknown, h.Retention.PrunedBefore)
 }

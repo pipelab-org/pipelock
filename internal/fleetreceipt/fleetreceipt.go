@@ -78,6 +78,7 @@ type Digest struct {
 }
 
 type Predicate struct {
+	History              *History              `json:"history,omitempty"`
 	SchemaVersion        int                   `json:"schemaVersion"`
 	ReportID             string                `json:"reportId"`
 	GeneratedAt          string                `json:"generatedAt"`
@@ -327,6 +328,14 @@ func (s Statement) Validate() error {
 }
 
 func (p Predicate) Validate() error {
+	if p.History != nil {
+		if p.SchemaVersion != SchemaVersionV2 {
+			return fmt.Errorf("%w: v1 cannot carry history observations", ErrInvalidPredicate)
+		}
+		if err := p.History.validate(p.SourceBatches); err != nil {
+			return err
+		}
+	}
 	if p.SchemaVersion != SchemaVersionV1 && p.SchemaVersion != SchemaVersionV2 {
 		return fmt.Errorf("%w: schemaVersion=%d", ErrInvalidPredicate, p.SchemaVersion)
 	}

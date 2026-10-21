@@ -156,3 +156,13 @@ func TestFleetReportVersionCompatibilityOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestFleetReportHistorySummary(t *testing.T) {
+	var out bytes.Buffer
+	printHistorySummary(&out, &fleetreceipt.History{Continuity: fleetreceipt.ContinuityUnproven, MultipleSessions: true, Gaps: []fleetreceipt.SequenceGap{{SeqStart: 3, SeqEnd: 9}}, Retention: fleetreceipt.RetentionCoverage{HistoryUnknown: true, PrunedBefore: "2026-01-01T00:00:00Z"}})
+	for _, fact := range []string{fleetreceipt.ContinuityUnproven, "multiple_sessions: true", "selected_sequence_gaps: 1", "history_unknown: true", "pruned_before: 2026-01-01T00:00:00Z"} {
+		if !strings.Contains(out.String(), fact) {
+			t.Fatalf("missing signed history fact %q: %s", fact, out.String())
+		}
+	}
+}

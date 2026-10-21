@@ -62,8 +62,9 @@ there is no fallback grouping or source omission.
 The new object is part of the canonical, signed report payload. Existing
 subjects still bind each original source batch's `envelopeHash`. The enrolled
 signer chooses the recorder session: a session identifies a sequence namespace,
-not proof that a restart was honest or that no history was rewritten. Report
-v2 changes no receiver admission or fork-detection policy.
+not proof that a restart was honest or that no history was rewritten.
+
+The accompanying receiver policy accepts overlapping sequence ranges from distinct validated chain namespaces. It rejects divergent overlaps within one namespace and treats unresolved identities as conflicting. These comparisons cover retained batch history; durable session observations don't preserve conflict detection after the corresponding batch history is pruned. The report format records these limits and doesn't establish continuity between sessions.
 
 ## Ordering and completeness
 
@@ -109,3 +110,34 @@ The schema is [fleet-receipt-v2.schema.json](../../schemas/fleet-receipt-v2.sche
 The frozen Go conformance corpus is `sdk/conformance/testdata/fleet-receipt-v2/`;
 the v1 corpus remains unchanged. Namespace derivation and malformed signed
 payloads are exercised separately by the report-builder tests.
+
+## Receiver observations and retention
+
+New v2 producers include an optional signed `history` object. Existing v2
+reports without it remain valid and mean receiver observations unavailable and
+cross-session continuity unproven. V1 has no history object.
+
+`history.continuity` is always `cross_session_continuity_unproven`.
+`multipleSessions` reports multiple session IDs for a follower, across included
+source batches and the durable receiver observations. It does not treat a
+writer change within one session as a new session. `sessions` lists constituent
+chain observations from the scoped fleet's receiver snapshot: follower identity,
+full chain identity, first/last server arrival, observed sequence span and
+`retainedBackfill`. These are all-time receiver context, separate from report
+window action totals; sequence spans do not assert complete intermediate coverage.
+`retainedBackfill` means the earliest observation available from retained history,
+not actual recorder startup.
+
+`gaps` lists inclusive missing sequence ranges between included batches within
+one full chain identity. The first included range need not start at zero, and
+missing outer ranges or unsubmitted history cannot be inferred. Validators
+recompute gaps and multiple-session facts from the declared evidence. They do
+not authenticate the receiver observation table independently of the report signer.
+
+`retention.observationsSince` records when durable observation tracking began;
+`historyUnknown` preserves legacy or unresolved coverage. `prunedBefore`, when
+present, records the receiver's greatest payload pruning cutoff, not proof that
+all older evidence ever arrived. Pruning retains observations while deleting
+payloads and their batch conflict metadata. No arrival ordering, timestamp or
+retention field establishes a predecessor between sessions. A valid report
+signature and its arithmetic do not establish source continuity.

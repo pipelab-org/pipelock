@@ -220,3 +220,31 @@ func TestFleetReceiptV2Conformance(t *testing.T) {
 		})
 	}
 }
+
+func TestFleetReceiptV2HistorySchema(t *testing.T) {
+	schema := fleetReceiptV2Schema(t)
+	for _, tc := range []struct {
+		name, continuity string
+		valid            bool
+	}{{"unproven", fleetreceipt.ContinuityUnproven, true}, {"unsupported", "verified", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := fleetV2Statement()
+			gaps, multiple := fleetreceipt.HistoryFacts(s.Predicate.SourceBatches, nil)
+			s.Predicate.History = &fleetreceipt.History{Continuity: tc.continuity, MultipleSessions: multiple, Sessions: []fleetreceipt.ObservedChain{}, Gaps: gaps, Retention: fleetreceipt.RetentionCoverage{HistoryUnknown: true}}
+			raw, err := json.Marshal(s)
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = schema.Validate(instance); (err == nil) != tc.valid {
+				t.Fatalf("schema=%v want valid=%t", err, tc.valid)
+			}
+			if err = s.Validate(); (err == nil) != tc.valid {
+				t.Fatalf("runtime=%v want valid=%t", err, tc.valid)
+			}
+		})
+	}
+}

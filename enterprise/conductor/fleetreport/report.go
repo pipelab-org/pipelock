@@ -89,7 +89,18 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		ReceivedTo:   opts.WindowEnd,
 		Limit:        opts.Limit,
 	}
-	evidence, err := source.ListAuditBatchEvidence(ctx, query)
+	var evidence []controlplane.AuditBatchEvidence
+	var snapshot controlplane.AuditEvidenceSnapshot
+	var err error
+	if snapshots, ok := source.(interface {
+		AuditEvidenceSnapshot(context.Context, controlplane.AuditEvidenceQuery) (controlplane.AuditEvidenceSnapshot, error)
+	}); ok {
+		snapshot, err = snapshots.AuditEvidenceSnapshot(ctx, query)
+		evidence = snapshot.Batches
+	} else {
+		evidence, err = source.ListAuditBatchEvidence(ctx, query)
+		snapshot.Coverage.HistoryUnknown = true
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -204,6 +215,13 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 				"Actions outside included signed audit batches are not claimed by this report.",
 			},
 		},
+	}
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		statement.Predicate.History = reportHistory(sourceBatches, snapshot)
+		statement.Predicate.Limits = append(statement.Predicate.Limits,
+			"Cross-session continuity unproven: distinct sessions are signer-attested histories, not authenticated restarts or predecessors.",
+			"Session observations describe the receiver snapshot; first/last arrival do not establish source order. Backfilled observations begin at earliest retained evidence.",
+			"Conflict comparison covers retained batch history only. Pruned payloads and evidence before observation coverage cannot establish complete history.")
 	}
 	envelope, err := fleetreceipt.SignStatement(statement, opts.SignerKeyID, opts.Signer)
 	if err != nil {
@@ -325,37 +343,8 @@ func decodeReceiptDetail(detail any) (receipt.Receipt, error) {
 }
 
 func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []recorder.Entry) error {
-	if len(entries) == 0 {
-		return fmt.Errorf("fleet report: audit batch %s has empty payload", batchID)
-	}
-	if entries[0].Sequence != chain.SeqStart || entries[len(entries)-1].Sequence != chain.SeqEnd {
-		return fmt.Errorf("fleet report: audit batch %s sequence range mismatch", batchID)
-	}
-	if entries[0].Hash != chain.SegmentHeadHash || entries[len(entries)-1].Hash != chain.SegmentTailHash {
-		return fmt.Errorf("fleet report: audit batch %s chain head/tail mismatch", batchID)
-	}
-	for _, entry := range entries {
-		if !recorder.IsAcceptedEntryVersion(entry.Version) {
-			return fmt.Errorf("fleet report: audit batch %s seq %d unsupported recorder entry version %d", batchID, entry.Sequence, entry.Version)
-		}
-		if err := recorder.ValidateEntrySchema(entry); err != nil {
-			return fmt.Errorf("fleet report: audit batch %s seq %d invalid recorder entry: %w", batchID, entry.Sequence, err)
-		}
-		if entry.Version != chain.EntryVersion ||
-			(recorder.EntryVersionHasNamespace(entry.Version) && entry.SessionID != chain.SessionID) ||
-			entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
-			return fmt.Errorf("fleet report: audit batch %s seq %d chain namespace mismatch", batchID, entry.Sequence)
-		}
-	}
-	for i := 1; i < len(entries); i++ {
-		entry := entries[i]
-		prev := entries[i-1]
-		if entry.Sequence != prev.Sequence+1 {
-			return fmt.Errorf("fleet report: audit batch %s seq gap at %d", batchID, entry.Sequence)
-		}
-		if entry.PrevHash != prev.Hash {
-			return fmt.Errorf("fleet report: audit batch %s seq %d chain link mismatch", batchID, entry.Sequence)
-		}
+	if err := conductorcore.ValidateAuditSegment(chain, entries); err != nil {
+		return fmt.Errorf("fleet report: audit batch %s %w", batchID, err)
 	}
 	return nil
 }

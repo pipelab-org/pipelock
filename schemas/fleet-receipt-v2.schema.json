@@ -167,6 +167,9 @@
           "items": {
             "$ref": "#/$defs/externalCorrelation"
           }
+        },
+        "history": {
+          "$ref": "#/$defs/history"
         }
       }
     },
@@ -413,6 +416,125 @@
             }
           }
         }
+      ]
+    },
+    "sequenceGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chain": {
+          "$ref": "#/$defs/chainIdentity"
+        },
+        "seqStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seqEnd": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "instanceId",
+        "chain",
+        "seqStart",
+        "seqEnd"
+      ]
+    },
+    "observedChain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "chain": {
+          "$ref": "#/$defs/chainIdentity"
+        },
+        "seqStart": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "seqEnd": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "firstReceived": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastReceived": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "retainedBackfill": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "instanceId",
+        "chain",
+        "seqStart",
+        "seqEnd",
+        "firstReceived",
+        "lastReceived",
+        "retainedBackfill"
+      ]
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "continuity": {
+          "const": "cross_session_continuity_unproven"
+        },
+        "multipleSessions": {
+          "type": "boolean"
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/observedChain"
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sequenceGap"
+          }
+        },
+        "retention": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "observationsSince": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "prunedBefore": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "historyUnknown": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "historyUnknown"
+          ]
+        }
+      },
+      "required": [
+        "continuity",
+        "multipleSessions",
+        "sessions",
+        "gaps",
+        "retention"
       ]
     }
   }

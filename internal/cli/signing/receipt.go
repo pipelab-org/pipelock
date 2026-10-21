@@ -1288,6 +1288,12 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	_, _ = fmt.Fprintf(out, "  Source batches:   %d\n", result.SourceBatches)
 	_, _ = fmt.Fprintf(out, "  Total actions:    %d\n", result.TotalActions)
 	_, _ = fmt.Fprintf(out, "  Mediated fraction: %s\n", result.MediatedFraction)
+	if result.Statement.Predicate.SchemaVersion == fleetreceipt.SchemaVersionV2 && result.Statement.Predicate.History == nil {
+		_, _ = fmt.Fprintln(out, "  Continuity:       cross_session_continuity_unproven (receiver observations unavailable)")
+	}
+	if h := result.Statement.Predicate.History; h != nil {
+		_, _ = fmt.Fprintf(out, "  Continuity:       %s\n  Multiple sessions: %t\n  Sequence gaps:    %d\n  History unknown:  %t\n  Pruned before:    %s\n", h.Continuity, h.MultipleSessions, len(h.Gaps), h.Retention.HistoryUnknown, h.Retention.PrunedBefore)
+	}
 	// Print the predicate's declared verification limits (e.g. "L1 does not
 	// replay raw audit-batch payloads during offline verification") so an
 	// operator reading a passing report cannot over-read what the level proves.
