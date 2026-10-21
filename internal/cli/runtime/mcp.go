@@ -1187,6 +1187,17 @@ Key-free evidence capture:
 			// transport, CEE, and denial-of-wallet counters share the served registry.
 			mcpMetrics := metrics.New()
 
+			// Deliver audit events to the sinks configured under emit, exactly
+			// as pipelock run does. Without this, a wrapper's emit section was
+			// parsed and then ignored. Activation failure aborts startup so a
+			// configured audit destination cannot be bypassed. The deferred
+			// Close runs before auditLogger.Close (LIFO), draining queued events.
+			mcpEmitter, _, emitErr := startAuditEmitter(cfg, auditLogger, mcpMetrics, configFile, cmd.ErrOrStderr())
+			if emitErr != nil {
+				return emitErr
+			}
+			defer func() { _ = mcpEmitter.Close() }()
+
 			// Build CEE deps when cross-request detection is enabled.
 			var cee *mcp.CEEDeps
 			if cfg.CrossRequestDetection.Enabled {

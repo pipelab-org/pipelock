@@ -424,28 +424,11 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	m := metrics.New()
 	s.metrics = m
-	emitSinks, emitErr := BuildEmitSinks(cfg, m)
+	emitter, emitSinks, emitErr := startAuditEmitter(cfg, logger, m, opts.ConfigFile, opts.Stderr)
 	if emitErr != nil {
 		s.cleanup()
-		return nil, fmt.Errorf("creating emit sinks: %w", emitErr)
+		return nil, emitErr
 	}
-	instanceID := cfg.Emit.InstanceID
-	if instanceID == "" {
-		instanceID = emit.DefaultInstanceID()
-	}
-	if activationErr := activateEmitSinks(emitSinks); activationErr != nil {
-		activationErr = fmt.Errorf("activating configured emit sinks: %w", activationErr)
-		logger.LogError(audit.NewResourceLogContext("EMIT_ACTIVATION", opts.ConfigFile), activationErr)
-		_, _ = fmt.Fprintf(opts.Stderr, "WARNING: audit sink activation failed; startup aborted so configured audit delivery cannot be bypassed: %v\n", activationErr)
-		for _, sink := range emitSinks {
-			_ = sink.Close()
-		}
-		s.cleanup()
-		return nil, activationErr
-	}
-	emitter := emit.NewEmitter(instanceID, emitSinks...)
-	m.SetAuditSinkHealthSnapshot(emitter.SinkHealth)
-	logger.SetEmitter(emitter)
 	s.emitter = emitter
 	s.emitSinks = append([]emit.Sink(nil), emitSinks...)
 	if s.containmentManaged {
