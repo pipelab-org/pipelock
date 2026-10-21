@@ -389,6 +389,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so a warn-only header or CEE finding on the same CONNECT request does not
 	// get offset by a clean decay from the URL stage.
+	urlBlocked := urlResultBlocks(cfg, sc, syntheticURL, result)
 	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
 		ClientIP:    clientIP,
 		Agent:       agent,
@@ -397,7 +398,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		UserAgent:   r.UserAgent(),
 		ActorAuth:   id.Auth,
 		Result:      result,
-		ObserveOnly: !result.Allowed && !urlResultBlocks(cfg, sc, syntheticURL, result),
+		ObserveOnly: !result.Allowed && !urlBlocked,
 		Config:      cfg,
 		Logger:      p.logger,
 		DeferClean:  true,
@@ -414,7 +415,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if urlResultBlocks(cfg, sc, syntheticURL, result) {
+		if urlBlocked {
 			p.logger.LogBlockedDetail(targetCtx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			emitConnectReceipt(receipt.EmitOpts{
 				ActionID:  actionID,
@@ -1191,6 +1192,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so later request/response findings on the same round trip do not get
 	// offset by an early clean decay from the URL stage.
+	urlBlocked := urlResultBlocks(cfg, sc, targetURL, result)
 	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
 		ClientIP:    clientIP,
 		Agent:       agent,
@@ -1199,7 +1201,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		UserAgent:   r.UserAgent(),
 		ActorAuth:   id.Auth,
 		Result:      result,
-		ObserveOnly: !result.Allowed && !urlResultBlocks(cfg, sc, targetURL, result),
+		ObserveOnly: !result.Allowed && !urlBlocked,
 		Config:      cfg,
 		Logger:      p.logger,
 		DeferClean:  true,
@@ -1260,7 +1262,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if urlResultBlocks(cfg, sc, targetURL, result) {
+		if urlBlocked {
 			p.logger.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			emitForwardReceipt(receipt.EmitOpts{
 				ActionID:  actionID,

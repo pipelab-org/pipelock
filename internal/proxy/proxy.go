@@ -5530,6 +5530,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// so RecordClean is NOT applied inside recordSessionActivity: header DLP,
 	// CEE, and response scanning may still find something after this point, and
 	// a clean decay before those stages would incorrectly counteract a later signal.
+	urlBlocked := urlResultBlocks(cfg, sc, targetURL, result)
 	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
 		ClientIP:    clientIP,
 		Agent:       agent,
@@ -5538,7 +5539,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		UserAgent:   r.UserAgent(),
 		ActorAuth:   id.Auth,
 		Result:      result,
-		ObserveOnly: !result.Allowed && !urlResultBlocks(cfg, sc, targetURL, result),
+		ObserveOnly: !result.Allowed && !urlBlocked,
 		Config:      cfg,
 		Logger:      log,
 		DeferClean:  true,
@@ -5611,7 +5612,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var fetchGate ContractGateOutput
 
 	if !result.Allowed {
-		if urlResultBlocks(cfg, sc, targetURL, result) {
+		if urlBlocked {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.recordDecision(config.ActionBlock, result.Scanner, result.Reason, "fetch", requestID)
 			emitFetchReceipt(receipt.EmitOpts{

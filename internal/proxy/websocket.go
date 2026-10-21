@@ -400,7 +400,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if parsed.Scheme == "wss" {
 		scanScheme = schemeHTTPS
 	}
-	scanURL := scanScheme + "://" + parsed.Host + parsed.RequestURI()
+	scanTarget := *parsed
+	scanTarget.Scheme = scanScheme
+	scanURL := scanTarget.String()
 
 	actx := newHTTPAuditContext(r.Context(), log, httpAuditEvent{Method: "WS", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
 
@@ -451,6 +453,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Session profiling: record BEFORE the enforce-mode early return so adaptive
 	// signals (SignalBlock) fire even for blocked requests. Pass deferClean=true
 	// so header DLP findings on the same handshake don't get offset by early decay.
+	urlBlocked := urlResultBlocks(cfg, sc, scanURL, result)
 	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
 		ClientIP:    clientIP,
 		Agent:       agent,
@@ -459,7 +462,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		UserAgent:   r.UserAgent(),
 		ActorAuth:   id.Auth,
 		Result:      result,
-		ObserveOnly: !result.Allowed && !urlResultBlocks(cfg, sc, targetURL, result),
+		ObserveOnly: !result.Allowed && !urlBlocked,
 		Config:      cfg,
 		Logger:      log,
 		DeferClean:  true,
@@ -475,7 +478,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if result.Scanner == scanner.ScannerRateLimit {
 			status = http.StatusTooManyRequests
 		}
-		if urlResultBlocks(cfg, sc, scanURL, result) {
+		if urlBlocked {
 			log.LogBlockedDetail(actx, result.Scanner, result.Reason, auditDetailFromResult(result))
 			p.metrics.RecordWSBlocked()
 			emitWebSocketReceipt(receipt.EmitOpts{

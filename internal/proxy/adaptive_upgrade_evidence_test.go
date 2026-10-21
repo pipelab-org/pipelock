@@ -26,90 +26,103 @@ func TestAdaptiveUpgradedWarningRecordedAsBlock(t *testing.T) {
 	}))
 	defer backend.Close()
 	for _, transport := range []string{"fetch", "forward", "connect", "websocket"} {
-		t.Run(transport, func(t *testing.T) {
-			var proxyAddr string
-			var p *Proxy
-			var cleanup func()
-			target := backend.URL
-			if transport == "websocket" {
-				var closeBackend func()
-				target, closeBackend = wsEchoServer(t)
-				defer closeBackend()
-				target = "ws://" + target
-				proxyAddr, p, cleanup = setupWSProxyDefaultWithProxy(t, adaptiveWarnTransportConfig)
-			} else {
-				proxyAddr, p, cleanup = setupForwardProxyWithInstance(t, adaptiveWarnTransportConfig)
-			}
-			defer cleanup()
-			parsedTarget, err := url.Parse(target)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// Independent enforced evidence has already escalated this
-			// destination, so upgrade_warn turns the next warning into a block.
-			rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyLoopback)
-			for range 7 {
-				rec.RecordScopedSignal(adaptiveScopeForHost(parsedTarget.Hostname()), session.SignalBlock, adaptiveTestThreshold)
-			}
-
-			var refused bool
-			switch transport {
-			case "websocket":
-				conn, err := dialWSConnToTarget(proxyAddr, target)
-				if err == nil {
-					_ = conn.Close()
+		for _, level := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("%s/level=%d", transport, level), func(t *testing.T) {
+				var proxyAddr string
+				var p *Proxy
+				var cleanup func()
+				target := backend.URL
+				if transport == "websocket" {
+					var closeBackend func()
+					target, closeBackend = wsEchoServer(t)
+					defer closeBackend()
+					target = "ws://" + target
+					proxyAddr, p, cleanup = setupWSProxyDefaultWithProxy(t, adaptiveWarnTransportConfig)
+				} else {
+					proxyAddr, p, cleanup = setupForwardProxyWithInstance(t, adaptiveWarnTransportConfig)
 				}
-				refused = err != nil
-			case "connect":
-				conn := dialProxy(t, proxyAddr)
-				defer func() { _ = conn.Close() }()
-				if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", parsedTarget.Host, parsedTarget.Host); err != nil {
-					t.Fatal(err)
-				}
-				resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+				defer cleanup()
+				parsedTarget, err := url.Parse(target)
 				if err != nil {
 					t.Fatal(err)
 				}
-				_ = resp.Body.Close()
-				refused = resp.StatusCode == http.StatusForbidden
-			default:
-				client := http.DefaultClient
-				reqURL := "http://" + proxyAddr + "/fetch?url=" + url.QueryEscape(target)
-				if transport == "forward" {
-					parsedProxy, err := url.Parse("http://" + proxyAddr)
+				// Independent enforced evidence has already escalated this
+				// destination, so upgrade_warn turns the next warning into a block.
+				rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyLoopback)
+				scope := adaptiveScopeForHost(parsedTarget.Hostname())
+				for range 50 {
+					if rec.EffectiveEscalationLevel(scope) >= level {
+						break
+					}
+					rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)
+				}
+				if got := rec.EffectiveEscalationLevel(scope); got != level {
+					t.Fatalf("setup level=%d, want %d", got, level)
+				}
+				scoreBefore := rec.ThreatScore()
+
+				var refused bool
+				switch transport {
+				case "websocket":
+					conn, err := dialWSConnToTarget(proxyAddr, target)
+					if err == nil {
+						_ = conn.Close()
+					}
+					refused = err != nil
+				case "connect":
+					conn := dialProxy(t, proxyAddr)
+					defer func() { _ = conn.Close() }()
+					if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", parsedTarget.Host, parsedTarget.Host); err != nil {
+						t.Fatal(err)
+					}
+					resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 					if err != nil {
 						t.Fatal(err)
 					}
-					tr := &http.Transport{Proxy: http.ProxyURL(parsedProxy)}
-					defer tr.CloseIdleConnections()
-					client = &http.Client{Transport: tr}
-					reqURL = target
+					_ = resp.Body.Close()
+					refused = resp.StatusCode == http.StatusForbidden
+				default:
+					client := http.DefaultClient
+					reqURL := "http://" + proxyAddr + "/fetch?url=" + url.QueryEscape(target)
+					if transport == "forward" {
+						parsedProxy, err := url.Parse("http://" + proxyAddr)
+						if err != nil {
+							t.Fatal(err)
+						}
+						tr := &http.Transport{Proxy: http.ProxyURL(parsedProxy)}
+						defer tr.CloseIdleConnections()
+						client = &http.Client{Transport: tr}
+						reqURL = target
+					}
+					req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, reqURL, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp, err := client.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = resp.Body.Close()
+					refused = resp.StatusCode == http.StatusForbidden
 				}
-				req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, reqURL, nil)
-				if err != nil {
-					t.Fatal(err)
+				if !refused {
+					t.Fatal("escalated destination delivered an upgraded warning")
 				}
-				resp, err := client.Do(req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				_ = resp.Body.Close()
-				refused = resp.StatusCode == http.StatusForbidden
-			}
-			if !refused {
-				t.Fatal("escalated destination delivered an upgraded warning")
-			}
 
-			events := rec.RecentEvents()
-			if len(events) == 0 {
-				t.Fatal("refused finding left no session evidence")
-			}
-			for _, event := range events {
-				if event.Kind != config.ActionBlock || event.Severity != config.SeverityCritical {
-					t.Fatalf("refused request recorded as an observation: %+v", event)
+				if got := rec.ThreatScore(); got != scoreBefore {
+					t.Fatalf("upgraded warning changed score: before=%v after=%v", scoreBefore, got)
 				}
-			}
-		})
+				events := rec.RecentEvents()
+				if len(events) == 0 {
+					t.Fatal("refused finding left no session evidence")
+				}
+				for _, event := range events {
+					if event.Kind != config.ActionBlock || event.Severity != config.SeverityCritical {
+						t.Fatalf("refused request recorded as an observation: %+v", event)
+					}
+				}
+			})
+		}
 	}
 }
 
