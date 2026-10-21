@@ -149,7 +149,7 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 			return Result{}, err
 		}
 		if opts.ReportVersion == fleetreceipt.SchemaVersionV1 {
-			if err := v1Runs.add(ev.Envelope.InstanceID, entries[0]); err != nil {
+			if err := v1Runs.add(ev.Envelope.InstanceID, entries); err != nil {
 				return Result{}, err
 			}
 		}
@@ -374,8 +374,15 @@ type v1Run struct {
 
 type v1RunSet map[string]v1Run
 
-// add runs after verifySegment, which has rejected empty and mixed-namespace segments.
-func (s v1RunSet) add(instanceID string, first recorder.Entry) error {
+// add runs after verifySegment, which rejects empty segments and mixed v3
+// namespaces. Legacy segments need a separate session consistency check.
+func (s v1RunSet) add(instanceID string, entries []recorder.Entry) error {
+	first := entries[0]
+	for _, entry := range entries[1:] {
+		if entry.SessionID != first.SessionID {
+			return fmt.Errorf("%w: follower %s has mixed recorder sessions within an audit batch; neither report version can represent this batch", ErrV1MultipleRuns, instanceID)
+		}
+	}
 	run := v1Run{entryVersion: first.Version, sessionID: first.SessionID, chainKind: first.ChainKind, writerID: first.WriterInstanceID}
 	if prev, ok := s[instanceID]; ok && prev != run {
 		return fmt.Errorf("%w: follower %s has audit batches from more than one recorder run in this window; use --report-version 2, which records each run separately", ErrV1MultipleRuns, instanceID)
