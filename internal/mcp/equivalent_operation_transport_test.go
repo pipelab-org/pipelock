@@ -159,15 +159,21 @@ func assertUninspectablePatchLog(t *testing.T, transportName, log string) {
 	}
 }
 
-func TestEquivalentOperationWarnPresetsExposeRuleOnBothMCPTransports(t *testing.T) {
+func TestEquivalentOperationPresetPoliciesExposeRuleOnBothMCPTransports(t *testing.T) {
 	sc := testInputScanner(t)
 	requestTemplate := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`
 
 	for _, toolName := range []string{"move_file", "mcp__filesystem__move_file", "filesystem.move_file", "filesystem:move_file"} {
 		request := strings.Replace(requestTemplate, "move_file", toolName, 1)
-		for _, preset := range []string{"audit", "generic-agent"} {
-			t.Run(preset+"/"+toolName, func(t *testing.T) {
-				cfg, err := config.Load("../../configs/" + preset + ".yaml")
+		for _, preset := range []struct {
+			name  string
+			block bool
+		}{
+			{name: "audit", block: true},
+			{name: "generic-agent"},
+		} {
+			t.Run(preset.name+"/"+toolName, func(t *testing.T) {
+				cfg, err := config.Load("../../configs/" + preset.name + ".yaml")
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -188,19 +194,35 @@ func TestEquivalentOperationWarnPresetsExposeRuleOnBothMCPTransports(t *testing.
 					nil,
 					opts,
 				)
-				if !strings.Contains(stdioOut.String(), request) || !strings.Contains(stdioLog.String(), "policy:Shell Profile Modification") {
-					t.Fatalf("stdio output=%q log=%q, want forwarded call and named warning", stdioOut.String(), stdioLog.String())
+				if !strings.Contains(stdioLog.String(), "policy:Shell Profile Modification") {
+					t.Fatalf("stdio log=%q, want named policy rule", stdioLog.String())
 				}
+				var blockedRequests []BlockedRequest
 				for br := range blocked {
-					t.Fatalf("warn preset unexpectedly blocked stdio request: %+v", br)
+					blockedRequests = append(blockedRequests, br)
+				}
+				if preset.block {
+					if stdioOut.Len() != 0 || len(blockedRequests) != 1 {
+						t.Fatalf("stdio output=%q blocked=%+v, want one blocked request and no forwarding", stdioOut.String(), blockedRequests)
+					}
+					if br := blockedRequests[0]; string(br.ID) != "1" || br.ErrorCode != -32002 {
+						t.Fatalf("stdio block=%+v, want policy block for request 1", br)
+					}
+				} else if !strings.Contains(stdioOut.String(), request) || len(blockedRequests) != 0 {
+					t.Fatalf("stdio output=%q blocked=%+v, want forwarded call and no block", stdioOut.String(), blockedRequests)
 				}
 
 				var httpLog bytes.Buffer
-				if got := scanHTTPInput([]byte(request), &httpLog, "session", "session", opts); got != nil {
+				got := scanHTTPInput([]byte(request), &httpLog, "session", "session", opts)
+				if preset.block {
+					if got == nil || string(got.ID) != "1" || got.ErrorCode != -32002 {
+						t.Fatalf("HTTP block=%+v, want policy block for request 1", got)
+					}
+				} else if got != nil {
 					t.Fatalf("warn preset unexpectedly blocked HTTP request: %+v", got)
 				}
 				if !strings.Contains(httpLog.String(), "policy:Shell Profile Modification") {
-					t.Fatalf("HTTP log=%q, want named warning", httpLog.String())
+					t.Fatalf("HTTP log=%q, want named policy rule", httpLog.String())
 				}
 			})
 		}
