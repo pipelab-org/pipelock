@@ -22,10 +22,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const audienceDiagnosticTarget = "https://api.vendor.example/v1/oauth/token"
@@ -38,6 +40,16 @@ func requireAudienceDiagnosticReceipt(t *testing.T, rph *receiptProxyHelper, lay
 	}
 	if err := receipt.VerifyWithKey(recorded, rph.pubHex); err != nil {
 		t.Fatalf("verify receipt: %v", err)
+	}
+}
+
+func requireAudienceDiagnosticDenial(t *testing.T, rec *SessionState, cfg *config.Config, host, layer, reason string) {
+	t.Helper()
+	if rec.ThreatScore() != session.SignalPoints[session.SignalBlock] {
+		t.Fatalf("denial score = %v, want one block", rec.ThreatScore())
+	}
+	if rec.NoteClassifiedDenial(adaptiveScopeForHost(host), layer, reason, cfg.CanonicalPolicyHash()) {
+		t.Fatal("diagnostic changed the legacy denial fingerprint")
 	}
 }
 
@@ -211,6 +223,9 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := reverseTestConfig()
+			cfg.SessionProfiling.Enabled = true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.ExemptDomains = nil
 			cfg.RequestBodyScanning.ScanHeaders = true
 			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
 			sc := scanner.MustNew(cfg)
@@ -224,7 +239,13 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, p.metrics, killswitch.New(cfg), nil, nil)
+			rp.SetOwnerProxy(p)
 			rph := newReceiptProxyHelper(t)
 			rp.receiptEmitterPtr = &atomic.Pointer[receipt.Emitter]{}
 			rp.receiptEmitterPtr.Store(rph.emitter)
@@ -238,6 +259,7 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				target += "/" + key
 			}
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(body))
+			req.RemoteAddr = "192.0.2.10:9300"
 			req.Header.Set("Content-Type", "text/plain")
 			if surface == "header" {
 				req.Header.Set("Authorization", "Bearer "+key)
@@ -270,6 +292,12 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				pattern = "URL DLP: Anthropic API Key"
 			}
 			requireAudienceDiagnosticReceipt(t, rph, layer, pattern)
+			recorder := p.SessionMgrPtr().Load().GetOrCreate(sessionKeyFor(cfg, "", "192.0.2.10", envelope.ActorAuthUnknown))
+			scoringLayer := scanner.ScannerDLP
+			if surface == "body" {
+				scoringLayer = scannerLabelBodyDLP
+			}
+			requireAudienceDiagnosticDenial(t, recorder, cfg, upstreamURL.Hostname(), scoringLayer, pattern)
 		})
 	}
 }
@@ -409,6 +437,8 @@ func TestInterceptCredentialAudienceDiagnosticReceipt(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.ExemptDomains = nil
 			cfg.RequestBodyScanning.Enabled = true
 			cfg.RequestBodyScanning.ScanHeaders = true
 			cfg.RequestBodyScanning.Action = config.ActionBlock
@@ -434,9 +464,10 @@ func TestInterceptCredentialAudienceDiagnosticReceipt(t *testing.T) {
 			if surface == "header" {
 				req.Header.Set("Authorization", "Bearer "+key)
 			}
+			recorder := &SessionState{}
 			resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
 				Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc,
-				Logger: logger, Metrics: m, Request: req, Proxy: p,
+				Logger: logger, Metrics: m, Request: req, Proxy: p, Recorder: recorder,
 			})
 			t.Cleanup(func() { _ = resp.Body.Close() })
 			response, err := io.ReadAll(resp.Body)
@@ -451,6 +482,15 @@ func TestInterceptCredentialAudienceDiagnosticReceipt(t *testing.T) {
 				layer, pattern = "header_dlp", "request header contains secret"
 			}
 			requireAudienceDiagnosticReceipt(t, rph, layer, pattern)
+			scoringLayer := layer
+			if surface == "header" {
+				scoringLayer = scanner.ScannerDLP
+			}
+			parsedUpstream, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			requireAudienceDiagnosticDenial(t, recorder, cfg, parsedUpstream.Hostname(), scoringLayer, pattern)
 		})
 	}
 }
@@ -463,6 +503,8 @@ func TestWebSocketFrameAudienceDiagnosticReceipt(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			cfg := testScannerConfig()
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.ExemptDomains = nil
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			var auditLog bytes.Buffer
@@ -482,7 +524,9 @@ func TestWebSocketFrameAudienceDiagnosticReceipt(t *testing.T) {
 			t.Cleanup(func() { _ = client.Close(); _ = clientPeer.Close(); _ = upstream.Close(); _ = upstreamPeer.Close() })
 			go func() { _, _ = io.Copy(io.Discard, clientPeer) }()
 			go func() { _, _ = io.Copy(io.Discard, upstreamPeer) }()
+			recorder := &SessionState{}
 			relay := &wsRelay{
+				rec:   recorder,
 				proxy: p, cfg: cfg, clientConn: client, upstreamConn: upstream,
 				targetURL: "wss://api.vendor.example/v1", hostname: "api.vendor.example", requestID: "frame-test",
 			}
@@ -504,6 +548,11 @@ func TestWebSocketFrameAudienceDiagnosticReceipt(t *testing.T) {
 				t.Fatalf("blocked=%v audit=%s", blocked, auditLog.String())
 			}
 			requireAudienceDiagnosticReceipt(t, rph, scanner.ScannerDLP, pattern)
+			scoringLayer := scanner.ScannerDLP
+			if structured {
+				scoringLayer = scannerLabelBodyDLP
+			}
+			requireAudienceDiagnosticDenial(t, recorder, cfg, relay.hostname, scoringLayer, pattern)
 		})
 	}
 }

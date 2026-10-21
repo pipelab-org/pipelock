@@ -2066,7 +2066,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if hardBlock || (r.cfg.EnforceEnabled() && !numberOnly) {
 			receiptPattern := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 			reason := diagnostic.withAudienceExplanation(receiptPattern)
-			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
+			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, receiptPattern)
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
 				Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -2098,7 +2098,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		if effectiveAction == config.ActionBlock {
 			receiptPattern := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			reason := diagnostic.withAudienceExplanation(receiptPattern)
-			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
+			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, receiptPattern)
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
 			log.LogWSBlocked(audit.WSBlockedEvent{
@@ -2425,7 +2425,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	reason = result.withAudienceExplanation(reason)
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
 	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
-		r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+		r.recordFinding(session.SignalBlock, log, scannerLabel, receiptPattern)
 		log.LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabel,
 			Reason: reason, ClientIP: r.clientIP, RequestID: r.requestID,
@@ -2480,7 +2480,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	switch action {
 	case config.ActionBlock:
 		if !hardBlock && !r.cfg.EnforceEnabled() && action == originalAction && len(result.AddressFindings) > 0 {
-			r.recordFinding(session.SignalNearMiss, log, scannerLabelAddressProtection, reason)
+			r.recordFinding(session.SignalNearMiss, log, scannerLabelAddressProtection, receiptPattern)
 			names := make([]string, len(result.AddressFindings))
 			for i, f := range result.AddressFindings {
 				names[i] = f.Explanation
@@ -2499,7 +2499,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			return false
 		}
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
-			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
+			r.recordFinding(session.SignalBlock, log, scannerLabel, receiptPattern)
 		}
 		blockReason := reason
 		blockPattern := receiptPattern
@@ -2533,7 +2533,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		return true
 	case config.ActionWarn:
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
-			r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
+			r.recordFinding(session.SignalNearMiss, log, scannerLabel, receiptPattern)
 		}
 		if len(result.DLPMatches) > 0 {
 			log.LogWSScan(audit.WSScanEvent{

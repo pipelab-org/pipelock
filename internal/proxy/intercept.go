@@ -1465,7 +1465,7 @@ func newInterceptHandler(
 				// tunnels, so it fails closed here.
 				if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					if !bodyAdaptiveExempt {
-						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, reason)
+						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, receiptPattern)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason)
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
@@ -1492,7 +1492,7 @@ func newInterceptHandler(
 				// without any escalation, which is not the intent.
 				if action == config.ActionBlock && action != originalBodyAction && !ic.Config.EnforceEnabled() {
 					if !bodyAdaptiveExempt {
-						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, reason)
+						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, receiptPattern)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason+" (escalated)")
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
@@ -1697,7 +1697,7 @@ func newInterceptHandler(
 				reason := headerResult.withAudienceExplanation(receiptPattern)
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
-					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, reason)
+					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, receiptPattern)
 					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
 						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),
 						Cookies: cookieNamesWithDLPMatch(r.Context(), scanHeaders, ic.Scanner),

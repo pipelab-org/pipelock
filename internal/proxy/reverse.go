@@ -1100,7 +1100,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				if explanation := scanner.CredentialAudienceMismatchExplanation(mismatches); explanation != "" {
 					reason += "; " + explanation
 				}
-				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, receiptPattern)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")
 				// Sign the denial so every reverse DLP block leaves a receipt,
@@ -1165,7 +1165,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
 				receiptPattern := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
 				reason := headerResult.withAudienceExplanation(receiptPattern)
-				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
+				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, receiptPattern)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
 				// Sign the denial under the cross-transport header-DLP layer
@@ -2176,7 +2176,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
@@ -2197,7 +2197,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			RequestID: receiptInput.RequestID,
 			Agent:     receiptInput.Agent,
 		})
-		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, reason)
+		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
