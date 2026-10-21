@@ -213,13 +213,14 @@ func TestEquivalentOperationPresetPoliciesExposeRuleOnBothMCPTransports(t *testi
 				}
 
 				var httpLog bytes.Buffer
-				got := scanHTTPInput([]byte(request), &httpLog, "session", "session", opts)
+				decision := scanHTTPInputDecision([]byte(request), &httpLog, "session", "session", opts)
+				got := decision.Blocked
 				if preset.block {
 					if got == nil || string(got.ID) != "1" || got.ErrorCode != -32002 {
 						t.Fatalf("HTTP block=%+v, want policy block for request 1", got)
 					}
-				} else if got != nil {
-					t.Fatalf("warn preset unexpectedly blocked HTTP request: %+v", got)
+				} else if got != nil || !bytes.Equal(decision.ForwardMessage, []byte(request)) {
+					t.Fatalf("warn preset HTTP block=%+v forwarded=%q, want original request forwarded", got, decision.ForwardMessage)
 				}
 				if !strings.Contains(httpLog.String(), "policy:Shell Profile Modification") {
 					t.Fatalf("HTTP log=%q, want named policy rule", httpLog.String())
