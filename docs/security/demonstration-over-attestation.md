@@ -26,8 +26,7 @@ pipelock verify-receipt \
   --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 
-What this does: verifies the receipt chain without contacting Pipelock,
-Conductor, or a hosted service.
+What this does: verifies both receipt chains, every recorder entry, and each run's transcript-root seal without contacting Pipelock, Conductor, or a hosted service. Exit 0 means each run's end is proven. Exit 3 (`VALID PREFIX, END UNPROVEN`) means the signatures and links check out but a run has no seal, as with a recorder that's still running.
 
 For a fleet report:
 
