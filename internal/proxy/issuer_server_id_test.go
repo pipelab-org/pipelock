@@ -58,6 +58,7 @@ func TestIssuerIDBlockObservation(t *testing.T) {
 		t.Fatal("warning omitted recovery guidance")
 	}
 	fresh := p.newObservedIssuerQueryStore()
+	fresh.recordSent("first", origin, nil, nil, true, time.Now())
 	if fresh.mintBlockedLocked("first", origin) || fresh.idBlockReported {
 		t.Fatal("fresh store retained uncertainty or log coalescing")
 	}
@@ -355,6 +356,53 @@ func newTestServerIDStore(t *testing.T) *issuerQueryStore {
 	return s
 }
 
+func TestIssuerServerIDHistoryRequired(t *testing.T) {
+	origin := mustIssuerQueryURL(t, "https://api.vendor.example/items")
+	now := time.Now()
+	t.Run("mint requires recorded send", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.mintServerID("owner", origin, serverIDListed, now)
+		if len(s.ids) != 0 || len(s.sent) != 0 {
+			t.Fatal("missing send history created ID authority or a history bucket")
+		}
+		s.recordSent("owner", origin, nil, nil, true, now)
+		s.mintServerID("owner", origin, serverIDListed, now)
+		if !s.serverIDIssued("owner", origin, serverIDListed) {
+			t.Fatal("recorded complete request did not permit response ID")
+		}
+	})
+	t.Run("lookup cannot consume history capacity", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		observations := 0
+		s.observeIDBlock = func(string, bool) { observations++ }
+		for i := 0; i <= issuerUnreadableMaxSessions; i++ {
+			if s.serverIDIssued(fmt.Sprintf("lookup-%d", i), origin, serverIDListed) {
+				t.Fatal("lookup admitted an unissued ID")
+			}
+		}
+		if len(s.sent) != 0 || len(s.sentUnreadable) != 0 || s.idCapacityReported || observations != 0 {
+			t.Fatal("read-only lookups changed history or capacity observations")
+		}
+		s.recordSent("peer", origin, nil, nil, true, now)
+		s.mintServerID("peer", origin, serverIDListed, now)
+		if !s.serverIDIssued("peer", origin, serverIDListed) {
+			t.Fatal("lookups prevented a later real caller from learning an ID")
+		}
+	})
+	t.Run("orphaned IDs cannot restore history", func(t *testing.T) {
+		s := newTestServerIDStore(t)
+		s.recordSent("owner", origin, nil, nil, true, now)
+		s.mintServerID("owner", origin, serverIDListed, now)
+		if !s.serverIDIssued("owner", origin, serverIDListed) {
+			t.Fatal("positive control: recorded response ID unavailable")
+		}
+		delete(s.sent, "owner")
+		if s.serverIDIssued("owner", origin, serverIDListed) || len(s.sent) != 0 {
+			t.Fatal("orphaned ID restored missing history")
+		}
+	})
+}
+
 func TestIssuerServerIDStore(t *testing.T) {
 	origin, _ := url.Parse("https://api.vendor.example/v1/filters")
 	now := time.Now()
@@ -370,6 +418,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("an unread body revokes ids minted before it", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, nil, nil, true, now)
 		s.mintServerID("a", origin, serverIDListed, now)
 		if !s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")
@@ -437,6 +486,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("bucket capacity refuses newcomers without revoking peers", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		s.recordSent("existing", origin, nil, nil, true, now)
 		s.mintServerID("existing", origin, serverIDListed, now)
 		for i := 1; i < issuerUnreadableMaxSessions; i++ {
 			s.taintSentLocked(fmt.Sprintf("tainted-%d", i))
@@ -463,6 +513,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 		if s.serverIDIssued("a", origin, agentBlob) {
 			t.Fatal("own reflection minted")
 		}
+		s.recordSent("b", origin, nil, nil, true, now)
 		s.mintServerID("b", origin, agentBlob, now)
 		if !s.serverIDIssued("b", origin, agentBlob) {
 			t.Fatal("another caller's sends poisoned recipient")
@@ -483,6 +534,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("total history capacity taints only the adding caller", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		s.recordSent("peer", origin, nil, nil, true, now)
 		s.mintServerID("peer", origin, serverIDListed, now)
 		s.sentEntries = issuerSentAllMaxEntries
 		s.recordSent("a", origin, nil, []byte(serverIDOther), true, now)
@@ -567,6 +619,7 @@ func TestIssuerServerIDUnmediatedSends(t *testing.T) {
 		h := newWebPlatformHarness(t)
 		store := h.p.issuerStoreForUnmediatedSend()
 		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.recordSent(session, origin, nil, nil, true, now)
 		store.mintServerID(session, origin, serverIDListed, now)
 		if !store.serverIDIssued(session, origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")

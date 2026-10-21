@@ -592,6 +592,7 @@ func TestWSProxyIssuerHistoryUncertainty(t *testing.T) {
 	sender := sessionKeyFor(p.cfgPtr.Load(), edition.ConfigDefaultName("sender"), "127.0.0.1", envelope.ActorAuthConfigDefault)
 	peer := sessionKeyFor(p.cfgPtr.Load(), "peer", "127.0.0.1", envelope.ActorAuthBound)
 	for _, key := range []string{sender, peer} {
+		store.recordSent(key, origin, nil, nil, true, time.Now())
 		store.mintServerID(key, origin, serverIDListed, time.Now())
 		if !store.serverIDIssued(key, origin, serverIDListed) {
 			t.Fatal("positive control: caller did not learn the ID")
@@ -655,6 +656,7 @@ func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, key := range []string{sender, peer} {
+		store.recordSent(key, origin, nil, nil, true, time.Now())
 		store.mintServerID(key, origin, serverIDListed, time.Now())
 		if !store.serverIDIssued(key, origin, serverIDListed) {
 			t.Fatal("positive control: caller did not learn the ID")

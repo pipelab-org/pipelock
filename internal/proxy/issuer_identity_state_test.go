@@ -45,6 +45,8 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	key := sessionKeyFor(cfg, "owner", "192.0.2.1", envelope.ActorAuthBound)
 	peer := sessionKeyFor(cfg, "peer", "192.0.2.1", envelope.ActorAuthBound)
 	original := p.issuerCookieRuntime.Load().query
+	original.recordSent(key, origin, nil, nil, true, time.Now())
+	original.recordSent(peer, origin, nil, nil, true, time.Now())
 	original.mintServerID(key, origin, serverIDListed, time.Now())
 	original.mintServerID(peer, origin, serverIDListed, time.Now())
 	original.taintSentLocked(key)
@@ -98,6 +100,7 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 	if fresh == original || fresh.serverIDIssued(peer, origin, serverIDListed) {
 		t.Fatal("disabled evidence revived")
 	}
+	fresh.recordSent(key, origin, nil, nil, true, time.Now())
 	fresh.mintServerID(key, origin, serverIDListed, time.Now())
 	if !fresh.serverIDIssued(key, origin, serverIDListed) {
 		t.Fatal("explicit reset retained taint")
@@ -110,6 +113,7 @@ func TestIssuerIDConcurrentCallerIsolation(t *testing.T) {
 	origin := mustIssuerQueryURL(t, "https://api.vendor.example/items")
 	store := p.issuerCookieRuntime.Load().query
 	key := sessionKeyFor(cfg, "owner", "192.0.2.1", envelope.ActorAuthConfigDefault)
+	store.recordSent(key, origin, nil, nil, true, time.Now())
 	store.mintServerID(key, origin, serverIDListed, time.Now())
 	var wg sync.WaitGroup
 	for _, auth := range []envelope.ActorAuth{envelope.ActorAuthUnknown, envelope.ActorAuthSelfDeclared, envelope.ActorAuthMatched} {

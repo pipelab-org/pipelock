@@ -59,6 +59,7 @@ func TestIssuerSentIdentityIsolation(t *testing.T) {
 					const agent = "recipient"
 					const client = "192.0.2.1"
 					trusted := sessionKeyFor(cfg, agent, client, envelope.ActorAuthBound)
+					s.recordSent(trusted, origin, nil, nil, true, time.Now())
 					s.mintServerID(trusted, origin, serverIDListed, time.Now())
 					if !s.serverIDIssued(trusted, origin, serverIDListed) {
 						t.Fatal("positive control missing")
@@ -89,6 +90,7 @@ func TestIssuerSentIdentityIsolation(t *testing.T) {
 						t.Fatal("send history crossed trust boundary or own reflection minted")
 					}
 					peer := sessionKeyFor(cfg, "peer", client, envelope.ActorAuthBound)
+					s.recordSent(peer, origin, nil, nil, true, time.Now())
 					s.mintServerID(peer, origin, serverIDOther, time.Now())
 					if !s.serverIDIssued(peer, origin, serverIDOther) {
 						t.Fatal("taint crossed bound identities on shared IP")
@@ -108,6 +110,7 @@ func TestIssuerSentIncompleteCallerLocal(t *testing.T) {
 			sender := sessionKeyFor(cfg, "sender", "192.0.2.1", envelope.ActorAuthBound)
 			peer := sessionKeyFor(cfg, "peer", "192.0.2.1", envelope.ActorAuthBound)
 			for _, key := range []string{sender, peer} {
+				s.recordSent(key, origin, nil, nil, true, time.Now())
 				s.mintServerID(key, origin, serverIDListed, time.Now())
 			}
 			var body []byte

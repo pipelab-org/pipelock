@@ -191,10 +191,11 @@ func (p *Proxy) newObservedIssuerQueryStore() *issuerQueryStore {
 	return s
 }
 
-// mintBlockedLocked never turns missing or incomplete history into authority.
+// mintBlockedLocked only inspects history established by send recording.
+// Neither a response nor a lookup can turn missing history into authority.
 func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
 	_, ok := s.sentDigest(target, "")
-	return !ok || s.sentUnreadable[session] || !s.admitIDSessionLocked(session)
+	return !ok || s.sent[session] == nil || s.sentUnreadable[session]
 }
 
 // recordSent records every token a request carries to its origin: path
