@@ -28,7 +28,7 @@ jobs:
   candidate:
     name: Released Pipelock candidate
     # Keep the benchmark environment fixed alongside the Go patch below.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 35 # Keep synchronized with JOB_TIMEOUT_MINUTES below.
     env:
       JOB_TIMEOUT_MINUTES: "35"
