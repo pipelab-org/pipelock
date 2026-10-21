@@ -60,7 +60,7 @@ A valid expired path or query entropy exclusion, request-body entropy warning ro
 ```yaml
 version: 1                    # Config schema version (currently 1)
 mode: balanced                # "strict", "balanced", or "audit"
-enforce: true                 # false = detect without blocking (warning-only)
+enforce: true                 # false = ordinary findings warn; independent controls can block
 explain_blocks: false         # true = include fix hints in block responses
 ```
 
@@ -103,7 +103,7 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | Logs findings without normal blocking. A built-in core credential, SSRF, fail-closed transport checks, and adaptive escalation can still block. | Evaluation before enforcement |
+| **audit** | Warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset disables adaptive escalation; operators can enable it explicitly. | Evaluation before enforcement |
 
 ## API Allowlist
 
@@ -2797,7 +2797,7 @@ The mode presets use `Preset Tool Invocation`, `Preset Instruction Boundary`, `P
 
 For example, `set system instructions aside` matches `Instruction Dismissal`, while `cast all previous directives aside` matches `Preset Instruction Dismissal`. A suppression for one doesn't cover the other. Use the `Preset` name when updating alerts or suppressions for supplemental findings.
 
-Each preset sets a five-minute tool-chain window. `pipelock init` preserves preset scanning actions, disabled sections, drift settings, and tool-chain windows when it discovers MCP servers. In audit mode, ordinary MCP input and tool-policy findings use `warn` by default. Core and transport safety protections can still block, and individual tool rules can override the tool-policy default, including with `block`. Malformed MCP messages (`mcp_input_scanning.on_parse_error: block`) and binary WebSocket frames (`websocket_proxy.allow_binary_frames: false`) are refused, even during evaluation. Regenerating an older audit configuration replaces its previous parse-error forwarding and binary-frame allowance with these refusals. MCP input scanning blocks findings in the `strict` and `balanced` presets. The response and default tool-policy actions in the table below describe those separate scanning paths; individual tool rules can override that default.
+Each preset sets a five-minute tool-chain window. `pipelock init` preserves preset scanning actions, disabled sections, drift settings, and tool-chain windows when it discovers MCP servers. In audit mode, ordinary MCP input and tool-policy findings use `warn` by default. The bundled audit preset retains explicit built-in tool-policy blocks and disables adaptive escalation. This preserves those blocks from previous generated audit configurations; users of the previous raw audit YAML instead gain these blocks and lose adaptive escalation. Core and transport safety protections can still block, and individual tool rules can override the tool-policy default, including with `block`. Malformed MCP messages (`mcp_input_scanning.on_parse_error: block`) and binary WebSocket frames (`websocket_proxy.allow_binary_frames: false`) are refused, even during evaluation. Regenerating an older audit configuration replaces its previous parse-error forwarding and binary-frame allowance with these refusals. MCP input scanning blocks findings in the `strict` and `balanced` presets. The response and default tool-policy actions in the table below describe those separate scanning paths; individual tool rules can override that default.
 
 Run `pipelock presets` or `pipelock generate config --list` to list the current built-in names with mode, default action, and reachability posture:
 

@@ -185,7 +185,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 | NIST Subcategory | Description | Pipelock Feature | EU AI Act |
 |-----------------|-------------|-----------------|-----------|
 | MAP 1.1 | Intended purposes and contexts documented | Capability separation documented; deployment guides per agent type | Art. 9, 13 |
-| MAP 1.5 | Organizational risk tolerance defined | Config presets: `audit` (log only), `balanced` (default), `strict` (aggressive blocking) | Art. 9 |
+| MAP 1.5 | Organizational risk tolerance defined | Config presets: `audit` (ordinary findings warn; safety protections can block), `balanced` (default), `strict` (aggressive blocking) | Art. 9 |
 | MAP 2.1 | System and potential harms classified | Scanner pipeline classifies: SSRF, DLP, injection, env leak, entropy, rate abuse | Art. 9 |
 | MAP 4.1 | Risks prioritized by impact and likelihood | Pipeline ordering reflects priority: blocklist/DLP (critical) before DNS, SSRF before rate limit | Art. 9 |
 

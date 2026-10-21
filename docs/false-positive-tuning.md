@@ -288,7 +288,7 @@ cross_request_detection:
 
 ## Deliberate Audit Rollouts
 
-Audit mode is an explicit rollout choice for an isolated test environment with synthetic data and separately enforced egress controls. It can forward requests containing credentials matched by operator or other non-core patterns, and is not the default recovery for a false positive. A built-in core credential (for example an AWS, GitHub, GitLab or Slack key, or a private key) still blocks on every transport, as do SSRF, fail-closed transport checks, and adaptive escalation; audit does not mean every request is allowed. Preserve the working policy and use a separate output file:
+Audit mode is an explicit rollout choice for an isolated test environment with synthetic data and separately enforced egress controls. It can forward requests containing credentials matched by operator or other non-core patterns, and is not the default recovery for a false positive. A built-in core credential (for example an AWS, GitHub, GitLab or Slack key, or a private key) still blocks on every transport, as do SSRF, fail-closed transport checks, and explicit tool-policy blocks. The audit preset disables adaptive escalation so policy blocks do not turn later warnings into refusals. An operator can enable adaptive escalation explicitly; audit does not mean every request is allowed. Preserve the working policy and use a separate output file:
 
 ```bash
 pipelock generate config --preset audit > pipelock-audit-trial.yaml

@@ -42,9 +42,6 @@ func TestModePresetsKeepRuntimeToolRules(t *testing.T) {
 					if wantAction == "" {
 						wantAction = cfg.MCPToolPolicy.Action
 					}
-					if name == config.ModeAudit {
-						wantAction = config.ActionWarn
-					}
 					if action != wantAction {
 						t.Errorf("rule[%d] %q action = %q, want %q", i, original.Name, action, wantAction)
 					}
@@ -98,10 +95,6 @@ func TestPresetRuntimeDoesNotReduceProtection(t *testing.T) {
 				// Audit observes ordinary MCP findings while safety floors remain active.
 				old.MCPInputScanning.Action = config.ActionWarn
 				old.Taint.Policy = config.ModePermissive
-				old.MCPToolPolicy.Rules = policy.DefaultToolPolicyRules()
-				for i := range old.MCPToolPolicy.Rules {
-					old.MCPToolPolicy.Rules[i].Action = config.ActionWarn
-				}
 			}
 		default:
 			// Named presets previously parsed YAML and applied only the

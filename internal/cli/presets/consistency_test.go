@@ -320,10 +320,9 @@ func TestAuditPresetOrdinaryFindingsWarn(t *testing.T) {
 			if cfg.Enforce == nil || *cfg.Enforce || cfg.MCPInputScanning.Action != config.ActionWarn || cfg.MCPToolScanning.Action != config.ActionWarn || cfg.MCPToolPolicy.Action != config.ActionWarn || cfg.ResponseScanning.Action != config.ActionWarn || cfg.ToolChainDetection.Action != config.ActionWarn || cfg.Taint.Policy != config.ModePermissive {
 				t.Fatal("audit ordinary findings must remain observe-only")
 			}
-			for _, rule := range cfg.MCPToolPolicy.Rules {
-				if rule.Action != "" && rule.Action != config.ActionWarn {
-					t.Errorf("audit rule %q action = %q, want warn", rule.Name, rule.Action)
-				}
+			checkAuditToolPolicyActions(t, cfg)
+			if cfg.AdaptiveEnforcement.Enabled {
+				t.Fatal("audit preset must not escalate ordinary warnings after policy blocks")
 			}
 			if cfg.MCPInputScanning.OnParseError != config.ActionBlock || cfg.WebSocketProxy.AllowBinaryFrames {
 				t.Fatal("audit lost transport safety protections")

@@ -1,5 +1,5 @@
 # Pipelock config — audit preset
-# Logs ordinary findings; core and transport safety protections still block.
+# Logs ordinary findings; explicit tool rules, core, and transport safety still block.
 # Malformed MCP messages are refused (mcp_input_scanning.on_parse_error: block).
 # Binary WebSocket frames are refused (websocket_proxy.allow_binary_frames: false).
 #
@@ -361,28 +361,34 @@ mcp_data_class_labels:
   enabled: false
   unknown_class: secret  # foundation only; no runtime effect until derivation wiring lands
 
+# Ordinary findings warn; explicit built-in safety rules retain their block actions.
 mcp_tool_policy:
   enabled: true
   action: warn
   rules:
     - name: "Destructive File Delete"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
     - name: "Recursive Permission Change"
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b'
     - name: "Credential File Access"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec|read_file|file_read|read_text_file|read_media_file|read_multiple_files|head_file|tail_file|batch_read|create_symlink|create_hardlink|move_file|file_move|rename_file|move-file|copy_file|file_copy)$'
       arg_pattern: '(?i)(\.ssh[\\/]?(?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)|\.aws[\\/]?credentials|\.env\b|\.netrc|/etc/shadow)'
     - name: "Credential File Write"
+      action: block
       tool_pattern: '(?i)^(?:(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:]))?(write_file|file_write|edit_file|edit_block|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked)$'
       arg_pattern: '(?i)((?:^|[\\/])\.ssh[\\/](?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:]))'
       arg_key: '(?i)^(path|file_?path|file|filename|target_?file)$'
     - name: "Credential File Write"
+      action: block
       tool_pattern: '(?i)^(?:(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:]))?(move_file|file_move|rename_file|move-file|copy_file|file_copy)$'
       arg_pattern: '(?i)((?:^|[\\/])\.ssh[\\/](?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:]))'
       arg_key: '(?i)^(destination|destination_?path|dest|new_?path|target|target_?path)$'
     - name: "Credential File Write"
+      action: block
       tool_pattern: '(?i)^(?:(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:]))?(apply_patch)$'
       arg_pattern: '(?i)((?:^|[\\/])\.ssh[\\/](?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:]))'
       arg_key: '(?i)^(path|file_?path|file|filename|target_?file)$'
@@ -391,58 +397,74 @@ mcp_tool_policy:
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(curl|wget)\b.*(-d\s|-F\s|-T\s|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|-X\s+POST)'
     - name: "Reverse Shell"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)'
     - name: "Disk Wipe Command"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b'
     - name: "Package Install"
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\b(pip|npm|gem|cargo|go)\s+install\b'
     - name: "Destructive Git Operation"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$'
       arg_pattern: '(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)'
     - name: "Encoded Command Execution"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)'
     - name: "Cron Job Persistence"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(\bcrontab\s+(-\w+\s+\S+\s+)*-e\b|\bcrontab\s+(-\w+\s+\S+\s+)*[^-\s]|>{1,2}\s*/(?:var/spool/cron|etc/cron)|\|\s*crontab\b)'
     - name: "Systemd Service Persistence"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)\bsystemctl\s+(-{1,2}\w+\s+)*(enable|daemon-reload)\b'
     - name: "Persistence Path Write"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(write_file|file_write|edit_file|edit_block|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
     - name: "Persistence Path Write"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(apply_patch)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)'
       arg_source: patch_targets
     - name: "Protected Path Copy"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(copy_file|file_copy)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       arg_key: '(?i)^destination$'
     - name: "Protected Path Delete"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(delete_file|file_delete)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
     - name: "Protected Path Metadata Change"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(chmod_file|chown_file)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
     - name: "Protected Path Link Creation"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(create_symlink|create_hardlink)$'
       arg_pattern: '(?i)(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/|(?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b|(?:^|[\\/])\.ssh[\\/](?:id_[a-z0-9_-]*(?:$|[^a-z0-9_.-]|\.(?:$|[^p]|p(?:$|[^u]|u(?:$|[^b]|b[\s\S]))))|authorized)|(?:^|[\\/])(?:\.ssh[\\/](?:config|rc)|\.aws[\\/](?:credentials|config)|\.netrc|\.kube[\\/]config|\.docker[\\/]config\.json|etc[\\/]shadow)(?:$|[\\/:]))'
     - name: "Persistence Path Write via Command"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(>{1,2}\s*[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(tee|sed\s+-i)\s+[^;|&]*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/)|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*(/etc/crontab\b|/etc/cron\.(d|daily|hourly|weekly|monthly)/|/var/spool/cron/|/etc/init\.d/|/etc/systemd/|/lib/systemd/|/usr/lib/systemd/|\.config/systemd/user/|/Library/Launch(Daemons|Agents)/))'
 
     - name: "Shell Profile Modification"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(write_file|file_write|edit_file|edit_block|create_file|modify_file|append_file|write_file_binary|find_replace|replace_content|replace_in_file|insert_lines|delete_lines|file_write_chunked|move_file|file_move|rename_file|move-file)$'
       arg_pattern: '(?i)((?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
     - name: "Shell Profile Modification"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(apply_patch)$'
       arg_pattern: '(?i)((?:^|[\\/])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|/etc/profile\b)'
       arg_source: patch_targets
     - name: "Shell Profile Write via Command"
+      action: block
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
       arg_pattern: '(?i)(>{1,2}[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(tee|sed\s+-i)[^;|&]*(?:^|[/\s])\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+(?:\S*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\s*$|\balias\s+\w+=|>{1,2}[^;|&]*/etc/profile\b|\b(tee|sed\s+-i)[^;|&]*/etc/profile\b|\b(cp|mv|install|ln)\b\s+(\S+\s+)+\S*/etc/profile\s*$|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b|\bcp(?:\s+[^\s;|&]+)+?\s+(?:[^\s;|&]*/)?\.(bashrc|bash_profile|profile|zshrc|zprofile|zshenv|bash_logout)\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)+\s+[^\s;|&]*/etc/profile\b|\b(?:ln|link)\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)+|\bcp(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b(?:\s+[^\s;|&]+)*\s+[^\s;|&]*/etc/profile\b|\bcp(?:\s+[^\s;|&]+)+?\s+[^\s;|&]*/etc/profile\b[^\s;|&]*(?:\s+[^\s;|&]+)*?\s+-(?:-(?:symbolic-)?link|(?-i:[A-Za-z]*[sl][A-Za-z]*))\b)'
     - name: "Detached Process Spawning"
@@ -479,9 +501,9 @@ mcp_tool_policy:
 session_profiling:
   enabled: true
 
-# Adaptive enforcement: per-session threat scoring with level-based action upgrades.
+# Adaptive escalation is disabled for audit trials; explicit tool-policy blocks remain.
 adaptive_enforcement:
-  enabled: true
+  enabled: false
   escalation_threshold: 5.0
   decay_per_clean_request: 0.5
   level_duration_seconds: 300
