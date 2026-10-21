@@ -251,11 +251,11 @@ Because the recorder is on by default, two footguns are bounded by the defaults 
 
 ### Completeness anchor (transcript root)
 
-On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. In that mode a run that recorded EvidenceReceipt v2 receipts, for example by blocking a request, reports `VALID PREFIX, END UNPROVEN` and exits 3 even after a clean shutdown, because the v2 chain carries no end marker of its own. Use `--whole-recorder` to prove that a recorder run ended. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
+On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. In that mode a single-chain run that recorded EvidenceReceipt v2 receipts, which can come from allowed or blocked requests, reports `VALID PREFIX, END UNPROVEN` and exits 3 even after a clean shutdown, because the v2 chain carries no end marker of its own. Use `--whole-recorder` to prove that a recorder run ended. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
 
 Scope and limits:
 
-- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). Directory-wide verification lists every unsealed run under `INCOMPLETE RUNS` without failing solely for a missing seal; `--require-seal` makes that condition fail. Selecting a run with `--session` or checking a single file with `--whole-recorder` fails on a missing seal. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
+- **Clean exit only.** The root is written during graceful shutdown, after in-flight receipt emits have drained (drain-then-seal). With `--whole-recorder`, an unsealed run is reported as `INCOMPLETE` and `VALID PREFIX, END UNPROVEN` with exit 3, whether you verify the directory, select a run with `--session`, or check a single file; directory and `--session` output also lists it under `INCOMPLETE RUNS`. `--allow-prefix` changes that exit to 0, and `--require-seal` makes a missing seal invalid evidence (exit 1) even with `--allow-prefix`. An unsealed run can be live or have ended unexpectedly. The root cannot prove that a trailing checkpoint written after the root is present.
 - **A restart starts a new chain.** A transcript root seals one process run. The next start records a new run chain beside it (see [One chain per process run](#one-chain-per-process-run)), so a prior clean shutdown never blocks receipts.
 - **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query and dashboard paths. Display reads stay bounded and report truncation. Native verification, group lifecycle operations and anchoring read complete session history through separate authoritative readers. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
@@ -442,10 +442,13 @@ that has not ended in a signed `session_close` exits 3 with
 `VALID PREFIX, END UNPROVEN`. Against a recorder that is still running, the
 command can also fail with exit 1 if a shard or link changes during verification;
 use `pipelock evidence doctor DIR` for a live check, or verify a copy. A clean
-stop writes that `session_close`, and the same command can then exit 0.
-That proves the receipt chain ended. It does not prove the recorder entries
-around it. Add `--whole-recorder`, and keep `--key` and every
-`--rotation-endorsement` flag, to check the `transcript_root` seal.
+stop writes that `session_close`. If the run recorded no EvidenceReceipt v2
+receipts, the same command can then exit 0, which proves the receipt chain
+ended but not the recorder entries around it. A single-chain run that recorded v2 receipts,
+which can come from allowed or blocked requests, still exits 3 with
+`VALID PREFIX, END UNPROVEN` after a clean stop. Add `--whole-recorder`, and
+keep `--key` and every `--rotation-endorsement` flag, to check the
+`transcript_root` seal.
 
 For a later rotation, pin the same original root and pass each earlier
 `--rotation-endorsement` to both the endorsement command and the verifier. This

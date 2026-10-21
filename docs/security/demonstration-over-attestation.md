@@ -18,16 +18,39 @@ re-run the shipped verifier against signed artifacts with a pinned public key.
 
 ## Customer-Path Demo
 
-Generate or collect a receipt chain, then verify it offline:
+Collect the evidence directory from a current single-chain Pipelock recorder,
+then verify it offline. Replace the paths with your evidence directory and the
+recorder signer's trusted public-key file, obtained independently of the evidence:
 
 ```bash
 pipelock verify-receipt \
-  --chain /path/to/receipts.jsonl \
-  --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
+  --chain /path/to/evidence-dir --whole-recorder \
+  --key /path/to/recorder-signing.pub
 ```
 
-What this does: verifies the receipt chain without contacting Pipelock,
-Conductor, or a hosted service.
+This checks the v1 and v2 receipt chains present, every recorder entry, and each
+selected run's transcript-root seal without contacting Pipelock, Conductor, or a
+hosted service. Exit 0 means those single-chain runs' ends are proven. Exit 3
+(`VALID PREFIX, END UNPROVEN`) means the signatures and links check out but an end
+is unproven, as with an unsealed running recorder or a legacy shared-session chain.
+
+For a multi-chain run, verify its complete receipt group explicitly:
+
+```bash
+pipelock verify-receipt \
+  --chain /path/to/evidence-dir --group <group-id> \
+  --key /path/to/recorder-signing.pub
+```
+
+Use the run's group ID from its signed group manifest. `GROUP_VALID` (exit 0)
+proves the selected group's signed close and shard commitments; an incomplete or
+invalid group exits nonzero. This group command does not take `--whole-recorder`.
+Directory verification also discovers and checks receipt groups automatically;
+see [multi-chain receipts](../guides/receipt-verification.md#receipt-groups-with-multiple-chains).
+
+To check a receipt file instead, pass its filename without `--chain`; see
+[receipt verification](../guides/receipt-verification.md) for the file's scope
+and endpoint options.
 
 For a fleet report:
 

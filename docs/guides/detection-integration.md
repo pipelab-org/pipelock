@@ -179,8 +179,7 @@ The harness produces three artifacts worth looking at:
 3. **`signing.key.pub` hex output**: the public key printed to
    stdout, the only thing a third party needs to verify the stream.
 
-The harness verifies the stream inline with Python. For an
-independent check, install the reference verifier:
+The harness verifies the stream inline with Python. For an independent v1-only integrity check, install the Python verifier below. This check doesn't prove that the recording is complete; the detector example uses the Go verifier for that.
 
 Choose the run chain being checked, for example the first JSONL file in the example's evidence directory. This checks that one shard, which is the whole run for this short example. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>` (see [One chain per process run](flight-recorder.md#one-chain-per-process-run)):
 
@@ -196,28 +195,49 @@ python -m pipelock_verify "$EVIDENCE_FILE" --key <public-key-hex>
 Or use the Go CLI that ships with Pipelock:
 
 ```bash
-pipelock verify-receipt "$EVIDENCE_FILE" --key <public-key-hex>
+pipelock verify-receipt "$EVIDENCE_FILE" --whole-recorder --key <public-key-hex>
 ```
 
-Both exit 0 on success, 1 on any signature failure, chain break, or
-reordering. The verifiers are byte-for-byte equivalent.
+`pipelock-verify` checks only ActionReceipt v1 integrity. It exits 1 on a signature failure, chain break, or reordering in that chain, and exits 0 when that chain verifies. It doesn't prove that the recording is complete.
+
+`pipelock verify-receipt` also checks the recorder hash chain and the EvidenceReceipt v2 chain. Handle its exit 3 (valid prefix, end unproven) separately from exit 1 (invalid evidence). The Python and Go commands aren't interchangeable completeness checks. The Go command above uses `--whole-recorder`.
+For an intact single-file run in the per-run session format, with trusted keys,
+its outcomes are:
+
+| Flags | Recorder state | Result | Exit |
+|-------|----------------|--------|------|
+| `--whole-recorder` | Valid transcript-root seal and signed trailing checkpoint | End proven | 0 |
+| `--whole-recorder` | Missing seal (live or interrupted run) | `INCOMPLETE`, then `VALID PREFIX, END UNPROVEN` | 3 |
+| `--whole-recorder --allow-prefix` | Missing seal | Prefix accepted; end still unproven | 0 |
+| `--whole-recorder --require-seal` | Missing seal | Invalid evidence, even with `--allow-prefix` | 1 |
+
+Keep `--allow-prefix` off when a detector requires a completed recording.
+Older shared-session recordings remain end-unproven even with a seal. Removing
+`--whole-recorder` checks the receipt subsequences instead of every recorder entry;
+a run with v2 receipts remains `VALID PREFIX, END UNPROVEN` (exit 3) even after a
+clean stop. See the [seal limitations](flight-recorder.md#completeness-anchor-transcript-root)
+for the full recorder verification contract.
 
 ### Consuming receipts in a detector
 
 Once the stream verifies, a downstream detector reads it like any
 JSONL source. This is a complete working example:
 
+This small-file example holds one recording in memory and verifies a private temporary copy of those bytes. It parses the captured bytes, so later changes to the source file don't change what the detector consumes.
+
 ```python
 """Verify a pipelock receipt stream, then route each verified receipt
 to a pluggable handler for whatever downstream detector runs on.
 
-Requires: pip install pipelock-verify
+Requires: the Pipelock Go CLI on PATH
 Run: python verify_and_route.py evidence.jsonl <public-key-hex>
 """
 
 import json
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Callable, Iterator
 
 
@@ -228,25 +248,32 @@ def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
     event types). We filter for type == "action_receipt" and carry the
     outer envelope's session_id into the yielded record, since it is
     the primary grouping key detectors use."""
-    check = subprocess.run(
-        ["pipelock-verify", path, "--key", pubkey_hex],
-        capture_output=True,
-        text=True,
-    )
+    # Keep the bytes being verified, even if the source file changes later.
+    contents = Path(path).read_bytes()
+    with tempfile.TemporaryDirectory() as directory:
+        snapshot = Path(directory) / Path(path).name
+        snapshot.write_bytes(contents)
+        check = subprocess.run(
+            [
+                "pipelock", "verify-receipt", str(snapshot),
+                "--whole-recorder", "--require-seal", "--key", pubkey_hex,
+            ],
+            capture_output=True,
+            text=True,
+        )
     if check.returncode != 0:
         raise RuntimeError(
             f"verification failed: {check.stderr.strip() or check.stdout.strip()}"
         )
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            entry = json.loads(line)
-            if entry.get("type") != "action_receipt":
-                continue
-            record = entry["detail"]["action_record"]
-            record.setdefault("session_id", entry.get("session_id"))
-            yield record
+    for line in contents.splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if entry.get("type") != "action_receipt":
+            continue
+        record = entry["detail"]["action_record"]
+        record.setdefault("session_id", entry.get("session_id"))
+        yield record
 
 
 def default_handler(receipt: dict) -> None:

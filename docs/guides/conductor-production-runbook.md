@@ -596,12 +596,14 @@ the kill/resume state.
 ## 9. Roll back a bad bundle
 
 `pipelock conductor rollback` authorizes a signed revert to a prior bundle
-version:
+version for the policy stream selected by the current and target bundle pair.
+Other policy streams in the same organization and fleet remain unchanged.
+Per-instance and per-label rollback within that stream are not supported.
 
 ```bash
 pipelock conductor rollback \
   --conductor-url https://conductor.pipelock-control.svc.cluster.local:8895 \
-  --org org-acme --fleet prod --instance '*' \
+  --org org-acme --fleet prod \
   --current-bundle-id bundle-v2 --current-version 2 \
   --target-bundle-id bundle-v1 --target-version 1 \
   --signing-key /etc/pipelock/fleet-keys/rollback-approver-1.json \
@@ -932,7 +934,11 @@ pipelock verify-receipt --chain /var/lib/pipelock/recorder/evidence \
 
 Without `--key`, verification is **structural-only** and exits non-zero unless
 you pass `--allow-unpinned` — pin the trusted signer key to get a meaningful
-`CHAIN VALID`. See [receipt verification](receipt-verification.md).
+`CHAIN VALID`. A cleanly stopped single-chain run that recorded EvidenceReceipt
+v2 receipts reports `VALID PREFIX, END UNPROVEN` and exits 3 in this mode; add
+`--whole-recorder` to prove each run's end from its transcript root. A closed
+multi-chain receipt group is checked as a group and exits 0 with `GROUP_VALID`. See
+[receipt verification](receipt-verification.md).
 
 ## 17. Rotate certs and keys
 

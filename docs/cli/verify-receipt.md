@@ -28,6 +28,8 @@ Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`)
 
 For chains, exit 0 means integrity verified and the endpoint proven for the declared scope. Exit 1 means invalid evidence; exit 2 means usage or configuration failure; exit 3 means `VALID PREFIX, END UNPROVEN`. `--allow-prefix` changes only the last exit to 0. Single receipts and fleet reports keep their existing exit contracts. Report-write failures remain errors. A script that treats any non-zero exit as failure now stops on an unproven end; add a pin or `--allow-prefix` where an open chain is expected, such as a recorder that's still running.
 
+Group verification refuses a native evidence run stream above 256 MiB, and the writer doesn't stop before that ceiling, so restart a multi-chain proxy before a run reaches it. See [receipt groups with multiple chains](../guides/receipt-verification.md#receipt-groups-with-multiple-chains). The published PyPI package `pipelock-verify` 0.4.1 doesn't verify groups or end proof.
+
 Clean-report readers must dispatch by `schema_version` and reject unknown versions.
 Validate historical `pipelock.clean_report.v1` reports with the unchanged
 [v1 schema](../evidence/clean-report-v1.schema.json), which has no endpoint status.
