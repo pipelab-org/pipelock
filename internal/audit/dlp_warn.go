@@ -98,6 +98,13 @@ func (l *Logger) logDLPAllowanceWithCookie(ctx LogContext, event EventType, patt
 func (l *Logger) logDLPInformational(ctx LogContext, patternName, severity, surface, mode, reason string) {
 	technique := TechniqueForScanner(ScannerDLP)
 	loggedURL, loggedTarget, loggedResource := redactedContentFields(ctx, ScannerDLP)
+	guidanceScanner := scannerpkg.ScannerDLP
+	switch surface {
+	case "header":
+		guidanceScanner = scannerpkg.AuditHeaderDLP
+	case "body":
+		guidanceScanner = scannerpkg.ScannerBodyDLP
+	}
 
 	e := newLogEntry(l.zl.Warn(), EventDLPWarn).
 		str("mode", mode).
@@ -105,7 +112,7 @@ func (l *Logger) logDLPInformational(ctx LogContext, patternName, severity, surf
 		str("severity", severity).
 		str("transport", surface).
 		str("reason", reason).
-		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(scannerpkg.ScannerDLP, []string{patternName})).
+		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(guidanceScanner, []string{patternName})).
 		str("mitre_technique", technique).
 		str("method", ctx.Method()).
 		optStr("url", loggedURL).

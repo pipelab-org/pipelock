@@ -175,6 +175,60 @@ func TestLogDLPDropped_EmitsInformationalReason(t *testing.T) {
 	}
 }
 
+func TestLogDLPInformational_SurfaceRemediation(t *testing.T) {
+	for _, mode := range []string{"warn", "suppressed"} {
+		for _, tc := range []struct {
+			surface string
+			want    string
+		}{
+			{"header", "false-positive header finding"},
+			{"body", "Request body DLP matched"},
+			{"fetch", "exempt_domains"},
+			{"mcp_stdio", "exempt_domains"},
+			{"unknown", "exempt_domains"},
+		} {
+			t.Run(mode+"/"+tc.surface, func(t *testing.T) {
+				var buf bytes.Buffer
+				logger, err := New("json", "custom", "", true, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				logger.zl = logger.zl.Output(&buf)
+				sink := &collectingSink{}
+				emitter := emit.NewEmitter("test-dlp-surface-hint", sink)
+				logger.SetEmitter(emitter)
+				t.Cleanup(func() { _ = emitter.Close() })
+				ctx, err := NewHTTPLogContext("POST", "https://api.vendor.example/path", "192.0.2.1", "req-hint", "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "warn" {
+					logger.LogDLPWarn(ctx, "test-pattern", "high", tc.surface)
+				} else {
+					logger.LogDLPDropped(ctx, "test-pattern", "high", tc.surface, mode)
+				}
+				var entry map[string]any
+				if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &entry); err != nil {
+					t.Fatal(err)
+				}
+				hint, ok := entry["remediation_hint"].(string)
+				if !ok || !strings.Contains(hint, tc.want) {
+					t.Fatalf("remediation_hint = %q, want %q", hint, tc.want)
+				}
+				if entry["transport"] != tc.surface || entry["reason"] != mode {
+					t.Fatalf("surface/reason changed: %#v", entry)
+				}
+				_ = emitter.Close()
+				sink.mu.Lock()
+				defer sink.mu.Unlock()
+				if len(sink.events) != 1 || sink.events[0].Fields["remediation_hint"] != hint {
+					t.Fatalf("emitter disagrees with audit hint: %#v", sink.events)
+				}
+			})
+		}
+	}
+}
+
 func TestLogDLPWarn_EmitterReceivesEvent(t *testing.T) {
 	var buf bytes.Buffer
 	logger, err := New("json", "custom", "", true, true)
