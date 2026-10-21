@@ -1152,8 +1152,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Dial upstream via SSRF-safe dialer.
 	// Frames are not recorded token by token. Preserve uncertainty for this
-	// session and every recipient of this host before sending the handshake.
-	// Requests refused by the admission checks above cannot taint the host.
+	// trusted caller before sending the handshake. Requests refused by the
+	// admission checks above cannot taint even that caller's evidence.
 	p.taintIssuerSessionForStream(cfg, agent, clientIP, id.Auth, parsed)
 	upstreamConn, dialErr := p.wsDialUpstream(r.Context(), targetURL, fwdHeaders, cfg)
 	if dialErr != nil {
