@@ -6,6 +6,7 @@ package posture
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -70,6 +71,31 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 				t.Fatalf("canonical JSON mismatch:\n got: %s\nwant: %s", got, expectedJSON)
 			}
 		})
+	}
+}
+
+func TestDiscoverSignedPayloadBytesRemainVersionOne(t *testing.T) {
+	capsule := Capsule{
+		SchemaVersion: "1",
+		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
+		ExpiresAt:     time.Date(2026, time.May, 11, 17, 45, 0, 0, time.UTC),
+		ToolVersion:   "0.0.0-dev.unknown",
+		ConfigHash:    "abc123",
+		Evidence: EvidenceBundle{Discover: DiscoverEvidence{
+			TotalClients: 1, TotalServers: 2, ProtectedPipelock: 1, Unprotected: 1,
+		}},
+	}
+	payload, err := capsule.signableJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte("sops_exec_env")) {
+		t.Fatalf("signed payload added discover-only SOPS count: %s", payload)
+	}
+	sum := sha256.Sum256(payload)
+	const want = "3a7a5b12c389f6c63de2186638b6bd6955cf27d8775738db6e4181fee6fab8ca"
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("signed payload changed: SHA-256 %s, want %s", got, want)
 	}
 }
 

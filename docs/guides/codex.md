@@ -53,6 +53,8 @@ pipelock assess finalize assessment-*/
 
 `pipelock codex install` discovers Codex's MCP server entries in `~/.codex/config.toml`, rewrites each one to launch through `pipelock mcp proxy`, and is idempotent — re-running it on an already-installed setup is a no-op. Add or remove an MCP server via `codex mcp add/remove` as usual, then re-run `pipelock codex install` to wrap any new entries.
 
+Run `pipelock discover` to inventory the MCP entries in that TOML file and see which configured commands are wrapped. With `--home`, it reads `.codex/config.toml` under the selected home directory.
+
 The installer validates and embeds an absolute Pipelock config path when you pass
 `--config`, or when a secure config is discovered through `PIPELOCK_CONFIG`,
 `$XDG_CONFIG_HOME/pipelock/pipelock.yaml`, `~/.config/pipelock/pipelock.yaml`,

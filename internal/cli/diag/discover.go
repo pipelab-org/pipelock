@@ -26,7 +26,7 @@ func DiscoverCmd() *cobra.Command {
 		Use:   "discover",
 		Short: "Scan for AI agent configs and report MCP server protection status",
 		Long: `Scan the local machine for AI agent client configurations (Claude Code,
-Claude Desktop, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
+Claude Desktop, Codex, Grok, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
 stable, Zed Preview, Flatpak Zed stable, Flatpak Zed Preview) and report
 which MCP servers are configured, their protection status, and risk level.
 
@@ -96,7 +96,20 @@ Examples:
 func printDiscoverJSON(cmd *cobra.Command, report *discover.Report) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(discover.RedactReportForOutput(report)); err != nil {
+	safeReport := discover.RedactReportForOutput(report)
+	// The SOPS subset is an operator-facing discover detail. Keep it out of
+	// shared Summary JSON, which assess embeds and posture signs separately.
+	output := struct {
+		Clients []discover.ClientConfig `json:"clients"`
+		Servers []discover.MCPServer    `json:"servers"`
+		Summary struct {
+			discover.Summary
+			SOPSExecEnv int `json:"sops_exec_env"`
+		} `json:"summary"`
+	}{Clients: safeReport.Clients, Servers: safeReport.Servers}
+	output.Summary.Summary = safeReport.Summary
+	output.Summary.SOPSExecEnv = safeReport.Summary.SOPSExecEnv
+	if err := enc.Encode(output); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("encoding JSON: %w", err))
 	}
 
@@ -147,6 +160,7 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 	_, _ = fmt.Fprintf(w, "  Protected (pipelock):  %d\n", safeReport.Summary.ProtectedPipelock)
 	_, _ = fmt.Fprintf(w, "  Protected (other):     %d\n", safeReport.Summary.ProtectedOther)
 	_, _ = fmt.Fprintf(w, "  Unprotected:           %d\n", safeReport.Summary.Unprotected)
+	_, _ = fmt.Fprintf(w, "    via sops exec-env:   %d\n", safeReport.Summary.SOPSExecEnv)
 	_, _ = fmt.Fprintf(w, "  Unknown:               %d\n", safeReport.Summary.Unknown)
 	_, _ = fmt.Fprintln(w)
 

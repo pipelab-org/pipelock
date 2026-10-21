@@ -36,6 +36,101 @@ func TestDiscoverCmd_JSONEmptyHome(t *testing.T) {
 	}
 }
 
+func TestDiscoverCmd_SOPSSubsetInHumanAndJSON(t *testing.T) {
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".codex"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "[mcp_servers.nested]\ncommand = 'sops'\nargs = ['exec-env', 'secrets.yaml', 'exec /opt/pipelock mcp proxy']\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "human", args: []string{"--home", home}},
+		{name: "JSON", args: []string{"--json", "--home", home}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			cmd := DiscoverCmd()
+			cmd.SetOut(&output)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			cmd.SetArgs(tc.args)
+			var exitErr *cliutil.ExitError
+			if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+				t.Fatalf("Execute() error = %v, want exit 1", err)
+			}
+			if tc.name == "human" {
+				if !strings.Contains(output.String(), "Unprotected:           1") || !strings.Contains(output.String(), "via sops exec-env:   1") {
+					t.Fatalf("human summary = %s", output.String())
+				}
+				return
+			}
+			var report discover.Report
+			if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			var raw struct {
+				Summary struct {
+					SOPSExecEnv int `json:"sops_exec_env"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.Unprotected != 1 || raw.Summary.SOPSExecEnv != 1 {
+				t.Fatalf("JSON summary = %+v", report.Summary)
+			}
+		})
+	}
+}
+
+func TestDiscoverCmd_TOMLRedactsSecrets(t *testing.T) {
+	home := t.TempDir()
+	for _, tc := range []struct {
+		dir     string
+		content string
+	}{
+		{dir: ".codex", content: "[mcp_servers.local]\ncommand = 'npx'\nenv = { API_TOKEN = 'secret-env-value' }\n"},
+		{dir: ".grok", content: "[mcp_servers.remote]\nurl = 'https://api.vendor.example/mcp?" + "token=secret-url-value'\nheaders = { Authorization = 'secret-header-value' }\n"},
+	} {
+		dir := filepath.Join(home, tc.dir)
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tc.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	cmd := DiscoverCmd()
+	cmd.SetOut(&output)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--json", "--home", home})
+	var exitErr *cliutil.ExitError
+	if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("Execute() error = %v, want exit 1", err)
+	}
+	for _, secret := range []string{"secret-env-value", "secret-url-value", "secret-header-value"} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("JSON output leaked %q: %s", secret, output.String())
+		}
+	}
+	var report discover.Report
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TotalServers != 2 || report.Summary.Unprotected != 2 {
+		t.Fatalf("summary = %+v", report.Summary)
+	}
+}
+
 func TestDiscoverCmd_JSONWithServers(t *testing.T) {
 	home := t.TempDir()
 

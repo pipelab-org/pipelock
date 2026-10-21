@@ -65,7 +65,7 @@ const (
 // inspectSOPSLauncher classifies a sops exec-env invocation. It never runs
 // sops or the command, and never decrypts anything.
 func inspectSOPSLauncher(command string, args []string) (sopsOutcome, string) {
-	if filepath.Base(command) != sopsCommandName || len(args) == 0 || args[0] != sopsExecEnv {
+	if !isSOPSExecEnv(command, args) {
 		return sopsNotLauncher, ""
 	}
 	var script string
@@ -97,6 +97,10 @@ func inspectSOPSLauncher(command string, args []string) (sopsOutcome, string) {
 	default:
 		return sopsRejected, evidenceSOPSInnerUncheck
 	}
+}
+
+func isSOPSExecEnv(command string, args []string) bool {
+	return filepath.Base(command) == sopsCommandName && len(args) > 0 && args[0] == sopsExecEnv
 }
 
 // isSOPSOperand reports whether a sops argument is a file operand rather than

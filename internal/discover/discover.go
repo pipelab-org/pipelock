@@ -47,6 +47,8 @@ const (
 // MCP client name constants.
 const (
 	clientClaudeCode        = "claude-code"
+	clientCodex             = "codex"
+	clientGrok              = "grok"
 	clientClaudeDesktop     = "claude-desktop"
 	clientCursor            = "cursor"
 	clientJunie             = "junie"
@@ -141,6 +143,7 @@ type Summary struct {
 	Unknown           int `json:"unknown"`
 	HighRisk          int `json:"high_risk"`
 	ParseErrors       int `json:"parse_errors"`
+	SOPSExecEnv       int `json:"-"` // only the discover CLI emits this sub-count
 }
 
 // clientPath maps a client tool to its config file location.
@@ -270,6 +273,8 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 		// Claude Code has nested per-project servers
 		if cp.Client == clientClaudeCode {
 			parsed, err = parseClaudeCodeConfig(cp.Path)
+		} else if cp.Client == clientCodex || cp.Client == clientGrok {
+			parsed, err = parseTOMLConfig(cp.Path, cp.Client)
 		} else if cp.Client == "continue" && (filepath.Ext(cp.Path) == ".yaml" || filepath.Ext(cp.Path) == ".yml") {
 			parsed, err = parseContinueYAMLConfig(cp.Path)
 		} else {
@@ -412,6 +417,9 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 			s.ProtectedOther++
 		case Unprotected:
 			s.Unprotected++
+			if isSOPSExecEnv(srv.Command, srv.Args) {
+				s.SOPSExecEnv++
+			}
 		case Unknown:
 			s.Unknown++
 		}
@@ -465,6 +473,10 @@ func configPathsForOS(home, goos string) []clientPath {
 			Scope:  scopeUser,
 		},
 		claudeLegacyPath(filepath.Join(home, ".claude")),
+		// OpenAI Codex config reference: https://developers.openai.com/codex/config-reference
+		{Client: clientCodex, Path: filepath.Join(home, ".codex", "config.toml"), Key: "mcp_servers", Scope: scopeUser},
+		// xAI MCP servers guide: https://docs.x.ai/build/features/mcp-servers
+		{Client: clientGrok, Path: filepath.Join(home, ".grok", "config.toml"), Key: "mcp_servers", Scope: scopeUser},
 		{
 			Client: clientClaudeDesktop,
 			Path:   filepath.Join(appData, "Claude", "claude_desktop_config.json"),
