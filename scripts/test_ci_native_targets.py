@@ -28,6 +28,13 @@ NATIVE_TARGETS = {
     "test-linux-arm64": ("ubuntu-26.04-arm", "ARM64", "linux/arm64", "bash"),
 }
 
+# Existing native-job prerequisites in .github/workflows/ci.yaml. Keep the
+# immutable action revisions aligned when updating those dependencies.
+NATIVE_SETUP_ACTIONS = [
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e",
+]
+
 
 def workflow_model() -> dict:
     """Load the full workflow, including inherited environment."""
@@ -131,8 +138,11 @@ def native_target_errors(workflow: dict) -> list[str]:
             continue
         # Preserve the existing workflow order: checkout/setup actions, then
         # native proof before run commands can write GITHUB_ENV or go env -w.
-        if any("run" in step for step in steps[:steps.index(proof_steps[0])]):
+        setup_steps = steps[:steps.index(proof_steps[0])]
+        if any("run" in step for step in setup_steps):
             errors.append(f"{job_name} runs commands before its native proof")
+        if [step.get("uses") for step in setup_steps] != NATIVE_SETUP_ACTIONS:
+            errors.append(f"{job_name} changes native proof setup actions")
         if any(key in proof_steps[0] for key in ("if", "continue-on-error", "env")):
             errors.append(f"{job_name} does not require unmodified architecture proof")
         effective_shell = proof_steps[0].get("shell", missing)
@@ -268,6 +278,33 @@ class NativeTargetWorkflowTest(unittest.TestCase):
                         f"{scope} overrides or obscures native proof environment",
                         native_target_errors(broken),
                     )
+
+    def test_native_setup_action_changes_fail_the_contract(self):
+        """Preserve the pinned setup sequence before every native proof."""
+        for job_name in NATIVE_TARGETS:
+            for mutation in ("extra", "reordered", "missing", "changed", "duplicate"):
+                with self.subTest(job=job_name, mutation=mutation):
+                    workflow = copy.deepcopy(self.workflow)
+                    steps = workflow["jobs"][job_name]["steps"]
+                    if mutation == "extra":
+                        steps.insert(2, {"uses": "./.github/actions/target-override"})
+                    elif mutation == "reordered":
+                        steps[0], steps[1] = steps[1], steps[0]
+                    elif mutation == "missing":
+                        steps.pop(1)
+                    elif mutation == "changed":
+                        steps[1]["uses"] = "actions/setup-go@main"
+                    else:
+                        steps.insert(2, copy.deepcopy(steps[1]))
+                    self.assertIn(
+                        f"{job_name} changes native proof setup actions",
+                        native_target_errors(workflow),
+                    )
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"][job_name]["steps"].append(
+                {"uses": "./.github/actions/after-proof"}
+            )
+            self.assertEqual(native_target_errors(workflow), [])
 
     def test_commands_before_native_proof_fail_the_contract(self):
         """Keep target-mutating commands behind the native proof in every lane."""
