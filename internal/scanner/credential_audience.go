@@ -667,7 +667,7 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 		return CredentialAudienceMismatch{}, false
 	}
 	host, ok := canonicalCredentialAudienceDestination(target)
-	if !ok || destination.MatchesDomainList(host, pattern.credentialAudienceHosts) {
+	if !ok || !credentialAudienceHostMismatch(host, pattern.credentialAudienceHosts, pattern.credentialAudienceGitHosts, pattern.credentialAudienceRegistryHosts) {
 		return CredentialAudienceMismatch{}, false
 	}
 	return CredentialAudienceMismatch{
@@ -676,6 +676,15 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 		Destination: host,
 		Hosts:       append([]string(nil), pattern.credentialAudienceHosts...),
 	}, true
+}
+
+// credentialAudienceHostMismatch distinguishes an unrelated destination from a
+// rejected carrier at any declared audience host. It does not grant an allow.
+func credentialAudienceHostMismatch(host string, hosts, gitHosts, registryHosts []string) bool {
+	return len(hosts) != 0 &&
+		!destination.MatchesDomainList(host, hosts) &&
+		!destination.MatchesDomainList(host, gitHosts) &&
+		!destination.MatchesDomainList(host, registryHosts)
 }
 
 // TextDLPCredentialAudienceMismatches explains surviving text findings using
@@ -692,13 +701,7 @@ func TextDLPCredentialAudienceMismatches(matches []TextDLPMatch, target, surface
 	var mismatches []CredentialAudienceMismatch
 	seen := make(map[string]bool)
 	for _, match := range matches {
-		if len(match.credentialAudienceHosts) == 0 || destination.MatchesDomainList(host, match.credentialAudienceHosts) || seen[match.PatternName] {
-			continue
-		}
-		// A git or registry host is also part of the declared audience. A
-		// finding that survives there failed a carrier rule, not host
-		// ownership, so naming a host mismatch would misdirect the operator.
-		if destination.MatchesDomainList(host, match.credentialAudienceGitHosts) || destination.MatchesDomainList(host, match.credentialAudienceRegistryHosts) {
+		if seen[match.PatternName] || !credentialAudienceHostMismatch(host, match.credentialAudienceHosts, match.credentialAudienceGitHosts, match.credentialAudienceRegistryHosts) {
 			continue
 		}
 		seen[match.PatternName] = true

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -72,5 +73,68 @@ func TestTextDLPCredentialAudienceMismatchesSkipsGitAndRegistryHosts(t *testing.
 	}
 	if got := TextDLPCredentialAudienceMismatches(matches, "https://other.vendor.example/x", "header"); len(got) != 1 {
 		t.Fatalf("unrelated host mismatches = %+v, want 1", got)
+	}
+}
+
+func TestCredentialAudienceMismatchURLTextParity(t *testing.T) {
+	pattern := &compiledPattern{
+		name:                            "Provider Key",
+		credentialAudienceHosts:         []string{"api.provider.example", "*.service.example"},
+		credentialAudienceGitHosts:      []string{"git.provider.example"},
+		credentialAudienceRegistryHosts: []string{"registry.provider.example"},
+	}
+	match := TextDLPMatch{
+		PatternName:                     pattern.name,
+		credentialAudienceHosts:         pattern.credentialAudienceHosts,
+		credentialAudienceGitHosts:      pattern.credentialAudienceGitHosts,
+		credentialAudienceRegistryHosts: pattern.credentialAudienceRegistryHosts,
+	}
+	for _, tc := range []struct {
+		name, target string
+		want         bool
+	}{
+		{"unrelated", "https://other.vendor.example/private?hidden=value", true},
+		{"canonical unrelated", "https://OTHER.vendor.example.:443/v1", true},
+		{"audience", "https://api.provider.example/v1", false},
+		{"wildcard audience", "https://api.service.example/v1", false},
+		{"git carrier rejection", "https://git.provider.example/v1", false},
+		{"registry carrier rejection", "https://registry.provider.example/v1", false},
+		{"other port at audience", "https://api.provider.example:8443/v1", false},
+		{"websocket unrelated", "wss://other.vendor.example/v1", true},
+		{"cleartext", "http://other.vendor.example/v1", false},
+		{"empty", "", false},
+		{"malformed", "https://%/", false},
+		{"relative", "/v1", false},
+		{"userinfo", "https://user@other.vendor.example/v1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			urlMismatch, ok := (&Scanner{}).credentialAudienceMismatch(pattern, tc.target, "body")
+			textMismatches := TextDLPCredentialAudienceMismatches([]TextDLPMatch{match}, tc.target, "body")
+			if ok != tc.want || (len(textMismatches) == 1) != tc.want {
+				t.Fatalf("URL mismatch = %+v (%v), text mismatches = %+v, want %v", urlMismatch, ok, textMismatches, tc.want)
+			}
+			if ok && !reflect.DeepEqual(urlMismatch, textMismatches[0]) {
+				t.Fatalf("URL/text diagnostic drift: %+v != %+v", urlMismatch, textMismatches[0])
+			}
+		})
+	}
+	pattern.core = true
+	if _, ok := (&Scanner{}).credentialAudienceMismatch(pattern, "https://other.vendor.example/v1", "url"); ok {
+		t.Fatal("URL diagnostic must retain its core-pattern exclusion")
+	}
+	if got := TextDLPCredentialAudienceMismatches([]TextDLPMatch{match}, "https://other.vendor.example/v1", "body"); len(got) != 1 {
+		t.Fatalf("text diagnostic lost surviving audience metadata: %+v", got)
+	}
+	pattern.core = false
+	pattern.credentialAudienceHosts = nil
+	match.credentialAudienceHosts = nil
+	if _, ok := (&Scanner{}).credentialAudienceMismatch(pattern, "https://other.vendor.example/v1", "url"); ok {
+		t.Fatal("URL diagnostic invented an audience")
+	}
+	if got := TextDLPCredentialAudienceMismatches([]TextDLPMatch{match}, "https://other.vendor.example/v1", "body"); len(got) != 0 {
+		t.Fatalf("text diagnostic invented an audience: %+v", got)
+	}
+	if _, ok := (&Scanner{}).credentialAudienceMismatch(nil, "https://other.vendor.example/v1", "url"); ok {
+		t.Fatal("nil pattern produced a diagnostic")
 	}
 }

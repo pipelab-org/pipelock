@@ -110,7 +110,7 @@ suppress:
     reason: Operator-approved token route
 ```
 
-This applies to that rule in request bodies and scanned headers at the route. It is route-wide: the matching credential shape is suppressed in any body field or scanned header, not just a `refresh_token` field. Other DLP rules and core protections still apply. URL DLP does not consult `suppress`, so putting the credential in the URL query still blocks.
+This applies to that rule in request bodies and scanned headers at the route for forwarded, TLS-intercepted and reverse-proxy requests. It cannot suppress a CONNECT outer-header finding: that scan uses the tunnel authority URL, which has no inner request path. It is route-wide: the matching credential shape is suppressed in any body field or scanned header, not just a `refresh_token` field. Other DLP rules and core protections still apply. URL DLP does not consult `suppress`, so putting the credential in the URL query still blocks.
 
 The exact entry does not cover another route, a query-bearing target, a lookalike host or port 8443. Explicit port 443 and an omitted HTTPS port are equivalent. A trailing slash makes the entry a prefix, and a glob broadens it; keep the complete exact URL when that is the intended scope. Test the normal request and these negative cases before applying the entry. Keep its reason and remove it when it is no longer needed.
 
