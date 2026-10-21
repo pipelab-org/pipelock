@@ -117,3 +117,50 @@ func TestInterceptServerIssuedDirectoryID(t *testing.T) {
 		})
 	}
 }
+
+func TestInterceptServerIssuedIDSharedClientAddress(t *testing.T) {
+	h := newWebPlatformHarness(t)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/submit" {
+			if got := r.Header.Get("X-Criteria"); got != agentBlob {
+				t.Errorf("submitted value = %q, want %q", got, agentBlob)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/listing" {
+			_, _ = io.WriteString(w, `{"value":[{"id":"`+serverIDListed+`"},{"id":"`+agentBlob+`"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"value":[]}`)
+	}))
+	t.Cleanup(upstream.Close)
+	// Each call opens a new tunnel; the helper gives both callers the same
+	// client address. Their self-declared names do not isolate issuer state.
+	do := func(path, agent, criteria string, want int) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if criteria != "" {
+			req.Header.Set("X-Criteria", criteria)
+		}
+		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+			Upstream: upstream, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
+			Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
+			Agent: agent, ActorAuth: envelope.ActorAuthSelfDeclared,
+		})
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if resp.StatusCode != want {
+			t.Fatalf("%s as %s = %d, want %d", path, agent, resp.StatusCode, want)
+		}
+	}
+	do("/items/"+serverIDListed, "caller-b", "", http.StatusForbidden)
+	do("/submit", "caller-a", agentBlob, http.StatusNoContent)
+	do("/listing", "caller-a", "", http.StatusOK)
+	do("/items/"+serverIDListed, "caller-b", "", http.StatusOK)
+	do("/items/"+agentBlob, "caller-b", "", http.StatusForbidden)
+}
