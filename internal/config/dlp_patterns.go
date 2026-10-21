@@ -567,6 +567,13 @@ func IsCredentialAudiencePatternName(name string) bool {
 	return len(credentialAudienceHostsForPattern(name)) > 0
 }
 
+// BuiltInCredentialAudienceHosts returns a copy of the public, compiled audience
+// hosts for diagnostic display. It excludes operator-declared hosts and must not
+// replace the effective audience used to decide whether a credential is allowed.
+func BuiltInCredentialAudienceHosts(name string) []string {
+	return append([]string(nil), credentialAudienceHostsForPattern(name)...)
+}
+
 // credentialAudienceHostsForPattern returns the compiled audience for name.
 // Callers must treat the returned slice as read-only. Unlike
 // DefaultDLPPatterns, this helper does not clone the full default registry, so

@@ -1089,12 +1089,16 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			requestEffectiveAction = strongestRequestAction(requestEffectiveAction, action)
 			requestScannerVerdict = scannerVerdictForContinuingAction(requestEffectiveAction, cfg.EnforceEnabled())
 			patternNames := dlpMatchNames(pathDLP.Matches)
+			mismatches := scanner.TextDLPCredentialAudienceMismatches(pathDLP.Matches, targetURL, "url")
 			rp.logger.LogBodyDLP(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}),
 				action,
-				len(patternNames), patternNames, nil)
+				len(patternNames), patternNames, nil, mismatches...)
 
 			if enforcedBlock(cfg, action, containsCoreFloorMatch(pathDLP.Matches)) {
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
+				if explanation := scanner.CredentialAudienceMismatchExplanation(mismatches); explanation != "" {
+					reason += "; " + explanation
+				}
 				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "url_dlp")

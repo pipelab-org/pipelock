@@ -4,9 +4,12 @@
 package scanner
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestTextDLPCredentialAudienceMismatches(t *testing.T) {
@@ -41,21 +44,78 @@ func TestTextDLPCredentialAudienceMismatches(t *testing.T) {
 				}
 				return
 			}
-			if got[0].PatternName != pattern || got[0].Surface != "body" || got[0].Destination != "api.vendor.example" || len(got[0].Hosts) != 1 || got[0].Hosts[0] != "api.provider.example" {
+			if got[0].PatternName != pattern || got[0].Surface != "body" || got[0].Destination != "api.vendor.example" || len(got[0].Hosts) != 0 || got[0].CoreRule {
 				t.Fatalf("mismatch = %+v", got)
 			}
 			explanation := CredentialAudienceMismatchExplanation(got)
-			if !strings.Contains(explanation, "immutable audience hosts api.provider.example") || strings.Contains(explanation, "private") || strings.Contains(explanation, "hidden") {
+			if !strings.Contains(explanation, "credential audience mismatch") || strings.Contains(explanation, "api.provider.example") || strings.Contains(explanation, "private") || strings.Contains(explanation, "hidden") {
 				t.Fatalf("explanation = %q", explanation)
-			}
-			got[0].Hosts[0] = "mutated.example"
-			if matches[0].credentialAudienceHosts[0] != "api.provider.example" {
-				t.Fatal("diagnostic aliases the scanner's audience hosts")
 			}
 		})
 	}
 	if got := TextDLPCredentialAudienceMismatches(nil, "https://api.vendor.example", "body"); len(got) != 0 {
 		t.Fatalf("no findings produced diagnosis: %+v", got)
+	}
+}
+
+func TestCredentialAudienceDiagnosticsKeepDeclaredHostsPrivate(t *testing.T) {
+	const declared = "git.corp.example"
+	for _, tc := range []struct {
+		name, value string
+		core        bool
+	}{
+		{"GitHub Token", "ghp_" + strings.Repeat("a", 36), true},
+		{"GitLab CI Job Token", "glcbt-" + strings.Repeat("d", 20), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := credentialAudienceTestConfig()
+			cfg.DLP.GitHubEnterpriseHosts = []string{declared}
+			cfg.DLP.GitLabHosts = []string{declared}
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			matches := sc.ScanTextForDLP(t.Context(), tc.value).Matches
+			retained, allows := sc.FilterTextDLPMatchesForDestination(matches, "https://other.vendor.example/receive", "body")
+			if !matchRetained(retained, tc.name) || len(allows) != 0 {
+				t.Fatalf("verdict changed: retained=%+v allows=%+v", retained, allows)
+			}
+			mismatches := TextDLPCredentialAudienceMismatches(retained, "https://other.vendor.example/receive", "body")
+			if len(mismatches) != 1 || mismatches[0].CoreRule != tc.core || !reflect.DeepEqual(mismatches[0].Hosts, config.BuiltInCredentialAudienceHosts(tc.name)) {
+				t.Fatalf("metadata = %+v", mismatches)
+			}
+			raw, err := json.Marshal(mismatches)
+			if err != nil {
+				t.Fatal(err)
+			}
+			explanation := CredentialAudienceMismatchExplanation(mismatches)
+			if strings.Contains(string(raw)+explanation, declared) || strings.Contains(explanation, tc.value) || !strings.Contains(explanation, "built-in audience hosts") {
+				t.Fatalf("unsafe diagnostic: %s %s", raw, explanation)
+			}
+			if strings.Contains(explanation, "suppress does not apply") != tc.core {
+				t.Fatalf("core remedy = %q", explanation)
+			}
+			mismatches[0].Hosts[0] = "mutated.example"
+			if config.BuiltInCredentialAudienceHosts(tc.name)[0] == "mutated.example" {
+				t.Fatal("diagnostic mutated public audience registry")
+			}
+			// The diagnostic redaction must not remove declared-host allowances.
+			surface := CredentialAudienceAuthorizationHeaderSurface
+			if !tc.core {
+				surface = credentialAudienceJobTokenSurface
+			}
+			retained, allows = sc.FilterTextDLPMatchesForDestination(matches, "https://"+declared+"/api/user", surface)
+			if matchRetained(retained, tc.name) || !audienceAllowFor(allows, tc.name) {
+				t.Fatalf("declared-host allowance changed: retained=%+v allows=%+v", retained, allows)
+			}
+			// URL diagnostics retain their existing core exclusion.
+			result := sc.Scan(t.Context(), "https://other.vendor.example/"+tc.value)
+			urlRaw, err := json.Marshal(result.CredentialAudienceMismatches)
+			if err != nil || result.Allowed || strings.Contains(string(urlRaw), declared) {
+				t.Fatalf("URL verdict/metadata = %+v err=%v", result, err)
+			}
+			if !tc.core && len(result.CredentialAudienceMismatches) == 0 {
+				t.Fatal("non-core URL diagnostic disappeared")
+			}
+		})
 	}
 }
 

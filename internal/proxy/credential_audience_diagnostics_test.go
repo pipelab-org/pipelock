@@ -126,6 +126,8 @@ func TestForwardProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			}))
 			t.Cleanup(upstream.Close)
 			cfg := testScannerConfig()
+			cfg.DLP.GitHubEnterpriseHosts = []string{"ghe.corp.example"}
+			cfg.DLP.GitLabHosts = []string{"gitlab.corp.example"}
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
 			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
@@ -133,7 +135,7 @@ func TestForwardProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(p.Close)
-			key := "sk-" + "ant-" + strings.Repeat("a", 24)
+			key := "ghp_" + strings.Repeat("a", 36)
 			body := "benign"
 			if surface == "body" {
 				body = key
@@ -151,12 +153,20 @@ func TestForwardProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			if got := upstreamCalls.Load(); got != 0 {
 				t.Fatalf("blocked request reached upstream %d times", got)
 			}
+			for _, private := range []string{"ghe.corp.example", "gitlab.corp.example"} {
+				if strings.Contains(rec.Body.String(), private) {
+					t.Fatal("response disclosed an operator-declared audience host")
+				}
+			}
+			if !strings.Contains(rec.Body.String(), "immutable core rule, suppress does not apply") {
+				t.Fatalf("core rule remedy missing: %s", rec.Body.String())
+			}
 		})
 	}
 }
 
 func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
-	for _, surface := range []string{"body", "header"} {
+	for _, surface := range []string{"body", "header", "url"} {
 		t.Run(surface, func(t *testing.T) {
 			var upstreamCalls atomic.Int32
 			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -183,7 +193,11 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			if surface == "body" {
 				body = key
 			}
-			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://inbound.example/v1", strings.NewReader(body))
+			target := "http://inbound.example/v1"
+			if surface == "url" {
+				target += "/" + key
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, strings.NewReader(body))
 			req.Header.Set("Content-Type", "text/plain")
 			if surface == "header" {
 				req.Header.Set("Authorization", "Bearer "+key)

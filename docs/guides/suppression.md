@@ -101,6 +101,8 @@ Use both knobs. `exempt_domains` keeps URL DLP from blocking a provider-bound ke
 
 A body or header block can report a credential audience mismatch: the matched rule has a declared audience, and the request's canonical destination is outside it. The diagnostic names the pattern, scanned surface, destination host and declared audience hosts, without including the credential. An absent mismatch explanation does not mean a request is safe; a carrier restriction, core rule or incomplete scan can still block it. `pipelock explain` evaluates URL scanning, not request bodies or headers.
 
+Audience diagnostics show the canonical destination and public built-in audience hosts; they omit operator-declared audience hosts. A diagnostic marked `immutable core rule` cannot be cleared with `suppress`. Core protection still applies even if a configurable rule has the same name.
+
 If investigation confirms a legitimate token exchange, an operator can suppress the specific non-core rule at an exact URL. Replace the neutral example URL with the verified endpoint and use the rule name from the diagnostic:
 
 ```yaml
@@ -112,7 +114,7 @@ suppress:
 
 This applies to that rule in request bodies and scanned headers at the route for forwarded, TLS-intercepted and reverse-proxy requests. It cannot suppress a CONNECT outer-header finding: that scan uses the tunnel authority URL, which has no inner request path. It is route-wide: the matching credential shape is suppressed in any body field or scanned header, not just a `refresh_token` field. Other DLP rules and core protections still apply. URL DLP does not consult `suppress`, so putting the credential in the URL query still blocks.
 
-The exact entry does not cover another route, a query-bearing target, a lookalike host or port 8443. Explicit port 443 and an omitted HTTPS port are equivalent. A trailing slash makes the entry a prefix, and a glob broadens it; keep the complete exact URL when that is the intended scope. Test the normal request and these negative cases before applying the entry. Keep its reason and remove it when it is no longer needed.
+The exact entry does not cover another route, a query-bearing target, a lookalike host or port 8443. Explicit port 443 and an omitted HTTPS port are equivalent. A trailing slash makes the entry a prefix, and a glob broadens it, including across slashes and query strings; keep the complete exact URL when that is the intended scope. Test the normal request and these negative cases before applying the entry. Keep its reason and remove it when it is no longer needed.
 
 This does not add a refresh-token allowance or change the built-in audience. Avoid using `passthrough_domains` for this remedy: TLS passthrough removes inspection of inner requests and responses, far beyond one pattern at one route.
 

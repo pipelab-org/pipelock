@@ -95,6 +95,20 @@ func TestDefaultDLPPatternsReturnsDeepCopy(t *testing.T) {
 	}
 }
 
+func TestBuiltInCredentialAudienceHostsAreIsolated(t *testing.T) {
+	hosts := BuiltInCredentialAudienceHosts("GitHub Token")
+	if len(hosts) == 0 || hosts[0] != "api.github.com" {
+		t.Fatalf("public GitHub audience = %v", hosts)
+	}
+	hosts[0] = "operator.example"
+	if got := BuiltInCredentialAudienceHosts("github token"); len(got) == 0 || got[0] != "api.github.com" {
+		t.Fatalf("diagnostic mutated the compiled registry: %v", got)
+	}
+	if got := BuiltInCredentialAudienceHosts("Unrecognized Key"); got != nil {
+		t.Fatalf("unknown pattern acquired public audience hosts: %v", got)
+	}
+}
+
 func TestProviderKeyPatternsRejectProsePrefixes(t *testing.T) {
 	t.Parallel()
 

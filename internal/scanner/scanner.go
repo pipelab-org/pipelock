@@ -156,9 +156,9 @@ type Result struct {
 	// their declared audience. It contains no credential material and is used by
 	// proxy audit, metrics, and receipt consumers.
 	CredentialAudienceAllows []CredentialAudienceAllow `json:"credential_audience_allows,omitempty"`
-	// CredentialAudienceMismatches records the immutable audience set that
-	// caused a provider-bound DLP match to remain blocked. It is explanatory
-	// metadata only; parse failures intentionally leave this empty and block.
+	// CredentialAudienceMismatches explains a provider-bound DLP host mismatch
+	// using only public built-in audience hosts, not operator declarations.
+	// Parse failures intentionally leave this explanatory metadata empty and block.
 	CredentialAudienceMismatches []CredentialAudienceMismatch `json:"credential_audience_mismatches,omitempty"`
 	spans                        []MatchSpan
 }

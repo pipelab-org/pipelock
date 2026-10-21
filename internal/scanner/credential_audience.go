@@ -42,6 +42,7 @@ type CredentialAudienceMismatch struct {
 	Surface     string   `json:"surface"`
 	Destination string   `json:"destination"`
 	Hosts       []string `json:"hosts"`
+	CoreRule    bool     `json:"core_rule,omitempty"`
 }
 
 type credentialAudienceCandidate struct {
@@ -670,12 +671,19 @@ func (s *Scanner) credentialAudienceMismatch(pattern *compiledPattern, target, s
 	if !ok || !credentialAudienceHostMismatch(host, pattern.credentialAudienceHosts, pattern.credentialAudienceGitHosts, pattern.credentialAudienceRegistryHosts) {
 		return CredentialAudienceMismatch{}, false
 	}
+	return newCredentialAudienceMismatch(pattern.name, surface, host), true
+}
+
+// Display only built-in audience hosts. Effective audiences can include private
+// operator declarations that must not be disclosed to unrelated destinations.
+func newCredentialAudienceMismatch(name, surface, destination string) CredentialAudienceMismatch {
 	return CredentialAudienceMismatch{
-		PatternName: pattern.name,
+		PatternName: name,
 		Surface:     surface,
-		Destination: host,
-		Hosts:       append([]string(nil), pattern.credentialAudienceHosts...),
-	}, true
+		Destination: destination,
+		Hosts:       config.BuiltInCredentialAudienceHosts(name),
+		CoreRule:    config.IsCoreDLPPatternName(name),
+	}
 }
 
 // credentialAudienceHostMismatch distinguishes an unrelated destination from a
@@ -705,12 +713,7 @@ func TextDLPCredentialAudienceMismatches(matches []TextDLPMatch, target, surface
 			continue
 		}
 		seen[match.PatternName] = true
-		mismatches = append(mismatches, CredentialAudienceMismatch{
-			PatternName: match.PatternName,
-			Surface:     surface,
-			Destination: host,
-			Hosts:       append([]string(nil), match.credentialAudienceHosts...),
-		})
+		mismatches = append(mismatches, newCredentialAudienceMismatch(match.PatternName, surface, host))
 	}
 	return mismatches
 }
@@ -720,7 +723,14 @@ func TextDLPCredentialAudienceMismatches(matches []TextDLPMatch, target, surface
 func CredentialAudienceMismatchExplanation(mismatches []CredentialAudienceMismatch) string {
 	parts := make([]string, 0, len(mismatches))
 	for _, mismatch := range mismatches {
-		parts = append(parts, fmt.Sprintf("credential audience mismatch (pattern %s, surface %s, canonical destination %s, immutable audience hosts %s)", mismatch.PatternName, mismatch.Surface, mismatch.Destination, strings.Join(mismatch.Hosts, ", ")))
+		detail := fmt.Sprintf("credential audience mismatch (pattern %s, surface %s, canonical destination %s", mismatch.PatternName, mismatch.Surface, mismatch.Destination)
+		if len(mismatch.Hosts) > 0 {
+			detail += ", built-in audience hosts " + strings.Join(mismatch.Hosts, ", ")
+		}
+		if mismatch.CoreRule {
+			detail += "; immutable core rule, suppress does not apply"
+		}
+		parts = append(parts, detail+")")
 	}
 	return strings.Join(parts, "; ")
 }

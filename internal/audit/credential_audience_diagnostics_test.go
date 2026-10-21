@@ -6,8 +6,10 @@ package audit
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -28,7 +30,13 @@ func TestLogCredentialAudienceMismatches(t *testing.T) {
 				t.Cleanup(func() { _ = emitter.Close() })
 				var mismatches []scanner.CredentialAudienceMismatch
 				if present {
-					mismatches = []scanner.CredentialAudienceMismatch{{PatternName: "Provider Key", Surface: surface, Destination: "api.vendor.example", Hosts: []string{"api.provider.example"}}}
+					cfg := config.Defaults()
+					cfg.Internal = nil
+					cfg.DLP.GitHubEnterpriseHosts = []string{"ghe.corp.example"}
+					sc := scanner.MustNew(cfg)
+					t.Cleanup(sc.Close)
+					matches := sc.ScanTextForDLP(t.Context(), "ghp_"+strings.Repeat("a", 36)).Matches
+					mismatches = scanner.TextDLPCredentialAudienceMismatches(matches, "https://api.vendor.example/v1", surface)
 				}
 				ctx := LogContext{method: "POST", target: "https://api.vendor.example/v1"}
 				if surface == "body" {
@@ -67,8 +75,11 @@ func TestLogCredentialAudienceMismatches(t *testing.T) {
 				if err := json.Unmarshal(raw, &got); err != nil {
 					t.Fatal(err)
 				}
-				if len(got) != 1 || got[0].Surface != surface || got[0].PatternName != "Provider Key" || got[0].Destination != "api.vendor.example" || len(got[0].Hosts) != 1 || got[0].Hosts[0] != "api.provider.example" {
+				if len(got) != 1 || got[0].Surface != surface || got[0].PatternName != "GitHub Token" || got[0].Destination != "api.vendor.example" || !got[0].CoreRule || len(got[0].Hosts) == 0 {
 					t.Fatalf("metadata=%+v", got)
+				}
+				if strings.Contains(buf.String()+string(emittedJSON), "ghe.corp.example") {
+					t.Fatal("audit or emitter disclosed an operator-declared audience host")
 				}
 			})
 		}
