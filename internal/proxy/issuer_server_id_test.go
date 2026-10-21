@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -480,15 +481,23 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("a full tombstone set stops all minting", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		var events []string
+		s.observeIDBlock = func(scope string, log bool) {
+			events = append(events, fmt.Sprintf("%s:%t", scope, log))
+		}
 		s.mu.Lock()
 		for i := 0; i < issuerUnreadableMaxSessions; i++ {
 			s.taintSentLocked("t" + strings.Repeat("y", i+1))
 		}
 		s.taintSentLocked("one-more")
+		s.taintSentLocked("another")
 		s.mu.Unlock()
 		s.mintServerID("fresh", origin, serverIDListed, now)
 		if s.serverIDIssued("fresh", origin, serverIDListed) {
 			t.Fatal("minted after the tombstone set overflowed")
+		}
+		if len(events) != 1 || events[0] != "global:true" {
+			t.Fatalf("overflow events = %v, want [global:true]", events)
 		}
 	})
 
@@ -515,6 +524,10 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("a full cross-session set stops all minting", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		var events []string
+		s.observeIDBlock = func(scope string, log bool) {
+			events = append(events, fmt.Sprintf("%s:%t", scope, log))
+		}
 		s.mu.Lock()
 		for i := 0; i < issuerSentAllMaxEntries; i++ {
 			var d [32]byte
@@ -523,9 +536,13 @@ func TestIssuerServerIDStore(t *testing.T) {
 		}
 		s.mu.Unlock()
 		s.recordSent("a", origin, nil, []byte(serverIDOther), true, now)
+		s.recordSent("b", origin, nil, []byte(serverIDOther), true, now)
 		s.mintServerID("a", origin, serverIDListed, now)
 		if s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("minted after the cross-session set overflowed")
+		}
+		if len(events) != 1 || events[0] != "global:true" {
+			t.Fatalf("overflow events = %v, want [global:true]", events)
 		}
 	})
 

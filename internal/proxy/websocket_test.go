@@ -644,17 +644,37 @@ func TestWSProxyIssuerHistoryTaintedBeforeHandshake(t *testing.T) {
 	if !store.serverIDIssued("recipient", origin, serverIDListed) {
 		t.Fatal("positive control: recipient did not learn the ID")
 	}
-	conn, _ := dialWSConnToTarget(proxyAddr, strings.Replace(upstream.URL, "http://", "ws://", 1))
-	if conn != nil {
-		defer func() { _ = conn.Close() }()
+	conn, err := dialWSConnToTarget(proxyAddr, strings.Replace(upstream.URL, "http://", "ws://", 1))
+	if err != nil {
+		t.Fatalf("client upgrade before upstream dial: %v", err)
 	}
+	defer func() { _ = conn.Close() }()
+	handshakeTimeout := time.NewTimer(5 * time.Second)
+	defer handshakeTimeout.Stop()
 	select {
 	case got := <-observed:
 		if got.retained || got.minted {
 			t.Fatalf("upstream handshake saw usable issuer evidence: %+v", got)
 		}
-	case <-t.Context().Done():
+	case <-handshakeTimeout.C:
 		t.Fatal("upstream handshake was not observed")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = wsutil.ReadServerData(conn)
+	var closed wsutil.ClosedError
+	// The upstream's 503 makes the dial fail after the handshake was sent.
+	// A close frame or EOF proves the client cannot keep using the stream.
+	if !errors.Is(err, io.EOF) && (!errors.As(err, &closed) || closed.Code != ws.StatusInternalServerError) {
+		t.Fatalf("failed upstream handshake = %v, want closed stream", err)
+	}
+	if store.serverIDIssued("recipient", origin, serverIDListed) {
+		t.Fatal("failed upstream dial restored previously learned evidence")
+	}
+	store.mintServerID("recipient", origin, serverIDOther, time.Now())
+	if store.serverIDIssued("recipient", origin, serverIDOther) {
+		t.Fatal("failed upstream dial allowed new issuer evidence")
 	}
 }
 
