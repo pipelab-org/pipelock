@@ -118,6 +118,15 @@ func TestAdaptiveURLWarningsTransportParity(t *testing.T) {
 			if snap := snapshots[0]; snap.ThreatScore != 0 || snap.BlockAll {
 				t.Fatalf("warn produced enforcement: %+v", snap)
 			}
+			events := p.sessionMgrPtr.Load().GetOrCreate(snapshots[0].Key).RecentEvents()
+			if len(events) == 0 {
+				t.Fatal("warning evidence was discarded")
+			}
+			for _, event := range events {
+				if event.Kind == config.ActionBlock || event.Severity == config.SeverityCritical {
+					t.Fatalf("delivered warning recorded as a block: %+v", event)
+				}
+			}
 		})
 	}
 }

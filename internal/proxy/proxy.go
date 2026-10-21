@@ -3771,16 +3771,18 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 		}
 	}
 
-	// Record a block event on any non-allowed scanner result so inspect/
-	// explain operators can see the specific evidence that drove escalation.
-	// Score-neutral cases (protective, config-mismatch) still record so the
-	// operator trail reflects the full picture; empty Reason is preserved.
+	// Preserve scanner findings for inspect/explain, distinguishing enforced
+	// denials from observations that the caller forwards.
 	if !result.Allowed {
+		kind, severity := config.ActionBlock, config.SeverityCritical
+		if opts.ObserveOnly {
+			kind, severity = "anomaly", config.SeverityWarn
+		}
 		sess.RecordEvent(SessionEvent{
-			Kind:     "block",
+			Kind:     kind,
 			Target:   hostname,
 			Detail:   result.Reason,
-			Severity: "critical",
+			Severity: severity,
 			Score:    result.Score,
 		})
 	}
