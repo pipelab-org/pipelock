@@ -6,14 +6,20 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/gobwas/ws"
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -241,16 +247,96 @@ func TestWebSocketCredentialAudienceDiagnostic(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
-	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
 	key := "sk-" + "ant-" + strings.Repeat("a", 24)
 	blocked, hard, action, reason, err := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.vendor.example/v1", audit.LogContext{})
 	if !blocked || !hard || action != config.ActionBlock || err != nil || !strings.Contains(reason, "credential audience mismatch") || strings.Contains(reason, key) {
 		t.Fatalf("blocked=%v hard=%v action=%s reason=%s err=%v", blocked, hard, action, reason, err)
 	}
+	blocked, _, _, reason, err = p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.anthropic.com/v1", audit.LogContext{})
+	if blocked || err != nil || reason != "" {
+		t.Fatalf("audience header blocked=%v reason=%s err=%v", blocked, reason, err)
+	}
 	relay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://api.vendor.example/v1")
 	_, result := relay.scanClientMessageBody(t.Context(), []byte(`{"credential":"`+key+`"}`))
 	if result.Clean || len(result.CredentialAudienceMismatches) != 1 || result.CredentialAudienceMismatches[0].Surface != "websocket_frame" {
 		t.Fatalf("frame diagnostic = %+v", result)
+	}
+}
+
+func TestWebSocketCredentialAudienceDiagnosticHandshake(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		name := "clean upgrade"
+		if blocked {
+			name = "credential rejected before upgrade"
+		}
+		t.Run(name, func(t *testing.T) {
+			var upstreamCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamCalls.Add(1)
+				conn, _, _, err := ws.UpgradeHTTP(r, w)
+				if err != nil {
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte(testWSHello))
+			}))
+			t.Cleanup(upstream.Close)
+			upstreamURL, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+			proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, nil)
+			t.Cleanup(p.Close)
+			t.Cleanup(cleanup)
+			if !blocked {
+				conn, err := dialWSConn(proxyAddr, upstreamURL.Host)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = conn.Close() }()
+				if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+					t.Fatal(err)
+				}
+				message, _, err := wsutil.ReadServerData(conn)
+				if err != nil || string(message) != testWSHello || upstreamCalls.Load() != 1 {
+					t.Fatalf("message=%q err=%v upstream calls=%d", message, err, upstreamCalls.Load())
+				}
+				return
+			}
+			key := "sk-" + "ant-" + strings.Repeat("a", 24)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+proxyAddr+"/ws?url="+url.QueryEscape("wss://"+upstreamURL.Host), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Upgrade", "websocket")
+			req.Header.Set("Connection", "Upgrade")
+			req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+			req.Header.Set("Sec-WebSocket-Version", "13")
+			client := &http.Client{Timeout: 5 * time.Second}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("X-Pipelock-Block-Reason") != string(blockreason.DLPMatch) ||
+				!strings.Contains(string(body), "credential audience mismatch") || !strings.Contains(string(body), "surface header") ||
+				!strings.Contains(string(body), upstreamURL.Hostname()) || strings.Contains(string(body), key) {
+				t.Fatalf("status=%d headers=%v response=%s", resp.StatusCode, resp.Header, body)
+			}
+			if got := upstreamCalls.Load(); got != 0 {
+				t.Fatalf("blocked handshake reached upstream %d times", got)
+			}
+		})
 	}
 }
 
