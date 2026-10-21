@@ -20,6 +20,7 @@ func DiscoverCmd() *cobra.Command {
 	var jsonOutput bool
 	var generate bool
 	var homeDir string
+	var claudeConfigDirs []string
 
 	cmd := &cobra.Command{
 		Use:   "discover",
@@ -28,6 +29,9 @@ func DiscoverCmd() *cobra.Command {
 Claude Desktop, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
 stable, Zed Preview, Flatpak Zed stable, Flatpak Zed Preview) and report
 which MCP servers are configured, their protection status, and risk level.
+
+Claude Code configs under CLAUDE_CONFIG_DIR (<dir>/.claude.json) are included
+when that variable is set and --home is not, and for every --claude-config-dir.
 
 Exit codes:
   0  All servers protected (or none found)
@@ -38,18 +42,24 @@ Examples:
   pipelock discover
   pipelock discover --json
   pipelock discover --generate
-  pipelock discover --home /home/otheruser`,
+  pipelock discover --home /home/otheruser
+  pipelock discover --claude-config-dir /home/me/.claude-work`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// An explicit --home inspects that tree only; the running
+			// process's own overrides describe this user, not that one.
+			var opts discover.Options
 			if homeDir == "" {
 				h, err := os.UserHomeDir()
 				if err != nil {
 					return cliutil.ExitCodeError(2, fmt.Errorf("determining home directory: %w", err))
 				}
 				homeDir = h
+				opts = discover.AmbientOptions(os.Getenv)
 			}
+			opts.ClaudeConfigDirs = append(opts.ClaudeConfigDirs, claudeConfigDirs...)
 
-			report, err := discover.Discover(homeDir)
+			report, err := discover.DiscoverWithOptions(homeDir, opts)
 			if err != nil {
 				return cliutil.ExitCodeError(2, fmt.Errorf("discovery failed: %w", err))
 			}
@@ -78,6 +88,7 @@ Examples:
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output machine-readable JSON")
 	cmd.Flags().BoolVar(&generate, "generate", false, "Print pipelock wrapper suggestions for unprotected servers")
 	cmd.Flags().StringVar(&homeDir, "home", "", "Override home directory (default: $HOME)")
+	cmd.Flags().StringArrayVar(&claudeConfigDirs, "claude-config-dir", nil, "Also inspect <dir>/.claude.json for a Claude Code CLAUDE_CONFIG_DIR (repeatable; absolute path)")
 
 	return cmd
 }

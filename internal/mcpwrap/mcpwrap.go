@@ -78,18 +78,8 @@ func ClassifyInvocationAgainst(command string, args []string, expected string) W
 }
 
 func classifyExecutable(command, self string, executableErr error) WrapperState {
-	if executableErr != nil {
-		return WrapperForeign
-	}
-	selfInfo, err := os.Stat(self)
-	if err != nil {
-		return WrapperForeign
-	}
-	commandInfo, err := os.Stat(command)
-	if err != nil || !os.SameFile(selfInfo, commandInfo) {
-		return WrapperForeign
-	}
-	return WrapperSelf
+	state, _ := explainExecutable(command, self, executableErr)
+	return state
 }
 
 // ClassifyServer applies ClassifyInvocation to either the conventional

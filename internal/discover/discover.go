@@ -4,6 +4,7 @@
 package discover
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -149,12 +150,73 @@ type clientPath struct {
 	Scope  string // "user" or "project"
 }
 
+// EnvClaudeConfigDir is Claude Code's documented configuration-directory
+// override (https://code.claude.com/docs/en/env-vars). With it set, Claude
+// Code keeps its global config, including MCP servers, in
+// <dir>/.claude.json instead of ~/.claude.json.
+const EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
+
+// claudeGlobalConfigName is the global config file Claude Code writes in the
+// home directory, or in CLAUDE_CONFIG_DIR when that override is set.
+const claudeGlobalConfigName = ".claude.json"
+
+// errClaudeConfigDirNotAbsolute is reported for a CLAUDE_CONFIG_DIR value that
+// is not absolute. Claude Code's docs require an absolute path; a relative one
+// would resolve against whichever directory the client starts in, so discover
+// reports it instead of guessing.
+var errClaudeConfigDirNotAbsolute = errors.New(EnvClaudeConfigDir + " must be an absolute path")
+
+// Options names additional configuration roots to inventory alongside the
+// conventional locations under home. Discover never reads the environment
+// itself, so its result is determined by its arguments; callers resolve
+// overrides at the CLI boundary (see AmbientOptions).
+type Options struct {
+	// ClaudeConfigDirs are CLAUDE_CONFIG_DIR values. Each contributes
+	// <dir>/.claude.json as an additional Claude Code config.
+	ClaudeConfigDirs []string
+}
+
+// AmbientOptions returns the documented overrides set in the given
+// environment lookup, normally os.Getenv.
+func AmbientOptions(getenv func(string) string) Options {
+	var opts Options
+	if dir := getenv(EnvClaudeConfigDir); dir != "" {
+		opts.ClaudeConfigDirs = append(opts.ClaudeConfigDirs, dir)
+	}
+	return opts
+}
+
 // Discover scans the home directory for AI agent client configs and reports
 // which MCP servers are configured, their protection status, and risk level.
 func Discover(home string) (*Report, error) {
-	paths := configPaths(home)
+	return DiscoverWithOptions(home, Options{})
+}
 
-	var clients []ClientConfig
+// DiscoverWithOptions is Discover plus the explicitly supplied configuration
+// roots in opts. A file reachable from more than one root is reported once.
+func DiscoverWithOptions(home string, opts Options) (*Report, error) {
+	paths := configPaths(home)
+	var rootErrors []ClientConfig
+	for _, dir := range opts.ClaudeConfigDirs {
+		if !filepath.IsAbs(dir) {
+			rootErrors = append(rootErrors, ClientConfig{
+				Client:     clientClaudeCode,
+				ConfigPath: dir,
+				Scope:      scopeUser,
+				ParseError: errClaudeConfigDirNotAbsolute.Error(),
+			})
+			continue
+		}
+		paths = append(paths, clientPath{
+			Client: clientClaudeCode,
+			Path:   filepath.Join(filepath.Clean(dir), claudeGlobalConfigName),
+			Key:    configKeyMCPServers,
+			Scope:  scopeUser,
+		})
+	}
+	paths = dedupeConfigPaths(paths)
+
+	clients := rootErrors
 	var servers []MCPServer
 
 	for _, cp := range paths {
@@ -198,8 +260,7 @@ func Discover(home string) (*Report, error) {
 
 		// Classify each server
 		for i := range parsed {
-			parsed[i].Protection = classifyProtection(parsed[i])
-			parsed[i].Evidence = protectionEvidence(parsed[i])
+			parsed[i].Protection, parsed[i].Evidence = classifyServer(parsed[i])
 			risk, reason := classifyRisk(parsed[i])
 			parsed[i].Risk = risk
 			if parsed[i].Evidence == evidenceNoProxy {
@@ -238,6 +299,32 @@ func Discover(home string) (*Report, error) {
 		Servers: servers,
 		Summary: summary,
 	}, nil
+}
+
+// dedupeConfigPaths drops a config path that names the same existing file as
+// an earlier one (for example CLAUDE_CONFIG_DIR set to the home directory, or
+// a symlinked root), so one file's servers are never counted twice.
+func dedupeConfigPaths(paths []clientPath) []clientPath {
+	var seen []os.FileInfo
+	out := make([]clientPath, 0, len(paths))
+	for _, cp := range paths {
+		info, err := os.Stat(cp.Path)
+		if err == nil {
+			duplicate := false
+			for _, prior := range seen {
+				if os.SameFile(prior, info) {
+					duplicate = true
+					break
+				}
+			}
+			if duplicate {
+				continue
+			}
+			seen = append(seen, info)
+		}
+		out = append(out, cp)
+	}
+	return out
 }
 
 func riskOrder(r RiskLevel) int {

@@ -479,3 +479,43 @@ func TestServerDescription(t *testing.T) {
 		})
 	}
 }
+
+// TestDiscoverCmd_ClaudeConfigDirSources proves the CLI boundary owns override
+// resolution: --home ignores the running user's CLAUDE_CONFIG_DIR, while an
+// explicit --claude-config-dir is always inspected.
+func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+
+	run := func(args ...string) discover.Report {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--json"}, args...))
+		_ = cmd.Execute() // exit code 1 is expected when servers are unprotected
+		var report discover.Report
+		// The report is the first JSON value; an unprotected result also
+		// returns exit code 1, whose message may follow it.
+		if err := json.NewDecoder(&buf).Decode(&report); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return report
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	if got := run(); got.Summary.TotalServers != 1 {
+		t.Fatalf("default run ignored the ambient CLAUDE_CONFIG_DIR: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir()); got.Summary.TotalServers != 0 {
+		t.Fatalf("--home inspected the ambient CLAUDE_CONFIG_DIR: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir(), "--claude-config-dir", altDir); got.Summary.TotalServers != 1 {
+		t.Fatalf("--claude-config-dir not inspected: %+v", got.Summary)
+	}
+}

@@ -179,7 +179,7 @@ trigger fields.
 
 **Pipelock coverage:**
 
-- **Discovery:** `pipelock discover` reports MCP server configurations for its supported local clients, including Claude Code, Claude Desktop, Cursor, VS Code, Cline, Continue, Junie, and Zed.
+- **Discovery:** `pipelock discover` reports MCP server configurations for its supported local clients, including Claude Code, Claude Desktop, Cursor, VS Code, Cline, Continue, Junie, and Zed. Claude Code configs under `CLAUDE_CONFIG_DIR` are included when that variable is set, or when named with `--claude-config-dir`. A server counts as protected only when its command is the running Pipelock executable invoked as `mcp proxy`; for other wrappers, the evidence says whether the executable path is missing, relative, a different file, or could not be checked.
 - **Preflight checks:** `pipelock preflight` validates deployment readiness (network isolation, config completeness, proxy routing).
 - **Diagnostics:** `pipelock diagnose` reports environment state, connectivity, and configuration issues.
 
