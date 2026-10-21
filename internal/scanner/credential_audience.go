@@ -729,6 +729,12 @@ func CredentialAudienceMismatchExplanation(mismatches []CredentialAudienceMismat
 		}
 		if mismatch.CoreRule {
 			detail += "; immutable core rule, suppress does not apply"
+			switch {
+			case strings.EqualFold(mismatch.PatternName, "GitHub Token"), strings.EqualFold(mismatch.PatternName, "GitHub Fine-Grained PAT"):
+				detail += "; enterprise-host configuration (eligible headers only): dlp.github_enterprise_hosts"
+			case strings.EqualFold(mismatch.PatternName, "GitLab PAT"):
+				detail += "; enterprise-host configuration (eligible headers only): dlp.gitlab_hosts"
+			}
 		}
 		parts = append(parts, detail+")")
 	}

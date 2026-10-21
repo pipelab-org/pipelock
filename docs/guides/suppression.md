@@ -103,6 +103,8 @@ A body or header block can report a credential audience mismatch: the matched ru
 
 Audience diagnostics show the canonical destination and public built-in audience hosts; they omit operator-declared audience hosts. A diagnostic marked `immutable core rule` cannot be cleared with `suppress`. Core protection still applies even if a configurable rule has the same name.
 
+For GitHub Enterprise or a self-managed GitLab instance, review [`dlp.github_enterprise_hosts` or `dlp.gitlab_hosts`](../configuration.md#per-pattern-domain-exemptions). These lists trust exact hosts with credentials on eligible headers only; declare only instances your organization operates. They don't clear body or URL findings or remove carrier restrictions.
+
 If investigation confirms a legitimate token exchange, an operator can suppress the specific non-core rule at an exact URL. Replace the neutral example URL with the verified endpoint and use the rule name from the diagnostic:
 
 ```yaml

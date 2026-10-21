@@ -136,6 +136,46 @@ func TestTextDLPCredentialAudienceMismatchesSkipsGitAndRegistryHosts(t *testing.
 	}
 }
 
+func TestCredentialAudienceExplanationPointsToEnterpriseHostConfiguration(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		core    bool
+		field   string
+	}{
+		{"GitHub Token", true, "dlp.github_enterprise_hosts"},
+		{"GitHub Fine-Grained PAT", true, "dlp.github_enterprise_hosts"},
+		{"GitLab PAT", true, "dlp.gitlab_hosts"},
+		{"Slack Token", true, ""},
+		{"GitLab CI Job Token", false, ""},
+		{"Anthropic API Key", false, ""},
+	} {
+		t.Run(tc.pattern, func(t *testing.T) {
+			explanation := CredentialAudienceMismatchExplanation([]CredentialAudienceMismatch{{
+				PatternName: tc.pattern, Surface: "header", Destination: "git.corp.example", CoreRule: tc.core,
+			}})
+			if strings.Contains(explanation, "suppress does not apply") != tc.core {
+				t.Fatalf("core remedy changed: %s", explanation)
+			}
+			if tc.field == "" {
+				if strings.Contains(explanation, "enterprise-host configuration") {
+					t.Fatalf("unrelated rule acquired enterprise remedy: %s", explanation)
+				}
+				return
+			}
+			if !strings.Contains(explanation, tc.field) || !strings.Contains(explanation, "eligible headers only") {
+				t.Fatalf("missing scoped configuration pointer: %s", explanation)
+			}
+			other := "dlp.github_enterprise_hosts"
+			if other == tc.field {
+				other = "dlp.gitlab_hosts"
+			}
+			if strings.Contains(explanation, other) {
+				t.Fatalf("wrong provider configuration pointer: %s", explanation)
+			}
+		})
+	}
+}
+
 func TestCredentialAudienceMismatchURLTextParity(t *testing.T) {
 	pattern := &compiledPattern{
 		name:                            "Provider Key",
