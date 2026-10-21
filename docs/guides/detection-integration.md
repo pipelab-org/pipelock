@@ -199,12 +199,9 @@ Or use the Go CLI that ships with Pipelock:
 pipelock verify-receipt "$EVIDENCE_FILE" --whole-recorder --key <public-key-hex>
 ```
 
-Both exit 1 on a signature failure, chain break, or reordering in the
-ActionReceipt v1 chain, and both reproduce the same v1 signature and
-chain-linking checks. They don't check the same scope. `pipelock-verify`
-checks only that v1 chain, has no end proof, and exits 0 when it verifies.
-`pipelock verify-receipt` also checks the recorder hash chain and the
-EvidenceReceipt v2 chain. The Go command above uses `--whole-recorder`.
+`pipelock-verify` checks only ActionReceipt v1 integrity. It exits 1 on a signature failure, chain break, or reordering in that chain, and exits 0 when that chain verifies. It doesn't prove that the recording is complete.
+
+`pipelock verify-receipt` also checks the recorder hash chain and the EvidenceReceipt v2 chain. Handle its exit 3 (valid prefix, end unproven) separately from exit 1 (invalid evidence). The Python and Go commands aren't interchangeable completeness checks. The Go command above uses `--whole-recorder`.
 For an intact single-file run in the per-run session format, with trusted keys,
 its outcomes are:
 
@@ -231,7 +228,7 @@ JSONL source. This is a complete working example:
 """Verify a pipelock receipt stream, then route each verified receipt
 to a pluggable handler for whatever downstream detector runs on.
 
-Requires: pip install pipelock-verify
+Requires: the Pipelock Go CLI on PATH
 Run: python verify_and_route.py evidence.jsonl <public-key-hex>
 """
 
@@ -249,7 +246,10 @@ def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
     outer envelope's session_id into the yielded record, since it is
     the primary grouping key detectors use."""
     check = subprocess.run(
-        ["pipelock-verify", path, "--key", pubkey_hex],
+        [
+            "pipelock", "verify-receipt", path,
+            "--whole-recorder", "--require-seal", "--key", pubkey_hex,
+        ],
         capture_output=True,
         text=True,
     )
