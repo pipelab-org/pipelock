@@ -2003,7 +2003,11 @@ The baseline admin endpoints (list, show, ratify, forget) are only mounted on th
 
 ## Adaptive Enforcement
 
-Per-session threat score that accumulates across concrete scanner hits and decays on clean requests. When the score exceeds the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades eligible warn and ask actions to block, or denies all traffic. URL, body, WebSocket, A2A/MCP content, and cross-request entropy findings remain visible and act at their configured warn or block action; entropy alone does not raise the score or acquire a stronger action. A mixed finding with DLP, injection, SSRF, policy denial, or structural hostname exfiltration remains eligible for scoring and upgrade. A session already at `block_all` because of concrete findings still denies every request, including one with entropy alone. A repeated denial with the same scanner and reason at the same destination scores once; retries stay denied without adding score. Warn and strip findings still score every time. Past 1,024 remembered denial fingerprints per session, new fingerprints always score.
+Per-session threat score that accumulates across concrete scanner hits and decays on clean requests. When the score reaches the threshold, the session escalates through levels (elevated → high → critical). At each level, the `levels` configuration upgrades eligible warn and ask actions to block, or denies all traffic. URL, body, WebSocket, A2A/MCP content, and cross-request entropy findings remain visible and act at their configured warn or block action; entropy alone does not raise the score or acquire a stronger action. An enforced mixed finding with DLP, injection, SSRF, policy denial, or structural hostname exfiltration remains eligible for scoring; an eligible warned finding can be upgraded only after independent scored evidence raises the scope. A session already at `block_all` because of concrete findings still denies every request, including one with entropy alone. A repeated denial with the same scanner and reason at the same destination scores once; retries stay denied without adding score. Strip findings still score every time. Warning-only findings add no enforcement points. Past 1,024 remembered denial fingerprints per session, new fingerprints always score.
+
+A configured `warn` action records an observation. Repeated input, response, tool-inventory, URL, header, body, or cross-request warnings cannot create an adaptive quarantine or deny a later clean call. Allowed cross-agent taint propagation keeps its taint evidence without adding enforcement points; an enforced denial or unreadable risk state retains its fail-closed signal. Warnings recorded by adaptive enforcement interrupt a consecutive-clean recovery streak but neither increase nor decay the score. Anomaly findings also remain observations when `session_profiling.anomaly_action` is `warn` or `enforce` is false.
+
+Explicit blocks, immutable security floors, and active mitigations keep their existing enforcement and score contributions. `levels.upgrade_warn` still upgrades eligible findings after other scored evidence elevates the applicable scope. Enabling adaptive enforcement therefore permits those upgrades, even in an audit deployment; warning-only traffic cannot reach that state on its own. To keep warnings observational even after independent enforced findings, disable adaptive enforcement or explicitly disable the relevant level upgrades.
 
 A block that reports a resolver outcome rather than agent behavior is refused without adding to the score: a DNS timeout, a name that does not exist, a resolver error, and an answer made only of the unspecified address (`0.0.0.0` or `::`), which DNS filters return for a name they block. An answer that includes any other internal or metadata address, and an unspecified address written literally in the URL, still count as SSRF findings.
 
@@ -2037,16 +2041,12 @@ adaptive_enforcement:
 | `decay_per_clean_request` | `0.5` | Score reduction per clean request. Lower values slow trust recovery. |
 | `level_duration_seconds` | `300` | Time at one adaptive level before time-based recovery drops one level. |
 | `deescalation_check_seconds` | `30` | Background sweep interval for idle-session time-based recovery. |
-| `clean_requests_to_deescalate` | `0` | Consecutive clean requests required to drop one adaptive level. `0` disables this opt-in recovery path. Any block or near-miss resets the clean streak, so an attacker cannot interleave clean traffic to stay under enforcement. A session that runs fully clean for this many requests does earn back one level, so set it conservatively: lower values recover faster but give a patient, fully-clean attacker an easier path back down. |
+| `clean_requests_to_deescalate` | `0` | Consecutive clean requests required to drop one adaptive level. `0` disables this opt-in recovery path. Any scored signal or recorded warning resets the clean streak, so an attacker cannot interleave clean traffic to stay under enforcement. A session that runs fully clean for this many requests does earn back one level, so set it conservatively: lower values recover faster but give a patient, fully-clean attacker an easier path back down. |
 | `severity_weighted_signals` | `false` | Opt-in lower score contribution for selected low-severity block labels when they represent concrete evidence. Entropy-only findings contribute no score regardless of this setting. DLP, SSRF, prompt-injection, and other concrete blocks retain their signals. |
 | `cooperative_tool_downweight` | `true` | Downweight domain-burst and IP-domain-burst adaptive signals from known cooperative tool user agents such as `yt-dlp`, package managers, `curl`, and `git`. A bound or config-default identity is always downweighted, whatever this is set to. |
 | `levels` | *(see below)* | Per-level enforcement upgrades |
 
-Concrete hard blocks retain their score contribution; entropy-only blocks do not. Adaptive levels recover only by time, and the 5-minute level
-duration plus 30-second sweep cadence are preserved. The clean-request recovery
-path is opt-in because it is intended for single interactive-agent
-false-positive recovery; it never advances on mixed traffic because every
-adaptive signal resets the consecutive-clean counter.
+Concrete hard blocks retain their score contribution; entropy-only blocks do not. By default, adaptive levels recover by time, using the configured level duration and sweep cadence. The clean-request recovery path is opt-in because it is intended for single interactive-agent false-positive recovery; it never advances on mixed traffic because every adaptive signal resets the consecutive-clean counter.
 
 ### Escalation Levels
 
@@ -2086,25 +2086,35 @@ Each level accepts the following fields. All fields use **pointer semantics**:
 
 ### Destination scope
 
-Findings on the HTTP paths (fetch, forward proxy, CONNECT, TLS interception, reverse proxy, redirect hops) are scored per destination host as well as on the session. The `levels` table, `block_all`, and airlock triggers are evaluated against the level of the destination a request is headed to, so one noisy destination is quarantined without cutting off the agent's other destinations. Signals that have no destination, such as MCP traffic, still act on the whole session.
+Findings on the HTTP paths (fetch, forward proxy, CONNECT, TLS interception, reverse proxy, WebSocket, redirect hops) are scored per destination host as well as on the session. The `levels` table, `block_all`, and airlock triggers are evaluated against the level of the destination a request is headed to, so one noisy destination is quarantined without cutting off the agent's other destinations. Signals that have no destination, such as MCP traffic, still act on the whole session. Warning-only destinations do not allocate enforcement scopes or consume the scope limit.
 
 The session's own score and level are an aggregate that sums every destination, and they are what `pipelock session risk` and `session list` show. Aggregate `critical` does not by itself deny anything: when findings are spread over many destinations and none of them reaches critical, the session reads `critical` with `block_all: false` and airlock tier `none`, and clean requests keep flowing. `pipelock session explain` lists the destination scopes that are actually elevated or quarantined. A destination that reaches critical on its own latches `block_all` and takes the configured `on_critical` airlock tier for that destination, and a request to it is refused until the scope recovers or `session reset` clears it. Loopback clients and loopback upstreams get no exemption from this: only `adaptive_enforcement.exempt_domains` exempts a destination. If more than 1,024 destinations are tracked for one session, new destinations fall back to the session-wide lane, which is stricter.
 
 ### De-escalation
 
-Sessions at `block_all` recover autonomously via a background sweep that runs
-every 30 seconds. If a session has been at its current escalation level for
-longer than 5 minutes, it is automatically stepped down one level. Recovery
-also triggers on the next incoming request, WebSocket frame, or MCP message
-after the timer expires (on-entry fast path). The session must accumulate new real signals to re-escalate.
+Sessions at `block_all` recover autonomously via a background sweep that runs every 30 seconds. If a session has been at its current escalation level for longer than 5 minutes, it is automatically stepped down one level. Warnings do not restart that timer. Recovery also triggers on the next incoming request, WebSocket frame, or MCP message after the timer expires (on-entry fast path). The session must accumulate new real signals to re-escalate.
 
 De-escalation drops one level per 5-minute period. A session at critical with no activity takes 15 minutes (3 periods) to return to normal. Each de-escalation resets the threat score to half the current threshold to prevent immediate re-escalation from stale points.
 
 When a session is at a `block_all` level, blocked retries do not refresh the session's idle timer. This allows idle eviction to eventually clean up sessions that are no longer generating traffic, preventing zombie sessions from persisting indefinitely.
 
+### Session lifetime and reload
+
+Adaptive state belongs to the proxy's session identity, rather than a client conversation window. MCP stdio keeps state for the wrapped proxy invocation. A shared MCP HTTP proxy keeps separate state for its authenticated principals; multiple conversations using the same identity can share state. Restarting the proxy creates fresh in-memory sessions. Do not use a client-controlled name as an authenticated identity.
+
+Unchanged and unrelated configuration reloads retain existing security state. Disabling adaptive enforcement stops adaptive upgrades immediately; it does not turn off explicit scanner blocks or immutable floors. Re-enabling it can reuse retained session state. Changing a scanner from block to warn stops new warning points but does not erase prior enforced evidence. Sessions already elevated before an upgrade recover through the configured timers, opt-in clean streak, or an operator session reset; scores are not retroactively attributed to old warning findings.
+
+### Block diagnostics
+
+An adaptive or upgraded block explains its category, current enforcement-scope score, configured initial threshold, level, and recovery settings to the caller and in the audit log. HTTP paths with a fixed error body use `X-Pipelock-Adaptive-Detail` for the explanation. MCP JSON-RPC errors carry it in `error.message`. MCP proxy diagnostics go to stderr in stdio mode, including when `logging.output` is `stdout`; stdout carries only protocol messages.
+
+WebSocket close frames carry the block category and, when the RFC 6455 byte budget permits, optional `adaptive` metadata with `score`, `threshold`, and `wait_s`. The wait is the configured duration per level, rather than an exact recovery time. The complete explanation remains in the audit log. See the [block-reason wire contract](specs/block-reason-header.md#adaptive-decision-details). Clean-request score decay alone does not clear an active level, and blocked retries do not earn clean-request recovery. At the default critical level, time recovery clears `block_all` after the first level drop; lower-level upgrades remain until their own blocking levels clear. Airlock quarantine has separate tier timers, which its denial explanation also reports. A zero airlock timer disables that automatic transition; an operator session reset can clear it.
+
+Quarantine that starts after a CONNECT tunnel or WebSocket relay has been established cancels the connection and records the complete explanation in the audit log. An opaque CONNECT tunnel cannot carry an HTTP error after its 200 handshake. The next request receives the normal admission refusal and detail.
+
 ### Domain Burst Scoring
 
-Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, the anomaly is signaled once per window with the configured score. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP; bound and config-default identities are not request-controlled, so they are never written to the IP-level counter. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
+Session profiling detects domain bursts (many unique domains in a short window). When the burst threshold is crossed, an enforced anomaly is signaled once per window with the configured score. A warned anomaly adds no enforcement points. Subsequent requests in the same window still trigger the configured `anomaly_action` (block or warn) but do not add further adaptive score, preventing burst detection from driving sessions to critical on its own. IP-wide domain bursts are tracked separately to catch agent-identity rotation from a single client IP; bound and config-default identities are not request-controlled, so they are never written to the IP-level counter. When `cooperative_tool_downweight` is enabled, burst signals from known cooperative tool user agents are reduced instead of scored at full browser-like weight.
 
 ## Metrics listener
 

@@ -1197,7 +1197,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				if allowed, reason := ClassifyAction(tier, req.Method, redirectTransport, false); !allowed {
 					logger.LogAirlockDeny(redirectSess.key, tier, redirectTransport, req.Method, clientIP, requestID)
 					p.metrics.RecordAirlockDenial(tier, redirectTransport, req.Method)
-					return newRedirectBlockedRequest("airlock", reason)
+					return newRedirectBlockedRequest("airlock", reason+"; "+airlockBlockDetail(logger, redirectSess, currentCfg, adaptiveScopeForHost(req.URL.Hostname()), tier))
 				}
 			}
 
@@ -3555,17 +3555,18 @@ func (p *Proxy) recordSessionActivity(clientIP, agent, hostname, requestID strin
 }
 
 type sessionActivityOptions struct {
-	ClientIP   string
-	Agent      string
-	Hostname   string
-	Scope      string
-	RequestID  string
-	UserAgent  string
-	ActorAuth  envelope.ActorAuth
-	Result     scanner.Result
-	Config     *config.Config
-	Logger     *audit.Logger
-	DeferClean bool
+	ClientIP    string
+	Agent       string
+	Hostname    string
+	Scope       string
+	RequestID   string
+	UserAgent   string
+	ActorAuth   envelope.ActorAuth
+	Result      scanner.Result
+	Config      *config.Config
+	Logger      *audit.Logger
+	DeferClean  bool
+	ObserveOnly bool // caller forwards this configured finding rather than enforcing it
 }
 
 // Returns a SessionResult with Blocked set when the request should be rejected
@@ -3684,6 +3685,8 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			// resolver). Neither proves anything about threat posture, and
 			// treating resolver instability as a threat cascade can push
 			// otherwise benign sessions into airlock lockdown.
+		} else if opts.ObserveOnly {
+			_ = recordScopedAdaptiveSignal(sess, scope, session.SignalWarning, ep)
 		} else if result.IsConfigMismatch() {
 			// Bounded signal: config-mismatch blocks (SSRF on an
 			// allowlisted domain) are not real attacks, but repeated
@@ -3706,7 +3709,7 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
 		} else if result.Score > 0 {
-			if to := recordScopedAdaptiveSignal(sess, scope, session.SignalNearMiss, ep); to != "" {
+			if to := recordScopedAdaptiveSignal(sess, scope, session.SignalWarning, ep); to != "" {
 				escalatedTo = to
 				sess.SetScopedBlockAll(scope, decide.UpgradeAction("", sess.EffectiveEscalationLevel(scope), &adaptiveCfg) == config.ActionBlock)
 			}
@@ -3725,6 +3728,9 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 			sig, ok := signalForSessionAnomaly(a.Type, cooperativeBurst)
 			if !ok || a.Score <= 0 {
 				continue
+			}
+			if cfg.SessionProfiling.AnomalyAction != config.ActionBlock || !cfg.EnforceEnabled() {
+				sig = session.SignalWarning
 			}
 			if to := recordScopedAdaptiveSignal(sess, scope, sig, ep); to != "" {
 				escalatedTo = to
@@ -3909,6 +3915,7 @@ func triggerScopedAirlockOnEscalation(sess *SessionState, scope, escalatedTo str
 		})
 		if ep.Logger != nil {
 			ep.Logger.LogAirlockEnterForScope(ep.Session, scope, to, "adaptive_"+escalatedTo, ep.ClientIP, ep.RequestID)
+			ep.Logger.LogBlocked(audit.NewMethodLogContext("ADAPTIVE"), "airlock", fmt.Sprintf("category=airlock score=%g escalation_threshold=%g level=%s; ", sess.ScopedThreatScore(scope), ep.Threshold, escalatedTo)+decide.AirlockRecoveryDetail(to, airlockCfg))
 		}
 		if ep.Metrics != nil {
 			ep.Metrics.RecordAirlockTransition(from, to, "adaptive")
@@ -5512,16 +5519,17 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// CEE, and response scanning may still find something after this point, and
 	// a clean decay before those stages would incorrectly counteract a later signal.
 	sr := p.recordSessionActivityWithUserAgent(sessionActivityOptions{
-		ClientIP:   clientIP,
-		Agent:      agent,
-		Hostname:   parsed.Hostname(),
-		RequestID:  requestID,
-		UserAgent:  r.UserAgent(),
-		ActorAuth:  id.Auth,
-		Result:     result,
-		Config:     cfg,
-		Logger:     log,
-		DeferClean: true,
+		ClientIP:    clientIP,
+		Agent:       agent,
+		Hostname:    parsed.Hostname(),
+		RequestID:   requestID,
+		UserAgent:   r.UserAgent(),
+		ActorAuth:   id.Auth,
+		Result:      result,
+		ObserveOnly: !result.Allowed && !urlResultBlocks(cfg, sc, targetURL, result),
+		Config:      cfg,
+		Logger:      log,
+		DeferClean:  true,
 	})
 
 	// Look up the live session recorder for Fix 4+5: use EscalationLevel() at
@@ -5566,7 +5574,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
 					http.StatusForbidden, FetchResponse{
 						URL: displayURL, Agent: agent, Blocked: true,
-						BlockReason: "session in airlock drain",
+						BlockReason: "session in airlock drain; " + airlockBlockDetail(log, fetchSess, cfg, adaptiveScopeForHost(parsed.Hostname()), tier),
 					})
 				return true
 			}
@@ -5688,7 +5696,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         escalatedEchoURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: adaptiveBlockedReason,
+					BlockReason: adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner),
 					Layer:       adaptiveEnforcementLayer,
 				})
 			return
@@ -5766,7 +5774,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: adaptiveBlockedReason,
+				BlockReason: adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 				Layer:       adaptiveEnforcementLayer,
 			})
 		return
@@ -5827,8 +5835,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			fetchReceiptPattern = "request_header_secret"
 		}
 		if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled {
-			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalNearMiss.
-			headerSignal := session.SignalNearMiss
+			// Blocked header DLP → SignalBlock (high confidence); warn-mode → SignalWarning.
+			headerSignal := session.SignalWarning
 			if headerBlocked {
 				headerSignal = session.SignalBlock
 			}
@@ -5921,7 +5929,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: adaptiveBlockedReason,
+				BlockReason: adaptiveBlockDetail(log, fetchRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 				Layer:       adaptiveEnforcementLayer,
 			})
 		return
@@ -6100,7 +6108,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         displayURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: adaptiveBlockedReason,
+					BlockReason: adaptiveBlockDetail(log, ceeRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 					Layer:       adaptiveEnforcementLayer,
 				})
 			return
@@ -6698,6 +6706,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	finalHost := resp.Request.URL.Hostname()
 	finalResponseURL := resp.Request.URL.String()
+	_, responseLevel := adaptiveBlockState(fetchRec, adaptiveScopeForHost(finalHost))
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
 	if sc.ResponseScanningEnabled() && responseScanExempt {
 		log.LogResponseScanExempt(actx, finalHost)
@@ -6748,7 +6757,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			scanner:        sc,
 			config:         cfg,
 			logger:         log,
-			sessionLevel:   recEscalationLevel(fetchRec),
+			sessionLevel:   responseLevel,
 			exempt:         responseScanExempt,
 			refusing:       true,
 		})
@@ -6841,7 +6850,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			scanner:        sc,
 			config:         cfg,
 			logger:         log,
-			sessionLevel:   recEscalationLevel(fetchRec),
+			sessionLevel:   responseLevel,
 			exempt:         responseScanExempt,
 		})
 		if found {
@@ -7058,6 +7067,11 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 			action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
 		}
 		if action != originalAction {
+			if sm := p.sessionMgrPtr.Load(); sm != nil {
+				if parsedResponseURL, err := url.Parse(firstNonEmptyString(in.responseURL, displayURL)); err == nil {
+					setAdaptiveBlockDetail(w, log, sm.GetOrCreate(sessionKeyFor(cfg, agent, clientIP, actorAuth)), cfg, adaptiveScopeForHost(parsedResponseURL.Hostname()), responseScanLayer)
+				}
+			}
 			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 		}
@@ -7200,10 +7214,10 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		out = result.TransformedContent
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), config.ActionStrip, len(result.Matches), patternNames, bundleRules)
 	case config.ActionWarn:
-		recordResponseSignal(session.SignalNearMiss)
+		recordResponseSignal(session.SignalWarning)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), config.ActionWarn, len(result.Matches), patternNames, bundleRules)
 	default:
-		recordResponseSignal(session.SignalNearMiss)
+		recordResponseSignal(session.SignalWarning)
 		log.LogResponseScan(newHTTPAuditContext(reqCtx, log, httpAuditEvent{Method: http.MethodGet, TargetURL: displayURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), action, len(result.Matches), patternNames, bundleRules)
 	}
 	if cfg.FlightRecorder.RequireReceipts {

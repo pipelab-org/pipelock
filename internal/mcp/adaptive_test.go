@@ -255,9 +255,9 @@ func TestMCP_Adaptive_DLPBlockRecordsSignalBlock(t *testing.T) {
 	}
 }
 
-// TestMCP_Adaptive_WarnRecordsNearMiss verifies that a DLP hit with warn action
-// records SignalNearMiss (+1 point) and never SignalBlock.
-func TestMCP_Adaptive_WarnRecordsNearMiss(t *testing.T) {
+// TestMCP_Adaptive_WarnRecordsObservation verifies that a DLP hit with warn action
+// records SignalWarning (zero points) and never SignalBlock.
+func TestMCP_Adaptive_WarnRecordsObservation(t *testing.T) {
 	rec := &mockRecorder{}
 	adaptiveCfg := adaptiveCfgEnabled()
 
@@ -265,17 +265,17 @@ func TestMCP_Adaptive_WarnRecordsNearMiss(t *testing.T) {
 	dirtyMsg := makeRequest(5, methodToolsCall, map[string]string{"api_key": secret}) + "\n"
 	runAdaptiveInput(dirtyMsg, rec, adaptiveCfg, nil, config.ActionWarn)
 
-	hasNearMiss := false
+	hasWarning := false
 	for _, sig := range rec.signals {
-		if sig == session.SignalNearMiss {
-			hasNearMiss = true
+		if sig == session.SignalWarning {
+			hasWarning = true
 		}
 		if sig == session.SignalBlock {
 			t.Errorf("unexpected SignalBlock for warn-action request, signals: %v", rec.signals)
 		}
 	}
-	if !hasNearMiss {
-		t.Errorf("expected SignalNearMiss in signals for warn-action hit, got: %v", rec.signals)
+	if !hasWarning {
+		t.Errorf("expected SignalWarning in signals for warn-action hit, got: %v", rec.signals)
 	}
 }
 
@@ -1069,7 +1069,7 @@ func TestBlockSessionDenyResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := blockSessionDenyResponse(tt.id, "critical")
+			data := blockSessionDenyResponse(tt.id, wantMessage)
 			if len(data) == 0 {
 				t.Fatal("expected non-empty response bytes")
 			}

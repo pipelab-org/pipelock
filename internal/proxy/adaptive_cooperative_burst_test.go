@@ -147,7 +147,7 @@ func cooperativeBurstTestConfig() *config.Config {
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
 	cfg.SessionProfiling.Enabled = true
-	cfg.SessionProfiling.AnomalyAction = config.ActionWarn
+	cfg.SessionProfiling.AnomalyAction = config.ActionBlock
 	cfg.SessionProfiling.DomainBurst = 2
 	cfg.SessionProfiling.WindowMinutes = 5
 	cfg.SessionProfiling.MaxSessions = 100

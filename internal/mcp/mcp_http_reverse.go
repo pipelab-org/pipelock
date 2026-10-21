@@ -928,12 +928,16 @@ func RunHTTPListenerProxy(
 					emitMCPOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, "error", -1, outcomeReason, requestBaseOpts.requireReceipts())
 				}
 			}()
-			withhold := func(reason string) {
+			withhold := func(reason string, callerDetail ...string) {
 				outcomeReason = reason
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed")))
+				message := "upstream HTTP request failed"
+				if len(callerDetail) > 0 {
+					message = callerDetail[0]
+				}
+				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("%s", message)))
 			}
 			// 407 is the listener's own credential challenge. An upstream 407
 			// relayed as-is would read as Pipelock refusing the client's
@@ -946,7 +950,8 @@ func RunHTTPListenerProxy(
 			// A session escalated to block every response gets no upstream
 			// content, refusals included, matching ForwardScanned.
 			if reqRec != nil && decide.UpgradeAction("", reqRec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
-				withhold("session escalation blocks responses")
+				detail := mcpAdaptiveBlockMessage(reqRec, adaptiveCfg, "mcp_response_scan", safeLogW)
+				withhold("session escalation blocks responses", detail)
 				return true
 			}
 			reply, err := readUpstreamClientError(upResp)
@@ -971,7 +976,7 @@ func RunHTTPListenerProxy(
 			relayOpts.AdaptiveCfg = adaptiveCfg
 			relayOpts.AdaptiveCfgFn = nil
 			if ok, reason := reply.writeIfActive(w, clientState, relayOpts); !ok {
-				withhold(reason)
+				withhold(reason, reason)
 			}
 			return true
 		}

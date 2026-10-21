@@ -443,7 +443,7 @@ func TestEmitCorrelation_WebSocketWithoutTag(t *testing.T) {
 // The CEE adaptive-escalation logger in enforceClientCEE is built from the
 // relay's captured tag, separately from the frame logger. Text-frame DLP is off
 // so only CEE fragment reassembly sees the key split across two frames, and the
-// action is warn so the escalation event is the only emission from that path.
+// action is block so the enforced fragment signal causes an escalation.
 func TestEmitCorrelation_WebSocketCEEAdaptiveEscalation(t *testing.T) {
 	t.Parallel()
 	backendAddr, backendCleanup := wsEchoServer(t)
@@ -455,7 +455,7 @@ func TestEmitCorrelation_WebSocketCEEAdaptiveEscalation(t *testing.T) {
 		scanText := false
 		cfg.WebSocketProxy.ScanTextFrames = &scanText
 		cfg.CrossRequestDetection.Enabled = true
-		cfg.CrossRequestDetection.Action = config.ActionWarn
+		cfg.CrossRequestDetection.Action = config.ActionBlock
 		cfg.CrossRequestDetection.EntropyBudget.Enabled = false
 		cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
 		cfg.CrossRequestDetection.FragmentReassembly.MaxBufferBytes = 65536
@@ -474,11 +474,11 @@ func TestEmitCorrelation_WebSocketCEEAdaptiveEscalation(t *testing.T) {
 	t.Cleanup(func() { _ = conn.Close() })
 
 	half1, half2 := pathSecretHalves()
-	for _, part := range []string{half1, half2} {
+	for i, part := range []string{half1, half2} {
 		if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte(part)); err != nil {
 			t.Fatalf("write frame: %v", err)
 		}
-		if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		if _, _, err := wsutil.ReadServerData(conn); err != nil && i == 0 {
 			t.Fatalf("read echo: %v", err)
 		}
 	}

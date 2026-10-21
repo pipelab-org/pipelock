@@ -175,6 +175,22 @@ The schema version sits in `X-Pipelock-Block-Reason-Version`. v1 covers everythi
 
 Agents should treat unknown reason codes as a generic block at the declared severity. Agents should treat unknown versions as a generic block.
 
+### Adaptive decision details
+
+An adaptive block includes its enforcement category, current scope score, configured
+initial `escalation_threshold`, level, and recovery settings in the response body.
+HTTP paths with a fixed block body carry the same explanation in the optional
+`X-Pipelock-Adaptive-Detail` header. The explanation contains no request content or
+session identity. The full explanation also goes to the audit log; MCP proxies
+write diagnostics to stderr so stdio stdout remains a JSON-RPC stream.
+
+The threshold is the configured initial threshold, rather than the next escalation
+edge. Recovery drops one level after `level_duration_seconds` without another
+escalation, on the next recovery check. Clean-request score decay alone does
+not clear a level. `clean_requests_to_deescalate: 0` disables the optional clean
+streak recovery path. The explanation reports those values so callers can tell
+which recovery paths are available.
+
 ## Transport coverage
 
 HTTP-capable block paths emit the same v1 schema; only the framing differs (HTTP headers vs WebSocket close-frame JSON). MCP JSON-RPC-only blocks preserve the same reason vocabulary in error metadata where there is no HTTP response surface.
@@ -203,7 +219,12 @@ WebSocket blocks happen via close frames, not response headers. The close-frame 
 }
 ```
 
-Per RFC 6455 the close-frame reason payload is limited to 123 bytes. A block payload also carries `request_id` when its recorded ID matches the shared shape and fits alongside `block_reason`. If the JSON exceeds the limit, fields drop in this order: `receipt`, `layer`, `retry`, `severity`, `version`, `request_id`. The reason is never dropped to make room for the ID. After upgrade there are no HTTP headers; the operator can run `pipelock explain event <request_id>` using the surviving ID.
+Adaptive closes can also carry `"adaptive":{"score":20,"threshold":5,"wait_s":300}`.
+`wait_s` is the configured wait per level, not an estimate of when the whole
+session will recover. The full category and recovery explanation is in the audit
+log; `block_reason` identifies the close category.
+
+Per RFC 6455 the close-frame reason payload is limited to 123 bytes. A block payload also carries `request_id` when its recorded ID matches the shared shape and fits alongside `block_reason`. If the JSON exceeds the limit, fields drop in this order: `receipt`, `layer`, `retry`, `severity`, `version`, `request_id`, `adaptive`. The reason is never dropped to make room for optional metadata. Extreme numeric values can require omitting `adaptive`; the full explanation remains in the audit log. After upgrade there are no HTTP headers; the operator can run `pipelock explain event <request_id>` using the surviving ID.
 
 MCP stdio is not covered. There is no HTTP layer to attach headers to; MCP-stdio errors flow through the JSON-RPC error envelope. Block-reason taxonomy in JSON-RPC errors is tracked separately.
 

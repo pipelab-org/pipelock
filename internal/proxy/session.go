@@ -477,7 +477,9 @@ func adaptiveBlockAllCheck(cfg *config.AdaptiveEnforcement) func(int) bool {
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.globalSignalsAuthoritative = true
+	if sig != session.SignalWarning {
+		s.globalSignalsAuthoritative = true
+	}
 
 	escalated, from, to := recordAdaptiveSignalFields(
 		&s.threatScore,
@@ -505,6 +507,16 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Observations must not allocate enforcement lanes: warning-only traffic
+	// cannot exhaust the scope cap and force later destinations into the
+	// stricter session-wide fallback.
+	if sig == session.SignalWarning {
+		s.cleanRequests = 0
+		if st := s.scopes[scope]; st != nil {
+			st.cleanRequests = 0
+		}
+		return false, "", ""
+	}
 	st := s.getOrCreateScopeLocked(scope)
 	if st == nil {
 		// Scope cap reached: record against the session-wide lane and make it
@@ -542,8 +554,11 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 }
 
 func recordAdaptiveSignalFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, cleanRequests *int, sig session.SignalType, initialThreshold float64) (bool, string, string) {
-	*score += session.SignalPoints[sig]
 	*cleanRequests = 0
+	if sig == session.SignalWarning {
+		return false, "", ""
+	}
+	*score += session.SignalPoints[sig]
 	if *threshold == 0 && initialThreshold > 0 {
 		*threshold = initialThreshold
 	}

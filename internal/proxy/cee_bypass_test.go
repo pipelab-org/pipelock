@@ -92,11 +92,8 @@ func TestCEEBypass_AgentRotationDoesNotPartition(t *testing.T) {
 	})
 }
 
-// TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey proves that CEE adaptive
-// enforcement follows the same folded key as fragment reassembly. In warn/audit
-// mode, a fragment DLP hit records an adaptive signal instead of directly
-// blocking. The completing rotated-agent request must still be denied when that
-// signal escalates the IP-anchored CEE session to block_all.
+// TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey verifies that warned
+// fragments retain their folded session without creating enforcement points.
 func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 	target := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -104,7 +101,7 @@ func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 	defer target.Close()
 
 	cfg := adaptiveConfigBlockAll()
-	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0 // one FragmentDLP signal reaches elevated
+	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0 // an enforced FragmentDLP signal reaches elevated
 	cfg.CrossRequestDetection.Enabled = true
 	cfg.CrossRequestDetection.Action = config.ActionWarn
 	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
@@ -131,8 +128,8 @@ func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 	}
 
 	fr2, code2 := fetchThroughProxyWithAgent(t, ts.URL, target.URL+"/x?p="+testCEEAWSKeySuffix, "rot-agent-2")
-	if code2 != http.StatusForbidden || !fr2.Blocked {
-		t.Fatalf("BYPASS: warn-mode CEE escalated the folded session but fetch did not enforce block_all "+
+	if code2 != http.StatusOK || fr2.Blocked {
+		t.Fatalf("warning-only CEE must leave the folded session usable "+
 			"(code=%d blocked=%v)", code2, fr2.Blocked)
 	}
 }

@@ -20,7 +20,7 @@ type SignalType int
 
 const (
 	SignalBlock                      SignalType = iota // +3 - hard block from any scanner/transport
-	SignalNearMiss                                     // +1 - warn-level finding from any scanner/transport
+	SignalNearMiss                                     // +1 - bounded enforced config-mismatch finding
 	SignalBlockLowSeverity                             // +1 - opt-in low/noisy hard block contribution
 	SignalBlockMediumSeverity                          // +2 - opt-in medium hard block contribution
 	SignalDomainAnomaly                                // +2 - domain burst detection
@@ -32,11 +32,12 @@ const (
 	SignalDomainAnomalyCooperative                     // +0.4 - downweighted domain burst from cooperative tool UA
 	SignalIPDomainAnomalyCooperative                   // +0.6 - downweighted IP burst from cooperative tool UA
 	SignalCrossAgentContamination                      // +2 - contaminated session propagated taint across an agent boundary (A2A/MCP)
+	SignalWarning                                      // +0 - observation only; interrupts the clean-request streak
 )
 
 // ClassifiedDenialSignal is true for enforced-block signals. Identical
-// retries of those findings do not pump threat score. Warn, strip, and
-// other non-block signals still score on every observation.
+// retries of those findings do not pump threat score. Strip and other scored
+// non-block signals still score on every observation; warnings score zero.
 func ClassifiedDenialSignal(sig SignalType) bool {
 	switch sig {
 	case SignalBlock, SignalBlockLowSeverity, SignalBlockMediumSeverity:
@@ -50,6 +51,7 @@ func ClassifiedDenialSignal(sig SignalType) bool {
 var SignalPoints = map[SignalType]float64{
 	SignalBlock:                      3.0,
 	SignalNearMiss:                   1.0,
+	SignalWarning:                    0,
 	SignalBlockLowSeverity:           1.0,
 	SignalBlockMediumSeverity:        2.0,
 	SignalDomainAnomaly:              2.0,

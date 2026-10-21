@@ -197,8 +197,8 @@ func TestInterceptHandler_CrossAgentA2ABodyRecordsEvidenceAndSignal(t *testing.T
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	if got := sess.ThreatScore() - before; got != session.SignalPoints[session.SignalCrossAgentContamination] {
-		t.Fatalf("score delta = %.2f, want cross-agent signal points %.2f", got, session.SignalPoints[session.SignalCrossAgentContamination])
+	if got := sess.ThreatScore() - before; got != 0 {
+		t.Fatalf("allowed cross-agent observation changed score by %.2f", got)
 	}
 	found := false
 	for _, source := range sess.RiskSnapshot().Sources {

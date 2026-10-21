@@ -243,7 +243,7 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 			return
 		}
 		if opts.Rec != nil && decide.UpgradeAction("", opts.Rec.EscalationLevel(), opts.adaptiveCfg()) == config.ActionBlock {
-			reason = "session escalation blocks responses"
+			reason = "session escalation blocks responses; " + mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
 			return
 		}
 		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() { e.write(w) })
