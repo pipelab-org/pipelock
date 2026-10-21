@@ -179,7 +179,7 @@ The harness produces three artifacts worth looking at:
 3. **`signing.key.pub` hex output**: the public key printed to
    stdout, the only thing a third party needs to verify the stream.
 
-The harness verifies the stream inline with Python. For an independent v1-only integrity check, install the reference verifier below. This check doesn't prove that the recording is complete; the detector example uses the Go verifier for that.
+The harness verifies the stream inline with Python. For an independent v1-only integrity check, install the Python verifier below. This check doesn't prove that the recording is complete; the detector example uses the Go verifier for that.
 
 Choose the run chain being checked, for example the first JSONL file in the example's evidence directory. This checks that one shard, which is the whole run for this short example. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>` (see [One chain per process run](flight-recorder.md#one-chain-per-process-run)):
 
@@ -251,7 +251,7 @@ def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
     # Keep the bytes being verified, even if the source file changes later.
     contents = Path(path).read_bytes()
     with tempfile.TemporaryDirectory() as directory:
-        snapshot = Path(directory) / "evidence.jsonl"
+        snapshot = Path(directory) / Path(path).name
         snapshot.write_bytes(contents)
         check = subprocess.run(
             [
