@@ -204,12 +204,23 @@ ActionReceipt v1 chain, and both reproduce the same v1 signature and
 chain-linking checks. They don't check the same scope. `pipelock-verify`
 checks only that v1 chain, has no end proof, and exits 0 when it verifies.
 `pipelock verify-receipt` also checks the recorder hash chain and the
-EvidenceReceipt v2 chain. With `--whole-recorder` it exits 0 only when the
-run's transcript root proves its end. If the file has no seal, as with a
-recorder that's still running, this command reports `VALID PREFIX, END UNPROVEN`
-and exits 3. Without that flag, a cleanly stopped run
-that recorded v2 receipts, which can come from allowed or blocked requests, reports
-`VALID PREFIX, END UNPROVEN` and exits 3.
+EvidenceReceipt v2 chain. The Go command above uses `--whole-recorder`.
+For an intact single-file run in the per-run session format, with trusted keys,
+its outcomes are:
+
+| Flags | Recorder state | Result | Exit |
+|-------|----------------|--------|------|
+| `--whole-recorder` | Valid transcript-root seal and signed trailing checkpoint | End proven | 0 |
+| `--whole-recorder` | Missing seal (live or interrupted run) | `INCOMPLETE`, then `VALID PREFIX, END UNPROVEN` | 3 |
+| `--whole-recorder --allow-prefix` | Missing seal | Prefix accepted; end still unproven | 0 |
+| `--whole-recorder --require-seal` | Missing seal | Invalid evidence, even with `--allow-prefix` | 1 |
+
+Keep `--allow-prefix` off when a detector requires a completed recording.
+Older shared-session recordings remain end-unproven even with a seal. Removing
+`--whole-recorder` checks the receipt subsequences instead of every recorder entry;
+a run with v2 receipts remains `VALID PREFIX, END UNPROVEN` (exit 3) even after a
+clean stop. See the [seal limitations](flight-recorder.md#completeness-anchor-transcript-root)
+for the full recorder verification contract.
 
 ### Consuming receipts in a detector
 
