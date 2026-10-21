@@ -1224,6 +1224,10 @@ func ForwardScannedInput(
 				reasonStr = joinStrings(reasons)
 				effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
 				scoringAction = mergeAction(scoringAction, baselineDecision.Action)
+				if baselineDecision.Action == config.ActionBlock || baselineDecision.Action == config.ActionAsk {
+					// Informational card observations cannot erase an independent baseline refusal.
+					numberOnlyDecision = false
+				}
 				if baselineDecision.Action == config.ActionAsk {
 					errCode = -32001
 					errMsg = "pipelock: MCP request blocked by behavioral baseline"

@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -121,6 +122,57 @@ func TestAdaptiveBaselineBlockStillScores(t *testing.T) {
 					t.Fatalf("baseline checks=%d score=%.1f signals=%v", checker.checks, rec.ThreatScore(), rec.signals)
 				}
 			})
+		}
+	}
+}
+
+// Numeric card observations remain score-neutral, but they must not hide an
+// independent behavioral-baseline refusal on the same request.
+func TestAdaptiveBaselineRefusalAlongsideInformationalCardsScores(t *testing.T) {
+	for _, mode := range []string{"stdio", "http"} {
+		for _, baselineAction := range []string{config.ActionWarn, config.ActionBlock} {
+			for _, level := range []int{0, 1} {
+				t.Run(fmt.Sprintf("%s/%s/level=%d", mode, baselineAction, level), func(t *testing.T) {
+					cfg := config.Defaults()
+					cfg.AdaptiveEnforcement.Enabled = true
+					cfg.ApplyDefaults()
+					cfg.Internal = nil
+					sc := scanner.MustNew(cfg)
+					defer sc.Close()
+					msg := makeRequest(905, methodToolsCall, map[string]interface{}{"name": "metrics", "arguments": map[string]interface{}{"ids": []float64{4111, 1111, 1111, 1111}}})
+					verdict := ScanRequest(t.Context(), []byte(msg), sc, config.ActionWarn, config.ActionBlock)
+					if !verdict.IsInformationalCardRuns() || verdict.Action != config.ActionWarn {
+						t.Fatalf("fixture is not an informational card warning: %+v", verdict)
+					}
+					rec := &mockRecorder{level: level, score: float64(level * 6)}
+					before := rec.ThreatScore()
+					checker := &identityBaselineChecker{t: t, wantAgentKey: "identity-k", blockedAgentKey: "identity-k", blockedAction: baselineAction}
+					opts := MCPProxyOpts{Scanner: sc, Rec: rec, BaselineRec: &baselineTestRecorder{}, AdaptiveCfg: &cfg.AdaptiveEnforcement, InputCfg: newHTTPInputCfg(config.ActionWarn), Baseline: checker, AddressProtectionAgent: "identity-k"}
+					var out, log bytes.Buffer
+					var blocked bool
+					if mode == "http" {
+						blocked = scanHTTPInput([]byte(msg), &log, "test-session", "test-session", opts) != nil
+					} else {
+						blockedCh := make(chan BlockedRequest, 2)
+						ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg+"\n")), transport.NewStdioWriter(&out), &log, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, opts)
+						blocked = len(blockedCh) == 1
+						if blocked && out.Len() != 0 {
+							t.Fatalf("refused request was forwarded: %s", out.String())
+						}
+					}
+					wantBlock := baselineAction != config.ActionWarn
+					if checker.checks != 1 || blocked != wantBlock {
+						t.Fatalf("baseline checks=%d blocked=%t want=%t log=%s", checker.checks, blocked, wantBlock, log.String())
+					}
+					wantScore := before
+					if wantBlock {
+						wantScore += session.SignalPoints[session.SignalBlock]
+					}
+					if rec.ThreatScore() != wantScore {
+						t.Fatalf("baseline action=%s score=%.1f want=%.1f signals=%v", baselineAction, rec.ThreatScore(), wantScore, rec.signals)
+					}
+				})
+			}
 		}
 	}
 }
