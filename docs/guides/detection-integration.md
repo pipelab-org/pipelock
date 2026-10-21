@@ -179,8 +179,7 @@ The harness produces three artifacts worth looking at:
 3. **`signing.key.pub` hex output**: the public key printed to
    stdout, the only thing a third party needs to verify the stream.
 
-The harness verifies the stream inline with Python. For an
-independent check, install the reference verifier:
+The harness verifies the stream inline with Python. For an independent v1-only integrity check, install the reference verifier below. This check doesn't prove that the recording is complete; the detector example uses the Go verifier for that.
 
 Choose the run chain being checked, for example the first JSONL file in the example's evidence directory. This checks that one shard, which is the whole run for this short example. For a run with several shards or restarts, verify the full chain with `pipelock verify-receipt --chain evidence --session <session> --whole-recorder --key <public-key-hex>` (see [One chain per process run](flight-recorder.md#one-chain-per-process-run)):
 
@@ -224,6 +223,8 @@ for the full recorder verification contract.
 Once the stream verifies, a downstream detector reads it like any
 JSONL source. This is a complete working example:
 
+This small-file example holds one recording in memory and verifies a private temporary copy of those bytes. It parses the captured bytes, so later changes to the source file don't change what the detector consumes.
+
 ```python
 """Verify a pipelock receipt stream, then route each verified receipt
 to a pluggable handler for whatever downstream detector runs on.
@@ -235,6 +236,8 @@ Run: python verify_and_route.py evidence.jsonl <public-key-hex>
 import json
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Callable, Iterator
 
 
@@ -245,28 +248,32 @@ def verified_receipts(path: str, pubkey_hex: str) -> Iterator[dict]:
     event types). We filter for type == "action_receipt" and carry the
     outer envelope's session_id into the yielded record, since it is
     the primary grouping key detectors use."""
-    check = subprocess.run(
-        [
-            "pipelock", "verify-receipt", path,
-            "--whole-recorder", "--require-seal", "--key", pubkey_hex,
-        ],
-        capture_output=True,
-        text=True,
-    )
+    # Keep the bytes being verified, even if the source file changes later.
+    contents = Path(path).read_bytes()
+    with tempfile.TemporaryDirectory() as directory:
+        snapshot = Path(directory) / "evidence.jsonl"
+        snapshot.write_bytes(contents)
+        check = subprocess.run(
+            [
+                "pipelock", "verify-receipt", str(snapshot),
+                "--whole-recorder", "--require-seal", "--key", pubkey_hex,
+            ],
+            capture_output=True,
+            text=True,
+        )
     if check.returncode != 0:
         raise RuntimeError(
             f"verification failed: {check.stderr.strip() or check.stdout.strip()}"
         )
-    with open(path) as f:
-        for line in f:
-            if not line.strip():
-                continue
-            entry = json.loads(line)
-            if entry.get("type") != "action_receipt":
-                continue
-            record = entry["detail"]["action_record"]
-            record.setdefault("session_id", entry.get("session_id"))
-            yield record
+    for line in contents.splitlines():
+        if not line.strip():
+            continue
+        entry = json.loads(line)
+        if entry.get("type") != "action_receipt":
+            continue
+        record = entry["detail"]["action_record"]
+        record.setdefault("session_id", entry.get("session_id"))
+        yield record
 
 
 def default_handler(receipt: dict) -> None:
