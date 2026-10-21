@@ -198,6 +198,29 @@ func TestValidateAuditSegmentRejectsSequenceWrap(t *testing.T) {
 	}
 }
 
+func TestPayloadNamespaceRejectsV1Envelope(t *testing.T) {
+	env, entries := legacySessionFixture(t)
+	env.Chain.EntryVersion = 1
+	for i := range entries {
+		entries[i].Version = 1
+		if i > 0 {
+			entries[i].PrevHash = entries[i-1].Hash
+		}
+		entries[i].Hash = recorder.ComputeHash(entries[i])
+	}
+	env.Chain.SegmentHeadHash = entries[0].Hash
+	env.Chain.SegmentTailHash = entries[len(entries)-1].Hash
+	env.Chain.CheckpointHash = entries[len(entries)-1].Hash
+	payload := bindLegacySessionPayload(t, &env, entries)
+	if err := env.Validate(); err == nil || !strings.Contains(err.Error(), "entry_version=1") {
+		t.Fatalf("v1 audit envelope validation=%v", err)
+	}
+	ns, err := env.PayloadNamespace(t.Context(), payload)
+	if err != nil || ns != (AuditNamespace{}) {
+		t.Fatalf("v1 granted an observation identity: namespace=%+v err=%v", ns, err)
+	}
+}
+
 // Cancel while the consumer checks its context, avoiding timing-dependent
 // goroutines while exercising cancellation after parsing and during hashing.
 type auditCancelOnCheck struct {

@@ -68,6 +68,10 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	if err = store.db.QueryRowContext(t.Context(), "SELECT min(retained_backfill) FROM audit_session_observations").Scan(&backfill); err != nil || backfill != 1 {
 		t.Fatalf("backfill=%d err=%v", backfill, err)
 	}
+	var originalFirst string
+	if err = store.db.QueryRowContext(t.Context(), "SELECT first_received FROM audit_chain_observations WHERE session_id=?", "run-a").Scan(&originalFirst); err != nil {
+		t.Fatal(err)
+	}
 	_, err = store.PruneBefore(t.Context(), time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
@@ -87,8 +91,18 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	check(2, 2)
 	// Pruned payloads no longer supply same-chain conflict comparisons. Arrival
 	// observations survive, but don't prove the deleted sequence history.
-	if got := post("a-pruned-overlap", "run-a", 0, 2); got != http.StatusAccepted {
+	if got := post("a-pruned-overlap-known-limitation", "run-a", 0, 2); got != http.StatusAccepted {
 		t.Fatalf("pruned overlap status=%d", got)
+	}
+	var after, firstReceived, seqStart string
+	if err = store.db.QueryRowContext(t.Context(), "SELECT pruned_before FROM audit_observation_coverage WHERE id=1").Scan(&after); err != nil || after != before {
+		t.Fatalf("post-overlap prune coverage=%q want=%q err=%v", after, before, err)
+	}
+	if err = store.db.QueryRowContext(t.Context(), "SELECT first_received,seq_start FROM audit_chain_observations WHERE session_id=?", "run-a").Scan(&firstReceived, &seqStart); err != nil {
+		t.Fatal(err)
+	}
+	if firstReceived != originalFirst || seqStart != formatUint(0) {
+		t.Fatalf("post-overlap observation first=%q want=%q seq_start=%q", firstReceived, originalFirst, seqStart)
 	}
 }
 

@@ -465,12 +465,10 @@
           "minimum": 0
         },
         "firstReceived": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/rfc3339"
         },
         "lastReceived": {
-          "type": "string",
-          "format": "date-time"
+          "$ref": "#/$defs/rfc3339"
         },
         "retainedBackfill": {
           "type": "boolean"

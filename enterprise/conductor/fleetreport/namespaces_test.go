@@ -114,6 +114,20 @@ func TestBuildNamespacesPreserveWholeFleet(t *testing.T) {
 			}
 			other = resignNamespaceEvidence(t, priv, other, entries)
 			evidence = append(evidence, other)
+			for _, ev := range evidence {
+				entries, err := recorder.ReadEntriesFromReader(bytes.NewReader(ev.Payload))
+				if err != nil {
+					t.Fatal(err)
+				}
+				received, err := ev.Envelope.PayloadNamespace(t.Context(), ev.Payload)
+				if err != nil || received.SessionID == "" {
+					t.Fatalf("receiver namespace=%+v err=%v", received, err)
+				}
+				reported, err := deriveChainIdentity(t.Context(), ev.Envelope, entries)
+				if err != nil || reported != (fleetreceipt.ChainIdentity{EntryVersion: received.EntryVersion, SessionID: received.SessionID, ChainKind: received.ChainKind, WriterInstanceID: received.WriterInstanceID}) {
+					t.Fatalf("namespace disagreement: receiver=%+v report=%+v err=%v", received, reported, err)
+				}
+			}
 			opts := namespaceOptions(t, pub)
 			first, err := Build(t.Context(), staticEvidenceSource{evidence: evidence}, opts)
 			if err != nil {
@@ -240,6 +254,14 @@ func TestBuildNamespaceDerivesActualPayload(t *testing.T) {
 			}
 			if tc.name == "unsigned payload change" {
 				ev.Payload = append(ev.Payload, ' ')
+			}
+			// Enrollment is authenticated by the receiver's caller; every other
+			// negative must also refuse a receiver namespace for the same payload.
+			if tc.name != "unenrolled signer" {
+				ns, err := ev.Envelope.PayloadNamespace(t.Context(), ev.Payload)
+				if err != nil || ns != (conductorcore.AuditNamespace{}) {
+					t.Fatalf("receiver accepted invalid report evidence: namespace=%+v err=%v", ns, err)
+				}
 			}
 			if _, err := Build(t.Context(), staticEvidenceSource{evidence: []controlplane.AuditBatchEvidence{ev}}, opts); err == nil || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("unverified namespace: %v, want %q", err, tc.reason)

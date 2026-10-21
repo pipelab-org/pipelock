@@ -153,6 +153,7 @@ FLEET RECEIPT OK: fleet-receipt.dsse.json
   Source batches:   12
   Total actions:    481
   Mediated fraction: 1
+  Continuity:       cross_session_continuity_unproven (receiver observations unavailable)
 ```
 
 Without `--key`, the verifier can check structure and self-consistency only. It

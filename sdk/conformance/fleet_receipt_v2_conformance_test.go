@@ -248,3 +248,46 @@ func TestFleetReceiptV2HistorySchema(t *testing.T) {
 		})
 	}
 }
+
+func TestFleetReceiptV2ObservationTimestampSchema(t *testing.T) {
+	schema := fleetReceiptV2Schema(t)
+	for _, field := range []string{"firstReceived", "lastReceived"} {
+		for _, tc := range []struct {
+			name, timestamp string
+			valid           bool
+		}{
+			{"utc", "2026-01-01T00:00:00Z", true},
+			{"fractional_utc", "2026-01-01T00:00:00.123Z", true},
+			{"offset", "2026-01-01T01:00:00+01:00", false},
+			{"malformed", "not-a-timestamp", false},
+		} {
+			t.Run(field+"/"+tc.name, func(t *testing.T) {
+				s := fleetV2Statement()
+				b := s.Predicate.SourceBatches[0]
+				o := fleetreceipt.ObservedChain{InstanceID: b.InstanceID, Chain: *b.Chain, SeqStart: b.SeqStart, SeqEnd: b.SeqEnd, FirstReceived: "2026-01-01T00:00:00Z", LastReceived: "2026-01-02T00:00:00Z"}
+				if field == "firstReceived" {
+					o.FirstReceived = tc.timestamp
+				} else {
+					o.LastReceived = tc.timestamp
+				}
+				observations := []fleetreceipt.ObservedChain{o}
+				gaps, multiple := fleetreceipt.HistoryFacts(s.Predicate.SourceBatches, observations)
+				s.Predicate.History = &fleetreceipt.History{Continuity: fleetreceipt.ContinuityUnproven, MultipleSessions: multiple, Sessions: observations, Gaps: gaps, Retention: fleetreceipt.RetentionCoverage{HistoryUnknown: true}}
+				raw, err := json.Marshal(s)
+				if err != nil {
+					t.Fatal(err)
+				}
+				instance, err := jsonschema.UnmarshalJSON(bytes.NewReader(raw))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err = schema.Validate(instance); (err == nil) != tc.valid {
+					t.Fatalf("schema validation=%v want valid=%t", err, tc.valid)
+				}
+				if err = s.Validate(); (err == nil) != tc.valid {
+					t.Fatalf("runtime validation=%v want valid=%t", err, tc.valid)
+				}
+			})
+		}
+	}
+}
