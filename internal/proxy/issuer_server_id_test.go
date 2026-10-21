@@ -561,9 +561,21 @@ func TestIssuerServerIDStore(t *testing.T) {
 	t.Run("plain http origin is ignored", func(t *testing.T) {
 		s := newTestServerIDStore(t)
 		plain, _ := url.Parse("http://api.vendor.example/v1/filters")
-		s.mintServerID("a", plain, serverIDListed, now)
+		s.recordSent("a", origin, nil, nil, true, now)
+		s.mintServerID("a", origin, serverIDListed, now)
+		if !s.serverIDIssued("a", origin, serverIDListed) {
+			t.Fatal("positive control: HTTPS origin did not mint an ID")
+		}
+		issued := len(s.ids["a"])
+		s.mintServerID("a", plain, serverIDOther, now)
+		if len(s.ids["a"]) != issued {
+			t.Fatal("plain http changed issued ID evidence")
+		}
 		if s.serverIDIssued("a", plain, serverIDListed) {
 			t.Fatal("plain http minted an id")
+		}
+		if !s.serverIDIssued("a", origin, serverIDListed) {
+			t.Fatal("plain http revoked HTTPS evidence")
 		}
 	})
 }
