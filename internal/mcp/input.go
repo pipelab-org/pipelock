@@ -454,6 +454,7 @@ func ForwardScannedInput(
 			originalVerdict := scanRequestForAgent(stdioInputCtx, line, sc, action, onParseError, opts.addressProtectionAgent())
 			if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked (%s)\n", lineNum, joinInputVerdictReasons(originalVerdict))
+				logMCPInputBlock(auditLogger, originalVerdict)
 				recordAdaptiveSignal(session.SignalBlock)
 				if pendingActionID != "" && (receiptEmitter != nil || opts.ReceiptGroup != nil) {
 					layer, pattern, severity := contentScanAttribution(originalVerdict)
@@ -1231,6 +1232,9 @@ func ForwardScannedInput(
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
+			if !verdict.Clean {
+				logMCPInputBlock(auditLogger, verdict)
+			}
 			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
 			if bindingReason != "" && bindingAction == config.ActionBlock {
 				blockReason = blockreason.SessionBinding
@@ -1602,6 +1606,9 @@ func ForwardScannedInput(
 			// HITL for input scanning is impractical - fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
+			if !verdict.Clean {
+				logMCPInputBlock(auditLogger, verdict)
+			}
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,

@@ -7,7 +7,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -25,6 +27,30 @@ func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.Lo
 		return audit.NewMethodLogContext(method)
 	}
 	return ctx
+}
+
+// logMCPInputBlock uses only scanner-owned labels and configured pattern names.
+// Input verdict reasons can contain request bytes (notably URL and parse errors).
+func logMCPInputBlock(logger *audit.Logger, verdict InputVerdict) {
+	if logger == nil {
+		return
+	}
+	scannerName := scanner.ScannerParser
+	reason := string(mcpScannerBlockReason(verdict, policy.Verdict{}, false))
+	switch {
+	case len(verdict.Matches) > 0:
+		scannerName = scanner.ScannerDLP
+		reason = verdict.Matches[0].PatternName
+	case len(verdict.Inject) > 0:
+		scannerName = scanner.AuditResponseScan
+		reason = verdict.Inject[0].PatternName
+	case len(verdict.URLFindings) > 0:
+		scannerName = verdict.URLFindings[0].Scanner
+	case len(verdict.AddressFindings) > 0:
+		scannerName = scanner.AuditAddressProtection
+		reason = "address protection blocked"
+	}
+	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scannerName, reason)
 }
 
 func resolvedDoWAttribution(opts MCPProxyOpts) (string, DoWAttribution) {

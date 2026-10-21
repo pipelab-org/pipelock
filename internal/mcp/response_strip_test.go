@@ -121,8 +121,21 @@ func TestResponseStripRecordedOutcome(t *testing.T) {
 				if !strings.Contains(log.String(), "response action="+want) {
 					t.Fatalf("operator log does not record %s: %s", want, log.String())
 				}
-				if strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), `"event":"response_scan"`) {
-					t.Fatalf("response scan emitted an additional audit event: %s", events.String())
+				wantEvent := `"event":"response_scan"`
+				if mixed {
+					wantEvent = `"event":"blocked"`
+				}
+				if !strings.Contains(events.String(), wantEvent) {
+					t.Fatalf("response scan omitted %s audit event: %s", wantEvent, events.String())
+				}
+				if !strings.Contains(events.String(), `"scanner":"response_scan"`) {
+					t.Fatalf("response scan audit used the wrong scanner: %s", events.String())
+				}
+				if !mixed && !strings.Contains(events.String(), `"action":"strip"`) {
+					t.Fatalf("response scan event omitted strip action: %s", events.String())
+				}
+				if strings.Contains(events.String(), text) {
+					t.Fatalf("response scan event leaked response content: %s", events.String())
 				}
 			})
 		}

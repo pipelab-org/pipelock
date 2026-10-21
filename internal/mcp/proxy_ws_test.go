@@ -381,6 +381,12 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 
 	pr, pw := io.Pipe()
 	var stdout, stderr lockedHTTPBuffer
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -390,7 +396,7 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc})
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, AuditLogger: logger})
 	}()
 
 	_, _ = pw.Write([]byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n"))
@@ -411,6 +417,9 @@ func TestRunWSProxy_BlocksInjectedResponse(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "injection detected") {
 		t.Errorf("expected injection log on stderr, got: %s", stderr.String())
+	}
+	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), "IGNORE ALL PREVIOUS INSTRUCTIONS") {
+		t.Fatalf("WS response audit missing or leaked response text: %s", events.String())
 	}
 }
 
@@ -862,12 +871,17 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 		OnParseError: config.ActionBlock,
 	}
 
-	al := audit.NewNop()
+	var events bytes.Buffer
+	al, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(al.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, AuditLogger: al})
+	err = RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, AuditLogger: al})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -878,6 +892,9 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	}
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Errorf("blocked audit-logged input forwarded %d frame(s) upstream, want 0", got)
+	}
+	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), fakeKey) {
+		t.Fatalf("WS input audit missing or leaked credential: %s", events.String())
 	}
 }
 

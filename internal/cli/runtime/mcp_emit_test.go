@@ -6,12 +6,36 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// webhookRecorder captures every body POSTed to it.
+type webhookRecorder struct {
+	mu     sync.Mutex
+	bodies []string
+}
+
+func (r *webhookRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	body, _ := io.ReadAll(req.Body)
+	r.mu.Lock()
+	r.bodies = append(r.bodies, string(body))
+	r.mu.Unlock()
+	w.WriteHeader(http.StatusOK)
+}
+
+func (r *webhookRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.bodies...)
+}
 
 func writeMCPEmitConfig(t *testing.T, emitSection string) string {
 	t.Helper()
@@ -43,6 +67,56 @@ func mcpEmitProxyArgs(configPath string) []string {
 		"--",
 		os.Args[0],
 		"-test.run=TestMCPRuntimeHelperProcess$",
+	}
+}
+
+// TestMCPProxyDeliversBlockedEventToWebhook proves a wrapper honors emit:
+// a blocked tool call reaches the configured webhook, and the event carries
+// the finding rather than the secret that triggered it.
+func TestMCPProxyDeliversBlockedEventToWebhook(t *testing.T) {
+	recorder := &webhookRecorder{}
+	srv := httptest.NewServer(recorder)
+	defer srv.Close()
+
+	configPath := writeMCPEmitConfig(t, fmt.Sprintf(`emit:
+  instance_id: mcp-emit-test
+  webhook:
+    url: %q
+    min_severity: info
+`, srv.URL))
+
+	// Built at runtime so the repository holds no credential-shaped literal.
+	secret := "AKIA" + "Z7VRSQ5TJN2XMPLQ"
+	input := strings.Join([]string{
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"runtime-test","version":"0"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"play_game","arguments":{"player":"` + secret + `"}}}`,
+	}, "\n") + "\n"
+
+	stdout, stderr, err := runMCPProxyCommandWithInput(t, mcpEmitProxyArgs(configPath), input)
+	if err != nil {
+		t.Fatalf("mcp proxy: %v\nstderr:\n%s", err, stderr)
+	}
+	if !strings.Contains(stdout, `"id":2`) || !strings.Contains(stdout, `"error"`) {
+		t.Fatalf("expected tool call 2 to be blocked, stdout:\n%s", stdout)
+	}
+
+	// The emitter is closed when the command returns, and the webhook sink
+	// drains its queue on Close, so delivery has completed by now.
+	bodies := recorder.snapshot()
+	if len(bodies) == 0 {
+		t.Fatalf("webhook received no events; emit section was ignored\nstderr:\n%s", stderr)
+	}
+	var sawBlocked bool
+	for _, body := range bodies {
+		if strings.Contains(body, secret) {
+			t.Fatalf("webhook event leaked the blocked secret: %s", body)
+		}
+		if strings.Contains(body, `"pipelock_instance":"mcp-emit-test"`) && strings.Contains(body, `"type":"blocked"`) {
+			sawBlocked = true
+		}
+	}
+	if !sawBlocked {
+		t.Fatalf("no blocked event with the configured instance; got:\n%s", strings.Join(bodies, "\n"))
 	}
 }
 

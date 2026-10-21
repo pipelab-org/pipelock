@@ -388,6 +388,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
+			logMCPInputBlock(auditLogger, originalVerdict)
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
@@ -986,6 +987,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
+		if !verdict.Clean {
+			logMCPInputBlock(auditLogger, verdict)
+		}
 		if !entropyOnlyDecision {
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		}
@@ -1231,6 +1235,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionAsk:
 		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
+		if !verdict.Clean {
+			logMCPInputBlock(auditLogger, verdict)
+		}
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{

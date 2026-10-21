@@ -463,12 +463,17 @@ func TestRunHTTPProxy_BlocksInjectedResponse(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	stdin := strings.NewReader(jsonToolsCallEcho + "\n")
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr, events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc})
+	err = RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, AuditLogger: logger})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -491,6 +496,9 @@ func TestRunHTTPProxy_BlocksInjectedResponse(t *testing.T) {
 	}
 	if rpc.Error.Code != -32000 {
 		t.Errorf("error code = %d, want -32000\noutput: %s", rpc.Error.Code, output)
+	}
+	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), "IGNORE ALL PREVIOUS INSTRUCTIONS") {
+		t.Fatalf("HTTP response audit missing or leaked response text: %s", events.String())
 	}
 }
 
@@ -927,11 +935,16 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	}
 
 	stdin := strings.NewReader(input + "\n")
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr, events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+	err = RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, AuditLogger: logger})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -946,6 +959,9 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	}
 	if atomic.LoadInt32(&serverCalled) != 0 {
 		t.Error("server should NOT be called when input is blocked")
+	}
+	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), prefix+fakeKey) {
+		t.Fatalf("HTTP input audit missing or leaked credential: %s", events.String())
 	}
 }
 
@@ -3322,6 +3338,12 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	t.Cleanup(sc.Close)
 
 	emitter, rec, dir, pubHex := newReceiptTestHarness(t)
+	var events lockedHTTPBuffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -3338,6 +3360,7 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{
 			Scanner:        sc,
 			ReceiptEmitter: emitter,
+			AuditLogger:    logger,
 		})
 	}()
 
@@ -3363,6 +3386,9 @@ func TestRunHTTPListenerProxy_BlockedResponse_EmitsReceipt(t *testing.T) {
 	}
 	if !strings.Contains(string(payload), "injection detected") {
 		t.Fatalf("expected block response, got: %s", payload)
+	}
+	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), "IGNORE ALL PREVIOUS INSTRUCTIONS") {
+		t.Fatalf("listener response audit missing or leaked response text: %s", events.String())
 	}
 
 	// Cleanup is handled by t.Cleanup registered above. Close the

@@ -1048,6 +1048,15 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 		}
+		if opts.AuditLogger != nil {
+			ctx := mustMCPAuditContext(opts.AuditLogger, "MCP", "server_response")
+			switch effectiveAction {
+			case config.ActionBlock:
+				opts.AuditLogger.LogBlocked(ctx, scanner.AuditResponseScan, firstNonEmpty(pattern, "response scanning blocked"))
+			case config.ActionStrip, config.ActionWarn:
+				opts.AuditLogger.LogResponseScan(ctx, effectiveAction, len(names), names, nil)
+			}
+		}
 		if err := writer.WriteMessage(outbound); err != nil {
 			releaseToolInventory()
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
