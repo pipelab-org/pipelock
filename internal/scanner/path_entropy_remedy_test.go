@@ -37,9 +37,14 @@ func TestPathEntropyRemedyDocumentedConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, ok := strings.Cut(string(doc), "## Tuning Entropy Thresholds\n")
+	docText := strings.ReplaceAll(string(doc), "\r\n", "\n")
+	_, section, ok := strings.Cut(docText, "<!-- path-entropy-exclusions-example:start -->")
 	if !ok {
-		t.Fatal("entropy tuning section missing")
+		t.Fatal("path-entropy example start marker missing")
+	}
+	section, _, ok = strings.Cut(section, "<!-- path-entropy-exclusions-example:end -->")
+	if !ok {
+		t.Fatal("path-entropy example end marker missing")
 	}
 	_, fenced, ok := strings.Cut(section, "```yaml\n")
 	if !ok {

@@ -141,6 +141,7 @@ Path entropy and subdomain entropy are the most common false positive sources. A
 
 For a path-entropy false positive, start with `path_entropy_exclusions` for the exact host and a stable publisher-specific path prefix. The entry defaults to HTTPS. A cleartext HTTP download needs an explicit `scheme: http`; that setting does not encrypt the request path, which remains visible on the network. Use separate entries only when both schemes are needed.
 
+<!-- path-entropy-exclusions-example:start -->
 ```yaml
 fetch_proxy:
   monitoring:
@@ -153,10 +154,13 @@ fetch_proxy:
         path_prefix: "/releases/"
         reason: "Cleartext package mirror"
 ```
+<!-- path-entropy-exclusions-example:end -->
 
 This lifts only path entropy on the matching route. Query entropy, subdomain entropy, DLP and SSRF still run. Every filename under that prefix receives the same path-entropy exclusion, so confirm an agent cannot place a chosen opaque segment there and later read it back. A package-shaped filename alone does not establish that it is safe.
 
 The default threshold is `4.5` (balanced preset). Raising `fetch_proxy.monitoring.entropy_threshold` reduces sensitivity for every destination. The broader `fetch_proxy.monitoring.subdomain_entropy_exclusions` host list lifts both path and subdomain entropy across the host; prefer a path-scoped entry when only a download route needs relief.
+
+The [monitoring configuration reference](configuration.md#fetch-proxy) includes threshold and whole-host exclusion examples. For a trusted publisher that uses high-entropy URLs by design, choose the narrowest exclusion that covers its routes. For an untrusted destination, keep the threshold and investigate the findings.
 
 Entropy-only URL, body, WebSocket, A2A/MCP content, and cross-request budget findings remain visible but do not raise the adaptive score or get upgraded by an elevated session. A configured `warn` still forwards opaque data, so it cannot prevent opaque exfiltration; choose `block` for an entropy detector that must deny it. Concrete DLP, injection, SSRF, policy, and structural hostname findings still score and upgrade. A session already at `block_all` denies every request.
 
