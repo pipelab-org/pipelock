@@ -77,10 +77,11 @@ def native_target_errors(workflow: dict) -> list[str]:
     # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#env
     # Reject overrides of the values used by the native proof, including the
     # case-insensitive spellings accepted by the Windows environment.
+    # `go help environment`: GOENV selects defaults for GOOS and GOARCH.
     def check_environment(scope: dict, name: str) -> None:
         environment = scope.get("env", {})
         if not isinstance(environment, dict) or any(
-            str(key).upper() in {"GOOS", "GOARCH", "RUNNER_ARCH"}
+            str(key).upper() in {"GOOS", "GOARCH", "GOENV", "RUNNER_ARCH"}
             for key in environment
         ):
             errors.append(f"{name} overrides or obscures native proof environment")
@@ -128,6 +129,10 @@ def native_target_errors(workflow: dict) -> list[str]:
         if len(proof_steps) != 1:
             errors.append(f"{job_name} does not have one architecture proof step")
             continue
+        # Preserve the existing workflow order: checkout/setup actions, then
+        # native proof before run commands can write GITHUB_ENV or go env -w.
+        if any("run" in step for step in steps[:steps.index(proof_steps[0])]):
+            errors.append(f"{job_name} runs commands before its native proof")
         if any(key in proof_steps[0] for key in ("if", "continue-on-error", "env")):
             errors.append(f"{job_name} does not require unmodified architecture proof")
         effective_shell = proof_steps[0].get("shell", missing)
@@ -251,6 +256,7 @@ class NativeTargetWorkflowTest(unittest.TestCase):
         for scope in ("workflow", *NATIVE_TARGETS):
             for environment in (
                 {"GOOS": "darwin"}, {"GOARCH": "amd64"},
+                {"GOENV": "forged.env"}, {"goenv": "forged.env"},
                 {"RUNNER_ARCH": "X64"}, {"goarch": "amd64"},
                 "${{ inputs.environment }}", None,
             ):
@@ -262,6 +268,27 @@ class NativeTargetWorkflowTest(unittest.TestCase):
                         f"{scope} overrides or obscures native proof environment",
                         native_target_errors(broken),
                     )
+
+    def test_commands_before_native_proof_fail_the_contract(self):
+        """Keep target-mutating commands behind the native proof in every lane."""
+        for job_name, (_, _, target, _) in NATIVE_TARGETS.items():
+            for command in (
+                'go env -w GOARCH=amd64',
+                'echo "GOARCH=amd64" >> "$GITHUB_ENV"',
+                '"GOARCH=amd64" >> $env:GITHUB_ENV',
+            ):
+                with self.subTest(job=job_name, command=command):
+                    workflow = copy.deepcopy(self.workflow)
+                    steps = workflow["jobs"][job_name]["steps"]
+                    index = next(i for i, step in enumerate(steps)
+                                 if step.get("name") == f"Verify native target is {target}")
+                    steps.insert(index, {"run": command})
+                    self.assertIn(
+                        f"{job_name} runs commands before its native proof",
+                        native_target_errors(workflow),
+                    )
+                    steps.insert(index + 2, steps.pop(index))
+                    self.assertEqual(native_target_errors(workflow), [])
 
     def test_unrelated_environment_and_condition_whitespace_are_allowed(self):
         """Keep harmless env settings and the existing docs exception valid."""
