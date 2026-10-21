@@ -99,7 +99,7 @@ Use both knobs. `exempt_domains` keeps URL DLP from blocking a provider-bound ke
 
 ### An exact token route
 
-A body or header block can report a credential audience mismatch: the matched rule has a declared audience, and the request's canonical destination is outside it. The diagnostic names the pattern, scanned surface, destination host and declared audience hosts, without including the credential. An absent mismatch explanation does not mean a request is safe; a carrier restriction, core rule or incomplete scan can still block it. `pipelock explain` evaluates URL scanning, not request bodies or headers.
+A body or header block can report a credential audience mismatch: the matched rule has a declared audience, and the request's canonical destination is outside it. The diagnostic names the pattern, scanned surface, destination host and built-in audience hosts, without including the credential. An absent mismatch explanation does not mean a request is safe; a carrier restriction, core rule or incomplete scan can still block it. `pipelock explain` evaluates URL scanning, not request bodies or headers.
 
 Audience diagnostics show the canonical destination and public built-in audience hosts; they omit operator-declared audience hosts. A diagnostic marked `immutable core rule` cannot be cleared with `suppress`. Core protection still applies even if a configurable rule has the same name.
 
