@@ -157,9 +157,41 @@ func (s *issuerQueryStore) taintSentLocked(session string) {
 	s.sentUnreadable[session] = true
 }
 
-// mintBlockedLocked reports whether the session may not mint or use IDs.
-func (s *issuerQueryStore) mintBlockedLocked(session string) bool {
-	return s.mintDisabled || s.sentUnreadable[session]
+// rememberSentLocked keeps cross-session history without evicting evidence.
+func (s *issuerQueryStore) rememberSentLocked(digest [32]byte) {
+	if _, exists := s.sentAll[digest]; exists {
+		return
+	}
+	if len(s.sentAll) >= issuerSentAllMaxEntries {
+		s.mintDisabled = true
+		return
+	}
+	s.sentAll[digest] = struct{}{}
+}
+
+// taintSentHostLocked propagates incomplete history to every recipient of
+// this host. The empty token is a reserved marker: recorded tokens are always
+// at least issuerServerIDMinLen bytes. It shares the existing history bound
+// and lifetime, so session eviction cannot forget the uncertainty.
+func (s *issuerQueryStore) taintSentHostLocked(target *url.URL) {
+	if target == nil {
+		s.mintDisabled = true
+		return
+	}
+	digest, ok := s.sentDigest(target, "")
+	if !ok {
+		s.mintDisabled = true
+		return
+	}
+	s.rememberSentLocked(digest)
+}
+
+// mintBlockedLocked applies both session and cross-session host uncertainty
+// when minting or using IDs.
+func (s *issuerQueryStore) mintBlockedLocked(session string, target *url.URL) bool {
+	digest, ok := s.sentDigest(target, "")
+	_, unreadableHost := s.sentAll[digest]
+	return s.mintDisabled || s.sentUnreadable[session] || !ok || unreadableHost
 }
 
 // recordSent records every token a request carries to its origin: path
@@ -226,6 +258,7 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	s.used[session] = now
 	if !bodyKnown || overflow {
 		s.taintSentLocked(session)
+		s.taintSentHostLocked(originTarget)
 		return
 	}
 	sent := s.sent[session]
@@ -236,18 +269,13 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	for _, digest := range digests {
 		// Every session's sends count: a value one agent handed a host must
 		// not mint as an ID that host issued to another agent.
-		if _, exists := s.sentAll[digest]; !exists {
-			if len(s.sentAll) >= issuerSentAllMaxEntries {
-				s.mintDisabled = true
-			} else {
-				s.sentAll[digest] = struct{}{}
-			}
-		}
+		s.rememberSentLocked(digest)
 		if _, exists := sent[digest]; exists {
 			continue
 		}
 		if len(sent) >= issuerSentMaxEntries {
 			s.taintSentLocked(session)
+			s.taintSentHostLocked(originTarget)
 			return
 		}
 		sent[digest] = struct{}{}
@@ -365,7 +393,7 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 	idDigest, _ := s.originDigest("server_id", target, value)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.mintBlockedLocked(session) {
+	if s.mintBlockedLocked(session, target) {
 		return
 	}
 	if _, reflectedAny := s.sentAll[sentDigest]; reflectedAny {
@@ -401,7 +429,7 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.mintBlockedLocked(session) {
+	if s.mintBlockedLocked(session, target) {
 		return false
 	}
 	for _, existing := range s.ids[session] {
@@ -470,7 +498,7 @@ func (p *Proxy) recordIssuerFetchSent(cfg *config.Config, agent, clientIP string
 
 // taintIssuerSessionForStream marks a session whose traffic now includes a
 // stream Pipelock does not record token by token, such as WebSocket frames.
-func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth) {
+func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP string, actorAuth envelope.ActorAuth, target *url.URL) {
 	store := p.issuerStoreForUnmediatedSend()
 	if store == nil || store.disabled {
 		return
@@ -482,4 +510,5 @@ func (p *Proxy) taintIssuerSessionForStream(cfg *config.Config, agent, clientIP 
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.taintSentLocked(session)
+	store.taintSentHostLocked(target)
 }

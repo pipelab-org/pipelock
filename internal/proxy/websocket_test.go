@@ -571,6 +571,48 @@ func waitForWarnContext(t *testing.T, hookCh <-chan scanner.DLPWarnContext, scop
 	}
 }
 
+func TestWSProxyIssuerHistoryUncertainty(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
+	proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
+		cfg.TLSInterception.Enabled = true
+	})
+	defer cleanup()
+	store := p.issuerStoreForUnmediatedSend()
+	if store == nil {
+		t.Fatal("issuer history store unavailable")
+	}
+	origin, err := url.Parse("https://" + backendAddr + "/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.mintServerID("recipient", origin, serverIDListed, time.Now())
+	if !store.serverIDIssued("recipient", origin, serverIDListed) {
+		t.Fatal("positive control: recipient did not learn the ID")
+	}
+	conn, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/"+agentBlob)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("unissued high-entropy WebSocket target passed admission")
+	}
+	if !store.serverIDIssued("recipient", origin, serverIDListed) {
+		t.Fatal("a blocked WebSocket request tainted the host")
+	}
+	conn = dialWS(t, proxyAddr, backendAddr)
+	defer func() { _ = conn.Close() }()
+	if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := wsutil.ReadServerData(conn); err != nil {
+		t.Fatal(err)
+	}
+	if store.serverIDIssued("recipient", origin, serverIDListed) {
+		t.Fatal("another caller kept an ID after WebSocket traffic reached the host")
+	}
+}
+
 func TestWSProxyEcho(t *testing.T) {
 	backendAddr, backendCleanup := wsEchoServer(t)
 	defer backendCleanup()

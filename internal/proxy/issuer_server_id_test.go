@@ -541,7 +541,7 @@ func TestIssuerServerIDUnmediatedSends(t *testing.T) {
 		if !store.serverIDIssued(session, origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")
 		}
-		h.p.taintIssuerSessionForStream(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		h.p.taintIssuerSessionForStream(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound, origin)
 		if store.serverIDIssued(session, origin, serverIDListed) {
 			t.Fatal("an id survived a websocket handshake")
 		}

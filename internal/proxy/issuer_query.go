@@ -72,7 +72,8 @@ type issuerQueryStore struct {
 	sent           map[string]map[[32]byte]struct{}
 	sentUnreadable map[string]bool
 	// sentAll holds sent digests across every session, so one agent's value
-	// cannot mint as an ID for another.
+	// cannot mint as an ID for another. An empty-token digest marks a host
+	// whose history is incomplete for all recipients.
 	sentAll map[[32]byte]struct{}
 	// mintDisabled stops all minting once incomplete sent history can no
 	// longer be remembered per session.

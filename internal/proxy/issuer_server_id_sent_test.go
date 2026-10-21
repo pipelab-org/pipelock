@@ -122,6 +122,100 @@ func TestInterceptUntrustedReflectionCannotIssueID(t *testing.T) {
 	}
 }
 
+func TestIssuerSentIncompleteAcrossSessions(t *testing.T) {
+	origin, err := url.Parse("https://api.vendor.example/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := url.Parse("https://other.vendor.example/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cause := range []string{"unread body", "unread http", "unread other port", "request limit", "session limit", "websocket"} {
+		t.Run(cause, func(t *testing.T) {
+			p, cfg := newSentIssuerProxy(t)
+			s := p.issuerStoreForUnmediatedSend()
+			now := time.Now()
+			recipient := sessionKeyFor(cfg, "recipient", "127.0.0.1", envelope.ActorAuthUnknown)
+			s.mintServerID(recipient, origin, serverIDListed, now)
+			if !s.serverIDIssued(recipient, origin, serverIDListed) {
+				t.Fatal("positive control: recipient did not learn the ID")
+			}
+			var body []byte
+			known := true
+			target := *origin
+			switch cause {
+			case "unread body":
+				known = false
+			case "unread http":
+				known = false
+				target.Scheme = "http"
+			case "unread other port":
+				known = false
+				target.Host += ":8443"
+			case "request limit":
+				body = []byte(strings.Repeat(serverIDOther+" ", issuerSentMaxTokensPerRequest+1))
+			case "session limit":
+				s.sent["sender"] = make(map[[32]byte]struct{})
+				for i := 0; i < issuerSentMaxEntries; i++ {
+					var digest [32]byte
+					digest[0], digest[1] = byte(i), byte(i>>8)
+					s.sent["sender"][digest] = struct{}{}
+				}
+				body = []byte(serverIDOther + " " + agentBlob)
+			}
+			if cause == "websocket" {
+				target.Scheme = "wss"
+				p.taintIssuerSessionForStream(cfg, "sender", "192.0.2.1", envelope.ActorAuthBound, &target)
+			} else {
+				s.recordSent("sender", &target, nil, body, known, now)
+			}
+			if s.serverIDIssued(recipient, origin, serverIDListed) {
+				t.Fatal("recipient kept an ID after another caller's incomplete send")
+			}
+			s.mintServerID("fresh-recipient", origin, agentBlob, now)
+			if s.serverIDIssued("fresh-recipient", origin, agentBlob) {
+				t.Fatal("another caller minted after incomplete send history")
+			}
+			s.mintServerID(recipient, other, serverIDListed, now)
+			if !s.serverIDIssued(recipient, other, serverIDListed) {
+				t.Fatal("incomplete history for one host blocked a different host")
+			}
+		})
+	}
+}
+
+func TestIssuerSentHostUncertaintyFailsClosed(t *testing.T) {
+	origin, err := url.Parse("https://api.vendor.example/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, cause := range []string{"missing target", "missing host", "history full"} {
+		t.Run(cause, func(t *testing.T) {
+			s := newTestServerIDStore(t)
+			s.mu.Lock()
+			switch cause {
+			case "missing target":
+				s.taintSentHostLocked(nil)
+			case "missing host":
+				s.taintSentHostLocked(&url.URL{})
+			case "history full":
+				for i := 0; i < issuerSentAllMaxEntries; i++ {
+					var digest [32]byte
+					digest[0], digest[1], digest[2] = byte(i), byte(i>>8), byte(i>>16)
+					s.sentAll[digest] = struct{}{}
+				}
+				s.taintSentHostLocked(origin)
+			}
+			s.mu.Unlock()
+			s.mintServerID("recipient", origin, serverIDListed, time.Now())
+			if s.serverIDIssued("recipient", origin, serverIDListed) {
+				t.Fatal("uncertainty failed open")
+			}
+		})
+	}
+}
+
 func TestIssuerSentJSONTextOutsideRawBody(t *testing.T) {
 	origin, err := url.Parse("https://api.vendor.example/v1/filters")
 	if err != nil {
