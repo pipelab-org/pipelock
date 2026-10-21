@@ -105,7 +105,20 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 }
 
 func (ic *InterceptContext) issuerQueryStore() *issuerQueryStore {
-	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) || !ic.stateTrusted() {
+	if ic == nil || !ic.stateTrusted() {
+		return nil
+	}
+	return ic.issuerServerIDStore()
+}
+
+// issuerServerIDStore keeps the runtime and scanning prerequisites of issuer
+// evidence without treating a caller's identity as proof of an object ID.
+// An ID instead requires this origin's delivered response and complete sent
+// history across every caller. Untrusted callers use the existing IP-folded
+// state key; declaring a different agent name cannot create a fresh bucket.
+// Cookies, linked paths and query values still use the trusted accessor above.
+func (ic *InterceptContext) issuerServerIDStore() *issuerQueryStore {
+	if ic == nil || ic.Proxy == nil || !issuerCookieEnabled(ic.Config) {
 		return nil
 	}
 	runtime := ic.Proxy.issuerCookieRuntime.Load()
@@ -523,7 +536,8 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		return
 	}
 	store := ic.issuerQueryStore()
-	if store == nil {
+	idStore := ic.issuerServerIDStore()
+	if idStore == nil {
 		return
 	}
 	issuerHost, issuerPort, ok := issuerCookieOrigin(response.Request.URL)
@@ -534,7 +548,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// An OAuth authorization request names where the code must go. Record the
 	// declaration only once the request was allowed and its response
 	// delivered, which is the only way this function is reached.
-	if redirect, declared := oauthRedirectDeclaration(response.Request.URL); declared {
+	if redirect, declared := oauthRedirectDeclaration(response.Request.URL); declared && store != nil {
 		store.declareRedirect(session, response.Request.URL, redirect, time.Now())
 	}
 	remaining := issuerCookieMaxSetCookies
@@ -552,6 +566,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	// has a scheme or starts with a single slash; otherwise any word the
 	// server returned would resolve to a path it never issued.
 	observe := func(value string, redirectHop, linkAttr bool) {
+		if store == nil {
+			return
+		}
 		candidate, err := url.Parse(value)
 		if err != nil {
 			return
@@ -618,6 +635,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 	}
 	mediaType := strings.ToLower(strings.TrimSpace(strings.Split(response.Header.Get("Content-Type"), ";")[0]))
 	if mediaType == "text/html" || mediaType == "application/xhtml+xml" {
+		if store == nil {
+			return
+		}
 		// The agent received a document from this origin, so a later request
 		// may name it as the page it is embedded in.
 		store.rememberDocument(session, response.Request.URL, time.Now())
@@ -692,7 +712,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 			}
 			observe(t, false, false)
 			if idRemaining > 0 && issuerServerIDShaped(t) {
-				store.mintServerID(session, response.Request.URL, t, time.Now())
+				idStore.mintServerID(session, response.Request.URL, t, time.Now())
 				idRemaining--
 			}
 			valueDone()

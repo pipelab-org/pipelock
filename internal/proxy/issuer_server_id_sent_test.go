@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,74 @@ func newSentIssuerProxy(t *testing.T) (*Proxy, *config.Config) {
 	}
 	t.Cleanup(p.Close)
 	return p, cfg
+}
+
+func TestIssuerSentUntrustedInterceptCannotMintAcrossSessions(t *testing.T) {
+	for _, auth := range []envelope.ActorAuth{
+		envelope.ActorAuthBound, envelope.ActorAuthUnknown, envelope.ActorAuthSelfDeclared,
+	} {
+		t.Run(string(auth), func(t *testing.T) {
+			p, cfg := newSentIssuerProxy(t)
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/filters", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("X-Criteria", agentBlob)
+			ic := &InterceptContext{Proxy: p, Config: cfg, ClientIP: "127.0.0.1", Agent: "sender", ActorAuth: auth}
+			recordIssuerRequestSent(ic, req, nil)
+			store := p.issuerStoreForUnmediatedSend()
+			recipient := sessionKeyFor(cfg, "recipient", "127.0.0.1", envelope.ActorAuthBound)
+			store.mintServerID(recipient, req.URL, agentBlob, time.Now())
+			if store.serverIDIssued(recipient, req.URL, agentBlob) {
+				t.Fatal("a value sent through interception minted as another session's server-issued ID")
+			}
+		})
+	}
+}
+
+func TestInterceptUntrustedReflectionCannotIssueID(t *testing.T) {
+	h := newWebPlatformHarness(t)
+	var mu sync.Mutex
+	var supplied string
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/submit" {
+			supplied = r.Header.Get("X-Criteria")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"value":[{"id":"`+supplied+`"}]}`)
+	}))
+	t.Cleanup(api.Close)
+	do := func(path, value string, auth envelope.ActorAuth) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, api.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value != "" {
+			req.Header.Set("X-Criteria", value)
+		}
+		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+			Upstream: api, Cache: h.cache, Pool: h.pool, Config: h.cfg, Scanner: h.sc,
+			Logger: h.logger, Metrics: h.m, Request: req, Proxy: h.p,
+			Agent: "recipient", ActorAuth: auth,
+		})
+		defer func() { _ = resp.Body.Close() }()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+	if got := do("/submit", agentBlob, envelope.ActorAuthUnknown); got != http.StatusNoContent {
+		t.Fatalf("untrusted sender = %d, want 204", got)
+	}
+	if got := do("/filters", "", envelope.ActorAuthBound); got != http.StatusOK {
+		t.Fatalf("trusted recipient listing = %d, want 200", got)
+	}
+	if got := do("/filters/"+agentBlob, "", envelope.ActorAuthBound); got != http.StatusForbidden {
+		t.Fatalf("reflected ID = %d, want 403", got)
+	}
 }
 
 func TestIssuerSentJSONTextOutsideRawBody(t *testing.T) {

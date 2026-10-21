@@ -417,16 +417,13 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 // upstream. It runs before forwarding, so a response to a later request can
 // never mint a value this request carried, even when the two overlap.
 func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte) {
-	if ic == nil || r == nil || r.URL == nil {
+	if ic == nil || ic.Proxy == nil || r == nil || r.URL == nil {
 		return
 	}
-	store := ic.issuerQueryStore()
-	if store == nil {
-		// A tunnel pinned to the pre-reload runtime still forwards. The live
-		// store is the one later requests mint from, so the send is recorded
-		// there instead of looking like the session never made it.
-		store = ic.issuerQueryStoreIgnoringSnapshot()
-	}
+	// Every sender can supply a reflected value, including callers that may
+	// not receive issuer allowances. Record into the live store even when a
+	// tunnel is pinned to an older runtime, just as forward and fetch do.
+	store := ic.Proxy.issuerStoreForUnmediatedSend()
 	if store == nil {
 		return
 	}
@@ -435,34 +432,10 @@ func recordIssuerRequestSent(ic *InterceptContext, r *http.Request, body []byte)
 	store.recordSent(session, r.URL, r.Header, body, bodyKnown, time.Now())
 }
 
-// issuerQueryStoreIgnoringSnapshot returns the live query store when this
-// request's pinned runtime no longer matches it. The feature check reads the
-// live configuration, not the request's: a tunnel opened while the feature
-// was off can still forward after a reload turns it on, and its sends must be
-// recorded where later requests mint. An untrusted actor or a missing proxy
-// still returns nil. The result is only ever used to record sends.
-func (ic *InterceptContext) issuerQueryStoreIgnoringSnapshot() *issuerQueryStore {
-	if ic == nil || ic.Proxy == nil || !ic.stateTrusted() {
-		return nil
-	}
-	runtime := ic.Proxy.issuerCookieRuntime.Load()
-	if runtime == nil || runtime.query == nil || runtime.query.disabled || !issuerCookieEnabled(runtime.cfg) {
-		return nil
-	}
-	skewed := ic.IssuerRuntime != nil && ic.IssuerRuntime != runtime
-	if ic.IssuerRuntime == nil && runtime.cfg != ic.Config {
-		skewed = true
-	}
-	if !skewed {
-		return nil
-	}
-	return runtime.query
-}
-
 // issuerStoreForUnmediatedSend returns the live issuer store whatever
-// configuration snapshot the caller holds. A send that does not pass through
-// TLS interception can still reach an origin the store holds IDs for, so it
-// must be recorded or taint the session even when the snapshots differ.
+// configuration snapshot or identity grade the sender holds. All sends can
+// reach an origin the store holds IDs for, so they must be recorded or taint
+// the session even when the snapshots differ. This grants no allowance.
 func (p *Proxy) issuerStoreForUnmediatedSend() *issuerQueryStore {
 	if p == nil {
 		return nil

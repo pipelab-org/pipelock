@@ -872,7 +872,8 @@ func newInterceptHandler(
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
 				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
-			if store := ic.issuerQueryStore(); store != nil {
+			if idStore := ic.issuerServerIDStore(); idStore != nil {
+				store := ic.issuerQueryStore()
 				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
@@ -880,7 +881,7 @@ func newInterceptHandler(
 				allowKind := issuerQueryObserved
 				allowCtx := scanner.WithIssuerPathAllowance(interceptScanCtx, func(escapedPath string) bool {
 					// Whole path, same origin: a link the origin itself served.
-					if escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
+					if store == nil || escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
 						return false
 					}
 					allowed = true
@@ -889,7 +890,7 @@ func newInterceptHandler(
 				allowCtx = scanner.WithIssuerSegmentAllowance(allowCtx, func(segment string) bool {
 					// One whole segment, same origin: an object ID the origin
 					// introduced in a response, never one the session sent.
-					if !store.serverIDIssued(session, r.URL, segment) {
+					if !idStore.serverIDIssued(session, r.URL, segment) {
 						return false
 					}
 					if allowKind == issuerQueryObserved {
@@ -899,6 +900,9 @@ func newInterceptHandler(
 					return true
 				})
 				allowCtx = scanner.WithIssuerQueryAllowance(allowCtx, func(key, value string) bool {
+					if store == nil {
+						return false
+					}
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
 					kind, ok := store.match(session, r.URL, key, value)
