@@ -149,6 +149,8 @@ type clientPath struct {
 	Path   string // absolute path to config file
 	Key    string // JSON key containing servers: "mcpServers" or "servers"
 	Scope  string // "user" or "project"
+	// Warning, when set, is added to every server parsed from this path.
+	Warning string
 }
 
 // EnvClaudeConfigDir is Claude Code's documented configuration-directory
@@ -160,6 +162,29 @@ const EnvClaudeConfigDir = "CLAUDE_CONFIG_DIR"
 // claudeGlobalConfigName is the global config file Claude Code writes in the
 // home directory, or in CLAUDE_CONFIG_DIR when that override is set.
 const claudeGlobalConfigName = ".claude.json"
+
+// claudeLegacyConfigName is the legacy global config file inside Claude
+// Code's config directory. The published @anthropic-ai/claude-code 2.1.0
+// resolver reads <config dir>/.config.json in place of .claude.json when it
+// exists, where the config dir is CLAUDE_CONFIG_DIR or ~/.claude. Discover
+// inventories it alongside .claude.json rather than choosing between them:
+// listing a file Claude Code may ignore can only add servers to the report,
+// never hide them.
+const claudeLegacyConfigName = ".config.json"
+
+// warnClaudeLegacyConfig marks servers read from claudeLegacyConfigName.
+const warnClaudeLegacyConfig = "from legacy Claude Code config .config.json; Claude Code 2.1.0 reads this file in place of .claude.json when it exists"
+
+// claudeLegacyPath returns the legacy config entry for a Claude config dir.
+func claudeLegacyPath(configDir string) clientPath {
+	return clientPath{
+		Client:  clientClaudeCode,
+		Path:    filepath.Join(configDir, claudeLegacyConfigName),
+		Key:     configKeyMCPServers,
+		Scope:   scopeUser,
+		Warning: warnClaudeLegacyConfig,
+	}
+}
 
 // errClaudeConfigDirNotAbsolute is reported for a CLAUDE_CONFIG_DIR value that
 // is not absolute. Claude Code's docs require an absolute path; a relative one
@@ -214,7 +239,7 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			Path:   filepath.Join(filepath.Clean(dir), claudeGlobalConfigName),
 			Key:    configKeyMCPServers,
 			Scope:  scopeUser,
-		})
+		}, claudeLegacyPath(filepath.Clean(dir)))
 	}
 	paths = dedupeConfigPaths(paths)
 
@@ -283,6 +308,9 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			}
 			if parsed[i].ParseWarnings == nil {
 				parsed[i].ParseWarnings = []string{}
+			}
+			if cp.Warning != "" {
+				parsed[i].ParseWarnings = append(parsed[i].ParseWarnings, cp.Warning)
 			}
 		}
 
@@ -436,6 +464,7 @@ func configPathsForOS(home, goos string) []clientPath {
 			Key:    configKeyMCPServers,
 			Scope:  scopeUser,
 		},
+		claudeLegacyPath(filepath.Join(home, ".claude")),
 		{
 			Client: clientClaudeDesktop,
 			Path:   filepath.Join(appData, "Claude", "claude_desktop_config.json"),

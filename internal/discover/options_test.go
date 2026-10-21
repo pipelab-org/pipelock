@@ -180,14 +180,14 @@ func TestDiscoverReportsUninspectableConfigPaths(t *testing.T) {
 		if err := os.Symlink(loop, loop); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		assertSingleInspectionError(t, dir, errConfigUninspectable)
+		assertInspectionErrors(t, dir, errConfigUninspectable, 1)
 	})
 	t.Run("directory in place of file", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := os.Mkdir(filepath.Join(dir, claudeGlobalConfigName), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		assertSingleInspectionError(t, dir, errConfigNotFile)
+		assertInspectionErrors(t, dir, errConfigNotFile, 1)
 	})
 	t.Run("permission denied", func(t *testing.T) {
 		if os.Geteuid() == 0 {
@@ -200,17 +200,66 @@ func TestDiscoverReportsUninspectableConfigPaths(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // restore for TempDir cleanup
-		assertSingleInspectionError(t, dir, errConfigUninspectable)
+		// A locked directory hides both the current and legacy config
+		// names, so neither can be proven absent.
+		assertInspectionErrors(t, dir, errConfigUninspectable, 2)
 	})
 }
 
-func assertSingleInspectionError(t *testing.T, claudeDir string, want error) {
+func assertInspectionErrors(t *testing.T, claudeDir string, want error, count int) {
 	t.Helper()
 	report, err := DiscoverWithOptions(t.TempDir(), Options{ClaudeConfigDirs: []string{claudeDir}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Summary.ParseErrors != 1 || len(report.Clients) != 1 || report.Clients[0].ParseError != want.Error() {
-		t.Fatalf("want one %q parse error, got summary %+v clients %+v", want, report.Summary, report.Clients)
+	if report.Summary.ParseErrors != count || len(report.Clients) != count || report.Summary.TotalServers != 0 {
+		t.Fatalf("want %d %q parse errors, got summary %+v clients %+v", count, want, report.Summary, report.Clients)
+	}
+	for _, c := range report.Clients {
+		if c.ParseError != want.Error() {
+			t.Fatalf("parse error = %q, want %q", c.ParseError, want)
+		}
+	}
+}
+
+// TestDiscoverInventoriesLegacyClaudeConfig proves the legacy .config.json
+// that Claude Code 2.1.0 reads in place of .claude.json is listed, with a
+// warning, for both the default ~/.claude dir and a CLAUDE_CONFIG_DIR, and
+// never replaces the .claude.json inventory.
+func TestDiscoverInventoriesLegacyClaudeConfig(t *testing.T) {
+	writeLegacy := func(t *testing.T, dir, name string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		content := `{"mcpServers":{"` + name + `":{"command":"node","args":["s.js"]}}}`
+		if err := os.WriteFile(filepath.Join(dir, claudeLegacyConfigName), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := t.TempDir()
+	writeClaudeConfig(t, home, "current")
+	writeLegacy(t, filepath.Join(home, ".claude"), "legacy-default")
+	alt := t.TempDir()
+	writeLegacy(t, alt, "legacy-override")
+
+	report, err := DiscoverWithOptions(home, Options{ClaudeConfigDirs: []string{alt}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	warned := map[string]bool{}
+	for _, s := range report.Servers {
+		for _, w := range s.ParseWarnings {
+			if w == warnClaudeLegacyConfig {
+				warned[s.ServerName] = true
+			}
+		}
+	}
+	names := serverNames(report)
+	if _, ok := names["current"]; !ok || warned["current"] {
+		t.Fatalf("current .claude.json server missing or mislabeled: %v warned=%v", names, warned)
+	}
+	if !warned["legacy-default"] || !warned["legacy-override"] {
+		t.Fatalf("legacy servers not inventoried with warning: names=%v warned=%v", names, warned)
 	}
 }
