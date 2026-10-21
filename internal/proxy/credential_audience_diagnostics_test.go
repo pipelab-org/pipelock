@@ -244,7 +244,7 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			}
 			rec := httptest.NewRecorder()
 			rp.ServeHTTP(rec, req)
-			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential audience mismatch") || !strings.Contains(rec.Body.String(), "127.0.0.1") || strings.Contains(rec.Body.String(), "inbound.example") || strings.Contains(rec.Body.String(), key) {
+			if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "credential audience mismatch") || !strings.Contains(rec.Body.String(), upstreamURL.Hostname()) || strings.Contains(rec.Body.String(), "inbound.example") || strings.Contains(rec.Body.String(), key) {
 				t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
 			}
 			if got := upstreamCalls.Load(); got != 0 {
