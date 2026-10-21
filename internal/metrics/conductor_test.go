@@ -100,3 +100,14 @@ pipelock_conductor_policy_bundle_policy_hash_status_count{status="unknown_unveri
 	var nilMetrics *Metrics
 	nilMetrics.RecordConductorPolicyHashStatusCounts(nil)
 }
+
+func TestConductorSessionFirstObservedCounter(t *testing.T) {
+	m := New()
+	m.RecordConductorServerAuditSessionFirstObserved()
+	m.RecordConductorServerAuditSessionFirstObserved()
+	if got := testutil.ToFloat64(m.conductorAuditSessionFirstObserved); got != 2 {
+		t.Fatalf("distinct session overlap counter=%v want 2", got)
+	}
+	var nilMetrics *Metrics
+	nilMetrics.RecordConductorServerAuditSessionFirstObserved()
+}

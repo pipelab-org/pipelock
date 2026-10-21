@@ -9,6 +9,7 @@ package controlplane
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -52,6 +53,9 @@ const (
 type AuditIngestResult struct {
 	Status  AuditIngestStatus
 	Summary AuditBatchSummary
+	// SessionFirstObserved is true only for a committed, newly inserted batch
+	// establishing a new follower/session observation. It is not wire data.
+	SessionFirstObserved bool `json:"-"`
 }
 
 type AcceptedAuditBatch struct {
@@ -129,6 +133,20 @@ func (h *Handler) handleAuditBatch(w http.ResponseWriter, r *http.Request) {
 	status := result.Status
 	if status == "" {
 		status = AuditIngestStatusAccepted
+	}
+	if status == AuditIngestStatusAccepted && result.SessionFirstObserved {
+		h.metrics.RecordConductorServerAuditSessionFirstObserved()
+		if h.logger != nil {
+			h.logger.WarnContext(r.Context(), "conductor_audit_session_first_observed",
+				slog.String("event", "conductor_audit_session_first_observed"),
+				slog.String("receiver", "conductor"),
+				slog.String("org_id", req.Envelope.OrgID),
+				slog.String("fleet_id", req.Envelope.FleetID),
+				slog.String("instance_id", req.Envelope.InstanceID),
+				slog.String("batch_id", req.Envelope.BatchID),
+				slog.Uint64("seq_start", req.Envelope.SeqStart),
+				slog.Uint64("seq_end", req.Envelope.SeqEnd))
+		}
 	}
 	responseAcceptedAt := acceptedAt
 	if !result.Summary.ReceivedAt.IsZero() {

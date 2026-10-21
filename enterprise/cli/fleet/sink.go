@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -101,6 +102,7 @@ func SinkCmd() *cobra.Command {
 				MaxSkew:     maxSkew,
 				KeyBindings: bindings,
 				ReaderToken: readerToken,
+				Logger:      slog.New(slog.NewJSONHandler(cmd.ErrOrStderr(), nil)),
 			})
 			if err != nil {
 				return err

@@ -53,6 +53,11 @@ func (m *Metrics) registerConductorMetrics(reg *prometheus.Registry) {
 		Help:      "Conductor server HTTP request duration by route and method.",
 		Buckets:   prometheus.DefBuckets,
 	}, []string{"route", "method"})
+	m.conductorAuditSessionFirstObserved = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock",
+		Name:      "conductor_server_audit_session_first_observed_total",
+		Help:      "Total validated follower sessions first observed in committed audit evidence. Retries and later batches do not count.",
+	})
 	m.conductorServerAuditIngest = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: "pipelock",
 		Name:      "conductor_server_audit_ingest_total",
@@ -80,6 +85,7 @@ func (m *Metrics) registerConductorMetrics(reg *prometheus.Registry) {
 		m.conductorAuditQueueInflight,
 		m.conductorAuditQueueDead,
 		m.conductorAuditDeliveries,
+		m.conductorAuditSessionFirstObserved,
 		m.conductorServerRequests,
 		m.conductorServerDuration,
 		m.conductorServerAuditIngest,
@@ -149,5 +155,13 @@ func (m *Metrics) RecordConductorPolicyHashStatusCounts(counts map[conductor.Pol
 	}
 	for _, status := range conductorPolicyHashStatuses {
 		m.conductorPolicyHashStatuses.WithLabelValues(string(status)).Set(float64(counts[status]))
+	}
+}
+
+// RecordConductorServerAuditSessionFirstObserved records one newly committed
+// follower session. Retries and later batches in that session do not count.
+func (m *Metrics) RecordConductorServerAuditSessionFirstObserved() {
+	if m != nil {
+		m.conductorAuditSessionFirstObserved.Inc()
 	}
 }
