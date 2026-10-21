@@ -519,7 +519,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			writeBlockedError(w, blockInfoForResult(result).WithRequestID(requestID),
-				adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner), status)
+				adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner), status)
 			return
 		}
 		log.LogAnomaly(actx, result.Scanner,
@@ -567,7 +567,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		})
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, "").WithRequestID(requestID),
-			adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny),
+			adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny),
 			http.StatusForbidden)
 		return
 	}
@@ -667,7 +667,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		if !wsHeaderBlocked && cfg.AdaptiveEnforcement.Enabled && headerSR.Level > 0 {
 			effectiveAction := decide.UpgradeAction(action, headerSR.Level, &cfg.AdaptiveEnforcement)
 			if effectiveAction == config.ActionBlock {
-				setAdaptiveBlockDetail(w, log, headerSR.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), scanner.ScannerDLP)
+				setAdaptiveBlockDetail(w, adaptiveAudit{log, clientIP, requestID}, headerSR.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), scanner.ScannerDLP)
 				sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 				recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: action, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: clientIP, RequestID: requestID})
 				action = effectiveAction
@@ -742,7 +742,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, "").WithRequestID(requestID),
-				adaptiveBlockDetail(log, headerSR.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny),
+				adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, headerSR.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny),
 				http.StatusForbidden)
 			return
 		}
@@ -823,7 +823,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			})
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-				adaptiveBlockDetail(log, ceeRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
+				adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, ceeRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
 			return
 		}
 	}
@@ -983,13 +983,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Agent:     agent,
 			})
 			if clientConn != nil {
-				_ = airlockBlockDetail(log, wsSess, cfg, wsScope, tier)
+				_ = airlockBlockDetail(adaptiveAudit{log, clientIP, requestID}, wsSess, cfg, wsScope, tier)
 				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-					adaptiveWSClosePayload(log, wsSess, cfg, wsScope, blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID)))
+					adaptiveCloseFrame(wsSess, cfg, wsScope, blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID)))
 			} else {
 				writeBlockedError(w,
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
-					"WebSocket blocked: airlock: WebSocket blocked during quarantine; "+airlockBlockDetail(log, wsSess, cfg, wsScope, tier), http.StatusForbidden)
+					"WebSocket blocked: airlock: WebSocket blocked during quarantine; "+airlockBlockDetail(adaptiveAudit{log, clientIP, requestID}, wsSess, cfg, wsScope, tier), http.StatusForbidden)
 			}
 			return
 		}
@@ -1822,7 +1822,7 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			})
 		})
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-			adaptiveWSClosePayload(log, ceeRec, r.cfg, "", blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
+			adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, ceeRec, r.cfg, "", blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 		return true
 	}
@@ -2123,7 +2123,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				Agent:     r.agent,
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID)))
+				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID)))
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
 			return true
 		}
@@ -2192,7 +2192,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			})
 			closePayload := blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID).CloseFramePayload()
 			if addrAction != originalAddrAction {
-				closePayload = adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
+				closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
 			}
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
@@ -2219,7 +2219,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			})
 			closePayload := blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID).CloseFramePayload()
 			if addrAction != originalAddrAction {
-				closePayload = adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
+				closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
 			}
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
@@ -2538,7 +2538,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		})
 		closePayload := blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID).CloseFramePayload()
 		if action != originalAction {
-			closePayload = adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID))
+			closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID))
 		}
 		_ = closeReason // free-text closeReason kept for receipt logging above
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
@@ -2707,7 +2707,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
+				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
@@ -3098,7 +3098,7 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		})
 		closePayload := blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload()
 		if wsAction != originalWSAction {
-			closePayload = adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID))
+			closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID))
 		}
 		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
@@ -3296,7 +3296,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				})
 			})
 			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				adaptiveWSClosePayload(log, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
+				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
 			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return

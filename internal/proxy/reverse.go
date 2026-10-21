@@ -1296,7 +1296,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID), reason+"; "+airlockBlockDetail(rp.logger, airlockSess, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), tier))
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID), reason+"; "+airlockBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, airlockSess, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), tier))
 				return true
 			}
 		}
@@ -1371,7 +1371,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			})
 			writeReverseProxyBlock(w, http.StatusForbidden,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-				adaptiveBlockDetail(rp.logger, sessionResult.recorder, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
+				adaptiveBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, sessionResult.recorder, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
 			return
 		}
 
@@ -1539,7 +1539,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-					adaptiveBlockDetail(rp.logger, ceeRec, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
+					adaptiveBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, ceeRec, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
 				return
 			}
 		}

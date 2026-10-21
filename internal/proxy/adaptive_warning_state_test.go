@@ -75,7 +75,7 @@ func TestAdaptiveDiagnosticsHTTPWebSocketAndLog(t *testing.T) {
 	s.RecordSignal(session.SignalBlock, 0.25)
 	wrapped := adaptiveDetailTestRecorder{s}
 	rr := httptest.NewRecorder()
-	setAdaptiveBlockDetail(rr, logger, wrapped, cfg, "", "dlp")
+	setAdaptiveBlockDetail(rr, adaptiveAudit{logger, "10.0.0.7", "req-adaptive-detail"}, wrapped, cfg, "", "dlp")
 	for _, want := range []string{`category="dlp"`, "score=3", "escalation_threshold=0.25", "wait 300s"} {
 		if !strings.Contains(rr.Header().Get(headerAdaptiveDetail), want) {
 			t.Errorf("HTTP detail missing %s", want)
@@ -84,10 +84,13 @@ func TestAdaptiveDiagnosticsHTTPWebSocketAndLog(t *testing.T) {
 	if !strings.Contains(logs.String(), "escalation_threshold=0.25") {
 		t.Fatal("audit log omitted recovery diagnostics")
 	}
+	if !strings.Contains(logs.String(), `"request_id":"req-adaptive-detail"`) || !strings.Contains(logs.String(), `"client_ip":"10.0.0.7"`) {
+		t.Fatalf("audit diagnostics lost request correlation: %s", logs.String())
+	}
 	info := blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny)
 	for _, duration := range []int{300, 0} {
 		cfg.AdaptiveEnforcement.LevelDurationSeconds = duration
-		payload := adaptiveWSClosePayload(logger, s, cfg, "", info)
+		payload := adaptiveWSClosePayload(adaptiveAudit{log: logger}, s, cfg, "", info)
 		for _, want := range []string{`"score":3`, `"threshold":0.25`, `"wait_s":300`} {
 			if !strings.Contains(payload, want) {
 				t.Errorf("WS payload %s missing %s", payload, want)
@@ -125,14 +128,14 @@ func TestAdaptiveDetailUsesEnforcingScope(t *testing.T) {
 	s := &SessionState{}
 	s.RecordScopedSignal("api.vendor.example", session.SignalBlock, 1)
 	s.RecordScopedSignal("other.example", session.SignalBlock, 1)
-	if got := adaptiveBlockDetail(nil, s, cfg, "api.vendor.example", "dlp"); !strings.Contains(got, "score=3") || !strings.Contains(got, "level=elevated") {
+	if got := adaptiveBlockDetail(adaptiveAudit{}, s, cfg, "api.vendor.example", "dlp"); !strings.Contains(got, "score=3") || !strings.Contains(got, "level=elevated") {
 		t.Fatalf("reported another destination's score: %s", got)
 	}
 	s.RecordSignal(session.SignalBlock, 1)
-	if got := adaptiveBlockDetail(nil, s, cfg, "api.vendor.example", "session_deny"); !strings.Contains(got, "score=9") {
+	if got := adaptiveBlockDetail(adaptiveAudit{}, s, cfg, "api.vendor.example", "session_deny"); !strings.Contains(got, "score=9") {
 		t.Fatalf("did not report authoritative global score: %s", got)
 	}
-	_ = adaptiveBlockDetail(nil, nil, cfg, "", "session_deny")
+	_ = adaptiveBlockDetail(adaptiveAudit{}, nil, cfg, "", "session_deny")
 }
 
 func TestAirlockDiagnosticUsesScopedStateAndTimers(t *testing.T) {
@@ -146,7 +149,7 @@ func TestAirlockDiagnosticUsesScopedStateAndTimers(t *testing.T) {
 	defer logger.Close()
 	s := &SessionState{}
 	s.RecordScopedSignal("api.vendor.example", session.SignalBlock, 1)
-	detail := airlockBlockDetail(logger, s, cfg, "api.vendor.example", config.AirlockTierHard)
+	detail := airlockBlockDetail(adaptiveAudit{log: logger}, s, cfg, "api.vendor.example", config.AirlockTierHard)
 	for _, want := range []string{`category="airlock"`, "score=3", `tier="hard"`, "hard_minutes="} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("missing %s: %s", want, detail)
@@ -155,5 +158,5 @@ func TestAirlockDiagnosticUsesScopedStateAndTimers(t *testing.T) {
 	if !strings.Contains(logs.String(), "hard_minutes=") {
 		t.Fatal("audit omitted airlock recovery")
 	}
-	_ = airlockBlockDetail(nil, nil, cfg, "", config.AirlockTierHard)
+	_ = airlockBlockDetail(adaptiveAudit{}, nil, cfg, "", config.AirlockTierHard)
 }

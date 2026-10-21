@@ -1197,7 +1197,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				if allowed, reason := ClassifyAction(tier, req.Method, redirectTransport, false); !allowed {
 					logger.LogAirlockDeny(redirectSess.key, tier, redirectTransport, req.Method, clientIP, requestID)
 					p.metrics.RecordAirlockDenial(tier, redirectTransport, req.Method)
-					return newRedirectBlockedRequest("airlock", reason+"; "+airlockBlockDetail(logger, redirectSess, currentCfg, adaptiveScopeForHost(req.URL.Hostname()), tier))
+					return newRedirectBlockedRequest("airlock", reason+"; "+airlockBlockDetail(adaptiveAudit{logger, clientIP, requestID}, redirectSess, currentCfg, adaptiveScopeForHost(req.URL.Hostname()), tier))
 				}
 			}
 
@@ -3915,7 +3915,6 @@ func triggerScopedAirlockOnEscalation(sess *SessionState, scope, escalatedTo str
 		})
 		if ep.Logger != nil {
 			ep.Logger.LogAirlockEnterForScope(ep.Session, scope, to, "adaptive_"+escalatedTo, ep.ClientIP, ep.RequestID)
-			ep.Logger.LogBlocked(audit.NewMethodLogContext("ADAPTIVE"), "airlock", fmt.Sprintf("category=airlock score=%g escalation_threshold=%g level=%s; ", sess.ScopedThreatScore(scope), ep.Threshold, escalatedTo)+decide.AirlockRecoveryDetail(to, airlockCfg))
 		}
 		if ep.Metrics != nil {
 			ep.Metrics.RecordAirlockTransition(from, to, "adaptive")
@@ -5574,7 +5573,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
 					http.StatusForbidden, FetchResponse{
 						URL: displayURL, Agent: agent, Blocked: true,
-						BlockReason: "session in airlock drain; " + airlockBlockDetail(log, fetchSess, cfg, adaptiveScopeForHost(parsed.Hostname()), tier),
+						BlockReason: "session in airlock drain; " + airlockBlockDetail(adaptiveAudit{log, clientIP, requestID}, fetchSess, cfg, adaptiveScopeForHost(parsed.Hostname()), tier),
 					})
 				return true
 			}
@@ -5696,7 +5695,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         escalatedEchoURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner),
+					BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner),
 					Layer:       adaptiveEnforcementLayer,
 				})
 			return
@@ -5774,7 +5773,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: adaptiveBlockDetail(log, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
+				BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 				Layer:       adaptiveEnforcementLayer,
 			})
 		return
@@ -5929,7 +5928,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: adaptiveBlockDetail(log, fetchRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
+				BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, fetchRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 				Layer:       adaptiveEnforcementLayer,
 			})
 		return
@@ -6108,7 +6107,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         displayURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: adaptiveBlockDetail(log, ceeRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
+					BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, ceeRec, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
 					Layer:       adaptiveEnforcementLayer,
 				})
 			return
@@ -7069,7 +7068,7 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		if action != originalAction {
 			if sm := p.sessionMgrPtr.Load(); sm != nil {
 				if parsedResponseURL, err := url.Parse(firstNonEmptyString(in.responseURL, displayURL)); err == nil {
-					setAdaptiveBlockDetail(w, log, sm.GetOrCreate(sessionKeyFor(cfg, agent, clientIP, actorAuth)), cfg, adaptiveScopeForHost(parsedResponseURL.Hostname()), responseScanLayer)
+					setAdaptiveBlockDetail(w, adaptiveAudit{log, clientIP, requestID}, sm.GetOrCreate(sessionKeyFor(cfg, agent, clientIP, actorAuth)), cfg, adaptiveScopeForHost(parsedResponseURL.Hostname()), responseScanLayer)
 				}
 			}
 			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)

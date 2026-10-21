@@ -448,7 +448,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			emitConnectSessionDenyReceipt()
 			p.metrics.RecordTunnelBlocked(agentLabel)
 			writeBlockedError(w, blockInfoForResult(result).WithRequestID(requestID),
-				adaptiveBlockDetail(p.logger, connectRec, cfg, adaptiveScopeForHost(host), result.Scanner), status)
+				adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, connectRec, cfg, adaptiveScopeForHost(host), result.Scanner), status)
 			return
 		}
 		p.logger.LogAnomaly(targetCtx, result.Scanner,
@@ -475,7 +475,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordTunnelBlocked(agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-			adaptiveBlockDetail(p.logger, connectRec, cfg, adaptiveScopeForHost(host), adaptiveSessionDeny),
+			adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, connectRec, cfg, adaptiveScopeForHost(host), adaptiveSessionDeny),
 			http.StatusForbidden)
 		return
 	}
@@ -550,7 +550,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-					adaptiveBlockDetail(p.logger, postCEERec, cfg, adaptiveScopeForHost(host), adaptiveSessionDeny), http.StatusForbidden)
+					adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, postCEERec, cfg, adaptiveScopeForHost(host), adaptiveSessionDeny), http.StatusForbidden)
 				return
 			}
 		}
@@ -661,7 +661,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordTunnelBlocked(agentLabel)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
-					"airlock: CONNECT blocked during quarantine; "+airlockBlockDetail(p.logger, connectSess, cfg, adaptiveScopeForHost(host), tier), http.StatusForbidden)
+					"airlock: CONNECT blocked during quarantine; "+airlockBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, connectSess, cfg, adaptiveScopeForHost(host), tier), http.StatusForbidden)
 				return
 			}
 		}
@@ -1243,7 +1243,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				p.metrics.RecordAirlockDenial(tier, TransportForward, r.Method)
 				writeBlockedError(w,
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),
-					"airlock: "+reason+"; "+airlockBlockDetail(p.logger, forwardSess, cfg, adaptiveScopeForHost(r.URL.Hostname()), tier), http.StatusForbidden)
+					"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, forwardSess, cfg, adaptiveScopeForHost(r.URL.Hostname()), tier), http.StatusForbidden)
 				return true
 			}
 		}
@@ -1295,7 +1295,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(r.URL.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoForResult(result).WithRequestID(requestID),
-				adaptiveBlockDetail(p.logger, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), result.Scanner), status)
+				adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), result.Scanner), status)
 			return
 		}
 		p.logger.LogAnomaly(actx, result.Scanner,
@@ -1327,7 +1327,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)
 		writeBlockedError(w,
 			blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-			adaptiveBlockDetail(p.logger, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
+			adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
 		return
 	}
 
@@ -1745,7 +1745,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				action = decide.UpgradeAction(action, sr.Level, &cfg.AdaptiveEnforcement)
 			}
 			if action != originalBodyAction {
-				setAdaptiveBlockDetail(w, p.logger, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), scannerLabel)
+				setAdaptiveBlockDetail(w, adaptiveAudit{p.logger, clientIP, requestID}, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), scannerLabel)
 				sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 				recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: originalBodyAction, ToAction: action, Scanner: scannerLabel, ClientIP: clientIP, RequestID: requestID})
 			}
@@ -1937,7 +1937,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				emitSessionDenyReceipt()
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-					adaptiveBlockDetail(p.logger, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
+					adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
 				return
 			}
 		}
@@ -2042,7 +2042,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			p.metrics.RecordBlocked(r.URL.Hostname(), adaptiveSessionDeny, time.Since(start), agentLabel)
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-				adaptiveBlockDetail(p.logger, ceeRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
+				adaptiveBlockDetail(adaptiveAudit{p.logger, clientIP, requestID}, ceeRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), adaptiveSessionDeny), http.StatusForbidden)
 			return
 		}
 	}
@@ -3260,7 +3260,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					_, responseLevel := adaptiveBlockState(forwardRec, adaptiveScopeForHost(r.URL.Hostname()))
 					action = decide.UpgradeAction(action, responseLevel, &cfg.AdaptiveEnforcement)
 					if action != originalAction {
-						setAdaptiveBlockDetail(w, p.logger, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), responseScanLayer)
+						setAdaptiveBlockDetail(w, adaptiveAudit{p.logger, clientIP, requestID}, forwardRec, cfg, adaptiveScopeForHost(r.URL.Hostname()), responseScanLayer)
 						sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 						recordAdaptiveUpgrade(p.logger, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(responseLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 					}

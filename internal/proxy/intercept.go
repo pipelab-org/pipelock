@@ -783,7 +783,7 @@ func newInterceptHandler(
 					ic.Metrics.RecordTLSRequestBlocked("airlock")
 					writeBlockedError(w,
 						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
-						"airlock: "+reason+"; "+airlockBlockDetail(ic.Logger, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
+						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
 					return
 				}
 			}
@@ -1066,7 +1066,7 @@ func newInterceptHandler(
 				effectiveAction = decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
 			}
 			if effectiveAction == config.ActionBlock {
-				setAdaptiveBlockDetail(w, ic.Logger, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), urlResult.Scanner)
+				setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), urlResult.Scanner)
 				sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
 				if ic.Proxy != nil {
@@ -1453,7 +1453,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
-					setAdaptiveBlockDetail(w, ic.Logger, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scannerLabel)
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scannerLabel)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
@@ -1680,7 +1680,7 @@ func newInterceptHandler(
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				escalatedBlock := action == config.ActionBlock && originalAction != config.ActionBlock
 				if action != originalAction {
-					setAdaptiveBlockDetail(w, ic.Logger, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scanner.ScannerDLP)
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scanner.ScannerDLP)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var metricSet *metrics.Metrics
 					if ic.Proxy != nil {
@@ -1878,7 +1878,7 @@ func newInterceptHandler(
 				}))
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
-					adaptiveBlockDetail(ic.Logger, ceeRec, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny), http.StatusForbidden)
+					adaptiveBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ceeRec, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny), http.StatusForbidden)
 				return
 			}
 		}
@@ -1921,7 +1921,7 @@ func newInterceptHandler(
 			}))
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
-				adaptiveBlockDetail(ic.Logger, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny),
+				adaptiveBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny),
 				http.StatusForbidden)
 			return
 		}
@@ -2963,7 +2963,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
-					setAdaptiveBlockDetail(w, ic.Logger, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), responseScanLayer)
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), responseScanLayer)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
