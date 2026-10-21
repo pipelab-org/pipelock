@@ -139,25 +139,24 @@ The host lists live in [`internal/config/dlp_patterns.go`](../internal/config/dl
 
 Path entropy and subdomain entropy are the most common false positive sources. APIs that use UUIDs, base64-encoded IDs, or hash-based URLs in their paths trigger entropy checks. Defaults already exempt common package/object hosts with hash-based routing paths: `files.pythonhosted.org`, `pypi.org`, and `objects.githubusercontent.com`.
 
-The default threshold is `4.5` (balanced preset). Raising it reduces sensitivity:
+For a path-entropy false positive, start with `path_entropy_exclusions` for the exact host and a stable publisher-specific path prefix. The entry defaults to HTTPS. A cleartext HTTP download needs an explicit `scheme: http`; that setting does not encrypt the request path, which remains visible on the network. Use separate entries only when both schemes are needed.
 
 ```yaml
 fetch_proxy:
   monitoring:
-    entropy_threshold: 5.0
+    path_entropy_exclusions:
+      - host: "packages.vendor.example"
+        path_prefix: "/releases/"
+        reason: "Publisher-issued package filenames"
+      - scheme: http
+        host: "packages.vendor.example"
+        path_prefix: "/releases/"
+        reason: "Cleartext package mirror"
 ```
 
-To exempt specific domains instead of raising the global threshold:
+This lifts only path entropy on the matching route. Query entropy, subdomain entropy, DLP and SSRF still run. Every filename under that prefix receives the same path-entropy exclusion, so confirm an agent cannot place a chosen opaque segment there and later read it back. A package-shaped filename alone does not establish that it is safe.
 
-```yaml
-fetch_proxy:
-  monitoring:
-    subdomain_entropy_exclusions:
-      - "api.example.com"
-      - "cdn.example.com"
-```
-
-**Guideline:** If the domain is trusted and uses high-entropy URLs by design (CDNs, object storage, API gateways), exempt it. If the domain is untrusted, keep the threshold and investigate the findings.
+The default threshold is `4.5` (balanced preset). Raising `fetch_proxy.monitoring.entropy_threshold` reduces sensitivity for every destination. The broader `fetch_proxy.monitoring.subdomain_entropy_exclusions` host list lifts both path and subdomain entropy across the host; prefer a path-scoped entry when only a download route needs relief.
 
 Entropy-only URL, body, WebSocket, A2A/MCP content, and cross-request budget findings remain visible but do not raise the adaptive score or get upgraded by an elevated session. A configured `warn` still forwards opaque data, so it cannot prevent opaque exfiltration; choose `block` for an entropy detector that must deny it. Concrete DLP, injection, SSRF, policy, and structural hostname findings still score and upgrade. A session already at `block_all` denies every request.
 
@@ -255,7 +254,7 @@ cross_request_detection:
 | Scenario | Scanner | Pattern | Fix |
 |----------|---------|---------|-----|
 | API returns docs that trigger a non-core response rule | response | Jailbreak Attempt | Add a `suppress` entry for `Jailbreak Attempt` scoped to that host's URLs. For a core response floor match, declare a `response_scanning.core_observe_exceptions` entry for that host and pattern instead. Use `response_scanning.exempt_domains` only to trust the whole host, which also drops media stripping, Browser Shield, and the response size cap there |
-| URL contains UUID path segments | entropy | (path entropy) | Raise `entropy_threshold` or add to `subdomain_entropy_exclusions` |
+| URL contains UUID path segments | entropy | (path entropy) | Add an exact host and path prefix to `path_entropy_exclusions`; use explicit `scheme: http` for cleartext HTTP |
 | Base64-encoded JWT in Authorization header | dlp | JWT Token | If the JWT is intentionally sent to a controlled endpoint, add a narrowly path-scoped `suppress` entry for `JWT Token`. Header and body DLP read `suppress`; per-pattern `exempt_domains` only affects URL scans |
 | High-entropy CDN URLs | entropy | (subdomain entropy) | Add CDN to `subdomain_entropy_exclusions` |
 | Service with long hex/base32 subdomain labels | subdomain_entropy | (structural hostname-exfil signal) | Add the host to `subdomain_entropy_exclusions` (raising the threshold does not allow encoded labels) |
@@ -265,7 +264,7 @@ cross_request_detection:
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add a `suppress` entry for `Environment Variable Secret` scoped to that upstream URL. Per-pattern `exempt_domains` only affects URL scans and does not apply to WebSocket frame content. |
 | Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |
 | Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Declare a `response_scanning.core_observe_exceptions` entry for that host and pattern, or fix pattern precision; `exempt_domains` is the whole-host fallback |
-| Hash-based object storage paths | entropy | (path entropy) | Add storage domain to `subdomain_entropy_exclusions` |
+| Hash-based object storage paths | entropy | (path entropy) | Add the storage host and path prefix to `path_entropy_exclusions` |
 
 ## Deliberate Audit Rollouts
 
