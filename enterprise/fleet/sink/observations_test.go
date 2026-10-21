@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -87,10 +88,16 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	}
 	// Reusing a pruned batch ID must insert its namespace again. A subsequent
 	// identical retry must skip that insertion and remain idempotent.
-	for attempt := range 2 {
-		if got := post("a-next", "run-a", 10, 2); got != http.StatusAccepted {
-			t.Fatalf("pruned batch retry %d status=%d", attempt, got)
+	for attempt, want := range []string{`"status":"accepted"`, `"status":"duplicate"`} {
+		env, payload := sessionEnvelope(t, priv, "a-next", "run-a", 10, 2)
+		response := postBatch(t, handler, env, payload)
+		if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), want) {
+			t.Fatalf("pruned batch retry %d status=%d body=%s want=%s", attempt, response.Code, response.Body.String(), want)
 		}
+	}
+	var namespaces int
+	if err = store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit_batch_namespaces WHERE batch_id='a-next'").Scan(&namespaces); err != nil || namespaces != 1 {
+		t.Fatalf("retried batch namespaces=%d want=1 err=%v", namespaces, err)
 	}
 	if got := post("a-after-prune", "run-a", 20, 2); got != http.StatusAccepted {
 		t.Fatalf("post-prune status=%d", got)
