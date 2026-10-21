@@ -85,6 +85,13 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	if err = store.db.QueryRowContext(t.Context(), "SELECT pruned_before FROM audit_observation_coverage WHERE id=1").Scan(&before); err != nil || before == "" {
 		t.Fatalf("prune coverage=%q err=%v", before, err)
 	}
+	// Reusing a pruned batch ID must insert its namespace again. A subsequent
+	// identical retry must skip that insertion and remain idempotent.
+	for attempt := range 2 {
+		if got := post("a-next", "run-a", 10, 2); got != http.StatusAccepted {
+			t.Fatalf("pruned batch retry %d status=%d", attempt, got)
+		}
+	}
 	if got := post("a-after-prune", "run-a", 20, 2); got != http.StatusAccepted {
 		t.Fatalf("post-prune status=%d", got)
 	}

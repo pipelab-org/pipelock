@@ -40,8 +40,13 @@ func TestSessionObservationMigrationRollbackAndRecovery(t *testing.T) {
 			// Leave retained evidence unclassified, as at first upgrade. Fail the
 			// second row so a non-atomic migration would leave the first behind.
 			tables := []string{"audit_batch_namespaces", "audit_session_observations", "audit_chain_observations", "audit_observation_coverage"}
-			for _, table := range tables {
-				if _, err := store.db.ExecContext(t.Context(), "DELETE FROM "+table); err != nil {
+			for _, statement := range []string{
+				"DELETE FROM audit_batch_namespaces",
+				"DELETE FROM audit_session_observations",
+				"DELETE FROM audit_chain_observations",
+				"DELETE FROM audit_observation_coverage",
+			} {
+				if _, err := store.db.ExecContext(t.Context(), statement); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -183,6 +188,13 @@ func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	var before string
 	if err = store.db.QueryRowContext(t.Context(), "SELECT pruned_before FROM audit_observation_coverage WHERE id=1").Scan(&before); err != nil || before == "" {
 		t.Fatalf("prune coverage=%q err=%v", before, err)
+	}
+	// Reusing a pruned batch ID must insert its namespace again. A subsequent
+	// identical retry must skip that insertion and remain idempotent.
+	for attempt := range 2 {
+		if got := post("a-next", "run-a", 10, 2); got != http.StatusAccepted {
+			t.Fatalf("pruned batch retry %d status=%d", attempt, got)
+		}
 	}
 	if got := post("a-after-prune", "run-a", 20, 2); got != http.StatusAccepted {
 		t.Fatalf("post-prune status=%d", got)
