@@ -66,7 +66,7 @@ suppress:
 | Basename glob | `*.generated.go` | `pkg/api/types.generated.go` |
 | URL suffix | `robots.txt` | `https://example.com/robots.txt` |
 
-A complete URL without wildcards matches that URL, with standard-port normalization. To match a URL prefix, end the entry with `/` or use an explicit wildcard. Scheme-qualified entries are not URL path suffixes; the suffix form uses a path tail such as `robots.txt`. A URL glob matches the whole target, including its query string, and `*` can cross path separators.
+A complete URL without glob characters matches that URL, with standard-port normalization. The characters `*`, `?`, and `[` introduce glob matching, including in query strings. Write `[?]` for a literal `?` and `[[]` for a literal `[`: for example, `https://api.vendor.example/token[?]mode=refresh` matches `https://api.vendor.example/token?mode=refresh`. Backslashes are normalized to `/`, so they cannot escape glob characters. To match a URL prefix, end the entry with `/` or use an explicit wildcard. Scheme-qualified entries are not URL path suffixes; the suffix form uses a path tail such as `robots.txt`. A URL glob matches the whole target, including its query string, and `*` can cross path separators.
 
 The `reason` field is optional but recommended. It appears in audit logs and helps future maintainers understand why the suppression exists.
 
