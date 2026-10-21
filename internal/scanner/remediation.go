@@ -200,6 +200,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 		// can preserve that nuance from Result.Reason. The table default is path
 		// entropy because a plain scanner label cannot distinguish the two.
 		OperatorKnob: "Add the exact host and path prefix to `fetch_proxy.monitoring.path_entropy_exclusions`; this is the narrowest fix and it lifts ONLY path entropy, leaving subdomain entropy, query entropy, DLP and SSRF enforced for that host. " +
+			"The entry defaults to HTTPS; for a cleartext HTTP download, set `scheme: http` explicitly. HTTP leaves the request path visible on the network; the exclusion does not encrypt it. Use separate entries if both schemes are needed. " +
 			"For recurring downloads, consider a stable publisher-specific prefix rather than a new filename entry for each release; a wider prefix also relaxes path entropy for every request it matches. " +
 			"Before adding a route, confirm an agent cannot place a chosen opaque segment there and later read that value back, because such a route can carry data out. " +
 			"This is the path-entropy gate; `fetch_proxy.monitoring.query_entropy_exclusions` does NOT lift path entropy blocks.",
