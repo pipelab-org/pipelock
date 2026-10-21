@@ -605,6 +605,210 @@ func TestDetectHostileTooling_PyprojectUnreadable(t *testing.T) {
 	}
 }
 
+// scanHostileManifests writes the named files into a fresh directory and
+// returns the hostile-tooling findings split into matched package patterns and
+// inspection warnings, so a test can assert both without caring about order.
+func scanHostileManifests(t *testing.T, files map[string]string) (patterns []string, warnedFiles []string) {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, f := range detectHostileTooling(dir) {
+		switch {
+		case f.Pattern != "":
+			patterns = append(patterns, f.Pattern)
+		case strings.Contains(strings.ToLower(f.Message), "could not inspect"):
+			warnedFiles = append(warnedFiles, f.File)
+		default:
+			t.Errorf("unexpected finding %+v", f)
+		}
+	}
+	return patterns, warnedFiles
+}
+
+func TestHostileToolingPackages_AreNormalized(t *testing.T) {
+	// Manifest names are normalized before lookup, so a list entry that is not
+	// already in normalized form could never match.
+	for _, pkg := range hostileToolingPackages {
+		if got := normalizePythonPackageName(pkg); got != pkg {
+			t.Errorf("hostileToolingPackages entry %q is not normalized (%q)", pkg, got)
+		}
+	}
+}
+
+func TestDetectHostileTooling_PyprojectOtherDependencyTables(t *testing.T) {
+	tests := []struct {
+		name      string
+		pyproject string
+		want      string
+	}{
+		{"PEP 735 group multiline", "[dependency-groups]\ndev = [\n  \"pytest\",\n  \"obliteratus\",\n]\n", "obliteratus"},
+		{"PEP 735 group one line", "[dependency-groups]\ndev = [\"obliteratus>=0.1\"]\n", "obliteratus"},
+		{"PEP 735 group beside include", "[dependency-groups]\nall = [{include-group = \"dev\"}, \"abliterator\"]\n", "abliterator"},
+		{"PEP 518 build requirement", "[build-system]\nrequires = [\n  \"setuptools\",\n  \"obliteratus\",\n]\n", "obliteratus"},
+		{"uv legacy dev dependencies", "[tool.uv]\ndev-dependencies = [\n  \"obliteratus\",\n]\n", "obliteratus"},
+		{"PDM legacy dev dependencies", "[tool.pdm.dev-dependencies]\nresearch = [\n  \"refusal_ablation\",\n]\n", "refusal-ablation"},
+		{"Hatch environment dependencies", "[tool.hatch.envs.default]\ndependencies = [\n  \"obliteratus\",\n]\n", "obliteratus"},
+		{"Hatch environment extra dependencies", "[tool.hatch.envs.lab]\nextra-dependencies = [\"llm-abliterator\"]\n", "llm-abliterator"},
+		{"PEP 508 compatible release", "[project]\ndependencies = [\"obliteratus~=0.1\"]\n", "obliteratus"},
+		{"PEP 508 parenthesised version", "[project]\ndependencies = [\"obliteratus (>=0.1)\"]\n", "obliteratus"},
+		{"PEP 508 URL without spaces", "[project]\ndependencies = [\"obliteratus@https://api.vendor.example/pkg.whl\"]\n", "obliteratus"},
+		{"UTF-8 byte order mark", "\xef\xbb\xbf[project]\ndependencies = [\"obliteratus\"]\n", "obliteratus"},
+		{"CRLF line endings", "[project]\r\ndependencies = [\r\n  \"obliteratus\",\r\n]\r\n", "obliteratus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns, warned := scanHostileManifests(t, map[string]string{"pyproject.toml": tt.pyproject})
+			if len(patterns) != 1 || patterns[0] != tt.want || len(warned) != 0 {
+				t.Fatalf("patterns = %v, warned = %v, want [%s] and no warning", patterns, warned, tt.want)
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_PyprojectCleanManifests(t *testing.T) {
+	tests := []struct {
+		name      string
+		pyproject string
+	}{
+		{"include-group only", "[dependency-groups]\nall = [{include-group = \"dev\"}]\ndev = [\"pytest\"]\n"},
+		{"dynamic dependencies", "[project]\ndynamic = [\"dependencies\"]\n[tool.setuptools.dynamic]\ndependencies = {file = [\"requirements.txt\"]}\n"},
+		{"poetry extras name no dependency", "[tool.poetry.extras]\nresearch = [\"obliteratus\"]\n"},
+		{"keywords are not dependencies", "[project]\nkeywords = [\"obliteratus\"]\ndependencies = [\"torch\"]\n"},
+		{"PDM editable entry has no name", "[tool.pdm.dev-dependencies]\nlocal = [\"-e file:///work/pkg\"]\n"},
+		{"empty file", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns, warned := scanHostileManifests(t, map[string]string{"pyproject.toml": tt.pyproject})
+			if len(patterns) != 0 || len(warned) != 0 {
+				t.Fatalf("patterns = %v, warned = %v, want a clean result", patterns, warned)
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_PyprojectShapeProblemKeepsOtherNames(t *testing.T) {
+	// A wrongly shaped table must not hide a hostile package declared in a
+	// well-formed one: the package is reported and the scan is flagged
+	// incomplete.
+	tests := []struct {
+		name      string
+		pyproject string
+	}{
+		{"optional dependencies is a string", "[project]\ndependencies = [\"obliteratus\"]\n[project.optional-dependencies]\nx = \"y\"\n"},
+		{"poetry dependencies is a string", "[tool.poetry]\ndependencies = \"x\"\n[project]\ndependencies = [\"obliteratus\"]\n"},
+		{"unknown dependency-group object", "[project]\ndependencies = [\"obliteratus\"]\n[dependency-groups]\ndev = [{set-phasers-to = \"stun\"}]\n"},
+		{"include-group with extra key", "[project]\ndependencies = [\"obliteratus\"]\n[dependency-groups]\ndev = [{include-group = \"x\", extra = \"y\"}]\n"},
+		{"include-group outside dependency-groups", "[project]\ndependencies = [\"obliteratus\", {include-group = \"x\"}]\n"},
+		{"non-string requirement", "[project]\ndependencies = [\"obliteratus\", 3]\n"},
+		{"project is not a table", "project = \"x\"\n[tool.uv]\ndev-dependencies = [\"obliteratus\"]\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns, warned := scanHostileManifests(t, map[string]string{"pyproject.toml": tt.pyproject})
+			if len(patterns) != 1 || patterns[0] != "obliteratus" {
+				t.Errorf("patterns = %v, want [obliteratus]", patterns)
+			}
+			if len(warned) != 1 || warned[0] != "pyproject.toml" {
+				t.Errorf("warned = %v, want one pyproject.toml inspection warning", warned)
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_OversizeManifestIsReportedNotParsed(t *testing.T) {
+	// Nested brackets overflow the TOML decoder's stack long before memory
+	// matters; the size limit must stop the read before decoding.
+	for _, file := range []string{"pyproject.toml", "requirements.txt"} {
+		t.Run(file, func(t *testing.T) {
+			body := "a = " + strings.Repeat("[", maxScanFileBytes) + "\n"
+			patterns, warned := scanHostileManifests(t, map[string]string{file: body})
+			if len(patterns) != 0 || len(warned) != 1 || warned[0] != file {
+				t.Fatalf("patterns = %v, warned = %v, want one %s inspection warning", patterns, warned, file)
+			}
+		})
+	}
+	t.Run("at the limit is still read", func(t *testing.T) {
+		pad := strings.Repeat("#", maxScanFileBytes-len("obliteratus\n#"))
+		patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": "obliteratus\n#" + pad})
+		if len(patterns) != 1 || len(warned) != 0 {
+			t.Fatalf("patterns = %v, warned = %v, want the package and no warning", patterns, warned)
+		}
+	})
+}
+
+func TestDetectHostileTooling_RequirementsShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"bare name", "obliteratus\n", "obliteratus"},
+		{"exact pin", "obliteratus==0.1\n", "obliteratus"},
+		{"compatible release", "obliteratus~=0.1\n", "obliteratus"},
+		{"spaced specifier", "obliteratus >= 0.1\n", "obliteratus"},
+		{"parenthesised version", "obliteratus (>=0.1)\n", "obliteratus"},
+		{"extras", "obliteratus[extra]>=0.1\n", "obliteratus"},
+		{"marker", "obliteratus ; python_version >= '3.10'\n", "obliteratus"},
+		{"URL reference", "obliteratus @ https://api.vendor.example/pkg.whl\n", "obliteratus"},
+		{"per-requirement hash option", "obliteratus==0.1 --hash=sha256:abc\n", "obliteratus"},
+		{"bare name with hash option", "obliteratus --hash=sha256:abc\n", "obliteratus"},
+		{"line continuation", "torch \\\n  --hash=sha256:abc\nobliteratus \\\n  >=0.1\n", "obliteratus"},
+		{"underscore separator", "refusal_ablation==1\n", "refusal-ablation"},
+		{"dot separator and case", "Refusal.Ablation>=1\n", "refusal-ablation"},
+		{"CRLF", "torch\r\nobliteratus\r\n", "obliteratus"},
+		{"byte order mark", "\xef\xbb\xbfobliteratus\n", "obliteratus"},
+		{"inline comment", "obliteratus  # needed\n", "obliteratus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": tt.body})
+			if len(patterns) != 1 || patterns[0] != tt.want || len(warned) != 0 {
+				t.Fatalf("patterns = %v, warned = %v, want [%s] and no warning", patterns, warned, tt.want)
+			}
+		})
+	}
+
+	for name, body := range map[string]string{
+		"comment line":     "# obliteratus\n",
+		"option lines":     "-r obliteratus.txt\n--index-url https://api.vendor.example/simple\n",
+		"similar name":     "obliteratus-extra>=1\n",
+		"trailing comment": "torch  # not obliteratus\n",
+	} {
+		t.Run("clean "+name, func(t *testing.T) {
+			patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": body})
+			if len(patterns) != 0 || len(warned) != 0 {
+				t.Fatalf("patterns = %v, warned = %v, want a clean result", patterns, warned)
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_RequirementsAndPyprojectReportOnce(t *testing.T) {
+	patterns, warned := scanHostileManifests(t, map[string]string{
+		"requirements.txt": "obliteratus\nobliteratus==0.1\n",
+		"pyproject.toml":   "[project]\ndependencies = [\"obliteratus\"]\n",
+	})
+	if len(patterns) != 1 || len(warned) != 0 {
+		t.Fatalf("patterns = %v, warned = %v, want one finding", patterns, warned)
+	}
+}
+
+func TestDetectHostileTooling_RequirementsUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "requirements.txt"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 1 || findings[0].File != "requirements.txt" || !strings.Contains(strings.ToLower(findings[0].Message), "could not inspect") {
+		t.Fatalf("unreadable requirements findings = %v, want inspection warning", findings)
+	}
+}
+
 func TestHasHostileFinding(t *testing.T) {
 	tests := []struct {
 		name     string
