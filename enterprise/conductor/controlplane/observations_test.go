@@ -8,6 +8,7 @@ package controlplane
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,100 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
+
+func TestSessionObservationMigrationRollbackAndRecovery(t *testing.T) {
+	for _, failure := range []string{"record_write", "received_at"} {
+		t.Run(failure, func(t *testing.T) {
+			pub, priv := testAuditSigner(t)
+			path := filepath.Join(t.TempDir(), "audit.db")
+			store := openTestSQLiteAuditStore(t, path)
+			handler := newAuditIngestTestHandler(t, store, auditKeyResolverFor(pub), 0)
+			for _, id := range []string{"a", "b"} {
+				if got := auditRunPost(t, handler, controlplaneSessionBatch(t, priv, id, "run-"+id, 0, 2)).Code; got != http.StatusAccepted {
+					t.Fatalf("%s status=%d", id, got)
+				}
+			}
+			var received time.Time
+			if err := store.db.QueryRowContext(t.Context(), "SELECT received_at FROM audit_batches WHERE batch_id='b'").Scan(&received); err != nil {
+				t.Fatal(err)
+			}
+			// Leave retained evidence unclassified, as at first upgrade. Fail the
+			// second row so a non-atomic migration would leave the first behind.
+			tables := []string{"audit_batch_namespaces", "audit_session_observations", "audit_chain_observations", "audit_observation_coverage"}
+			for _, table := range tables {
+				if _, err := store.db.ExecContext(t.Context(), "DELETE FROM "+table); err != nil {
+					t.Fatal(err)
+				}
+			}
+			breakSQL := "CREATE TRIGGER refuse_migration_row BEFORE INSERT ON audit_batch_namespaces WHEN NEW.batch_id='b' BEGIN SELECT RAISE(ABORT,'migration write refused'); END"
+			repairSQL := "DROP TRIGGER refuse_migration_row"
+			if failure == "received_at" {
+				breakSQL = "UPDATE audit_batches SET received_at='invalid' WHERE batch_id='b'"
+				repairSQL = "UPDATE audit_batches SET received_at=? WHERE batch_id='b'"
+			}
+			if _, err := store.db.ExecContext(t.Context(), breakSQL); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			failed, err := OpenSQLiteAuditStore(t.Context(), path)
+			if failed != nil {
+				_ = failed.Close()
+				t.Fatal("failed migration returned an open store")
+			}
+			if err == nil {
+				t.Fatal("migration ignored a storage failure")
+			}
+			t.Logf("migration refused: %v", err)
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = db.Close() }()
+			for _, table := range tables {
+				var n int
+				if err = db.QueryRowContext(t.Context(), "SELECT count(*) FROM "+table).Scan(&n); err != nil || n != 0 {
+					t.Fatalf("partial %s rows=%d err=%v", table, n, err)
+				}
+			}
+			var retained int
+			if err = db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit_batches").Scan(&retained); err != nil || retained != 2 {
+				t.Fatalf("retained batches=%d err=%v", retained, err)
+			}
+			var args []any
+			if failure == "received_at" {
+				args = []any{received}
+			}
+			if _, err = db.ExecContext(t.Context(), repairSQL, args...); err != nil {
+				t.Fatal(err)
+			}
+			if err = db.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = OpenSQLiteAuditStore(t.Context(), path)
+			if err != nil {
+				t.Fatalf("reopen after correcting storage failure: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+			var classified int
+			if err = store.db.QueryRowContext(t.Context(), "SELECT count(*) FROM audit_batch_namespaces WHERE session_id<>''").Scan(&classified); err != nil || classified != 2 {
+				t.Fatalf("classified batches=%d err=%v", classified, err)
+			}
+			// Reopening classified history must not repeat payload classification.
+			if _, err = store.db.ExecContext(t.Context(), "CREATE TRIGGER refuse_reclassification BEFORE INSERT ON audit_batch_namespaces BEGIN SELECT RAISE(ABORT,'reclassification'); END"); err != nil {
+				t.Fatal(err)
+			}
+			if err = store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = OpenSQLiteAuditStore(t.Context(), path)
+			if err != nil {
+				t.Fatalf("classified history was revisited: %v", err)
+			}
+		})
+	}
+}
 
 func TestSessionObservationsMigrationAndPrune(t *testing.T) {
 	pub, priv := testAuditSigner(t)
