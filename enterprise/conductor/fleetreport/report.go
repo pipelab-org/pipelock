@@ -357,6 +357,11 @@ func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []
 	if err := conductorcore.ValidateAuditSegment(chain, entries); err != nil {
 		return fmt.Errorf("fleet report: audit batch %s %w", batchID, err)
 	}
+	for _, entry := range entries {
+		if recorder.ComputeHash(entry) != entry.Hash {
+			return fmt.Errorf("fleet report: audit batch %s seq %d recorder hash mismatch", batchID, entry.Sequence)
+		}
+	}
 	return nil
 }
 

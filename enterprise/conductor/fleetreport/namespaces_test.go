@@ -183,7 +183,7 @@ func TestBuildNamespaceDerivesActualPayload(t *testing.T) {
 	for _, tc := range []struct{ name, reason string }{
 		{"mixed session", "mixed session or recorder hash mismatch"},
 		{"empty session", "chain sessionId"},
-		{"bad hash", "mixed session or recorder hash mismatch"},
+		{"bad hash", "recorder hash mismatch"},
 		{"checkpoint binding", "checkpoint binding mismatch"},
 		{"checkpoint signature", "checkpoint signature binding mismatch"},
 		{"unenrolled signer", "conductor signature verification failed"},
