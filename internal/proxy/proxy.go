@@ -3772,10 +3772,21 @@ func (p *Proxy) recordSessionActivityWithUserAgent(opts sessionActivityOptions) 
 	}
 
 	// Preserve scanner findings for inspect/explain, distinguishing enforced
-	// denials from observations that the caller forwards.
+	// denials from observations that the caller forwards. An observed finding
+	// is still refused when this level upgrades it (upgrade_warn, or block_all
+	// for entropy-only findings, which callers never upgrade), using the same
+	// level the caller receives as SessionResult.Level.
 	if !result.Allowed {
+		observed := opts.ObserveOnly
+		if observed {
+			callerAction := config.ActionWarn
+			if result.IsEntropyOnly() {
+				callerAction = ""
+			}
+			observed = decide.UpgradeAction(callerAction, level, &cfg.AdaptiveEnforcement) != config.ActionBlock
+		}
 		kind, severity := config.ActionBlock, config.SeverityCritical
-		if opts.ObserveOnly {
+		if observed {
 			kind, severity = "anomaly", config.SeverityWarn
 		}
 		sess.RecordEvent(SessionEvent{
