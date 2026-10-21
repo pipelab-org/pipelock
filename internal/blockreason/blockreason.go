@@ -570,7 +570,7 @@ const closeFrameOverflowFallback = `{"block_reason":"block_reason_overflow","ver
 // CloseFramePayload returns a JSON document for the WebSocket close-frame
 // Reason field. The result is GUARANTEED to be at most closeFrameMaxBytes
 // bytes (RFC 6455's 123-byte ceiling). To honor the ceiling, optional
-// fields drop in this order: receipt, layer, retry, severity, version, request_id, adaptive.
+// fields drop in this order: receipt, layer, retry, severity, version, adaptive, request_id.
 // If even the bare {"block_reason":"<code>"} would overflow because the
 // Reason value is unusually long, CloseFramePayload returns
 // closeFrameOverflowFallback (block_reason_overflow). The fallback
@@ -605,8 +605,10 @@ func (i Info) CloseFramePayload() string {
 		func(p *closeFramePayload) { p.Retry = "" },
 		func(p *closeFramePayload) { p.Severity = "" },
 		func(p *closeFramePayload) { p.Version = "" },
-		func(p *closeFramePayload) { p.RequestID = "" },
+		// Adaptive numbers yield to the request ID, which locates the
+		// complete explanation in the audit log.
 		func(p *closeFramePayload) { p.Adaptive = nil },
+		func(p *closeFramePayload) { p.RequestID = "" },
 	}
 	for _, drop := range dropFields {
 		drop(&p)
