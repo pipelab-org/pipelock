@@ -57,3 +57,20 @@ func TestTextDLPCredentialAudienceMismatches(t *testing.T) {
 		t.Fatalf("no findings produced diagnosis: %+v", got)
 	}
 }
+
+func TestTextDLPCredentialAudienceMismatchesSkipsGitAndRegistryHosts(t *testing.T) {
+	matches := []TextDLPMatch{{
+		PatternName:                     "Provider Key",
+		credentialAudienceHosts:         []string{"api.provider.example"},
+		credentialAudienceGitHosts:      []string{"git.provider.example"},
+		credentialAudienceRegistryHosts: []string{"registry.provider.example"},
+	}}
+	for _, target := range []string{"https://git.provider.example/x", "https://registry.provider.example/x"} {
+		if got := TextDLPCredentialAudienceMismatches(matches, target, "header"); len(got) != 0 {
+			t.Fatalf("%s: carrier failure at an audience host reported as host mismatch: %+v", target, got)
+		}
+	}
+	if got := TextDLPCredentialAudienceMismatches(matches, "https://other.vendor.example/x", "header"); len(got) != 1 {
+		t.Fatalf("unrelated host mismatches = %+v, want 1", got)
+	}
+}

@@ -216,3 +216,21 @@ func TestWebSocketCredentialAudienceDiagnostic(t *testing.T) {
 		t.Fatalf("frame diagnostic = %+v", result)
 	}
 }
+
+func TestCheckRedirectHeaderBlockCarriesAudienceExplanation(t *testing.T) {
+	p, cfg, sc := redirectPolicyTestProxy(t)
+	redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
+	originalReq.URL.Host = "gitlab.com"
+	token := fakeGitLabPAT()
+	redirectReq.Header.Set("Private-Token", token)
+	originalReq.Header.Set("Private-Token", token)
+	err := p.client.CheckRedirect(redirectReq, []*http.Request{originalReq})
+	blockedErr, ok := blockedRequestErrorFrom(err)
+	if !ok || blockedErr.layer != "header_dlp" {
+		t.Fatalf("redirect block = %v, want header_dlp", err)
+	}
+	msg := blockedErr.Error()
+	if !strings.Contains(msg, "credential audience mismatch") || !strings.Contains(msg, "api.vendor.example") || strings.Contains(msg, token) {
+		t.Fatalf("redirect header explanation = %q", msg)
+	}
+}

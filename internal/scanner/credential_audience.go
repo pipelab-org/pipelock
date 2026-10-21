@@ -695,6 +695,12 @@ func TextDLPCredentialAudienceMismatches(matches []TextDLPMatch, target, surface
 		if len(match.credentialAudienceHosts) == 0 || destination.MatchesDomainList(host, match.credentialAudienceHosts) || seen[match.PatternName] {
 			continue
 		}
+		// A git or registry host is also part of the declared audience. A
+		// finding that survives there failed a carrier rule, not host
+		// ownership, so naming a host mismatch would misdirect the operator.
+		if destination.MatchesDomainList(host, match.credentialAudienceGitHosts) || destination.MatchesDomainList(host, match.credentialAudienceRegistryHosts) {
+			continue
+		}
 		seen[match.PatternName] = true
 		mismatches = append(mismatches, CredentialAudienceMismatch{
 			PatternName: match.PatternName,

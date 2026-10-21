@@ -1129,8 +1129,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				if headerResult := scanRequestHeadersForTarget(req.Context(), req.Header, currentCfg, currentScanner, redirectURL); headerResult != nil {
 					action, hardBlock := headerDLPDecision(headerResult, currentCfg)
 					if hardBlock || (action == config.ActionBlock && currentCfg.EnforceEnabled()) {
-						logger.LogBlocked(redirectAuditCtx, "header_dlp", "redirect headers are not allowed at destination")
-						return newRedirectBlockedRequest("header_dlp", "redirect headers are not allowed at destination")
+						redirectReason := headerResult.withAudienceExplanation("redirect headers are not allowed at destination")
+						logger.LogBlocked(redirectAuditCtx, "header_dlp", redirectReason)
+						return newRedirectBlockedRequest("header_dlp", redirectReason)
 					}
 				}
 			}
