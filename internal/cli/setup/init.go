@@ -186,13 +186,17 @@ type initOptions struct {
 
 func runInit(cmd *cobra.Command, opts initOptions) error {
 	// Resolve the user's home directory for discovery (--scan-home or $HOME).
+	// An explicit --scan-home inspects that tree only; the running
+	// process's own CLAUDE_CONFIG_DIR describes this user, not that one.
 	home := opts.scanHome
+	var discoverOpts discover.Options
 	if home == "" {
 		h, err := os.UserHomeDir()
 		if err != nil {
 			return cliutil.ExitCodeError(initExitError, fmt.Errorf("determining home directory: %w", err))
 		}
 		home = h
+		discoverOpts = discover.AmbientOptions(os.Getenv)
 	}
 
 	presetCfg, err := presets.Config(opts.preset)
@@ -212,7 +216,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		_, _ = fmt.Fprintln(w, "[1/5] Discovering IDE and agent configs...")
 	}
 
-	report, err := discover.Discover(home)
+	report, err := discover.DiscoverWithOptions(home, discoverOpts)
 	if err != nil {
 		return cliutil.ExitCodeError(initExitError, fmt.Errorf("discovery failed: %w", err))
 	}

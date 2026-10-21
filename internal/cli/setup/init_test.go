@@ -876,3 +876,43 @@ func assertFlightRecorderPublicKeySidecar(t *testing.T, keyPath string) {
 		}
 	}
 }
+
+// TestInitCmd_ClaudeConfigDirSources proves init inventories the running
+// user's CLAUDE_CONFIG_DIR like pipelock discover, and that an explicit
+// --scan-home inspects only that tree.
+func TestInitCmd_ClaudeConfigDirSources(t *testing.T) {
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+
+	serversFound := func(args ...string) int {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := InitCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{
+			"--output", filepath.Join(t.TempDir(), "pipelock.yaml"),
+			"--json", "--dry-run", "--skip-canary", "--skip-validate", "--no-auditor",
+		}, args...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("init failed: %v\n%s", err, errBuf.String())
+		}
+		var result initResult
+		if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return result.Discover.ServersFound
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	if got := serversFound(); got != 1 {
+		t.Fatalf("default init found %d servers, want the 1 under CLAUDE_CONFIG_DIR", got)
+	}
+	if got := serversFound("--scan-home", t.TempDir()); got != 0 {
+		t.Fatalf("--scan-home inspected the ambient CLAUDE_CONFIG_DIR: %d servers", got)
+	}
+}

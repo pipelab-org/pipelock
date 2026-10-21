@@ -1591,3 +1591,25 @@ func TestWriteProofMarkdown_NilCapsule(t *testing.T) {
 		t.Fatalf("WriteProofMarkdown(nil) error = %v, want capsule required", err)
 	}
 }
+
+// TestCollectDiscoverEvidenceIncludesClaudeConfigDir proves the signed capsule
+// counts servers under the current user's CLAUDE_CONFIG_DIR, matching what
+// pipelock discover reports for that user.
+func TestCollectDiscoverEvidenceIncludesClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	defer patchUserHomeDir(func() (string, error) { return home, nil })()
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", altDir)
+
+	evidence, err := collectDiscoverEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.TotalServers != 1 {
+		t.Fatalf("capsule discover evidence = %+v, want the 1 server under CLAUDE_CONFIG_DIR", evidence)
+	}
+}

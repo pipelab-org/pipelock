@@ -55,7 +55,7 @@ var (
 	canonicalize     = canonicalJSON
 	jsonMarshal      = json.Marshal
 	userHomeDir      = os.UserHomeDir
-	discoverConfigs  = discover.Discover
+	discoverConfigs  = discoverAmbient
 	readRecorderFile = recorder.ReadHistoryEntries
 )
 
@@ -578,6 +578,13 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 		Simulate:       simulateEvidence,
 		FlightRecorder: flightRecorderEvidence,
 	}, nil
+}
+
+// discoverAmbient inventories the current user's configs, including the
+// documented CLAUDE_CONFIG_DIR override, so the capsule counts the same
+// servers pipelock discover reports for this user.
+func discoverAmbient(home string) (*discover.Report, error) {
+	return discover.DiscoverWithOptions(home, discover.AmbientOptions(os.Getenv))
 }
 
 func collectDiscoverEvidence() (DiscoverEvidence, error) {
