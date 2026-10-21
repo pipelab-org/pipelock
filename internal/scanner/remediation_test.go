@@ -8,6 +8,48 @@ import (
 	"testing"
 )
 
+func TestGuidanceForResultAudienceMetadataIsNotGrantValidity(t *testing.T) {
+	for _, name := range []string{
+		"Provider Key; GitHub grant outside its validity window",
+		"Provider Key; GitHub download grant outside its validity window; check the host clock or obtain a current download URL",
+	} {
+		mismatches := []CredentialAudienceMismatch{{
+			PatternName: name,
+			Surface:     "url",
+			Destination: "api.vendor.example",
+		}}
+		reason := "DLP match: " + name + " (high); " + CredentialAudienceMismatchExplanation(mismatches)
+		for _, reason := range []string{reason, "DLP match: " + name + " (high)", "DLP: " + name} {
+			got, ok := GuidanceForResult(ScannerDLP, reason)
+			want, wantOK := GuidanceFor(ScannerDLP)
+			if !ok || !wantOK || got != want {
+				t.Fatalf("metadata changed guidance: got=%+v want=%+v", got, want)
+			}
+		}
+	}
+}
+
+func TestGuidanceForResultGrantValidityAnnotation(t *testing.T) {
+	for _, note := range []string{
+		"GitHub download grant outside its validity window; check the host clock or obtain a current download URL",
+		"GitHub download SAS outside its validity window; check the host clock or obtain a current download URL",
+		"GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL",
+		"GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL",
+	} {
+		reason := "DLP match: JWT Token (high); credential audience mismatch (pattern JWT Token, surface url, canonical destination api.vendor.example); " + note
+		got, ok := GuidanceForResult(ScannerDLP, reason)
+		if !ok || !got.Immutable || !strings.Contains(got.OperatorKnob, "host clock") {
+			t.Fatalf("validity annotation lost guidance: reason=%q got=%+v", reason, got)
+		}
+		for _, invalid := range []string{"DLP: " + note, reason + ")", reason + " trailing metadata"} {
+			got, ok := GuidanceForResult(ScannerDLP, invalid)
+			if !ok || strings.Contains(got.OperatorKnob, "host clock") {
+				t.Fatalf("non-annotation changed guidance: reason=%q got=%+v", invalid, got)
+			}
+		}
+	}
+}
+
 func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 	// The canonical set of block labels a scanner emits. Every one must have
 	// guidance, and the guidance table must not carry a label outside this set,

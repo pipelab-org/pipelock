@@ -511,10 +511,30 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	return guidanceForResult(label, reason)
 }
 
+// hasQueryGrantValidityNote recognizes only a terminal annotation emitted by
+// queryGrantValidityNote. Pattern names precede the severity and audience
+// explanations end in a closing parenthesis, so neither supplies this suffix.
+func hasQueryGrantValidityNote(reason string) bool {
+	if !strings.HasPrefix(reason, "DLP match: ") {
+		return false
+	}
+	for _, note := range []string{
+		githubDownloadGrantValidityNote,
+		githubDownloadSASValidityNote,
+		githubAttestationValidityNote,
+		githubActionsValidityNote,
+	} {
+		if strings.HasSuffix(reason, "; "+note) {
+			return true
+		}
+	}
+	return false
+}
+
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
-	if label == ScannerDLP && strings.Contains(reason, "; GitHub ") && strings.Contains(reason, "outside its validity window") {
+	if label == ScannerDLP && hasQueryGrantValidityNote(reason) {
 		return RemediationGuidance{
 			OperatorKnob: "Check the host clock and obtain a current GitHub URL. The grant validity window is required and is not extended by a DLP pattern exemption.",
 			Immutable:    true,

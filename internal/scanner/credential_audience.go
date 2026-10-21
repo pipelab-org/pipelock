@@ -1561,6 +1561,13 @@ func sasValidityWindow(query url.Values) (time.Time, time.Time, bool) {
 	return start, expiry, err == nil && expiry.After(start)
 }
 
+const (
+	githubDownloadGrantValidityNote = "GitHub download grant outside its validity window; check the host clock or obtain a current download URL"
+	githubDownloadSASValidityNote   = "GitHub download SAS outside its validity window; check the host clock or obtain a current download URL"
+	githubAttestationValidityNote   = "GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL"
+	githubActionsValidityNote       = "GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL"
+)
+
 // queryGrantValidityNote names a validity window as the cause of a URL DLP
 // block. A grant outside its window at now nominates a time inside that
 // window, and the note is returned only when DLP at that time allows the URL.
@@ -1591,9 +1598,9 @@ func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.T
 			case !valid:
 				continue
 			case !grantValidityWindowValid(start, expiry, now):
-				return "GitHub download grant outside its validity window; check the host clock or obtain a current download URL", start, true
+				return githubDownloadGrantValidityNote, start, true
 			case !sasValidityWindowValid(query, now):
-				return "GitHub download SAS outside its validity window; check the host clock or obtain a current download URL", start, true
+				return githubDownloadSASValidityNote, start, true
 			}
 		}
 	}
@@ -1601,14 +1608,14 @@ func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.T
 		!attestationBundleSASQueryValid(parsed, now) {
 		start, err := time.Parse(time.RFC3339, query.Get("st"))
 		if err == nil && attestationBundleSASQueryValid(parsed, start) {
-			return "GitHub attestation SAS outside its validity window; check the host clock or obtain a current bundle URL", start, true
+			return githubAttestationValidityNote, start, true
 		}
 	}
 	if destination.MatchesDomainList(host, githubActionsResultsHosts) && actionsResultsPath(parsed) &&
 		!attestationBundleSASQueryValid(parsed, now) {
 		start, err := time.Parse(time.RFC3339, query.Get("st"))
 		if err == nil && attestationBundleSASQueryValid(parsed, start) {
-			return "GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL", start, true
+			return githubActionsValidityNote, start, true
 		}
 	}
 	return "", time.Time{}, false
