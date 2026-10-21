@@ -205,7 +205,9 @@ chain-linking checks. They don't check the same scope. `pipelock-verify`
 checks only that v1 chain, has no end proof, and exits 0 when it verifies.
 `pipelock verify-receipt` also checks the recorder hash chain and the
 EvidenceReceipt v2 chain. With `--whole-recorder` it exits 0 only when the
-run's transcript root proves its end. Without that flag, a cleanly stopped run
+run's transcript root proves its end. If the file has no seal, as with a
+recorder that's still running, this command reports `VALID PREFIX, END UNPROVEN`
+and exits 3. Without that flag, a cleanly stopped run
 that recorded v2 receipts, which can come from allowed or blocked requests, reports
 `VALID PREFIX, END UNPROVEN` and exits 3.
 

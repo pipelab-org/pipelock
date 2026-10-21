@@ -18,7 +18,7 @@ re-run the shipped verifier against signed artifacts with a pinned public key.
 
 ## Customer-Path Demo
 
-Generate or collect a receipt chain, then verify it offline:
+Collect the evidence directory from a current Pipelock recorder, then verify it offline:
 
 ```bash
 pipelock verify-receipt \
@@ -26,7 +26,7 @@ pipelock verify-receipt \
   --key 70b991eb77816fc4ef0ae6a54d8a4119ddc5a16c9711c332c39e743079f6c63e
 ```
 
-What this does: verifies both receipt chains, every recorder entry, and each run's transcript-root seal without contacting Pipelock, Conductor, or a hosted service. Exit 0 means each run's end is proven. Exit 3 (`VALID PREFIX, END UNPROVEN`) means the signatures and links check out but a run has no seal, as with a recorder that's still running.
+For single-chain runs, this checks the v1 and v2 receipt chains present, every recorder entry, and each run's transcript-root seal without contacting Pipelock, Conductor, or a hosted service. Multi-chain runs are checked as complete receipt groups. Exit 0 means the included runs' ends are proven. Exit 3 (`VALID PREFIX, END UNPROVEN`) means the signatures and links check out but an end is unproven, as with an unsealed running recorder or a legacy shared-session chain. To check a receipt file instead, pass its filename without `--chain`; see [receipt verification](../guides/receipt-verification.md) for the file's scope and endpoint options.
 
 For a fleet report:
 
