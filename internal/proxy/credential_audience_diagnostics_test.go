@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -23,10 +24,22 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const audienceDiagnosticTarget = "https://api.vendor.example/v1/oauth/token"
+
+func requireAudienceDiagnosticReceipt(t *testing.T, rph *receiptProxyHelper, layer, pattern string) {
+	t.Helper()
+	recorded := rph.requireReceipt(t, layer)
+	if recorded.ActionRecord.Pattern != pattern {
+		t.Fatalf("decisive pattern = %q, want %q", recorded.ActionRecord.Pattern, pattern)
+	}
+	if err := receipt.VerifyWithKey(recorded, rph.pubHex); err != nil {
+		t.Fatalf("verify receipt: %v", err)
+	}
+}
 
 func TestCredentialAudienceDiagnosticsSurvivingFindings(t *testing.T) {
 	cfg := testScannerConfig()
@@ -147,6 +160,8 @@ func TestForwardProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(rph.emitter)
 			key := "ghp_" + strings.Repeat("a", 36)
 			body := "benign"
 			if surface == "body" {
@@ -173,6 +188,11 @@ func TestForwardProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 			if !strings.Contains(rec.Body.String(), "immutable core rule, suppress does not apply") {
 				t.Fatalf("core rule remedy missing: %s", rec.Body.String())
 			}
+			layer, pattern := scannerLabelBodyDLP, "request body contains secret: GitHub Token"
+			if surface == "header" {
+				layer, pattern = "dlp_header", "request_header_secret"
+			}
+			requireAudienceDiagnosticReceipt(t, rph, layer, pattern)
 		})
 	}
 }
@@ -205,6 +225,9 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 				t.Fatal(err)
 			}
 			rp := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, logger, metrics.New(), killswitch.New(cfg), nil, nil)
+			rph := newReceiptProxyHelper(t)
+			rp.receiptEmitterPtr = &atomic.Pointer[receipt.Emitter]{}
+			rp.receiptEmitterPtr.Store(rph.emitter)
 			key := "sk-" + "ant-" + strings.Repeat("a", 24)
 			body := "benign"
 			if surface == "body" {
@@ -239,6 +262,14 @@ func TestReverseProxyCredentialAudienceDiagnosticResponse(t *testing.T) {
 					t.Fatalf("reverse URL audit event=%+v", entry)
 				}
 			}
+			layer, pattern := "dlp", "DLP: Anthropic API Key"
+			switch surface {
+			case "header":
+				layer, pattern = "dlp_header", "header DLP: Anthropic API Key"
+			case "url":
+				pattern = "URL DLP: Anthropic API Key"
+			}
+			requireAudienceDiagnosticReceipt(t, rph, layer, pattern)
 		})
 	}
 }
@@ -253,11 +284,14 @@ func TestWebSocketCredentialAudienceDiagnostic(t *testing.T) {
 	}
 	t.Cleanup(p.Close)
 	key := "sk-" + "ant-" + strings.Repeat("a", 24)
-	blocked, hard, action, reason, err := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.vendor.example/v1", audit.LogContext{})
+	blocked, hard, action, reason, pattern, err := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.vendor.example/v1", audit.LogContext{})
 	if !blocked || !hard || action != config.ActionBlock || err != nil || !strings.Contains(reason, "credential audience mismatch") || strings.Contains(reason, key) {
 		t.Fatalf("blocked=%v hard=%v action=%s reason=%s err=%v", blocked, hard, action, reason, err)
 	}
-	blocked, _, _, reason, err = p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.anthropic.com/v1", audit.LogContext{})
+	if pattern != "DLP match in Authorization header: Anthropic API Key, Anthropic API Key" {
+		t.Fatalf("decisive header pattern = %q", pattern)
+	}
+	blocked, _, _, reason, _, err = p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.anthropic.com/v1", audit.LogContext{})
 	if blocked || err != nil || reason != "" {
 		t.Fatalf("audience header blocked=%v reason=%s err=%v", blocked, reason, err)
 	}
@@ -293,6 +327,9 @@ func TestWebSocketCredentialAudienceDiagnosticHandshake(t *testing.T) {
 			proxyAddr, p, cleanup := setupWSProxyDefaultWithProxy(t, nil)
 			t.Cleanup(p.Close)
 			t.Cleanup(cleanup)
+			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			t.Cleanup(func() { _ = rph.rec.Close() })
 			if !blocked {
 				conn, err := dialWSConn(proxyAddr, upstreamURL.Host)
 				if err != nil {
@@ -336,6 +373,7 @@ func TestWebSocketCredentialAudienceDiagnosticHandshake(t *testing.T) {
 			if got := upstreamCalls.Load(); got != 0 {
 				t.Fatalf("blocked handshake reached upstream %d times", got)
 			}
+			requireAudienceDiagnosticReceipt(t, rph, "dlp_header", "DLP match in Authorization header: Anthropic API Key, Anthropic API Key")
 		})
 	}
 }
@@ -355,5 +393,117 @@ func TestCheckRedirectHeaderBlockCarriesAudienceExplanation(t *testing.T) {
 	msg := blockedErr.Error()
 	if !strings.Contains(msg, "credential audience mismatch") || !strings.Contains(msg, "api.vendor.example") || strings.Contains(msg, token) {
 		t.Fatalf("redirect header explanation = %q", msg)
+	}
+	if got := blockedErr.decisivePattern(); got != "redirect blocked: redirect headers are not allowed at destination" {
+		t.Fatalf("redirect decisive pattern = %q", got)
+	}
+}
+
+func TestInterceptCredentialAudienceDiagnosticReceipt(t *testing.T) {
+	for _, surface := range []string{"body", "header"} {
+		t.Run(surface, func(t *testing.T) {
+			var hits atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				hits.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(upstream.Close)
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, logger, sc, m)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, m)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			key := "sk-" + "ant-" + strings.Repeat("a", 24)
+			body := "benign"
+			if surface == "body" {
+				body = key
+			}
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/v1", strings.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "text/plain")
+			if surface == "header" {
+				req.Header.Set("Authorization", "Bearer "+key)
+			}
+			resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+				Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc,
+				Logger: logger, Metrics: m, Request: req, Proxy: p,
+			})
+			t.Cleanup(func() { _ = resp.Body.Close() })
+			response, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || hits.Load() != 0 || !strings.Contains(string(response), "credential audience mismatch") || strings.Contains(string(response), key) {
+				t.Fatalf("status=%d hits=%d response=%s", resp.StatusCode, hits.Load(), response)
+			}
+			layer, pattern := scannerLabelBodyDLP, "request body contains secret: Anthropic API Key"
+			if surface == "header" {
+				layer, pattern = "header_dlp", "request header contains secret"
+			}
+			requireAudienceDiagnosticReceipt(t, rph, layer, pattern)
+		})
+	}
+}
+
+func TestWebSocketFrameAudienceDiagnosticReceipt(t *testing.T) {
+	for _, structured := range []bool{false, true} {
+		name := "text"
+		if structured {
+			name = "body"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			var auditLog bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &auditLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := New(cfg, logger, sc, metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			rph := newReceiptProxyHelperWithMetrics(t, p.metrics)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			client, clientPeer := net.Pipe()
+			upstream, upstreamPeer := net.Pipe()
+			t.Cleanup(func() { _ = client.Close(); _ = clientPeer.Close(); _ = upstream.Close(); _ = upstreamPeer.Close() })
+			go func() { _, _ = io.Copy(io.Discard, clientPeer) }()
+			go func() { _, _ = io.Copy(io.Discard, upstreamPeer) }()
+			relay := &wsRelay{
+				proxy: p, cfg: cfg, clientConn: client, upstreamConn: upstream,
+				targetURL: "wss://api.vendor.example/v1", hostname: "api.vendor.example", requestID: "frame-test",
+			}
+			key := "sk-" + "ant-" + strings.Repeat("a", 24)
+			var blocked bool
+			pattern := "DLP match: Anthropic API Key"
+			if structured {
+				body, result := scanRequestBody(t.Context(), BodyScanRequest{
+					Body: strings.NewReader(key), ContentType: "text/plain",
+					MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: relay.targetURL, Action: config.ActionBlock,
+				})
+				blocked = relay.handleClientMessageBodyResult(logger, body, result)
+				pattern = "request body contains secret: Anthropic API Key"
+			} else {
+				matches := sc.ScanTextForDLP(t.Context(), key).Matches
+				blocked = relay.handleClientTextFindings(logger, matches, nil)
+			}
+			if !blocked || !strings.Contains(auditLog.String(), "credential audience mismatch") || strings.Contains(auditLog.String(), key) {
+				t.Fatalf("blocked=%v audit=%s", blocked, auditLog.String())
+			}
+			requireAudienceDiagnosticReceipt(t, rph, scanner.ScannerDLP, pattern)
+		})
 	}
 }

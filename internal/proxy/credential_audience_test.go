@@ -259,7 +259,7 @@ func TestGoogleOAuthAudience_AuthorizationOnly(t *testing.T) {
 	} {
 		t.Run("WebSocket "+tc.name, func(t *testing.T) {
 			p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-			blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, wsTarget, audit.LogContext{})
+			blocked, _, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, wsTarget, audit.LogContext{})
 			if blocked != tc.block {
 				t.Fatalf("WebSocket header %q blocked=%t want %t", tc.header, blocked, tc.block)
 			}

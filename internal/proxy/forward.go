@@ -1660,6 +1660,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					reason = bodyEntropyReason(bodyResult)
 				}
 			}
+			receiptPattern := reason
 			reason = bodyResult.withAudienceExplanation(reason)
 			promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(bodyResult, r.URL.Hostname(), cfg)
 			bodyAdaptiveExempt := isBodyAdaptiveExempt(scannerLabel, bodyResult, r.URL.Hostname(), cfg)
@@ -1710,7 +1711,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
-					Pattern:             reason,
+					Pattern:             receiptPattern,
 					Transport:           "forward",
 					Method:              r.Method,
 					Target:              targetURL,
@@ -1751,7 +1752,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
-					Pattern:             reason,
+					Pattern:             receiptPattern,
 					Transport:           "forward",
 					Method:              r.Method,
 					Target:              targetURL,
@@ -1780,7 +1781,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					ActionID:            actionID,
 					Verdict:             config.ActionBlock,
 					Layer:               scannerLabel,
-					Pattern:             reason + " (escalated)",
+					Pattern:             receiptPattern + " (escalated)",
 					Transport:           "forward",
 					Method:              r.Method,
 					Target:              targetURL,
@@ -1806,7 +1807,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if action == config.ActionWarn {
 				forwardReceiptVerdict = config.ActionWarn
 				forwardReceiptLayer = scannerLabel
-				forwardReceiptPattern = reason
+				forwardReceiptPattern = receiptPattern
 			}
 		}
 
@@ -2219,7 +2220,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
-				Pattern:             blockedErr.reason,
+				Pattern:             blockedErr.decisivePattern(),
 				Transport:           "forward",
 				Method:              r.Method,
 				Target:              targetURL,
@@ -2338,7 +2339,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
-				Pattern:             blockedErr.reason,
+				Pattern:             blockedErr.decisivePattern(),
 				Transport:           "forward",
 				Method:              r.Method,
 				Target:              redirectReceiptTarget(blockedErr, targetURL),

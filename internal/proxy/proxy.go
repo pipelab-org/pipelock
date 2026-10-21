@@ -205,6 +205,15 @@ type blockedRequestError struct {
 	detail string
 	target string
 	taint  *taintDecision
+	// receiptPattern retains the decisive pattern when reason includes diagnostics.
+	receiptPattern string
+}
+
+func (e *blockedRequestError) decisivePattern() string {
+	if e.receiptPattern != "" {
+		return e.receiptPattern
+	}
+	return e.reason
 }
 
 func (e *blockedRequestError) Error() string {
@@ -1131,7 +1140,9 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					if hardBlock || (action == config.ActionBlock && currentCfg.EnforceEnabled()) {
 						redirectReason := headerResult.withAudienceExplanation("redirect headers are not allowed at destination")
 						logger.LogBlocked(redirectAuditCtx, "header_dlp", redirectReason)
-						return newRedirectBlockedRequest("header_dlp", redirectReason)
+						blockedErr := newRedirectBlockedRequest("header_dlp", redirectReason)
+						blockedErr.receiptPattern = "redirect blocked: redirect headers are not allowed at destination"
+						return blockedErr
 					}
 				}
 			}
@@ -6274,7 +6285,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
-				Pattern:             blockedErr.reason,
+				Pattern:             blockedErr.decisivePattern(),
 				Transport:           "fetch",
 				Method:              http.MethodGet,
 				Target:              displayURL,
@@ -6421,7 +6432,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				ActionID:            actionID,
 				Verdict:             config.ActionBlock,
 				Layer:               blockedErr.layer,
-				Pattern:             blockedErr.reason,
+				Pattern:             blockedErr.decisivePattern(),
 				Transport:           "fetch",
 				Method:              http.MethodGet,
 				Target:              redirectReceiptTarget(blockedErr, displayURL),

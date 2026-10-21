@@ -223,8 +223,8 @@ func TestCapture_DecisivePatternsMatchPublishedClaims(t *testing.T) {
 	wantPatterns := map[string]string{
 		"secret-exfil-url-blocked":      patternText("core DLP match: AWS Access ID (critical)"),
 		"poisoned-ticket-webhook-exfil": patternText("request body contains secret: Private ", "Key Header"),
-		"poisoned-readme-key-paste":     patternText("request body contains secret: OpenAI API ", "Key; credential audience mismatch (pattern OpenAI API ", "Key, surface body, canonical destination paste.attacker.test, built-in audience hosts *.openai.com)"),
-		"hostile-page-session-keys":     patternText("request body contains secret: JWT Token; credential audience mismatch (pattern JWT Token, surface body, canonical destination sessions.attacker.test, built-in audience hosts release-assets.githubusercontent.com)"),
+		"poisoned-readme-key-paste":     patternText("request body contains secret: OpenAI API ", "Key"),
+		"hostile-page-session-keys":     patternText("request body contains secret: JWT Token"),
 	}
 
 	for _, s := range DefaultScenarios() {

@@ -6,7 +6,32 @@ package scanner
 import (
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestGuidanceForResultPatternNameEndingInValidityNote(t *testing.T) {
+	for _, note := range []string{githubDownloadGrantValidityNote, githubDownloadSASValidityNote, githubAttestationValidityNote, githubActionsValidityNote} {
+		t.Run(note, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.Patterns = []config.DLPPattern{{
+				Name: "Provider Key; " + note, Regex: `testcredential[a-z]{12}`, Severity: config.SeverityHigh,
+				CredentialAudienceHosts: []string{"audience.example"},
+			}}
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			result := sc.Scan(t.Context(), "https://api.vendor.example/?key=testcredential"+strings.Repeat("a", 12))
+			if result.Allowed || result.Scanner != ScannerDLP || !strings.Contains(result.Reason, note) {
+				t.Fatalf("expected the named DLP block, got %+v", result)
+			}
+			got, ok := GuidanceForResult(result.Scanner, result.Reason)
+			if !ok || strings.Contains(got.OperatorKnob, "host clock") || strings.Contains(result.Hint, "validity window") {
+				t.Fatalf("pattern name selected validity guidance: result=%+v guidance=%+v", result, got)
+			}
+		})
+	}
+}
 
 func TestGuidanceForResultAudienceMetadataIsNotGrantValidity(t *testing.T) {
 	for _, name := range []string{

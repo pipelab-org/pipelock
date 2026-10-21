@@ -1096,6 +1096,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 
 			if enforcedBlock(cfg, action, containsCoreFloorMatch(pathDLP.Matches)) {
 				reason := fmt.Sprintf("URL DLP: %s", strings.Join(patternNames, ", "))
+				receiptPattern := reason
 				if explanation := scanner.CredentialAudienceMismatchExplanation(mismatches); explanation != "" {
 					reason += "; " + explanation
 				}
@@ -1112,7 +1113,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     scanner.ScannerDLP,
-					Pattern:   reason,
+					Pattern:   receiptPattern,
 					Transport: TransportReverse,
 					Method:    r.Method,
 					Target:    targetURL,
@@ -1162,7 +1163,8 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				action, patternNames, nil, headerResult.CredentialAudienceMismatches...)
 
 			if headerHardBlock || (action == config.ActionBlock && cfg.EnforceEnabled()) {
-				reason := headerResult.withAudienceExplanation(fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", ")))
+				receiptPattern := fmt.Sprintf("header DLP: %s", strings.Join(patternNames, ", "))
+				reason := headerResult.withAudienceExplanation(receiptPattern)
 				rp.recordRequestBlockSignal(r, agent, clientIP, requestID, resolvedIdentity.Auth, cfg, scanner.ScannerDLP, reason)
 				rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 				rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "header_dlp")
@@ -1174,7 +1176,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					ActionID:  receipt.NewActionID(),
 					Verdict:   config.ActionBlock,
 					Layer:     "dlp_header",
-					Pattern:   reason,
+					Pattern:   receiptPattern,
 					Transport: TransportReverse,
 					Method:    r.Method,
 					Target:    targetURL,
@@ -2107,6 +2109,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if reason == "" {
 		reason = "request body contains secret patterns"
 	}
+	receiptPattern := reason
 	reason = result.withAudienceExplanation(reason)
 	clientIP, _ := r.Context().Value(ctxKeyClientIP).(string)
 	requestID, _ := r.Context().Value(ctxKeyRequestID).(string)
@@ -2166,7 +2169,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     layer,
-			Pattern:   reason,
+			Pattern:   receiptPattern,
 			Transport: TransportReverse,
 			Method:    r.Method,
 			Target:    receiptInput.Target,
@@ -2187,7 +2190,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			ActionID:  receipt.NewActionID(),
 			Verdict:   config.ActionBlock,
 			Layer:     layer,
-			Pattern:   reason,
+			Pattern:   receiptPattern,
 			Transport: TransportReverse,
 			Method:    r.Method,
 			Target:    receiptInput.Target,

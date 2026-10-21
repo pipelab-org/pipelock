@@ -1418,6 +1418,7 @@ func newInterceptHandler(
 					}
 				}
 
+				receiptPattern := reason
 				reason = result.withAudienceExplanation(reason)
 
 				// DLP-only exemption: DLP pattern findings on adaptive-exempt
@@ -1472,7 +1473,7 @@ func newInterceptHandler(
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabel,
-						Pattern:   reason,
+						Pattern:   receiptPattern,
 						Transport: "intercept",
 						Method:    r.Method,
 						Target:    targetURL,
@@ -1499,7 +1500,7 @@ func newInterceptHandler(
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     scannerLabel,
-						Pattern:   reason + " (escalated)",
+						Pattern:   receiptPattern + " (escalated)",
 						Transport: "intercept",
 						Method:    r.Method,
 						Target:    targetURL,
@@ -1689,10 +1690,11 @@ func newInterceptHandler(
 					})
 				}
 				ic.Logger.LogHeaderDLP(actx, headerResult.HeaderName, action, dlpMatchNames(headerResult.DLPMatches), dlpBundleRules(headerResult.DLPMatches), headerResult.CredentialAudienceMismatches...)
-				reason := headerResult.withAudienceExplanation("request header contains secret")
+				receiptPattern := "request header contains secret"
 				if escalatedBlock && !ic.Config.EnforceEnabled() {
-					reason += " (escalated)"
+					receiptPattern += " (escalated)"
 				}
+				reason := headerResult.withAudienceExplanation(receiptPattern)
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
 					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, reason)
@@ -1705,7 +1707,7 @@ func newInterceptHandler(
 						ActionID:  actionID,
 						Verdict:   config.ActionBlock,
 						Layer:     "header_dlp",
-						Pattern:   reason,
+						Pattern:   receiptPattern,
 						Transport: "intercept",
 						Method:    r.Method,
 						Target:    targetURL,
@@ -2032,7 +2034,7 @@ func newInterceptHandler(
 					ActionID:  actionID,
 					Verdict:   config.ActionBlock,
 					Layer:     blockedErr.layer,
-					Pattern:   blockedErr.reason,
+					Pattern:   blockedErr.decisivePattern(),
 					Transport: "intercept",
 					Method:    r.Method,
 					Target:    targetURL,

@@ -250,7 +250,7 @@ func TestCredentialAudience_AllowImpliesClean(t *testing.T) {
 
 	// WebSocket upgrade headers: a blocked handshake records no allow metric.
 	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-	blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
+	blocked, _, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {"Bearer " + gh}, "X-Api-Key": {gh}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
 	if !blocked {
 		t.Fatal("WebSocket upgrade with GitHub token in X-Api-Key allowed")
 	}
@@ -338,7 +338,7 @@ func TestGitHubGitLabAudience_BodyAndWebSocketStayBlocked(t *testing.T) {
 	} {
 		t.Run("WebSocket upgrade "+tc.name, func(t *testing.T) {
 			p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-			blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
+			blocked, _, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{tc.header: []string{tc.value}}, sc, cfg, "wss://api.github.com/graphql", audit.LogContext{})
 			if blocked != tc.block {
 				t.Fatalf("blocked=%t want %t", blocked, tc.block)
 			}
@@ -439,7 +439,7 @@ func TestGitHubGitLabAudience_GitTransportRule(t *testing.T) {
 
 	// The git rule never applies to a WebSocket upgrade, even at a git path.
 	p := &Proxy{metrics: metrics.New(), logger: audit.NewNop()}
-	blocked, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, sc, cfg, "wss://github.com/o/r.git/git-upload-pack", audit.LogContext{})
+	blocked, _, _, _, _, _ := p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": {basicAuth("x-access-token", gh)}}, sc, cfg, "wss://github.com/o/r.git/git-upload-pack", audit.LogContext{})
 	if !blocked {
 		t.Fatal("WebSocket upgrade with GitHub Basic at a git path allowed")
 	}

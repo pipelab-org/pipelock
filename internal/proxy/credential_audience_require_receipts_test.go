@@ -365,7 +365,7 @@ func TestDLPScanWSHeaders_CredentialAudienceRequireReceipts(t *testing.T) {
 
 			headers := http.Header{"Authorization": []string{"Bearer " + audienceReceiptTestCredential}}
 			actx := newHTTPAuditContext(t.Context(), p.logger, httpAuditEvent{Method: "WS", TargetURL: "wss://api.vendor.example/socket"})
-			_, _, _, _, receiptErr := p.dlpScanWSHeaders(t.Context(), headers, sc, cfg, "wss://api.vendor.example/socket", actx)
+			_, _, _, _, _, receiptErr := p.dlpScanWSHeaders(t.Context(), headers, sc, cfg, "wss://api.vendor.example/socket", actx)
 
 			wantErr := tc.require && tc.emitFails
 			if (receiptErr != nil) != wantErr {

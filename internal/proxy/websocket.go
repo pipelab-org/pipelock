@@ -209,7 +209,7 @@ func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err
 		ActionID:  receipt.NewActionID(),
 		Verdict:   config.ActionBlock,
 		Layer:     blockedErr.layer,
-		Pattern:   blockedErr.reason,
+		Pattern:   blockedErr.decisivePattern(),
 		Transport: TransportWS,
 		Method:    "WS",
 		Target:    r.targetURL,
@@ -614,7 +614,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
-	wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason, wsHeaderReceiptErr := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx)
+	wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason, wsHeaderPattern, wsHeaderReceiptErr := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx)
 	if wsHeaderReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -624,6 +624,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if blocked, hardBlock, action, reason := wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason; blocked {
+		receiptPattern := wsHeaderPattern
 		captureHeaderDLP := func(effectiveAction, skipReason string) {
 			p.captureObs.ObserveDLPVerdict(r.Context(), &capture.DLPVerdictRecord{
 				Subsurface:        "dlp_ws_header",
@@ -674,6 +675,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(headerSR.Level), FromAction: action, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: clientIP, RequestID: requestID})
 				action = effectiveAction
 				reason += " (escalated)"
+				receiptPattern += " (escalated)"
 				wsHeaderBlocked = true
 			}
 		}
@@ -709,7 +711,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     "dlp_header",
-				Pattern:   reason,
+				Pattern:   receiptPattern,
 				Transport: TransportWS,
 				Method:    "WS",
 				Target:    targetURL,
@@ -1056,7 +1058,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     blockedErr.layer,
-				Pattern:   blockedErr.reason,
+				Pattern:   blockedErr.decisivePattern(),
 				Transport: TransportWS,
 				Method:    "WS",
 				Target:    targetURL,
@@ -1095,7 +1097,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				ActionID:  actionID,
 				Verdict:   config.ActionBlock,
 				Layer:     blockedErr.layer,
-				Pattern:   blockedErr.reason,
+				Pattern:   blockedErr.decisivePattern(),
 				Transport: TransportWS,
 				Method:    "WS",
 				Target:    targetURL,
@@ -1365,7 +1367,7 @@ func (p *Proxy) buildWSForwardHeaders(r *http.Request, parsed *url.URL, cfg *con
 // dlpScanWSHeaders runs DLP scanning on all forwarded header values before the
 // upstream handshake. Headers are scanned regardless of destination (no
 // allowlist skip) because agents can exfiltrate secrets in any header value.
-func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string, actx audit.LogContext) (blocked bool, hardBlock bool, action string, reason string, receiptErr error) {
+func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanner, cfg *config.Config, targetURL string, actx audit.LogContext) (blocked bool, hardBlock bool, action string, reason string, receiptPattern string, receiptErr error) {
 	disabled := bodyDLPDisabledSet(cfg.RequestBodyScanning.DisablePatterns)
 	// Scan all headers that buildWSForwardHeaders may forward. This covers
 	// auth headers, cookies, origin, subprotocol, and user-agent. An agent
@@ -1426,9 +1428,10 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			CredentialAudienceMismatches: scanner.TextDLPCredentialAudienceMismatches(allMatches, targetURL, "header"),
 		}
 		action, hardBlock := headerDLPDecision(result, cfg)
-		return true, hardBlock, action, result.withAudienceExplanation(fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))), nil
+		receiptPattern := fmt.Sprintf("DLP match in %s header: %s", result.HeaderName, strings.Join(names, ", "))
+		return true, hardBlock, action, result.withAudienceExplanation(receiptPattern), receiptPattern, nil
 	}
-	return false, false, "", "", nil
+	return false, false, "", "", "", nil
 }
 
 func wsHeaderDLPSource(headers []string) string {
@@ -2061,7 +2064,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		hardBlock := shouldHardBlockCriticalDLP(dlpMatches, r.cfg.EnforceEnabled())
 		numberOnly := scanner.OnlyInformational(dlpMatches)
 		if hardBlock || (r.cfg.EnforceEnabled() && !numberOnly) {
-			reason := diagnostic.withAudienceExplanation(fmt.Sprintf("DLP match: %s", strings.Join(names, ", ")))
+			receiptPattern := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
+			reason := diagnostic.withAudienceExplanation(receiptPattern)
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			log.LogWSBlocked(audit.WSBlockedEvent{
 				Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: audit.ScannerDLP,
@@ -2073,7 +2077,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
-				Pattern:   reason,
+				Pattern:   receiptPattern,
 				Transport: TransportWS,
 				Method:    "WS",
 				Target:    r.targetURL,
@@ -2092,7 +2096,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			effectiveAction = decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 		}
 		if effectiveAction == config.ActionBlock {
-			reason := diagnostic.withAudienceExplanation(fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", ")))
+			receiptPattern := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
+			reason := diagnostic.withAudienceExplanation(receiptPattern)
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			sessionKey := sessionKeyFor(r.cfg, r.agent, r.clientIP, r.actorAuth)
 			recordAdaptiveUpgrade(log, r.proxy.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(r.escalationLevel()), FromAction: baseAction, ToAction: effectiveAction, Scanner: audit.ScannerDLP, ClientIP: r.clientIP, RequestID: r.requestID})
@@ -2106,7 +2111,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				ActionID:  receipt.NewActionID(),
 				Verdict:   config.ActionBlock,
 				Layer:     audit.ScannerDLP,
-				Pattern:   reason,
+				Pattern:   receiptPattern,
 				Transport: TransportWS,
 				Method:    "WS",
 				Target:    r.targetURL,
@@ -2416,6 +2421,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		reason = "request body contains secret patterns"
 	}
 
+	receiptPattern := reason
 	reason = result.withAudienceExplanation(reason)
 	promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.hostname, r.cfg)
 	if promptInjectionHardBlock || isFailClosedBodyResult(result, bodyBytes) {
@@ -2430,7 +2436,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
-			Pattern:          reason,
+			Pattern:          receiptPattern,
 			Transport:        TransportWS,
 			Method:           "WS",
 			Target:           r.targetURL,
@@ -2496,8 +2502,10 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
 		}
 		blockReason := reason
+		blockPattern := receiptPattern
 		if !r.cfg.EnforceEnabled() && action != originalAction {
 			blockReason += " (escalated)"
+			blockPattern += " (escalated)"
 		}
 		log.LogWSBlocked(audit.WSBlockedEvent{
 			Target: r.targetURL, Direction: audit.DirectionClientToServer, Scanner: scannerLabel,
@@ -2509,7 +2517,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			ActionID:         receipt.NewActionID(),
 			Verdict:          config.ActionBlock,
 			Layer:            receiptLayer,
-			Pattern:          blockReason,
+			Pattern:          blockPattern,
 			Transport:        TransportWS,
 			Method:           "WS",
 			Target:           r.targetURL,
