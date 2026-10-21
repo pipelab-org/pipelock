@@ -5,11 +5,15 @@ package projectscan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Agent type constants.
@@ -292,17 +296,24 @@ func detectHostileTooling(dir string) []Finding {
 		}
 	}
 
-	// Also check pyproject.toml directly for hostile packages.
-	// readPythonDeps/parsePyprojectDeps only looks for agent frameworks,
-	// so we do a separate check. Two dependency formats exist:
-	//   PEP 621:  dependencies = ["obliteratus>=0.1"]  (quoted in array)
-	//   Poetry:   obliteratus = "^0.1"                 (TOML key = value)
-	// We match both while avoiding false positives from prose descriptions.
+	// readPythonDeps/parsePyprojectDeps only looks for agent frameworks, so
+	// inspect the dependency-bearing pyproject tables separately.
 	pyprojectPath := filepath.Join(dir, "pyproject.toml")
 	if data, err := os.ReadFile(filepath.Clean(pyprojectPath)); err == nil {
-		lower := strings.ToLower(string(data))
-		for _, hostile := range hostileToolingPackages {
-			if pyprojectHasHostileDep(lower, hostile) {
+		deps, parseErr := pyprojectDependencyNames(data)
+		if parseErr != nil {
+			// A malformed manifest cannot establish that the project is clean.
+			findings = append(findings, Finding{
+				Severity: "warning",
+				Category: "tooling",
+				File:     "pyproject.toml",
+				Message:  "Could not inspect pyproject.toml dependencies; fix the malformed manifest and scan again.",
+			})
+		} else {
+			for _, hostile := range hostileToolingPackages {
+				if !deps[hostile] {
+					continue
+				}
 				if !hasHostileFinding(findings, hostile) {
 					findings = append(findings, Finding{
 						Severity: "warning",
@@ -313,6 +324,13 @@ func detectHostileTooling(dir string) []Finding {
 				}
 			}
 		}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		findings = append(findings, Finding{
+			Severity: "warning",
+			Category: "tooling",
+			File:     "pyproject.toml",
+			Message:  "Could not inspect pyproject.toml dependencies; fix the unreadable manifest and scan again.",
+		})
 	}
 
 	// Check for HuggingFace ablation configs
@@ -336,28 +354,83 @@ func detectHostileTooling(dir string) []Finding {
 	return findings
 }
 
-// pyprojectHasHostileDep checks if a lowercased pyproject.toml contains a
-// hostile package as an actual dependency (not in prose). Matches per-line:
-//   - PEP 621 array entries: line starts with "pkg or 'pkg (indented items)
-//   - Poetry table keys: line starts with pkg followed by space or = sign
-func pyprojectHasHostileDep(lower, pkg string) bool {
-	for _, line := range strings.Split(lower, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// PEP 621: dependency array entry starts with quoted package name
-		//   e.g. "obliteratus>=0.1",
-		if strings.HasPrefix(trimmed, `"`+pkg) || strings.HasPrefix(trimmed, `'`+pkg) {
-			return true
+// PEP 621 defines project.dependencies and project.optional-dependencies as
+// arrays of PEP 508 requirement strings: https://peps.python.org/pep-0621/.
+// Poetry also publishes dependency tables (including groups and the legacy
+// dev-dependencies table): https://python-poetry.org/docs/pyproject/.
+type pyprojectManifest struct {
+	Project struct {
+		Dependencies         []string            `toml:"dependencies"`
+		OptionalDependencies map[string][]string `toml:"optional-dependencies"`
+	} `toml:"project"`
+	Tool struct {
+		Poetry struct {
+			Dependencies    map[string]any `toml:"dependencies"`
+			DevDependencies map[string]any `toml:"dev-dependencies"`
+			Group           map[string]struct {
+				Dependencies map[string]any `toml:"dependencies"`
+			} `toml:"group"`
+		} `toml:"poetry"`
+	} `toml:"tool"`
+}
+
+func pyprojectDependencyNames(data []byte) (map[string]bool, error) {
+	var manifest pyprojectManifest
+	if err := toml.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("parse pyproject.toml: %w", err)
+	}
+
+	deps := make(map[string]bool)
+	for _, requirement := range manifest.Project.Dependencies {
+		if name := pep508DependencyName(requirement); name != "" {
+			deps[name] = true
 		}
-		// Poetry: package name as a TOML key at the start of a line
-		//   e.g. obliteratus = "^0.1"
-		if strings.HasPrefix(trimmed, pkg) {
-			rest := trimmed[len(pkg):]
-			if len(rest) > 0 && (rest[0] == ' ' || rest[0] == '=') {
-				return true
+	}
+	for _, group := range manifest.Project.OptionalDependencies {
+		for _, requirement := range group {
+			if name := pep508DependencyName(requirement); name != "" {
+				deps[name] = true
 			}
 		}
 	}
-	return false
+	addPoetryDependencyNames(deps, manifest.Tool.Poetry.Dependencies)
+	addPoetryDependencyNames(deps, manifest.Tool.Poetry.DevDependencies)
+	for _, group := range manifest.Tool.Poetry.Group {
+		addPoetryDependencyNames(deps, group.Dependencies)
+	}
+	return deps, nil
+}
+
+func addPoetryDependencyNames(deps map[string]bool, entries map[string]any) {
+	for name := range entries {
+		deps[normalizePythonPackageName(name)] = true
+	}
+}
+
+// PEP 508's name grammar starts with an ASCII letter or digit, permits
+// internal [-_.], and ends with a letter or digit:
+// https://peps.python.org/pep-0508/#complete-grammar.
+var pep508PackageName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?`)
+
+func pep508DependencyName(requirement string) string {
+	requirement = strings.TrimSpace(requirement)
+	name := pep508PackageName.FindString(requirement)
+	if name == "" {
+		return ""
+	}
+	rest := strings.TrimSpace(requirement[len(name):])
+	if rest != "" && !strings.ContainsRune("[(@<>=!~;", rune(rest[0])) {
+		return ""
+	}
+	return normalizePythonPackageName(name)
+}
+
+// PEP 503 normalizes runs of hyphens, underscores, and dots to one hyphen,
+// then lowercases: https://peps.python.org/pep-0503/#normalized-names.
+var pythonPackageSeparators = regexp.MustCompile(`[-_.]+`)
+
+func normalizePythonPackageName(name string) string {
+	return strings.ToLower(pythonPackageSeparators.ReplaceAllString(name, "-"))
 }
 
 func hasHostileFinding(findings []Finding, pattern string) bool {

@@ -3,6 +3,7 @@ module github.com/luckyPipewrench/pipelock
 go 1.26.0
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/common-fate/httpsig v0.2.1
 	github.com/dunglas/httpsfv v1.1.2
 	github.com/fsnotify/fsnotify v1.10.1

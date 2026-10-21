@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -542,6 +543,65 @@ dependencies = ["numpy", "torch"]
 	findings := detectHostileTooling(dir)
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for mention in description, got %d: %v", len(findings), findings)
+	}
+}
+
+func TestDetectHostileTooling_PyprojectDependencyShapes(t *testing.T) {
+	tests := []struct {
+		name       string
+		pyproject  string
+		want       string
+		wantUnread bool
+	}{
+		{"one line dependency", "[project]\ndependencies = [\"obliteratus>=0.1\"]\n", "obliteratus", false},
+		{"second item on one line", "[project]\ndependencies = [\"torch>=2\", \"obliteratus>=0.1\"]\n", "obliteratus", false},
+		{"multiline dependency", "[project]\ndependencies = [\n  \"torch\",\n  \"obliteratus>=0.1\",\n]\n", "obliteratus", false},
+		{"optional dependency", "[project.optional-dependencies]\nresearch = [\"torch\", \"refusal_ablation[extra]>=1; python_version >= '3.11'\"]\n", "refusal-ablation", false},
+		{"normalized PEP 508 name", "[project]\ndependencies = [\"LLM...Abliterator @ https://api.vendor.example/pkg.whl\"]\n", "llm-abliterator", false},
+		{"Poetry quoted key and inline table", "[tool.poetry.dependencies]\n\"OblIteratus\" = { version = \"^0.1\", optional = true }\n", "obliteratus", false},
+		{"Poetry legacy dev dependencies", "[tool.poetry.dev-dependencies]\n'abliterator' = '^0.1'\n", "abliterator", false},
+		{"Poetry group dependencies", "[tool.poetry.group.research.dependencies]\n'refusal_ablation' = {version = '^1'}\n", "refusal-ablation", false},
+		{"comments do not count", "[project]\ndependencies = [\"torch\"] # obliteratus\n# dependencies = [\"obliteratus\"]\n", "", false},
+		{"description does not count", "[project]\ndescription = \"obliteratus\"\ndependencies = [\"torch\"]\n", "", false},
+		{"unrelated table key does not count", "[tool.other]\nobliteratus = \"text\"\n", "", false},
+		{"similar name does not count", "[project]\ndependencies = [\"obliteratus-extra>=1\"]\n", "", false},
+		{"empty requirement has no name", "[project]\ndependencies = [\"\"]\n", "", false},
+		{"invalid name suffix does not count", "[project]\ndependencies = [\"obliteratus?invalid\"]\n", "", false},
+		{"malformed TOML reports incomplete scan", "[project]\ndependencies = [\"obliteratus\"\n", "", true},
+		{"invalid dependency shape reports incomplete scan", "[project]\ndependencies = \"obliteratus\"\n", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(tt.pyproject), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			findings := detectHostileTooling(dir)
+			if len(findings) != 1 && (tt.want != "" || tt.wantUnread) {
+				t.Fatalf("findings = %v, want one", findings)
+			}
+			if len(findings) != 0 && tt.want == "" && !tt.wantUnread {
+				t.Fatalf("findings = %v, want none", findings)
+			}
+			if tt.want != "" && findings[0].Pattern != tt.want {
+				t.Errorf("pattern = %q, want %q", findings[0].Pattern, tt.want)
+			}
+			if tt.wantUnread && (findings[0].File != "pyproject.toml" || !strings.Contains(strings.ToLower(findings[0].Message), "could not inspect")) {
+				t.Errorf("malformed manifest finding = %+v, want explicit inspection warning", findings[0])
+			}
+		})
+	}
+}
+
+func TestDetectHostileTooling_PyprojectUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "pyproject.toml"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	findings := detectHostileTooling(dir)
+	if len(findings) != 1 || findings[0].File != "pyproject.toml" || !strings.Contains(strings.ToLower(findings[0].Message), "could not inspect") {
+		t.Fatalf("unreadable manifest findings = %v, want inspection warning", findings)
 	}
 }
 
