@@ -442,10 +442,13 @@ that has not ended in a signed `session_close` exits 3 with
 `VALID PREFIX, END UNPROVEN`. Against a recorder that is still running, the
 command can also fail with exit 1 if a shard or link changes during verification;
 use `pipelock evidence doctor DIR` for a live check, or verify a copy. A clean
-stop writes that `session_close`, and the same command can then exit 0.
-That proves the receipt chain ended. It does not prove the recorder entries
-around it. Add `--whole-recorder`, and keep `--key` and every
-`--rotation-endorsement` flag, to check the `transcript_root` seal.
+stop writes that `session_close`. If the run recorded no EvidenceReceipt v2
+receipts, the same command can then exit 0, which proves the receipt chain
+ended but not the recorder entries around it. A run that recorded v2 receipts,
+for example by blocking a request, still exits 3 with
+`VALID PREFIX, END UNPROVEN` after a clean stop. Add `--whole-recorder`, and
+keep `--key` and every `--rotation-endorsement` flag, to check the
+`transcript_root` seal.
 
 For a later rotation, pin the same original root and pass each earlier
 `--rotation-endorsement` to both the endorsement command and the verifier. This
