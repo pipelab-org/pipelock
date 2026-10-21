@@ -3,7 +3,11 @@
 
 package discover
 
-import "github.com/luckyPipewrench/pipelock/internal/mcpwrap"
+import (
+	"path/filepath"
+
+	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
+)
 
 // Evidence strings for proxy-shaped invocations that are not proven to run
 // this executable. Each keeps the server unprotected; they differ only so an
@@ -25,7 +29,7 @@ func classifyServer(s MCPServer) (ProtectionStatus, string) {
 	if s.Command == "" && s.URL == "" {
 		return Unknown, evidenceUnknown
 	}
-	state, reason := mcpwrap.ExplainInvocation(s.Command, s.Args)
+	state, reason := explainInvocation(s.Command, s.Args)
 	if state == mcpwrap.WrapperSelf {
 		return ProtectedPipelock, evidenceProtectedPipelock
 	}
@@ -76,7 +80,20 @@ func protectionEvidence(s MCPServer) string {
 		if outcome, evidence := inspectSOPSLauncher(s.Command, s.Args); outcome != sopsNotLauncher {
 			return evidence
 		}
-		_, reason := mcpwrap.ExplainInvocation(s.Command, s.Args)
+		_, reason := explainInvocation(s.Command, s.Args)
 		return foreignEvidence(reason)
 	}
+}
+
+// explainInvocation is mcpwrap.ExplainInvocation with one stricter rule: a
+// relative command is never this executable. The file check resolves a
+// relative path against this process's working directory, but the client
+// resolves it against its own (or PATH), so a match here would prove nothing
+// about what the client launches and would change with where discover runs.
+func explainInvocation(command string, args []string) (mcpwrap.WrapperState, mcpwrap.ForeignReason) {
+	state, reason := mcpwrap.ExplainInvocation(command, args)
+	if state == mcpwrap.WrapperSelf && !filepath.IsAbs(command) {
+		return mcpwrap.WrapperForeign, mcpwrap.ForeignRelativePath
+	}
+	return state, reason
 }

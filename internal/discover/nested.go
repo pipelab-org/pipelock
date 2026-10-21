@@ -84,7 +84,7 @@ func inspectSOPSLauncher(command string, args []string) (sopsOutcome, string) {
 	if !ok {
 		return sopsRejected, evidenceSOPSUnsupported
 	}
-	state, reason := mcpwrap.ExplainInvocation(inner, innerArgs)
+	state, reason := explainInvocation(inner, innerArgs)
 	switch {
 	case state == mcpwrap.WrapperSelf:
 		return sopsNestedVerified, evidenceSOPSNestedUnverified
