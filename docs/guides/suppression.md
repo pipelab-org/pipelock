@@ -66,7 +66,11 @@ suppress:
 | Basename glob | `*.generated.go` | `pkg/api/types.generated.go` |
 | URL suffix | `robots.txt` | `https://example.com/robots.txt` |
 
-A complete URL without glob characters matches that URL, with standard-port normalization. The characters `*`, `?`, and `[` introduce glob matching, including in query strings. Write `[?]` for a literal `?` and `[[]` for a literal `[`: for example, `https://api.vendor.example/token[?]mode=refresh` matches `https://api.vendor.example/token?mode=refresh`. Backslashes are normalized to `/`, so they cannot escape glob characters. To match a URL prefix, end the entry with `/` or use an explicit wildcard. Scheme-qualified entries are not URL path suffixes; the suffix form uses a path tail such as `robots.txt`. A URL glob matches the whole target, including its query string, and `*` can cross path separators.
+A complete URL without glob characters matches that URL, with standard-port normalization. To match a URL prefix, end the entry with `/` or use an explicit wildcard. Scheme-qualified entries aren't URL path suffixes; the suffix form uses a path tail such as `robots.txt`.
+
+The characters `*`, `?`, and `[` introduce glob matching, including in query strings. Write `[?]` for a literal `?` and `[[]` for a literal `[`: for example, `https://api.vendor.example/token[?]mode=refresh` matches `https://api.vendor.example/token?mode=refresh`. Backslashes are normalized to `/`, so they can't escape glob characters. Globs first use Go's [`path.Match`](https://pkg.go.dev/path#Match), where `*` stops at `/`. URL patterns also have a fallback where `*` crosses `/`, but the pieces between stars are literal: that fallback doesn't interpret `?` or character classes such as `[?]`. When a query-specific entry needs to cover several path segments, list each complete URL with `[?]` instead of combining a separator-crossing `*` with a character class.
+
+**Upgrade note:** Review URL suppress entries that previously matched more than the written URL. Those additional findings are no longer suppressed by a literal entry. For an intentional prefix, use a trailing `/` or an explicit `*` after checking the resulting scope. Plain path tails such as `robots.txt` retain suffix matching.
 
 The `reason` field is optional but recommended. It appears in audit logs and helps future maintainers understand why the suppression exists.
 
