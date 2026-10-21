@@ -29,6 +29,12 @@ func classifyServer(s MCPServer) (ProtectionStatus, string) {
 	if state == mcpwrap.WrapperSelf {
 		return ProtectedPipelock, evidenceProtectedPipelock
 	}
+	// A recognized launcher (sops exec-env) wrapping this executable is
+	// explained precisely but still unprotected: the launcher itself is
+	// not authenticated.
+	if outcome, evidence := inspectSOPSLauncher(s.Command, s.Args); outcome != sopsNotLauncher {
+		return Unprotected, evidence
+	}
 	// Future: check for other known proxy wrappers here.
 	// Anything not pipelock-wrapped with a command or URL is unprotected.
 	return Unprotected, foreignEvidence(reason)
@@ -67,6 +73,9 @@ func protectionEvidence(s MCPServer) string {
 	case Unknown:
 		return evidenceUnknown
 	default:
+		if outcome, evidence := inspectSOPSLauncher(s.Command, s.Args); outcome != sopsNotLauncher {
+			return evidence
+		}
 		_, reason := mcpwrap.ExplainInvocation(s.Command, s.Args)
 		return foreignEvidence(reason)
 	}
