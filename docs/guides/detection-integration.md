@@ -206,7 +206,7 @@ checks only that v1 chain, has no end proof, and exits 0 when it verifies.
 `pipelock verify-receipt` also checks the recorder hash chain and the
 EvidenceReceipt v2 chain. With `--whole-recorder` it exits 0 only when the
 run's transcript root proves its end. Without that flag, a cleanly stopped run
-that recorded v2 receipts, which any proxied request (allowed or blocked) does, reports
+that recorded v2 receipts, which can come from allowed or blocked requests, reports
 `VALID PREFIX, END UNPROVEN` and exits 3.
 
 ### Consuming receipts in a detector

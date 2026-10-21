@@ -251,7 +251,7 @@ Because the recorder is on by default, two footguns are bounded by the defaults 
 
 ### Completeness anchor (transcript root)
 
-On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. In that mode a run that recorded EvidenceReceipt v2 receipts, which any proxied request (allowed or blocked) does, reports `VALID PREFIX, END UNPROVEN` and exits 3 even after a clean shutdown, because the v2 chain carries no end marker of its own. Use `--whole-recorder` to prove that a recorder run ended. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
+On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. In that mode a run that recorded EvidenceReceipt v2 receipts, which can come from allowed or blocked requests, reports `VALID PREFIX, END UNPROVEN` and exits 3 even after a clean shutdown, because the v2 chain carries no end marker of its own. Use `--whole-recorder` to prove that a recorder run ended. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
 
 Scope and limits:
 
@@ -445,7 +445,7 @@ use `pipelock evidence doctor DIR` for a live check, or verify a copy. A clean
 stop writes that `session_close`. If the run recorded no EvidenceReceipt v2
 receipts, the same command can then exit 0, which proves the receipt chain
 ended but not the recorder entries around it. A run that recorded v2 receipts,
-which any proxied request (allowed or blocked) does, still exits 3 with
+which can come from allowed or blocked requests, still exits 3 with
 `VALID PREFIX, END UNPROVEN` after a clean stop. Add `--whole-recorder`, and
 keep `--key` and every `--rotation-endorsement` flag, to check the
 `transcript_root` seal.
