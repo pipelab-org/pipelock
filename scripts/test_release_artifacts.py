@@ -250,11 +250,19 @@ class TestReleaseArtifacts(unittest.TestCase):
         """
         parsed = load_workflow(WORKFLOW)
         holders = []
-        self.assertNotIn("HOMEBREW_TAP_TOKEN", str(parsed.get("env") or {}))
+        # Anything outside a step reaches every step below it: workflow and job
+        # env, job secrets and with, container and service env, outputs. Scan all
+        # of it, and refuse whole-context secret access that carries the token
+        # without naming it.
+        scopes = {"workflow": {k: v for k, v in parsed.items() if k != "jobs"}}
         for job_name, job in parsed["jobs"].items():
-            self.assertNotIn(
-                "HOMEBREW_TAP_TOKEN", str(job.get("env") or {}), job_name
-            )
+            scopes[job_name] = {k: v for k, v in job.items() if k != "steps"}
+        for scope, config in scopes.items():
+            self.assertNotIn("HOMEBREW_TAP_TOKEN", str(config), scope)
+        whole_secrets = re.compile(r"toJSON\(\s*secrets\s*\)|secrets\s*\[")
+        self.assertIsNone(whole_secrets.search(str(parsed)))
+        for job_name, job in parsed["jobs"].items():
+            self.assertNotEqual(job.get("secrets"), "inherit", job_name)
             for step in job.get("steps", []):
                 texts = [
                     str(value)

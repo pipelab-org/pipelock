@@ -59,7 +59,9 @@ gh attestation verify "oci://${PIPELOCK_IMAGE}" \
   --deny-self-hosted-runners
 ```
 
-These commands use the v3.7.1 signing identity, `pipelab-org/pipelock`. For v3.6.0 through v3.7.0, use `luckyPipewrench/pipelock/.github/workflows/release.yaml` as the signer workflow. The legacy image and chart addresses remain unchanged for v3.7.1.
+These commands use the v3.7.1 signing identity, `pipelab-org/pipelock`, for both `--repo` and `--signer-workflow`. The legacy image and chart addresses remain unchanged for v3.7.1.
+
+Releases through v3.7.0 were signed by `luckyPipewrench/pipelock`, and `gh` rejects a mismatched `--repo` (`expected SourceRepositoryOwnerURI`). For their container images, set both `--repo luckyPipewrench/pipelock` and `--signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml`, and add `--bundle-from-oci`: GitHub's attestation service returns 404 for those older digests, so only the copy stored beside the image in the registry verifies. Checked for the `pipelock` images of v3.5.0, v3.6.0 and v3.7.0. The v3.7.0 `release-images.json` and the v3.6.0 and v3.7.0 Helm charts did not verify with these commands when checked, so a complete verified set needs v3.7.1 or later.
 
 Run the same command for `pipelock-init` and `pipelock-license-service` when
 your upgrade uses those images.
@@ -88,8 +90,9 @@ manifest digest cannot.
 
 The chart itself is published as an OCI artifact next to the images, at
 `ghcr.io/luckypipewrench/charts/pipelock`. From v3.6.0 on it carries the same
-kind of provenance attestation as the container images above; earlier charts
-have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step, and
+kind of provenance attestation as the container images above, but GitHub only
+returns it for v3.7.1 and later, so set `PIPELOCK_RELEASE` to v3.7.1 or later
+for this step, and
 look its commit up again, because the source check must name the commit of the
 release you are verifying. Verify the chart, keep the digest the attestation
 names, and confirm the archive you pull has that same digest:
