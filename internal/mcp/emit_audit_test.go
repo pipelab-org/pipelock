@@ -486,6 +486,7 @@ func TestMCPControlDenialLabels(t *testing.T) {
 		{name: "session binding", binding: config.ActionBlock, wantLabel: scanner.AuditMCPSessionBinding, wantHint: "mcp_session_binding.unknown_tool_action"},
 		{name: "chain detection", chain: config.ActionBlock, wantLabel: scanner.AuditChainDetection, wantHint: "tool_chain_detection.pattern_overrides", wantMITRE: "T1059"},
 		{name: "behavioral baseline", baseline: config.ActionBlock, wantLabel: scanner.AuditSessionAnomaly, wantHint: "pipelock baseline show", wantMITRE: "T1078"},
+		{name: "behavioral baseline ask", baseline: config.ActionAsk, wantLabel: scanner.AuditSessionAnomaly, wantHint: "pipelock baseline show", wantMITRE: "T1078"},
 		{name: "adaptive policy warning", policy: policy.Verdict{Matched: true, Action: config.ActionWarn}, wantLabel: scanner.AuditAdaptiveEnforcement, wantHint: "affected identity session"},
 		{name: "adaptive binding warning", binding: config.ActionWarn, wantLabel: scanner.AuditAdaptiveEnforcement, wantHint: "affected identity session"},
 		{name: "adaptive chain warning", chain: config.ActionWarn, wantLabel: scanner.AuditAdaptiveEnforcement, wantHint: "affected identity session"},
@@ -555,5 +556,74 @@ func TestMCPResponseScanErrorEmitsOneOperationalBlock(t *testing.T) {
 		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) ||
 		!strings.Contains(out.String(), "upstream response scan failed") {
 		t.Fatalf("scan error event incorrect: event=%s output=%s", got, out.String())
+	}
+}
+
+// TestMCPBaselineAskDenialLabel drives a baseline deviation whose configured
+// action is ask through both input transports. Input has no human approval, so
+// ask is enforced as a block; the event must name the baseline, not adaptive
+// enforcement, when a matched warn-only policy rule sends the request through
+// the combined decision rather than the clean-content path.
+func TestMCPBaselineAskDenialLabel(t *testing.T) {
+	const msg = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"README.md"}}}`
+	warnPolicy := func() *policy.Config {
+		return buildPolicyConfig(config.ActionWarn, []config.ToolPolicyRule{{
+			Name: "watch-read", ToolPattern: "^read_file$", Action: config.ActionWarn,
+		}})
+	}
+	for _, transportName := range []string{"stdio", "http"} {
+		t.Run(transportName, func(t *testing.T) {
+			var events bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			checker := &identityBaselineChecker{t: t, wantAgentKey: "identity-k", blockedAgentKey: "identity-k", blockedAction: config.ActionAsk}
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), AuditLogger: logger, Rec: &baselineTestRecorder{}, Baseline: checker,
+				AddressProtectionAgent: "identity-k", PolicyCfg: warnPolicy(),
+			}
+			if transportName == "stdio" {
+				var serverIn bytes.Buffer
+				blockedCh := make(chan BlockedRequest, 1)
+				ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg+"\n")), transport.NewStdioWriter(&serverIn),
+					io.Discard, config.ActionWarn, config.ActionBlock, blockedCh, nil, nil, opts)
+				if serverIn.Len() != 0 || len(blockedCh) != 1 {
+					t.Fatalf("baseline ask did not block: forwarded=%q blocked=%d", serverIn.String(), len(blockedCh))
+				}
+			} else {
+				opts.Transport = "mcp_http_listener"
+				if decision := scanHTTPInputDecision([]byte(msg), io.Discard, "s", "s", opts); decision.Blocked == nil {
+					t.Fatal("baseline ask did not block")
+				}
+			}
+			got := events.String()
+			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditSessionAnomaly+`"`) ||
+				!strings.Contains(got, "pipelock baseline show") || strings.Contains(got, scanner.AuditAdaptiveEnforcement) {
+				t.Fatalf("baseline ask denial mislabeled: %s", got)
+			}
+		})
+	}
+}
+
+// TestMCPToolInventoryCapacityAuditEvent covers the inventory reservation
+// refusal: an operational tools/list block under the documented label.
+func TestMCPToolInventoryCapacityAuditEvent(t *testing.T) {
+	var events, out bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	if err := blockToolInventoryCapacity(transport.NewStdioWriter(&out), io.Discard, MCPProxyOpts{AuditLogger: logger}, 1,
+		[]byte("1"), func(string, string, []byte) {}); err != nil {
+		t.Fatal(err)
+	}
+	got := events.String()
+	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.ScannerMCPToolScanning+`"`) ||
+		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) ||
+		!strings.Contains(got, "does not override this refusal") {
+		t.Fatalf("inventory capacity refusal mislabeled: %s", got)
 	}
 }

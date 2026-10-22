@@ -1433,11 +1433,11 @@ func blockToolInventoryCapacity(
 	blockReason := "tools/list cannot be safely inspected: " + reason
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
 	if opts.AuditLogger != nil {
-		opts.AuditLogger.LogBlocked(
-			mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
-			"tool_scanning",
-			blockReason,
-		)
+		// A capacity refusal is operational, like the ResourceLimit refusal
+		// in ForwardScanned: same label, no attack technique.
+		opts.AuditLogger.LogBlockedDetail(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
+			scanner.ScannerMCPToolScanning, blockReason,
+			audit.BlockDetail{Class: audit.BlockClassInfrastructureError})
 	}
 	if opts.Metrics != nil {
 		opts.Metrics.RecordBlocked("mcp", reason, 0, "")

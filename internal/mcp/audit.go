@@ -74,15 +74,21 @@ func logMCPInputDecisionBlock(logger *audit.Logger, verdict InputVerdict, conten
 		logMCPInputBlock(logger, verdict)
 		return
 	}
+	// MCP input has no human approval, so a control that asks is enforced as
+	// a block (behavioral_baseline.deviation_action: ask). That control, not
+	// adaptive enforcement, made the denial.
+	enforces := func(action string) bool {
+		return action == config.ActionBlock || action == config.ActionAsk
+	}
 	label, reason := scanner.AuditAdaptiveEnforcement, "MCP input action upgraded to block"
 	switch {
-	case policyVerdict.Matched && policyVerdict.Action == config.ActionBlock:
+	case policyVerdict.Matched && enforces(policyVerdict.Action):
 		label, reason = scanner.AuditMCPToolPolicy, "MCP tool policy blocked"
-	case bindingAction == config.ActionBlock:
+	case enforces(bindingAction):
 		label, reason = scanner.AuditMCPSessionBinding, "MCP session binding blocked"
-	case chainAction == config.ActionBlock:
+	case enforces(chainAction):
 		label, reason = scanner.AuditChainDetection, chainPattern
-	case baselineAction == config.ActionBlock:
+	case enforces(baselineAction):
 		label, reason = scanner.AuditSessionAnomaly, "baseline_deviation"
 	}
 	// If no control independently blocked, adaptive enforcement made the
