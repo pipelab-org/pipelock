@@ -32,7 +32,7 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "git clone release branch",
         re.compile(
-            r"git\s+clone(?=[^\n]*https://github\.com/luckyPipewrench/pipelock(?:\.git)?)"
+            r"git\s+clone(?=[^\n]*https://github\.com/(?:luckyPipewrench|pipelab-org)/pipelock(?:\.git)?)"
             r"[^\n]*?(?:--branch(?:=|\s+)|-b\s+)(?P<version>[^\s]+)"
         ),
     ),
@@ -52,12 +52,12 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
     (
         "GitHub Action tag",
-        re.compile(r"uses:\s*luckyPipewrench/pipelock(?:/[^@\s]+)?@(?P<version>v?[0-9][^\s`\"']*)"),
+        re.compile(r"uses:\s*(?:luckyPipewrench|pipelab-org)/pipelock(?:/[^@\s]+)?@(?P<version>v?[0-9][^\s`\"']*)"),
     ),
     (
         "release archive URL",
         re.compile(
-            r"https://github\.com/luckyPipewrench/pipelock/releases/download/"
+            r"https://github\.com/(?:luckyPipewrench|pipelab-org)/pipelock/releases/download/"
             r"(?P<tag>[^/\s`\"']+)/pipelock_(?P<version>[^/_\s`\"']+)"
             r"_(?:linux|darwin|windows)_"
         ),
@@ -69,7 +69,7 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "GitHub Action version comment",
         re.compile(
-            r"uses:\s*luckyPipewrench/pipelock(?:/[^@\s]+)?@"
+            r"uses:\s*(?:luckyPipewrench|pipelab-org)/pipelock(?:/[^@\s]+)?@"
             r"[0-9a-fA-F]{40}\s+#\s*(?P<version>v?[^\s]+)"
         ),
     ),

@@ -47,6 +47,26 @@ class ReleaseDocVersionTests(unittest.TestCase):
             self.assertTrue(any("Helm chart version" in issue for issue in check(root, "v3.6.0")))
 
 
+    def test_both_repository_owners_enforce_current_versions(self) -> None:
+        for owner in ("luckyPipewrench", "pipelab-org"):
+            current = CURRENT.replace("luckyPipewrench/pipelock", f"{owner}/pipelock")
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                write_tree(root, current=current)
+                self.assertEqual(check(root, "v3.6.0"), [])
+                for before, after, surface in (
+                    ("--branch v3.6.0", "--branch v3.5.0", "git clone release branch"),
+                    ("/v3.6.0/", "/v3.5.0/", "release archive URL"),
+                    ("pipelock_3.6.0_", "pipelock_3.5.0_", "release archive URL"),
+                    ("# v3.6.0", "# v3.5.0", "GitHub Action version comment"),
+                ):
+                    with self.subTest(surface=surface, replacement=after):
+                        write_tree(root, current=current.replace(before, after))
+                        issues = check(root, "v3.6.0")
+                        self.assertTrue(any(surface in item and "3.5.0" in item for item in issues), issues)
+                write_tree(root, current=current + f"- uses: {owner}/pipelock@v3.5.0\n")
+                self.assertTrue(any("GitHub Action tag" in item for item in check(root, "v3.6.0")))
+
     def test_repository_matches_chart_app_version(self) -> None:
         """Exercise the release gate on the shipped tree, not only fixtures."""
         chart = yaml.load(
