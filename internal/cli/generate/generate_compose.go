@@ -124,7 +124,7 @@ func composeServices() string {
 
 func composePipelockService() string {
 	return `  pipelock:
-    image: ghcr.io/pipelab-org/pipelock:latest
+    image: ghcr.io/luckypipewrench/pipelock:latest
     container_name: pipelock
     networks:
       - pipelock-internal

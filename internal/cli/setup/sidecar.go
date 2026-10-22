@@ -101,7 +101,7 @@ Examples:
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "output path (default: stdout)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "show diff without writing files or running canary")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "overwrite existing output files")
-	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/pipelab-org/pipelock:<version>)")
+	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/luckypipewrench/pipelock:<version>)")
 	cmd.Flags().StringVar(&opts.preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().BoolVar(&opts.skipCanary, "skip-canary", false, "skip the canary detection test")
 	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip static topology verification")

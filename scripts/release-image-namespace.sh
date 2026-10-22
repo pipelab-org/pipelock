@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Print the container registry namespace a release publishes to, given the
-# GitHub repository that runs the release workflow.
+# GitHub repository that runs the release workflow. Maintenance releases keep
+# the existing package addresses after the repository transfer.
 #
 # Exactly two repositories may publish: the ones whose release-workflow
 # signatures installed binaries accept (internal/cli/selfupdate/update.go,
@@ -21,7 +22,7 @@ fi
 
 case "$1" in
 	luckyPipewrench/pipelock) printf 'ghcr.io/luckypipewrench\n' ;;
-	pipelab-org/pipelock) printf 'ghcr.io/pipelab-org\n' ;;
+	pipelab-org/pipelock) printf 'ghcr.io/luckypipewrench\n' ;;
 	*)
 		printf 'release image namespace: %s is not a Pipelock release repository\n' "$1" >&2
 		exit 1

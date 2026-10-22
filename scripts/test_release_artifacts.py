@@ -344,6 +344,23 @@ class TestReleaseArtifacts(unittest.TestCase):
         )
         self.assertNotIn("image.source=https://github.com/luckyPipewrench", self.goreleaser)
 
+    def test_maintenance_installation_paths_retain_published_namespace(self) -> None:
+        # Maintenance releases preserve the package addresses installed users use.
+        paths = [ROOT / "README.md", ROOT / "charts/pipelock/README.md",
+                 ROOT / "charts/pipelock/values.yaml"]
+        for directory in ("docs", "examples", "internal/cli/generate", "internal/cli/setup"):
+            paths.extend(path for path in (ROOT / directory).rglob("*")
+                         if path.is_file() and path.suffix in (".md", ".go", ".yaml", ".yml"))
+        checked = 0
+        for path in paths:
+            text = path.read_text()
+            refs = re.findall(r"ghcr\.io/([^/\s]+)/", text)
+            for namespace in refs:
+                with self.subTest(path=str(path.relative_to(ROOT)), namespace=namespace):
+                    self.assertNotEqual(namespace, "pipelab-org")
+                checked += namespace == "luckypipewrench"
+        self.assertGreater(checked, 0, "no installed-user package addresses checked")
+
     @unittest.skipIf(os.name == "nt", "release workflow guard requires bash")
     def test_build_namespace_guard_precedes_publication(self) -> None:
         steps = yaml.load(self.workflow, Loader=WorkflowLoader)["jobs"]["release-build"]["steps"]
@@ -352,9 +369,9 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertEqual(index, 1)  # Immediately after checkout, before build or upload.
         guard = steps[index]
         self.assertEqual(guard["env"], {"REPOSITORY": "${{ github.repository }}"})
-        for repository, expected in (("pipelab-org/pipelock", "ghcr.io/pipelab-org"),
+        for repository, expected in (("pipelab-org/pipelock", "ghcr.io/luckypipewrench"),
                                      ("luckyPipewrench/pipelock", "ghcr.io/luckypipewrench")):
-            for value in (None, "", expected, "ghcr.io/other", expected + "/extra"):
+            for value in (None, "", expected, "ghcr.io/pipelab-org", "ghcr.io/other", expected + "/extra"):
                 with self.subTest(repository=repository, value=value):
                     env = {"PATH": os.environ["PATH"], "REPOSITORY": repository}
                     if value is not None:

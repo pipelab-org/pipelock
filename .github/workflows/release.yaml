@@ -43,10 +43,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      # Images, SBOMs, attestations and the chart publish under the namespace of
-      # the repository running the release, so a repository move needs no edit
-      # here. Only the two repositories installed binaries accept signatures
-      # from may publish; any other repository stops before a build starts.
+      # Images and charts retain their existing package namespace for maintenance
+      # releases. Signatures still identify the repository running the workflow.
+      # Only the two accepted release repositories may publish; any other
+      # repository stops before a build starts.
       - name: Resolve release image namespace
         id: release-identity
         env:

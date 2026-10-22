@@ -129,7 +129,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # See https://github.com/pipelab-org/pipelock/releases
 
 # Docker (after v3.7.1 image publication)
-docker pull ghcr.io/pipelab-org/pipelock:3.7.1
+docker pull ghcr.io/luckypipewrench/pipelock:3.7.1
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -146,9 +146,9 @@ Use GitHub CLI v2.97.0 or later for attestation verification; older versions hav
 
 ```bash
 gh attestation verify pipelock_3.7.1_linux_amd64.tar.gz --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/pipelab-org/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
-gh attestation verify oci://ghcr.io/pipelab-org/charts/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images, and (from 3.6.0) an attested Helm chart. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
@@ -566,9 +566,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker (after v3.7.1 image publication)
-docker pull ghcr.io/pipelab-org/pipelock:3.7.1
+docker pull ghcr.io/luckypipewrench/pipelock:3.7.1
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
-  ghcr.io/pipelab-org/pipelock:3.7.1 \
+  ghcr.io/luckypipewrench/pipelock:3.7.1 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -576,7 +576,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (after v3.7.1 chart publication, Helm 3.8+)
-helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version 3.7.1
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.1
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**

@@ -34,7 +34,7 @@ func runReleaseImageNamespace(t *testing.T, args ...string) (string, error) {
 func TestReleaseImageNamespaceMapsBothReleaseRepositories(t *testing.T) {
 	for repository, want := range map[string]string{
 		"luckyPipewrench/pipelock": "ghcr.io/luckypipewrench\n",
-		"pipelab-org/pipelock":     "ghcr.io/pipelab-org\n",
+		"pipelab-org/pipelock":     "ghcr.io/luckypipewrench\n",
 	} {
 		got, err := runReleaseImageNamespace(t, repository)
 		if err != nil {

@@ -17,7 +17,7 @@ services:
   # -- Production services (always run) ----------------------------------------
 
   pipelock:
-    image: ghcr.io/pipelab-org/pipelock:${PIPELOCK_VERSION:-latest}
+    image: ghcr.io/luckypipewrench/pipelock:${PIPELOCK_VERSION:-latest}
     container_name: pipelock
     networks:
       - pipelock-internal
@@ -77,7 +77,7 @@ services:
 
   verify:
     profiles: ["verify"]
-    image: ghcr.io/pipelab-org/pipelock-init:${PIPELOCK_VERSION:-latest}
+    image: ghcr.io/luckypipewrench/pipelock-init:${PIPELOCK_VERSION:-latest}
     container_name: verify
     networks:
       - pipelock-internal

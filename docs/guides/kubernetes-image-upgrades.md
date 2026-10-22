@@ -72,7 +72,7 @@ The file has this shape:
   "images": [
     {
       "name": "pipelock",
-      "repository": "ghcr.io/pipelab-org/pipelock",
+      "repository": "ghcr.io/luckypipewrench/pipelock",
       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   ]
@@ -85,7 +85,7 @@ manifest digest cannot.
 ## Helm chart
 
 The chart itself is published as an OCI artifact next to the images, at
-`ghcr.io/pipelab-org/charts/pipelock` from v3.7.1 on. From v3.6.0 on it carries
+`ghcr.io/luckypipewrench/charts/pipelock`, including v3.7.1. From v3.6.0 on it carries
 the same kind of provenance attestation as the container images above; earlier
 charts have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step,
 and look its commit up again, because the source check must name the commit of
@@ -103,7 +103,7 @@ PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
 test -n "$PIPELOCK_COMMIT"
 
 PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
-  "oci://ghcr.io/pipelab-org/charts/pipelock:${PIPELOCK_RELEASE#v}" \
+  "oci://ghcr.io/luckypipewrench/charts/pipelock:${PIPELOCK_RELEASE#v}" \
   --repo pipelab-org/pipelock \
   --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
@@ -112,7 +112,7 @@ PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
   --format json --jq '.[0].verificationResult.statement.subject[0].digest.sha256')"
 
 mkdir -p "pipelock-${PIPELOCK_RELEASE}"
-helm pull "oci://ghcr.io/pipelab-org/charts/pipelock" \
+helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" \
   --version "${PIPELOCK_RELEASE#v}" --destination "pipelock-${PIPELOCK_RELEASE}" \
   >"pipelock-${PIPELOCK_RELEASE}/helm-pull.log" 2>&1 &&
   grep -Fx "Digest: ${PIPELOCK_CHART_DIGEST}" "pipelock-${PIPELOCK_RELEASE}/helm-pull.log" &&

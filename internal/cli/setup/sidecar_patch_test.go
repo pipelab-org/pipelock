@@ -850,7 +850,7 @@ func TestResolveImage(t *testing.T) {
 		image     string
 		wantImage string
 	}{
-		{name: "default image uses version", image: "", wantImage: fmt.Sprintf("ghcr.io/pipelab-org/pipelock:%s", cliutil.Version)},
+		{name: "default image uses version", image: "", wantImage: fmt.Sprintf("ghcr.io/luckypipewrench/pipelock:%s", cliutil.Version)},
 		{name: "custom image override", image: "my-registry.io/pipelock:custom", wantImage: "my-registry.io/pipelock:custom"},
 	}
 

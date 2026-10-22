@@ -276,7 +276,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/pipelab-org/pipelock:3.7.1
+    image: ghcr.io/luckypipewrench/pipelock:3.7.1
     networks:
       - pipelock-internal
       - pipelock-external

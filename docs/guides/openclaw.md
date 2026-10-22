@@ -199,7 +199,7 @@ spec:
       terminationGracePeriodSeconds: 600
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/pipelab-org/pipelock-init:3.7.1
+          image: ghcr.io/luckypipewrench/pipelock-init:3.7.1
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin
@@ -220,7 +220,7 @@ spec:
               readOnly: true
 
         - name: pipelock
-          image: ghcr.io/pipelab-org/pipelock:3.7.1
+          image: ghcr.io/luckypipewrench/pipelock:3.7.1
           args: ["run", "--listen", "0.0.0.0:8888"]
           ports:
             - containerPort: 8888
