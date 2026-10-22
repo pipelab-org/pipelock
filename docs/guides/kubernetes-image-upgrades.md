@@ -19,9 +19,11 @@ This downloads the v3.7.1 immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.7.1
-gh release download v3.7.1 --repo pipelab-org/pipelock --pattern release-images.json --dir pipelock-v3.7.1
-cat pipelock-v3.7.1/release-images.json
+PIPELOCK_RELEASE=v3.7.1
+PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
+mkdir -p "pipelock-${PIPELOCK_RELEASE}"
+gh release download "$PIPELOCK_RELEASE" --repo pipelab-org/pipelock --pattern release-images.json --dir "pipelock-${PIPELOCK_RELEASE}"
+cat "$PIPELOCK_BUNDLE"
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -32,8 +34,6 @@ GitHub CLI login and registry access when the image is not public.
 Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 ```bash
-PIPELOCK_RELEASE=v3.7.1
-PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"

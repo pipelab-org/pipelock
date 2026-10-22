@@ -258,15 +258,24 @@ class TestReleaseArtifacts(unittest.TestCase):
         for scope, config in scopes:
             self.assertNotIn("HOMEBREW_TAP_TOKEN", str(config).upper(), scope)
 
-        def strings(value):
+        def expressions(value, path=()):
+            """Read braced expressions and GitHub's implicit job/step if expressions."""
             if isinstance(value, dict):
-                for child in value.values():
-                    yield from strings(child)
+                for key, child in value.items():
+                    yield from expressions(child, (*path, key))
             elif isinstance(value, list):
-                for child in value:
-                    yield from strings(child)
+                for index, child in enumerate(value):
+                    yield from expressions(child, (*path, index))
             elif isinstance(value, str):
-                yield value
+                implicit_if = (
+                    path[:1] == ("jobs",) and path[-1:] == ("if",)
+                    and (len(path) == 3 or (len(path) == 5 and path[2] == "steps"))
+                )
+                if implicit_if and "${{" not in value:
+                    yield value
+                else:
+                    # Quoted expression strings may contain closing braces.
+                    yield from re.findall(r"\$\{\{((?:'(?:[^']|'')*'|[^'])*?)\}\}", value, re.DOTALL)
 
         # Conservatively require named dot access to secrets. Inspect decoded
         # strings so newlines stay whitespace. This is not an expression parser.
@@ -275,8 +284,9 @@ class TestReleaseArtifacts(unittest.TestCase):
         whole_secrets = re.compile(
             r"\bsecrets\b(?!\s*\.\s*[a-z_][a-z0-9_-]*)", re.IGNORECASE
         )
-        for text in strings(parsed):
-            self.assertIsNone(whole_secrets.search(text))
+        for text in expressions(parsed):
+            expression = re.sub(r"'(?:[^']|'')*'", "''", text)
+            self.assertIsNone(whole_secrets.search(expression))
         for job_name, job in parsed["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", job_name)
             for step in job.get("steps", []):
@@ -288,6 +298,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 run = step.get("run")
                 if run is not None:
                     texts.append(str(run))
+                texts.append(str(step.get("name", "")))
                 if any("HOMEBREW_TAP_TOKEN" in text.upper() for text in texts):
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
@@ -299,6 +310,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         )
 
     def test_tap_token_guard_rejects_broader_secret_scopes(self) -> None:
+        """Reject broad credential exposure while accepting unrelated workflow text."""
         parsed = load_workflow(WORKFLOW)
         mutations = {}
         for expression in (
@@ -342,6 +354,19 @@ class TestReleaseArtifacts(unittest.TestCase):
             "EXPOSURE": "${{ secrets.homebrew_tap_token }}"
         }
         mutations["build step"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["name"] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+        mutations["step name"] = document
+        for scope in ("job", "step"):
+            document = copy.deepcopy(parsed)
+            target = document["jobs"]["release-build"]
+            if scope == "step":
+                target = target["steps"][0]
+            target["if"] = "contains(toJSON(secrets), 'example')"
+            mutations[scope + " implicit if"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["run"] = "echo ${{ format('}}', toJSON(secrets)) }}"
+        mutations["quoted closing braces"] = document
 
         for label, document in mutations.items():
             with self.subTest(mutation=label):
@@ -352,6 +377,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         document = copy.deepcopy(parsed)
         document["env"] = {"METADATA": "${{ toJSON(github) }}"}
         document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
+        document["jobs"]["release-build"]["steps"][0]["name"] = "Explain secrets handling"
+        document["jobs"]["release-build"]["steps"][0]["run"] = "echo 'secrets documentation'\necho ${{ 'secrets' }}"
         with mock.patch(__name__ + ".load_workflow", return_value=document):
             self.test_tap_token_reaches_only_the_protected_publish_step()
 
