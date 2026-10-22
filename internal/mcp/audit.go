@@ -194,6 +194,37 @@ func mcpRedactionBlockClass(err error) string {
 	return audit.BlockClassProtective
 }
 
+// mcpA2AGateAudit classifies an A2A body-gate block from the scan's own
+// failure fields. Adaptive neutrality is a scoring property, not an
+// inspection outcome: a heuristic entropy finding is still content evidence,
+// and a parse, depth, or scanner failure is never a content finding.
+func mcpA2AGateAudit(r A2AScanResult) (class, reason string) {
+	switch {
+	case r.ScanError != "" || r.InspectionIncomplete:
+		return audit.BlockClassInfrastructureError, mcpA2AInspectionReason
+	case r.IsConfigMismatch():
+		return audit.BlockClassConfigMismatch, mcpA2AConfigReason
+	case mcpA2AOperationalURLFindingsOnly(r):
+		return audit.BlockClassInfrastructureError, mcpA2AInspectionReason
+	default:
+		return audit.BlockClassThreat, mcpA2AContentReason
+	}
+}
+
+// mcpA2AOperationalURLFindingsOnly reports URL-only results whose findings are
+// all protective or infrastructure outcomes. Heuristic entropy is excluded.
+func mcpA2AOperationalURLFindingsOnly(r A2AScanResult) bool {
+	if len(r.URLFindings) == 0 || len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 || r.EntropyFinding != nil {
+		return false
+	}
+	for _, f := range r.URLFindings {
+		if !f.IsAdaptiveNeutral() || f.IsEntropyOnly() {
+			return false
+		}
+	}
+	return true
+}
+
 func logMCPGateBlock(logger *audit.Logger, label, resource, reason, class string) {
 	if logger == nil {
 		return

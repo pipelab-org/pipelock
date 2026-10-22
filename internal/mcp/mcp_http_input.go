@@ -511,12 +511,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// LogMessage strings) stays in the transport layer.
 	switch eval.BlockingGate {
 	case blockingGateA2ABody:
-		class, reason := audit.BlockClassThreat, mcpA2AContentReason
-		if eval.A2AResult.IsAdaptiveNeutral() {
-			class, reason = audit.BlockClassInfrastructureError, mcpA2AInspectionReason
-		} else if eval.A2AResult.IsConfigMismatch() {
-			class, reason = audit.BlockClassConfigMismatch, mcpA2AConfigReason
-		}
+		class, reason := mcpA2AGateAudit(eval.A2AResult)
 		logMCPInputGateBlock(auditLogger, scanner.AuditA2AScan, reason, class)
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
 		switch {

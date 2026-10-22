@@ -788,12 +788,7 @@ func ForwardScannedInput(
 		// here because it is transport-specific.
 		switch eval.BlockingGate {
 		case blockingGateA2ABody:
-			class, reason := audit.BlockClassThreat, mcpA2AContentReason
-			if eval.A2AResult.IsAdaptiveNeutral() {
-				class, reason = audit.BlockClassInfrastructureError, mcpA2AInspectionReason
-			} else if eval.A2AResult.IsConfigMismatch() {
-				class, reason = audit.BlockClassConfigMismatch, mcpA2AConfigReason
-			}
+			class, reason := mcpA2AGateAudit(eval.A2AResult)
 			logMCPInputGateBlock(auditLogger, scanner.AuditA2AScan, reason, class)
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input blocked (%s)\n", lineNum, eval.A2AResult.Reason)
 			switch {

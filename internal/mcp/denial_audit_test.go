@@ -62,6 +62,19 @@ func TestMCPInputGateDenialAuditParity(t *testing.T) {
 			},
 		},
 		{
+			// URL path entropy is score-neutral but remains content evidence.
+			"a2a_url_entropy", a2aURLEntropyRequest(), scanner.AuditA2AScan, audit.BlockClassThreat,
+			func(t *testing.T) MCPProxyOpts {
+				return MCPProxyOpts{Scanner: testInputScanner(t), A2ACfg: &config.A2AScanning{Enabled: true, Action: config.ActionBlock}}
+			},
+		},
+		{
+			"a2a_inspection_incomplete", a2aOverDeepRequest(), scanner.AuditA2AScan, audit.BlockClassInfrastructureError,
+			func(t *testing.T) MCPProxyOpts {
+				return MCPProxyOpts{Scanner: testInputScanner(t), A2ACfg: &config.A2AScanning{Enabled: true, Action: config.ActionBlock}}
+			},
+		},
+		{
 			"contract", toolCall, scanner.AuditContract, audit.BlockClassProtective,
 			func(t *testing.T) MCPProxyOpts {
 				return mcpLiveLockOpts(t, contractruntime.ModeLive, mcpToolRule("allow-other", nil))
@@ -115,6 +128,40 @@ func TestMCPInputGateDenialAuditParity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func a2aURLEntropyRequest() string {
+	return makeRequest(1, "SendMessage", map[string]any{"message": map[string]any{"parts": []map[string]any{{
+		"kind": "data", "data": map[string]any{"url": "https://files.vendor.example/aB3xQ9zK7mN2pL5vR8tY1wE4uI6oP0sDfG7hJ2kL9zXcV"},
+	}}}})
+}
+
+func a2aOverDeepRequest() string {
+	deep := strings.Repeat(`{"a":`, 400) + `"x"` + strings.Repeat(`}`, 400)
+	return `{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"kind":"data","data":` + deep + `}]}}}`
+}
+
+func TestMCPA2AGateAuditClass(t *testing.T) {
+	entropyURL := scanner.Result{Scanner: scanner.ScannerEntropy, Class: scanner.ClassHeuristicEntropy}
+	for _, tc := range []struct {
+		name          string
+		result        A2AScanResult
+		class, reason string
+	}{
+		{"url_entropy", A2AScanResult{URLFindings: []scanner.Result{entropyURL}}, audit.BlockClassThreat, mcpA2AContentReason},
+		{"scan_error", A2AScanResult{ScanError: "scanner failed"}, audit.BlockClassInfrastructureError, mcpA2AInspectionReason},
+		{"incomplete_with_dlp", A2AScanResult{InspectionIncomplete: true, DLPFindings: []scanner.TextDLPMatch{{}}}, audit.BlockClassInfrastructureError, mcpA2AInspectionReason},
+		{"dns_url", A2AScanResult{URLFindings: []scanner.Result{{Class: scanner.ClassInfrastructureError}}}, audit.BlockClassInfrastructureError, mcpA2AInspectionReason},
+		{"entropy_and_dns_url", A2AScanResult{URLFindings: []scanner.Result{entropyURL, {Class: scanner.ClassInfrastructureError}}}, audit.BlockClassThreat, mcpA2AContentReason},
+		{"config_mismatch", A2AScanResult{URLFindings: []scanner.Result{{Class: scanner.ClassConfigMismatch}}}, audit.BlockClassConfigMismatch, mcpA2AConfigReason},
+		{"dlp", A2AScanResult{DLPFindings: []scanner.TextDLPMatch{{}}}, audit.BlockClassThreat, mcpA2AContentReason},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if class, reason := mcpA2AGateAudit(tc.result); class != tc.class || reason != tc.reason {
+				t.Fatalf("A2A audit = (%q, %q), want (%q, %q)", class, reason, tc.class, tc.reason)
+			}
+		})
 	}
 }
 
