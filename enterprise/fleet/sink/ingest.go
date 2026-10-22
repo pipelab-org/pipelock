@@ -13,8 +13,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -22,14 +24,16 @@ import (
 )
 
 type Handler struct {
-	store           *Store
-	resolver        conductor.SignatureKeyResolver
-	dlpScanner      DLPScanner
-	now             func() time.Time
-	maxSkew         time.Duration
-	maxRequestBytes int64
-	keyBindings     map[string]KeyBinding
-	readerToken     string
+	logger                    *slog.Logger
+	sessionFirstObservedCount atomic.Uint64
+	store                     *Store
+	resolver                  conductor.SignatureKeyResolver
+	dlpScanner                DLPScanner
+	now                       func() time.Time
+	maxSkew                   time.Duration
+	maxRequestBytes           int64
+	keyBindings               map[string]KeyBinding
+	readerToken               string
 }
 
 func NewHandler(opts Options) (*Handler, error) {
@@ -57,6 +61,7 @@ func NewHandler(opts Options) (*Handler, error) {
 		bindings[k] = v
 	}
 	return &Handler{
+		logger:          opts.Logger,
 		store:           opts.Store,
 		resolver:        opts.Resolver,
 		dlpScanner:      opts.DLPScanner,
@@ -136,6 +141,22 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !result.Duplicate && result.SessionFirstObserved {
+		count := h.sessionFirstObservedCount.Add(1)
+		if h.logger != nil {
+			h.logger.WarnContext(r.Context(), "conductor_audit_session_first_observed",
+				slog.String("event", "conductor_audit_session_first_observed"),
+				slog.String("receiver", "fleet_sink"),
+				slog.Uint64("session_first_observed_count", count),
+				slog.String("counter_scope", "handler_lifetime"),
+				slog.String("org_id", upload.Envelope.OrgID),
+				slog.String("fleet_id", upload.Envelope.FleetID),
+				slog.String("instance_id", upload.Envelope.InstanceID),
+				slog.String("batch_id", upload.Envelope.BatchID),
+				slog.Uint64("seq_start", upload.Envelope.SeqStart),
+				slog.Uint64("seq_end", upload.Envelope.SeqEnd))
+		}
+	}
 	status := "accepted"
 	if result.Duplicate {
 		status = "duplicate"

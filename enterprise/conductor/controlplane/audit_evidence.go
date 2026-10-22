@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditstate"
 )
 
 // AuditBatchEvidence is the local-only raw evidence view used by offline report
@@ -33,7 +35,48 @@ type AuditEvidenceQuery struct {
 	Limit        int
 }
 
+// AuditEvidenceSnapshot carries one SQLite read snapshot for batches and receiver facts.
+type AuditEvidenceSnapshot struct {
+	Batches      []AuditBatchEvidence
+	Observations []auditstate.Observation
+	Coverage     auditstate.Coverage
+}
+
+func (s *SQLiteAuditStore) AuditEvidenceSnapshot(ctx context.Context, q AuditEvidenceQuery) (AuditEvidenceSnapshot, error) {
+	if s == nil || s.db == nil {
+		return AuditEvidenceSnapshot{}, ErrAuditSinkRequired
+	}
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return AuditEvidenceSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	batches, err := s.listAuditBatchEvidence(ctx, q, tx)
+	if err != nil {
+		return AuditEvidenceSnapshot{}, err
+	}
+	observations, coverage, err := auditstate.Query(ctx, tx, strings.TrimSpace(q.OrgID), strings.TrimSpace(q.FleetID))
+	if err != nil {
+		return AuditEvidenceSnapshot{}, err
+	}
+	if err = tx.Commit(); err != nil {
+		return AuditEvidenceSnapshot{}, err
+	}
+	return AuditEvidenceSnapshot{Batches: batches, Observations: observations, Coverage: coverage}, nil
+}
+
+type auditEvidenceQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func (s *SQLiteAuditStore) ListAuditBatchEvidence(ctx context.Context, q AuditEvidenceQuery) ([]AuditBatchEvidence, error) {
+	if s == nil || s.db == nil {
+		return nil, ErrAuditSinkRequired
+	}
+	return s.listAuditBatchEvidence(ctx, q, s.db)
+}
+
+func (s *SQLiteAuditStore) listAuditBatchEvidence(ctx context.Context, q AuditEvidenceQuery, queryer auditEvidenceQueryer) ([]AuditBatchEvidence, error) {
 	if s == nil || s.db == nil {
 		return nil, ErrAuditSinkRequired
 	}
@@ -53,7 +96,7 @@ func (s *SQLiteAuditStore) ListAuditBatchEvidence(ctx context.Context, q AuditEv
 	// undisclosed cut would misstate what it proves. Probe one past the effective
 	// limit and fail closed if the window holds more, instead of paginating.
 	limit := normalizeAuditLimit(q.Limit)
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := queryer.QueryContext(ctx, `
 		SELECT batch_id, org_id, fleet_id, instance_id, audit_schema_version,
 			seq_start, seq_end, event_count, payload_sha256, payload_bytes,
 			envelope_hash, segment_tail_hash, dropped_count, emitted_at,

@@ -26,11 +26,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/atomicfile"
 	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 type fleetReportOptions struct {
+	reportVersion    int
 	storageDir       string
 	orgID            string
 	fleetID          string
@@ -48,7 +50,8 @@ type fleetReportOptions struct {
 
 func fleetReportCmd() *cobra.Command {
 	opts := fleetReportOptions{
-		conductorID: "conductor",
+		conductorID:   "conductor",
+		reportVersion: 2,
 	}
 	cmd := &cobra.Command{
 		Use:   "report",
@@ -72,9 +75,16 @@ into the offline verifier:
 			if _, err := license.VerifyFleetWithOptions(license.FleetVerifyInputs{CRLFile: opts.licenseCRLFile}); err != nil {
 				return err
 			}
+			if opts.reportVersion != 1 && opts.reportVersion != 2 {
+				return errors.New("--report-version must be 1 or 2")
+			}
+			if !cmd.Flags().Changed("report-version") {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "notice: fleet receipt reports default to v2; older v1-only verifiers reject v2. Use --report-version 1 for v1 compatibility, or upgrade older verifiers.")
+			}
 			return runFleetReport(cmd, opts)
 		},
 	}
+	cmd.Flags().IntVar(&opts.reportVersion, "report-version", opts.reportVersion, "report predicate version: 2 groups verified recorder namespaces; 1 retains per-follower overlap refusal and refuses more than one recorder run per follower")
 	cmd.Flags().StringVar(&opts.storageDir, "storage-dir", "", "directory for Conductor policy bundles and audit store")
 	cmd.Flags().StringVar(&opts.orgID, "org-id", "", "org id to report (required)")
 	cmd.Flags().StringVar(&opts.fleetID, "fleet-id", "", "fleet id to report (required)")
@@ -139,6 +149,7 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 	defer func() { _ = store.Close() }()
 
 	result, err := fleetreport.Build(cmd.Context(), store, fleetreport.Options{
+		ReportVersion:    opts.reportVersion,
 		OrgID:            opts.orgID,
 		FleetID:          opts.fleetID,
 		WindowStart:      start,
@@ -163,18 +174,22 @@ func runFleetReport(cmd *cobra.Command, opts fleetReportOptions) error {
 		}
 		summary := cmd.ErrOrStderr()
 		_, _ = fmt.Fprintln(summary, "fleet receipt report written: <stdout>")
+		_, _ = fmt.Fprintf(summary, "  report_version: %d\n", result.Statement.Predicate.SchemaVersion)
 		_, _ = fmt.Fprintf(summary, "  report_id: %s\n", result.Statement.Predicate.ReportID)
 		_, _ = fmt.Fprintf(summary, "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 		_, _ = fmt.Fprintf(summary, "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
+		printHistorySummary(summary, result.Statement.Predicate.History)
 		return nil
 	}
 	if err := writeFleetReportEnvelope(opts.out, result.Envelope); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "fleet receipt report written: %s\n", opts.out)
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  report_version: %d\n", result.Statement.Predicate.SchemaVersion)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  report_id: %s\n", result.Statement.Predicate.ReportID)
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  source_batches: %d\n", len(result.Statement.Predicate.SourceBatches))
 	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "  total_actions: %d\n", result.Statement.Predicate.Summary.TotalActions)
+	printHistorySummary(cmd.OutOrStdout(), result.Statement.Predicate.History)
 	return nil
 }
 
@@ -202,6 +217,9 @@ func openFleetReportAuditStore(cmd *cobra.Command, storageDir string) (*controlp
 }
 
 func validateFleetReportOptions(opts fleetReportOptions) error {
+	if opts.reportVersion != 0 && opts.reportVersion != 1 && opts.reportVersion != 2 {
+		return errors.New("--report-version must be 1 or 2")
+	}
 	for _, item := range []struct {
 		flag  string
 		value string
@@ -302,4 +320,11 @@ func writeFleetReportEnvelopeTo(w io.Writer, envelope any) error {
 		return fmt.Errorf("write fleet report to stdout: %w", err)
 	}
 	return nil
+}
+
+func printHistorySummary(out io.Writer, h *fleetreceipt.History) {
+	if h == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  continuity: %s\n  multiple_sessions: %t\n  selected_sequence_gaps: %d\n  history_unknown: %t\n  pruned_before: %s\n", h.Continuity, h.MultipleSessions, len(h.Gaps), h.Retention.HistoryUnknown, h.Retention.PrunedBefore)
 }

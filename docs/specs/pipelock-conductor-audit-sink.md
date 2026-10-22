@@ -336,7 +336,40 @@ idempotency on `(org, fleet, instance,
 batch_id)` and fork rejection on overlapping sequence ranges with divergent
 payload or segment-tail hashes within the same recorder chain namespace.
 Independent v3 writer namespaces may reuse sequence ranges without forming a
-fork. The storage directory is sensitive
+fork. A v2 envelope carries no namespace, so two overlapping v2 batches are
+treated as independent runs only when each stored payload matches its signed
+digest, passes segment validation, holds one non-empty session, and the two
+sessions differ. The enrolled signer chooses that session, so it separates
+runs and does not prove that a restart rather than a rewrite produced the
+second batch. Unknown, malformed, mixed-session, oversized or digest-mismatched
+history keeps the sequence comparison above.
+
+Each validated session is recorded once per organization, fleet, follower and
+session ID, independently of its constituent entry-version/kind/writer chain
+namespaces. Batch identity metadata, session observations, and accepted batches
+commit atomically. The receiver emits `conductor_audit_session_first_observed`
+only after that first observation commits. Exact retries, later batches in the
+same session, rejected forks and failed commits do not emit it. V2 and v3 use
+the actual validated payload identity. An unresolved payload retains the prior
+first-admission compatibility behavior but creates no validated session and can
+never separate overlapping histories. Existing unknown history stays conflicting.
+
+Conductor increments `pipelock_conductor_server_audit_session_first_observed_total`
+on its existing operator metrics endpoint. The fleet sink logs
+`session_first_observed_count` with `counter_scope=handler_lifetime`. These
+process-local notifications can reset or be lost after commit during a crash;
+the durable session table is the authoritative observation record. Arrival does
+not authenticate a restart or distinguish an honest signer from a compromised one.
+
+Both stores persist full validated batch namespaces and durable per-session and
+per-chain first/last server-arrival times. Backfill uses earliest retained
+observations, never an inferred start. Payload pruning removes the corresponding
+batch conflict-comparison metadata, but preserves observations and a durable
+prune cutoff in the same transaction. Same-chain conflict protection is limited
+to retained batch evidence. These observations are not receiver-witnessed
+cross-session commitments. Unknown historical coverage remains explicit.
+
+The storage directory is sensitive
 operator-controlled state. The MVP exposes
 `GET /api/v1/conductor/audit/batches` as an operator/admin metadata query
 endpoint; it requires audit-query authorization and at least `org_id`, returns

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditstate"
 
 	// Pure-Go SQLite driver.
 	_ "modernc.org/sqlite"
@@ -246,7 +247,7 @@ func (s *SQLiteAuditStore) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("migrate conductor audit store: %w", err)
 	}
-	return nil
+	return auditstate.Migrate(ctx, s.db)
 }
 
 func (s *SQLiteAuditStore) IngestAuditBatch(ctx context.Context, batch AcceptedAuditBatch) (AuditIngestResult, error) {
@@ -289,7 +290,8 @@ func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBat
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := detectAuditFork(ctx, tx, batch.Envelope); err != nil {
+	ns, err := detectAuditFork(ctx, tx, batch.Envelope, batch.Payload)
+	if err != nil {
 		return AuditIngestResult{}, err
 	}
 	insertResult, err := tx.ExecContext(ctx, `
@@ -331,10 +333,17 @@ func (s *SQLiteAuditStore) putResult(ctx context.Context, batch AcceptedAuditBat
 	if err := upsertVerifiedAppliedStateTx(ctx, tx, batch); err != nil {
 		return AuditIngestResult{}, err
 	}
+	firstObserved := false
+	if status == AuditIngestStatusAccepted {
+		firstObserved, err = auditstate.Record(ctx, tx, batch.Envelope, ns, batch.ReceivedAt, false)
+		if err != nil {
+			return AuditIngestResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return AuditIngestResult{}, fmt.Errorf("commit conductor audit store transaction: %w", err)
 	}
-	return AuditIngestResult{Status: status, Summary: summary}, nil
+	return AuditIngestResult{Status: status, Summary: summary, SessionFirstObserved: firstObserved}, nil
 }
 
 func validateAcceptedAuditBatch(batch AcceptedAuditBatch) error {
@@ -458,13 +467,9 @@ func (s *SQLiteAuditStore) PruneAuditBatchesBefore(ctx context.Context, before t
 		return AuditPruneResult{}, fmt.Errorf("%w: audit retention cutoff", ErrInvalidStoreRecord)
 	}
 	cutoff := before.UTC()
-	result, err := s.db.ExecContext(ctx, `DELETE FROM audit_batches WHERE received_at < ?`, cutoff)
+	deleted, err := auditstate.Prune(ctx, s.db, cutoff)
 	if err != nil {
 		return AuditPruneResult{}, fmt.Errorf("prune conductor audit batches: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return AuditPruneResult{}, fmt.Errorf("count pruned conductor audit batches: %w", err)
 	}
 	return AuditPruneResult{Deleted: deleted, Before: cutoff}, nil
 }
@@ -522,42 +527,24 @@ func scanAuditSummary(row auditSummaryScanner) (AuditBatchSummary, error) {
 	return summary, nil
 }
 
-// detectAuditFork rejects writes whose [SeqStart, SeqEnd] range overlaps any
-// previously accepted batch from the same (org, fleet, instance) AND whose
-// payload SHA256 or segment-tail hash diverges from the existing record.
-// This is the conductor-side defense against an instance that re-attempts
-// audit batches with rewritten history: signed envelopes alone don't prevent
-// it, since the follower's own signing key produces both records. Returning
-// [ErrAuditForkDetected] also signals followers to stop retrying.
-func detectAuditFork(ctx context.Context, tx *sql.Tx, env conductor.AuditBatchEnvelope) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT envelope_json
-		FROM audit_batches
-		WHERE org_id = ? AND fleet_id = ? AND instance_id = ?
-		  AND seq_end   >= ?
-		  AND seq_start <= ?
-	`, env.OrgID, env.FleetID, env.InstanceID, formatAuditUint(env.SeqStart), formatAuditUint(env.SeqEnd))
+// detectAuditFork rejects overlapping rewritten history within the same chain.
+// Authenticated, validated v2 payloads can establish distinct run sessions even
+// though their envelopes predate explicit namespaces. Unknown sessions retain
+// the conservative legacy comparator. Rows are streamed and payloads bounded;
+// total overlap fanout still depends on retained history and context deadlines.
+func detectAuditFork(ctx context.Context, tx *sql.Tx, env conductor.AuditBatchEnvelope, payload []byte) (conductor.AuditNamespace, error) {
+	ns, err := env.PayloadNamespace(ctx, payload)
 	if err != nil {
-		return fmt.Errorf("query conductor audit sequence overlaps: %w", err)
+		return ns, err
 	}
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return fmt.Errorf("scan conductor audit overlap: %w", err)
-		}
-		var existing conductor.AuditBatchEnvelope
-		if err := json.Unmarshal(raw, &existing); err != nil {
-			return fmt.Errorf("decode stored conductor audit envelope: %w", err)
-		}
-		if env.ForksWith(existing) {
-			return ErrAuditForkDetected
-		}
+	conflict, err := auditstate.Conflict(ctx, tx, env, ns)
+	if err != nil {
+		return ns, err
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("scan conductor audit overlaps: %w", err)
+	if conflict {
+		return ns, ErrAuditForkDetected
 	}
-	return nil
+	return ns, nil
 }
 
 // VerifiedAppliedState is a follower's applied-state statement AFTER the

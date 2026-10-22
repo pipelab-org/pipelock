@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strings"
 	"time"
 
@@ -39,7 +40,11 @@ var (
 	ErrNoEvidence          = errors.New("fleet report: no audit-batch evidence matched the query")
 	ErrNoActionReceipts    = errors.New("fleet report: no action_receipt records found in matched evidence")
 	ErrNonTerminatingRatio = errors.New("fleet report: mediated fraction is not representable as an exact decimal")
-	newReportUUID          = uuid.NewV7
+	// ErrV1MultipleRuns refuses a v1 window that holds more than one recorder
+	// chain for a follower. V1 has no field to state that continuity between
+	// runs is unproven, so a signed v1 report would present them as one history.
+	ErrV1MultipleRuns = errors.New("fleet report: v1 cannot represent more than one recorder run per follower")
+	newReportUUID     = uuid.NewV7
 )
 
 type EvidenceSource interface {
@@ -47,6 +52,9 @@ type EvidenceSource interface {
 }
 
 type Options struct {
+	// ReportVersion defaults to v2; v1 retains per-follower overlap refusal and
+	// refuses more than one recorder run per follower.
+	ReportVersion    int
 	OrgID            string
 	FleetID          string
 	ReportID         string
@@ -70,6 +78,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	if source == nil {
 		return Result{}, errors.New("fleet report: evidence source is required")
 	}
+	if opts.ReportVersion == 0 {
+		opts.ReportVersion = fleetreceipt.SchemaVersionV2
+	}
 	if err := validateOptions(opts); err != nil {
 		return Result{}, err
 	}
@@ -83,7 +94,18 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		ReceivedTo:   opts.WindowEnd,
 		Limit:        opts.Limit,
 	}
-	evidence, err := source.ListAuditBatchEvidence(ctx, query)
+	var evidence []controlplane.AuditBatchEvidence
+	var snapshot controlplane.AuditEvidenceSnapshot
+	var err error
+	if snapshots, ok := source.(interface {
+		AuditEvidenceSnapshot(context.Context, controlplane.AuditEvidenceQuery) (controlplane.AuditEvidenceSnapshot, error)
+	}); ok {
+		snapshot, err = snapshots.AuditEvidenceSnapshot(ctx, query)
+		evidence = snapshot.Batches
+	} else {
+		evidence, err = source.ListAuditBatchEvidence(ctx, query)
+		snapshot.Coverage.HistoryUnknown = true
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -91,9 +113,12 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		return Result{}, ErrNoEvidence
 	}
 	agg := newAggregator()
+	v1Runs := v1RunSet{}
 	var sourceBatches []fleetreceipt.SourceBatch
-	var subjects []fleetreceipt.Subject
 	for _, ev := range evidence {
+		if err := ctx.Err(); err != nil {
+			return Result{}, err
+		}
 		if err := validateEvidence(opts, ev); err != nil {
 			return Result{}, err
 		}
@@ -123,12 +148,34 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 		if err := agg.addBatch(ev, entries, auditKey); err != nil {
 			return Result{}, err
 		}
+		if opts.ReportVersion == fleetreceipt.SchemaVersionV1 {
+			if err := v1Runs.add(ev.Envelope.InstanceID, entries); err != nil {
+				return Result{}, err
+			}
+		}
 		batch := sourceBatch(ev)
+		if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+			if len(auditKey.PublicKey) != ed25519.PublicKeySize {
+				return Result{}, fmt.Errorf("fleet report: no enrolled audit key available for namespace in batch %s", ev.Envelope.BatchID)
+			}
+			identity, err := deriveChainIdentity(ctx, ev.Envelope, entries)
+			if err != nil {
+				return Result{}, fmt.Errorf("fleet report: batch %s namespace: %w", ev.Envelope.BatchID, err)
+			}
+			batch.Chain = &identity
+		}
 		sourceBatches = append(sourceBatches, batch)
-		subjects = append(subjects, fleetreceipt.Subject{
-			Name:   sourceBatchSubjectName(batch),
-			Digest: fleetreceipt.Digest{SHA256: batch.EnvelopeHash},
-		})
+	}
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		slices.SortFunc(sourceBatches, fleetreceipt.CompareSourceBatches)
+	}
+	subjects := make([]fleetreceipt.Subject, 0, len(sourceBatches))
+	for _, batch := range sourceBatches {
+		subjects = append(subjects, fleetreceipt.Subject{Name: sourceBatchSubjectName(batch), Digest: fleetreceipt.Digest{SHA256: batch.EnvelopeHash}})
+	}
+	predicateType := fleetreceipt.PredicateType
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		predicateType = fleetreceipt.PredicateTypeV2
 	}
 	if agg.totalActions == 0 {
 		return Result{}, ErrNoActionReceipts
@@ -144,9 +191,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 	statement := fleetreceipt.Statement{
 		Type:          fleetreceipt.StatementType,
 		Subject:       subjects,
-		PredicateType: fleetreceipt.PredicateType,
+		PredicateType: predicateType,
 		Predicate: fleetreceipt.Predicate{
-			SchemaVersion:     1,
+			SchemaVersion:     opts.ReportVersion,
 			ReportID:          id,
 			GeneratedAt:       opts.GeneratedAt.UTC().Format(time.RFC3339),
 			OrgID:             opts.OrgID,
@@ -180,6 +227,13 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 			},
 		},
 	}
+	if opts.ReportVersion == fleetreceipt.SchemaVersionV2 {
+		statement.Predicate.History = reportHistory(sourceBatches, snapshot)
+		statement.Predicate.Limits = append(statement.Predicate.Limits,
+			"Cross-session continuity unproven: distinct sessions are signer-attested histories, not authenticated restarts or predecessors.",
+			"Session observations describe the receiver snapshot; first/last arrival do not establish source order. Backfilled observations begin at earliest retained evidence.",
+			"Conflict comparison covers retained batch history only. Pruned payloads and evidence before observation coverage cannot establish complete history.")
+	}
 	envelope, err := fleetreceipt.SignStatement(statement, opts.SignerKeyID, opts.Signer)
 	if err != nil {
 		return Result{}, err
@@ -188,6 +242,9 @@ func Build(ctx context.Context, source EvidenceSource, opts Options) (Result, er
 }
 
 func validateOptions(opts Options) error {
+	if opts.ReportVersion != 0 && opts.ReportVersion != fleetreceipt.SchemaVersionV1 && opts.ReportVersion != fleetreceipt.SchemaVersionV2 {
+		return errors.New("fleet report: unsupported report version; use 1 or 2")
+	}
 	if strings.TrimSpace(opts.OrgID) == "" {
 		return errors.New("fleet report: org id is required")
 	}
@@ -297,39 +354,76 @@ func decodeReceiptDetail(detail any) (receipt.Receipt, error) {
 }
 
 func verifySegment(batchID string, chain conductorcore.EvidenceChain, entries []recorder.Entry) error {
-	if len(entries) == 0 {
-		return fmt.Errorf("fleet report: audit batch %s has empty payload", batchID)
-	}
-	if entries[0].Sequence != chain.SeqStart || entries[len(entries)-1].Sequence != chain.SeqEnd {
-		return fmt.Errorf("fleet report: audit batch %s sequence range mismatch", batchID)
-	}
-	if entries[0].Hash != chain.SegmentHeadHash || entries[len(entries)-1].Hash != chain.SegmentTailHash {
-		return fmt.Errorf("fleet report: audit batch %s chain head/tail mismatch", batchID)
+	if err := conductorcore.ValidateAuditSegment(chain, entries); err != nil {
+		return fmt.Errorf("fleet report: audit batch %s %w", batchID, err)
 	}
 	for _, entry := range entries {
-		if !recorder.IsAcceptedEntryVersion(entry.Version) {
-			return fmt.Errorf("fleet report: audit batch %s seq %d unsupported recorder entry version %d", batchID, entry.Sequence, entry.Version)
-		}
-		if err := recorder.ValidateEntrySchema(entry); err != nil {
-			return fmt.Errorf("fleet report: audit batch %s seq %d invalid recorder entry: %w", batchID, entry.Sequence, err)
-		}
-		if entry.Version != chain.EntryVersion ||
-			(recorder.EntryVersionHasNamespace(entry.Version) && entry.SessionID != chain.SessionID) ||
-			entry.ChainKind != chain.ChainKind || entry.WriterInstanceID != chain.WriterInstanceID {
-			return fmt.Errorf("fleet report: audit batch %s seq %d chain namespace mismatch", batchID, entry.Sequence)
-		}
-	}
-	for i := 1; i < len(entries); i++ {
-		entry := entries[i]
-		prev := entries[i-1]
-		if entry.Sequence != prev.Sequence+1 {
-			return fmt.Errorf("fleet report: audit batch %s seq gap at %d", batchID, entry.Sequence)
-		}
-		if entry.PrevHash != prev.Hash {
-			return fmt.Errorf("fleet report: audit batch %s seq %d chain link mismatch", batchID, entry.Sequence)
+		if recorder.ComputeHash(entry) != entry.Hash {
+			return fmt.Errorf("fleet report: audit batch %s seq %d recorder hash mismatch", batchID, entry.Sequence)
 		}
 	}
 	return nil
+}
+
+// deriveChainIdentity joins verifySegment and the recorder's hash projection.
+// Call only after authenticating the envelope and checking its payload digest.
+// v1Run is the recorder chain a v1 report attributes to one follower, keyed by
+// the same namespace fields the receivers compare. Entries without a session
+// share one value, so legacy recorders keep v1's original overlap checks.
+type v1Run struct {
+	entryVersion int
+	sessionID    string
+	chainKind    string
+	writerID     string
+}
+
+type v1RunSet map[string]v1Run
+
+// add runs after verifySegment, which rejects empty segments and mixed v3
+// namespaces. Legacy segments need a separate session consistency check.
+func (s v1RunSet) add(instanceID string, entries []recorder.Entry) error {
+	first := entries[0]
+	for _, entry := range entries[1:] {
+		if entry.SessionID != first.SessionID {
+			return fmt.Errorf("%w: follower %s has mixed recorder sessions within an audit batch; neither report version can represent this batch, so narrow --from and --to to exclude it", ErrV1MultipleRuns, instanceID)
+		}
+	}
+	run := v1Run{entryVersion: first.Version, sessionID: first.SessionID, chainKind: first.ChainKind, writerID: first.WriterInstanceID}
+	if prev, ok := s[instanceID]; ok && prev != run {
+		// V2 can't group a session-less batch by run either, so only a
+		// narrower window resolves a mix that includes one.
+		if prev.sessionID == "" || run.sessionID == "" {
+			return fmt.Errorf("%w: follower %s has session-less and session-bearing audit batches in this window; neither report version can group a session-less batch by recorder run, so narrow --from and --to to one recorder run", ErrV1MultipleRuns, instanceID)
+		}
+		return fmt.Errorf("%w: follower %s has audit batches from more than one recorder run in this window; use --report-version 2, which records each run separately", ErrV1MultipleRuns, instanceID)
+	}
+	s[instanceID] = run
+	return nil
+}
+
+func deriveChainIdentity(ctx context.Context, env conductorcore.AuditBatchEnvelope, entries []recorder.Entry) (fleetreceipt.ChainIdentity, error) {
+	first := entries[0] // verifySegment has already rejected empty payloads.
+	identity := fleetreceipt.ChainIdentity{EntryVersion: first.Version, SessionID: first.SessionID, ChainKind: first.ChainKind, WriterInstanceID: first.WriterInstanceID}
+	if err := identity.Validate(); err != nil {
+		return identity, err
+	}
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return identity, err
+		}
+		if entry.SessionID != identity.SessionID || recorder.ComputeHash(entry) != entry.Hash {
+			return identity, errors.New("mixed session or recorder hash mismatch")
+		}
+	}
+	last := entries[len(entries)-1]
+	if last.Type != "checkpoint" || last.Sequence != env.Chain.CheckpointSeq || last.Hash != env.Chain.CheckpointHash {
+		return identity, errors.New("checkpoint binding mismatch")
+	}
+	var checkpoint recorder.CheckpointDetail
+	if json.Unmarshal(last.RawDetail, &checkpoint) != nil || checkpoint.Signature == "" || conductorcore.SignaturePrefixEd25519+strings.TrimPrefix(checkpoint.Signature, conductorcore.SignaturePrefixEd25519) != env.Chain.CheckpointSignature {
+		return identity, errors.New("checkpoint signature binding mismatch")
+	}
+	return identity, nil
 }
 
 func (a *aggregator) addReceipt(instanceID string, ar receipt.ActionRecord) {

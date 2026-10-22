@@ -17,6 +17,7 @@ func (m *Metrics) registerConductorMetrics(_ *prometheus.Registry) {
 	_ = m.conductorAuditQueuePending
 	_ = m.conductorAuditQueueInflight
 	_ = m.conductorAuditQueueDead
+	_ = m.conductorAuditSessionFirstObserved
 	_ = m.conductorAuditDeliveries
 	_ = m.conductorServerRequests
 	_ = m.conductorServerDuration

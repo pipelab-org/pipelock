@@ -9,6 +9,7 @@ package sink
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
@@ -79,6 +80,7 @@ func (b KeyBinding) IsZero() bool {
 }
 
 type Options struct {
+	Logger          *slog.Logger
 	Store           *Store
 	Resolver        conductor.SignatureKeyResolver
 	DLPScanner      DLPScanner
@@ -136,4 +138,6 @@ type Query struct {
 type PutResult struct {
 	Summary   BatchSummary
 	Duplicate bool
+	// SessionFirstObserved denotes a newly committed follower/session observation.
+	SessionFirstObserved bool `json:"-"`
 }

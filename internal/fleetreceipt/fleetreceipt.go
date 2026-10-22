@@ -2,11 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package fleetreceipt verifies Fleet Receipt Reports: DSSE envelopes wrapping
-// in-toto Statement v1 payloads with Pipelock's fleet-receipt/v1 predicate.
+// in-toto Statement v1 payloads with Pipelock's versioned fleet-receipt predicates.
 package fleetreceipt
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -22,12 +23,16 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 const (
 	StatementType   = "https://in-toto.io/Statement/v1"
 	PredicateType   = "https://pipelab.org/attestation/fleet-receipt/v1"
+	PredicateTypeV2 = "https://pipelab.org/attestation/fleet-receipt/v2"
+	SchemaVersionV1 = 1
+	SchemaVersionV2 = 2
 	DssePayloadType = "application/vnd.in-toto+json"
 
 	VerificationLevelL1 = "L1"
@@ -73,6 +78,7 @@ type Digest struct {
 }
 
 type Predicate struct {
+	History              *History              `json:"history,omitempty"`
 	SchemaVersion        int                   `json:"schemaVersion"`
 	ReportID             string                `json:"reportId"`
 	GeneratedAt          string                `json:"generatedAt"`
@@ -98,22 +104,45 @@ type Conductor struct {
 	Version string `json:"version,omitempty"`
 }
 
+// ChainIdentity names one payload-derived recorder sequence namespace.
+// The report signer attests to its derivation; offline L1 does not replay it.
+type ChainIdentity struct {
+	EntryVersion     int    `json:"entryVersion"`
+	SessionID        string `json:"sessionId"`
+	ChainKind        string `json:"chainKind,omitempty"`
+	WriterInstanceID string `json:"writerInstanceId,omitempty"`
+}
+
+func (c ChainIdentity) Validate() error {
+	if c.EntryVersion != 2 && c.EntryVersion != 3 {
+		return fmt.Errorf("%w: unsupported chain entryVersion=%d", ErrInvalidPredicate, c.EntryVersion)
+	}
+	if c.SessionID == "" || strings.ContainsRune(c.SessionID, 0) {
+		return fmt.Errorf("%w: nonempty chain sessionId without NUL required", ErrInvalidPredicate)
+	}
+	if err := recorder.ValidateEntryNamespace(c.EntryVersion, c.ChainKind, c.WriterInstanceID); err != nil {
+		return fmt.Errorf("%w: chain namespace: %w", ErrInvalidPredicate, err)
+	}
+	return nil
+}
+
 type SourceBatch struct {
-	OrgID           string   `json:"orgId"`
-	FleetID         string   `json:"fleetId"`
-	InstanceID      string   `json:"instanceId"`
-	BatchID         string   `json:"batchId"`
-	SeqStart        uint64   `json:"seqStart"`
-	SeqEnd          uint64   `json:"seqEnd"`
-	EventCount      uint64   `json:"eventCount"`
-	PayloadSHA256   string   `json:"payloadSha256"`
-	PayloadBytes    uint64   `json:"payloadBytes"`
-	EnvelopeHash    string   `json:"envelopeHash"`
-	SegmentTailHash string   `json:"segmentTailHash"`
-	DroppedCount    uint64   `json:"droppedCount"`
-	EmittedAt       string   `json:"emittedAt"`
-	ReceivedAt      string   `json:"receivedAt"`
-	SignatureKeyIDs []string `json:"signatureKeyIds"`
+	Chain           *ChainIdentity `json:"chain,omitempty"`
+	OrgID           string         `json:"orgId"`
+	FleetID         string         `json:"fleetId"`
+	InstanceID      string         `json:"instanceId"`
+	BatchID         string         `json:"batchId"`
+	SeqStart        uint64         `json:"seqStart"`
+	SeqEnd          uint64         `json:"seqEnd"`
+	EventCount      uint64         `json:"eventCount"`
+	PayloadSHA256   string         `json:"payloadSha256"`
+	PayloadBytes    uint64         `json:"payloadBytes"`
+	EnvelopeHash    string         `json:"envelopeHash"`
+	SegmentTailHash string         `json:"segmentTailHash"`
+	DroppedCount    uint64         `json:"droppedCount"`
+	EmittedAt       string         `json:"emittedAt"`
+	ReceivedAt      string         `json:"receivedAt"`
+	SignatureKeyIDs []string       `json:"signatureKeyIds"`
 }
 
 type Summary struct {
@@ -282,8 +311,12 @@ func (s Statement) Validate() error {
 	if s.Type != StatementType {
 		return fmt.Errorf("%w: _type=%q", ErrInvalidStatement, s.Type)
 	}
-	if s.PredicateType != PredicateType {
+	if s.PredicateType != PredicateType && s.PredicateType != PredicateTypeV2 {
 		return fmt.Errorf("%w: predicateType=%q", ErrInvalidStatement, s.PredicateType)
+	}
+	if (s.PredicateType == PredicateType && s.Predicate.SchemaVersion != SchemaVersionV1) ||
+		(s.PredicateType == PredicateTypeV2 && s.Predicate.SchemaVersion != SchemaVersionV2) {
+		return fmt.Errorf("%w: predicateType/schemaVersion mismatch", ErrInvalidStatement)
 	}
 	if len(s.Subject) == 0 {
 		return fmt.Errorf("%w: subject required", ErrInvalidStatement)
@@ -295,7 +328,15 @@ func (s Statement) Validate() error {
 }
 
 func (p Predicate) Validate() error {
-	if p.SchemaVersion != 1 {
+	if p.History != nil {
+		if p.SchemaVersion != SchemaVersionV2 {
+			return fmt.Errorf("%w: v1 cannot carry history observations", ErrInvalidPredicate)
+		}
+		if err := p.History.validate(p.SourceBatches); err != nil {
+			return err
+		}
+	}
+	if p.SchemaVersion != SchemaVersionV1 && p.SchemaVersion != SchemaVersionV2 {
 		return fmt.Errorf("%w: schemaVersion=%d", ErrInvalidPredicate, p.SchemaVersion)
 	}
 	for _, item := range []struct {
@@ -336,7 +377,7 @@ func (p Predicate) Validate() error {
 	if len(p.SourceBatches) == 0 {
 		return fmt.Errorf("%w: sourceBatches required", ErrInvalidPredicate)
 	}
-	if err := validateSourceBatches(p.OrgID, p.FleetID, p.SourceBatches); err != nil {
+	if err := validateSourceBatches(p.OrgID, p.FleetID, p.SourceBatches, p.SchemaVersion); err != nil {
 		return err
 	}
 	if err := p.validateSummary(); err != nil {
@@ -429,10 +470,15 @@ func sourceBatchSubjectName(b SourceBatch) string {
 	return fmt.Sprintf("conductor-audit-batch:%s/%s/%s/%s", b.OrgID, b.FleetID, b.InstanceID, b.BatchID)
 }
 
-func validateSourceBatches(orgID, fleetID string, batches []SourceBatch) error {
+func validateSourceBatches(orgID, fleetID string, batches []SourceBatch, version int) error {
 	seen := map[string]struct{}{}
 	lastSeq := map[string]uint64{}
-	for _, b := range batches {
+	type namespaceKey struct {
+		Org, Fleet, Instance string
+		Chain                ChainIdentity
+	}
+	namespaceLast := map[namespaceKey]uint64{}
+	for i, b := range batches {
 		key := strings.Join([]string{b.OrgID, b.FleetID, b.InstanceID, b.BatchID}, "\x00")
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("%w: duplicate source batch %s", ErrInvalidPredicate, b.BatchID)
@@ -447,11 +493,31 @@ func validateSourceBatches(orgID, fleetID string, batches []SourceBatch) error {
 		if b.SeqEnd < b.SeqStart {
 			return fmt.Errorf("%w: invalid source batch sequence range", ErrInvalidPredicate)
 		}
-		followerKey := strings.Join([]string{b.OrgID, b.FleetID, b.InstanceID}, "\x00")
-		if previous, ok := lastSeq[followerKey]; ok && b.SeqStart <= previous {
-			return fmt.Errorf("%w: source batches overlap or are reordered for %s", ErrInvalidPredicate, b.InstanceID)
+		if version == SchemaVersionV1 {
+			if b.Chain != nil {
+				return fmt.Errorf("%w: v1 source batch cannot carry chain identity", ErrInvalidPredicate)
+			}
+			followerKey := strings.Join([]string{b.OrgID, b.FleetID, b.InstanceID}, "\x00")
+			if previous, ok := lastSeq[followerKey]; ok && b.SeqStart <= previous {
+				return fmt.Errorf("%w: source batches overlap or are reordered for %s", ErrInvalidPredicate, b.InstanceID)
+			}
+			lastSeq[followerKey] = b.SeqEnd
+		} else {
+			if b.Chain == nil {
+				return fmt.Errorf("%w: v2 source batch chain required", ErrInvalidPredicate)
+			}
+			if err := b.Chain.Validate(); err != nil {
+				return err
+			}
+			if i > 0 && CompareSourceBatches(batches[i-1], b) > 0 {
+				return fmt.Errorf("%w: v2 source batches are reordered", ErrInvalidPredicate)
+			}
+			key := namespaceKey{b.OrgID, b.FleetID, b.InstanceID, *b.Chain}
+			if previous, ok := namespaceLast[key]; ok && b.SeqStart <= previous {
+				return fmt.Errorf("%w: source batches overlap or are reordered for %s namespace", ErrInvalidPredicate, b.InstanceID)
+			}
+			namespaceLast[key] = b.SeqEnd
 		}
-		lastSeq[followerKey] = b.SeqEnd
 		if b.EventCount == 0 || b.PayloadBytes == 0 {
 			return fmt.Errorf("%w: source batch eventCount and payloadBytes required", ErrInvalidPredicate)
 		}
@@ -480,6 +546,23 @@ func validateSourceBatches(orgID, fleetID string, batches []SourceBatch) error {
 		}
 	}
 	return nil
+}
+
+// CompareSourceBatches defines v2's deterministic ordering. Identity precedes
+// sequence so independent runs may reuse ranges without interleaving groups.
+func CompareSourceBatches(a, b SourceBatch) int {
+	var ac, bc ChainIdentity
+	if a.Chain != nil {
+		ac = *a.Chain
+	}
+	if b.Chain != nil {
+		bc = *b.Chain
+	}
+	return cmp.Or(cmp.Compare(a.OrgID, b.OrgID), cmp.Compare(a.FleetID, b.FleetID),
+		cmp.Compare(a.InstanceID, b.InstanceID), cmp.Compare(ac.EntryVersion, bc.EntryVersion),
+		cmp.Compare(ac.SessionID, bc.SessionID), cmp.Compare(ac.ChainKind, bc.ChainKind),
+		cmp.Compare(ac.WriterInstanceID, bc.WriterInstanceID), cmp.Compare(a.SeqStart, b.SeqStart),
+		cmp.Compare(a.SeqEnd, b.SeqEnd), cmp.Compare(a.ReceivedAt, b.ReceivedAt), cmp.Compare(a.BatchID, b.BatchID))
 }
 
 func validateCountMap(name string, counts map[string]uint64) (uint64, error) {

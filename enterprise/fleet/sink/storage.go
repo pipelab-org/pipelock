@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditstate"
 
 	// Pure-Go SQLite driver.
 	_ "modernc.org/sqlite"
@@ -194,7 +195,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, ddl); err != nil {
 		return fmt.Errorf("migrate fleet sink store: %w", err)
 	}
-	return nil
+	return auditstate.Migrate(ctx, s.db)
 }
 
 func (s *Store) Put(ctx context.Context, batch acceptedBatch, informational []string) (PutResult, error) {
@@ -226,7 +227,8 @@ func (s *Store) Put(ctx context.Context, batch acceptedBatch, informational []st
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := detectFork(ctx, tx, batch.Envelope); err != nil {
+	ns, err := detectFork(ctx, tx, batch.Envelope, batch.Payload)
+	if err != nil {
 		return PutResult{}, err
 	}
 
@@ -263,10 +265,17 @@ func (s *Store) Put(ctx context.Context, batch acceptedBatch, informational []st
 		}
 		duplicate = true
 	}
+	firstObserved := false
+	if !duplicate {
+		firstObserved, err = auditstate.Record(ctx, tx, batch.Envelope, ns, batch.ReceivedAt, false)
+		if err != nil {
+			return PutResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return PutResult{}, fmt.Errorf("commit fleet sink store transaction: %w", err)
 	}
-	return PutResult{Summary: summary, Duplicate: duplicate}, nil
+	return PutResult{Summary: summary, Duplicate: duplicate, SessionFirstObserved: firstObserved}, nil
 }
 
 func (s *Store) List(ctx context.Context, q Query) ([]BatchSummary, error) {
@@ -386,43 +395,24 @@ func scanSummary(row summaryScanner) (BatchSummary, error) {
 	return summary, nil
 }
 
-// detectFork uses the namespace_sequence index to load only the rows
-// whose [seq_start, seq_end] overlaps the incoming envelope, then
-// unmarshals just those to call ForksWith for the (PayloadSHA256 OR
-// SegmentTailHash) equivocation check. Without the SQL-level overlap
-// filter this scans the entire namespace per ingest, which is an
-// unbounded DoS vector once an instance accumulates batches.
-func detectFork(ctx context.Context, tx *sql.Tx, env conductor.AuditBatchEnvelope) error {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT envelope_json
-		FROM audit_batches
-		WHERE org_id = ? AND fleet_id = ? AND instance_id = ?
-		  AND seq_end   >= ?
-		  AND seq_start <= ?
-	`, env.OrgID, env.FleetID, env.InstanceID,
-		formatUint(env.SeqStart), formatUint(env.SeqEnd))
+// detectFork uses the sequence index to stream overlapping rows, keeping each
+// payload within MaxAuditPayloadBytes. Distinct validated v2 payload sessions
+// can separate independent runs; unknown sessions retain the legacy comparator.
+// The index does not bound total overlap fanout, so query/context errors remain
+// errors and no candidate rows may be silently skipped.
+func detectFork(ctx context.Context, tx *sql.Tx, env conductor.AuditBatchEnvelope, payload []byte) (conductor.AuditNamespace, error) {
+	ns, err := env.PayloadNamespace(ctx, payload)
 	if err != nil {
-		return fmt.Errorf("query audit sequence overlaps: %w", err)
+		return ns, err
 	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return fmt.Errorf("scan audit overlap: %w", err)
-		}
-		var existing conductor.AuditBatchEnvelope
-		if err := json.Unmarshal(raw, &existing); err != nil {
-			return fmt.Errorf("decode stored audit envelope: %w", err)
-		}
-		if env.ForksWith(existing) {
-			return ErrForkDetected
-		}
+	conflict, err := auditstate.Conflict(ctx, tx, env, ns)
+	if err != nil {
+		return ns, err
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("scan audit overlaps: %w", err)
+	if conflict {
+		return ns, ErrForkDetected
 	}
-	return nil
+	return ns, nil
 }
 
 func signatureKeyIDs(signatures []conductor.SignatureProof) []string {
@@ -453,4 +443,12 @@ func parseUintField(name, value string) (uint64, error) {
 		return 0, fmt.Errorf("decode %s: %w", name, err)
 	}
 	return parsed, nil
+}
+
+// PruneBefore retains observations while retiring payload conflict evidence.
+func (s *Store) PruneBefore(ctx context.Context, before time.Time) (int64, error) {
+	if before.IsZero() {
+		return 0, errors.New("audit retention cutoff is required")
+	}
+	return auditstate.Prune(ctx, s.db, before)
 }
