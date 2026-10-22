@@ -2009,6 +2009,8 @@ A configured `warn` action records an observation. Repeated input, response, too
 
 Explicit blocks, immutable security floors, and active mitigations keep their existing enforcement and score contributions. `levels.upgrade_warn` still upgrades eligible findings after other scored evidence elevates the applicable scope. Enabling adaptive enforcement therefore permits those upgrades, even in an audit deployment; warning-only traffic cannot reach that state on its own. To keep warnings observational even after independent enforced findings, disable adaptive enforcement or explicitly disable the relevant level upgrades.
 
+An independent refusal policy still scores its findings even when another configured action is `warn`. For example, the MCP HTTP listener relays upstream `4xx` replies only when their headers and body pass scanning. A flagged reply is withheld and records a block in every response-scanning mode; this isn't an adaptive upgrade of a warning. Clean upstream errors retain their status without adding points. Ordinary warned tool results remain score-neutral. See [upstream status handling](guides/transport-modes.md) for the relay contract.
+
 A block that reports a resolver outcome rather than agent behavior is refused without adding to the score: a DNS timeout, a name that does not exist, a resolver error, and an answer made only of the unspecified address (`0.0.0.0` or `::`), which DNS filters return for a name they block. An answer that includes any other internal or metadata address, and an unspecified address written literally in the URL, still count as SSRF findings.
 
 ```yaml pipelock-fragment

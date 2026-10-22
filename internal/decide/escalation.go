@@ -64,6 +64,8 @@ func UpgradeAction(baseAction string, level int, cfg *config.AdaptiveEnforcement
 // baseAction is the action immediately before UpgradeAction, after any core
 // floor has imposed its block. Other actions retain the caller's signal so
 // explicit blocks, failed strips and fail-closed ask actions keep scoring.
+// Independent refusal policies must supply their resolved action, not a
+// configured warning action that the refusal policy overrides.
 func UpgradedWarningSignal(baseAction string, sig session.SignalType) session.SignalType {
 	if baseAction == config.ActionWarn {
 		return session.SignalWarning

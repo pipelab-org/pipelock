@@ -967,6 +967,9 @@ func RunHTTPListenerProxy(
 				return true
 			}
 			if ok, finding := reply.scan(requestBaseOpts); !ok {
+				// The clean-only error relay refuses independently of adaptive
+				// upgrades and the tool-result response action. Preserve that
+				// refusal's score even when ordinary responses are warn-only.
 				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
 				withhold(finding)
 				return true
