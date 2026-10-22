@@ -54,9 +54,13 @@ func RunWSProxy(
 		opts.A2ACardURL = upstreamURL
 	}
 	opts.A2ACardURL = a2aCardURLForWSUpstream(opts.A2ACardURL)
+	startupAuditOpts := opts
+	startupAuditOpts.Transport = "mcp_ws"
 	if gate, gateErr := evaluateMCPUpstreamGate(ctx, upstreamURL, opts); gateErr != nil {
+		dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpListenerContractEvalDenialAudit()), "startup")
 		return fmt.Errorf("contract upstream evaluation: %w", gateErr)
 	} else if gate.Verdict == config.ActionBlock {
+		dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpUpstreamGateDenialAudit(gate)), "startup")
 		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
 	}
 
@@ -77,6 +81,7 @@ func RunWSProxy(
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
 		if rec == nil {
+			dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
 	}
@@ -239,19 +244,21 @@ func RunWSProxy(
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
+				denialAudit := mcpKillMcpInputDenialAudit()
 				batchResp := refuseKillSwitchRequest(wsOpts, safeLogW, frame, d)
 				if batchResp != nil {
-					if wErr := safeClientOut.WriteMessage(batchResp); wErr != nil {
+					if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, batchResp); wErr != nil {
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 					}
 					continue
 				}
 				if d.IsNotification {
+					dropMCPDenial(wsOpts, denialAudit, "input")
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: kill switch dropped notification (source=%s)\n", d.Source)
 					continue
 				}
 				resp := killswitch.ErrorResponse(frame.ID, d.Message)
-				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+				if wErr := writeMCPInputDenial(wsOpts, denialAudit, safeClientOut, resp); wErr != nil {
 					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
 				}
 				continue
@@ -260,18 +267,16 @@ func RunWSProxy(
 
 		// Input scanning: DLP, injection, policy, chain detection.
 		decision := scanHTTPInputDecision(msg, safeLogW, sessionKey, sessionKey, wsOpts)
+		if decision.Synthetic != nil {
+			if err := deliverMCPSynthetic(decision.Synthetic, safeClientOut); err != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: synthetic response write error: %v\n", err)
+			}
+			continue
+		}
+
 		if decision.Blocked != nil {
-			if !decision.Blocked.IsNotification {
-				var resp []byte
-				if decision.Blocked.SyntheticResponse != nil {
-					// Redirect handler produced a synthetic response -- send it as-is.
-					resp = decision.Blocked.SyntheticResponse
-				} else {
-					resp = blockRequestResponse(*decision.Blocked)
-				}
-				if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
-					_, _ = fmt.Fprintf(safeLogW, "pipelock: stdout write error: %v\n", wErr)
-				}
+			if wErr := deliverMCPInputResult(wsOpts, *decision.Blocked, safeClientOut); wErr != nil {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send input result: %v\n", wErr)
 			}
 			continue
 		}

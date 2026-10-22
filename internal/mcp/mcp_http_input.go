@@ -27,6 +27,7 @@ import (
 
 type httpInputDecision struct {
 	Blocked        *BlockedRequest
+	Synthetic      *mcpSyntheticResult
 	Deferred       *DeferredRequest
 	ForwardMessage []byte
 	Outcome        TrackedRequestOutcome
@@ -83,6 +84,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	inputCfg := opts.inputCfg()
 	policyCfg := opts.policyCfg()
 	auditLogger := opts.AuditLogger
+	var denialAudit mcpDenialAudit
 	cee := opts.cee()
 	rec := opts.Rec
 	adaptiveCfg := opts.adaptiveCfg()
@@ -124,6 +126,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// ID / Method / ToolCallName stay stable.
 	frame := ParseMCPFrame(msg)
 	baselineIdentity := mcpFrameBaselineIdentity(frame)
+	defer func() {
+		if result.Blocked != nil && result.Blocked.SyntheticResponse != nil {
+			result.Synthetic = &mcpSyntheticResult{response: result.Blocked.SyntheticResponse, notification: result.Blocked.IsNotification, logMessage: result.Blocked.LogMessage}
+			result.Blocked = nil
+		}
+		if result.Blocked != nil {
+			result.Blocked = inputMCPDenial(opts, denialAudit, result.Blocked)
+		}
+	}()
 	defer func() {
 		if redirectReceiptEmitted && receiptVerdict == config.ActionRedirect {
 			return
@@ -220,7 +231,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
-			logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
+			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 			result.Deferred = nil
 			result.Blocked = &BlockedRequest{
 				ID:             frame.ID,
@@ -282,6 +293,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return
 		}
 		if err := authorizeMCP(opts.warnContext(), authorityRef, authorityCarrierErr, frame, opts); err != nil {
+			denialAudit = mcpAuthorityDenialAudit()
 			result.Blocked = authorityBlockedRequest(frame)
 			result.Deferred = nil
 			result.Outcome = TrackedRequestOutcome{}
@@ -335,7 +347,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// verdict.Method gap where per-call checks (DoW, chain, A2A) were
 	// silently skipped because the aggregated verdict had no Method.
 	if trimmed := bytes.TrimSpace(msg); len(trimmed) > 0 && trimmed[0] == '[' {
-		logMCPInputGateBlock(auditLogger, scanner.AuditMCPProtocol, mcpBatchReason, audit.BlockClassProtective)
+		denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPProtocol, mcpBatchReason, audit.BlockClassProtective)
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch request (not supported by MCP)\n")
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
@@ -390,7 +402,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if !originalVerdict.Clean && originalVerdict.Error == "" && preRedactionBlock(originalVerdict, action) {
 			receiptLayer, receiptPattern, receiptSeverity = contentScanAttribution(originalVerdict)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinInputVerdictReasons(originalVerdict))
-			logMCPInputBlock(auditLogger, originalVerdict)
+			denialAudit = mcpInputBlockAudit(originalVerdict)
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
@@ -412,7 +424,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	}
 	rewrittenMsg, report, redactErr := applyMCPToolCallRedactionWithConfig(msg, redactionCfg)
 	if redactErr != nil {
-		logMCPInputGateBlock(auditLogger, scanner.AuditRedaction, mcpRedactionReason, mcpRedactionBlockClass(redactErr))
+		denialAudit = mcpInputGateBlockAudit(scanner.AuditRedaction, mcpRedactionReason, mcpRedactionBlockClass(redactErr))
 		var blockErr *redact.BlockError
 		reason := redactErr.Error()
 		if errors.As(redactErr, &blockErr) {
@@ -512,7 +524,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch eval.BlockingGate {
 	case blockingGateA2ABody:
 		class, reason := mcpA2AGateAudit(eval.A2AResult)
-		logMCPInputGateBlock(auditLogger, scanner.AuditA2AScan, reason, class)
+		denialAudit = mcpInputGateBlockAudit(scanner.AuditA2AScan, reason, class)
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: blocked (%s)\n", eval.A2AResult.Reason)
 		switch {
 		case eval.A2AResult.IsAdaptiveNeutral():
@@ -535,6 +547,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case blockingGateAirlockHard, blockingGateAirlockMissing:
+		denialAudit = mcpAirlockDenialAudit()
 		blockMessage := mcpAirlockBlockMessage(eval)
 		_, _ = fmt.Fprintf(logW, "%s: %q\n", blockMessage, enforcementTarget)
 		if auditLogger != nil {
@@ -566,9 +579,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case blockingGateDoW:
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
-		if auditLogger != nil {
-			auditLogger.LogBlocked(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason)
-		}
+		denialAudit = mcpDoWDenialAudit(opts, eval.DoWReason)
 		recordDoWMetric(m, config.ActionBlock, opts)
 		recordAdaptiveFinding(session.SignalBlock, scanner.ScannerDenialOfWallet, eval.DoWReason)
 		receiptVerdict = config.ActionBlock
@@ -577,7 +588,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case blockingGateChain:
 		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
-		logMCPChainBlock(auditLogger, eval.ChainPatternName)
+		denialAudit = mcpChainBlockAudit(eval.ChainPatternName)
 		if auditLogger != nil {
 			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, enforcementTarget, auditSessionKey)
 		}
@@ -593,7 +604,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	case blockingGateParseError:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
-		logMCPInputBlock(auditLogger, verdict)
+		denialAudit = mcpInputBlockAudit(verdict)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
@@ -603,6 +614,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		return result
 	case blockingGateTaintBlock, blockingGateTaintAskDenied:
+		denialAudit = mcpTaintDenialAudit()
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
@@ -695,7 +707,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			switch baselineDecision.Action {
 			case config.ActionBlock, config.ActionAsk:
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", baselineDecision.Detail)
-				logMCPBaselineBlock(auditLogger)
+				denialAudit = mcpBaselineBlockAudit()
 				recordAdaptiveSignal(session.SignalBlock)
 				receiptVerdict = config.ActionBlock
 				errMsg := ""
@@ -719,7 +731,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
-			logMCPCleanAdaptiveBlock(auditLogger)
+			denialAudit = mcpCleanAdaptiveBlockAudit()
 			if m != nil {
 				m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
 			}
@@ -743,6 +755,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
+			denialAudit:    &denialAudit,
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
 			frame:          frame,
@@ -805,7 +818,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		contractGate, contractErr := evaluateMCPToolGate(frame, config.ActionAllow, false, opts)
 		if contractErr != nil {
-			logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 			_, _ = fmt.Fprintf(logW, "pipelock: contract tool-call evaluation failed: %v\n", contractErr)
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
@@ -818,7 +831,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if contractGate.Verdict == config.ActionBlock {
-			logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked %s %q (%s)\n", enforcementKind, enforcementTarget, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
 			receiptContractGate = &contractGate
@@ -829,7 +842,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			var decorateErr error
 			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, mcpMethod, toolName, config.ActionAllow, taintEval)
 			if decorateErr != nil {
-				logMCPInputGateBlock(auditLogger, scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
 				result.Blocked = &BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
@@ -1002,7 +1015,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
-		logMCPInputDecisionBlock(auditLogger, verdict, contentBlock, policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
+		denialAudit = mcpInputDecisionBlockAudit(verdict, contentBlock, policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 		if !entropyOnlyDecision {
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		}
@@ -1024,7 +1037,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// Batch requests cannot be redirected element-by-element. Fail closed.
 		trimmedMsg := bytes.TrimSpace(msg)
 		if len(trimmedMsg) > 0 && trimmedMsg[0] == '[' {
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectBatchReason, audit.BlockClassProtective)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectBatchReason, audit.BlockClassProtective)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked batch (%s) [redirect not supported for batches]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -1036,7 +1049,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		if policyCfg == nil {
 			// No policy config - fail closed.
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect without policy config]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -1048,7 +1061,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
 		if !ok {
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect profile %q not found]\n", joinStrings(reasons), policyVerdict.RedirectProfile)
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -1076,7 +1089,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
 				RequireReceipt: true, RequireReceipts: true,
 			}); err != nil {
-				logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
+				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				receiptVerdict = config.ActionBlock
 				result.Blocked = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
@@ -1136,7 +1149,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				receiptPattern, receiptSeverity = redirectResponseAttribution(finalResponseVerdict)
 			}
 			if !scanVerdict.Clean {
-				logMCPGateBlock(auditLogger, scanner.AuditMCPRedirectOutputInjection, "mcp_redirect_output", mcpRedirectOutputInjectionReason, audit.BlockClassThreat)
+				denialAudit = mcpRedirectOutputBlockAudit(scanner.AuditMCPRedirectOutputInjection, mcpRedirectOutputInjectionReason)
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)
 				br = &BlockedRequest{
@@ -1145,7 +1158,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 					ErrorMessage: "pipelock: redirect handler output blocked by response scanning",
 				}
 			} else if !dlpResult.Clean {
-				logMCPGateBlock(auditLogger, scanner.AuditMCPRedirectOutputDLP, "mcp_redirect_output", mcpRedirectOutputDLPReason, audit.BlockClassThreat)
+				denialAudit = mcpRedirectOutputBlockAudit(scanner.AuditMCPRedirectOutputDLP, mcpRedirectOutputDLPReason)
 				pattern := patternUnknown
 				if len(dlpResult.Matches) > 0 {
 					pattern = dlpResult.Matches[0].PatternName
@@ -1167,7 +1180,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 		} else {
 			// Redirect handler failed - fall through to block (fail-closed).
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectHandlerReason, audit.BlockClassInfrastructureError)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPRedirect, mcpRedirectHandlerReason, audit.BlockClassInfrastructureError)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [redirect failed: %s]\n", joinStrings(reasons), redirectResult.Error)
 			recordAdaptiveSignal(session.SignalBlock)
 			br = &BlockedRequest{
@@ -1197,7 +1210,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionDefer:
 		manager := opts.deferManager()
 		if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [%v]\n", joinStrings(reasons), err)
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -1211,7 +1224,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if manager == nil || !manager.Enabled() {
-			logMCPInputGateBlock(auditLogger, scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 			_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [defer manager disabled]\n", joinStrings(reasons))
 			recordAdaptiveSignal(session.SignalBlock)
 			receiptVerdict = config.ActionBlock
@@ -1257,7 +1270,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionAsk:
 		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
-		logMCPInputDecisionBlock(auditLogger, verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
+		denialAudit = mcpInputDecisionBlockAudit(verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
@@ -1285,6 +1298,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		inspectionMode, fallbackReason, matchedPattern, ceeBlockKind := "", "", "", ""
 		var ceeContributors []json.RawMessage
 		ceeOpts := ceeRecordMCPOptions{
+			denialAudit:    &denialAudit,
 			sessionKey:     ceeKey,
 			entropyPayload: msg,
 			frame:          frame,
@@ -1347,7 +1361,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
 		if contractErr != nil {
-			logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 			_, _ = fmt.Fprintf(logW, "pipelock: contract tool-call evaluation failed: %v\n", contractErr)
 			receiptVerdict = config.ActionBlock
 			result.Blocked = &BlockedRequest{
@@ -1360,7 +1374,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			return result
 		}
 		if contractGate.Verdict == config.ActionBlock {
-			logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
+			denialAudit = mcpInputGateBlockAudit(scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 			_, _ = fmt.Fprintf(logW, "pipelock: contract blocked %s %q (%s)\n", enforcementKind, enforcementTarget, contractGate.Reason)
 			receiptVerdict = config.ActionBlock
 			receiptContractGate = &contractGate
@@ -1371,7 +1385,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			var decorateErr error
 			result.ForwardMessage, decorateErr = decorateMCPToolMessage(msg, envelopeEmitter, actionID, verdict.Method, toolName, config.ActionWarn, taintEval)
 			if decorateErr != nil {
-				logMCPInputGateBlock(auditLogger, scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
+				denialAudit = mcpInputGateBlockAudit(scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
 				result.Blocked = &BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),

@@ -297,6 +297,7 @@ func mcpCEEFragmentSessionKey(sessionKey, path string) string {
 }
 
 type ceeRecordMCPOptions struct {
+	denialAudit      *mcpDenialAudit
 	sessionKey       string
 	entropyPayload   []byte
 	fragmentPayloads map[string][]byte
@@ -395,8 +396,8 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				if opts.blockKind != nil {
 					*opts.blockKind = ceeBlockKindEntropyBudget
 				}
-				if opts.logger != nil {
-					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_entropy", reason)
+				if opts.denialAudit != nil {
+					*opts.denialAudit = mcpCeeEntropyDenialAudit()
 				}
 				return ceeEntropyBlockClientReason
 			}
@@ -460,8 +461,8 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				// identities' fragments.
 				reason := "cross-request fragment stream belongs to another identity; request cannot be safely inspected"
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
-				if opts.logger != nil {
-					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_owner_mismatch", reason)
+				if opts.denialAudit != nil {
+					*opts.denialAudit = mcpCeeOwnerDenialAudit()
 				}
 				if opts.blockKind != nil {
 					*opts.blockKind = ceeBlockKindOwnerMismatch
@@ -474,8 +475,8 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 				}
 				reason := "cross-request fragment session capacity exhausted; request cannot be safely inspected; increase cross_request_detection.fragment_reassembly.max_sessions or reduce active sessions"
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", reason, opts.sessionKey)
-				if opts.logger != nil {
-					opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment_capacity", reason)
+				if opts.denialAudit != nil {
+					*opts.denialAudit = mcpCeeCapacityDenialAudit()
 				}
 				if opts.blockKind != nil {
 					*opts.blockKind = ceeBlockKindSessionCapacity
@@ -513,8 +514,11 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					if opts.contributors != nil {
 						*opts.contributors = captureCEEContributors(primary.Contributors)
 					}
-					if opts.logger != nil {
-						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason)
+					if opts.denialAudit != nil {
+						*opts.denialAudit = mcpCEEFragmentDenialAudit(operatorReason)
+						if inspectionLimit {
+							*opts.denialAudit = mcpCeeFragmentLimitDenialAudit()
+						}
 					}
 					return ceeFragmentBlockClientReason
 				}

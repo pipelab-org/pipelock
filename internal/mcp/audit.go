@@ -9,6 +9,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -24,6 +25,8 @@ const (
 	mcpKillSwitchReason              = "MCP kill switch active"
 	mcpBatchReason                   = "MCP batch requests are unsupported"
 	mcpRedactionReason               = "MCP redaction blocked the request"
+	mcpA2ABudgetReason               = "A2A input inspection budget exceeded"
+	mcpA2AURLReason                  = "A2A input URL check refused"
 	mcpA2AContentReason              = "A2A input content finding"
 	mcpA2AInspectionReason           = "A2A input could not be inspected"
 	mcpA2AConfigReason               = "A2A input configuration mismatch"
@@ -50,140 +53,107 @@ func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.Lo
 	return ctx
 }
 
-// logMCPInputBlock uses finding-kind labels and configured pattern names.
-// Input verdict reasons can contain request bytes (notably URL and parse errors).
-func logMCPInputBlock(logger *audit.Logger, verdict InputVerdict) {
-	if logger == nil {
-		return
+// mcpAuditDescriptor resolves only registered MCP label/class/resource variants.
+// Diagnostic errors and client-controlled resource names never enter the catalog.
+func mcpAuditDescriptor(label, resource, reason, class string) mcpDenialAudit {
+	if class == "" {
+		class = audit.BlockClassThreat
 	}
-	scannerName := scanner.AuditMCPInputInspection
+	for _, spec := range mcpDenialCatalog {
+		if spec.label == label && spec.resource == resource && spec.class == class && (spec.reason == "" || spec.reason == reason) {
+			return mcpDenialAudit{kind: spec.kind, pattern: reason}
+		}
+	}
+	return mcpDenialAudit{}
+}
+
+func mcpInputBlockAudit(verdict InputVerdict) mcpDenialAudit {
+	label := scanner.AuditMCPInputInspection
 	reason := string(mcpScannerBlockReason(verdict, policy.Verdict{}, false))
-	detail := audit.BlockDetail{Class: audit.BlockClassInfrastructureError}
+	class := audit.BlockClassInfrastructureError
 	switch {
 	case verdict.Error != "":
-		// A failed inspection is the enforcing gate even if a raw fallback
-		// found content. No attacker-controlled parse diagnostic enters audit.
 	case len(verdict.Matches) > 0:
-		scannerName = scanner.AuditMCPInputDLP
-		reason = verdict.Matches[0].PatternName
-		detail.Class = audit.BlockClassThreat
+		label, reason, class = scanner.AuditMCPInputDLP, verdict.Matches[0].PatternName, audit.BlockClassThreat
 	case len(verdict.Inject) > 0:
-		scannerName = scanner.AuditMCPInputInjection
-		reason = verdict.Inject[0].PatternName
-		detail.Class = audit.BlockClassThreat
+		label, reason, class = scanner.AuditMCPInputInjection, verdict.Inject[0].PatternName, audit.BlockClassThreat
 	case len(verdict.URLFindings) > 0:
-		scannerName = verdict.URLFindings[0].Scanner
-		detail.Class = audit.BlockClassThreat
+		finding := verdict.URLFindings[0]
+		label, class = finding.Scanner, audit.BlockClassThreat
+		switch finding.Class {
+		case scanner.ClassProtective:
+			class = audit.BlockClassProtective
+		case scanner.ClassInfrastructureError:
+			class = audit.BlockClassInfrastructureError
+		case scanner.ClassConfigMismatch:
+			class = audit.BlockClassConfigMismatch
+		}
 	case len(verdict.AddressFindings) > 0:
-		scannerName = scanner.AuditAddressProtection
-		reason = "address protection blocked"
-		detail.Class = audit.BlockClassThreat
+		label, reason, class = scanner.AuditAddressProtection, "address protection blocked", audit.BlockClassThreat
 	}
-	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "mcp_input"), scannerName, reason, detail)
+	return mcpAuditDescriptor(label, "mcp_input", reason, class)
 }
 
-// logMCPInputDecisionBlock records exactly one final denial. Content wins when
-// its own action blocks; otherwise the first enforcing control in this fixed
-// precedence supplies the label. Reasons are fixed or policy-owned strings.
-func logMCPInputDecisionBlock(logger *audit.Logger, verdict InputVerdict, contentBlock bool, policyVerdict policy.Verdict, bindingAction, chainAction, chainPattern, baselineAction string) {
-	if logger == nil {
-		return
-	}
+func mcpInputDecisionBlockAudit(verdict InputVerdict, contentBlock bool, policyVerdict policy.Verdict, bindingAction, chainAction, chainPattern, baselineAction string) mcpDenialAudit {
 	if contentBlock {
-		logMCPInputBlock(logger, verdict)
-		return
+		return mcpInputBlockAudit(verdict)
 	}
-	// MCP input has no human approval, so a control that asks is enforced as
-	// a block (behavioral_baseline.deviation_action: ask). That control, not
-	// adaptive enforcement, made the denial.
-	enforces := func(action string) bool {
-		return action == config.ActionBlock || action == config.ActionAsk
-	}
-	label, reason := scanner.AuditAdaptiveEnforcement, "MCP input action upgraded to block"
+	enforces := func(action string) bool { return action == config.ActionBlock || action == config.ActionAsk }
 	switch {
 	case policyVerdict.Matched && enforces(policyVerdict.Action):
-		label, reason = scanner.AuditMCPToolPolicy, "MCP tool policy blocked"
+		return mcpDenialAudit{kind: "policy"}
 	case enforces(bindingAction):
-		label, reason = scanner.AuditMCPSessionBinding, "MCP session binding blocked"
+		return mcpDenialAudit{kind: "binding"}
 	case enforces(chainAction):
-		label, reason = scanner.AuditChainDetection, chainPattern
+		return mcpChainBlockAudit(chainPattern)
 	case enforces(baselineAction):
-		label, reason = scanner.AuditSessionAnomaly, "baseline_deviation"
-	}
-	// If no control independently blocked, adaptive enforcement made the
-	// warning into a denial. Its session guidance is the narrowest remedy.
-	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), label, reason)
-}
-
-func logMCPChainBlock(logger *audit.Logger, pattern string) {
-	if logger != nil {
-		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditChainDetection, pattern)
+		return mcpBaselineBlockAudit()
+	default:
+		return mcpDenialAudit{kind: "adaptive"}
 	}
 }
 
-func logMCPBaselineBlock(logger *audit.Logger) {
-	if logger != nil {
-		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditSessionAnomaly, "baseline_deviation")
-	}
+func mcpChainBlockAudit(pattern string) mcpDenialAudit {
+	return mcpDenialAudit{kind: "chain", pattern: pattern}
 }
+func mcpBaselineBlockAudit() mcpDenialAudit      { return mcpDenialAudit{kind: "baseline"} }
+func mcpCleanAdaptiveBlockAudit() mcpDenialAudit { return mcpDenialAudit{kind: "adaptive_clean"} }
 
-func logMCPCleanAdaptiveBlock(logger *audit.Logger) {
-	if logger != nil {
-		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditAdaptiveEnforcement, "MCP clean input action upgraded to block")
-	}
-}
-
-// inputBlockedByContent is true only when the content verdict independently
-// blocks. An adaptive upgrade of a warning uses the adaptive label instead.
 func inputBlockedByContent(verdict InputVerdict, contentAction string) bool {
 	return !verdict.Clean && inputVerdictEffectiveAction(verdict, contentAction) == config.ActionBlock
 }
 
-// logMCPListenerHeaderBlock records a listener header DLP, injection or
-// encoding block. The header name and value are request bytes (an Mcp-Param-
-// suffix is client-chosen), so only the pattern name or a fixed label is used.
-func logMCPListenerHeaderBlock(logger *audit.Logger, result *mcpListenerHeaderDLPResult) {
-	if logger == nil || result == nil {
-		return
+func mcpListenerHeaderBlockAudit(result *mcpListenerHeaderDLPResult) mcpDenialAudit {
+	if result == nil {
+		return mcpDenialAudit{}
 	}
 	_, pattern := listenerHeaderBlockClassification(result)
-	scannerName := scanner.AuditMCPHeaderInspection
-	detail := audit.BlockDetail{Class: audit.BlockClassInfrastructureError}
+	label, class := scanner.AuditMCPHeaderInspection, audit.BlockClassInfrastructureError
 	switch {
 	case len(result.matches) > 0:
-		scannerName = scanner.AuditMCPHeaderDLP
-		detail.Class = audit.BlockClassThreat
+		label, class = scanner.AuditMCPHeaderDLP, audit.BlockClassThreat
 	case result.reason == blockreason.PromptInjection:
-		scannerName = scanner.AuditMCPHeaderInjection
-		detail.Class = audit.BlockClassThreat
+		label, class = scanner.AuditMCPHeaderInjection, audit.BlockClassThreat
 	case result.reason == blockreason.ParseError:
-		// The decoded header could not be scanned; it is not evidence of
-		// an attack pattern or a malformed client header.
-		scannerName = scanner.AuditMCPHeaderInspection
 		pattern = "response scan parse error in MCP parameter header"
-		detail.Class = audit.BlockClassInfrastructureError
 	}
-	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "mcp_listener_header"), scannerName, pattern, detail)
+	return mcpAuditDescriptor(label, "mcp_listener_header", pattern, class)
 }
 
-// logMCPResponseInspectionBlock classifies a failed response inspection as
-// operational. detail and response bytes must never enter the event.
-func logMCPResponseInspectionBlock(logger *audit.Logger, reason string) {
-	logMCPOperationalBlock(logger, scanner.AuditMCPResponseInspection, "mcp_response", reason)
+func mcpResponseInspectionBlockAudit(reason string) mcpDenialAudit {
+	return mcpDenialAudit{kind: "response_inspection", pattern: reason}
 }
 
-func logMCPOperationalBlock(logger *audit.Logger, label, resource, reason string) {
-	if logger == nil {
-		return
-	}
-	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", resource), label, reason,
-		audit.BlockDetail{Class: audit.BlockClassInfrastructureError})
+func mcpOperationalBlockAudit(label, resource, reason string) mcpDenialAudit {
+	return mcpAuditDescriptor(label, resource, reason, audit.BlockClassInfrastructureError)
 }
 
-// logMCPInputGateBlock records a denial with a fixed protocol resource and
-// reason. Callers must not pass request bytes, tool names, or error strings.
-func logMCPInputGateBlock(logger *audit.Logger, label, reason, class string) {
-	logMCPGateBlock(logger, label, "mcp_input", reason, class)
+func mcpInputGateBlockAudit(label, reason, class string) mcpDenialAudit {
+	return mcpAuditDescriptor(label, "mcp_input", reason, class)
+}
+
+func mcpRedirectOutputBlockAudit(label, reason string) mcpDenialAudit {
+	return mcpAuditDescriptor(label, "mcp_redirect_output", reason, audit.BlockClassThreat)
 }
 
 func mcpRedactionBlockClass(err error) string {
@@ -194,10 +164,6 @@ func mcpRedactionBlockClass(err error) string {
 	return audit.BlockClassProtective
 }
 
-// mcpA2AGateAudit classifies an A2A body-gate block from the scan's own
-// failure fields. Adaptive neutrality is a scoring property, not an
-// inspection outcome: a heuristic entropy finding is still content evidence,
-// and a parse, depth, or scanner failure is never a content finding.
 func mcpA2AGateAudit(r A2AScanResult) (class, reason string) {
 	switch {
 	case r.ScanError != "" || r.InspectionIncomplete:
@@ -205,53 +171,42 @@ func mcpA2AGateAudit(r A2AScanResult) (class, reason string) {
 	case r.IsConfigMismatch():
 		return audit.BlockClassConfigMismatch, mcpA2AConfigReason
 	case mcpA2AOperationalURLFindingsOnly(r):
-		return audit.BlockClassInfrastructureError, mcpA2AInspectionReason
+		for _, f := range r.URLFindings {
+			if f.Class == scanner.ClassInfrastructureError {
+				return audit.BlockClassInfrastructureError, mcpA2AURLReason
+			}
+		}
+		return audit.BlockClassProtective, mcpA2AURLReason
+	case r.BudgetExceeded && len(r.DLPFindings) == 0 && len(r.InjectFindings) == 0 && len(r.URLFindings) == 0 && r.EntropyFinding == nil:
+		return audit.BlockClassProtective, mcpA2ABudgetReason
 	default:
 		return audit.BlockClassThreat, mcpA2AContentReason
 	}
 }
 
-// mcpA2AOperationalURLFindingsOnly reports URL-only results whose findings are
-// all protective or infrastructure outcomes. Heuristic entropy is excluded.
 func mcpA2AOperationalURLFindingsOnly(r A2AScanResult) bool {
 	if len(r.URLFindings) == 0 || len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 || r.EntropyFinding != nil {
 		return false
 	}
 	for _, f := range r.URLFindings {
-		if !f.IsAdaptiveNeutral() || f.IsEntropyOnly() {
+		switch f.Class {
+		case scanner.ClassInfrastructureError, scanner.ClassProtective, scanner.ClassConfigMismatch:
+		default:
 			return false
 		}
 	}
 	return true
 }
 
-func logMCPGateBlock(logger *audit.Logger, label, resource, reason, class string) {
-	if logger == nil {
-		return
-	}
-	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", resource), label, reason,
-		audit.BlockDetail{Class: class})
-}
-
-// logMCPListenerReplyBlock records an upstream HTTP error reply withheld by
-// response scanning. finding is a pattern name or a fixed scan-failure label,
-// never reply bytes (see upstreamClientErrorFinding).
-func logMCPListenerReplyBlock(logger *audit.Logger, finding string) {
-	if logger == nil {
-		return
-	}
-	detail := audit.BlockDetail{}
+func mcpListenerReplyBlockAudit(finding string) mcpDenialAudit {
+	class := audit.BlockClassThreat
 	switch finding {
 	case "response scanner unavailable", "uninspectable reply":
-		// These are scan-integrity refusals, not observed prompt injection.
-		// Route to scan-integrity guidance and omit MITRE.
-		finding = "response scan cannot be scanned: " + finding
-		detail.Class = audit.BlockClassInfrastructureError
+		finding, class = "response scan cannot be scanned: "+finding, audit.BlockClassInfrastructureError
 	case "response scan finding":
-		finding = "response scan returned an incomplete verdict"
-		detail.Class = audit.BlockClassInfrastructureError
+		finding, class = "response scan returned an incomplete verdict", audit.BlockClassInfrastructureError
 	}
-	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "upstream_error_reply"), scanner.AuditResponseScan, finding, detail)
+	return mcpAuditDescriptor(scanner.AuditResponseScan, "upstream_error_reply", finding, class)
 }
 
 func resolvedDoWAttribution(opts MCPProxyOpts) (string, DoWAttribution) {
@@ -303,4 +258,178 @@ func recordDoWMetric(m *metrics.Metrics, action string, opts MCPProxyOpts) {
 	}
 	agent, attribution := resolvedDoWAttribution(opts)
 	m.RecordDenialOfWalletEvent(action, agent, attribution.Trust)
+}
+
+func mcpDoWDenialAudit(opts MCPProxyOpts, reason string) mcpDenialAudit {
+	ctx := mustMCPDoWAuditContext(opts.AuditLogger, "mcp_input", opts)
+	return mcpDenialAudit{kind: "dow", pattern: reason, context: &ctx}
+}
+
+func mcpDeferredDenialAudit(res deferred.Resolution) mcpDenialAudit {
+	if res.Reason == deferred.ReasonReceiptNotWritten {
+		return mcpDenialAudit{kind: "receipt_mcp_input"}
+	}
+	switch res.ResolutionSource {
+	case deferred.SourceKillSwitch:
+		return mcpDenialAudit{kind: "kill_mcp_input"}
+	case deferred.SourceAuthority:
+		return mcpDenialAudit{kind: "authority"}
+	default:
+		return mcpDenialAudit{kind: "defer_terminal"}
+	}
+}
+
+func mcpListenerBlockAudit(dec mcpListenerBlockDecision) mcpDenialAudit {
+	switch dec.reason {
+	case blockreason.KillSwitchActive:
+		return mcpDenialAudit{kind: "kill_mcp_input"}
+	case blockreason.ReceiptEmissionFailed:
+		return mcpDenialAudit{kind: "receipt_mcp_input"}
+	case blockreason.SSRFMetadata:
+		return mcpDenialAudit{kind: "listener_metadata"}
+	}
+	switch dec.layer {
+	case "session_capacity", "mcp_listener_session":
+		return mcpDenialAudit{kind: "listener_capacity"}
+	case mcpContractReceiptLayer:
+		return mcpDenialAudit{kind: "listener_contract"}
+	case mcpReceiptLayerA2A:
+		return mcpDenialAudit{kind: "listener_a2a"}
+	default:
+		return mcpDenialAudit{kind: "listener_admission"}
+	}
+}
+
+func mcpUpstreamGateDenialAudit(gate mcpContractGateOutput) mcpDenialAudit {
+	if gate.upstreamDenial.kind != "" {
+		return gate.upstreamDenial
+	}
+	if mcpContractBlockReason(gate) == blockreason.KillSwitchActive {
+		return mcpDenialAudit{kind: "kill_mcp_input"}
+	}
+	return mcpDenialAudit{kind: "listener_contract"}
+}
+
+func mcpA2AHeaderDenialAudit(result A2AScanResult) mcpDenialAudit {
+	class, reason := mcpA2AGateAudit(result)
+	return mcpInputGateBlockAudit(scanner.AuditA2AScan, reason, class)
+}
+
+func mcpMediaDenialAudit(result mcpMediaPolicyResult) mcpDenialAudit { return result.denialAudit }
+
+// The reason values are fixed outcomes of upstreamClientError.writeIfActive
+// and the listener relay gates, never diagnostic error text.
+func mcpListenerWithholdAudit(reason string) mcpDenialAudit {
+	switch reason {
+	case "kill switch blocks responses":
+		return mcpDenialAudit{kind: "kill_mcp_response"}
+	case "upstream identity changed":
+		return mcpDenialAudit{kind: "identity_mcp_response"}
+	case "session escalation blocks responses":
+		return mcpDenialAudit{kind: "adaptive_response"}
+	default:
+		return mcpDenialAudit{kind: "listener_inspection"}
+	}
+}
+
+func mcpAdaptiveResponseDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "adaptive_response"}
+}
+
+func mcpAirlockDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "airlock"} }
+
+func mcpAuthorityDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "authority"} }
+
+func mcpBatchResponseDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "batch_response"} }
+
+func mcpCeeCapacityDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "cee_capacity"} }
+
+func mcpCeeEntropyDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "cee_entropy"} }
+
+func mcpCeeFragmentLimitDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "cee_fragment_limit"}
+}
+
+func mcpCeeOwnerDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "cee_owner"} }
+
+func mcpCorrelationResponseDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "correlation_response"}
+}
+
+func mcpDeferDisabledDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "defer_disabled"} }
+
+func mcpDeferHoldDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "defer_hold"} }
+
+func mcpFrozenDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "frozen"} }
+
+func mcpIdentityMcpResponseDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "identity_mcp_response"}
+}
+
+func mcpKillMcpInputDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "kill_mcp_input"} }
+
+func mcpKillMcpResponseDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "kill_mcp_response"} }
+
+func mcpListenerAdmissionDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "listener_admission"}
+}
+
+func mcpListenerCapacityDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "listener_capacity"}
+}
+
+func mcpListenerContractEvalDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "listener_contract_eval"}
+}
+
+func mcpListenerInspectionDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "listener_inspection"}
+}
+
+func mcpListenerProtocolDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "listener_protocol"}
+}
+
+func mcpMediaInspectionDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "media_inspection"} }
+
+func mcpMediaPolicyDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "media_policy"} }
+
+func mcpProvenanceDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "provenance"} }
+
+func mcpReceiptMcpInputDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "receipt_mcp_input"} }
+
+func mcpTaintDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "taint"} }
+
+func mcpToolCapacityDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "tool_capacity"} }
+
+func mcpResponseContentDenialAudit(pattern string) mcpDenialAudit {
+	return mcpDenialAudit{kind: "response_content", pattern: firstNonEmpty(pattern, "response scanning blocked")}
+}
+
+func mcpToolResultDenialAudit(resourceLimit string) mcpDenialAudit {
+	if resourceLimit != "" {
+		return mcpDenialAudit{kind: "tool_inspection", pattern: "tools/list cannot be safely inspected: " + resourceLimit}
+	}
+	return mcpDenialAudit{kind: "tool_finding", pattern: "tool poisoning detected in tools/list"}
+}
+
+func mcpCEEFragmentDenialAudit(pattern string) mcpDenialAudit {
+	return mcpDenialAudit{kind: "cee_fragment", pattern: pattern}
+}
+
+func mcpStartupDenialAudit(descriptor mcpDenialAudit) mcpDenialAudit {
+	switch descriptor.kind {
+	case "listener_contract":
+		return mcpDenialAudit{kind: "startup_contract"}
+	case "listener_contract_eval":
+		return mcpDenialAudit{kind: "startup_contract_eval"}
+	case "listener_capacity":
+		return mcpDenialAudit{kind: "startup_capacity"}
+	case "listener_metadata":
+		return mcpDenialAudit{kind: "startup_metadata"}
+	case "kill_mcp_input":
+		return mcpDenialAudit{kind: "kill_mcp_startup"}
+	default:
+		return descriptor
+	}
 }

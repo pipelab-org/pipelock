@@ -109,7 +109,7 @@ func TestHTTPListener_ServerIdentityFn(t *testing.T) {
 	}
 }
 
-func TestHTTPListenerIdentityChangeDuringResponse(t *testing.T) {
+func TestHTTPListenerIdentityChangeDuringResponseAudit(t *testing.T) {
 	for _, sse := range []bool{false, true} {
 		name := "json"
 		if sse {
@@ -117,6 +117,7 @@ func TestHTTPListenerIdentityChangeDuringResponse(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			var changed atomic.Bool
+			logger, events := newListenerEventLogger(t)
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				// Model a reload after admission, before the first upstream byte.
 				changed.Store(true)
@@ -130,7 +131,8 @@ func TestHTTPListenerIdentityChangeDuringResponse(t *testing.T) {
 			}))
 			defer upstream.Close()
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
-				Scanner: testScannerForHTTP(t),
+				Scanner:     testScannerForHTTP(t),
+				AuditLogger: logger,
 				ServerIdentityFn: func() ServerIdentity {
 					if changed.Load() {
 						return ServerIdentity{Refusal: identityRefusalText}
@@ -151,6 +153,9 @@ func TestHTTPListenerIdentityChangeDuringResponse(t *testing.T) {
 			body, _ := io.ReadAll(resp.Body)
 			if strings.Contains(string(body), `"text":"hi"`) || resp.StatusCode < http.StatusBadRequest {
 				t.Fatalf("changed registration forwarded response: status %d body %s", resp.StatusCode, body)
+			}
+			if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"scanner":"agent_identity"`) {
+				t.Fatal(events.String())
 			}
 		})
 	}

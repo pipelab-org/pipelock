@@ -97,6 +97,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
 		if rec == nil {
+			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
 	}
@@ -277,16 +278,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	go func() {
 		defer wgBlocked.Done()
 		for blocked := range blockedCh {
-			if blocked.IsNotification {
-				continue
-			}
-			var resp []byte
-			if blocked.SyntheticResponse != nil {
-				resp = blocked.SyntheticResponse
-			} else {
-				resp = blockRequestResponse(blocked)
-			}
-			if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+			if wErr := deliverMCPInputResult(inputOpts, blocked, safeClientOut); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}

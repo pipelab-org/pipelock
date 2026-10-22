@@ -33,6 +33,8 @@ type sseMessageWriter struct {
 var _ transport.MessageWriter = (*sseMessageWriter)(nil)
 
 type listenerStateMessageWriter struct {
+	opts   MCPProxyOpts
+	denied bool
 	state  *mcpListenerClientState
 	writer transport.MessageWriter
 }
@@ -42,6 +44,8 @@ func (w *listenerStateMessageWriter) WriteMessage(msg []byte) error {
 	if !w.state.commitIfActive(func() {
 		writeErr = w.writer.WriteMessage(msg)
 	}) {
+		w.denied = true
+		dropMCPDenial(w.opts, mcpListenerAdmissionDenialAudit(), "response")
 		return context.Canceled
 	}
 	return writeErr
@@ -183,4 +187,13 @@ func startGETStream(
 			}
 		}
 	}()
+}
+
+func (w *listenerStateMessageWriter) writeDeniedMessage(msg []byte) error {
+	w.denied = true
+	var err error
+	if !w.state.commitIfActive(func() { err = deliverMCPDeniedMessage(w.writer, msg) }) {
+		return context.Canceled
+	}
+	return err
 }

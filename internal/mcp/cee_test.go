@@ -1247,12 +1247,15 @@ func TestCeeRecordMCP_FragmentSessionCapacityFailsClosedAndCounts(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create audit logger: %v", err)
 	}
+	var descriptor mcpDenialAudit
 	reason := ceeRecordMCP(ceeRecordMCPOptions{
-		sessionKey: testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+		denialAudit: &descriptor,
+		sessionKey:  testMCPSessionKey, entropyPayload: []byte("new fragment"), fragmentPayloads: map[string][]byte{"": []byte("new fragment")}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
 	})
 	if reason != ceeCapacityBlockClientReason {
 		t.Fatalf("capacity reason = %q, want %q", reason, ceeCapacityBlockClientReason)
 	}
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, descriptor, "input")
 	logger.Close()
 	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
 	if err != nil {

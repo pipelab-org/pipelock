@@ -31,7 +31,7 @@ type capacityTestStore struct {
 func (s *capacityTestStore) GetOrCreate(string) session.Recorder { return s.rec }
 func (*capacityTestStore) Delete(string)                         {}
 
-func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
+func TestSessionCapacityRefusesMCPInvocationsAudit(t *testing.T) {
 	for _, transport := range []string{"stdio", "sandbox", "http", "websocket"} {
 		for _, admit := range []bool{false, true} {
 			name := transport + "/refused"
@@ -39,6 +39,7 @@ func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
 				name = transport + "/admitted-control"
 			}
 			t.Run(name, func(t *testing.T) {
+				logger, events := newListenerEventLogger(t)
 				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
 				defer cancel()
 				store := &capacityTestStore{}
@@ -47,7 +48,7 @@ func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
 				}
 				var dials atomic.Int32
 				opts := MCPProxyOpts{
-					Store: store, Scanner: testScannerForHTTP(t),
+					Store: store, Scanner: testScannerForHTTP(t), AuditLogger: logger,
 					DialContext: func(context.Context, string, string) (net.Conn, error) {
 						dials.Add(1)
 						return nil, errors.New("capacity test dial witness")
@@ -69,10 +70,16 @@ func TestSessionCapacityRefusesMCPInvocations(t *testing.T) {
 					err = RunWSProxy(ctx, input, io.Discard, io.Discard, "ws://api.vendor.example/mcp", opts)
 				}
 				if !admit {
+					if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"direction":"startup"`) || !strings.Contains(events.String(), `"block_class":"protective"`) {
+						t.Fatal(events.String())
+					}
 					if !errors.Is(err, session.ErrCapacity) || dials.Load() != 0 {
 						t.Fatalf("refused invocation: err=%v dials=%d", err, dials.Load())
 					}
 					return
+				}
+				if strings.Contains(events.String(), `"event":"blocked"`) {
+					t.Fatal(events.String())
 				}
 				if errors.Is(err, session.ErrCapacity) {
 					t.Fatal("admitted invocation was refused")

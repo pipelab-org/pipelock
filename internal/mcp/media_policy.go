@@ -18,6 +18,7 @@ import (
 )
 
 type mcpMediaPolicyResult struct {
+	denialAudit mcpDenialAudit
 	Line        []byte
 	Changed     bool
 	Blocked     bool
@@ -26,8 +27,9 @@ type mcpMediaPolicyResult struct {
 }
 
 type mcpMediaVerdict struct {
-	Body      []byte
-	MediaType string
+	inspectionFailed bool
+	Body             []byte
+	MediaType        string
 	// Relabeled is the image type the payload's own header proves when the
 	// server declared a different JPEG/PNG type; the result's mimeType is
 	// rewritten to it.
@@ -54,7 +56,8 @@ func applyMCPResponseMediaPolicy(line []byte, policy *config.MediaPolicy, transp
 		return result
 	}
 
-	rewritten, changed, blockReason, exposures := rewriteMCPToolResultMedia(rawResult, policy, transport)
+	rewritten, changed, blockReason, exposures, descriptor := rewriteMCPToolResultMedia(rawResult, policy, transport)
+	result.denialAudit = descriptor
 	result.Exposures = exposures
 	if blockReason != "" {
 		result.Blocked = true
@@ -70,6 +73,7 @@ func applyMCPResponseMediaPolicy(line []byte, policy *config.MediaPolicy, transp
 	if err != nil {
 		result.Blocked = true
 		result.BlockReason = fmt.Sprintf("media_policy: re-marshal MCP response: %v", err)
+		result.denialAudit = mcpMediaInspectionDenialAudit()
 		return result
 	}
 	result.Line = updated
@@ -77,20 +81,20 @@ func applyMCPResponseMediaPolicy(line []byte, policy *config.MediaPolicy, transp
 	return result
 }
 
-func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, transport string) (json.RawMessage, bool, string, []audit.MediaExposureInfo) {
+func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, transport string) (json.RawMessage, bool, string, []audit.MediaExposureInfo, mcpDenialAudit) {
 	var resultMap map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &resultMap); err != nil {
-		return raw, false, "", nil
+		return raw, false, "", nil, mcpDenialAudit{}
 	}
 
 	contentRaw, ok := resultMap["content"]
 	if !ok || len(contentRaw) == 0 || string(contentRaw) == jsonrpc.Null {
-		return raw, false, "", nil
+		return raw, false, "", nil, mcpDenialAudit{}
 	}
 
 	var content []jsonrpc.ContentBlock
 	if err := json.Unmarshal(contentRaw, &content); err != nil || len(content) == 0 {
-		return raw, false, "", nil
+		return raw, false, "", nil, mcpDenialAudit{}
 	}
 
 	changed := false
@@ -107,7 +111,7 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 			decoded, ok := decodeMCPMediaPayload(field.encoded)
 			if !ok {
 				if field.looksLikeMedia {
-					return raw, changed, fmt.Sprintf("media_policy: invalid base64 in result.content[%d].%s", i, field.name), exposures
+					return raw, changed, fmt.Sprintf("media_policy: invalid base64 in result.content[%d].%s", i, field.name), exposures, mcpMediaInspectionDenialAudit()
 				}
 				continue
 			}
@@ -117,28 +121,32 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 				exposures = append(exposures, *verdict.Exposure)
 			}
 			if field.looksLikeMedia && verdict.MediaType == "" {
-				return raw, changed, fmt.Sprintf("media_policy: unsupported media in result.content[%d].%s", i, field.name), exposures
+				return raw, changed, fmt.Sprintf("media_policy: unsupported media in result.content[%d].%s", i, field.name), exposures, mcpMediaInspectionDenialAudit()
 			}
 			if verdict.Blocked {
-				return raw, changed, verdict.BlockReason, exposures
+				descriptor := mcpMediaPolicyDenialAudit()
+				if verdict.inspectionFailed {
+					descriptor = mcpMediaInspectionDenialAudit()
+				}
+				return raw, changed, verdict.BlockReason, exposures, descriptor
 			}
 			stripped := verdict.StripResult != nil && verdict.StripResult.Changed()
 			if stripped || verdict.Relabeled != "" {
 				encodedOut := base64.StdEncoding.EncodeToString(verdict.Body)
 				if rawContentBlocks == nil {
 					if err := json.Unmarshal(contentRaw, &rawContentBlocks); err != nil {
-						return raw, changed, fmt.Sprintf("media_policy: parse tool result content for rewrite: %v", err), exposures
+						return raw, changed, fmt.Sprintf("media_policy: parse tool result content for rewrite: %v", err), exposures, mcpMediaInspectionDenialAudit()
 					}
 					if len(rawContentBlocks) != len(content) {
-						return raw, changed, "media_policy: content block count changed during rewrite", exposures
+						return raw, changed, "media_policy: content block count changed during rewrite", exposures, mcpMediaInspectionDenialAudit()
 					}
 				}
 				if err := setMCPMediaPayload(rawContentBlocks[i], field.name, encodedOut); err != nil {
-					return raw, changed, fmt.Sprintf("media_policy: rewrite result.content[%d].%s: %v", i, field.name, err), exposures
+					return raw, changed, fmt.Sprintf("media_policy: rewrite result.content[%d].%s: %v", i, field.name, err), exposures, mcpMediaInspectionDenialAudit()
 				}
 				if verdict.Relabeled != "" {
 					if err := setMCPMediaMimeType(rawContentBlocks[i], field.name, verdict.Relabeled); err != nil {
-						return raw, changed, fmt.Sprintf("media_policy: relabel result.content[%d].%s: %v", i, field.name, err), exposures
+						return raw, changed, fmt.Sprintf("media_policy: relabel result.content[%d].%s: %v", i, field.name, err), exposures, mcpMediaInspectionDenialAudit()
 					}
 				}
 				changed = true
@@ -147,20 +155,20 @@ func rewriteMCPToolResultMedia(raw json.RawMessage, policy *config.MediaPolicy, 
 	}
 
 	if !changed {
-		return raw, false, "", exposures
+		return raw, false, "", exposures, mcpDenialAudit{}
 	}
 
 	updatedContent, err := json.Marshal(rawContentBlocks)
 	if err != nil {
-		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result content: %v", err), exposures
+		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result content: %v", err), exposures, mcpMediaInspectionDenialAudit()
 	}
 	resultMap["content"] = updatedContent
 
 	updated, err := json.Marshal(resultMap)
 	if err != nil {
-		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result: %v", err), exposures
+		return raw, false, fmt.Sprintf("media_policy: re-marshal tool result: %v", err), exposures, mcpMediaInspectionDenialAudit()
 	}
-	return updated, true, "", exposures
+	return updated, true, "", exposures, mcpDenialAudit{}
 }
 
 // mcpMediaTypeKeys are the fields servers use to label a payload's type. The
@@ -439,10 +447,11 @@ func applyMCPMediaPolicy(policy *config.MediaPolicy, contentType string, body []
 			exposure.Blocked = true
 			exposure.BlockReason = mcpMediaParseBlockReason(mt, body, err)
 			return mcpMediaVerdict{
-				Blocked:     true,
-				BlockReason: exposure.BlockReason,
-				MediaType:   mt,
-				Exposure:    mcpExposureOrNil(policy, exposure),
+				Blocked:          true,
+				inspectionFailed: true,
+				BlockReason:      exposure.BlockReason,
+				MediaType:        mt,
+				Exposure:         mcpExposureOrNil(policy, exposure),
 			}
 		}
 		stripResult = sr

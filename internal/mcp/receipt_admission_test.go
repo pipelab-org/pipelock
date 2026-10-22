@@ -124,14 +124,23 @@ func TestRedirectRequiredReceiptAdmission(t *testing.T) {
 					})
 					var log, forwarded bytes.Buffer
 					var blocked *BlockedRequest
+					var synthetic []byte
 					if surface == transportMCPStdio {
 						ch := make(chan BlockedRequest, 10)
 						ForwardScannedInput(transport.NewStdioReader(strings.NewReader(cleanToolsCallRequest)), transport.NewStdioWriter(&forwarded), &log, config.ActionBlock, config.ActionBlock, ch, nil, nil, opts)
 						for br := range ch {
-							blocked = &br
+							if br.terminal == nil && br.SyntheticResponse != nil {
+								synthetic = br.SyntheticResponse
+							} else {
+								blocked = &br
+							}
 						}
 					} else {
-						blocked = scanHTTPInputDecision([]byte(cleanToolsCallRequest), &log, "session", "session", opts).Blocked
+						decision := scanHTTPInputDecision([]byte(cleanToolsCallRequest), &log, "session", "session", opts)
+						blocked = decision.Blocked
+						if decision.Synthetic != nil {
+							synthetic = decision.Synthetic.response
+						}
 					}
 					_, statErr := os.Stat(marker)
 					wantExecute := failure == "healthy" || failure == "optional"
@@ -141,18 +150,18 @@ func TestRedirectRequiredReceiptAdmission(t *testing.T) {
 					if forwarded.Len() != 0 {
 						t.Fatal("redirect forwarded the original request")
 					}
-					if blocked == nil {
-						t.Fatal("missing redirect response")
-					}
 					if wantExecute {
-						if !bytes.Contains(blocked.SyntheticResponse, []byte("safe result")) {
-							t.Fatalf("synthetic response missing: %+v", blocked)
+						if blocked != nil || !bytes.Contains(synthetic, []byte("safe result")) {
+							t.Fatalf("synthetic response missing or denied: %+v", blocked)
 						}
 						if failure == "healthy" && syncs.Load() < 2 {
 							t.Fatalf("synced %d families, want both before handler execution", syncs.Load())
 						}
-					} else if blocked.SyntheticResponse != nil || blocked.ErrorCode != -32007 {
+					} else if blocked == nil || synthetic != nil || blocked.SyntheticResponse != nil || blocked.ErrorCode != -32007 {
 						t.Fatalf("receipt refusal=%+v, want -32007 without synthetic output", blocked)
+					}
+					if wantExecute && strings.Contains(events.String(), `"event":"blocked"`) {
+						t.Fatal(events.String())
 					}
 					if !wantExecute {
 						got := events.String()

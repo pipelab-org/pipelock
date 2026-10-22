@@ -72,9 +72,9 @@ func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTar
 	loggedResource = ctx.resource
 	// MCP block producers use these literal protocol markers. Preserve only
 	// the fixed markers, never an argument, resource URI, or tool name.
-	if ctx.method == "MCP" {
+	if ctx.mcp {
 		switch ctx.resource {
-		case "mcp_input", "mcp_listener_header", "mcp_response", "mcp_redirect_output", "upstream_error_reply":
+		case "mcp_input", "mcp_listener_header", "mcp_response", "mcp_redirect_output", "upstream_error_reply", "mcp-input", "mcp_listener", "mcp_startup":
 			return redactContentBearingURL(ctx.url), redactContentBearingURL(ctx.target), ctx.resource
 		}
 	}

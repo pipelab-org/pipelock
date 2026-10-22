@@ -15,7 +15,15 @@ type serverIdentityMessageWriter struct {
 
 func (w *serverIdentityMessageWriter) WriteMessage(msg []byte) error {
 	if err := w.opts.checkServerIdentity(); err != nil {
-		return err
+		dropMCPDenial(w.opts, mcpIdentityMcpResponseDenialAudit(), "response")
+		return &mcpFinalizedDenialError{err: err}
 	}
 	return w.writer.WriteMessage(msg)
+}
+
+func (w *serverIdentityMessageWriter) writeDeniedMessage(msg []byte) error {
+	if err := w.opts.checkServerIdentity(); err != nil {
+		return err
+	}
+	return deliverMCPDeniedMessage(w.writer, msg)
 }

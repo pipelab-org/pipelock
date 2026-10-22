@@ -20,6 +20,9 @@ import (
 //   - Target: CONNECT tunnel host:port destinations
 //   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
+	mcp             bool
+	mcpTransport    string
+	mcpDirection    string
 	method          string
 	url             string // actual HTTP URL
 	target          string // CONNECT host:port
@@ -149,7 +152,9 @@ func NewMCPLogContext(method, resource, agent string) (LogContext, error) {
 	if resource == "" {
 		return LogContext{}, errLogContextMissingResource
 	}
-	return newLogContext(LogContextOpts{Method: method, Resource: resource, Agent: agent})
+	ctx, err := newLogContext(LogContextOpts{Method: method, Resource: resource, Agent: agent})
+	ctx.mcp = true
+	return ctx, err
 }
 
 // NewConnectLogContext creates a LogContext for CONNECT tunnel operations.
@@ -183,4 +188,14 @@ func NewRequestLogContext(requestID string) LogContext {
 func NewMethodLogContext(method string) LogContext {
 	ctx, _ := newLogContext(LogContextOpts{Method: method})
 	return ctx
+}
+
+// WithMCPRoute attaches proxy-owned routing metadata. HTTP contexts cannot opt
+// into the MCP event contract by supplying a method named MCP.
+func (c LogContext) WithMCPRoute(transport, direction string) LogContext {
+	if c.mcp {
+		c.mcpTransport = transport
+		c.mcpDirection = direction
+	}
+	return c
 }

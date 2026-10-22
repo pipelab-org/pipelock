@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
@@ -227,8 +226,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			return foundInjection, fmt.Errorf("reading input: %w", err)
 		}
 		lineNum++
+		var denialAudit mcpDenialAudit
 		if err := opts.checkServerIdentity(); err != nil {
-			return foundInjection, err
+			dropMCPDenial(opts, mcpIdentityMcpResponseDenialAudit(), "response")
+			return foundInjection, &mcpFinalizedDenialError{err: err}
 		}
 
 		// Parse the inbound frame once per message; every gate below reads
@@ -255,8 +256,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// immediately on already-open MCP sessions.
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
+				denialAudit = mcpKillMcpResponseDenialAudit()
 				rpcID := frame.ID
 				if rpcID == nil {
+					dropMCPDenial(opts, denialAudit, "response")
 					// Notification: drop silently (no response possible).
 					_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch dropped notification (source=%s)\n",
 						lineNum, d.Source)
@@ -265,7 +268,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				_, _ = fmt.Fprintf(logW, "pipelock: response line %d: kill switch denied (source=%s)\n",
 					lineNum, d.Source)
 				resp := killswitch.ErrorResponse(rpcID, d.Message)
-				if wErr := writer.WriteMessage(resp); wErr != nil {
+				if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
 					return foundInjection, fmt.Errorf("writing kill switch response: %w", wErr)
 				}
 				continue
@@ -311,14 +314,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 		if blockAll {
+			denialAudit = mcpAdaptiveResponseDenialAudit()
 			rpcID := frame.ID
 			// Notifications (no ID) must not receive a response per JSON-RPC spec.
 			// Drop them silently instead of writing an error.
 			if rpcID == nil {
+				dropMCPDenial(opts, denialAudit, "response")
 				continue
 			}
 			resp := blockSessionDenyResponse(rpcID, session.EscalationLabel(rec.EscalationLevel()))
-			if wErr := writer.WriteMessage(resp); wErr != nil {
+			if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
 			continue
@@ -330,6 +335,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// frame: WebSocket and SSE can preserve leading whitespace that
 		// a raw first-byte check would miss.
 		if frame.IsBatch {
+			dropMCPDenial(opts, mcpBatchResponseDenialAudit(), "response")
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: blocked batch JSON-RPC message (not supported by MCP)\n", lineNum)
 			continue
 		}
@@ -353,8 +359,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// parse error before the first client request is recorded.
 			if canonicalID(rpcID) == "" {
 				_, _ = fmt.Fprintf(logW, "pipelock: line %d: confused deputy: response has no correlatable ID\n", lineNum)
+				denialAudit = mcpCorrelationResponseDenialAudit()
 				resp := blockResponseReason(nil, "response has no correlatable ID (confused deputy)")
-				if err := writer.WriteMessage(resp); err != nil {
+				if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 				}
 				continue
@@ -372,8 +379,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					if tracker.Strict() {
 						blockID = nil
 					}
+					denialAudit = mcpCorrelationResponseDenialAudit()
 					resp := blockResponseReason(blockID, "unsolicited response ID (confused deputy)")
-					if err := writer.WriteMessage(resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing confused deputy block: %w", err)
 					}
 					continue
@@ -391,12 +399,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		blockScanError := func(scanError string) error {
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, scanError)
-			logMCPResponseInspectionBlock(opts.AuditLogger, "MCP response scan failed")
+			denialAudit = mcpResponseInspectionBlockAudit("MCP response scan failed")
 			if frame.ID == nil && frame.Method != "" {
+				dropMCPDenial(opts, denialAudit, "response")
 				return nil // Notifications have no request awaiting a response.
 			}
 			resp := blockResponseReason(frame.ID, "upstream response scan failed")
-			if err := writer.WriteMessage(resp); err != nil {
+			if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 				return fmt.Errorf("writing scan-error block response: %w", err)
 			}
 			emitTrackedOutcome("error", "response_scan_error", resp)
@@ -430,9 +439,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			_, _ = fmt.Fprintf(logW, "pipelock: line %d: media policy blocked MCP response (%s)\n",
 				lineNum, mediaResult.BlockReason)
-			if opts.AuditLogger != nil {
-				opts.AuditLogger.LogBlocked(mustMCPAuditContext(opts.AuditLogger, mcpWarnMethod, target), "media_policy", mediaResult.BlockReason)
-			}
+			denialAudit = mcpMediaDenialAudit(mediaResult)
 			if m != nil {
 				m.RecordBlocked("mcp", "media_policy", 0, "")
 			}
@@ -465,7 +472,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				})
 			}
 			resp := blockMediaPolicyResponse(rpcID, mediaResult.BlockReason)
-			if err := writer.WriteMessage(resp); err != nil {
+			if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 				return foundInjection, fmt.Errorf("writing media policy block: %w", err)
 			}
 			emitTrackedOutcome("error", "media_policy", resp)
@@ -474,9 +481,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 		if mediaResult.Changed {
 			if emitErr := confirmMCPResponseEffect(logW, opts, trackedOutcome.Receipt, receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionStrip, Layer: "media_policy", Pattern: "image media rewritten", Transport: opts.Transport, Target: "mcp://response", RequestID: canonicalID(frame.ID)}); emitErr != nil {
-				logMCPOperationalBlock(opts.AuditLogger, scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
+				denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 				resp := blockResponseReason(frame.ID, "receipt emission failed")
-				if err := writer.WriteMessage(resp); err != nil {
+				if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 					return foundInjection, fmt.Errorf("writing media receipt-failure block: %w", err)
 				}
 				emitTrackedOutcome("error", "receipt_emission_failed", resp)
@@ -566,14 +573,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						manager.ResolveToolInventory(captureSessionID(opts.Transport), config.ActionBlock)
 					}
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
-					if opts.AuditLogger != nil {
-						opts.AuditLogger.LogBlocked(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"), "provenance", pv.Error)
-					}
+					denialAudit = mcpProvenanceDenialAudit()
 					if m != nil {
 						m.RecordBlocked("mcp", "provenance", 0, "")
 					}
 					resp := blockResponseReason(toolResult.RPCID, "tool provenance verification failed")
-					if err := writer.WriteMessage(resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing provenance block: %w", err)
 					}
 					emitTrackedOutcome("error", "provenance", resp)
@@ -680,14 +685,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}
-					if opts.AuditLogger != nil {
-						detail := audit.BlockDetail{Class: audit.BlockClassThreat}
-						if toolResult.ResourceLimit != "" {
-							detail.Class = audit.BlockClassInfrastructureError
-						}
-						opts.AuditLogger.LogBlockedDetail(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
-							scanner.ScannerMCPToolScanning, blockReason, detail)
-					}
+					denialAudit = mcpToolResultDenialAudit(toolResult.ResourceLimit)
+
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
 						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
@@ -702,16 +701,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						})
 					}
 					resp := blockResponseReason(toolResult.RPCID, blockReason)
-					if err := writer.WriteMessage(resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing tool block: %w", err)
 					}
 					emitTrackedOutcome("error", "tool_poisoning", resp)
 					continue
 				}
 				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionWarn, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
-					logMCPOperationalBlock(opts.AuditLogger, scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
+					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
-					if err := writer.WriteMessage(resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
 					}
 					emitTrackedOutcome("error", "receipt_emission_failed", resp)
@@ -739,11 +738,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				// inventory reservation) can still refuse delivery, and record
 				// that themselves.
 				if emitErr := emitMCPToolScanReceipt(logW, opts, toolResult, config.ActionAllow, trackedOutcome.Receipt); emitErr != nil && opts.requireReceipts() {
-					logMCPOperationalBlock(opts.AuditLogger, scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
+					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 					captureToolScan(config.ActionBlock)
 					resolveToolInventory(config.ActionBlock)
 					resp := blockResponseReason(toolResult.RPCID, "receipt emission failed")
-					if err := writer.WriteMessage(resp); err != nil {
+					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 						return foundInjection, fmt.Errorf("writing receipt-failure block: %w", err)
 					}
 					emitTrackedOutcome("error", "receipt_emission_failed", resp)
@@ -805,9 +804,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		if baselineReceiptErr != nil {
-			logMCPOperationalBlock(opts.AuditLogger, scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
+			denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 			resp := blockResponseReason(frame.ID, "receipt emission failed")
-			if err := writer.WriteMessage(resp); err != nil {
+			if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 				return foundInjection, fmt.Errorf("writing card receipt-failure block: %w", err)
 			}
 			emitTrackedOutcome("error", "receipt_emission_failed", resp)
@@ -860,8 +859,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Parse error: always fail-closed regardless of action setting.
 		// Unparseable responses could hide injection in malformed content.
 		if verdict.Error != "" {
-			logMCPResponseInspectionBlock(opts.AuditLogger, "MCP response is unparseable")
-			detected, resp, err := writeUnparseableResponse(frame, verdict.Error, lineNum, sc, writer, logW)
+			detected, resp, err := writeUnparseableResponse(unparseableResponseOptions{frame: frame, detail: verdict.Error, lineNum: lineNum, sc: sc, writer: writer, logW: logW, opts: opts})
 			foundInjection = foundInjection || detected
 			if err != nil {
 				return foundInjection, err
@@ -1058,20 +1056,20 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				continue
 			}
 		}
-		if opts.AuditLogger != nil {
+		if effectiveAction == config.ActionBlock || opts.AuditLogger != nil {
 			ctx := mustMCPAuditContext(opts.AuditLogger, "MCP", "server_response")
 			switch effectiveAction {
 			case config.ActionBlock:
 				if receiptFailureBlock {
-					logMCPOperationalBlock(opts.AuditLogger, scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
+					denialAudit = mcpOperationalBlockAudit(scanner.AuditReceiptEmission, "mcp_response", mcpReceiptEmissionReason)
 				} else {
-					opts.AuditLogger.LogBlocked(ctx, scanner.AuditResponseScan, firstNonEmpty(pattern, "response scanning blocked"))
+					denialAudit = mcpResponseContentDenialAudit(pattern)
 				}
 			case config.ActionStrip, config.ActionWarn:
 				opts.AuditLogger.LogResponseScan(ctx, effectiveAction, len(names), names, nil)
 			}
 		}
-		if err := writer.WriteMessage(outbound); err != nil {
+		if err := writeMCPResponseDisposition(opts, denialAudit, writer, outbound, effectiveAction == config.ActionBlock); err != nil {
 			releaseToolInventory()
 			return foundInjection, fmt.Errorf("%s: %w", writeContext, err)
 		}
@@ -1127,7 +1125,19 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 
 // writeUnparseableResponse preserves parse diagnostics without admitting any
 // response-derived state. The caller owns request correlation and receipts.
-func writeUnparseableResponse(frame MCPFrame, detail string, lineNum int, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer) (bool, []byte, error) {
+type unparseableResponseOptions struct {
+	frame   MCPFrame
+	detail  string
+	lineNum int
+	sc      *scanner.Scanner
+	writer  transport.MessageWriter
+	logW    io.Writer
+	opts    MCPProxyOpts
+}
+
+func writeUnparseableResponse(o unparseableResponseOptions) (bool, []byte, error) {
+	frame, detail, lineNum, sc, writer, logW, opts := o.frame, o.detail, o.lineNum, o.sc, o.writer, o.logW, o.opts
+	denialAudit := mcpResponseInspectionBlockAudit("MCP response is unparseable")
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, detail)
 	rawResult := sc.ScanResponse(context.Background(), string(frame.Raw))
 	if !rawResult.Clean {
@@ -1142,7 +1152,7 @@ func writeUnparseableResponse(frame MCPFrame, detail string, lineNum int, sc *sc
 		id = frame.ID
 	}
 	resp := blockResponseReason(id, "upstream response is not parseable JSON-RPC")
-	if err := writer.WriteMessage(resp); err != nil {
+	if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 		return !rawResult.Clean, resp, fmt.Errorf("writing block response: %w", err)
 	}
 	return !rawResult.Clean, resp, nil
@@ -1152,29 +1162,29 @@ func writeUnparseableResponse(frame MCPFrame, detail string, lineNum int, sc *sc
 // any response-derived state updates. Cancellation remains a scan error; valid
 // but ambiguous messages remain security findings, unlike ordinary malformed JSON.
 func rejectResponseKeys(frame MCPFrame, lineNum int, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, opts MCPProxyOpts) (bool, []byte, error) {
+	var denialAudit mcpDenialAudit
 	if err := opts.warnContext().Err(); err != nil {
-		logMCPResponseInspectionBlock(opts.AuditLogger, "MCP response scan failed")
+		denialAudit = mcpResponseInspectionBlockAudit("MCP response scan failed")
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: response scan failed: %v\n", lineNum, err)
 		resp := blockResponseReason(frame.ID, "upstream response scan failed")
-		if err := writer.WriteMessage(resp); err != nil {
+		if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 			return false, resp, fmt.Errorf("writing scan-error block response: %w", err)
 		}
 		return false, resp, nil
 	}
 	if !json.Valid(frame.Raw) {
-		logMCPResponseInspectionBlock(opts.AuditLogger, "MCP response is unparseable")
 		verdict := responseKeyErrorVerdict(frame.Raw, frame.KeyValidationErr)
-		return writeUnparseableResponse(frame, verdict.Error, lineNum, sc, writer, logW)
+		return writeUnparseableResponse(unparseableResponseOptions{frame: frame, detail: verdict.Error, lineNum: lineNum, sc: sc, writer: writer, logW: logW, opts: opts})
 	}
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: invalid or ambiguous JSON before tool processing: %v\n", lineNum, frame.KeyValidationErr)
-	logMCPResponseInspectionBlock(opts.AuditLogger, "MCP response has ambiguous protocol keys")
+	denialAudit = mcpResponseInspectionBlockAudit("MCP response has ambiguous protocol keys")
 	id := recoverTopLevelJSONRPCID(frame.Raw)
 	reason := "upstream response is not unambiguous JSON"
 	if shape, _ := toolsListShape(frame.Raw); shape == toolsListUninspectable || (shape == toolsListScannable && jsonscan.RejectDuplicateKeys(frame.Raw) == nil) {
 		reason = "tools/list cannot be safely inspected: tool_definition_uninspectable"
 	}
 	resp := blockResponseReason(id, reason)
-	if err := writer.WriteMessage(resp); err != nil {
+	if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 		return true, resp, fmt.Errorf("writing preflight JSON block: %w", err)
 	}
 	return true, resp, nil
@@ -1279,7 +1289,7 @@ func emitMCPToolScanReceipt(
 // ("strip" or "block") plus any writer error.
 func stripOrBlock(line []byte, sc *scanner.Scanner, writer transport.MessageWriter, logW io.Writer, rpcID json.RawMessage) (string, error) {
 	actualAction, msg := stripOrBlockMessage(line, sc, logW, rpcID)
-	return actualAction, writer.WriteMessage(msg)
+	return actualAction, writeMCPResponseDisposition(MCPProxyOpts{}, mcpResponseContentDenialAudit(""), writer, msg, actualAction == config.ActionBlock)
 }
 
 func stripOrBlockMessage(line []byte, sc *scanner.Scanner, logW io.Writer, rpcID json.RawMessage) (string, []byte) {
@@ -1432,18 +1442,13 @@ func blockToolInventoryCapacity(
 	const reason = "tool_inventory_capacity"
 	blockReason := "tools/list cannot be safely inspected: " + reason
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, blockReason)
-	if opts.AuditLogger != nil {
-		// A capacity refusal is operational, like the ResourceLimit refusal
-		// in ForwardScanned: same label, no attack technique.
-		opts.AuditLogger.LogBlockedDetail(mustMCPAuditContext(opts.AuditLogger, "MCP", "tools/list"),
-			scanner.ScannerMCPToolScanning, blockReason,
-			audit.BlockDetail{Class: audit.BlockClassInfrastructureError})
-	}
+	denialAudit := mcpToolCapacityDenialAudit()
+
 	if opts.Metrics != nil {
 		opts.Metrics.RecordBlocked("mcp", reason, 0, "")
 	}
 	resp := blockResponseReason(rpcID, blockReason)
-	if err := writer.WriteMessage(resp); err != nil {
+	if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
 		return fmt.Errorf("writing inventory-capacity block: %w", err)
 	}
 	emitTrackedOutcome("error", reason, resp)
@@ -1747,6 +1752,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	if opts.Store != nil {
 		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
 		if rec == nil {
+			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
 	}
@@ -2098,13 +2104,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: blocked notification (no response sent): %s\n", blocked.LogMessage)
 				continue
 			}
-			var resp []byte
-			if blocked.SyntheticResponse != nil {
-				resp = blocked.SyntheticResponse
-			} else {
-				resp = blockRequestResponse(blocked)
-			}
-			if wErr := safeClientOut.WriteMessage(resp); wErr != nil {
+			if wErr := deliverMCPInputResult(opts, blocked, safeClientOut); wErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: failed to send block response: %v\n", wErr)
 			}
 		}

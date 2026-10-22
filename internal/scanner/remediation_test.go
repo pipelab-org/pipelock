@@ -4,64 +4,11 @@
 package scanner
 
 import (
-	"os"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
-
-func TestSIEMMCPBlockedScannerLabelsMatchCode(t *testing.T) {
-	guide, err := os.ReadFile("../../docs/guides/siem-integration.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const start = "<!-- BEGIN MCP blocked scanner labels -->"
-	const end = "<!-- END MCP blocked scanner labels -->"
-	text := string(guide)
-	startAt := strings.Index(text, start)
-	endAt := strings.Index(text, end)
-	if startAt < 0 || endAt <= startAt {
-		t.Fatal("MCP scanner label table markers missing or reversed")
-	}
-	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)` \\|")
-	documented := make(map[string]bool)
-	for _, match := range row.FindAllStringSubmatch(text[startAt:endAt], -1) {
-		if documented[match[1]] {
-			t.Errorf("duplicate SIEM scanner label %q", match[1])
-		}
-		documented[match[1]] = true
-		if _, ok := remediationGuidance[match[1]]; !ok {
-			t.Errorf("SIEM scanner label %q has no code guidance", match[1])
-		}
-	}
-	expected := make(map[string]bool)
-	for label := range remediationGuidance {
-		if strings.HasPrefix(label, "mcp_") {
-			expected[label] = true
-		}
-	}
-	for _, label := range []string{
-		AuditChainDetection, AuditSessionAnomaly, AuditAdaptiveEnforcement,
-		AuditFrozenTool, ScannerDenialOfWallet, AuditAirlock, AuditTaintPolicy,
-		AuditAddressProtection, AuditScannerUnavailable, AuditReceiptEmission,
-		AuditKillSwitch, AuditRedaction, AuditA2AScan, AuditContract,
-		AuditMediationEnvelope,
-	} {
-		expected[label] = true
-	}
-	for label := range expected {
-		if !documented[label] {
-			t.Errorf("MCP scanner label %q missing from SIEM guide", label)
-		}
-	}
-	for label := range documented {
-		if !expected[label] {
-			t.Errorf("SIEM scanner label %q is not in the MCP code label set", label)
-		}
-	}
-}
 
 func TestMCPHeaderGuidanceNamesActualScanControls(t *testing.T) {
 	dlp, ok := guidanceForResult(AuditMCPHeaderDLP, "test credential")
@@ -208,6 +155,8 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		AuditAirlock,
 		AuditCrossRequestEntropy,
 		AuditCrossRequestFragment,
+		AuditCrossRequestFragmentOwnerMismatch,
+		AuditCrossRequestFragmentCapacity,
 		AuditGitProtection,
 		AuditAgentBudget,
 		AuditResponseSize,

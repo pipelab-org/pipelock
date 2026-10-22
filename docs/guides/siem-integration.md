@@ -72,43 +72,68 @@ on a sink to receive the info events as well.
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
 MCP `blocked` events use `fields.scanner` for the gate that denied the call.
-The labels below are checked against the code's scanner constants and
-remediation table by a test. `block_class` separates content findings from
+The labels below are checked against the MCP denial catalog by a test. `block_class` separates content findings from
 protective, configuration, and inspection refusals.
 
 <!-- BEGIN MCP blocked scanner labels -->
 | Scanner | MCP denial |
 |---------|------------|
-| `mcp_input_dlp` | Credential in a request |
-| `mcp_input_injection` | Instruction in request arguments |
-| `mcp_input_inspection` | Request inspection failure |
+| `a2a_scan` | A2A input finding, inspection limit, or inspection failure |
+| `adaptive_enforcement` | Session-level action upgrade |
+| `address_protection` | Address protection finding |
+| `agent_identity` | Server identity revoked |
+| `airlock` | Session airlock refusal |
+| `allowlist` | Embedded URL destination check; see the scanner guidance for this label |
+| `blocklist` | Embedded URL destination check; see the scanner guidance for this label |
+| `chain_detection` | Tool-call chain finding |
+| `context` | Embedded URL destination check; see the scanner guidance for this label |
+| `contract` | Contract refusal or evaluation failure |
+| `core_dlp` | Embedded URL destination check; see the scanner guidance for this label |
+| `core_ssrf` | Embedded URL destination check; see the scanner guidance for this label |
+| `crlf_injection` | Embedded URL destination check; see the scanner guidance for this label |
+| `cross_request_entropy` | Cross-request entropy budget refusal |
+| `cross_request_fragment` | Reassembled credential or inspection-limit refusal |
+| `cross_request_fragment_capacity` | Fragment inspection state capacity exhausted |
+| `cross_request_fragment_owner_mismatch` | Fragment stream belongs to another identity |
+| `databudget` | Embedded URL destination check; see the scanner guidance for this label |
+| `denial_of_wallet` | Tool-use budget or expansion finding |
+| `dlp` | Embedded URL destination check; see the scanner guidance for this label |
+| `entropy` | Embedded URL destination check; see the scanner guidance for this label |
+| `frozen_tool` | Tool absent from frozen inventory |
+| `kill_switch` | Active kill switch, including held-call cancellation |
+| `length` | Embedded URL destination check; see the scanner guidance for this label |
+| `mcp_defer` | Defer unavailable, hold failure, or terminal deferred refusal |
 | `mcp_header_dlp` | Text DLP finding in a selected listener request header |
 | `mcp_header_injection` | Injection finding in a decoded `Mcp-Param-*` value |
 | `mcp_header_inspection` | Parameter-header inspection failure |
-| `mcp_tool_policy` | Matched tool rule |
-| `mcp_tool_scanning` | Tool definition finding or operational inventory refusal |
-| `mcp_session_binding` | Session inventory mismatch |
-| `chain_detection` | Tool-call chain finding |
-| `session_anomaly` | Behavioral baseline deviation |
-| `adaptive_enforcement` | Session-level action upgrade |
-| `frozen_tool` | Tool absent from frozen inventory |
-| `denial_of_wallet` | Tool-use budget or expansion finding |
-| `airlock` | Session airlock refusal |
-| `taint_policy` | Tainted action refusal |
-| `address_protection` | Address protection finding |
-| `scanner_unavailable` | Scanner unavailable |
-| `receipt_emission` | Required receipt unavailable |
-| `mcp_response_inspection` | Uninspectable upstream response |
-| `kill_switch` | Active kill switch, including held-call cancellation |
-| `mcp_protocol` | Unsupported batch request |
-| `redaction` | Request redaction could not complete safely |
-| `a2a_scan` | A2A input gate finding or inspection failure |
-| `contract` | Contract refusal or evaluation failure |
-| `mediation_envelope` | Mediation envelope injection failure |
+| `mcp_input_dlp` | Credential in a request |
+| `mcp_input_injection` | Instruction in request arguments |
+| `mcp_input_inspection` | Request inspection failure |
+| `mcp_protocol` | Listener admission, protocol or state-capacity refusal; unsupported request or response batch |
 | `mcp_redirect` | Redirect profile or handler failure, or unsupported batch redirect |
 | `mcp_redirect_output_dlp` | Credential in redirect handler output |
 | `mcp_redirect_output_injection` | Instruction in redirect handler output |
-| `mcp_defer` | Defer unavailable on the transport or disabled |
+| `mcp_response_inspection` | Uninspectable upstream response |
+| `mcp_session_binding` | Session inventory mismatch |
+| `mcp_tool_policy` | Matched tool rule |
+| `mcp_tool_scanning` | Tool definition finding or operational inventory refusal |
+| `media_policy` | Response media policy or inspection refusal |
+| `mediation_envelope` | Mediation envelope injection failure |
+| `parser` | Embedded URL destination check; see the scanner guidance for this label |
+| `path_traversal` | Embedded URL destination check; see the scanner guidance for this label |
+| `provenance` | Tool signature verification refusal |
+| `ratelimit` | Embedded URL destination check; see the scanner guidance for this label |
+| `receipt_emission` | Required receipt unavailable |
+| `redaction` | Request redaction could not complete safely |
+| `request_policy` | Action authority refusal |
+| `response_scan` | Upstream response content or inspection refusal |
+| `scanner_unavailable` | Scanner unavailable |
+| `scheme` | Embedded URL destination check; see the scanner guidance for this label |
+| `session_anomaly` | Behavioral baseline deviation |
+| `ssrf` | Embedded URL destination check; see the scanner guidance for this label |
+| `ssrf_metadata` | Embedded URL destination check; see the scanner guidance for this label |
+| `subdomain_entropy` | Embedded URL destination check; see the scanner guidance for this label |
+| `taint_policy` | Tainted action refusal |
 <!-- END MCP blocked scanner labels -->
 
 Listener header DLP scans selected request header names and values as text.
@@ -120,7 +145,10 @@ Decoded `Mcp-Param-*` values receive response injection scanning too.
 an uninspectable response under `mcp_response_inspection` use
 `block_class: infrastructure_error`, carry no MITRE technique, and omit
 agent-threat attributes. MCP operational blocks retain their native OTLP
-record. The new input and redirect failure events use fixed protocol resource
+record. Each finalized denial attempts one canonical `blocked` emission before
+reply delivery or a deliberate silent drop. Sink delivery remains best effort.
+`protocol: mcp`, `transport`, and `direction` identify the trusted MCP route,
+including CEE events. HTTP events retain their existing field set. The new input and redirect failure events use fixed protocol resource
 markers and omit request arguments, header values, tool names, and response
 bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
 select `mcp_input_dlp`, `mcp_header_dlp`, and `mcp_redirect_output_dlp` when MCP

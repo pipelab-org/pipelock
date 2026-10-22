@@ -734,8 +734,9 @@ func TestRunHTTPProxy_DeferResolverBlocksBridge(t *testing.T) {
 	}
 }
 
-func TestRunHTTPProxy_DeferCapacityBlocksBridge(t *testing.T) {
+func TestRunHTTPProxy_DeferCapacityBlocksBridgeAudit(t *testing.T) {
 	sc := testInputScanner(t)
+	logger, events := newListenerEventLogger(t)
 	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Hour, MaxPending: 1, MaxPendingPerSession: 1, MaxPendingBytes: 4096})
 	sessionID := captureSessionID(deferred.SurfaceMCPHTTPUpstream)
 	if err := manager.Hold(deferred.HeldAction{
@@ -768,6 +769,7 @@ func TestRunHTTPProxy_DeferCapacityBlocksBridge(t *testing.T) {
 	go func() {
 		done <- RunHTTPProxy(ctx, inputR, &stdout, &stderr, upstream.URL, nil, MCPProxyOpts{
 			Scanner:        sc,
+			AuditLogger:    logger,
 			PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
 			DeferManager:   manager,
 			ReceiptEmitter: emitter,
@@ -792,10 +794,14 @@ func TestRunHTTPProxy_DeferCapacityBlocksBridge(t *testing.T) {
 		t.Fatal("capacity-blocked deferred call reached upstream")
 	default:
 	}
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"scanner":"mcp_defer"`) || !strings.Contains(events.String(), `"block_class":"protective"`) {
+		t.Fatal(events.String())
+	}
 }
 
-func TestForwardScannedInput_DeferCapacityBlocks(t *testing.T) {
+func TestForwardScannedInput_DeferCapacityBlocksAudit(t *testing.T) {
 	sc := testInputScanner(t)
+	logger, events := newListenerEventLogger(t)
 	manager := deferred.NewManager(deferred.Config{Enabled: true, Timeout: time.Hour, MaxPending: 1, MaxPendingPerSession: 1, MaxPendingBytes: 4096})
 	sessionID := captureSessionID(deferred.SurfaceMCPStdio)
 	if err := manager.Hold(deferred.HeldAction{
@@ -830,6 +836,7 @@ func TestForwardScannedInput_DeferCapacityBlocks(t *testing.T) {
 			nil,
 			MCPProxyOpts{
 				Scanner:        sc,
+				AuditLogger:    logger,
 				Transport:      deferred.SurfaceMCPStdio,
 				PolicyCfg:      deferApprovalPolicy(config.DeferResolverProfile{Exec: []string{"/bin/sh", "-c", "printf allow"}}),
 				DeferManager:   manager,
@@ -855,6 +862,9 @@ func TestForwardScannedInput_DeferCapacityBlocks(t *testing.T) {
 		t.Fatalf("close input: %v", err)
 	}
 	<-done
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"scanner":"mcp_defer"`) || !strings.Contains(events.String(), `"block_class":"protective"`) {
+		t.Fatal(events.String())
+	}
 }
 
 func TestForwardScanned_ToolInventoryResolvesHeldActions(t *testing.T) {

@@ -27,6 +27,7 @@ const (
 )
 
 type mcpContractGateOutput struct {
+	upstreamDenial     mcpDenialAudit
 	Verdict            string
 	LiveVerdict        string
 	PolicySources      []string
@@ -69,12 +70,20 @@ func evaluateMCPUpstreamGate(ctx context.Context, upstreamURL string, opts MCPPr
 	return evaluateMCPUpstreamGateForMethod(ctx, upstreamURL, http.MethodPost, opts)
 }
 
-func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method string, opts MCPProxyOpts) (mcpContractGateOutput, error) {
+func evaluateMCPUpstreamGateForMethod(ctx context.Context, upstreamURL, method string, opts MCPProxyOpts) (out mcpContractGateOutput, err error) {
 	loader := opts.contractLoader()
 	gateURL := mcpUpstreamGateURL(upstreamURL)
 	var scanResult scanner.Result
 	var scannerVerdict string
 	var scannerMatched bool
+	// Retain the existing scanner result for audit only. The gate continues to
+	// evaluate exactly the same result and contract precedence as before.
+	defer func() {
+		if err == nil && out.Verdict == config.ActionBlock && out.WinningSource == contractruntime.WinningSourceScanner && scannerMatched {
+			out.upstreamDenial = mcpInputBlockAudit(InputVerdict{URLFindings: []scanner.Result{scanResult}})
+		}
+	}()
+
 	sc := opts.scanner()
 	if sc != nil {
 		scanResult = sc.Scan(ctx, gateURL)

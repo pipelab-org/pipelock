@@ -690,7 +690,8 @@ func TestRunHTTPProxyLiveLock_PerMessageUpstreamEvaluationErrorReturnsStructured
 	}
 }
 
-func TestRunWSProxyLiveLock_DeniedUpstreamExitsBeforeTraffic(t *testing.T) {
+func TestRunWSProxyLiveLock_DeniedUpstreamExitsBeforeTrafficAudit(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		upstreamHits.Add(1)
@@ -700,6 +701,7 @@ func TestRunWSProxyLiveLock_DeniedUpstreamExitsBeforeTraffic(t *testing.T) {
 	rule := contractruntimetest.HTTPEnforceRule("r-other", "api.example.com", "/", http.MethodPost)
 	err := RunWSProxy(context.Background(), strings.NewReader(mcpToolCall(mcpAllowedTool, "")+"\n"), ioDiscard{}, ioDiscard{}, wsURL(upstream),
 		MCPProxyOpts{
+			AuditLogger:    logger,
 			Scanner:        testScannerForHTTP(t),
 			ContractLoader: mcpLiveLockLoader(t, contractruntime.ModeLive, rule),
 			ContractAgent:  mcpLiveLockAgent,
@@ -711,11 +713,16 @@ func TestRunWSProxyLiveLock_DeniedUpstreamExitsBeforeTraffic(t *testing.T) {
 	if upstreamHits.Load() != 0 {
 		t.Fatalf("upstream hits = %d, want 0", upstreamHits.Load())
 	}
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"transport":"mcp_ws"`) || !strings.Contains(events.String(), `"direction":"startup"`) {
+		t.Fatal(events.String())
+	}
 }
 
-func TestRunWSProxyLiveLock_UpstreamEvaluationErrorExitsBeforeTraffic(t *testing.T) {
+func TestRunWSProxyLiveLock_UpstreamEvaluationErrorExitsBeforeTrafficAudit(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
 	err := RunWSProxy(context.Background(), strings.NewReader(mcpToolCall(mcpAllowedTool, "")+"\n"), ioDiscard{}, ioDiscard{}, "wss://api.example.com/mcp",
 		MCPProxyOpts{
+			AuditLogger:    logger,
 			ContractLoader: mcpLiveLockLoader(t, contractruntime.ModeLive, mcpToolRule("r-allow", nil)),
 			ContractAgent:  mcpLiveLockAgent,
 			ContractServer: mcpLiveLockServer,
@@ -723,9 +730,13 @@ func TestRunWSProxyLiveLock_UpstreamEvaluationErrorExitsBeforeTraffic(t *testing
 	if err == nil || !strings.Contains(err.Error(), mcpUpstreamEval) {
 		t.Fatalf("RunWSProxy err = %v, want %s", err, mcpUpstreamEval)
 	}
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"transport":"mcp_ws"`) || !strings.Contains(events.String(), `"direction":"startup"`) {
+		t.Fatal(events.String())
+	}
 }
 
-func TestRunHTTPListenerProxyLiveLock_StartupEvaluationErrorExitsBeforeTraffic(t *testing.T) {
+func TestRunHTTPListenerProxyLiveLock_StartupEvaluationErrorExitsBeforeTrafficAudit(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
@@ -738,12 +749,16 @@ func TestRunHTTPListenerProxyLiveLock_StartupEvaluationErrorExitsBeforeTraffic(t
 
 	err = RunHTTPListenerProxy(ctx, ln, "https://api.example.com/mcp", ioDiscard{},
 		MCPProxyOpts{
+			AuditLogger:    logger,
 			ContractLoader: mcpLiveLockLoader(t, contractruntime.ModeLive, mcpToolRule("r-allow", nil)),
 			ContractAgent:  mcpLiveLockAgent,
 			ContractServer: mcpLiveLockServer,
 		})
 	if err == nil || !strings.Contains(err.Error(), mcpUpstreamEval) {
 		t.Fatalf("RunHTTPListenerProxy err = %v, want %s", err, mcpUpstreamEval)
+	}
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 || !strings.Contains(events.String(), `"transport":"mcp_http_listener"`) || !strings.Contains(events.String(), `"direction":"startup"`) {
+		t.Fatal(events.String())
 	}
 }
 

@@ -77,15 +77,14 @@ func agentThreatDetectionAttrs(event Event, binaryVersion string) []*commonpb.Ke
 	// MCP operational refusals are not observed agent threats. HTTP and
 	// forward-proxy blocks retain their existing convention projection even
 	// when the audit logger classifies them as protective or operational.
-	// HTTP can use a custom method named MCP. Proxy-origin MCP audit
-	// contexts carry a resource; URL-based HTTP contexts do not.
-	method, _ := event.Fields["method"].(string)
-	resource, _ := event.Fields["resource"].(string)
-	if method == "MCP" && resource != "" {
+	// The protocol field comes from the typed MCP audit context, including CEE.
+	protocol, _ := event.Fields["protocol"].(string)
+	if protocol == "mcp" {
 		if class, _ := event.Fields["block_class"].(string); class != "" && class != "threat" {
 			return nil
 		}
 	}
+
 	action, ok := mapConventionAction(event)
 	if !ok {
 		return nil

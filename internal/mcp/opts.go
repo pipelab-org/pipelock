@@ -132,6 +132,7 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	denialTerminal *mcpDeferredTerminal
 	// OnResponseKeysValidated admits transport metadata only after message keys
 	// pass the shared guard. It must be set before response scanning starts.
 	OnResponseKeysValidated func()

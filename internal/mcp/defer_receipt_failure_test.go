@@ -22,7 +22,7 @@ import (
 //
 // The healthy row is the positive control: the same approval with a working
 // recorder is an allow everywhere.
-func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
+func TestDeferredReleaseReceiptFailureReportsBlockAudit(t *testing.T) {
 	tests := []struct {
 		name         string
 		breakRecords bool
@@ -41,6 +41,7 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 	t.Run("stdio", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				logger, events := newListenerEventLogger(t)
 				manager := newDeferKillManager(t)
 				emitter, rec, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 				policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
@@ -53,7 +54,7 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 					defer close(done)
 					ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
 						config.ActionWarn, config.ActionBlock, blocked, nil, nil, MCPProxyOpts{
-							Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
+							AuditLogger: logger, Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
 							ReceiptEmitter: emitter, RequireReceipts: true,
 							Transport: deferred.SurfaceMCPStdio, KillSwitch: deferKillTestController(),
 						})
@@ -91,6 +92,13 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 					t.Fatalf("close input: %v", err)
 				}
 				<-done
+				wantBlocks := 0
+				if tt.breakRecords {
+					wantBlocks = 1
+				}
+				if strings.Count(events.String(), `"event":"blocked"`) != wantBlocks || (wantBlocks == 1 && !strings.Contains(events.String(), `"scanner":"receipt_emission"`)) {
+					t.Fatal(events.String())
+				}
 			})
 		}
 	})
@@ -98,8 +106,10 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 	t.Run("http bridge", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
+				logger, events := newListenerEventLogger(t)
 				emitter, rec, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 				run := startHTTPDeferRun(t, deferKillTestController(), func(o *MCPProxyOpts) {
+					o.AuditLogger = logger
 					o.ReceiptEmitter = emitter
 					o.RequireReceipts = true
 				})
@@ -126,6 +136,13 @@ func TestDeferredReleaseReceiptFailureReportsBlock(t *testing.T) {
 				}
 				assertTerminalJournalSequence(t, run.manager, held.DeferID, tt.wantJournal...)
 				run.stop(t)
+				wantBlocks := 0
+				if tt.breakRecords {
+					wantBlocks = 1
+				}
+				if strings.Count(events.String(), `"event":"blocked"`) != wantBlocks || (wantBlocks == 1 && !strings.Contains(events.String(), `"scanner":"receipt_emission"`)) {
+					t.Fatal(events.String())
+				}
 			})
 		}
 	})

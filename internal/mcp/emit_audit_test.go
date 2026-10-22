@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -114,11 +115,11 @@ func TestMCPInputAuditReasonExcludesUntrustedText(t *testing.T) {
 	}
 	t.Cleanup(logger.Close)
 	attackerText := "attacker-supplied-marker"
-	logMCPInputBlock(logger, InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerBlocklist, Reason: attackerText}}})
-	logMCPInputBlock(logger, InputVerdict{Error: attackerText})
-	logMCPInputBlock(logger, InputVerdict{Error: attackerText, Matches: []scanner.TextDLPMatch{{PatternName: "AWS Access ID"}}})
-	logMCPInputBlock(logger, InputVerdict{Inject: []scanner.ResponseMatch{{PatternName: "Prompt Injection", MatchText: attackerText}}})
-	logMCPInputBlock(logger, InputVerdict{AddressFindings: []addressprotect.Finding{{Explanation: attackerText}}})
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputBlockAudit(InputVerdict{URLFindings: []scanner.Result{{Scanner: scanner.ScannerBlocklist, Reason: attackerText}}}), "input")
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputBlockAudit(InputVerdict{Error: attackerText}), "input")
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputBlockAudit(InputVerdict{Error: attackerText, Matches: []scanner.TextDLPMatch{{PatternName: "AWS Access ID"}}}), "input")
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputBlockAudit(InputVerdict{Inject: []scanner.ResponseMatch{{PatternName: "Prompt Injection", MatchText: attackerText}}}), "input")
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputBlockAudit(InputVerdict{AddressFindings: []addressprotect.Finding{{Explanation: attackerText}}}), "input")
 	if strings.Contains(events.String(), attackerText) {
 		t.Fatalf("audit leaked untrusted reason: %s", events.String())
 	}
@@ -167,8 +168,27 @@ func newListenerEventLogger(t *testing.T) (*audit.Logger, *lockedHTTPBuffer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(logger.Close)
+	sink := &mcpCanonicalAuditSink{}
+	logger.SetEmitter(emit.NewEmitter("fixture", sink))
+	t.Cleanup(func() {
+		local := strings.Count(events.String(), `"event":"blocked"`)
+		if got := sink.blocks.Load(); int64(local) != got {
+			t.Errorf("local/external canonical events differ: local=%d external=%d", local, got)
+		}
+	})
 	return logger, events
 }
+
+type mcpCanonicalAuditSink struct{ blocks atomic.Int64 }
+
+func (s *mcpCanonicalAuditSink) Emit(_ context.Context, event emit.Event) error {
+	if event.Type == "blocked" {
+		s.blocks.Add(1)
+	}
+	return nil
+}
+
+func (*mcpCanonicalAuditSink) Close() error { return nil }
 
 // TestHTTPListenerHeaderBlockAuditEvent covers the listener input blocks that
 // are decided on request headers rather than the JSON-RPC body: they are input
@@ -274,16 +294,16 @@ func TestMCPListenerScanFailureAuditClassification(t *testing.T) {
 		log                                     func(*audit.Logger)
 	}{
 		{"header scan failure", scanner.AuditMCPHeaderInspection, "decoded MCP parameter header could not be scanned", "upstream response", func(logger *audit.Logger) {
-			logMCPListenerHeaderBlock(logger, &mcpListenerHeaderDLPResult{reason: blockreason.ParseError})
+			dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpListenerHeaderBlockAudit(&mcpListenerHeaderDLPResult{reason: blockreason.ParseError}), "input")
 		}},
 		{"upstream reply scan failure", scanner.AuditResponseScan, "scan-integrity failure", "", func(logger *audit.Logger) {
-			logMCPListenerReplyBlock(logger, "uninspectable reply")
+			dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpListenerReplyBlockAudit("uninspectable reply"), "input")
 		}},
 		{"upstream scanner unavailable", scanner.AuditResponseScan, "Investigate scanner initialization", "upstream response", func(logger *audit.Logger) {
-			logMCPListenerReplyBlock(logger, "response scanner unavailable")
+			dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpListenerReplyBlockAudit("response scanner unavailable"), "input")
 		}},
 		{"upstream unknown scan result", scanner.AuditResponseScan, "non-clean verdict without a pattern finding", "upstream response", func(logger *audit.Logger) {
-			logMCPListenerReplyBlock(logger, "response scan finding")
+			dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpListenerReplyBlockAudit("response scan finding"), "input")
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -311,7 +331,7 @@ func TestMCPListenerScanFailureAuditClassification(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(logger.Close)
-	logMCPListenerReplyBlock(logger, "injection pattern Prompt Injection")
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpListenerReplyBlockAudit("injection pattern Prompt Injection"), "input")
 	if !strings.Contains(events.String(), `"mitre_technique":"T1059"`) {
 		t.Fatalf("real injection finding lost its attack classification: %s", events.String())
 	}
@@ -500,7 +520,7 @@ func TestMCPControlDenialLabels(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(logger.Close)
-			logMCPInputDecisionBlock(logger, InputVerdict{Clean: true}, false, tc.policy, tc.binding, tc.chain, "read-then-send", tc.baseline)
+			dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, mcpInputDecisionBlockAudit(InputVerdict{Clean: true}, false, tc.policy, tc.binding, tc.chain, "read-then-send", tc.baseline), "input")
 			got := events.String()
 			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+tc.wantLabel+`"`) || !strings.Contains(got, tc.wantHint) || !strings.Contains(got, `"resource":"mcp_input"`) {
 				t.Fatalf("wrong control block event: %s", got)

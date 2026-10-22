@@ -307,6 +307,7 @@ func TestRunHTTPProxy_UpstreamUsesConfiguredDialContext(t *testing.T) {
 
 func TestRunHTTPProxy_RedactsToolCallArguments(t *testing.T) {
 	secret := mcpRedactionSecret()
+	logger, events := newListenerEventLogger(t)
 	var upstreamBody bytes.Buffer
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -328,12 +329,17 @@ func TestRunHTTPProxy_RedactsToolCallArguments(t *testing.T) {
 
 	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{
 		Scanner:       sc,
+		AuditLogger:   logger,
 		RedactMatcher: testHTTPRedactionMatcher(),
 		RedactLimits:  redact.DefaultLimits().ToLimits(),
 		RedactProfile: "code",
 	})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
+	}
+
+	if strings.Contains(events.String(), `"event":"blocked"`) {
+		t.Fatal(events.String())
 	}
 
 	var envelope struct {
@@ -1576,12 +1582,14 @@ func TestScanHTTPInput_PolicyRedirectSuccess(t *testing.T) {
 
 	msg := jsonToolsCallDangerous
 	var logW bytes.Buffer
-	blocked := scanHTTPInput([]byte(msg), &logW, "", "", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg})
-	if blocked == nil {
-		t.Fatal("expected redirect result (not nil)")
+	logger, events := newListenerEventLogger(t)
+	decision := scanHTTPInputDecision([]byte(msg), &logW, "", "", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, AuditLogger: logger})
+	if decision.Blocked != nil || decision.Synthetic == nil {
+		t.Fatal("expected successful synthetic redirect")
 	}
-	if blocked.SyntheticResponse == nil {
-		t.Fatal("expected synthetic response for successful redirect")
+
+	if strings.Contains(events.String(), `"event":"blocked"`) {
+		t.Fatal(events.String())
 	}
 
 	var resp struct {
@@ -1591,7 +1599,7 @@ func TestScanHTTPInput_PolicyRedirectSuccess(t *testing.T) {
 			} `json:"content"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(blocked.SyntheticResponse, &resp); err != nil {
+	if err := json.Unmarshal(decision.Synthetic.response, &resp); err != nil {
 		t.Fatalf("invalid synthetic response: %v", err)
 	}
 	if len(resp.Result.Content) == 0 {
@@ -1633,11 +1641,8 @@ func TestScanHTTPInputDecision_A2APolicyRedirectReceivesRedactedParams(t *testin
 		RedactMatcher: testRedactionMatcher(),
 		RedactLimits:  redact.DefaultLimits().ToLimits(),
 	})
-	if decision.Blocked == nil {
+	if decision.Synthetic == nil || decision.Blocked != nil {
 		t.Fatal("expected A2A redirect synthetic response")
-	}
-	if decision.Blocked.SyntheticResponse == nil {
-		t.Fatalf("expected synthetic response, got block: %+v", decision.Blocked)
 	}
 	var resp struct {
 		Result struct {
@@ -1646,7 +1651,7 @@ func TestScanHTTPInputDecision_A2APolicyRedirectReceivesRedactedParams(t *testin
 			} `json:"content"`
 		} `json:"result"`
 	}
-	if err := json.Unmarshal(decision.Blocked.SyntheticResponse, &resp); err != nil {
+	if err := json.Unmarshal(decision.Synthetic.response, &resp); err != nil {
 		t.Fatalf("invalid synthetic response: %v", err)
 	}
 	if len(resp.Result.Content) == 0 {
@@ -6256,8 +6261,8 @@ func TestScanHTTPInput_RedirectOutputWarnPreservesWarnContext(t *testing.T) {
 		PolicyHash: "stale-policy-hash",
 	})
 
-	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", opts)
-	if blocked == nil || blocked.SyntheticResponse == nil {
+	decision := scanHTTPInputDecision(msg, &logBuf, "sess", "sess", opts)
+	if decision.Blocked != nil || decision.Synthetic == nil {
 		t.Fatal("expected synthetic response for warn-only redirect output")
 	}
 
@@ -6313,12 +6318,9 @@ func TestScanHTTPInput_RedirectWithAuditLogger(t *testing.T) {
 
 	al := audit.NewNop()
 	var logBuf bytes.Buffer
-	blocked := scanHTTPInput(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, AuditLogger: al})
-	if blocked == nil {
-		t.Fatal("expected redirect to return a blocked request")
-	}
-	if blocked.SyntheticResponse == nil {
-		t.Error("expected synthetic response for successful redirect")
+	decision := scanHTTPInputDecision(msg, &logBuf, "sess", "sess", MCPProxyOpts{Scanner: sc, PolicyCfg: policyCfg, AuditLogger: al})
+	if decision.Blocked != nil || decision.Synthetic == nil {
+		t.Fatal("expected successful synthetic redirect")
 	}
 	if !strings.Contains(logBuf.String(), "redirected") {
 		t.Errorf("expected 'redirected' in log, got: %s", logBuf.String())
