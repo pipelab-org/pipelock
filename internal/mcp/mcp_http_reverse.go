@@ -1572,6 +1572,7 @@ func RunHTTPListenerProxy(
 		// Kill switch: deny all requests when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(body); d.Active {
+				logMCPInputGateBlock(requestBaseOpts.AuditLogger, scanner.AuditKillSwitch, mcpKillSwitchReason, audit.BlockClassProtective)
 				batchResp := refuseKillSwitchRequest(requestBaseOpts, safeLogW, frame, d)
 				w.Header().Set("Content-Type", "application/json")
 				if batchResp != nil {

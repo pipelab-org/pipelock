@@ -1296,10 +1296,16 @@ MCP blocked audit events distinguish `mcp_input_dlp`, `mcp_input_injection`,
 and `mcp_input_inspection`. The first two point to the MCP input controls below;
 inspection failures require correcting the request or scanner state. Tool-policy
 denials use `mcp_tool_policy` and point to the matched `mcp_tool_policy.rules`
-entry. Listener parameter-header findings use separate `mcp_header_*` labels
-because they are scanned as response text, not by this input action. A failed
+entry. Listener request-header findings use separate `mcp_header_*` labels:
+text DLP checks selected header names and values, while decoded `Mcp-Param-*`
+values also receive response injection scanning. `Last-Event-ID`,
+`Mcp-Param-*`, and `Mcp-Session-Id` are always selected; `Authorization` is
+selected by default. Other selection follows `request_body_scanning.scan_headers`,
+`header_mode`, `sensitive_headers`, and `ignore_headers`, not the MCP input
+action. A failed
 or unparseable MCP response uses `mcp_response_inspection` and an operational
 `block_class`; these events do not report an attack technique.
+Malformed upstream responses are blocked and classified as operational even when a raw fallback detects instruction-like content, matching the input inspection-failure rule.
 Tool-definition blocks use `mcp_tool_scanning`; an inventory capacity or
 inspection refusal has an operational `block_class` and cannot be relaxed by
 `mcp_tool_scanning.action`.

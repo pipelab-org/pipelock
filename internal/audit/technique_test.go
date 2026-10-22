@@ -44,6 +44,8 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 		// Command/scripting interpreter
 		{"response_scan", "T1059"},
 		{"policy", "T1059"},
+		{"mcp_redirect_output_dlp", "T1048"},
+		{"mcp_redirect_output_injection", "T1059"},
 
 		// WebSocket transport
 		{"ws_protocol", "T1071"},
@@ -122,6 +124,9 @@ func TestTechniqueForScanner_UnknownReturnsEmpty(t *testing.T) {
 		"config_reload",
 		"startup",
 		"readability",
+		"mcp_protocol",
+		"mcp_redirect",
+		"mcp_defer",
 	}
 
 	for _, scanner := range unknowns {
@@ -148,7 +153,7 @@ func TestTechniqueMap_NoDuplicateKeys(t *testing.T) {
 	// This test is a compile-time guarantee in Go (duplicate map keys are a
 	// compile error), but we verify the map has the expected number of entries
 	// to catch accidental deletions during refactoring.
-	const expectedEntries = 41
+	const expectedEntries = 43
 	if len(techniqueMap) != expectedEntries {
 		t.Errorf("techniqueMap has %d entries, expected %d (was an entry added or removed?)", len(techniqueMap), expectedEntries)
 	}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
@@ -21,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -266,6 +268,7 @@ func RunHTTPProxy(
 		// Kill switch: deny all messages when active.
 		if opts.KillSwitch != nil {
 			if d := opts.KillSwitch.IsActiveMCP(msg); d.Active {
+				logMCPInputGateBlock(fwdOpts.AuditLogger, scanner.AuditKillSwitch, mcpKillSwitchReason, audit.BlockClassProtective)
 				if manager := fwdOpts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
@@ -450,6 +453,7 @@ func RunHTTPProxy(
 						}
 					default:
 						if res.ResolutionSource == deferred.SourceKillSwitch {
+							logMCPInputGateBlock(fwdOpts.AuditLogger, scanner.AuditKillSwitch, mcpKillSwitchReason, audit.BlockClassProtective)
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
 						}
 						if !deferredReq.IsNotification {

@@ -79,6 +79,8 @@ The convention's `action` enum is `allow | block | warn | ask`. Pipelock's inter
 
 Suppression here means the `agent.threat.detection.*` attribute set is not appended; the underlying Pipelock log record still emits with its native fields. When the convention grows the vocabulary, suppression cases will be promoted.
 
+MCP `blocked` events with a non-threat `block_class` keep their native OTLP log record but omit the convention attributes. HTTP and forward-proxy blocks retain their existing convention projection, including rate-limit, budget, DNS, and allowlist blocks classified as protective or operational.
+
 `ask` is defined as the enforcement decision at detection time. The downstream human approval (yes/no) resolving to allow/block is a separate event with its own ActionID. The convention is intentionally silent on the chain.
 
 ## Transport parity

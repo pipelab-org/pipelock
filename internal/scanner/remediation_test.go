@@ -4,11 +4,84 @@
 package scanner
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestSIEMMCPBlockedScannerLabelsMatchCode(t *testing.T) {
+	guide, err := os.ReadFile("../../docs/guides/siem-integration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const start = "<!-- BEGIN MCP blocked scanner labels -->"
+	const end = "<!-- END MCP blocked scanner labels -->"
+	text := string(guide)
+	startAt := strings.Index(text, start)
+	endAt := strings.Index(text, end)
+	if startAt < 0 || endAt <= startAt {
+		t.Fatal("MCP scanner label table markers missing or reversed")
+	}
+	row := regexp.MustCompile("(?m)^\\| `([a-z0-9_]+)` \\|")
+	documented := make(map[string]bool)
+	for _, match := range row.FindAllStringSubmatch(text[startAt:endAt], -1) {
+		if documented[match[1]] {
+			t.Errorf("duplicate SIEM scanner label %q", match[1])
+		}
+		documented[match[1]] = true
+		if _, ok := remediationGuidance[match[1]]; !ok {
+			t.Errorf("SIEM scanner label %q has no code guidance", match[1])
+		}
+	}
+	expected := make(map[string]bool)
+	for label := range remediationGuidance {
+		if strings.HasPrefix(label, "mcp_") {
+			expected[label] = true
+		}
+	}
+	for _, label := range []string{
+		AuditChainDetection, AuditSessionAnomaly, AuditAdaptiveEnforcement,
+		AuditFrozenTool, ScannerDenialOfWallet, AuditAirlock, AuditTaintPolicy,
+		AuditAddressProtection, AuditScannerUnavailable, AuditReceiptEmission,
+		AuditKillSwitch, AuditRedaction, AuditA2AScan, AuditContract,
+		AuditMediationEnvelope,
+	} {
+		expected[label] = true
+	}
+	for label := range expected {
+		if !documented[label] {
+			t.Errorf("MCP scanner label %q missing from SIEM guide", label)
+		}
+	}
+	for label := range documented {
+		if !expected[label] {
+			t.Errorf("SIEM scanner label %q is not in the MCP code label set", label)
+		}
+	}
+}
+
+func TestMCPHeaderGuidanceNamesActualScanControls(t *testing.T) {
+	dlp, ok := guidanceForResult(AuditMCPHeaderDLP, "test credential")
+	if !ok {
+		t.Fatal("MCP header DLP guidance missing")
+	}
+	for _, want := range []string{
+		"listener request header", "text DLP", "Authorization", "Last-Event-ID", "Mcp-Param-*", "Mcp-Session-Id",
+		"request_body_scanning.scan_headers", "header_mode", "sensitive_headers", "ignore_headers",
+	} {
+		if !strings.Contains(dlp.OperatorKnob, want) {
+			t.Errorf("MCP header DLP guidance omitted %q: %s", want, dlp.OperatorKnob)
+		}
+	}
+	injection, ok := guidanceForResult(AuditMCPHeaderInjection, "test instruction")
+	if !ok || !strings.Contains(injection.OperatorKnob, "decoded Mcp-Param-*") ||
+		!strings.Contains(injection.OperatorKnob, "response injection scanning") {
+		t.Fatalf("MCP header injection guidance describes the wrong scan: %+v", injection)
+	}
+}
 
 func TestGuidanceForResultPatternNameEndingInValidityNote(t *testing.T) {
 	for _, note := range []string{githubDownloadGrantValidityNote, githubDownloadSASValidityNote, githubAttestationValidityNote, githubActionsValidityNote} {
@@ -124,6 +197,11 @@ func TestRemediationGuidanceCoversAllLabels(t *testing.T) {
 		AuditMCPHeaderInjection,
 		AuditMCPHeaderInspection,
 		AuditMCPResponseInspection,
+		AuditMCPProtocol,
+		AuditMCPRedirect,
+		AuditMCPRedirectOutputDLP,
+		AuditMCPRedirectOutputInjection,
+		AuditMCPDefer,
 		AuditFrozenTool,
 		AuditSNIMismatch,
 		AuditKillSwitch,

@@ -4,20 +4,39 @@
 package mcp
 
 import (
+	"errors"
+
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
-	dowSubjectKeyDefault     = "_default"
-	dowSubjectTrustDefault   = "default"
-	dowAuditFallbackTarget   = "invalid-mcp-resource"
-	mcpReceiptEmissionReason = "MCP receipt emission failed"
+	dowSubjectKeyDefault             = "_default"
+	dowSubjectTrustDefault           = "default"
+	dowAuditFallbackTarget           = "invalid-mcp-resource"
+	mcpReceiptEmissionReason         = "MCP receipt emission failed"
+	mcpKillSwitchReason              = "MCP kill switch active"
+	mcpBatchReason                   = "MCP batch requests are unsupported"
+	mcpRedactionReason               = "MCP redaction blocked the request"
+	mcpA2AContentReason              = "A2A input content finding"
+	mcpA2AInspectionReason           = "A2A input could not be inspected"
+	mcpA2AConfigReason               = "A2A input configuration mismatch"
+	mcpContractEvalReason            = "MCP contract evaluation failed"
+	mcpContractDenyAuditReason       = "MCP live-lock contract blocked the request"
+	mcpEnvelopeReason                = "MCP mediation envelope injection failed"
+	mcpRedirectBatchReason           = "MCP batch redirect is unsupported"
+	mcpRedirectProfileReason         = "MCP redirect profile is unavailable"
+	mcpRedirectHandlerReason         = "MCP redirect handler failed"
+	mcpDeferUnsupportedReason        = "MCP defer is unsupported on this transport"
+	mcpDeferDisabledReason           = "MCP defer is disabled"
+	mcpRedirectOutputDLPReason       = "MCP redirect output DLP finding"
+	mcpRedirectOutputInjectionReason = "MCP redirect output injection finding"
 )
 
 func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.LogContext {
@@ -159,6 +178,28 @@ func logMCPOperationalBlock(logger *audit.Logger, label, resource, reason string
 	}
 	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", resource), label, reason,
 		audit.BlockDetail{Class: audit.BlockClassInfrastructureError})
+}
+
+// logMCPInputGateBlock records a denial with a fixed protocol resource and
+// reason. Callers must not pass request bytes, tool names, or error strings.
+func logMCPInputGateBlock(logger *audit.Logger, label, reason, class string) {
+	logMCPGateBlock(logger, label, "mcp_input", reason, class)
+}
+
+func mcpRedactionBlockClass(err error) string {
+	var blockErr *redact.BlockError
+	if !errors.As(err, &blockErr) || blockErr.Reason == redact.ReasonInternalError || blockErr.Reason == redact.ReasonRemarshalFailed {
+		return audit.BlockClassInfrastructureError
+	}
+	return audit.BlockClassProtective
+}
+
+func logMCPGateBlock(logger *audit.Logger, label, resource, reason, class string) {
+	if logger == nil {
+		return
+	}
+	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", resource), label, reason,
+		audit.BlockDetail{Class: class})
 }
 
 // logMCPListenerReplyBlock records an upstream HTTP error reply withheld by

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -66,6 +67,12 @@ func TestDeferredStdioKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.
 			ks, arm := src.ctl(t)
 			manager := newDeferKillManager(t)
 			receipts := &resolutionReceipts{}
+			var events syncBuffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
 			emitter, _, _, _ := newReceiptTestHarnessWithObserver(t, receipts.observe)
 			policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
 			policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
@@ -78,7 +85,7 @@ func TestDeferredStdioKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.
 				ForwardScannedInput(transport.NewStdioReader(inputR), transport.NewStdioWriter(&upstream), &logBuf,
 					config.ActionWarn, config.ActionBlock, blocked, nil, nil, MCPProxyOpts{
 						Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
-						ReceiptEmitter: emitter, Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
+						ReceiptEmitter: emitter, Transport: deferred.SurfaceMCPStdio, KillSwitch: ks, AuditLogger: logger,
 					})
 			}()
 			if _, err := inputW.Write([]byte(deferKillTestCall)); err != nil {
@@ -123,6 +130,10 @@ func TestDeferredStdioKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.
 			}
 			assertSingleKillSwitchResolution(t, receipts.snapshot())
 			assertTerminalJournal(t, manager, held.DeferID, deferred.StateResolvedBlock, deferred.SourceKillSwitch)
+			if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+				!strings.Contains(got, `"scanner":"kill_switch"`) || !strings.Contains(got, `"block_class":"protective"`) {
+				t.Fatalf("deferred stdio kill-switch audit mismatch: %s", got)
+			}
 			if err := inputW.Close(); err != nil {
 				t.Fatalf("close input: %v", err)
 			}
@@ -138,7 +149,13 @@ func TestDeferredHTTPKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.T
 		t.Run(src.name, func(t *testing.T) {
 			fastKillPoll(t)
 			ks, arm := src.ctl(t)
-			run := startHTTPDeferRun(t, ks, nil)
+			var events syncBuffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			run := startHTTPDeferRun(t, ks, func(o *MCPProxyOpts) { o.AuditLogger = logger })
 			held := run.manager.Snapshot()[0]
 			arm()
 			testwait.For(t, 5*time.Second, func() bool { return run.manager.HeldCount() == 0 }, "held call cancelled by the kill switch")
@@ -149,6 +166,10 @@ func TestDeferredHTTPKillSwitchCancelsHeldCallWithoutAnotherMessage(t *testing.T
 			assertSingleKillSwitchResolution(t, run.receipts.snapshot())
 			assertTerminalJournal(t, run.manager, held.DeferID, deferred.StateResolvedBlock, deferred.SourceKillSwitch)
 			run.stop(t)
+			if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+				!strings.Contains(got, `"scanner":"kill_switch"`) || !strings.Contains(got, `"block_class":"protective"`) {
+				t.Fatalf("deferred HTTP kill-switch audit mismatch: %s", got)
+			}
 		})
 	}
 }

@@ -19,55 +19,60 @@ const (
 	// the URL scanner pipeline. Keeping their operator guidance in this table
 	// gives generic blocked/anomaly events and dedicated audit events one source
 	// of truth.
-	AuditResponseScan          = "response_scan"
-	AuditHeaderDLP             = "header_dlp"
-	AuditReverseURLDLP         = "dlp_reverse_url"
-	AuditBodyPromptInjection   = "body_prompt_injection"
-	AuditAddressProtection     = "address_protection"
-	AuditChainDetection        = "chain_detection"
-	AuditProvenance            = "provenance"
-	AuditMediaPolicy           = "media_policy"
-	AuditRequestPolicy         = "request_policy"
-	AuditAgentIdentity         = "agent_identity"
-	AuditTaintPolicy           = "taint_policy"
-	AuditSessionAnomaly        = "session_anomaly"
-	AuditAdaptiveEnforcement   = "adaptive_enforcement"
-	AuditMCPSessionBinding     = "mcp_session_binding"
-	AuditMCPToolPolicy         = "mcp_tool_policy"
-	AuditMCPInputDLP           = "mcp_input_dlp"
-	AuditMCPInputInjection     = "mcp_input_injection"
-	AuditMCPInputInspection    = "mcp_input_inspection"
-	AuditMCPHeaderDLP          = "mcp_header_dlp"
-	AuditMCPHeaderInjection    = "mcp_header_injection"
-	AuditMCPHeaderInspection   = "mcp_header_inspection"
-	AuditMCPResponseInspection = "mcp_response_inspection"
-	AuditFrozenTool            = "frozen_tool"
-	AuditSNIMismatch           = "sni_mismatch"
-	AuditKillSwitch            = "kill_switch"
-	AuditAirlock               = "airlock"
-	AuditCrossRequestEntropy   = "cross_request_entropy"
-	AuditCrossRequestFragment  = "cross_request_fragment"
-	AuditGitProtection         = "git_protection"
-	AuditAgentBudget           = "budget"
-	AuditResponseSize          = "response_size"
-	AuditShieldOversize        = "shield_oversize"
-	AuditContract              = "contract"
-	AuditSSEStream             = "sse_stream"
-	AuditUnscannable           = "unscannable_passthrough"
-	AuditA2AScan               = "a2a_scan"
-	AuditA2ACardSignature      = "a2a_card_signature"
-	AuditRedaction             = "redaction"
-	AuditScannerUnavailable    = "scanner_unavailable"
-	AuditMediationEnvelope     = "mediation_envelope"
-	AuditReceiptEmission       = "receipt_emission"
-	AuditReverseSubmit         = "reverse_proxy_submit"
-	AuditA2AHeader             = "a2a_header"
-	AuditA2AResponse           = "a2a_response"
-	AuditBudgetTruncated       = "budget_truncated"
-	AuditTLSResponseBlocked    = "tls_response_blocked"
-	AuditSessionDeny           = "session_deny"
-	AuditTLSHandshakeError     = "tls_handshake_error"
-	AuditTLSAuthorityMismatch  = "tls_authority_mismatch"
+	AuditResponseScan               = "response_scan"
+	AuditHeaderDLP                  = "header_dlp"
+	AuditReverseURLDLP              = "dlp_reverse_url"
+	AuditBodyPromptInjection        = "body_prompt_injection"
+	AuditAddressProtection          = "address_protection"
+	AuditChainDetection             = "chain_detection"
+	AuditProvenance                 = "provenance"
+	AuditMediaPolicy                = "media_policy"
+	AuditRequestPolicy              = "request_policy"
+	AuditAgentIdentity              = "agent_identity"
+	AuditTaintPolicy                = "taint_policy"
+	AuditSessionAnomaly             = "session_anomaly"
+	AuditAdaptiveEnforcement        = "adaptive_enforcement"
+	AuditMCPSessionBinding          = "mcp_session_binding"
+	AuditMCPToolPolicy              = "mcp_tool_policy"
+	AuditMCPInputDLP                = "mcp_input_dlp"
+	AuditMCPInputInjection          = "mcp_input_injection"
+	AuditMCPInputInspection         = "mcp_input_inspection"
+	AuditMCPHeaderDLP               = "mcp_header_dlp"
+	AuditMCPHeaderInjection         = "mcp_header_injection"
+	AuditMCPHeaderInspection        = "mcp_header_inspection"
+	AuditMCPResponseInspection      = "mcp_response_inspection"
+	AuditMCPProtocol                = "mcp_protocol"
+	AuditMCPRedirect                = "mcp_redirect"
+	AuditMCPRedirectOutputDLP       = "mcp_redirect_output_dlp"
+	AuditMCPRedirectOutputInjection = "mcp_redirect_output_injection"
+	AuditMCPDefer                   = "mcp_defer"
+	AuditFrozenTool                 = "frozen_tool"
+	AuditSNIMismatch                = "sni_mismatch"
+	AuditKillSwitch                 = "kill_switch"
+	AuditAirlock                    = "airlock"
+	AuditCrossRequestEntropy        = "cross_request_entropy"
+	AuditCrossRequestFragment       = "cross_request_fragment"
+	AuditGitProtection              = "git_protection"
+	AuditAgentBudget                = "budget"
+	AuditResponseSize               = "response_size"
+	AuditShieldOversize             = "shield_oversize"
+	AuditContract                   = "contract"
+	AuditSSEStream                  = "sse_stream"
+	AuditUnscannable                = "unscannable_passthrough"
+	AuditA2AScan                    = "a2a_scan"
+	AuditA2ACardSignature           = "a2a_card_signature"
+	AuditRedaction                  = "redaction"
+	AuditScannerUnavailable         = "scanner_unavailable"
+	AuditMediationEnvelope          = "mediation_envelope"
+	AuditReceiptEmission            = "receipt_emission"
+	AuditReverseSubmit              = "reverse_proxy_submit"
+	AuditA2AHeader                  = "a2a_header"
+	AuditA2AResponse                = "a2a_response"
+	AuditBudgetTruncated            = "budget_truncated"
+	AuditTLSResponseBlocked         = "tls_response_blocked"
+	AuditSessionDeny                = "session_deny"
+	AuditTLSHandshakeError          = "tls_handshake_error"
+	AuditTLSAuthorityMismatch       = "tls_authority_mismatch"
 )
 
 // Decide*Label values identify non-URL blocks emitted by internal/decide.
@@ -85,51 +90,56 @@ const (
 	bodyEntropyOperatorBroader = "Host-wide `request_body_scanning.content_entropy_exclusions`, `trusted_domains`, or a higher entropy threshold affect more traffic than one exact route; use them only when that broader scope is intended."
 	denialOfWalletOperatorKnob = "Correct the denial-of-wallet condition named by the reason. `runaway expansion` and alternating `cycle detected` use fixed detector thresholds and have no per-detector limit knob. " +
 		"To audit instead of block, set the matched `agents._default.budget.dow_action` (or `agents.<name>.budget.dow_action`) to `warn`; this changes enforcement for every denial-of-wallet finding."
-	denialOfWalletToolCallsOperatorKnob = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the DoW subject's per-window tool-call budget is intentionally higher."
-	denialOfWalletWallClockOperatorKnob = "Raise `agents._default.budget.max_wall_clock_minutes` (or the matched `agents.<name>.budget.max_wall_clock_minutes`) if the DoW subject's per-window active time is intentionally longer-lived."
-	denialOfWalletRetriesOperatorKnob   = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
-	responseScanOperatorKnob            = "For a non-core false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. Core response floor matches cannot be suppressed; fix the core pattern's precision. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
-	headerDLPOperatorKnob               = "For a non-core false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
-	bodyPromptInjectionOperatorKnob     = "Correct the outbound request body. For a verified destination that must receive this content, add only that host to `request_body_scanning.trusted_hosts`; request-body scanning and its configured action still apply, but prompt-injection findings no longer force a block. An explicit `block` action still blocks."
-	addressProtectionOperatorKnob       = "After independently verifying the intended destination, add the exact address to `address_protection.allowed_addresses` (or the matched `agents.<name>.allowed_addresses`). Do not weaken similarity thresholds to approve one address."
-	chainDetectionOperatorKnob          = "If the event's named chain is expected, set that exact key under `tool_chain_detection.pattern_overrides` to `warn`; for a custom pattern, narrow its `sequence` or `action`. This changes only that named pattern."
-	provenanceOperatorKnob              = "In `pipelock` mode, sign the tool metadata with an Ed25519 key present in `mcp_tool_provenance.trusted_keys`. `mcp_tool_provenance.action: warn` downgrades unsigned tools only; invalid signatures, verification errors, and malformed tools/list responses always fail closed. Sigstore trust fields are not consumed by this verifier, so they are not a remediation path."
-	mediaPolicyOperatorKnob             = "Tune the media control identified by the reason under `media_policy`: `strip_audio`, `strip_video`, `strip_images`, `allowed_image_types`, or `max_image_bytes`. Parse/read failures have no exemption; correct the malformed media or upstream response."
-	requestPolicyOperatorKnob           = "Edit the exact matched entry under `request_policy.rules` (the event reason names it), narrowing its route/predicate or changing that rule's action. For parser/opaque findings, tune only `request_policy.on_parse_error` or `request_policy.on_opaque_operation`; allowing either is broader and fail-open for matching body predicates."
-	agentIdentityOperatorKnob           = "Use a non-reserved self-declared agent identity. Reserved control-actor names are a non-tunable identity boundary; there is no exemption knob."
-	taintPolicyOperatorKnob             = "After inspecting the recorded source and action, add a narrow, expiring `taint.trust_overrides` entry matching that source/action, or correct the source classification. Changing `taint.policy` weakens all taint decisions and is broader."
-	sessionAnomalyOperatorKnob          = "For a legitimate domain burst, raise the matched `session_profiling.domain_burst` threshold (global or per-agent) or the global-only `session_profiling.window_minutes`. For a behavioral baseline deviation, inspect the profile and explicitly relearn/ratify it with the baseline operator commands; do not auto-ratify an unexplained deviation."
-	adaptiveEnforcementOperatorKnob     = "Wait for the event's auto-recovery time, or inspect and reset only the affected identity session with the session operator commands after confirming the traffic is legitimate. Changing `adaptive_enforcement.levels` or thresholds affects every session and is broader."
-	mcpSessionBindingOperatorKnob       = "Refresh the MCP session only after verifying the server's current tool inventory. If inventory drift is intentionally non-blocking, change `mcp_session_binding.unknown_tool_action` (or `no_baseline_action` for a missing baseline) to `warn`; that applies to every matching inventory event."
-	mcpToolPolicyOperatorKnob           = "Inspect the matched `mcp_tool_policy.rules` entry and change only the intended tool or argument rule. A broad allow rule would admit unrelated calls."
-	mcpInputDLPOperatorKnob             = "Remove the matched sensitive value from the MCP request. For a non-core false positive, inspect the exact `dlp.patterns` rule; `mcp_input_scanning.action` controls non-core input findings. Core credentials still hard-block unless redaction fully removes them; URL `exempt_domains` does not apply to MCP arguments."
-	mcpInputInjectionOperatorKnob       = "Correct the MCP tool arguments carrying the instruction. `mcp_input_scanning.action` controls this input scan; URL and response suppressions do not apply to MCP arguments."
-	mcpInputInspectionOperatorKnob      = "Correct the malformed or uninspectable MCP request and retry. `mcp_input_scanning.on_parse_error` covers only configurable protocol parse errors; malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol aliases always block."
-	mcpHeaderDLPOperatorKnob            = "Remove the credential from the MCP parameter header. This header is scanned as response text; URL DLP `exempt_domains` and `mcp_input_scanning.action` do not govern this header gate."
-	mcpHeaderInjectionOperatorKnob      = "Correct the instruction in the MCP parameter header. The header response-text scan has no per-header suppression; investigate the matched pattern before changing response scanning globally."
-	mcpHeaderInspectionOperatorKnob     = "The decoded MCP parameter header could not be scanned. Correct its encoding or restore scanner health and retry; suppression cannot make it scannable."
-	mcpResponseInspectionOperatorKnob   = "The MCP response could not be inspected safely. Correct the malformed upstream response or restore scanner health and retry; no pattern suppression repairs a failed inspection."
-	mcpToolScanningOperatorKnob         = "Inspect the flagged tools/list definition and correct it at the upstream server. Review `mcp_tool_scanning` settings only after confirming the definition is intended."
-	sniMismatchOperatorKnob             = "Correct the CONNECT hostname or TLS client so the SNI name matches the requested authority. `forward_proxy.sni_verification: false` disables domain-fronting protection for every tunnel and is not a narrow remediation."
-	killSwitchOperatorKnob              = "Inspect and clear the active kill-switch source named by the event. Config, API, remote kill, stale bundle, unresolved policy application, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips` except during unresolved Conductor policy application, which requires successful policy recovery. Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
-	airlockOperatorKnob                 = "Inspect the affected session and wait for its configured `airlock.timers` recovery, or use the authenticated session operator command to lower/reset only that session after confirming the traffic is legitimate. Weakening global triggers or tiers is broader."
-	crossRequestEntropyOperatorKnob     = "For a verified high-entropy destination, add only that host to `cross_request_detection.entropy_budget.exempt_domains`, or raise `bits_per_window` if the session-wide volume is expected. Changing `action` to `warn` affects every entropy-budget finding."
-	crossRequestFragmentOperatorKnob    = "The fragment reassembly DLP path has no per-host or per-rule exemption. Correct the split secret-like payload; the only config relief is the broad `cross_request_detection.action: warn` (or disabling `fragment_reassembly`), which weakens this detector for every session."
-	gitProtectionOperatorKnob           = "Add only the intended owner/repository to `git_protection.allowed_push_repos` after verifying the remote. Disabling `git_protection` permits pushes to every repository and is broader."
-	agentBudgetOperatorKnob             = "Raise only the limit named by the reason under the matched `agents.<name>.budget`: `max_requests_per_session`, `max_bytes_per_session`, or `max_unique_domains_per_session`. Zero disables that ceiling and is broader."
-	responseSizeOperatorKnob            = "Raise only the exact transport response ceiling named in the reason. A `response_scanning.size_exempt_domains` entry is not a universal override: fetch-handler response-size blocks do not consult it."
-	shieldOversizeOperatorKnob          = "Raise `browser_shield.max_shield_bytes` for the expected response size, or add only the trusted host to `browser_shield.exempt_domains`. Changing `browser_shield.oversize_action` to `warn` or `scan_head` permits incompletely shielded content and is broader."
-	contractOperatorKnob                = "Correct the action to match the active contract, or inspect and ratify a narrowly updated contract through the contract operator workflow. Disabling contract enforcement or broadening the manifest without review is not a safe remediation."
-	sseStreamOperatorKnob               = "For a non-core false-positive SSE finding, add a top-level `suppress:` entry for the matched response rule and exact path. Core response floor matches cannot be suppressed; fix the core pattern's precision. For event-size failures, raise `response_scanning.sse_streaming.max_event_bytes`; changing its action to `warn` affects every SSE finding."
-	unscannableOperatorKnob             = "Remove or narrow the matching `response_scanning.unscannable_passthrough` entry to restore fail-closed scanning, or make the upstream response scannable. This event records an explicit full-content visibility gap; do not broaden the entry."
-	a2aScanOperatorKnob                 = "Correct the flagged A2A content. There is no per-finding suppression, and `a2a_scanning.action` is not a universal override: malformed/uninspectable payloads and hostname-exfiltration findings hard-block without consulting it."
-	a2aCardSignatureOperatorKnob        = "Sign the Agent Card with a key whose exact origin is authorized by `a2a_scanning.trusted_agent_card_keys`, or add the verified signer/origin pair there. Disabling signed-card requirements trusts every unsigned card and is broader."
-	redactionOperatorKnob               = "The requested redaction could not be applied safely. Correct the redaction profile or input and retry; there is no exemption knob because forwarding the unredacted payload would leak the protected value."
-	scannerUnavailableOperatorKnob      = "Scanner acquisition failed closed during a reload/runtime transition. Restore scanner health or correct the rejected configuration and retry; there is no policy exemption for running without a scanner."
-	mediationEnvelopeOperatorKnob       = "Mediation-envelope signing or verification failed closed. Restore the configured signing key/trust material or correct the envelope; there is no bypass knob when an envelope is required."
-	receiptEmissionOperatorKnob         = "Required receipt emission failed closed. Restore the configured receipt sink/key and retry; there is no bypass knob while receipt-required enforcement is active."
-	reverseSubmitOperatorKnob           = "Correct the submission to the configured `reverse_proxy` submit profile. This admission gate consults only `reverse_proxy.allowed_methods`, `reverse_proxy.allowed_paths`, and the effective minimum of `reverse_proxy.max_body_bytes` and `request_body_scanning.max_body_bytes`. Raw-path canonicality failures have no exemption."
-	tlsFailureOperatorKnob              = "Correct the TLS handshake, certificate, or authority mismatch at the client/upstream and retry. These checks fail closed and have no per-request exemption; disabling TLS interception or SNI verification is a broad loss of visibility."
+	denialOfWalletToolCallsOperatorKnob    = "Raise `agents._default.budget.max_tool_calls_per_session` (or the matched `agents.<name>.budget.max_tool_calls_per_session`) if the DoW subject's per-window tool-call budget is intentionally higher."
+	denialOfWalletWallClockOperatorKnob    = "Raise `agents._default.budget.max_wall_clock_minutes` (or the matched `agents.<name>.budget.max_wall_clock_minutes`) if the DoW subject's per-window active time is intentionally longer-lived."
+	denialOfWalletRetriesOperatorKnob      = "Raise `agents._default.budget.max_retries_per_tool` (or the matched `agents.<name>.budget.max_retries_per_tool`) if repeated identical calls are expected."
+	responseScanOperatorKnob               = "For a non-core false-positive response finding, add a top-level `suppress:` entry with `rule:` set to the event's matched pattern and `path:` scoped to the exact request path. Core response floor matches cannot be suppressed; fix the core pattern's precision. `response_scanning.exempt_domains` is broader: it disables injection scanning for every response from that host."
+	headerDLPOperatorKnob                  = "For a non-core false-positive header finding, add a top-level `suppress:` entry with `rule:` set to the matched DLP pattern and `path:` scoped to the exact request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
+	bodyPromptInjectionOperatorKnob        = "Correct the outbound request body. For a verified destination that must receive this content, add only that host to `request_body_scanning.trusted_hosts`; request-body scanning and its configured action still apply, but prompt-injection findings no longer force a block. An explicit `block` action still blocks."
+	addressProtectionOperatorKnob          = "After independently verifying the intended destination, add the exact address to `address_protection.allowed_addresses` (or the matched `agents.<name>.allowed_addresses`). Do not weaken similarity thresholds to approve one address."
+	chainDetectionOperatorKnob             = "If the event's named chain is expected, set that exact key under `tool_chain_detection.pattern_overrides` to `warn`; for a custom pattern, narrow its `sequence` or `action`. This changes only that named pattern."
+	provenanceOperatorKnob                 = "In `pipelock` mode, sign the tool metadata with an Ed25519 key present in `mcp_tool_provenance.trusted_keys`. `mcp_tool_provenance.action: warn` downgrades unsigned tools only; invalid signatures, verification errors, and malformed tools/list responses always fail closed. Sigstore trust fields are not consumed by this verifier, so they are not a remediation path."
+	mediaPolicyOperatorKnob                = "Tune the media control identified by the reason under `media_policy`: `strip_audio`, `strip_video`, `strip_images`, `allowed_image_types`, or `max_image_bytes`. Parse/read failures have no exemption; correct the malformed media or upstream response."
+	requestPolicyOperatorKnob              = "Edit the exact matched entry under `request_policy.rules` (the event reason names it), narrowing its route/predicate or changing that rule's action. For parser/opaque findings, tune only `request_policy.on_parse_error` or `request_policy.on_opaque_operation`; allowing either is broader and fail-open for matching body predicates."
+	agentIdentityOperatorKnob              = "Use a non-reserved self-declared agent identity. Reserved control-actor names are a non-tunable identity boundary; there is no exemption knob."
+	taintPolicyOperatorKnob                = "After inspecting the recorded source and action, add a narrow, expiring `taint.trust_overrides` entry matching that source/action, or correct the source classification. Changing `taint.policy` weakens all taint decisions and is broader."
+	sessionAnomalyOperatorKnob             = "For a legitimate domain burst, raise the matched `session_profiling.domain_burst` threshold (global or per-agent) or the global-only `session_profiling.window_minutes`. For a behavioral baseline deviation, inspect the profile and explicitly relearn/ratify it with the baseline operator commands; do not auto-ratify an unexplained deviation."
+	adaptiveEnforcementOperatorKnob        = "Wait for the event's auto-recovery time, or inspect and reset only the affected identity session with the session operator commands after confirming the traffic is legitimate. Changing `adaptive_enforcement.levels` or thresholds affects every session and is broader."
+	mcpSessionBindingOperatorKnob          = "Refresh the MCP session only after verifying the server's current tool inventory. If inventory drift is intentionally non-blocking, change `mcp_session_binding.unknown_tool_action` (or `no_baseline_action` for a missing baseline) to `warn`; that applies to every matching inventory event."
+	mcpToolPolicyOperatorKnob              = "Inspect the matched `mcp_tool_policy.rules` entry and change only the intended tool or argument rule. A broad allow rule would admit unrelated calls."
+	mcpInputDLPOperatorKnob                = "Remove the matched sensitive value from the MCP request. For a non-core false positive, inspect the exact `dlp.patterns` rule; `mcp_input_scanning.action` controls non-core input findings. Core credentials still hard-block unless redaction fully removes them; URL `exempt_domains` does not apply to MCP arguments."
+	mcpInputInjectionOperatorKnob          = "Correct the MCP tool arguments carrying the instruction. `mcp_input_scanning.action` controls this input scan; URL and response suppressions do not apply to MCP arguments."
+	mcpInputInspectionOperatorKnob         = "Correct the malformed or uninspectable MCP request and retry. `mcp_input_scanning.on_parse_error` covers only configurable protocol parse errors; malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol aliases always block."
+	mcpHeaderDLPOperatorKnob               = "Remove the matched credential from the MCP listener request header. Header values are checked by text DLP, including Authorization by default and Last-Event-ID, Mcp-Param-*, and Mcp-Session-Id regardless of generic header selection. `request_body_scanning.scan_headers`, `header_mode`, `sensitive_headers`, and `ignore_headers` select other headers; `mcp_input_scanning.action` and URL DLP `exempt_domains` do not govern this gate. Supply upstream credentials with the operator's `--header` option instead of client headers."
+	mcpHeaderInjectionOperatorKnob         = "Correct the instruction in the decoded Mcp-Param-* listener request header. Only those decoded parameter values receive response injection scanning; `request_body_scanning` header selection does not disable it. Investigate the matched pattern before changing response scanning globally."
+	mcpHeaderInspectionOperatorKnob        = "The decoded MCP parameter header could not be scanned. Correct its encoding or restore scanner health and retry; suppression cannot make it scannable."
+	mcpResponseInspectionOperatorKnob      = "The MCP response could not be inspected safely. Correct the malformed upstream response or restore scanner health and retry; no pattern suppression repairs a failed inspection."
+	mcpProtocolOperatorKnob                = "Send one JSON-RPC request at a time. MCP batch requests are unsupported; no scanner or policy setting enables them."
+	mcpRedirectOperatorKnob                = "Inspect the matched `mcp_tool_policy.rules` redirect rule and its `mcp_tool_policy.redirect_profiles` entry. Use a supported single request and restore the named handler; a missing profile or failed handler blocks locally."
+	mcpRedirectOutputDLPOperatorKnob       = "Remove the matched credential from the redirect handler output. Inspect the configured `mcp_tool_policy.redirect_profiles` handler; request-side MCP input settings do not control its response."
+	mcpRedirectOutputInjectionOperatorKnob = "Remove the instruction from the redirect handler output. Inspect the configured `mcp_tool_policy.redirect_profiles` handler and the matched response pattern."
+	mcpDeferOperatorKnob                   = "Use defer only on MCP stdio or its stdio-to-HTTP bridge with top-level `defer.enabled: true`. Inspect the matched `mcp_tool_policy.rules` action before retrying."
+	mcpToolScanningOperatorKnob            = "Inspect the flagged tools/list definition and correct it at the upstream server. Review `mcp_tool_scanning` settings only after confirming the definition is intended."
+	sniMismatchOperatorKnob                = "Correct the CONNECT hostname or TLS client so the SNI name matches the requested authority. `forward_proxy.sni_verification: false` disables domain-fronting protection for every tunnel and is not a narrow remediation."
+	killSwitchOperatorKnob                 = "Inspect and clear every active kill-switch source. Config, API, remote kill, stale bundle, unresolved policy application, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips` except during unresolved Conductor policy application, which requires successful policy recovery. Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
+	airlockOperatorKnob                    = "Inspect the affected session and wait for its configured `airlock.timers` recovery, or use the authenticated session operator command to lower/reset only that session after confirming the traffic is legitimate. Weakening global triggers or tiers is broader."
+	crossRequestEntropyOperatorKnob        = "For a verified high-entropy destination, add only that host to `cross_request_detection.entropy_budget.exempt_domains`, or raise `bits_per_window` if the session-wide volume is expected. Changing `action` to `warn` affects every entropy-budget finding."
+	crossRequestFragmentOperatorKnob       = "The fragment reassembly DLP path has no per-host or per-rule exemption. Correct the split secret-like payload; the only config relief is the broad `cross_request_detection.action: warn` (or disabling `fragment_reassembly`), which weakens this detector for every session."
+	gitProtectionOperatorKnob              = "Add only the intended owner/repository to `git_protection.allowed_push_repos` after verifying the remote. Disabling `git_protection` permits pushes to every repository and is broader."
+	agentBudgetOperatorKnob                = "Raise only the limit named by the reason under the matched `agents.<name>.budget`: `max_requests_per_session`, `max_bytes_per_session`, or `max_unique_domains_per_session`. Zero disables that ceiling and is broader."
+	responseSizeOperatorKnob               = "Raise only the exact transport response ceiling named in the reason. A `response_scanning.size_exempt_domains` entry is not a universal override: fetch-handler response-size blocks do not consult it."
+	shieldOversizeOperatorKnob             = "Raise `browser_shield.max_shield_bytes` for the expected response size, or add only the trusted host to `browser_shield.exempt_domains`. Changing `browser_shield.oversize_action` to `warn` or `scan_head` permits incompletely shielded content and is broader."
+	contractOperatorKnob                   = "Correct the action to match the active contract, or inspect and ratify a narrowly updated contract through the contract operator workflow. Disabling contract enforcement or broadening the manifest without review is not a safe remediation."
+	sseStreamOperatorKnob                  = "For a non-core false-positive SSE finding, add a top-level `suppress:` entry for the matched response rule and exact path. Core response floor matches cannot be suppressed; fix the core pattern's precision. For event-size failures, raise `response_scanning.sse_streaming.max_event_bytes`; changing its action to `warn` affects every SSE finding."
+	unscannableOperatorKnob                = "Remove or narrow the matching `response_scanning.unscannable_passthrough` entry to restore fail-closed scanning, or make the upstream response scannable. This event records an explicit full-content visibility gap; do not broaden the entry."
+	a2aScanOperatorKnob                    = "Correct the flagged A2A content. There is no per-finding suppression, and `a2a_scanning.action` is not a universal override: malformed/uninspectable payloads and hostname-exfiltration findings hard-block without consulting it."
+	a2aCardSignatureOperatorKnob           = "Sign the Agent Card with a key whose exact origin is authorized by `a2a_scanning.trusted_agent_card_keys`, or add the verified signer/origin pair there. Disabling signed-card requirements trusts every unsigned card and is broader."
+	redactionOperatorKnob                  = "The requested redaction could not be applied safely. Correct the redaction profile or input and retry; there is no exemption knob because forwarding the unredacted payload would leak the protected value."
+	scannerUnavailableOperatorKnob         = "Scanner acquisition failed closed during a reload/runtime transition. Restore scanner health or correct the rejected configuration and retry; there is no policy exemption for running without a scanner."
+	mediationEnvelopeOperatorKnob          = "The mediation envelope could not be built, injected, signed, or verified safely. Check `mediation_envelope.actor_format` and `trust_domain`, then the configured signing key or inbound trust material as applicable; retry after correcting the failed step."
+	receiptEmissionOperatorKnob            = "Required receipt emission failed closed. Restore the configured receipt sink/key and retry; there is no bypass knob while receipt-required enforcement is active."
+	reverseSubmitOperatorKnob              = "Correct the submission to the configured `reverse_proxy` submit profile. This admission gate consults only `reverse_proxy.allowed_methods`, `reverse_proxy.allowed_paths`, and the effective minimum of `reverse_proxy.max_body_bytes` and `request_body_scanning.max_body_bytes`. Raw-path canonicality failures have no exemption."
+	tlsFailureOperatorKnob                 = "Correct the TLS handshake, certificate, or authority mismatch at the client/upstream and retry. These checks fail closed and have no per-request exemption; disabling TLS interception or SNI verification is a broad loss of visibility."
 
 	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. Shell/file/tool Decide paths consult `response_scanning.enabled` and `response_scanning.action`; they call `ScanResponse` without the top-level `suppress:` list, so a suppression entry is inert here. MCP Decide input consults `mcp_input_scanning.enabled` and `mcp_input_scanning.action`."
 	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
@@ -307,56 +317,61 @@ var remediationGuidance = map[string]RemediationGuidance{
 		OperatorKnob: denialOfWalletOperatorKnob,
 		AgentReason:  denialOfWalletAgentReason,
 	},
-	AuditResponseScan:          {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditHeaderDLP:             {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
-	AuditReverseURLDLP:         {OperatorKnob: "Remove the credential from the request URL. Reverse-proxy URL text scanning does not consult top-level `suppress:` entries or per-pattern `exempt_domains`. Core DLP matches cannot be exempted; a genuine false positive requires a pattern-precision fix.", AgentReason: secretAgentReason},
-	AuditBodyPromptInjection:   {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditAddressProtection:     {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditChainDetection:        {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditProvenance:            {OperatorKnob: provenanceOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMediaPolicy:           {OperatorKnob: mediaPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditRequestPolicy:         {OperatorKnob: requestPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAgentIdentity:         {OperatorKnob: agentIdentityOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditTaintPolicy:           {OperatorKnob: taintPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditSessionAnomaly:        {OperatorKnob: sessionAnomalyOperatorKnob, AgentReason: auditAnomalyAgentReason},
-	AuditAdaptiveEnforcement:   {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMCPSessionBinding:     {OperatorKnob: mcpSessionBindingOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMCPToolPolicy:         {OperatorKnob: mcpToolPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMCPInputDLP:           {OperatorKnob: mcpInputDLPOperatorKnob, AgentReason: secretAgentReason},
-	AuditMCPInputInjection:     {OperatorKnob: mcpInputInjectionOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditMCPInputInspection:    {OperatorKnob: mcpInputInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditMCPHeaderDLP:          {OperatorKnob: mcpHeaderDLPOperatorKnob, AgentReason: secretAgentReason},
-	AuditMCPHeaderInjection:    {OperatorKnob: mcpHeaderInjectionOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditMCPHeaderInspection:   {OperatorKnob: mcpHeaderInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditMCPResponseInspection: {OperatorKnob: mcpResponseInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	ScannerMCPToolScanning:     {OperatorKnob: mcpToolScanningOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditSNIMismatch:           {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditKillSwitch:            {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAirlock:               {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditCrossRequestEntropy:   {OperatorKnob: crossRequestEntropyOperatorKnob, AgentReason: auditAnomalyAgentReason},
-	AuditCrossRequestFragment:  {OperatorKnob: crossRequestFragmentOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditGitProtection:         {OperatorKnob: gitProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAgentBudget:           {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditResponseSize:          {OperatorKnob: responseSizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditShieldOversize:        {OperatorKnob: shieldOversizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditContract:              {OperatorKnob: contractOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditSSEStream:             {OperatorKnob: sseStreamOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditUnscannable:           {OperatorKnob: unscannableOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditA2AScan:               {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditA2ACardSignature:      {OperatorKnob: a2aCardSignatureOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditRedaction:             {OperatorKnob: redactionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditScannerUnavailable:    {OperatorKnob: scannerUnavailableOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
-	AuditMediationEnvelope:     {OperatorKnob: mediationEnvelopeOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditReceiptEmission:       {OperatorKnob: receiptEmissionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditReverseSubmit:         {OperatorKnob: reverseSubmitOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditFrozenTool:            {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditA2AHeader:             {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditA2AResponse:           {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditBudgetTruncated:       {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditTLSResponseBlocked:    {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditSessionDeny:           {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditTLSHandshakeError:     {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditTLSAuthorityMismatch:  {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditResponseScan:               {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditHeaderDLP:                  {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditReverseURLDLP:              {OperatorKnob: "Remove the credential from the request URL. Reverse-proxy URL text scanning does not consult top-level `suppress:` entries or per-pattern `exempt_domains`. Core DLP matches cannot be exempted; a genuine false positive requires a pattern-precision fix.", AgentReason: secretAgentReason},
+	AuditBodyPromptInjection:        {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditAddressProtection:          {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditChainDetection:             {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditProvenance:                 {OperatorKnob: provenanceOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMediaPolicy:                {OperatorKnob: mediaPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRequestPolicy:              {OperatorKnob: requestPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentIdentity:              {OperatorKnob: agentIdentityOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTaintPolicy:                {OperatorKnob: taintPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSessionAnomaly:             {OperatorKnob: sessionAnomalyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditAdaptiveEnforcement:        {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPSessionBinding:          {OperatorKnob: mcpSessionBindingOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPToolPolicy:              {OperatorKnob: mcpToolPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPInputDLP:                {OperatorKnob: mcpInputDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditMCPInputInjection:          {OperatorKnob: mcpInputInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditMCPInputInspection:         {OperatorKnob: mcpInputInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPHeaderDLP:               {OperatorKnob: mcpHeaderDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditMCPHeaderInjection:         {OperatorKnob: mcpHeaderInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditMCPHeaderInspection:        {OperatorKnob: mcpHeaderInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPResponseInspection:      {OperatorKnob: mcpResponseInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPProtocol:                {OperatorKnob: mcpProtocolOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
+	AuditMCPRedirect:                {OperatorKnob: mcpRedirectOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPRedirectOutputDLP:       {OperatorKnob: mcpRedirectOutputDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditMCPRedirectOutputInjection: {OperatorKnob: mcpRedirectOutputInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditMCPDefer:                   {OperatorKnob: mcpDeferOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	ScannerMCPToolScanning:          {OperatorKnob: mcpToolScanningOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditSNIMismatch:                {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditKillSwitch:                 {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAirlock:                    {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditCrossRequestEntropy:        {OperatorKnob: crossRequestEntropyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditCrossRequestFragment:       {OperatorKnob: crossRequestFragmentOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditGitProtection:              {OperatorKnob: gitProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentBudget:                {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditResponseSize:               {OperatorKnob: responseSizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditShieldOversize:             {OperatorKnob: shieldOversizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditContract:                   {OperatorKnob: contractOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSSEStream:                  {OperatorKnob: sseStreamOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditUnscannable:                {OperatorKnob: unscannableOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditA2AScan:                    {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2ACardSignature:           {OperatorKnob: a2aCardSignatureOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRedaction:                  {OperatorKnob: redactionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditScannerUnavailable:         {OperatorKnob: scannerUnavailableOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
+	AuditMediationEnvelope:          {OperatorKnob: mediationEnvelopeOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReceiptEmission:            {OperatorKnob: receiptEmissionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReverseSubmit:              {OperatorKnob: reverseSubmitOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditFrozenTool:                 {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditA2AHeader:                  {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2AResponse:                {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditBudgetTruncated:            {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditTLSResponseBlocked:         {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditSessionDeny:                {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTLSHandshakeError:          {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditTLSAuthorityMismatch:       {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
 	DecideInjectionLabel: {
 		OperatorKnob: decideInjectionOperatorKnob,
 		AgentReason:  promptInjectionAgentReason,
@@ -560,6 +575,20 @@ func hasQueryGrantValidityNote(reason string) bool {
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
+	if label == AuditContract && reason == "MCP contract evaluation failed" {
+		return RemediationGuidance{
+			OperatorKnob: "The live-lock contract could not be evaluated. Restore the active contract loader or correct the invalid contract state and retry; changing a rule's allow/block action does not repair an evaluation failure.",
+			AgentReason:  auditRuntimeAgentReason,
+		}, true
+	}
+	if label == AuditA2AScan {
+		switch reason {
+		case "A2A input could not be inspected":
+			return RemediationGuidance{OperatorKnob: "Restore A2A input inspection or correct the uninspectable payload and retry; `a2a_scanning.action` does not override a failed inspection.", AgentReason: auditRuntimeAgentReason}, true
+		case "A2A input configuration mismatch":
+			return RemediationGuidance{OperatorKnob: "Check the A2A input configuration and the underlying URL or SSRF rule before retrying. Changing `a2a_scanning.action` does not repair a configuration mismatch.", AgentReason: auditRuntimeAgentReason}, true
+		}
+	}
 	if label == ScannerMCPToolScanning && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {
 		return RemediationGuidance{
 			OperatorKnob: "The tools/list inventory cannot be safely inspected or admitted into the current baseline. Correct or reduce the upstream inventory and retry; `mcp_tool_scanning.action` does not override this refusal.",

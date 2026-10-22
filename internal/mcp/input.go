@@ -372,6 +372,7 @@ func ForwardScannedInput(
 		// Kill switch: deny all messages when active.
 		if ks != nil {
 			if d := ks.IsActiveMCP(line); d.Active {
+				logMCPInputGateBlock(auditLogger, scanner.AuditKillSwitch, mcpKillSwitchReason, audit.BlockClassProtective)
 				if manager := opts.deferManager(); manager != nil {
 					manager.ResolveAll(config.ActionBlock, deferred.SourceKillSwitch)
 				}
@@ -421,6 +422,7 @@ func ForwardScannedInput(
 		// verdict having no Method field.
 		trimmedLine := bytes.TrimSpace(line)
 		if len(trimmedLine) > 0 && trimmedLine[0] == '[' {
+			logMCPInputGateBlock(auditLogger, scanner.AuditMCPProtocol, mcpBatchReason, audit.BlockClassProtective)
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (not supported by MCP)\n", lineNum)
 			recordAdaptiveSignal(session.SignalBlock)
 			blockedCh <- BlockedRequest{
@@ -493,6 +495,7 @@ func ForwardScannedInput(
 		}
 		rewrittenLine, redactionReport, redactErr := applyMCPToolCallRedactionWithConfig(line, redactionCfg)
 		if redactErr != nil {
+			logMCPInputGateBlock(auditLogger, scanner.AuditRedaction, mcpRedactionReason, mcpRedactionBlockClass(redactErr))
 			reason := redactErr.Error()
 			var blockErr *redact.BlockError
 			if errors.As(redactErr, &blockErr) {
@@ -785,6 +788,13 @@ func ForwardScannedInput(
 		// here because it is transport-specific.
 		switch eval.BlockingGate {
 		case blockingGateA2ABody:
+			class, reason := audit.BlockClassThreat, mcpA2AContentReason
+			if eval.A2AResult.IsAdaptiveNeutral() {
+				class, reason = audit.BlockClassInfrastructureError, mcpA2AInspectionReason
+			} else if eval.A2AResult.IsConfigMismatch() {
+				class, reason = audit.BlockClassConfigMismatch, mcpA2AConfigReason
+			}
+			logMCPInputGateBlock(auditLogger, scanner.AuditA2AScan, reason, class)
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input blocked (%s)\n", lineNum, eval.A2AResult.Reason)
 			switch {
 			case eval.A2AResult.IsAdaptiveNeutral():
@@ -1034,6 +1044,7 @@ func ForwardScannedInput(
 			}
 			contractGate, contractErr := evaluateMCPToolGate(frame, config.ActionAllow, false, opts)
 			if contractErr != nil {
+				logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
@@ -1046,6 +1057,7 @@ func ForwardScannedInput(
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
+				logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
@@ -1080,6 +1092,7 @@ func ForwardScannedInput(
 					InboundMsg: line,
 				})
 				if emitErr != nil {
+					logMCPInputGateBlock(auditLogger, scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),
@@ -1261,6 +1274,7 @@ func ForwardScannedInput(
 			// Fail closed: block the entire batch.
 			trimmed := bytes.TrimSpace(line)
 			if len(trimmed) > 0 && trimmed[0] == '[' {
+				logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectBatchReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked batch request (%s) [redirect not supported for batches]\n",
 					lineNum, reasonStr)
 				blockedCh <- BlockedRequest{
@@ -1275,6 +1289,7 @@ func ForwardScannedInput(
 			profile, ok := policyCfg.RedirectProfiles[policyVerdict.RedirectProfile]
 			if !ok {
 				// Profile not found - fail closed to block.
+				logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectProfileReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect profile %q not found]\n",
 					lineNum, method, reasonStr, policyVerdict.RedirectProfile)
 				blockedCh <- BlockedRequest{
@@ -1354,6 +1369,7 @@ func ForwardScannedInput(
 					receiptPatternOverride, receiptSeverityOverride = redirectResponseAttribution(finalResponseVerdict)
 				}
 				if !scanVerdict.Clean {
+					logMCPGateBlock(auditLogger, scanner.AuditMCPRedirectOutputInjection, "mcp_redirect_output", mcpRedirectOutputInjectionReason, audit.BlockClassThreat)
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked redirect response (injection detected in handler output)\n", lineNum)
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
@@ -1363,6 +1379,7 @@ func ForwardScannedInput(
 						ErrorMessage:   "pipelock: redirect handler output blocked by response scanning",
 					}
 				} else if !dlpResult.Clean {
+					logMCPGateBlock(auditLogger, scanner.AuditMCPRedirectOutputDLP, "mcp_redirect_output", mcpRedirectOutputDLPReason, audit.BlockClassThreat)
 					pattern := patternUnknown
 					if len(dlpResult.Matches) > 0 {
 						pattern = dlpResult.Matches[0].PatternName
@@ -1389,6 +1406,7 @@ func ForwardScannedInput(
 				}
 			} else {
 				// Redirect handler failed - fall through to block (fail-closed).
+				logMCPInputGateBlock(auditLogger, scanner.AuditMCPRedirect, mcpRedirectHandlerReason, audit.BlockClassInfrastructureError)
 				effectiveAction = config.ActionBlock
 				receiptEmitted = false
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [redirect failed: %s]\n",
@@ -1415,6 +1433,7 @@ func ForwardScannedInput(
 		case config.ActionDefer:
 			manager := opts.deferManager()
 			if err := deferred.ValidateAction(opts.Transport, config.ActionDefer); err != nil {
+				logMCPInputGateBlock(auditLogger, scanner.AuditMCPDefer, mcpDeferUnsupportedReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [%v]\n",
 					lineNum, method, reasonStr, err)
 				blockedCh <- BlockedRequest{
@@ -1428,6 +1447,7 @@ func ForwardScannedInput(
 				break
 			}
 			if manager == nil || !manager.Enabled() {
+				logMCPInputGateBlock(auditLogger, scanner.AuditMCPDefer, mcpDeferDisabledReason, audit.BlockClassConfigMismatch)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [defer manager disabled]\n",
 					lineNum, method, reasonStr)
 				blockedCh <- BlockedRequest{
@@ -1548,6 +1568,7 @@ func ForwardScannedInput(
 						commitMCPToolCall(baselineMetricsRecorder(opts, rec), heldBaselineIdentity)
 					default:
 						if res.ResolutionSource == deferred.SourceKillSwitch {
+							logMCPInputGateBlock(auditLogger, scanner.AuditKillSwitch, mcpKillSwitchReason, audit.BlockClassProtective)
 							_, _ = fmt.Fprintf(logW, "pipelock: deferred call %s cancelled by kill switch\n", res.DeferID)
 						}
 						if !heldNotification {
@@ -1691,6 +1712,7 @@ func ForwardScannedInput(
 			}
 			contractGate, contractErr := evaluateMCPToolGate(frame, effectiveAction, len(reasons) > 0, opts)
 			if contractErr != nil {
+				logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractEvalReason, audit.BlockClassInfrastructureError)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract tool-call evaluation failed: %v\n", lineNum, contractErr)
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
@@ -1703,6 +1725,7 @@ func ForwardScannedInput(
 				continue
 			}
 			if contractGate.Verdict == config.ActionBlock {
+				logMCPInputGateBlock(auditLogger, scanner.AuditContract, mcpContractDenyAuditReason, audit.BlockClassProtective)
 				_, _ = fmt.Fprintf(logW, "pipelock: input line %d: contract blocked %s %q (%s)\n", lineNum, enforcementKind, enforcementTarget, contractGate.Reason)
 				blockedCh <- mcpContractBlockRequest(verdict.ID, contractGate, "pipelock: request blocked by live-lock contract")
 				_ = emitToolReceipt(config.ActionBlock, contractGate)
@@ -1739,6 +1762,7 @@ func ForwardScannedInput(
 					InboundMsg: line,
 				})
 				if emitErr != nil {
+					logMCPInputGateBlock(auditLogger, scanner.AuditMediationEnvelope, mcpEnvelopeReason, audit.BlockClassInfrastructureError)
 					blockedCh <- BlockedRequest{
 						ID:             verdict.ID,
 						IsNotification: isRPCNotification(verdict.ID),

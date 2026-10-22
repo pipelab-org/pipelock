@@ -72,23 +72,59 @@ on a sink to receive the info events as well.
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
 MCP `blocked` events use `fields.scanner` for the gate that denied the call.
-`mcp_input_dlp`, `mcp_input_injection`, and `mcp_input_inspection` distinguish
-credential, instruction, and inspection failures in requests;
-`mcp_header_dlp`, `mcp_header_injection`, and `mcp_header_inspection` do the
-same for listener parameter headers. `mcp_tool_policy` identifies a tool rule.
-`mcp_tool_scanning` identifies a blocked tool definition; a tools/list capacity
-or inspection refusal under that label is operational (`block_class:
-infrastructure_error`) and carries no MITRE technique.
-Session binding, chain detection, and behavioral baseline blocks retain
-`mcp_session_binding`, `chain_detection`, and `session_anomaly`. Scanner
-availability and required receipt failures retain `scanner_unavailable` and
-`receipt_emission`. Response
-inspection failures use `mcp_response_inspection` with
-`block_class: infrastructure_error`, no MITRE technique, and no agent-threat
-projection. A fixed protocol marker is the only MCP resource in these events;
-request arguments, header values, tool names, and response bodies are omitted.
-Rules that currently filter `fields.scanner == "dlp"` for all credentials should
-also select `mcp_input_dlp` and `mcp_header_dlp` when MCP blocks are in scope.
+The labels below are checked against the code's scanner constants and
+remediation table by a test. `block_class` separates content findings from
+protective, configuration, and inspection refusals.
+
+<!-- BEGIN MCP blocked scanner labels -->
+| Scanner | MCP denial |
+|---------|------------|
+| `mcp_input_dlp` | Credential in a request |
+| `mcp_input_injection` | Instruction in request arguments |
+| `mcp_input_inspection` | Request inspection failure |
+| `mcp_header_dlp` | Text DLP finding in a selected listener request header |
+| `mcp_header_injection` | Injection finding in a decoded `Mcp-Param-*` value |
+| `mcp_header_inspection` | Parameter-header inspection failure |
+| `mcp_tool_policy` | Matched tool rule |
+| `mcp_tool_scanning` | Tool definition finding or operational inventory refusal |
+| `mcp_session_binding` | Session inventory mismatch |
+| `chain_detection` | Tool-call chain finding |
+| `session_anomaly` | Behavioral baseline deviation |
+| `adaptive_enforcement` | Session-level action upgrade |
+| `frozen_tool` | Tool absent from frozen inventory |
+| `denial_of_wallet` | Tool-use budget or expansion finding |
+| `airlock` | Session airlock refusal |
+| `taint_policy` | Tainted action refusal |
+| `address_protection` | Address protection finding |
+| `scanner_unavailable` | Scanner unavailable |
+| `receipt_emission` | Required receipt unavailable |
+| `mcp_response_inspection` | Uninspectable upstream response |
+| `kill_switch` | Active kill switch, including held-call cancellation |
+| `mcp_protocol` | Unsupported batch request |
+| `redaction` | Request redaction could not complete safely |
+| `a2a_scan` | A2A input gate finding or inspection failure |
+| `contract` | Contract refusal or evaluation failure |
+| `mediation_envelope` | Mediation envelope injection failure |
+| `mcp_redirect` | Redirect profile or handler failure, or unsupported batch redirect |
+| `mcp_redirect_output_dlp` | Credential in redirect handler output |
+| `mcp_redirect_output_injection` | Instruction in redirect handler output |
+| `mcp_defer` | Defer unavailable on the transport or disabled |
+<!-- END MCP blocked scanner labels -->
+
+Listener header DLP scans selected request header names and values as text.
+Decoded `Mcp-Param-*` values receive response injection scanning too.
+`Last-Event-ID`, `Mcp-Param-*`, and `Mcp-Session-Id` are always selected;
+`Authorization` is selected by default. The other selections follow
+`request_body_scanning.scan_headers`, `header_mode`, `sensitive_headers`, and
+`ignore_headers`. A tools/list capacity refusal under `mcp_tool_scanning` and
+an uninspectable response under `mcp_response_inspection` use
+`block_class: infrastructure_error`, carry no MITRE technique, and omit
+agent-threat attributes. MCP operational blocks retain their native OTLP
+record. The new input and redirect failure events use fixed protocol resource
+markers and omit request arguments, header values, tool names, and response
+bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
+select `mcp_input_dlp`, `mcp_header_dlp`, and `mcp_redirect_output_dlp` when MCP
+blocks are in scope.
 
 ### Info (sent only when a sink sets `min_severity: info`)
 

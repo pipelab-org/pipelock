@@ -7,6 +7,7 @@
 package siemforward
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,9 +32,16 @@ func acquireStateLock(spoolPath string) (*os.File, error) {
 	)
 	if err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("siem forwarder spool %q is locked by another Pipelock process; give each process its own emit.forwarder.spool_file and emit.forwarder.cursor_file pair: %w", spoolPath, err)
+		return nil, stateLockError(spoolPath, err)
 	}
 	return file, nil
+}
+
+func stateLockError(spoolPath string, err error) error {
+	if errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+		return fmt.Errorf("siem forwarder spool %q is locked by another Pipelock process; give each process its own emit.forwarder.spool_file and emit.forwarder.cursor_file pair: %w", spoolPath, err)
+	}
+	return fmt.Errorf("lock siem forwarder spool %q: %w", spoolPath, err)
 }
 
 // releaseStateLock unlocks and closes the lock file. Safe to call with nil.

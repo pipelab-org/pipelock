@@ -115,10 +115,28 @@ func TestAgentThreatDetectionAttrs_ActionMappingForLegacyBlockedEvents(t *testin
 
 func TestAgentThreatDetectionAttrsOmitsOperationalBlocks(t *testing.T) {
 	event := Event{Type: eventTypeBlocked, Fields: map[string]any{
-		fieldScanner: "mcp_response_inspection", "block_class": "infrastructure_error",
+		"method": "MCP", "resource": "mcp_response", fieldScanner: "mcp_response_inspection", "block_class": "infrastructure_error",
 	}}
 	if got := agentThreatDetectionAttrs(event, "test"); len(got) != 0 {
 		t.Fatalf("operational block projected as agent threat: %+v", got)
+	}
+}
+
+func TestAgentThreatDetectionAttrsPreservesHTTPBlockProjection(t *testing.T) {
+	for _, tc := range []struct{ method, scanner, class string }{
+		{"GET", "ratelimit", "protective"},
+		{"GET", "databudget", "protective"},
+		{"GET", "ssrf", "infrastructure_error"},
+		{"GET", "allowlist", "config_mismatch"},
+		{"MCP", "ratelimit", "protective"},
+	} {
+		t.Run(tc.method+"/"+tc.scanner, func(t *testing.T) {
+			fields := map[string]any{"method": tc.method, "url": "https://api.vendor.example/path", fieldScanner: tc.scanner, "block_class": tc.class}
+			got := agentThreatDetectionAttrs(Event{Type: eventTypeBlocked, Fields: fields}, testBinaryVersion)
+			if len(got) != 4 || got[0].GetValue().GetStringValue() != tc.scanner || got[3].GetValue().GetStringValue() != conventionActionBlock {
+				t.Fatalf("HTTP %s block lost origin/main agent-threat projection: %+v", tc.scanner, got)
+			}
+		})
 	}
 }
 
