@@ -851,6 +851,7 @@ func TestForwardScannedInput_BlocksToolCallRedactionFailure(t *testing.T) {
 // tools/call block verdicts. Exercising the FrozenTool path here is
 // representative: all four use the same emitToolReceipt closure.
 func TestForwardScannedInput_FrozenToolBlockEmitsReceipt(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
 	sc := testInputScanner(t)
 	msg := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"exec_command","arguments":{"cmd":"ls"}}}`
 
@@ -860,6 +861,7 @@ func TestForwardScannedInput_FrozenToolBlockEmitsReceipt(t *testing.T) {
 	blockedCh := make(chan BlockedRequest, 1)
 	opts := MCPProxyOpts{
 		Scanner:             sc,
+		AuditLogger:         logger,
 		Transport:           "mcp_stdio",
 		ReceiptEmitter:      emitter,
 		ToolFreezer:         &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}},
@@ -878,6 +880,9 @@ func TestForwardScannedInput_FrozenToolBlockEmitsReceipt(t *testing.T) {
 		opts,
 	)
 
+	if !strings.Contains(events.String(), `"resource":"exec_command"`) {
+		t.Fatalf("released frozen-tool resource changed: %s", events.String())
+	}
 	blocked, ok := <-blockedCh
 	if !ok {
 		t.Fatal("expected blocked request on frozen-tool path")

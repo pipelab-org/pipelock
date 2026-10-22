@@ -41,7 +41,12 @@ func TestDeferredReleaseReceiptFailureReportsBlockAudit(t *testing.T) {
 	t.Run("stdio", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				logger, events := newListenerEventLogger(t)
+				ks := deferKillTestController()
+				logger, events := newListenerEventLogger(t, func() {
+					if got := ks.DeferredInFlight(); got != 0 {
+						t.Errorf("denial sink retained %d upstream send claims", got)
+					}
+				})
 				manager := newDeferKillManager(t)
 				emitter, rec, _, _ := newReceiptTestHarnessWithObserver(t, nil)
 				policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
@@ -56,7 +61,7 @@ func TestDeferredReleaseReceiptFailureReportsBlockAudit(t *testing.T) {
 						config.ActionWarn, config.ActionBlock, blocked, nil, nil, MCPProxyOpts{
 							AuditLogger: logger, Scanner: testInputScanner(t), PolicyCfg: policyCfg, DeferManager: manager,
 							ReceiptEmitter: emitter, RequireReceipts: true,
-							Transport: deferred.SurfaceMCPStdio, KillSwitch: deferKillTestController(),
+							Transport: deferred.SurfaceMCPStdio, KillSwitch: ks,
 						})
 				}()
 				if _, err := inputW.Write([]byte(deferKillTestCall)); err != nil {
@@ -106,9 +111,14 @@ func TestDeferredReleaseReceiptFailureReportsBlockAudit(t *testing.T) {
 	t.Run("http bridge", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				logger, events := newListenerEventLogger(t)
+				ks := deferKillTestController()
+				logger, events := newListenerEventLogger(t, func() {
+					if got := ks.DeferredInFlight(); got != 0 {
+						t.Errorf("denial sink retained %d upstream send claims", got)
+					}
+				})
 				emitter, rec, _, _ := newReceiptTestHarnessWithObserver(t, nil)
-				run := startHTTPDeferRun(t, deferKillTestController(), func(o *MCPProxyOpts) {
+				run := startHTTPDeferRun(t, ks, func(o *MCPProxyOpts) {
 					o.AuditLogger = logger
 					o.ReceiptEmitter = emitter
 					o.RequireReceipts = true

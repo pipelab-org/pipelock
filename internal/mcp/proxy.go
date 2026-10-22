@@ -322,7 +322,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				dropMCPDenial(opts, denialAudit, "response")
 				continue
 			}
-			resp := blockSessionDenyResponse(rpcID, session.EscalationLabel(rec.EscalationLevel()))
+			resp := blockSessionDenyResponse(rpcID, mcpAdaptiveBlockMessage(rec, adaptiveCfg, "session_deny", logW))
 			if wErr := writeMCPDenial(opts, denialAudit, writer, resp); wErr != nil {
 				return foundInjection, fmt.Errorf("writing session deny: %w", wErr)
 			}
@@ -645,8 +645,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				toolPoisonDetected = true
 				tools.LogToolFindings(logW, lineNum, toolResult)
 
-				originalToolAction := toolCfg.Action
-				toolAction := originalToolAction
+				toolAction := toolCfg.Action
 				if toolResult.ResourceLimit != "" {
 					// A capacity result means the response cannot become a complete
 					// security baseline. Policy warn/strip would forward an
@@ -659,15 +658,17 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					// every action rather than quietly becoming a warning.
 					toolAction = config.ActionBlock
 				}
-				// Escalation upgrade for tool poison detection.
+				// Escalation upgrade for tool poison detection. Hard floors above
+				// keep their own reason even when the configured action is warn.
+				preAdaptiveToolAction := toolAction
 				if rec != nil {
 					toolAction = decide.UpgradeAction(toolAction, rec.EscalationLevel(), adaptiveCfg)
-					if toolAction != originalToolAction {
+					if toolAction != preAdaptiveToolAction {
 						// Emit adaptive-upgrade telemetry when escalation changed the action.
 						_, _ = fmt.Fprintf(logW, "pipelock: line %d: adaptive upgrade tool-poison %s->%s (level=%s)\n",
-							lineNum, originalToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
+							lineNum, preAdaptiveToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
 						if m != nil {
-							m.RecordAdaptiveUpgrade(originalToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
+							m.RecordAdaptiveUpgrade(preAdaptiveToolAction, toolAction, session.EscalationLabel(rec.EscalationLevel()))
 						}
 					}
 				}
@@ -685,11 +686,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					} else if toolScanHasDrift(toolResult) && toolCfg.DriftRemediation != "" {
 						blockReason = "tool definition drift detected; " + toolCfg.DriftRemediation
 					}
-					denialAudit = mcpToolResultDenialAudit(toolResult.ResourceLimit)
+					// Preserve the resolved enforcement cause before adaptive caller
+					// wording can replace the reply's explanation.
+					denialAudit = mcpToolResultDenialAudit(toolResult.ResourceLimit, blockReason)
 
 					// Signal: tool poisoning blocked.
 					if adaptiveCfg != nil && adaptiveCfg.Enabled {
-						recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, decide.EscalationParams{
+						recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(preAdaptiveToolAction, session.SignalBlock), decide.EscalationParams{
 							Threshold:     adaptiveCfg.EscalationThreshold,
 							Logger:        opts.AuditLogger,
 							Metrics:       m,
@@ -699,6 +702,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 							DenialReason:  blockReason,
 							PolicyHash:    opts.receiptPolicyHash(),
 						})
+					}
+					if toolAction != preAdaptiveToolAction {
+						blockReason = strings.TrimPrefix(mcpAdaptiveBlockMessage(rec, adaptiveCfg, "tool_scanning", logW), "pipelock: ")
 					}
 					resp := blockResponseReason(toolResult.RPCID, blockReason)
 					if err := writeMCPDenial(opts, denialAudit, writer, resp); err != nil {
@@ -716,9 +722,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					emitTrackedOutcome("error", "receipt_emission_failed", resp)
 					continue
 				}
-				// warn: logged above, record near-miss and fall through to general handling.
+				// Warn: preserve the observation without enforcement points.
 				if adaptiveCfg != nil && adaptiveCfg.Enabled {
-					recordMCPAdaptiveSignal(opts, rec, session.SignalNearMiss, decide.EscalationParams{
+					recordMCPAdaptiveSignal(opts, rec, session.SignalWarning, decide.EscalationParams{
 						Threshold:     adaptiveCfg.EscalationThreshold,
 						Logger:        opts.AuditLogger,
 						Metrics:       m,
@@ -908,7 +914,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Escalation-driven blocks use -32001 (session deny code) to
 			// distinguish them from direct injection blocks (-32000).
 			if escalationDriven {
-				outbound = blockSessionDenyResponse(verdict.ID, session.EscalationLabel(rec.EscalationLevel()))
+				outbound = blockSessionDenyResponse(verdict.ID, mcpAdaptiveBlockMessage(rec, adaptiveCfg, "mcp_response_scan", logW))
 			} else {
 				outbound = blockResponseReason(verdict.ID, responseFindingBlockReason(verdict, serverName, firstNonEmptyPattern(names), trustClass))
 			}
@@ -1093,12 +1099,12 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			switch effectiveAction {
 			case config.ActionBlock:
-				recordMCPAdaptiveSignal(opts, rec, session.SignalBlock, ep)
+				recordMCPAdaptiveSignal(opts, rec, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), ep)
 			case config.ActionStrip:
 				recordMCPAdaptiveSignal(opts, rec, session.SignalStrip, ep)
 			default:
-				// Warn/ask: near-miss signal (injection detected but not blocked).
-				recordMCPAdaptiveSignal(opts, rec, session.SignalNearMiss, ep)
+				// Warn/ask: observation only (injection detected but not blocked).
+				recordMCPAdaptiveSignal(opts, rec, session.SignalWarning, ep)
 			}
 		}
 
@@ -1476,13 +1482,13 @@ func blockMediaPolicyResponse(id json.RawMessage, reason string) []byte {
 // denial. Uses error code -32001 (implementation-defined) with a session-deny
 // message. Distinct from blockResponse to distinguish session-level blocks
 // from per-message injection blocks in logs and client error handling.
-func blockSessionDenyResponse(id json.RawMessage, _ string) []byte {
+func blockSessionDenyResponse(id json.RawMessage, detail string) []byte {
 	resp := rpcError{
 		JSONRPC: jsonrpc.Version,
 		ID:      id,
 		Error: rpcErrorDetail{
 			Code:    -32001,
-			Message: adaptiveBlockedReason,
+			Message: detail,
 		},
 	}
 	data, _ := json.Marshal(resp) //nolint:errcheck // marshaling known-good struct

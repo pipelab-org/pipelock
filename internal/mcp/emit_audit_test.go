@@ -160,7 +160,7 @@ func TestMCPResponseWarnAuditEvent(t *testing.T) {
 	}
 }
 
-func newListenerEventLogger(t *testing.T) (*audit.Logger, *lockedHTTPBuffer) {
+func newListenerEventLogger(t *testing.T, onBlocked ...func()) (*audit.Logger, *lockedHTTPBuffer) {
 	t.Helper()
 	events := &lockedHTTPBuffer{}
 	logger, err := audit.NewWithStream("json", "stdout", "", true, true, events)
@@ -168,7 +168,7 @@ func newListenerEventLogger(t *testing.T) (*audit.Logger, *lockedHTTPBuffer) {
 		t.Fatal(err)
 	}
 	t.Cleanup(logger.Close)
-	sink := &mcpCanonicalAuditSink{}
+	sink := &mcpCanonicalAuditSink{onBlocked: onBlocked}
 	logger.SetEmitter(emit.NewEmitter("fixture", sink))
 	t.Cleanup(func() {
 		local := strings.Count(events.String(), `"event":"blocked"`)
@@ -179,11 +179,17 @@ func newListenerEventLogger(t *testing.T) (*audit.Logger, *lockedHTTPBuffer) {
 	return logger, events
 }
 
-type mcpCanonicalAuditSink struct{ blocks atomic.Int64 }
+type mcpCanonicalAuditSink struct {
+	blocks    atomic.Int64
+	onBlocked []func()
+}
 
 func (s *mcpCanonicalAuditSink) Emit(_ context.Context, event emit.Event) error {
 	if event.Type == "blocked" {
 		s.blocks.Add(1)
+		for _, observe := range s.onBlocked {
+			observe()
+		}
 	}
 	return nil
 }
@@ -667,7 +673,7 @@ func TestMCPToolInventoryCapacityAuditEvent(t *testing.T) {
 	got := events.String()
 	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.ScannerMCPToolScanning+`"`) ||
 		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) ||
-		!strings.Contains(got, "does not override this refusal") {
+		!strings.Contains(got, "does not override this refusal") || !strings.Contains(got, `"resource":"tools/list"`) {
 		t.Fatalf("inventory capacity refusal mislabeled: %s", got)
 	}
 }

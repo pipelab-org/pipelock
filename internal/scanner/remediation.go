@@ -606,7 +606,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 		case "MCP batch responses are unsupported":
 			return RemediationGuidance{OperatorKnob: "The upstream MCP server answered with a JSON-RPC batch. Batch responses are unsupported and no scanner or policy setting enables them; correct the upstream server.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener admission refused":
-			return RemediationGuidance{OperatorKnob: "The MCP listener refused the HTTP request before inspection. Check the client's Origin, Host, listener credential, HTTP method and Pipelock session token against the listener configuration, including `mcp_session_binding.listener_require_state_token`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+			return RemediationGuidance{OperatorKnob: "The MCP listener refused the exchange. Check the client's Origin, Host, listener credential, HTTP method and Pipelock session token against the listener configuration, including `mcp_session_binding.listener_require_state_token`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener protocol refused":
 			return RemediationGuidance{OperatorKnob: "The MCP listener refused a malformed or inconsistent request. Correct the client's MCP headers, protocol version or JSON-RPC body; no scanner or policy setting relaxes protocol validation.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener state capacity exhausted":

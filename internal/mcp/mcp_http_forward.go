@@ -339,6 +339,11 @@ func RunHTTPProxy(
 			var gateAudit mcpDenialAudit
 			receiptSettle := &deferredReceiptSettlement{}
 			var terminalSlot mcpDeferredTerminal
+			// A receipt or journal failure can downgrade a prepared allow to
+			// deny. Release its upstream write lock and send claim before the
+			// finalizer's synchronous audit sinks or downstream delivery can
+			// block unrelated upstream work. OnceFunc also makes the manager's
+			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:       deferredReq.DeferID,

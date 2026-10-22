@@ -122,8 +122,8 @@ func TestReverseURLDLPAuditModeRecordsOneNearMiss(t *testing.T) {
 
 	sess := p.SessionMgrPtr().Load().GetOrCreate(sessionKeyFor(nil, "", clientHost, envelope.ActorAuthUnknown))
 	scope := adaptiveScopeForHost(upstreamURL.Hostname())
-	if score := sess.ScopedThreatScore(scope); score != session.SignalPoints[session.SignalNearMiss] {
-		t.Fatalf("audit-mode URL DLP score = %.4f, want one near-miss score %.4f", score, session.SignalPoints[session.SignalNearMiss])
+	if score := sess.ScopedThreatScore(scope); score != session.SignalPoints[session.SignalWarning] {
+		t.Fatalf("audit-mode URL DLP score = %.4f, want zero-point observation %.4f", score, session.SignalPoints[session.SignalWarning])
 	}
 }
 
@@ -288,7 +288,7 @@ func TestReverseDLPBlockAdaptiveSignalHonorsExemptDomain(t *testing.T) {
 	}
 }
 
-func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
+func TestReverseDLPWarnRecordsAdaptiveObservation(t *testing.T) {
 	cases := []struct {
 		name   string
 		header bool
@@ -360,8 +360,8 @@ func TestReverseDLPWarnRecordsAdaptiveNearMiss(t *testing.T) {
 				if score != 0 {
 					t.Fatalf("adaptive-exempt warn finding score = %.4f, want 0", score)
 				}
-			} else if want := session.SignalPoints[session.SignalNearMiss]; score != want {
-				t.Fatalf("warn finding score = %.4f, want near-miss score %.4f", score, want)
+			} else if want := session.SignalPoints[session.SignalWarning]; score != want {
+				t.Fatalf("warn finding score = %.4f, want observation score %.4f", score, want)
 			}
 		})
 	}

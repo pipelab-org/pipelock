@@ -7615,7 +7615,7 @@ func TestScanHTTPInput_A2AWarnAction_InfrastructureErrorNoSignal(t *testing.T) {
 	}
 }
 
-func TestScanHTTPInput_A2AWarnAction_ThreatStillNearMiss(t *testing.T) {
+func TestScanHTTPInput_A2AWarnAction_RecordsObservation(t *testing.T) {
 	sc := testScannerForHTTP(t)
 	a2aCfg := &config.A2AScanning{
 		Enabled: true,
@@ -7634,8 +7634,8 @@ func TestScanHTTPInput_A2AWarnAction_ThreatStillNearMiss(t *testing.T) {
 	if decision.Blocked != nil {
 		t.Fatalf("warn mode should not block threat A2A finding: %#v", decision.Blocked)
 	}
-	if len(rec.signals) != 1 || rec.signals[0] != session.SignalNearMiss {
-		t.Fatalf("threat A2A warn result must record SignalNearMiss; got signals=%v", rec.signals)
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalWarning {
+		t.Fatalf("threat A2A warn result must record SignalWarning; got signals=%v", rec.signals)
 	}
 }
 

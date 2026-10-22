@@ -279,9 +279,8 @@ func TestEvaluateMCPInputGates_CrossAgentLaunderingDoesNotResetTaint(t *testing.
 }
 
 // Done-state #2 (HTTP caller end-to-end): driving a hostile-contaminated
-// session through the full scanHTTPInput path records the cross-agent
-// escalation signal on the adaptive recorder.
-func TestScanHTTPInput_CrossAgentEscalationFires(t *testing.T) {
+// session through scanHTTPInput records exposure without enforcement points.
+func TestScanHTTPInput_AllowedCrossAgentRecordsObservation(t *testing.T) {
 	t.Parallel()
 	sc := newAdaptiveTestScanner()
 	defer sc.Close()
@@ -306,15 +305,14 @@ func TestScanHTTPInput_CrossAgentEscalationFires(t *testing.T) {
 		TaintCfg:    &cfg.Taint,
 	})
 
-	if !rec.hasSignal(session.SignalCrossAgentContamination) {
-		t.Fatal("hostile cross-agent emit must record SignalCrossAgentContamination through the HTTP caller")
+	if rec.hasSignal(session.SignalCrossAgentContamination) || !rec.hasSignal(session.SignalWarning) {
+		t.Fatal("allowed hostile cross-agent emit must record only an observation through the HTTP caller")
 	}
 }
 
 // Done-state #2 (stdio caller end-to-end): driving a hostile-contaminated
-// session through the full ForwardScannedInput path records the cross-agent
-// escalation signal on the adaptive recorder.
-func TestForwardScannedInput_CrossAgentEscalationFires(t *testing.T) {
+// session through ForwardScannedInput records exposure without enforcement points.
+func TestForwardScannedInput_AllowedCrossAgentRecordsObservation(t *testing.T) {
 	t.Parallel()
 	sc := newAdaptiveTestScanner()
 	defer sc.Close()
@@ -343,8 +341,8 @@ func TestForwardScannedInput_CrossAgentEscalationFires(t *testing.T) {
 		MCPProxyOpts{Scanner: sc, Rec: rec, AdaptiveCfg: adaptiveCfgEnabled(), TaintCfg: &cfg.Taint},
 	)
 
-	if !rec.hasSignal(session.SignalCrossAgentContamination) {
-		t.Fatal("hostile cross-agent emit must record SignalCrossAgentContamination through the stdio caller")
+	if rec.hasSignal(session.SignalCrossAgentContamination) || !rec.hasSignal(session.SignalWarning) {
+		t.Fatal("allowed hostile cross-agent emit must record only an observation through the stdio caller")
 	}
 }
 

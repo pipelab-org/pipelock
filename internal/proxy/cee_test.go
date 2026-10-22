@@ -567,6 +567,7 @@ func TestCeeRecordSignals_BothHits(t *testing.T) {
 	result := ceeResult{
 		EntropyHit:  true,
 		FragmentHit: true,
+		Blocked:     true,
 	}
 
 	// Fragment DLP contributes three points; entropy is score-neutral.
@@ -643,7 +644,7 @@ func TestCEERecordSignalsAndBlockAll_UsesCEEKey(t *testing.T) {
 	}
 
 	rec, blocked := ceeRecordSignalsAndBlockAll(ceeSignalParams{
-		Result: ceeResult{FragmentHit: true}, Sessions: sm, SessionKey: foldedKey,
+		Result: ceeResult{FragmentHit: true, Blocked: true}, Sessions: sm, SessionKey: foldedKey,
 		AdaptiveCfg: &adaptiveCfg, Logger: audit.NewNop(), Metrics: m,
 		ClientIP: testCEEClientIP, RequestID: testCEERequestID,
 	})
@@ -667,7 +668,7 @@ func TestCEEEntropyOnlyDoesNotScore(t *testing.T) {
 	if rec == nil || rec.ThreatScore() != 0 {
 		t.Fatalf("entropy-only CEE score = %v, want 0", rec)
 	}
-	ceeRecordSignals(ceeResult{EntropyHit: true, FragmentHit: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
+	ceeRecordSignals(ceeResult{EntropyHit: true, FragmentHit: true, Blocked: true}, sm, key, 1, audit.NewNop(), metrics.New(), testCEEClientIP, testCEERequestID)
 	if rec.ThreatScore() == 0 {
 		t.Fatal("fragment DLP in mixed CEE result must still score")
 	}

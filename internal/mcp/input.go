@@ -318,7 +318,9 @@ func ForwardScannedInput(
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
+	hadAdaptiveFinding := false
 	recordAdaptiveFinding := func(sig session.SignalType, scannerName, reason string) {
+		hadAdaptiveFinding = true
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
 			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
@@ -351,6 +353,7 @@ func ForwardScannedInput(
 		}
 		lineNum++
 		var denialAudit mcpDenialAudit
+		hadAdaptiveFinding = false
 		var deferredGeneration uint64
 		if ks != nil {
 			deferredGeneration = ks.DeferredGeneration()
@@ -548,12 +551,10 @@ func ForwardScannedInput(
 		// between DoW and chain, taint last).
 		scanEnabled := !opts.stdioInputScanDisabled
 		eval := evaluateMCPInputGatesStdio(stdioInputCtx, frame, line, trimmedLine, bindingCfg, opts, action, onParseError, scanEnabled)
-		// Cross-agent contamination escalation. Fired regardless of the gate
-		// outcome: the contaminated session already emitted across the agent
-		// boundary, so the adaptive signal must accumulate even when the call
-		// is otherwise allowed.
+		// Preserve cross-agent exposure evidence. Only an enforced denial or
+		// indeterminate risk state contributes enforcement points.
 		if eval.CrossAgentEscalate {
-			recordAdaptiveSignal(session.SignalCrossAgentContamination)
+			recordAdaptiveSignal(eval.CrossAgentObservation.AdaptiveSignal(eval.BlockingGate != ""))
 		}
 		verdict := eval.ContentVerdict
 		// Redaction evidence floor: if redaction scrubbed a pre-redaction DLP
@@ -811,7 +812,7 @@ func ForwardScannedInput(
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateAirlockHard, blockingGateAirlockMissing:
-			blockMessage := mcpAirlockBlockMessage(eval)
+			blockMessage := mcpAirlockDiagnostic(eval, opts, rec, logW)
 			airlockMsg := fmt.Sprintf("pipelock: input line %d: %s: %q", lineNum, blockMessage, enforcementTarget)
 			_, _ = fmt.Fprintln(logW, airlockMsg)
 			if auditLogger != nil {
@@ -838,7 +839,7 @@ func ForwardScannedInput(
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateDoW:
-			denialAudit = mcpDoWDenialAudit(opts, eval.DoWReason)
+			denialAudit = mcpDoWDenialAudit(opts, enforcementTarget, eval.DoWReason)
 			recordDoWMetric(m, config.ActionBlock, opts)
 			recordAdaptiveFinding(session.SignalBlock, scanner.ScannerDenialOfWallet, eval.DoWReason)
 			sendMCPDenial(opts, denialAudit, BlockedRequest{
@@ -853,7 +854,7 @@ func ForwardScannedInput(
 		case blockingGateFrozenTool:
 			frozenMsg := fmt.Sprintf("pipelock: input line %d: tools/call %q blocked by frozen tool inventory", lineNum, eval.FrozenToolName)
 			_, _ = fmt.Fprintln(logW, frozenMsg)
-			denialAudit = mcpFrozenDenialAudit()
+			denialAudit = mcpFrozenDenialAudit(opts, eval.FrozenToolName)
 			if m != nil {
 				m.RecordBlocked("mcp", "frozen_tool", 0, "")
 			}
@@ -904,15 +905,15 @@ func ForwardScannedInput(
 		}
 
 		// Non-blocking warn-level side effects from gates that did not
-		// short-circuit. A2A warn logs and records a near-miss unless the
-		// finding is adaptive-neutral. DoW warn: audit anomaly + near-miss
+		// short-circuit. A2A warn records a zero-point observation unless the
+		// finding is adaptive-neutral. DoW warn: audit anomaly + observation
 		// signal (the diagnostic log already ran above). Taint approved:
 		// audit the pre-approval decision so the operator sees the approval
 		// happened.
 		if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: a2a input warning (%s)\n", lineNum, eval.A2AResult.Reason)
 			if !eval.A2AResult.IsAdaptiveNeutral() {
-				recordAdaptiveFinding(session.SignalNearMiss, "a2a", eval.A2AResult.Reason)
+				recordAdaptiveFinding(session.SignalWarning, "a2a", eval.A2AResult.Reason)
 			}
 		}
 		if !eval.DoWAllowed && eval.DoWAction != "" {
@@ -920,7 +921,7 @@ func ForwardScannedInput(
 				auditLogger.LogAnomaly(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 			}
 			recordDoWMetric(m, config.ActionWarn, opts)
-			recordAdaptiveFinding(session.SignalNearMiss, scanner.ScannerDenialOfWallet, eval.DoWReason)
+			recordAdaptiveFinding(session.SignalWarning, scanner.ScannerDenialOfWallet, eval.DoWReason)
 		}
 		if eval.TaintApproved {
 			logTaintDecision()
@@ -952,7 +953,7 @@ func ForwardScannedInput(
 				case config.ActionWarn:
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: warning — %s request contains flagged content (%s)\n",
 						lineNum, verdict.Method, baselineDecision.Detail)
-					recordAdaptiveSignal(session.SignalNearMiss)
+					recordAdaptiveSignal(session.SignalWarning)
 				}
 			}
 			// block_all enforcement: deny ALL traffic (including clean) when the
@@ -968,7 +969,7 @@ func ForwardScannedInput(
 					IsNotification: isRPCNotification(verdict.ID),
 					LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked (session deny)", lineNum),
 					ErrorCode:      -32001,
-					ErrorMessage:   adaptiveBlockedReason,
+					ErrorMessage:   mcpAdaptiveBlockMessage(rec, adaptiveCfg, "session_deny", logW),
 				}, blockedCh)
 				continue
 			}
@@ -1148,13 +1149,15 @@ func ForwardScannedInput(
 				return
 			}
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
-			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-				sessionKey: "default",
-				reason:     adaptiveRecoveryClean,
-				requestID:  canonicalID(verdict.ID),
-				logger:     auditLogger,
-				metrics:    m,
-			}, stdioInputCtx))
+			if !hadAdaptiveFinding {
+				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+					sessionKey: "default",
+					reason:     adaptiveRecoveryClean,
+					requestID:  canonicalID(verdict.ID),
+					logger:     auditLogger,
+					metrics:    m,
+				}, stdioInputCtx))
+			}
 			continue
 		}
 
@@ -1213,11 +1216,13 @@ func ForwardScannedInput(
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 		entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		originalAction := effectiveAction
+		scoringAction := originalAction
 		numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 		}
 		if effectiveAction != originalAction {
+			errMsg = mcpAdaptiveBlockMessage(rec, adaptiveCfg, "mcp_input", logW)
 			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
 			if m != nil {
 				m.RecordAdaptiveUpgrade(originalAction, effectiveAction, session.EscalationLabel(rec.EscalationLevel()))
@@ -1234,6 +1239,11 @@ func ForwardScannedInput(
 				// deviation detail (reasonStr was built before this append).
 				reasonStr = joinStrings(reasons)
 				effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+				scoringAction = mergeAction(scoringAction, baselineDecision.Action)
+				if baselineDecision.Action == config.ActionBlock || baselineDecision.Action == config.ActionAsk {
+					// Informational card observations cannot erase an independent baseline refusal.
+					numberOnlyDecision = false
+				}
 				if baselineDecision.Action == config.ActionAsk {
 					errCode = -32001
 					errMsg = "pipelock: MCP request blocked by behavioral baseline"
@@ -1485,6 +1495,11 @@ func ForwardScannedInput(
 			argDigest := argsDigest(deferToolArgs)
 			receiptSettle := &deferredReceiptSettlement{}
 			var terminalSlot mcpDeferredTerminal
+			// A receipt or journal failure can downgrade a prepared allow to
+			// deny. Release its upstream write lock and send claim before the
+			// finalizer's synchronous audit sinks or downstream delivery can
+			// block unrelated upstream work. OnceFunc also makes the manager's
+			// deferred cleanup safe after this early denial cleanup.
 			var finishDeniedRelease func()
 			holdErr := manager.Hold(deferred.HeldAction{
 				DeferID:       actionID,
@@ -1824,20 +1839,23 @@ func ForwardScannedInput(
 		switch {
 		case entropyOnlyDecision || numberOnlyDecision:
 			// Heuristic findings do not affect the adaptive score.
-		case effectiveAction == config.ActionBlock:
-			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+		case effectiveAction == config.ActionBlock || effectiveAction == config.ActionAsk:
+			// Input ask falls back to refusal, so it retains block scoring.
+			recordAdaptiveFinding(decide.UpgradedWarningSignal(scoringAction, session.SignalBlock), "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case len(reasons) > 0:
-			recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
+			recordAdaptiveFinding(session.SignalWarning, "mcp_input", joinStrings(reasons))
 		default:
-			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-				sessionKey: "default",
-				reason:     adaptiveRecoveryClean,
-				requestID:  canonicalID(verdict.ID),
-				logger:     auditLogger,
-				metrics:    m,
-			}, stdioInputCtx))
+			if !hadAdaptiveFinding {
+				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+					sessionKey: "default",
+					reason:     adaptiveRecoveryClean,
+					requestID:  canonicalID(verdict.ID),
+					logger:     auditLogger,
+					metrics:    m,
+				}, stdioInputCtx))
+			}
 		}
 
 		// Action receipt: emit for tools/call decisions only.

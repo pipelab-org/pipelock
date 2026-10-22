@@ -450,9 +450,7 @@ func TestRunProxy_AirlockHardContainsStdioToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunProxy: %v", err)
 	}
-	if !strings.Contains(stdout.String(), "tool call blocked by hard airlock") {
-		t.Fatalf("stdout = %q, want hard-airlock error", stdout.String())
-	}
+	assertAirlockCallerRefusal(t, stdout.String())
 	if !strings.Contains(stdout.String(), `"block_reason":"`+string(blockreason.AirlockActive)+`"`) {
 		t.Fatalf("stdout = %q, want structured airlock block reason", stdout.String())
 	}
@@ -479,9 +477,7 @@ func TestRunHTTPProxy_AirlockHardContainsToolCall(t *testing.T) {
 	if got := upstreamCalls.Load(); got != 0 {
 		t.Fatalf("upstream calls = %d, want 0", got)
 	}
-	if !strings.Contains(stdout.String(), "tool call blocked by hard airlock") {
-		t.Fatalf("stdout = %q, want hard-airlock error", stdout.String())
-	}
+	assertAirlockCallerRefusal(t, stdout.String())
 }
 
 func TestRunWSProxy_AirlockHardContainsToolCall(t *testing.T) {
@@ -500,9 +496,7 @@ func TestRunWSProxy_AirlockHardContainsToolCall(t *testing.T) {
 	if got := frames.Load(); got != 0 {
 		t.Fatalf("upstream frames = %d, want 0", got)
 	}
-	if !strings.Contains(stdout.String(), "tool call blocked by hard airlock") {
-		t.Fatalf("stdout = %q, want hard-airlock error", stdout.String())
-	}
+	assertAirlockCallerRefusal(t, stdout.String())
 }
 
 func TestRunHTTPListenerProxy_AirlockHardContainsOnlyBoundClient(t *testing.T) {
@@ -540,9 +534,7 @@ func TestRunHTTPListenerProxy_AirlockHardContainsOnlyBoundClient(t *testing.T) {
 	if got := upstreamCalls.Load(); got != afterSetup {
 		t.Fatalf("contained client reached upstream: calls = %d, want %d", got, afterSetup)
 	}
-	if !strings.Contains(response, "tool call blocked by hard airlock") {
-		t.Fatalf("response = %q, want hard-airlock error", response)
-	}
+	assertAirlockCallerRefusal(t, response)
 	if !strings.Contains(response, `"block_reason":"`+string(blockreason.AirlockActive)+`"`) {
 		t.Fatalf("response = %q, want structured airlock block reason", response)
 	}
@@ -551,7 +543,7 @@ func TestRunHTTPListenerProxy_AirlockHardContainsOnlyBoundClient(t *testing.T) {
 	if got := upstreamCalls.Load(); got != afterSetup+1 {
 		t.Fatalf("innocent client did not reach upstream: calls = %d, want %d", got, afterSetup+1)
 	}
-	if strings.Contains(response, "hard airlock") {
+	if strings.Contains(response, `"error"`) {
 		t.Fatalf("innocent client was cross-contained: %s", response)
 	}
 }
@@ -594,9 +586,7 @@ func TestRunHTTPListenerProxy_AdaptiveCriticalEntersHardAirlock(t *testing.T) {
 	if got := upstreamCalls.Load(); got != afterSetup {
 		t.Fatalf("post-escalation tool call reached upstream: calls = %d, want %d", got, afterSetup)
 	}
-	if !strings.Contains(response, "tool call blocked by hard airlock") {
-		t.Fatalf("response = %q, want hard-airlock error", response)
-	}
+	assertAirlockCallerRefusal(t, response)
 	unrelatedReload := cfg
 	unrelatedReload.Timers.HardMinutes++
 	liveCfg.Store(&unrelatedReload)
@@ -604,9 +594,7 @@ func TestRunHTTPListenerProxy_AdaptiveCriticalEntersHardAirlock(t *testing.T) {
 	if got := upstreamCalls.Load(); got != afterSetup {
 		t.Fatalf("tool call after unrelated reload reached upstream: calls = %d, want %d", got, afterSetup)
 	}
-	if !strings.Contains(response, "tool call blocked by hard airlock") {
-		t.Fatalf("response after unrelated reload = %q, want hard-airlock error", response)
-	}
+	assertAirlockCallerRefusal(t, response)
 	disabledReload := unrelatedReload
 	disabledReload.Enabled = false
 	liveCfg.Store(&disabledReload)
@@ -661,9 +649,7 @@ func TestRunHTTPListenerProxy_AirlockEnableReloadDeniesHeaderlessToolCall(t *tes
 			if got := upstreamCalls.Load(); got != 1 {
 				t.Fatalf("headerless call after enable reload reached upstream: calls = %d, want 1", got)
 			}
-			if !strings.Contains(response, "airlock tier is unavailable") {
-				t.Fatalf("response after enable reload = %q, want unavailable-tier denial", response)
-			}
+			assertAirlockCallerRefusal(t, response)
 		})
 	}
 }
@@ -758,9 +744,7 @@ func TestRunHTTPListenerProxy_HeaderlessToolCallCannotEscapeHardClient(t *testin
 	if got := upstreamCalls.Load(); got != afterSetup {
 		t.Fatalf("headerless tool call escaped hard client: calls = %d, want %d", got, afterSetup)
 	}
-	if !strings.Contains(response, "airlock tier is unavailable") {
-		t.Fatalf("response = %q, want explicit unavailable-tier denial", response)
-	}
+	assertAirlockCallerRefusal(t, response)
 
 	response = listenerPost(t, baseURL, "", jsonToolsList)
 	if strings.Contains(response, `"error"`) {
@@ -823,5 +807,31 @@ func TestRunHTTPListenerProxy_AirlockAuditUsesRequestClientIP(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no %s event in %s", audit.EventAirlockDeny, data)
+	}
+}
+
+func assertAirlockCallerRefusal(t *testing.T, response string) {
+	t.Helper()
+	var body struct {
+		Error struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+			Data    struct {
+				BlockReason string `json:"block_reason"`
+			} `json:"data"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(response), &body); err != nil {
+		t.Fatalf("decode airlock refusal: %v", err)
+	}
+	if body.Error.Code != -32001 || body.Error.Data.BlockReason != string(blockreason.AirlockActive) || !strings.Contains(body.Error.Message, `category="airlock"`) {
+		t.Fatalf("response = %q, want structured airlock refusal", response)
+	}
+	assertAdaptiveCallerPrivacy(t, body.Error.Message)
+	assertAdaptiveCallerPrivacy(t, response)
+	for _, field := range []string{"score", "threshold", "escalation_threshold", "level", "duration", "minutes", "seconds", "recovery", "decay", "hard_minutes", "soft_minutes", "clean_request_decay", "clean_requests_to_deescalate"} {
+		if strings.Contains(response, `"`+field+`"`) {
+			t.Errorf("refusal exposes adaptive field %q: %s", field, response)
+		}
 	}
 }

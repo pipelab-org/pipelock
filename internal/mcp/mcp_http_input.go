@@ -310,7 +310,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// Helper: record an adaptive signal and handle escalation side-effects.
 	// Eliminates repeated nil/enabled guards at every call site.
+	hadAdaptiveFinding := false
 	recordAdaptiveFinding := func(sig session.SignalType, scannerName, reason string) {
+		hadAdaptiveFinding = true
 		if adaptiveCfg != nil && adaptiveCfg.Enabled {
 			recordMCPAdaptiveSignal(opts, rec, sig, decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
@@ -454,12 +456,10 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// a composite verdict and the first gate that short-circuited,
 	// preserving per-gate block semantics and ordering.
 	eval := EvaluateMCPInputGates(inputScanCtx, frame, msg, sessionKey, opts, action, onParseError, scanEnabled)
-	// Cross-agent contamination escalation. Fired regardless of the gate
-	// outcome: the contaminated session already emitted across the agent
-	// boundary, so the adaptive signal must accumulate even when the call is
-	// otherwise allowed.
+	// Preserve cross-agent exposure evidence on every gate outcome. Only
+	// enforced denials or unreadable risk state add enforcement points.
 	if eval.CrossAgentEscalate {
-		recordAdaptiveSignal(session.SignalCrossAgentContamination)
+		recordAdaptiveSignal(eval.CrossAgentObservation.AdaptiveSignal(eval.BlockingGate != ""))
 	}
 	verdict := eval.ContentVerdict
 	policyVerdict := eval.PolicyVerdict
@@ -548,7 +548,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	case blockingGateAirlockHard, blockingGateAirlockMissing:
 		denialAudit = mcpAirlockDenialAudit()
-		blockMessage := mcpAirlockBlockMessage(eval)
+		blockMessage := mcpAirlockDiagnostic(eval, opts, rec, logW)
 		_, _ = fmt.Fprintf(logW, "%s: %q\n", blockMessage, enforcementTarget)
 		if auditLogger != nil {
 			warnCtx := scanner.DLPWarnContextFromCtx(opts.warnContext())
@@ -579,7 +579,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case blockingGateDoW:
 		_, _ = fmt.Fprintf(logW, "pipelock: %s %q DoW %s: %s (%s)\n",
 			enforcementKind, enforcementTarget, eval.DoWAction, eval.DoWReason, eval.DoWBudgetType)
-		denialAudit = mcpDoWDenialAudit(opts, eval.DoWReason)
+		denialAudit = mcpDoWDenialAudit(opts, enforcementTarget, eval.DoWReason)
 		recordDoWMetric(m, config.ActionBlock, opts)
 		recordAdaptiveFinding(session.SignalBlock, scanner.ScannerDenialOfWallet, eval.DoWReason)
 		receiptVerdict = config.ActionBlock
@@ -638,7 +638,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	if !eval.A2AResult.Clean && eval.A2AEffectiveAction != "" && eval.A2AEffectiveAction != config.ActionBlock {
 		_, _ = fmt.Fprintf(logW, "pipelock: a2a input: warning (%s)\n", eval.A2AResult.Reason)
 		if !eval.A2AResult.IsAdaptiveNeutral() {
-			recordAdaptiveFinding(session.SignalNearMiss, "a2a", eval.A2AResult.Reason)
+			recordAdaptiveFinding(session.SignalWarning, "a2a", eval.A2AResult.Reason)
 		}
 	}
 	if eval.DoWAction != "" && !eval.DoWAllowed && eval.DoWAction != config.ActionBlock {
@@ -648,7 +648,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			auditLogger.LogAnomaly(mustMCPDoWAuditContext(auditLogger, enforcementTarget, opts), scanner.ScannerDenialOfWallet, eval.DoWReason, 0)
 		}
 		recordDoWMetric(m, config.ActionWarn, opts)
-		recordAdaptiveFinding(session.SignalNearMiss, scanner.ScannerDenialOfWallet, eval.DoWReason)
+		recordAdaptiveFinding(session.SignalWarning, scanner.ScannerDenialOfWallet, eval.DoWReason)
 	}
 	// Chain warn has already been recorded as ChainAction on eval;
 	// log it here so the action-merge section below can fold it in.
@@ -724,7 +724,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				return result
 			case config.ActionWarn:
 				_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", baselineDecision.Detail)
-				recordAdaptiveSignal(session.SignalNearMiss)
+				recordAdaptiveSignal(session.SignalWarning)
 			}
 		}
 		// block_all enforcement: deny ALL traffic (including clean) when the
@@ -741,7 +741,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     "blocked (session deny)",
 				ErrorCode:      -32001,
-				ErrorMessage:   adaptiveBlockedReason,
+				ErrorMessage:   mcpAdaptiveBlockMessage(rec, adaptiveCfg, "session_deny", logW),
 			}
 			return result
 		}
@@ -855,13 +855,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptVerdict = config.ActionAllow
 			receiptContractGate = &contractGate
 		}
-		recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-			sessionKey: auditSessionKey,
-			reason:     adaptiveRecoveryClean,
-			requestID:  canonicalID(verdict.ID),
-			logger:     auditLogger,
-			metrics:    m,
-		}, opts.warnContext()))
+		if !hadAdaptiveFinding {
+			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+				sessionKey: auditSessionKey,
+				reason:     adaptiveRecoveryClean,
+				requestID:  canonicalID(verdict.ID),
+				logger:     auditLogger,
+				metrics:    m,
+			}, opts.warnContext()))
+		}
 		return result
 	}
 
@@ -919,10 +921,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	originalAction := effectiveAction
+	scoringAction := originalAction
 	if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 	}
 	if effectiveAction != originalAction {
+		errMsg = mcpAdaptiveBlockMessage(rec, adaptiveCfg, "mcp_input", logW)
 		levelLabel := session.EscalationLabel(rec.EscalationLevel())
 		_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade %s -> %s (level %s)\n", originalAction, effectiveAction, levelLabel)
 		if auditLogger != nil {
@@ -940,6 +944,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			baselineAction = baselineDecision.Action
 			reasons = append(reasons, baselineDecision.Detail)
 			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
+			scoringAction = mergeAction(scoringAction, baselineDecision.Action)
 			if baselineDecision.Action == config.ActionAsk {
 				errCode = -32001
 				errMsg = "pipelock: MCP request blocked by behavioral baseline"
@@ -1017,7 +1022,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
 		denialAudit = mcpInputDecisionBlockAudit(verdict, contentBlock, policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 		if !entropyOnlyDecision {
-			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
+			recordAdaptiveFinding(decide.UpgradedWarningSignal(scoringAction, session.SignalBlock), "mcp_input", joinStrings(reasons))
 		}
 		receiptVerdict = effectiveAction
 		blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
@@ -1285,7 +1290,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
 			if !entropyOnlyDecision && !numberOnlyDecision {
-				recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
+				recordAdaptiveFinding(session.SignalWarning, "mcp_input", joinStrings(reasons))
 			}
 		}
 		// Cross-request exfiltration check even in warn mode.

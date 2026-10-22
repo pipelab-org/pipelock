@@ -184,6 +184,13 @@ func NewRequestLogContext(requestID string) LogContext {
 	return ctx
 }
 
+// NewClientRequestLogContext creates a LogContext for a request-scoped
+// decision whose explanation must not echo the request URL or target.
+func NewClientRequestLogContext(method, clientIP, requestID string) LogContext {
+	ctx, _ := newLogContext(LogContextOpts{Method: method, ClientIP: clientIP, RequestID: requestID})
+	return ctx
+}
+
 // NewMethodLogContext creates a LogContext scoped only to an operation name.
 func NewMethodLogContext(method string) LogContext {
 	ctx, _ := newLogContext(LogContextOpts{Method: method})

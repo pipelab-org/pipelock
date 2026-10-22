@@ -615,7 +615,7 @@ func (i Info) CloseFramePayload() string {
 }
 
 // mustMarshal is json.Marshal with a known-good fixed-shape struct. The
-// struct has only string fields (no interface{}, no time.Time) so
+// struct has only strings, so
 // json.Marshal cannot fail on real input. The error fallback is defensive
 // code; it would surface the BlockReasonOverflow sentinel rather than a
 // silent zero value.

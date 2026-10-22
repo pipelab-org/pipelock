@@ -983,15 +983,17 @@ func RunHTTPListenerProxy(
 					emitMCPOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, "error", -1, outcomeReason, requestBaseOpts.requireReceipts())
 				}
 			}()
-			withhold := func(reason string) {
-				if denialAudit.kind == "" {
-					denialAudit = mcpListenerWithholdAudit(reason)
-				}
+			withhold := func(reason string, callerDetail ...string) {
+				w.setResponseDenial(reason)
 				outcomeReason = reason
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusBadGateway)
-				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed")))
+				message := "upstream HTTP request failed"
+				if len(callerDetail) > 0 {
+					message = callerDetail[0]
+				}
+				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("%s", message)))
 			}
 			// 407 is the listener's own credential challenge. An upstream 407
 			// relayed as-is would read as Pipelock refusing the client's
@@ -1004,7 +1006,8 @@ func RunHTTPListenerProxy(
 			// A session escalated to block every response gets no upstream
 			// content, refusals included, matching ForwardScanned.
 			if reqRec != nil && decide.UpgradeAction("", reqRec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
-				withhold("session escalation blocks responses")
+				detail := mcpAdaptiveBlockMessage(reqRec, adaptiveCfg, "mcp_response_scan", safeLogW)
+				withhold("session escalation blocks responses", detail)
 				return true
 			}
 			reply, err := readUpstreamClientError(upResp)
@@ -1021,6 +1024,9 @@ func RunHTTPListenerProxy(
 			}
 			if ok, finding := reply.scan(requestBaseOpts); !ok {
 				denialAudit = mcpListenerReplyBlockAudit(finding)
+				// The clean-only error relay refuses independently of adaptive
+				// upgrades and the tool-result response action. Preserve that
+				// refusal's score even when ordinary responses are warn-only.
 				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
 				withhold(finding)
 				return true
@@ -1029,8 +1035,12 @@ func RunHTTPListenerProxy(
 			relayOpts.Rec = reqRec
 			relayOpts.AdaptiveCfg = adaptiveCfg
 			relayOpts.AdaptiveCfgFn = nil
-			if ok, reason := reply.writeIfActive(w, clientState, relayOpts); !ok {
-				withhold(reason)
+			if ok, reason, detail := reply.writeIfActive(w, clientState, relayOpts); !ok {
+				if detail != "" {
+					withhold(reason, detail)
+				} else {
+					withhold(reason)
+				}
 			}
 			return true
 		}
@@ -1227,6 +1237,9 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
+			// Upstream replies stay response-side even when a live gate reuses
+			// an admission or inspection descriptor.
+			w.direction = "response"
 			// The client carries no total timeout so subscriptions/listen can stream;
 			// bound the gap between body reads instead, so an upstream that sends
 			// headers and then stalls cannot pin this goroutine and both connections.
@@ -1389,6 +1402,9 @@ func RunHTTPListenerProxy(
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("upstream HTTP request failed")))
 				return
 			}
+			// Upstream replies stay response-side even when a live gate reuses
+			// an admission or inspection descriptor.
+			w.direction = "response"
 			// The client carries no total timeout so subscriptions/listen can stream;
 			// bound the gap between body reads instead, so an upstream that sends
 			// headers and then stalls cannot pin this goroutine and both connections.
@@ -1876,6 +1892,9 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("upstream HTTP request failed")))
 			return
 		}
+		// Upstream replies stay response-side even when a live gate reuses
+		// an admission or inspection descriptor.
+		w.direction = "response"
 		// The client carries no total timeout so subscriptions/listen can stream;
 		// bound the gap between body reads instead, so an upstream that sends
 		// headers and then stalls cannot pin this goroutine and both connections.

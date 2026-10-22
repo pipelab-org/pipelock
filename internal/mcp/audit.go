@@ -260,8 +260,8 @@ func recordDoWMetric(m *metrics.Metrics, action string, opts MCPProxyOpts) {
 	m.RecordDenialOfWalletEvent(action, agent, attribution.Trust)
 }
 
-func mcpDoWDenialAudit(opts MCPProxyOpts, reason string) mcpDenialAudit {
-	ctx := mustMCPDoWAuditContext(opts.AuditLogger, "mcp_input", opts)
+func mcpDoWDenialAudit(opts MCPProxyOpts, target, reason string) mcpDenialAudit {
+	ctx := mustMCPDoWAuditContext(opts.AuditLogger, target, opts)
 	return mcpDenialAudit{kind: "dow", pattern: reason, context: &ctx}
 }
 
@@ -374,7 +374,12 @@ func mcpDeferDisabledDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: 
 
 func mcpDeferHoldDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "defer_hold"} }
 
-func mcpFrozenDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "frozen"} }
+// Preserve the released frozen-tool resource: it is the refused tool name,
+// unlike content-bearing resources that the audit logger redacts.
+func mcpFrozenDenialAudit(opts MCPProxyOpts, toolName string) mcpDenialAudit {
+	ctx := mustMCPAuditContext(opts.AuditLogger, "MCP", toolName)
+	return mcpDenialAudit{kind: "frozen", context: &ctx}
+}
 
 func mcpIdentityMcpResponseDenialAudit() mcpDenialAudit {
 	return mcpDenialAudit{kind: "identity_mcp_response"}
@@ -420,11 +425,11 @@ func mcpResponseContentDenialAudit(pattern string) mcpDenialAudit {
 	return mcpDenialAudit{kind: "response_content", pattern: firstNonEmpty(pattern, "response scanning blocked")}
 }
 
-func mcpToolResultDenialAudit(resourceLimit string) mcpDenialAudit {
+func mcpToolResultDenialAudit(resourceLimit, reason string) mcpDenialAudit {
 	if resourceLimit != "" {
-		return mcpDenialAudit{kind: "tool_inspection", pattern: "tools/list cannot be safely inspected: " + resourceLimit}
+		return mcpDenialAudit{kind: "tool_inspection", pattern: reason}
 	}
-	return mcpDenialAudit{kind: "tool_finding", pattern: "tool poisoning detected in tools/list"}
+	return mcpDenialAudit{kind: "tool_finding", pattern: reason}
 }
 
 func mcpCEEFragmentDenialAudit(pattern string) mcpDenialAudit {

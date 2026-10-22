@@ -72,9 +72,11 @@ func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTar
 	loggedResource = ctx.resource
 	// MCP block producers use these literal protocol markers. Preserve only
 	// the fixed markers, never an argument, resource URI, or tool name.
-	if ctx.mcp {
+	// DoW retains a client-chosen tool name as its resource. Even a name
+	// equal to a protocol marker keeps its released content redaction.
+	if ctx.mcp && scanner != scannerpkg.ScannerDenialOfWallet {
 		switch ctx.resource {
-		case "mcp_input", "mcp_listener_header", "mcp_response", "mcp_redirect_output", "upstream_error_reply", "mcp-input", "mcp_listener", "mcp_startup":
+		case "mcp_input", "mcp_listener_header", "mcp_response", "mcp_redirect_output", "upstream_error_reply", "mcp_listener", "mcp_startup":
 			return redactContentBearingURL(ctx.url), redactContentBearingURL(ctx.target), ctx.resource
 		}
 	}

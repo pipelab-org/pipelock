@@ -37,7 +37,7 @@ func TestMCPDenialCatalog(t *testing.T) {
 		if spec.label == "" || !slices.Contains(classes, spec.class) {
 			t.Errorf("invalid denial spec %+v", spec)
 		}
-		if !slices.Contains([]string{"mcp_input", "mcp_response", "mcp_listener_header", "mcp_redirect_output", "upstream_error_reply", "mcp-input", "mcp_listener", "mcp_startup"}, spec.resource) {
+		if !slices.Contains([]string{"mcp_input", "mcp_response", "mcp_listener_header", "mcp_redirect_output", "upstream_error_reply", "mcp-input", "mcp_listener", "mcp_startup", "server_response", "tools/list"}, spec.resource) {
 			t.Errorf("unsafe resource in %+v", spec)
 		}
 		if scanner.OperatorHintForResult(spec.label, spec.reason) == "" {

@@ -1399,8 +1399,8 @@ type SessionProfiling struct {
 }
 
 // AdaptiveEnforcement configures per-session threat scoring with escalation.
-// Score accumulates from DLP near-misses and blocks. When threshold is exceeded,
-// the session's enforcement level escalates (audit->warn or warn->block).
+// Enforced findings accumulate score; warnings are observations without points.
+// Crossing a threshold applies the configured per-level enforcement upgrades.
 type AdaptiveEnforcement struct {
 	Enabled                   bool             `yaml:"enabled"`
 	EscalationThreshold       float64          `yaml:"escalation_threshold"`         // points before escalation

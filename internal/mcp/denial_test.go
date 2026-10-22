@@ -363,6 +363,22 @@ func TestMCPDenialListenerSessionLayerDescriptors(t *testing.T) {
 // error-reply relay must label it like the JSON and SSE paths, not as an
 // infrastructure failure.
 func TestMCPDenialListenerRevokedStateWithholdLabel(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
+	var descriptor mcpDenialAudit
+	writer := &mcpListenerDenialWriter{ResponseWriter: httptest.NewRecorder(), opts: MCPProxyOpts{AuditLogger: logger}, descriptor: &descriptor}
+	writer.setResponseDenial("listener state revoked")
+	writer.WriteHeader(http.StatusBadGateway)
+	if _, err := writer.Write([]byte(`{"error":"withheld"}`)); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"scanner":"mcp_protocol"`, `"block_class":"protective"`, `"direction":"response"`, `"transport":"mcp_http_listener"`} {
+		if !strings.Contains(events.String(), field) {
+			t.Fatalf("revoked-state response lost %s: %s", field, events.String())
+		}
+	}
+	if got := strings.Count(events.String(), `"event":"blocked"`); got != 1 {
+		t.Fatalf("got %d terminal events", got)
+	}
 	if got := mcpListenerWithholdAudit("listener state revoked").kind; got != "listener_admission" {
 		t.Fatalf("revoked state withhold kind=%s want listener_admission", got)
 	}

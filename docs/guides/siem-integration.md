@@ -148,9 +148,27 @@ agent-threat attributes. MCP operational blocks retain their native OTLP
 record. Each finalized denial attempts one canonical `blocked` emission before
 reply delivery or a deliberate silent drop. Sink delivery remains best effort.
 `protocol: mcp`, `transport`, and `direction` identify the trusted MCP route,
-including CEE events. HTTP events retain their existing field set. The new input and redirect failure events use fixed protocol resource
-markers and omit request arguments, header values, tool names, and response
-bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
+including CEE events. HTTP events retain their existing field set. MCP `resource` values follow these contracts. Existing content-bearing
+resources retain audit redaction; route fields do not make their content safe.
+
+| Denial surface | Serialized `resource` |
+|---|---|
+| Tool inventory scanning (`mcp_tool_scanning`) | `tools/list` |
+| Frozen tool inventory (`frozen_tool`) | Refused tool name |
+| Response content, provenance, media policy, denial-of-wallet, and CEE | `[redacted]` |
+| Newly logged input failures | `mcp_input` |
+| Listener header failures | `mcp_listener_header` |
+| Newly logged response failures | `mcp_response` |
+| Redirect output failures | `mcp_redirect_output` |
+| Upstream error reply scanning | `upstream_error_reply` |
+| Listener admission and inspection failures | `mcp_listener` |
+| Startup refusals | `mcp_startup` |
+
+The tool inventory and frozen-tool resource inputs predate this finalizer and
+remain compatible with released versions. Tool scanning now uses the documented
+`mcp_tool_scanning` label; versions using the older `tool_scanning` spelling
+redact its resource. New failure markers omit request arguments, header values,
+and response bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
 select `mcp_input_dlp`, `mcp_header_dlp`, and `mcp_redirect_output_dlp` when MCP
 blocks are in scope.
 

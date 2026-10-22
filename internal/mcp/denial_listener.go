@@ -13,6 +13,16 @@ type mcpListenerDenialWriter struct {
 	opts       MCPProxyOpts
 	descriptor *mcpDenialAudit
 	terminal   *mcpTerminalDecision
+	direction  string
+}
+
+// A withheld upstream reply is a response even when revocation reuses an
+// admission descriptor. Keep that route independent of its label and resource.
+func (w *mcpListenerDenialWriter) setResponseDenial(reason string) {
+	w.direction = "response"
+	if w.descriptor.kind == "" {
+		*w.descriptor = mcpListenerWithholdAudit(reason)
+	}
 }
 
 func (w *mcpListenerDenialWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -21,11 +31,7 @@ func (w *mcpListenerDenialWriter) decision(reply []byte) *mcpDenial {
 		return nil
 	}
 	if w.terminal == nil {
-		direction := "input"
-		spec, _ := denialSpec(w.descriptor.kind)
-		if spec.resource == "mcp_response" || spec.resource == "upstream_error_reply" || w.descriptor.kind == "listener_inspection" {
-			direction = "response"
-		}
+		direction := firstNonEmpty(w.direction, "input")
 		opts := w.opts
 		opts.Transport = "mcp_http_listener"
 		w.terminal = newMCPDenial(opts, *w.descriptor, direction, nil).decision
