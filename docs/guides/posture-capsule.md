@@ -110,7 +110,7 @@ Flags:
 Three named policies ship with the current `PolicyVersion = "2"`:
 
 - **`enterprise`** (default) — standard hard gates. Suitable for most environments. Zero discovered MCP servers is a warning rather than a hard failure so non-MCP deployments and empty home directories still verify.
-- **`strict`** — recommended for new installations that deliberately target MCP coverage. Requires flight recorder active, MCP discovery to have found at least one server (zero discovered is a hard failure, closes the vacuous-truth gap), receipts fresh within `--max-receipt-age`, and no parse errors in discovery.
+- **`strict`** — recommended for new installations that deliberately target MCP coverage. Requires flight recorder active, MCP discovery to have found at least one server (zero discovered is a hard failure, closes the vacuous-truth gap), receipts fresh within `--max-receipt-age`, and no parse errors or unknown entries in discovery. Discovery reads configuration files and can't confirm what a client launches, so it reports wrapped servers as unconfirmed and capsules count them as unknown. Strict therefore fails while any MCP server is configured; see [discovery coverage](../cli/discover.md).
 - **`none`** — no named policy gates; only the minimum-score gate applies. Useful for pipelines that want to enforce score but not the opinionated MCP/recorder gates.
 
 The policy evaluation produces hard failures (gate-blocking) and warnings (informational). JSON output lists both categories separately.
@@ -156,10 +156,10 @@ Minimal example:
       "high_risk":0,
       "parse_errors":0,
       "protected_other":0,
-      "protected_pipelock":2,
+      "protected_pipelock":0,
       "total_clients":1,
       "total_servers":2,
-      "unknown":0,
+      "unknown":2,
       "unprotected":0
     },
     "flight_recorder":{

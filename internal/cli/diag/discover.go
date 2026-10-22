@@ -42,7 +42,7 @@ Wrapper detection is a file observation: unchecked client launch settings
 leave wrapped entries unconfirmed. See docs/cli/discover.md for coverage.
 
 Exit codes:
-  0  All servers protected (or none found)
+  0  No servers found, or every server has confirmed protection evidence
   1  Unprotected, unconfirmed, unknown, or unparseable configs found
   2  Usage or runtime error
 
