@@ -14,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -217,6 +218,55 @@ func TestHTTPListenerUpstreamErrorReplyBlockAuditEvent(t *testing.T) {
 	}
 	if strings.Contains(got, reply) {
 		t.Fatalf("error reply audit leaked reply bytes: %s", got)
+	}
+}
+
+func TestMCPListenerScanFailureAuditClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name, scannerName, wantHint, rejectHint string
+		log                                     func(*audit.Logger)
+	}{
+		{"header scan failure", scanner.AuditResponseScan, "decoded MCP parameter header could not be scanned", "upstream response", func(logger *audit.Logger) {
+			logMCPListenerHeaderBlock(logger, &mcpListenerHeaderDLPResult{reason: blockreason.ParseError})
+		}},
+		{"upstream reply scan failure", scanner.AuditResponseScan, "scan-integrity failure", "", func(logger *audit.Logger) {
+			logMCPListenerReplyBlock(logger, "uninspectable reply")
+		}},
+		{"upstream scanner unavailable", scanner.AuditResponseScan, "Investigate scanner initialization", "upstream response", func(logger *audit.Logger) {
+			logMCPListenerReplyBlock(logger, "response scanner unavailable")
+		}},
+		{"upstream unknown scan result", scanner.AuditResponseScan, "non-clean verdict without a pattern finding", "upstream response", func(logger *audit.Logger) {
+			logMCPListenerReplyBlock(logger, "response scan finding")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var events bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			tc.log(logger)
+			got := events.String()
+			if !strings.Contains(got, `"event":"blocked"`) || !strings.Contains(got, `"scanner":"`+tc.scannerName+`"`) {
+				t.Fatalf("scan failure block event missing: %s", got)
+			}
+			if strings.Contains(got, `"mitre_technique"`) || !strings.Contains(got, tc.wantHint) ||
+				(tc.rejectHint != "" && strings.Contains(got, tc.rejectHint)) {
+				t.Fatalf("scan failure reported as a pattern attack or gave the wrong guidance: %s", got)
+			}
+		})
+	}
+
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	logMCPListenerReplyBlock(logger, "injection pattern Prompt Injection")
+	if !strings.Contains(events.String(), `"mitre_technique":"T1059"`) {
+		t.Fatalf("real injection finding lost its attack classification: %s", events.String())
 	}
 }
 

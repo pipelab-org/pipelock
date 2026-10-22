@@ -93,23 +93,41 @@ func logMCPListenerHeaderBlock(logger *audit.Logger, result *mcpListenerHeaderDL
 	}
 	_, pattern := listenerHeaderBlockClassification(result)
 	scannerName := scanner.ScannerParser
+	detail := audit.BlockDetail{}
 	switch {
 	case len(result.matches) > 0:
 		scannerName = scanner.ScannerDLP
 	case result.reason == blockreason.PromptInjection:
 		scannerName = scanner.AuditResponseScan
+	case result.reason == blockreason.ParseError:
+		// The decoded header could not be scanned; it is not evidence of
+		// an attack pattern or a malformed client header.
+		scannerName = scanner.AuditResponseScan
+		pattern = "response scan parse error in MCP parameter header"
+		detail.Class = audit.BlockClassInfrastructureError
 	}
-	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_listener_header"), scannerName, pattern)
+	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "mcp_listener_header"), scannerName, pattern, detail)
 }
 
 // logMCPListenerReplyBlock records an upstream HTTP error reply withheld by
-// response scanning. finding is built from pattern names, never reply bytes
-// (see upstreamClientErrorFinding).
+// response scanning. finding is a pattern name or a fixed scan-failure label,
+// never reply bytes (see upstreamClientErrorFinding).
 func logMCPListenerReplyBlock(logger *audit.Logger, finding string) {
 	if logger == nil {
 		return
 	}
-	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "upstream_error_reply"), scanner.AuditResponseScan, finding)
+	detail := audit.BlockDetail{}
+	switch finding {
+	case "response scanner unavailable", "uninspectable reply":
+		// These are scan-integrity refusals, not observed prompt injection.
+		// Route to scan-integrity guidance and omit MITRE.
+		finding = "response scan cannot be scanned: " + finding
+		detail.Class = audit.BlockClassInfrastructureError
+	case "response scan finding":
+		finding = "response scan returned an incomplete verdict"
+		detail.Class = audit.BlockClassInfrastructureError
+	}
+	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "upstream_error_reply"), scanner.AuditResponseScan, finding, detail)
 }
 
 func resolvedDoWAttribution(opts MCPProxyOpts) (string, DoWAttribution) {

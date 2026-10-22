@@ -600,6 +600,21 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	}
 	if label == AuditResponseScan {
 		switch {
+		case reason == "response scan parse error in MCP parameter header":
+			return RemediationGuidance{
+				OperatorKnob: "The decoded MCP parameter header could not be scanned. Inspect scanner health and retry; a `suppress:` entry cannot make the header scannable.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		case reason == "response scan cannot be scanned: response scanner unavailable":
+			return RemediationGuidance{
+				OperatorKnob: "The MCP response scanner is unavailable. Investigate scanner initialization and retry only when it is operational; policy suppression cannot provide the missing scan.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
+		case reason == "response scan returned an incomplete verdict":
+			return RemediationGuidance{
+				OperatorKnob: "The MCP response scan returned a non-clean verdict without a pattern finding. Investigate the scan result before retrying; a pattern suppression has no identified match to change.",
+				AgentReason:  auditRuntimeAgentReason,
+			}, true
 		case strings.Contains(lowerReason, "compressed"),
 			strings.Contains(lowerReason, "read error"),
 			strings.Contains(lowerReason, "read_error"),
