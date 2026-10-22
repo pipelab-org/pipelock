@@ -1,8 +1,10 @@
 name: PR-Agent review
 
 on:
-  # Default-branch code only; the identity gate and fork admission are tested.
+  # Commands run on the default branch; inline replies have independent admission.
   issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
+  pull_request_review_comment: # zizmor: ignore[dangerous-triggers]
     types: [created]
 
 permissions: {}
@@ -10,7 +12,7 @@ permissions: {}
 jobs:
   review:
     if: >-
-      github.event_name == 'issue_comment' &&
+      (github.event_name == 'issue_comment' &&
       github.event.action == 'created' &&
       github.actor == 'luckyPipewrench' &&
       github.actor_id == '142104046' &&
@@ -21,13 +23,22 @@ jobs:
       github.event.comment.user.type == 'User' &&
       github.event.comment.author_association == 'MEMBER' &&
       github.event.issue.pull_request &&
-      contains(fromJSON('["/review","/review deep"]'), github.event.comment.body)
+      contains(fromJSON('["/review","/review deep"]'), github.event.comment.body)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+      github.event.action == 'created' &&
+      github.run_attempt == '1' &&
+      github.actor == github.event.comment.user.login &&
+      github.triggering_actor == github.actor &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.in_reply_to_id)
     permissions:
+      actions: read
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@856e474c1697f3897ccaa156f083e0b9504196e0 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@dfd05004235de19c644e4a5f1a780be3c5300984 # main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ORG_MEMBERS_TOKEN: ${{ secrets.ORG_MEMBERS_TOKEN }}
