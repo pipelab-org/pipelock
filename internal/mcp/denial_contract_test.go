@@ -438,3 +438,40 @@ func TestMCPDenialSourceContractRejectsDirectWire(t *testing.T) {
 		}
 	}
 }
+
+// Each remaining source rule needs its own bypass fixture. Without one, the
+// rule could be disabled while the clean production tree still passes.
+func TestMCPDenialSourceContractRejectsHandoffAndListenerBypass(t *testing.T) {
+	pkg := loadDenialSource(t, "")
+	for name, source := range map[string]string{
+		"blocked request handoff":   `package mcp; type BlockedRequest struct{ ID int }; func bypass(out chan<- BlockedRequest) { out <- BlockedRequest{} }`,
+		"terminal identity":         `package mcp; type mcpTerminalDecision struct{}; func bypass() *mcpTerminalDecision { return &mcpTerminalDecision{} }`,
+		"denial value":              `package mcp; type mcpDenial struct{}; func bypass() mcpDenial { return mcpDenial{} }`,
+		"raw listener status":       `package mcp; import "net/http"; func RunHTTPListenerProxy(w http.ResponseWriter) { w.WriteHeader(http.StatusForbidden) }`,
+		"raw listener body":         `package mcp; import "net/http"; func RunHTTPListenerProxy(w http.ResponseWriter) { _, _ = w.Write([]byte("denied")) }`,
+		"raw listener http error":   `package mcp; import "net/http"; func RunHTTPListenerProxy(w http.ResponseWriter) { http.Error(w, "denied", http.StatusForbidden) }`,
+		"unregistered kind literal": `package mcp; type mcpDenialKind string; type mcpDenialAudit struct{ kind mcpDenialKind }; func bypass() mcpDenialAudit { return mcpDenialAudit{kind: "not_registered"} }`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			// The classifier file may build descriptors, so only the kind
+			// registration rule can reject this literal there.
+			filename := "bypass.go"
+			if name == "unregistered kind literal" {
+				filename = "audit.go"
+			}
+			file, err := parser.ParseFile(fset, filename, source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+			checker := types.Config{Importer: pkg.imports}
+			if _, err := checker.Check("github.com/luckyPipewrench/pipelock/internal/mcp", fset, []*ast.File{file}, info); err != nil {
+				t.Fatal(err)
+			}
+			if len(denialSourceViolations(file, info, fset)) == 0 {
+				t.Fatal("bypass survived the source guard")
+			}
+		})
+	}
+}
