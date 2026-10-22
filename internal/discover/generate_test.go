@@ -11,6 +11,47 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// TestGenerateTOMLWrapperSuggestionsComposeIntoOneConfig applies every After
+// snippet the way an operator would, replacing each server's table in one
+// config.toml, and requires the result to load. Each snippet parsing alone is
+// not enough: a bare [mcp_servers] header in every snippet is valid once and
+// a duplicate table declaration the second time, which makes the client
+// refuse the whole file.
+func TestGenerateTOMLWrapperSuggestionsComposeIntoOneConfig(t *testing.T) {
+	servers := []MCPServer{
+		{Client: clientCodex, ServerName: "api.vendor.example", Transport: TransportStdio, Command: "npx", Args: []string{"-y", "server"}},
+		{Client: clientCodex, ServerName: `odd "name" = 0`, Transport: TransportStdio, Command: "uvx", Args: []string{"tool"}},
+		{Client: clientCodex, ServerName: "remote", Transport: TransportHTTP, URL: "https://api.vendor.example/mcp"},
+	}
+	config := "[mcp_servers.untouched]\ncommand = \"node\"\n"
+	for _, s := range servers {
+		suggestion := generateWrapper(s, "/opt/pipelock")
+		_, after, ok := strings.Cut(suggestion, "  After:\n")
+		if !ok {
+			t.Fatalf("no After snippet for %q: %s", s.ServerName, suggestion)
+		}
+		for _, line := range strings.Split(after, "\n") {
+			if strings.TrimSpace(line) == "["+tomlKeyServers+"]" {
+				t.Fatalf("snippet for %q declares the shared parent table:\n%s", s.ServerName, after)
+			}
+		}
+		config += "\n" + after
+	}
+	var document map[string]map[string]map[string]any
+	if _, err := toml.Decode(config, &document); err != nil {
+		t.Fatalf("config with every suggestion applied does not load: %v\n%s", err, config)
+	}
+	entries := document[tomlKeyServers]
+	if len(entries) != len(servers)+1 || entries["untouched"]["command"] != "node" {
+		t.Fatalf("entries = %+v", entries)
+	}
+	for _, s := range servers {
+		if got := entries[s.ServerName]["command"]; got != "/opt/pipelock" {
+			t.Fatalf("server %q command = %v, want /opt/pipelock", s.ServerName, got)
+		}
+	}
+}
+
 func TestGenerateTOMLWrapperProducesParseableClientEntries(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

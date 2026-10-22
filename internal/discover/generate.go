@@ -118,16 +118,43 @@ func generateTOMLWrapper(s MCPServer, pipelockBin string) string {
 	default:
 		return "  (no suggestion available for this transport type)"
 	}
-	encode := func(fields map[string]any) (string, error) {
-		data, err := toml.Marshal(map[string]any{"mcp_servers": map[string]any{s.ServerName: fields}})
-		return string(data), err
-	}
-	oldSnippet, oldErr := encode(before)
-	newSnippet, newErr := encode(after)
+	oldSnippet, oldErr := tomlServerTable(s.ServerName, before)
+	newSnippet, newErr := tomlServerTable(s.ServerName, after)
 	if oldErr != nil || newErr != nil {
 		return "  (cannot encode a TOML wrapper suggestion for this entry)"
 	}
 	return fmt.Sprintf("%s\n  Before:\n%s\n  After:\n%s", lead, oldSnippet, newSnippet)
+}
+
+// tomlServerTable renders one [mcp_servers.<name>] table and nothing else.
+// Marshalling the nested document would also emit a bare [mcp_servers]
+// header, and TOML forbids declaring a table twice: an operator who applied
+// two such suggestions would leave a config.toml the client refuses to load.
+// The key is quoted by the encoder itself, and the result is decoded back so
+// a snippet that does not reproduce exactly this one entry is never printed.
+func tomlServerTable(name string, fields map[string]any) (string, error) {
+	const probeSuffix = " = 0\n"
+	probe, err := toml.Marshal(map[string]int{name: 0})
+	if err != nil {
+		return "", err
+	}
+	key, ok := strings.CutSuffix(string(probe), probeSuffix)
+	if !ok || key == "" {
+		return "", fmt.Errorf("unexpected TOML key encoding %q", probe)
+	}
+	body, err := toml.Marshal(fields)
+	if err != nil {
+		return "", err
+	}
+	snippet := "[" + tomlKeyServers + "." + key + "]\n" + string(body)
+	var document map[string]map[string]map[string]any
+	if _, err := toml.Decode(snippet, &document); err != nil {
+		return "", err
+	}
+	if entries := document[tomlKeyServers]; len(document) != 1 || len(entries) != 1 || entries[name] == nil {
+		return "", fmt.Errorf("TOML snippet does not round-trip server %q", name)
+	}
+	return snippet, nil
 }
 
 // isProxyShaped reports whether args begin with the mcp proxy subcommand.
