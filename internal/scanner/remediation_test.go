@@ -942,3 +942,24 @@ func TestA2AJSONInspectionRemediationRejectsForgedParts(t *testing.T) {
 		}
 	}
 }
+
+// The mcp_protocol label covers listener admission, protocol and capacity
+// refusals as well as batches. Only a batch request is repaired by sending one
+// request at a time, so no other reason may carry that hint.
+func TestMCPProtocolHintOnlyForBatchRequests(t *testing.T) {
+	const batchKnob = "Send one JSON-RPC request at a time."
+	if hint := OperatorHintForResult(AuditMCPProtocol, "MCP batch requests are unsupported"); !strings.Contains(hint, batchKnob) {
+		t.Fatalf("batch request hint = %q", hint)
+	}
+	for _, reason := range []string{
+		"MCP batch responses are unsupported",
+		"MCP listener admission refused",
+		"MCP listener protocol refused",
+		"MCP listener state capacity exhausted",
+		"session capacity exhausted; release active quarantine or increase max_sessions",
+	} {
+		if hint := OperatorHintForResult(AuditMCPProtocol, reason); hint == "" || strings.Contains(hint, batchKnob) {
+			t.Errorf("reason %q has hint %q, want its own non-empty hint", reason, hint)
+		}
+	}
+}

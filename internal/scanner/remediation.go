@@ -597,6 +597,24 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			return RemediationGuidance{OperatorKnob: "Check the A2A input configuration and the underlying URL or SSRF rule before retrying. Changing `a2a_scanning.action` does not repair a configuration mismatch.", AgentReason: auditRuntimeAgentReason}, true
 		}
 	}
+	// MCP listener admission, protocol and capacity refusals and upstream batch
+	// responses share this label with batch requests. Sending one request at a
+	// time repairs only a batch request, so each other refusal names its own
+	// inputs. The batch-request reason keeps the label's table entry.
+	if label == AuditMCPProtocol {
+		switch reason {
+		case "MCP batch responses are unsupported":
+			return RemediationGuidance{OperatorKnob: "The upstream MCP server answered with a JSON-RPC batch. Batch responses are unsupported and no scanner or policy setting enables them; correct the upstream server.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "MCP listener admission refused":
+			return RemediationGuidance{OperatorKnob: "The MCP listener refused the HTTP request before inspection. Check the client's Origin, Host, listener credential, HTTP method and Pipelock session token against the listener configuration, including `mcp_session_binding.listener_require_state_token`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "MCP listener protocol refused":
+			return RemediationGuidance{OperatorKnob: "The MCP listener refused a malformed or inconsistent request. Correct the client's MCP headers, protocol version or JSON-RPC body; no scanner or policy setting relaxes protocol validation.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "MCP listener state capacity exhausted":
+			return RemediationGuidance{OperatorKnob: "Listener client state is at capacity. Retry after an existing state expires; when the session store is full, release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "session capacity exhausted; release active quarantine or increase max_sessions":
+			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted. Release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		}
+	}
 	if label == ScannerMCPToolScanning && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {
 		return RemediationGuidance{
 			OperatorKnob: "The tools/list inventory cannot be safely inspected or admitted into the current baseline. Correct or reduce the upstream inventory and retry; `mcp_tool_scanning.action` does not override this refusal.",
