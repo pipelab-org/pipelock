@@ -4,6 +4,8 @@
 package projectscan
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +14,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -388,19 +393,21 @@ var requirementComment = regexp.MustCompile(`(?:^|\s)#.*$`)
 // names its package, so the name is reported rather than dropped.
 var requirementOption = regexp.MustCompile(`\s--`)
 
-// utf8BOM is the byte order mark pip accepts at the start of a requirements file.
-const utf8BOM = "\xef\xbb\xbf"
+// Python str.splitlines recognizes these boundaries in addition to CRLF:
+// https://docs.python.org/3/library/stdtypes.html#str.splitlines.
+var requirementLineBreak = regexp.MustCompile("\r\n|[\n\r\v\f\x1c-\x1e\u0085\u2028\u2029]")
 
 // requirementNames returns the normalized package names in a pip requirements
 // file. Option lines (-r, -e, --index-url) start with a dash, which is not a
 // PEP 508 name, so they yield no name; per-requirement options (--hash) are
 // cut off before the requirement is read.
 func requirementNames(data []byte) (map[string]bool, error) {
-	text := strings.TrimPrefix(string(data), utf8BOM)
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	text = strings.ReplaceAll(text, "\\\n", " ")
+	text, err := decodeRequirementText(data)
+	if err != nil {
+		return nil, err
+	}
 	names := make(map[string]bool)
-	for _, line := range strings.Split(text, "\n") {
+	record := func(line string) {
 		line = strings.TrimSpace(requirementComment.ReplaceAllString(line, ""))
 		if loc := requirementOption.FindStringIndex(line); loc != nil {
 			line = line[:loc[0]]
@@ -409,7 +416,84 @@ func requirementNames(data []byte) (map[string]bool, error) {
 			names[name] = true
 		}
 	}
+	// pip's join_lines runs before ignore_comments. A comment line cannot
+	// continue, and its leading space keeps a pending requirement separate
+	// from the comment. https://github.com/pypa/pip/blob/main/src/pip/_internal/req/req_file.py
+	var pending strings.Builder
+	for _, line := range requirementLineBreak.Split(text, -1) {
+		comment := strings.HasPrefix(strings.TrimSpace(line), "#")
+		if strings.HasSuffix(line, `\`) && !comment {
+			pending.WriteString(strings.Trim(line, `\`))
+			continue
+		}
+		if comment {
+			line = " " + line
+		}
+		if pending.Len() > 0 {
+			pending.WriteString(line)
+			line = pending.String()
+			pending.Reset()
+		}
+		record(line)
+	}
+	if pending.Len() > 0 {
+		record(pending.String())
+	}
 	return names, nil
+}
+
+// pip decodes a leading UTF-8, UTF-16, or UTF-32 BOM before it splits lines:
+// https://github.com/pypa/pip/blob/main/src/pip/_internal/req/req_file.py
+// Invalid text is reported so an incomplete inspection cannot look clean.
+func decodeRequirementText(data []byte) (string, error) {
+	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		data = data[3:]
+	}
+	var order binary.ByteOrder
+	width := 0
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe, 0x00, 0x00}):
+		order, width, data = binary.LittleEndian, 4, data[4:]
+	case bytes.HasPrefix(data, []byte{0x00, 0x00, 0xfe, 0xff}):
+		order, width, data = binary.BigEndian, 4, data[4:]
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		order, width, data = binary.LittleEndian, 2, data[2:]
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+		order, width, data = binary.BigEndian, 2, data[2:]
+	}
+	if width == 0 {
+		if !utf8.Valid(data) {
+			return "", errors.New("invalid UTF-8 requirements file")
+		}
+		return string(data), nil
+	}
+	if len(data)%width != 0 {
+		return "", errors.New("incomplete requirements file character")
+	}
+	if width == 4 {
+		var result strings.Builder
+		for i := 0; i < len(data); i += 4 {
+			codepoint := order.Uint32(data[i:])
+			if codepoint > utf8.MaxRune {
+				return "", errors.New("invalid UTF-32 requirements file")
+			}
+			r := rune(codepoint)
+			if !utf8.ValidRune(r) {
+				return "", errors.New("invalid UTF-32 requirements file")
+			}
+			result.WriteRune(r)
+		}
+		return result.String(), nil
+	}
+	units := make([]uint16, 0, len(data)/2)
+	for i := 0; i < len(data); i += 2 {
+		units = append(units, order.Uint16(data[i:]))
+	}
+	runes := utf16.Decode(units)
+	if !slices.Equal(units, utf16.Encode(runes)) {
+		return "", errors.New("invalid UTF-16 requirements file")
+	}
+	return string(runes), nil
 }
 
 // dependencyWalk collects package names from the dependency-bearing tables of

@@ -4,6 +4,7 @@
 package projectscan
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -742,6 +743,14 @@ func TestDetectHostileTooling_OversizeManifestIsReportedNotParsed(t *testing.T) 
 }
 
 func TestDetectHostileTooling_RequirementsShapes(t *testing.T) {
+	utf16BE := []byte{0xfe, 0xff}
+	utf32LE := []byte{0xff, 0xfe, 0x00, 0x00}
+	utf32BE := []byte{0x00, 0x00, 0xfe, 0xff}
+	for _, b := range []byte("obliteratus\n") {
+		utf16BE = binary.BigEndian.AppendUint16(utf16BE, uint16(b))
+		utf32LE = binary.LittleEndian.AppendUint32(utf32LE, uint32(b))
+		utf32BE = binary.BigEndian.AppendUint32(utf32BE, uint32(b))
+	}
 	tests := []struct {
 		name string
 		body string
@@ -759,10 +768,21 @@ func TestDetectHostileTooling_RequirementsShapes(t *testing.T) {
 		{"bare name with hash option", "obliteratus --hash=sha256:abc\n", "obliteratus"},
 		{"tab before hash option", "obliteratus\t--hash=sha256:abc\n", "obliteratus"},
 		{"line continuation", "torch \\\n  --hash=sha256:abc\nobliteratus \\\n  >=0.1\n", "obliteratus"},
+		{"comment line does not continue", "# note \\\nobliteratus\n", "obliteratus"},
+		{"name split across continuation", "obliter\\\natus\n", "obliteratus"},
+		{"continuation at end of file", "obliteratus\\", "obliteratus"},
 		{"underscore separator", "refusal_ablation==1\n", "refusal-ablation"},
 		{"dot separator and case", "Refusal.Ablation>=1\n", "refusal-ablation"},
 		{"CRLF", "torch\r\nobliteratus\r\n", "obliteratus"},
+		{"bare CR", "torch\robliteratus\r", "obliteratus"},
+		{"vertical tab", "torch\vobliteratus\v", "obliteratus"},
+		{"form feed", "torch\fobliteratus\f", "obliteratus"},
+		{"Unicode line separator", "torch\u2028obliteratus\u2028", "obliteratus"},
 		{"byte order mark", "\xef\xbb\xbfobliteratus\n", "obliteratus"},
+		{"UTF-16 LE byte order mark", "\xff\xfeo\x00b\x00l\x00i\x00t\x00e\x00r\x00a\x00t\x00u\x00s\x00\n\x00", "obliteratus"},
+		{"UTF-16 BE byte order mark", string(utf16BE), "obliteratus"},
+		{"UTF-32 LE byte order mark", string(utf32LE), "obliteratus"},
+		{"UTF-32 BE byte order mark", string(utf32BE), "obliteratus"},
 		{"inline comment", "obliteratus  # needed\n", "obliteratus"},
 	}
 	for _, tt := range tests {
@@ -787,6 +807,30 @@ func TestDetectHostileTooling_RequirementsShapes(t *testing.T) {
 			}
 		})
 	}
+	t.Run("malformed UTF-16 byte order mark", func(t *testing.T) {
+		patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": "\xff\xfeo"})
+		if len(patterns) != 0 || len(warned) != 1 || warned[0] != "requirements.txt" {
+			t.Fatalf("patterns = %v, warned = %v, want a requirements.txt inspection warning", patterns, warned)
+		}
+	})
+	t.Run("malformed UTF-32 byte order mark", func(t *testing.T) {
+		patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": "\xff\xfe\x00\x00\x00\x00\x11\x00"})
+		if len(patterns) != 0 || len(warned) != 1 || warned[0] != "requirements.txt" {
+			t.Fatalf("patterns = %v, warned = %v, want a requirements.txt inspection warning", patterns, warned)
+		}
+	})
+	t.Run("unpaired UTF-16 surrogate", func(t *testing.T) {
+		patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": "\xff\xfe\x00\xd8"})
+		if len(patterns) != 0 || len(warned) != 1 || warned[0] != "requirements.txt" {
+			t.Fatalf("patterns = %v, warned = %v, want a requirements.txt inspection warning", patterns, warned)
+		}
+	})
+	t.Run("invalid UTF-8", func(t *testing.T) {
+		patterns, warned := scanHostileManifests(t, map[string]string{"requirements.txt": "\xffobliteratus"})
+		if len(patterns) != 0 || len(warned) != 1 || warned[0] != "requirements.txt" {
+			t.Fatalf("patterns = %v, warned = %v, want a requirements.txt inspection warning", patterns, warned)
+		}
+	})
 }
 
 func TestDetectHostileTooling_RequirementsAndPyprojectReportOnce(t *testing.T) {
