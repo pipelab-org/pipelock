@@ -381,11 +381,11 @@ class TestReleaseArtifacts(unittest.TestCase):
         checked = 0
         for path in paths:
             text = path.read_text()
-            refs = re.findall(r"ghcr\.io/([^/\s]+)/", text)
+            refs = re.findall(r"ghcr\.io/([^/\s]+)/(?:charts/)?pipelock\b", text)
             for namespace in refs:
                 with self.subTest(path=str(path.relative_to(ROOT)), namespace=namespace):
-                    self.assertNotEqual(namespace, "pipelab-org")
-                checked += namespace == "luckypipewrench"
+                    self.assertEqual(namespace, "luckypipewrench")
+                checked += 1
         self.assertGreater(checked, 0, "no installed-user package addresses checked")
 
     @unittest.skipIf(os.name == "nt", "release workflow guard requires bash")

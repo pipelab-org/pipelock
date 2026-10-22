@@ -87,9 +87,8 @@ manifest digest cannot.
 The chart itself is published as an OCI artifact next to the images, at
 `ghcr.io/luckypipewrench/charts/pipelock`, including v3.7.1. From v3.6.0 on it carries
 the same kind of provenance attestation as the container images above; earlier
-charts have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step,
-and look its commit up again, because the source check must name the commit of
-the release you are verifying. v3.6.0 and v3.7.0 were published at
+charts have none. The following commands verify v3.7.1 and look up its commit
+again so the source check names that release. v3.6.0 and v3.7.0 were published at
 `ghcr.io/luckypipewrench/charts/pipelock` and signed by
 `luckyPipewrench/pipelock/.github/workflows/release.yaml`; use that chart
 location, `--repo luckyPipewrench/pipelock` and that signer workflow for those
@@ -97,6 +96,7 @@ two releases. Verify the chart, keep the digest the attestation names, and
 confirm the archive you pull has that same digest:
 
 ```bash
+PIPELOCK_RELEASE=v3.7.1
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
