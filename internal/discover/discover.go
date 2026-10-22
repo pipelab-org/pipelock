@@ -20,7 +20,6 @@ const (
 	ProtectedOther    ProtectionStatus = "protected_other"
 	Unprotected       ProtectionStatus = "unprotected"
 	Unknown           ProtectionStatus = "unknown"
-	Disabled          ProtectionStatus = "disabled"
 )
 
 // RiskLevel for unprotected servers based on capability heuristics.
@@ -135,8 +134,9 @@ type Report struct {
 	Summary Summary        `json:"summary"`
 }
 
-// Summary has aggregate counts. TotalServers counts active entries; Disabled
-// entries remain in Report.Servers and ClientConfig.ServerCount.
+// Summary has aggregate counts. Disabled counts entries the file marks
+// enabled = false; they stay in every other count because a higher Codex
+// config layer can re-enable them (see warnCodexDisabledStillCounted).
 type Summary struct {
 	TotalClients      int `json:"total_clients"`
 	TotalServers      int `json:"total_servers"`
@@ -346,12 +346,10 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 		// Classify each server
 		for i := range parsed {
 			parsed[i].Protection, parsed[i].Evidence = classifyServer(parsed[i])
-			if !parsed[i].Disabled {
-				risk, reason := classifyRisk(parsed[i])
-				parsed[i].Risk = risk
-				if parsed[i].Evidence == evidenceNoProxy {
-					parsed[i].Evidence = reason
-				}
+			risk, reason := classifyRisk(parsed[i])
+			parsed[i].Risk = risk
+			if parsed[i].Evidence == evidenceNoProxy {
+				parsed[i].Evidence = reason
 			}
 			if parsed[i].ParseWarnings == nil {
 				parsed[i].ParseWarnings = []string{}
@@ -453,9 +451,7 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 	}
 	for _, srv := range servers {
 		if srv.Disabled {
-			s.TotalServers--
 			s.Disabled++
-			continue
 		}
 		switch srv.Protection {
 		case ProtectedPipelock:

@@ -190,17 +190,20 @@ func TestScoreDeploymentVerification_AllNA(t *testing.T) {
 	}
 }
 
-func TestScoreMCPProtectionExcludesDisabledCodexEntries(t *testing.T) {
+// TestScoreMCPProtectionCountsDisabledCodexEntries proves a Codex entry marked
+// enabled = false is scored by its protection state: Codex config layers can
+// re-enable it, so excluding it would score an unwrapped server as absent.
+func TestScoreMCPProtectionCountsDisabledCodexEntries(t *testing.T) {
 	disc := &AssessDiscoverReport{
 		Servers: []AssessDiscoverServer{
-			{MCPServer: discover.MCPServer{ServerName: "off", Client: "codex", Disabled: true, Protection: discover.Disabled}},
+			{MCPServer: discover.MCPServer{ServerName: "off", Client: "codex", Disabled: true, Protection: discover.Unprotected}},
 			{MCPServer: discover.MCPServer{ServerName: "on", Client: "codex", Protection: discover.ProtectedPipelock}},
 		},
-		Summary: AssessDiscoverSummary{Summary: discover.Summary{TotalServers: 1, Disabled: 1, ProtectedPipelock: 1}},
+		Summary: AssessDiscoverSummary{Summary: discover.Summary{TotalServers: 2, Disabled: 1, ProtectedPipelock: 1, Unprotected: 1}},
 	}
 	section := scoreMCPProtection(disc)
-	if section.Score != 100 || section.Applicable != 1 || section.Total != 1 {
-		t.Fatalf("disabled entry affected score: %+v", section)
+	if section.Score != 50 || section.Applicable != 2 || section.Total != 2 {
+		t.Fatalf("disabled unwrapped entry was not scored: %+v", section)
 	}
 }
 

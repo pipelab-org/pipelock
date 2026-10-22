@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -53,7 +54,7 @@ func TestParseTOMLConfig(t *testing.T) {
 		{
 			name: "Codex disabled", client: clientCodex,
 			content:  "[mcp_servers.off]\ncommand = 'npx'\nenabled = false\n",
-			wantName: "off", wantCommand: "npx", wantType: TransportStdio, wantDisabled: true,
+			wantName: "off", wantCommand: "npx", wantType: TransportStdio, wantDisabled: true, wantWarning: true,
 		},
 		{
 			name: "Codex explicit enabled", client: clientCodex,
@@ -162,7 +163,13 @@ func TestDiscoverTOMLClientsAndErrors(t *testing.T) {
 	}
 }
 
-func TestDiscoverDisabledCodexServersRemainListedWithoutScoring(t *testing.T) {
+// TestDiscoverDisabledCodexServersStayCounted proves enabled = false does not
+// remove an unwrapped Codex server from the protection counts. Codex merges
+// config layers: a trusted project's .codex/config.toml holding only
+// enabled = true, or a -c override, starts the server again, and discover does
+// not read those layers. Excluding the entry made discover exit 0 and assess
+// score 100 while Codex launched the unwrapped server.
+func TestDiscoverDisabledCodexServersStayCounted(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".codex")
 	if err := os.Mkdir(dir, 0o750); err != nil {
@@ -176,15 +183,18 @@ func TestDiscoverDisabledCodexServersRemainListedWithoutScoring(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Servers) != 2 || report.Summary.TotalServers != 1 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 1 {
-		t.Fatalf("report = %+v", report)
+	if len(report.Servers) != 2 || report.Summary.TotalServers != 2 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 2 {
+		t.Fatalf("summary = %+v", report.Summary)
 	}
 	foundDisabled := false
 	for _, server := range report.Servers {
 		if server.ServerName == "off" {
 			foundDisabled = true
-			if server.Protection != Disabled || !server.Disabled || server.Risk != "" {
+			if server.Protection != Unprotected || !server.Disabled || server.Risk == "" {
 				t.Fatalf("disabled server = %+v", server)
+			}
+			if !slices.Contains(server.ParseWarnings, warnCodexDisabledStillCounted) {
+				t.Fatalf("disabled server does not explain why it is counted: %+v", server.ParseWarnings)
 			}
 		}
 	}

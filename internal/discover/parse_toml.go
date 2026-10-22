@@ -38,6 +38,14 @@ const (
 
 var errInvalidTOMLMCPConfig = errors.New("invalid TOML MCP config")
 
+// warnCodexDisabledStillCounted marks a Codex entry whose enabled key is
+// false. Codex reads an effective merged config: a trusted project's
+// .codex/config.toml setting only enabled = true, or a -c override, starts the
+// server again (reproduced with codex-cli 0.162.0, where codex mcp list then
+// shows it enabled). Discover cannot see every such layer, so the entry keeps
+// its real protection state rather than being excluded from the counts.
+const warnCodexDisabledStillCounted = "enabled = false in this file, but a trusted project config or a -c override can re-enable it, so it is still counted; wrap or remove it"
+
 // parseTOMLConfig inventories the published client MCP table without running
 // a client executable. Parser errors are deliberately fixed text: a TOML
 // decoder error may echo a line containing a credential.
@@ -75,6 +83,9 @@ func parseTOMLConfig(path, client string) ([]MCPServer, error) {
 				return nil, invalid
 			}
 			s.Disabled = !enabled
+			if s.Disabled {
+				s.ParseWarnings = append(s.ParseWarnings, warnCodexDisabledStillCounted)
+			}
 		}
 		if s.Command, ok = tomlString(entry, tomlKeyCommand); !ok {
 			return nil, invalid

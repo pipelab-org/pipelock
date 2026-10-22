@@ -22,9 +22,6 @@ const (
 // proxy and why, from a single identity inspection, so the reported state and
 // its evidence always describe the same observation.
 func classifyServer(s MCPServer) (ProtectionStatus, string) {
-	if s.Disabled {
-		return Disabled, "server disabled in client config"
-	}
 	if s.Command == "" && s.URL == "" {
 		return Unknown, evidenceUnknown
 	}
@@ -75,8 +72,6 @@ func protectionEvidence(s MCPServer) string {
 		return evidenceProtectedOther
 	case Unknown:
 		return evidenceUnknown
-	case Disabled:
-		return "server disabled in client config"
 	default:
 		if outcome, evidence := inspectSOPSLauncher(s.Command, s.Args); outcome != sopsNotLauncher {
 			return evidence

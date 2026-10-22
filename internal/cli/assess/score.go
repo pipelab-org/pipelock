@@ -343,12 +343,7 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		parseErrors = disc.Summary.ParseErrors
 	}
 
-	totalServers := 0
-	for _, server := range disc.Servers {
-		if !server.Disabled && server.Protection != discover.Disabled {
-			totalServers++
-		}
-	}
+	totalServers := len(disc.Servers)
 
 	// Zero servers AND clean scan (no parse errors): perfect score.
 	if totalServers == 0 && parseErrors == 0 {
@@ -359,7 +354,7 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 			Score:         100,
 			MaxScore:      100,
 			Grade:         assessGradeA,
-			Detail:        "no active MCP servers configured",
+			Detail:        "no MCP servers configured",
 			Applicable:    0,
 			Total:         0,
 		}
@@ -386,9 +381,6 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 	// Client parse errors add to the denominator with 0% credit (failed evidence).
 	var numerator int
 	for _, s := range disc.Servers {
-		if s.Disabled || s.Protection == discover.Disabled {
-			continue
-		}
 		switch s.Protection {
 		case discover.ProtectedPipelock, discover.ProtectedOther:
 			numerator += 100

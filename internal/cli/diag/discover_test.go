@@ -93,7 +93,10 @@ func TestDiscoverCmd_SOPSSubsetInHumanAndJSON(t *testing.T) {
 	}
 }
 
-func TestDiscoverCmdDisabledCodexServerExitsCleanAndStaysListed(t *testing.T) {
+// TestDiscoverCmdDisabledCodexServerStillFails proves an unwrapped Codex server
+// marked enabled = false still fails discover, because a trusted project layer
+// or a -c override re-enables it when Codex runs.
+func TestDiscoverCmdDisabledCodexServerStillFails(t *testing.T) {
 	home := t.TempDir()
 	dir := filepath.Join(home, ".codex")
 	if err := os.Mkdir(dir, 0o750); err != nil {
@@ -108,18 +111,19 @@ func TestDiscoverCmdDisabledCodexServerExitsCleanAndStaysListed(t *testing.T) {
 		cmd.SetOut(&output)
 		cmd.SetErr(&bytes.Buffer{})
 		cmd.SetArgs(args)
-		if err := cmd.Execute(); err != nil {
-			t.Fatalf("Execute(%v): %v", args, err)
+		var exitErr *cliutil.ExitError
+		if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+			t.Fatalf("Execute(%v) = %v, want exit 1", args, err)
 		}
 		if args[0] == "--json" {
 			var report discover.Report
-			if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+			if err := json.NewDecoder(&output).Decode(&report); err != nil {
 				t.Fatal(err)
 			}
-			if report.Summary.TotalServers != 0 || report.Summary.Disabled != 1 || len(report.Servers) != 1 || report.Servers[0].Protection != discover.Disabled {
+			if report.Summary.TotalServers != 1 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 1 || len(report.Servers) != 1 || report.Servers[0].Protection != discover.Unprotected || !report.Servers[0].Disabled {
 				t.Fatalf("JSON report = %+v", report)
 			}
-		} else if !strings.Contains(output.String(), "Disabled servers") || !strings.Contains(output.String(), "off") || strings.Contains(output.String(), "Unprotected servers:") {
+		} else if !strings.Contains(output.String(), "Unprotected servers:") || !strings.Contains(output.String(), "off") || !strings.Contains(output.String(), "so it is still counted") {
 			t.Fatalf("human report = %s", output.String())
 		}
 	}

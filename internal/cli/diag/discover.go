@@ -36,7 +36,7 @@ Codex configs under CODEX_HOME (<dir>/config.toml) are included when that
 variable is set and --home is not.
 
 Exit codes:
-  0  All active servers protected (or none active)
+  0  All servers protected (or none found)
   1  Unprotected, unknown, or unparseable configs found
   2  Usage or runtime error
 
@@ -158,23 +158,14 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 		_, _ = fmt.Fprintln(w)
 	}
 
-	_, _ = fmt.Fprintf(w, "MCP Servers: %d active\n", safeReport.Summary.TotalServers)
-	_, _ = fmt.Fprintf(w, "  Disabled:              %d\n", safeReport.Summary.Disabled)
+	_, _ = fmt.Fprintf(w, "MCP Servers: %d total\n", safeReport.Summary.TotalServers)
 	_, _ = fmt.Fprintf(w, "  Protected (pipelock):  %d\n", safeReport.Summary.ProtectedPipelock)
 	_, _ = fmt.Fprintf(w, "  Protected (other):     %d\n", safeReport.Summary.ProtectedOther)
 	_, _ = fmt.Fprintf(w, "  Unprotected:           %d\n", safeReport.Summary.Unprotected)
 	_, _ = fmt.Fprintf(w, "    via sops exec-env:   %d\n", safeReport.Summary.SOPSExecEnv)
 	_, _ = fmt.Fprintf(w, "  Unknown:               %d\n", safeReport.Summary.Unknown)
+	_, _ = fmt.Fprintf(w, "  Marked enabled=false:  %d (still counted above)\n", safeReport.Summary.Disabled)
 	_, _ = fmt.Fprintln(w)
-	if safeReport.Summary.Disabled > 0 {
-		_, _ = fmt.Fprintln(w, "Disabled servers (excluded from protection counts):")
-		for _, s := range safeReport.Servers {
-			if s.Protection == discover.Disabled {
-				_, _ = fmt.Fprintf(w, "  [%-16s] %s\n", s.Client, s.ServerName)
-			}
-		}
-		_, _ = fmt.Fprintln(w)
-	}
 
 	// List unprotected servers sorted by risk
 	unprotected := false
