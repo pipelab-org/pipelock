@@ -9,7 +9,10 @@ Trace success, error, incomplete, and unknown outcomes through every changed gua
 Check create, rotate, revoke, recover, first load, reload, unrelated reload,
 downgrade, stale state, and preservation of runtime security state where relevant.
 Check sibling consumers across transports, schemas, examples, SDKs, and signed
-artifacts in the supplied diff. Say when the supplied evidence cannot prove parity.
+artifacts using the supplied source and discussion. Report a concrete defect only
+when the evidence supports its failing path and impact. Missing context or inability
+to prove parity alone is not a finding. Check whether existing guards, tests, or
+discussion already address the concern before reporting it.
 Require negative and boundary tests; reject tests that mirror the implementation
 or cannot fail with the guard removed. Deletions can remove security checks.
 
