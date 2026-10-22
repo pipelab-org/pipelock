@@ -286,6 +286,33 @@ class TestReleaseArtifacts(unittest.TestCase):
             ],
         )
 
+    def test_legacy_registry_credentials_require_protected_jobs(self) -> None:
+        jobs = load_workflow(WORKFLOW)["jobs"]
+        registry_jobs = {"release-build", "release-promote", "release-publish-chart"}
+        holders = []
+        for name, job in jobs.items():
+            if name in registry_jobs:
+                self.assertEqual(job.get("environment"), "release-promotion")
+            else:
+                self.assertNotIn("LEGACY_GHCR_TOKEN", str(job))
+            self.assertNotIn("LEGACY_GHCR_TOKEN", str(job.get("env", {})))
+            for step in job.get("steps", []):
+                if "LEGACY_GHCR_TOKEN" in str(step):
+                    holders.append(name)
+                if str(step.get("uses", "")).startswith("docker/login-action@"):
+                    self.assertIn(name, registry_jobs)
+                    self.assertEqual(step["with"]["username"], "luckyPipewrench")
+                    self.assertEqual(step["with"]["password"], "${{ secrets.LEGACY_GHCR_TOKEN }}")
+                if "helm registry login ghcr.io" in step.get("run", ""):
+                    self.assertIn(name, registry_jobs)
+                    self.assertEqual(step["env"]["LEGACY_GHCR_TOKEN"], "${{ secrets.LEGACY_GHCR_TOKEN }}")
+                    self.assertIn('--username luckyPipewrench --password-stdin <<<"$LEGACY_GHCR_TOKEN"', step["run"])
+                if str(step.get("uses", "")).startswith("actions/attest"):
+                    self.assertNotIn("LEGACY_GHCR_TOKEN", str(step))
+        self.assertCountEqual(holders, ["release-build", "release-promote", "release-promote", "release-publish-chart", "release-publish-chart"])
+        for name in ("release-attest-chart", "release-publish"):
+            self.assertNotIn("environment", jobs[name])
+
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         jobs = parsed["jobs"]

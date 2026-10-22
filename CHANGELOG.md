@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Publish release images, attestations and charts under the releasing repository owner's namespace.
+- Publish the GitHub release from `pipelab-org/pipelock` while retaining `ghcr.io/luckypipewrench` images and charts, `luckyPipewrench/homebrew-tap`, and the existing Go module path.
 
 ## [3.7.0] - 2026-10-13
 

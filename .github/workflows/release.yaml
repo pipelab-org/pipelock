@@ -223,6 +223,7 @@ jobs:
   release-build:
     needs: [release-preflight, release-tests, release-verifier-install]
     runs-on: ubuntu-latest
+    environment: release-promotion
     env:
       IMAGE_NAMESPACE: ${{ needs.release-preflight.outputs.image_namespace }}
     outputs:
@@ -285,8 +286,8 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: luckyPipewrench
+          password: ${{ secrets.LEGACY_GHCR_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -1010,8 +1011,8 @@ jobs:
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: luckyPipewrench
+          password: ${{ secrets.LEGACY_GHCR_TOKEN }}
 
       - name: Set up Helm
         uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
@@ -1177,7 +1178,7 @@ jobs:
       - name: Stage Helm chart locally
         id: stage-helm-chart
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
           TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -1225,7 +1226,7 @@ jobs:
             "127.0.0.1:5000/charts/pipelock:${chart_version}" dist-chart-oci
           test "$(jq -r '.manifests[0].digest' dist-chart-oci/index.json)" = "$chart_digest"
 
-          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          helm registry login ghcr.io --username luckyPipewrench --password-stdin <<<"$LEGACY_GHCR_TOKEN"
           existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
           candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
           mkdir -p "$existing_dir" "$candidate_dir"
@@ -1320,6 +1321,7 @@ jobs:
   release-publish-chart:
     needs: [release-promote, release-attest-chart]
     runs-on: ubuntu-latest
+    environment: release-promotion
     timeout-minutes: 15
     permissions:
       contents: read
@@ -1360,8 +1362,8 @@ jobs:
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: luckyPipewrench
+          password: ${{ secrets.LEGACY_GHCR_TOKEN }}
 
       - uses: Azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
@@ -1370,7 +1372,7 @@ jobs:
       - name: Publish and verify attested Helm chart
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LEGACY_GHCR_TOKEN: ${{ secrets.LEGACY_GHCR_TOKEN }}
           CHART_DIGEST: ${{ needs.release-promote.outputs.chart_digest }}
           CHART_VERSION: ${{ needs.release-promote.outputs.chart_version }}
         run: |
@@ -1398,7 +1400,7 @@ jobs:
           fi
           # The registry digest identifies the exact OCI manifest bytes.
           test "$(crane digest "$target")" = "$CHART_DIGEST"
-          helm registry login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin <<<"$GITHUB_TOKEN"
+          helm registry login ghcr.io --username luckyPipewrench --password-stdin <<<"$LEGACY_GHCR_TOKEN"
           trap 'helm registry logout ghcr.io >/dev/null 2>&1 || true' EXIT
           mkdir -p "$RUNNER_TEMP/pulled-chart"
           pull_output="$(helm pull "oci://${repository}" --version "$CHART_VERSION" --destination "$RUNNER_TEMP/pulled-chart" 2>&1)"
