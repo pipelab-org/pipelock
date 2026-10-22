@@ -71,6 +71,24 @@ func TestRunWritesStableImageBundle(t *testing.T) {
 	}
 }
 
+func TestBuildManifestAcceptsEachReleaseNamespace(t *testing.T) {
+	for _, namespace := range releaseNamespaces {
+		manifest, err := buildManifest("v3.4.0", strings.Repeat("a", 40), []string{
+			"pipelock=" + namespace + "/pipelock@" + testDigest,
+			"pipelock-init=" + namespace + "/pipelock-init@" + testDigest,
+			"pipelock-license-service=" + namespace + "/pipelock-license-service@" + testDigest,
+		})
+		if err != nil {
+			t.Fatalf("%s: %v", namespace, err)
+		}
+		for _, image := range manifest.Images {
+			if want := namespace + "/" + image.Name; image.Repository != want {
+				t.Fatalf("%s: repository = %q, want %q", namespace, image.Repository, want)
+			}
+		}
+	}
+}
+
 func TestRunWritesBundleToStdout(t *testing.T) {
 	var stdout bytes.Buffer
 	if err := run(validArgs(""), &stdout, io.Discard); err != nil {
@@ -137,7 +155,7 @@ func TestBuildManifestRejectsWrongOrMissingInputs(t *testing.T) {
 		{name: "bad tag", tag: "release-3.4.0", commit: strings.Repeat("a", 40), images: validImages, want: "--tag"},
 		{name: "bad commit", tag: "v3.4.0", commit: "ABC", images: validImages, want: "--commit"},
 		{name: "missing image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: validImages[:2], want: "missing required"},
-		{name: "duplicate image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: append(validImages[:2], validImages[0]), want: "duplicate"},
+		{name: "duplicate image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{validImages[0], validImages[1], validImages[0]}, want: "duplicate"},
 		{name: "too many images", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: append(validImages, validImages[0]), want: "exactly"},
 		{name: "unknown image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
 			"other=ghcr.io/luckypipewrench/other@" + testDigest,
@@ -155,6 +173,26 @@ func TestBuildManifestRejectsWrongOrMissingInputs(t *testing.T) {
 			"pipelock=ghcr.io/luckypipewrench/pipelock@sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef",
 			validImages[1], validImages[2],
 		}, want: "lowercase"},
+		{name: "mixed namespaces", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
+			"pipelock=ghcr.io/pipelab-org/pipelock@" + testDigest,
+			validImages[1], validImages[2],
+		}, want: "not in namespace"},
+		{name: "look-alike namespace", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
+			"pipelock=ghcr.io/pipelab-org-mirror/pipelock@" + testDigest,
+			validImages[1], validImages[2],
+		}, want: "repository"},
+		{name: "image under another image's name", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
+			"pipelock=ghcr.io/luckypipewrench/pipelock-init@" + testDigest,
+			validImages[1], validImages[2],
+		}, want: "repository"},
+		{name: "mixed-case namespace", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
+			"pipelock=ghcr.io/luckyPipewrench/pipelock@" + testDigest,
+			validImages[1], validImages[2],
+		}, want: "repository"},
+		{name: "nested repository", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
+			"pipelock=ghcr.io/pipelab-org/charts/pipelock@" + testDigest,
+			validImages[1], validImages[2],
+		}, want: "repository"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

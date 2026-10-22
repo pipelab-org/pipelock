@@ -15,13 +15,13 @@ updates your cluster.
 
 ## Get the exact image set
 
-After v3.7.0 is published, this downloads its immutable image set into the current directory.
+After v3.7.1 is published, this downloads its immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.7.0
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.7.0
-cat pipelock-v3.7.0/release-images.json
+mkdir -p pipelock-v3.7.1
+gh release download v3.7.1 --repo pipelab-org/pipelock --pattern release-images.json --dir pipelock-v3.7.1
+cat pipelock-v3.7.1/release-images.json
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -32,16 +32,16 @@ GitHub CLI login and registry access when the image is not public.
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
 ```bash
-PIPELOCK_RELEASE=v3.7.0
+PIPELOCK_RELEASE=v3.7.1
 PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
-PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
+PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
 test -n "$PIPELOCK_COMMIT"
 
 gh attestation verify "$PIPELOCK_BUNDLE" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners
@@ -52,8 +52,8 @@ jq -e --arg tag "$PIPELOCK_RELEASE" --arg commit "$PIPELOCK_COMMIT" \
 
 PIPELOCK_IMAGE="$(jq -er '.images[] | select(.name == "pipelock") | "\(.repository)@\(.digest)"' "$PIPELOCK_BUNDLE")"
 gh attestation verify "oci://${PIPELOCK_IMAGE}" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners
@@ -67,25 +67,25 @@ The file has this shape:
 ```json
 {
   "schema": "pipelock-release-images-v1",
-  "tag": "v3.7.0",
+  "tag": "v3.7.1",
   "commit": "the release commit",
   "images": [
     {
       "name": "pipelock",
-      "repository": "ghcr.io/luckypipewrench/pipelock",
+      "repository": "ghcr.io/pipelab-org/pipelock",
       "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     }
   ]
 }
 ```
 
-Use a `repository@digest` reference. A tag such as `:3.7.0` can be moved; a
+Use a `repository@digest` reference. A tag such as `:3.7.1` can be moved; a
 manifest digest cannot.
 
 ## Helm chart
 
 The chart itself is published as an OCI artifact next to the images, at
-`ghcr.io/luckypipewrench/charts/pipelock`. From v3.6.0 on it carries the same
+`ghcr.io/pipelab-org/charts/pipelock`. From v3.6.0 on it carries the same
 kind of provenance attestation as the container images above; earlier charts
 have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step, and
 look its commit up again, because the source check must name the commit of the
@@ -93,22 +93,22 @@ release you are verifying. Verify the chart, keep the digest the attestation
 names, and confirm the archive you pull has that same digest:
 
 ```bash
-PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
+PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
 test -n "$PIPELOCK_COMMIT"
 
 PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
-  "oci://ghcr.io/luckypipewrench/charts/pipelock:${PIPELOCK_RELEASE#v}" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  "oci://ghcr.io/pipelab-org/charts/pipelock:${PIPELOCK_RELEASE#v}" \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners \
   --format json --jq '.[0].verificationResult.statement.subject[0].digest.sha256')"
 
 mkdir -p "pipelock-${PIPELOCK_RELEASE}"
-helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" \
+helm pull "oci://ghcr.io/pipelab-org/charts/pipelock" \
   --version "${PIPELOCK_RELEASE#v}" --destination "pipelock-${PIPELOCK_RELEASE}" \
   >"pipelock-${PIPELOCK_RELEASE}/helm-pull.log" 2>&1 &&
   grep -Fx "Digest: ${PIPELOCK_CHART_DIGEST}" "pipelock-${PIPELOCK_RELEASE}/helm-pull.log" &&

@@ -310,6 +310,7 @@ func TestWholeRecorderEndProof(t *testing.T) {
 		{"open", open, hex.EncodeToString(openKey), nil, 3, false},
 		{"accepted-prefix", open, hex.EncodeToString(openKey), []string{"--allow-prefix"}, 0, false},
 		{"required-seal", open, hex.EncodeToString(openKey), []string{"--require-seal", "--allow-prefix"}, 1, false},
+		{"required-seal-alone", open, hex.EncodeToString(openKey), []string{"--require-seal"}, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, jsonMode := range []bool{false, true} {
@@ -452,6 +453,14 @@ func TestWholeRecorderEvidenceOnlyPrefix(t *testing.T) {
 		{"pin-is-not-proof", []string{files[0], "--expect-head", head}, 3},
 		{"pin-mismatch", []string{files[0], "--expect-head", strings.Repeat("0", 64), "--allow-prefix"}, 1},
 		{"require-seal", []string{files[0], "--require-seal", "--allow-prefix"}, 1},
+		// A required seal is invalid evidence on its own too, not an
+		// unproven prefix, for one file, one run and the whole directory.
+		{"require-seal-alone", []string{files[0], "--require-seal"}, 1},
+		{"session-require-seal", []string{"--chain", dir, "--session", session, "--require-seal"}, 1},
+		{"session-require-seal-allow-prefix", []string{"--chain", dir, "--session", session, "--require-seal", "--allow-prefix"}, 1},
+		{"dir-require-seal", []string{"--chain", dir, "--require-seal"}, 1},
+		{"dir-require-seal-allow-prefix", []string{"--chain", dir, "--require-seal", "--allow-prefix"}, 1},
+		{"require-seal-pin-mismatch", []string{files[0], "--require-seal", "--expect-head", strings.Repeat("0", 64)}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := VerifyReceiptCmd()

@@ -9,7 +9,7 @@ deployment.
 
 ```bash
 # 1. Install pipelock
-git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.1 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
 # 2. Generate a config (or copy a preset)
@@ -204,14 +204,14 @@ asyncio.run(main())
 
 ### LangGraph Docker image with Pipelock
 
-After v3.7.0 is published, download and verify its [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz) in the build directory.
+After v3.7.1 is published, download and verify its [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.1/pipelock_3.7.1_linux_amd64.tar.gz) in the build directory.
 
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
 ```bash
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-tar xzf pipelock_3.7.0_linux_amd64.tar.gz pipelock
+gh release download v3.7.1 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.1_linux_amd64.tar.gz
+gh attestation verify pipelock_3.7.1_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+tar xzf pipelock_3.7.1_linux_amd64.tar.gz pipelock
 ```
 
 Then use `dockerfile_lines` in `langgraph.json` to copy the verified binary into the image:
@@ -276,7 +276,7 @@ networks:
 
 services:
   pipelock:
-    image: ghcr.io/luckypipewrench/pipelock:3.7.0
+    image: ghcr.io/pipelab-org/pipelock:3.7.1
     networks:
       - pipelock-internal
       - pipelock-external

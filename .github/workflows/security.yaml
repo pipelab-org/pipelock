@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, 'release-base/**']
   schedule:
     - cron: '0 3 * * 0' # Weekly Sunday 3AM UTC
 

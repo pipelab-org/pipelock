@@ -39,14 +39,14 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "Docker image tag",
         re.compile(
-            r"ghcr\.io/luckypipewrench/pipelock(?:-init)?:(?P<version>[0-9A-Za-z._+-]+)"
+            r"ghcr\.io/(?:luckypipewrench|pipelab-org)/pipelock(?:-init)?:(?P<version>[0-9A-Za-z._+-]+)"
         ),
     ),
     (
         "Helm chart version",
         re.compile(
             r"helm\s+(?:install|upgrade|pull)\b[^\n]*?"
-            r"oci://ghcr\.io/luckypipewrench/charts/pipelock[^\n]*?"
+            r"oci://ghcr\.io/(?:luckypipewrench|pipelab-org)/charts/pipelock[^\n]*?"
             r"--version\s+(?P<version>[0-9A-Za-z._+-]+)"
         ),
     ),

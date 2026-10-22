@@ -286,3 +286,21 @@ func TestInterceptChunkedBodyRecordedAsSent(t *testing.T) {
 		t.Fatal("a value sent in a chunked body reached upstream as an id")
 	}
 }
+
+func TestIssuerServerIDRequiresRecordedHistory(t *testing.T) {
+	origin, err := url.Parse("https://api.vendor.example/v1/filters")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTestServerIDStore(t)
+	now := time.Now()
+	s.mintServerID("a", origin, serverIDListed, now)
+	if s.serverIDIssued("a", origin, serverIDListed) {
+		t.Fatal("missing send history granted an issued ID allowance")
+	}
+	s.recordSent("a", origin, nil, nil, true, now)
+	s.mintServerID("a", origin, serverIDListed, now)
+	if !s.serverIDIssued("a", origin, serverIDListed) {
+		t.Fatal("complete send history did not permit a new server ID")
+	}
+}

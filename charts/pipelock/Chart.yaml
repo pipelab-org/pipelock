@@ -6,8 +6,8 @@ type: application
 # gate enforces that both equal the release tag. The chart publishes to an
 # OCI registry under this version as the tag, so a version that did not move
 # every release would overwrite the previously published chart in place.
-version: 3.7.0
-appVersion: "3.7.0"
+version: 3.7.1
+appVersion: "3.7.1"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -41,7 +41,7 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed
-      description: Pipelock appVersion 3.7.0. Parallel signed receipt chains use group openings, closes and complete-history verification; exact clean-text caching reduces receipt scanning cost within its documented detection bounds.
+      description: Pipelock appVersion 3.7.1. Security fixes for response scanning, credential detection, destination checks, issuer history and terminal output; updated Go build toolchains.
     - kind: added
       description: Exact destination grants authorize host-and-port pairs while retaining content and protected-address checks.
     - kind: added

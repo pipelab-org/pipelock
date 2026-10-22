@@ -429,6 +429,7 @@ type compiledPattern struct {
 	providerKeyPrefix   string
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
+	cardPrefixRetry     bool
 	// validateAt judges a candidate in the view it was found in, with the view
 	// around it. It is set only in scanners built for tool-command text.
 	validateAt func(view string, start, end int) bool
@@ -471,7 +472,7 @@ func (p *compiledPattern) matches(text string) bool {
 	// No cap: regex specificity (BIN prefixes, IBAN format) and data budget
 	// limits already bound the match count in practice.
 	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		if p.accepts(text, loc[0], loc[1]) {
+		if _, _, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
 			return true
 		}
 	}
@@ -485,6 +486,20 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 		return false
 	}
 	return p.validateAt == nil || p.validateAt(view, start, end)
+}
+
+// acceptedSpan returns the finding span of one regex hit. For every pattern
+// but the canonical card rule that is the hit itself, when accepts takes it.
+// The card rule may instead accept a shorter candidate with the same start,
+// so the returned span, not the hit, is the evidence to report.
+func (p *compiledPattern) acceptedSpan(view string, start, end int) (int, int, bool) {
+	if !p.cardPrefixRetry {
+		return start, end, p.accepts(view, start, end)
+	}
+	accepted, ok := acceptedCardEnd(view[start:end], func(candidateEnd int) bool {
+		return p.accepts(view, start, start+candidateEnd)
+	})
+	return start, start + accepted, ok
 }
 
 // New creates a Scanner from config. Config should be validated first via
@@ -501,6 +516,8 @@ type Options struct {
 	// assignment whose whole statement is one environment-variable lookup.
 	// Proxy, body, header, WebSocket and MCP upstream scanners never set it.
 	ToolCommandEnvLookups bool
+	// UpstreamResolver defaults to net.DefaultResolver when nil.
+	UpstreamResolver Resolver
 }
 
 func New(cfg *config.Config) (*Scanner, error) {
@@ -642,6 +659,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
 			}
 			cp.validate = fn
+			cp.cardPrefixRetry = RetriesCardPrefixes(p)
 		}
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)
@@ -695,7 +713,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	// degrades to a plain delegation to net.DefaultResolver - this keeps a
 	// single code path through the rest of the scanner and proxy regardless
 	// of whether overrides are configured.
-	s.resolver = NewStaticOverrideResolver(cfg.DNS.HostOverrides, nil)
+	s.resolver = NewStaticOverrideResolver(cfg.DNS.HostOverrides, opts.UpstreamResolver)
 
 	// Initialize data budget if configured
 	if cfg.FetchProxy.Monitoring.MaxDataPerMinute > 0 {
@@ -903,12 +921,19 @@ func (s *Scanner) AddressChecker() *addressprotect.Checker {
 // IsInternalIP checks whether the given IP falls within immutable core CIDRs
 // or any configured internal CIDR.
 func (s *Scanner) IsInternalIP(ip net.IP) bool {
-	// Normalize IPv4-mapped IPv6 addresses (e.g., ::ffff:127.0.0.1) to
-	// their 4-byte IPv4 form so they match IPv4 CIDRs like 127.0.0.0/8.
-	if v4 := ip.To4(); v4 != nil {
-		ip = v4
+	// Check the normalized address (IPv4-mapped IPv6 becomes 4-byte IPv4)
+	// and every IPv4 address embedded in it (NAT64, 6to4, Teredo,
+	// IPv4-compatible), so a translated form cannot reach an internal host.
+	for _, form := range destination.SSRFForms(ip) {
+		if s.isRawInternalIP(form) {
+			return true
+		}
 	}
-	if s.isCoreCIDRBlocked(ip) {
+	return false
+}
+
+func (s *Scanner) isRawInternalIP(ip net.IP) bool {
+	if s.isRawCoreCIDRBlocked(ip) {
 		return true
 	}
 	for _, cidr := range s.internalCIDRs {
@@ -966,9 +991,30 @@ func (s *Scanner) HostResolver() Resolver {
 // floor, resolved SSRF, and the proxy dial guard), so hardening it here covers
 // all of them at once.
 func (s *Scanner) IsIPAllowlisted(ip net.IP) bool {
-	if IsNonOverridableSSRFTarget(ip) {
+	if ip == nil || IsNonOverridableSSRFTarget(ip) {
 		return false
 	}
+	// When an IPv4 address is embedded in ip, every internal form must be
+	// allowlisted; allowlisting the outer address alone does not exempt an
+	// internal host reached through translation.
+	forms := destination.SSRFForms(ip)
+	internalForms := 0
+	for _, form := range forms {
+		if !s.isRawInternalIP(form) {
+			continue
+		}
+		internalForms++
+		if !s.rawIPAllowlisted(form) {
+			return false
+		}
+	}
+	if internalForms > 0 {
+		return true
+	}
+	return s.rawIPAllowlisted(forms[0])
+}
+
+func (s *Scanner) rawIPAllowlisted(ip net.IP) bool {
 	for _, cidr := range s.ipAllowlistCIDRs {
 		if cidr.Contains(ip) {
 			return true
@@ -1451,7 +1497,7 @@ func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) R
 			}
 		}
 		for _, cidr := range allCIDRs {
-			if cidr.Contains(literalIP) && !s.IsIPAllowlisted(literalIP) && !s.destinationGrants.Contains(dest) {
+			if destination.ContainsAnySSRFForm(cidr, literalIP) && !s.IsIPAllowlisted(literalIP) && !s.destinationGrants.Contains(dest) {
 				result := Result{
 					Allowed: false,
 					Reason:  fmt.Sprintf("SSRF blocked: %s is an internal IP", hostname),

@@ -159,7 +159,7 @@ func (s *issuerQueryStore) taintSentLocked(session string) {
 
 // mintBlockedLocked reports whether the session may not mint or use IDs.
 func (s *issuerQueryStore) mintBlockedLocked(session string) bool {
-	return s.mintDisabled || s.sentUnreadable[session]
+	return s.mintDisabled || s.sent[session] == nil || s.sentUnreadable[session]
 }
 
 // recordSent records every token a request carries to its origin: path

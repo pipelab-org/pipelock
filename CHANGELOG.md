@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.7.1] - 2026-10-21
+
+### Fixed
+
+- Build release binaries with Go 1.26.10 and container images with Go 1.27.3, including the standard-library security fixes for GO-2026-6809.
+- Retain response-scanning findings when Browser Shield rewrites a response.
+- Detect built-in card patterns followed by another numeric field, while preserving custom-rule matching.
+- Apply SSRF checks to supported IPv4 addresses embedded in IPv6 destinations.
+- Preserve case-insensitive matching for bundled injection rules and detect additional encoded credential forms.
+- Require recorded outgoing-request history before granting a server-issued ID allowance.
+- Escape terminal control characters in approval prompts and affected command output.
+- Avoid printing receipt verification success when a required seal is missing.
+- Preserve configured MCP scanning policy during setup discovery.
+- Scan tool descriptions with separators preserved as word boundaries.
+
+### Changed
+
+- Publish release images, attestations and charts under the releasing repository owner's namespace.
+
+
 ## [3.7.0] - 2026-10-13
 
 ### Breaking Changes / Upgrade Notes

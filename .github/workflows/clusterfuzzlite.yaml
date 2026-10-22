@@ -1,7 +1,7 @@
 name: ClusterFuzzLite
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main, 'release-base/**']
     paths:
       # ClusterFuzzLite builds Go fuzzers from source. Keep this advisory,
       # expensive job tied to code, module, corpus, and fuzzer-build inputs.

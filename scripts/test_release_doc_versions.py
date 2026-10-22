@@ -35,6 +35,18 @@ def write_tree(root: Path, *, current: str = CURRENT, health: str = '  "version"
 
 
 class ReleaseDocVersionTests(unittest.TestCase):
+    def test_current_and_stale_organization_image_pins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            current = CURRENT.replace("ghcr.io/luckypipewrench/", "ghcr.io/pipelab-org/")
+            write_tree(root, current=current)
+            self.assertEqual(check(root, "v3.6.0"), [])
+            write_tree(root, current=current.replace("pipelock:3.6.0", "pipelock:3.5.0"))
+            self.assertTrue(any("Docker image tag" in issue for issue in check(root, "v3.6.0")))
+            write_tree(root, current=current.replace("--version 3.6.0", "--version 3.5.0"))
+            self.assertTrue(any("Helm chart version" in issue for issue in check(root, "v3.6.0")))
+
+
     def test_repository_matches_chart_app_version(self) -> None:
         """Exercise the release gate on the shipped tree, not only fixtures."""
         chart = yaml.load(

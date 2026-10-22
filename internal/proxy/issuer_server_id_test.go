@@ -334,6 +334,7 @@ func TestIssuerServerIDStore(t *testing.T) {
 
 	t.Run("an unread body revokes ids minted before it", func(t *testing.T) {
 		s := newTestServerIDStore(t)
+		s.recordSent("a", origin, nil, nil, true, now)
 		s.mintServerID("a", origin, serverIDListed, now)
 		if !s.serverIDIssued("a", origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")
@@ -537,6 +538,7 @@ func TestIssuerServerIDUnmediatedSends(t *testing.T) {
 		h := newWebPlatformHarness(t)
 		store := h.p.issuerStoreForUnmediatedSend()
 		session := sessionKeyFor(h.cfg, agent, "127.0.0.1", envelope.ActorAuthBound)
+		store.recordSent(session, origin, nil, nil, true, now)
 		store.mintServerID(session, origin, serverIDListed, now)
 		if !store.serverIDIssued(session, origin, serverIDListed) {
 			t.Fatal("positive control: id not minted")

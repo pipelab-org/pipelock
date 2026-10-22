@@ -555,6 +555,27 @@ func credentialAckCandidate(cfg *ToolScanConfig, tool ToolDef, att credentialReq
 	return c, ""
 }
 
+// Reasons a Credential Request Directive found only with separators read as
+// spaces offers no candidate.
+const (
+	credentialAckSpacedUnattributable = "the finding matches only with line breaks and separators read as spaces, and no single tool field holds it"
+	credentialAckSpacedUnavailable    = "the finding matches only with line breaks and separators read as spaces, and no candidate can be built for this tool"
+)
+
+// requestAckCandidate is credentialAckCandidate for the finding pre raised.
+// A finding that only the spaced view raised always carries either a
+// candidate or a reason, so the operator learns why none is offered.
+func requestAckCandidate(cfg *ToolScanConfig, tool ToolDef, pre toolPrescan, att credentialRequestAttribution) (*CredentialAckCandidate, string) {
+	c, reason := credentialAckCandidate(cfg, tool, att)
+	if c != nil || reason != "" || !pre.credentialRequestSpacedOnly() {
+		return c, reason
+	}
+	if !att.Attributable {
+		return nil, credentialAckSpacedUnattributable
+	}
+	return nil, credentialAckSpacedUnavailable
+}
+
 // entry converts the candidate to a configuration entry without the fields
 // only an operator can supply.
 func (c *CredentialAckCandidate) entry() config.MCPAcknowledgedFinding {
@@ -671,8 +692,8 @@ func credentialAckOutcome(cfg *ToolScanConfig, tool ToolDef, pre toolPrescan, no
 	att := credentialRequestAttribution{Attributable: true}
 	hasRequest := false
 	if pre.text != "" {
-		hasRequest = slices.Contains(pre.poison, handoverRequestFinding)
-		att = attributeWithNorm(pre.text, pre.norm, pre.spans)
+		hasRequest = pre.hasCredentialRequest()
+		att = pre.credentialRequestAttribution()
 	}
 	outcome := evaluateCredentialAck(entry, cfg, tool, att, now)
 	if outcome == CredentialAckAcknowledged && !hasRequest {

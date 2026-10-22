@@ -707,16 +707,16 @@ func TestBuildConfig_MCPEnablement(t *testing.T) {
 			wantToolChain: false,
 		},
 		{
-			name:          "few servers enables MCP scanning",
+			name:          "few servers preserves preset scanning",
 			servers:       2,
 			wantMCPInput:  true,
 			wantToolChain: false,
 		},
 		{
-			name:          "many servers enables tool chain detection",
+			name:          "many servers preserves preset scanning",
 			servers:       5,
 			wantMCPInput:  true,
-			wantToolChain: true,
+			wantToolChain: false,
 		},
 	}
 

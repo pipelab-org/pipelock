@@ -110,7 +110,7 @@ These examples target v3.7.0 once its release artifacts are published. For an ex
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.1 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
 # Discover local agent integrations and save a config
@@ -128,8 +128,8 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # Download a binary
 # See https://github.com/luckyPipewrench/pipelock/releases
 
-# Docker (after v3.7.0 image publication)
-docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
+# Docker (after v3.7.1 image publication)
+docker pull ghcr.io/pipelab-org/pipelock:3.7.1
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -143,10 +143,10 @@ brew install luckyPipewrench/tap/pipelock
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
 ```bash
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify pipelock_3.7.1_linux_amd64.tar.gz --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/pipelab-org/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
-gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/pipelab-org/charts/pipelock:3.7.1 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images, and (from 3.6.0) an attested Helm chart. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
@@ -563,10 +563,10 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 ## Deployment
 
 ```bash
-# Docker (after v3.7.0 image publication)
-docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
+# Docker (after v3.7.1 image publication)
+docker pull ghcr.io/pipelab-org/pipelock:3.7.1
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:3.7.0 \
+  ghcr.io/pipelab-org/pipelock:3.7.1 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -574,7 +574,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (after v3.7.0 chart publication, Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.0
+helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version 3.7.1
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -587,7 +587,7 @@ The source commit below pins the action implementation, not a release tag. Its e
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
+- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.1 action source
   with:
     version: '3.7.0'
     scan-diff: 'true'

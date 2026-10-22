@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
 // AdaptiveCmd is the top-level `pipelock adaptive` operator command.
@@ -124,7 +125,7 @@ func renderAdaptiveStatus(w io.Writer, status proxy.AdaptiveStatus) error {
 	}
 	_, _ = fmt.Fprintln(w, "top_anomalies:")
 	for _, a := range status.TopAnomalies {
-		_, _ = fmt.Fprintf(w, "  %s %d\n", a.Name, a.Count)
+		_, _ = fmt.Fprintf(w, "  %s %d\n", termsafe.Escape(a.Name), a.Count)
 	}
 	return nil
 }
