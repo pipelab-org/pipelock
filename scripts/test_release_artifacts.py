@@ -250,7 +250,11 @@ class TestReleaseArtifacts(unittest.TestCase):
         """
         parsed = load_workflow(WORKFLOW)
         holders = []
+        self.assertNotIn("HOMEBREW_TAP_TOKEN", str(parsed.get("env") or {}))
         for job_name, job in parsed["jobs"].items():
+            self.assertNotIn(
+                "HOMEBREW_TAP_TOKEN", str(job.get("env") or {}), job_name
+            )
             for step in job.get("steps", []):
                 texts = [
                     str(value)
