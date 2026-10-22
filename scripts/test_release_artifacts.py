@@ -18,6 +18,7 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -250,17 +251,32 @@ class TestReleaseArtifacts(unittest.TestCase):
         """
         parsed = load_workflow(WORKFLOW)
         holders = []
-        # Anything outside a step reaches every step below it: workflow and job
-        # env, job secrets and with, container and service env, outputs. Scan all
-        # of it, and refuse whole-context secret access that carries the token
-        # without naming it.
-        scopes = {"workflow": {k: v for k, v in parsed.items() if k != "jobs"}}
+        # Keep workflow and job scopes separate even for a job named workflow.
+        scopes = [("workflow", {k: v for k, v in parsed.items() if k != "jobs"})]
         for job_name, job in parsed["jobs"].items():
-            scopes[job_name] = {k: v for k, v in job.items() if k != "steps"}
-        for scope, config in scopes.items():
-            self.assertNotIn("HOMEBREW_TAP_TOKEN", str(config), scope)
-        whole_secrets = re.compile(r"toJSON\(\s*secrets\s*\)|secrets\s*\[")
-        self.assertIsNone(whole_secrets.search(str(parsed)))
+            scopes.append((job_name, {k: v for k, v in job.items() if k != "steps"}))
+        for scope, config in scopes:
+            self.assertNotIn("HOMEBREW_TAP_TOKEN", str(config).upper(), scope)
+
+        def strings(value):
+            if isinstance(value, dict):
+                for child in value.values():
+                    yield from strings(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from strings(child)
+            elif isinstance(value, str):
+                yield value
+
+        # Conservatively require named dot access to secrets. Inspect decoded
+        # strings so newlines stay whitespace. This is not an expression parser.
+        # GitHub's expressions reference defines property dereference syntax;
+        # its secrets reference defines case-insensitive secret names.
+        whole_secrets = re.compile(
+            r"\bsecrets\b(?!\s*\.\s*[a-z_][a-z0-9_-]*)", re.IGNORECASE
+        )
+        for text in strings(parsed):
+            self.assertIsNone(whole_secrets.search(text))
         for job_name, job in parsed["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", job_name)
             for step in job.get("steps", []):
@@ -272,7 +288,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 run = step.get("run")
                 if run is not None:
                     texts.append(str(run))
-                if any("HOMEBREW_TAP_TOKEN" in text for text in texts):
+                if any("HOMEBREW_TAP_TOKEN" in text.upper() for text in texts):
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
             holders,
@@ -281,6 +297,63 @@ class TestReleaseArtifacts(unittest.TestCase):
                 ("release-publish", "Publish Homebrew formula"),
             ],
         )
+
+    def test_tap_token_guard_rejects_broader_secret_scopes(self) -> None:
+        parsed = load_workflow(WORKFLOW)
+        mutations = {}
+        for expression in (
+            "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ secrets.homebrew_tap_token }}",
+            "${{ toJSON(secrets) }}",
+            "${{ toJson(secrets) }}",
+            "${{ toJSON (secrets) }}",
+            "${{ toJSON(\nsecrets\n) }}",
+            "${{ toJSON((secrets)) }}",
+            "${{ SECRETS['HOMEBREW_TAP_TOKEN'] }}",
+            "${{ (secrets)['HOMEBREW_TAP_TOKEN'] }}",
+        ):
+            document = copy.deepcopy(parsed)
+            document["env"] = {"EXPOSURE": expression}
+            mutations[expression] = document
+        for field in ("env", "with", "secrets", "outputs"):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"][field] = {
+                "EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            }
+            mutations[field] = document
+        for field in ("container", "services"):
+            document = copy.deepcopy(parsed)
+            container = {"image": "alpine", "env": {
+                "EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            }}
+            document["jobs"]["release-build"][field] = (
+                container if field == "container" else {"service": container}
+            )
+            mutations[field] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["secrets"] = "inherit"
+        mutations["inherit"] = document
+        document = copy.deepcopy(parsed)
+        document["env"] = {"EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"}
+        document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
+        mutations["job named workflow"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["env"] = {
+            "EXPOSURE": "${{ secrets.homebrew_tap_token }}"
+        }
+        mutations["build step"] = document
+
+        for label, document in mutations.items():
+            with self.subTest(mutation=label):
+                with mock.patch(__name__ + ".load_workflow", return_value=document):
+                    with self.assertRaises(AssertionError):
+                        self.test_tap_token_reaches_only_the_protected_publish_step()
+
+        document = copy.deepcopy(parsed)
+        document["env"] = {"METADATA": "${{ toJSON(github) }}"}
+        document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
+        with mock.patch(__name__ + ".load_workflow", return_value=document):
+            self.test_tap_token_reaches_only_the_protected_publish_step()
 
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
