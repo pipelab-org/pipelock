@@ -655,6 +655,7 @@ func TestProtectionLabel(t *testing.T) {
 		{"protected_pipelock", "PIPELOCK"},
 		{"protected_other", "OTHER"},
 		{"unprotected", "UNPROTECTED"},
+		{"disabled", "DISABLED"},
 		{"unknown_status", "UNKNOWN"},
 		{"", "UNKNOWN"},
 	}

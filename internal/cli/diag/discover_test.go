@@ -37,11 +37,15 @@ func TestDiscoverCmd_JSONEmptyHome(t *testing.T) {
 }
 
 func TestDiscoverCmd_SOPSSubsetInHumanAndJSON(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, ".codex"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	content := "[mcp_servers.nested]\ncommand = 'sops'\nargs = ['exec-env', 'secrets.yaml', 'exec /opt/pipelock mcp proxy']\n"
+	content := "[mcp_servers.nested]\ncommand = 'sops'\nargs = ['exec-env', 'secrets.yaml', 'exec " + self + " mcp proxy']\n"
 	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -86,6 +90,58 @@ func TestDiscoverCmd_SOPSSubsetInHumanAndJSON(t *testing.T) {
 				t.Fatalf("JSON summary = %+v", report.Summary)
 			}
 		})
+	}
+}
+
+func TestDiscoverCmdDisabledCodexServerExitsCleanAndStaysListed(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[mcp_servers.off]\ncommand = 'npx'\nenabled = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--home", home}, {"--json", "--home", home}} {
+		var output bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&output)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("Execute(%v): %v", args, err)
+		}
+		if args[0] == "--json" {
+			var report discover.Report
+			if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.TotalServers != 0 || report.Summary.Disabled != 1 || len(report.Servers) != 1 || report.Servers[0].Protection != discover.Disabled {
+				t.Fatalf("JSON report = %+v", report)
+			}
+		} else if !strings.Contains(output.String(), "Disabled servers") || !strings.Contains(output.String(), "off") || strings.Contains(output.String(), "Unprotected servers:") {
+			t.Fatalf("human report = %s", output.String())
+		}
+	}
+}
+
+func TestDiscoverComplianceGuideNamesTOMLClients(t *testing.T) {
+	const guide = "../../../docs/compliance/owasp-mcp-top10.md"
+	data, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var discoveryLine string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "- **Discovery:**") {
+			discoveryLine = line
+			break
+		}
+	}
+	for _, client := range []string{"Codex", "Grok"} {
+		if !strings.Contains(discoveryLine, client) {
+			t.Fatalf("compliance discovery list omits %s", client)
+		}
 	}
 }
 

@@ -14,15 +14,16 @@ import (
 
 func TestParseTOMLConfig(t *testing.T) {
 	tests := []struct {
-		name        string
-		client      string
-		content     string
-		wantName    string
-		wantCommand string
-		wantURL     string
-		wantType    string
-		wantWarning bool
-		wantError   bool
+		name         string
+		client       string
+		content      string
+		wantName     string
+		wantCommand  string
+		wantURL      string
+		wantType     string
+		wantWarning  bool
+		wantDisabled bool
+		wantError    bool
 	}{
 		{
 			name: "Codex stdio with quoted key and env", client: clientCodex,
@@ -43,6 +44,31 @@ func TestParseTOMLConfig(t *testing.T) {
 			name: "Codex HTTP headers", client: clientCodex,
 			content:  "[mcp_servers.remote]\nurl = 'https://api.vendor.example/mcp'\nhttp_headers = { Authorization = 'secret-value' }\n",
 			wantName: "remote", wantURL: "https://api.vendor.example/mcp", wantType: TransportHTTP, wantWarning: true,
+		},
+		{
+			name: "Codex bearer token warning", client: clientCodex,
+			content:  "[mcp_servers.remote]\nurl = 'https://api.vendor.example/mcp'\nbearer_token_env_var = 'MCP_TOKEN'\n",
+			wantName: "remote", wantURL: "https://api.vendor.example/mcp", wantType: TransportHTTP, wantWarning: true,
+		},
+		{
+			name: "Codex disabled", client: clientCodex,
+			content:  "[mcp_servers.off]\ncommand = 'npx'\nenabled = false\n",
+			wantName: "off", wantCommand: "npx", wantType: TransportStdio, wantDisabled: true,
+		},
+		{
+			name: "Codex explicit enabled", client: clientCodex,
+			content:  "[mcp_servers.on]\ncommand = 'npx'\nenabled = true\n",
+			wantName: "on", wantCommand: "npx", wantType: TransportStdio,
+		},
+		{
+			name: "unsupported type does not override URL", client: clientGrok,
+			content:  "[mcp_servers.remote]\nurl = 'https://api.vendor.example/mcp'\ntype = 'stdio'\n",
+			wantName: "remote", wantURL: "https://api.vendor.example/mcp", wantType: TransportHTTP,
+		},
+		{
+			name: "invalid Codex enabled type", client: clientCodex,
+			content:   "[mcp_servers.bad]\ncommand = 'npx'\nenabled = 'false'\n",
+			wantError: true,
 		},
 		{
 			name: "invalid args type", client: clientCodex,
@@ -95,7 +121,7 @@ func TestParseTOMLConfig(t *testing.T) {
 				t.Fatalf("servers = %+v, want one", servers)
 			}
 			s := servers[0]
-			if s.Client != tt.client || s.ServerName != tt.wantName || s.Command != tt.wantCommand || s.URL != tt.wantURL || s.Transport != tt.wantType || s.Args == nil {
+			if s.Client != tt.client || s.ServerName != tt.wantName || s.Command != tt.wantCommand || s.URL != tt.wantURL || s.Transport != tt.wantType || s.Args == nil || s.Disabled != tt.wantDisabled {
 				t.Fatalf("server = %+v", s)
 			}
 			if (len(s.ParseWarnings) > 0) != tt.wantWarning {
@@ -136,17 +162,53 @@ func TestDiscoverTOMLClientsAndErrors(t *testing.T) {
 	}
 }
 
+func TestDiscoverDisabledCodexServersRemainListedWithoutScoring(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "[mcp_servers.off]\ncommand = 'npx'\nenabled = false\n[mcp_servers.on]\ncommand = 'node'\nenabled = true\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := Discover(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Servers) != 2 || report.Summary.TotalServers != 1 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	foundDisabled := false
+	for _, server := range report.Servers {
+		if server.ServerName == "off" {
+			foundDisabled = true
+			if server.Protection != Disabled || !server.Disabled || server.Risk != "" {
+				t.Fatalf("disabled server = %+v", server)
+			}
+		}
+	}
+	if !foundDisabled {
+		t.Fatalf("disabled server missing from inventory: %+v", report.Servers)
+	}
+}
+
 func TestBuildSummarySOPSSubset(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	servers := []MCPServer{
-		{Command: "sops", Args: []string{"exec-env", "secrets.yaml", "exec /opt/pipelock mcp proxy"}, Protection: Unprotected},
+		{Command: "sops", Args: []string{"exec-env", "secrets.yaml", "exec " + self + " mcp proxy"}, Protection: Unprotected},
 		{Command: "/usr/bin/sops", Args: []string{"exec-env", "--background"}, Protection: Unprotected},
+		{Command: "sops", Args: []string{"exec-env", "secrets.yaml", "exec /usr/bin/true mcp proxy"}, Protection: Unprotected},
 		{Command: "sops", Args: []string{"exec-file", "secrets.yaml"}, Protection: Unprotected},
 		{Command: "npx", Protection: Unprotected},
-		{Command: "sops", Args: []string{"exec-env", "secrets.yaml", "exec /opt/pipelock mcp proxy"}, Protection: ProtectedPipelock},
+		{Command: "sops", Args: []string{"exec-env", "secrets.yaml", "exec " + self + " mcp proxy"}, Protection: ProtectedPipelock},
 	}
 	s := buildSummary(nil, servers)
-	if s.Unprotected != 4 || s.SOPSExecEnv != 2 {
-		t.Fatalf("summary = %+v, want four unprotected including two sops exec-env", s)
+	if s.Unprotected != 5 || s.SOPSExecEnv != 1 {
+		t.Fatalf("summary = %+v, want one recognized sops wrapper among five unprotected", s)
 	}
 	sharedJSON, err := json.Marshal(s)
 	if err != nil {

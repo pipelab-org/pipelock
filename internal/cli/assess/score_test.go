@@ -190,6 +190,20 @@ func TestScoreDeploymentVerification_AllNA(t *testing.T) {
 	}
 }
 
+func TestScoreMCPProtectionExcludesDisabledCodexEntries(t *testing.T) {
+	disc := &AssessDiscoverReport{
+		Servers: []AssessDiscoverServer{
+			{MCPServer: discover.MCPServer{ServerName: "off", Client: "codex", Disabled: true, Protection: discover.Disabled}},
+			{MCPServer: discover.MCPServer{ServerName: "on", Client: "codex", Protection: discover.ProtectedPipelock}},
+		},
+		Summary: AssessDiscoverSummary{Summary: discover.Summary{TotalServers: 1, Disabled: 1, ProtectedPipelock: 1}},
+	}
+	section := scoreMCPProtection(disc)
+	if section.Score != 100 || section.Applicable != 1 || section.Total != 1 {
+		t.Fatalf("disabled entry affected score: %+v", section)
+	}
+}
+
 func TestScoreMCPProtection(t *testing.T) {
 	t.Run("unknown gets 50% credit", func(t *testing.T) {
 		disc := &AssessDiscoverReport{

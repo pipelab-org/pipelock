@@ -200,6 +200,8 @@ func protectionLabel(status string) string {
 		return "OTHER"
 	case "unprotected":
 		return "UNPROTECTED"
+	case "disabled":
+		return "DISABLED"
 	default:
 		return "UNKNOWN"
 	}

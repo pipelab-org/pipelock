@@ -25,7 +25,7 @@ import (
 // inventory describing what the client will launch.
 const (
 	tomlKeyServers  = "mcp_servers"
-	tomlKeyType     = "type"
+	tomlKeyEnabled  = "enabled"
 	tomlKeyCommand  = "command"
 	tomlKeyArgs     = "args"
 	tomlKeyEnv      = "env"
@@ -33,6 +33,7 @@ const (
 	tomlKeyHeaders  = "headers"
 	tomlKeyHTTPHdrs = "http_headers"
 	tomlKeyEnvHdrs  = "env_http_headers"
+	tomlKeyAuthEnv  = "bearer_" + "token_env_var"
 )
 
 var errInvalidTOMLMCPConfig = errors.New("invalid TOML MCP config")
@@ -67,10 +68,13 @@ func parseTOMLConfig(path, client string) ([]MCPServer, error) {
 			return nil, invalid
 		}
 		s := MCPServer{Client: client, ConfigPath: path, ServerName: name}
-		var serverType string
-		var hasHeaders bool
-		if serverType, ok = tomlString(entry, tomlKeyType); !ok {
-			return nil, invalid
+		var hasAuthSettings bool
+		if client == clientCodex {
+			var enabled bool
+			if enabled, ok = tomlBoolDefaultTrue(entry, tomlKeyEnabled); !ok {
+				return nil, invalid
+			}
+			s.Disabled = !enabled
 		}
 		if s.Command, ok = tomlString(entry, tomlKeyCommand); !ok {
 			return nil, invalid
@@ -89,15 +93,33 @@ func parseTOMLConfig(path, client string) ([]MCPServer, error) {
 			if !valid {
 				return nil, invalid
 			}
-			hasHeaders = hasHeaders || len(headers) > 0
+			hasAuthSettings = hasAuthSettings || len(headers) > 0
 		}
-		s.Transport = inferTransport(rawServer{Type: serverType, Command: s.Command}, s.URL)
-		if hasHeaders {
-			s.ParseWarnings = append(s.ParseWarnings, "headers present but not preserved in wrapper suggestions")
+		s.Transport = inferTransport(rawServer{Command: s.Command}, s.URL)
+		if client == clientCodex {
+			bearer, valid := tomlString(entry, tomlKeyAuthEnv)
+			if !valid {
+				return nil, invalid
+			}
+			hasAuthSettings = hasAuthSettings || bearer != ""
+		}
+		if hasAuthSettings {
+			s.ParseWarnings = append(s.ParseWarnings, "HTTP headers or bearer token setting present but not preserved in wrapper suggestions")
 		}
 		servers = append(servers, s)
 	}
 	return servers, nil
+}
+
+// tomlBoolDefaultTrue reads Codex's enabled key without treating an absent
+// key as disabled. A present non-boolean value is a malformed client config.
+func tomlBoolDefaultTrue(table map[string]any, key string) (bool, bool) {
+	raw, present := table[key]
+	if !present {
+		return true, true
+	}
+	b, ok := raw.(bool)
+	return b, ok
 }
 
 // tomlString returns the string under the exact key, or "" when absent. A

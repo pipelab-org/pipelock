@@ -8,6 +8,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // GenerateWrapper returns a human-readable wrapper suggestion for an unprotected server.
@@ -27,6 +29,9 @@ func generateWrapper(s MCPServer, pipelockBin string) string {
 	var b strings.Builder
 	if pipelockBin == "" {
 		return "  (cannot suggest a verified wrapper because the current pipelock executable path is unavailable)"
+	}
+	if s.Client == clientCodex || s.Client == clientGrok {
+		return generateTOMLWrapper(s, pipelockBin)
 	}
 
 	if s.Transport == TransportStdio && s.Command != "" && isProxyShaped(s.Args) {
@@ -81,6 +86,48 @@ func generateWrapper(s MCPServer, pipelockBin string) string {
 	}
 
 	return "  (no suggestion available for this transport type)"
+}
+
+// Codex and Grok publish [mcp_servers.<name>] tables in config.toml:
+// https://developers.openai.com/codex/config-reference
+// https://docs.x.ai/build/features/mcp-servers
+// Marshal the whole table so quoted names, arguments, and URLs remain TOML.
+func generateTOMLWrapper(s MCPServer, pipelockBin string) string {
+	before := map[string]any{}
+	after := map[string]any{"command": pipelockBin}
+	var lead string
+	switch {
+	case s.Transport == TransportStdio && s.Command != "" && isProxyShaped(s.Args):
+		lead = "  Point the existing mcp proxy command at this executable; keep args unchanged."
+		before["command"] = s.Command
+		before["args"] = s.Args
+		after["args"] = s.Args
+	case s.Transport == TransportStdio && s.Command != "":
+		lead = "  Replace this stdio entry:"
+		before["command"] = s.Command
+		before["args"] = s.Args
+		args := []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "~/.config/pipelock/local.yaml"}
+		for _, key := range sortedEnvKeys(s.Env) {
+			args = append(args, "--env", key)
+		}
+		after["args"] = append(append(args, "--", s.Command), s.Args...)
+	case s.URL != "":
+		lead = "  Replace this HTTP entry:"
+		before["url"] = s.URL
+		after["args"] = []string{wrapperArgMCP, wrapperArgProxy, flagConfig, "~/.config/pipelock/local.yaml", "--upstream", s.URL}
+	default:
+		return "  (no suggestion available for this transport type)"
+	}
+	encode := func(fields map[string]any) (string, error) {
+		data, err := toml.Marshal(map[string]any{"mcp_servers": map[string]any{s.ServerName: fields}})
+		return string(data), err
+	}
+	oldSnippet, oldErr := encode(before)
+	newSnippet, newErr := encode(after)
+	if oldErr != nil || newErr != nil {
+		return "  (cannot encode a TOML wrapper suggestion for this entry)"
+	}
+	return fmt.Sprintf("%s\n  Before:\n%s\n  After:\n%s", lead, oldSnippet, newSnippet)
 }
 
 // isProxyShaped reports whether args begin with the mcp proxy subcommand.

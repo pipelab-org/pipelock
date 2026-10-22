@@ -7,7 +7,64 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
+
+func TestGenerateTOMLWrapperProducesParseableClientEntries(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server MCPServer
+		want   []string
+	}{
+		{"Codex stdio", MCPServer{Client: clientCodex, ServerName: "api.vendor.example", Transport: TransportStdio, Command: "npx", Args: []string{"-y", "server"}, Env: map[string]string{"API_KEY": "secret"}}, []string{"mcp", "proxy", flagConfig, "~/.config/pipelock/local.yaml", "--env", "API_KEY", "--", "npx", "-y", "server"}},
+		{"Grok HTTP", MCPServer{Client: clientGrok, ServerName: "remote", Transport: TransportHTTP, URL: "https://api.vendor.example/mcp"}, []string{"mcp", "proxy", flagConfig, "~/.config/pipelock/local.yaml", "--upstream", "https://api.vendor.example/mcp"}},
+		{"Codex repoint", MCPServer{Client: clientCodex, ServerName: "old", Transport: TransportStdio, Command: "/tmp/old", Args: []string{"mcp", "proxy", "--", "node", "server.js"}}, []string{"mcp", "proxy", "--", "node", "server.js"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			suggestion := generateWrapper(tc.server, "/opt/pipelock")
+			_, rest, ok := strings.Cut(suggestion, "  Before:\n")
+			if !ok {
+				t.Fatalf("no Before snippet: %s", suggestion)
+			}
+			before, _, ok := strings.Cut(rest, "\n  After:\n")
+			if !ok {
+				t.Fatalf("no After boundary: %s", suggestion)
+			}
+			if _, err := toml.Decode(before, &map[string]any{}); err != nil {
+				t.Fatalf("invalid Before TOML: %v\n%s", err, before)
+			}
+			_, after, ok := strings.Cut(suggestion, "  After:\n")
+			if !ok {
+				t.Fatalf("no After snippet: %s", suggestion)
+			}
+			var document map[string]any
+			if _, err := toml.Decode(after, &document); err != nil {
+				t.Fatalf("invalid TOML: %v\n%s", err, after)
+			}
+			servers, ok := document["mcp_servers"].(map[string]any)
+			if !ok {
+				t.Fatalf("no mcp_servers table: %+v", document)
+			}
+			entry, ok := servers[tc.server.ServerName].(map[string]any)
+			if !ok || entry["command"] != "/opt/pipelock" {
+				t.Fatalf("entry = %+v", entry)
+			}
+			args, ok := entry["args"].([]any)
+			if !ok || len(args) != len(tc.want) {
+				t.Fatalf("args = %+v, want %v", entry["args"], tc.want)
+			}
+			for i, want := range tc.want {
+				if args[i] != want {
+					t.Fatalf("args[%d] = %v, want %q", i, args[i], want)
+				}
+			}
+			if strings.Contains(after, `"command":`) {
+				t.Fatalf("JSON syntax in TOML: %s", after)
+			}
+		})
+	}
+}
 
 func TestGenerateWrapperStdio(t *testing.T) {
 	server := MCPServer{

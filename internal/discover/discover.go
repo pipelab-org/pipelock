@@ -20,6 +20,7 @@ const (
 	ProtectedOther    ProtectionStatus = "protected_other"
 	Unprotected       ProtectionStatus = "unprotected"
 	Unknown           ProtectionStatus = "unknown"
+	Disabled          ProtectionStatus = "disabled"
 )
 
 // RiskLevel for unprotected servers based on capability heuristics.
@@ -112,6 +113,7 @@ type MCPServer struct {
 	Env           map[string]string `json:"env,omitempty"`
 	URL           string            `json:"url"`
 	Protection    ProtectionStatus  `json:"protection_state"`
+	Disabled      bool              `json:"disabled,omitempty"`
 	Risk          RiskLevel         `json:"risk"`
 	Evidence      string            `json:"evidence"`
 	ParseWarnings []string          `json:"parse_warnings"`
@@ -133,7 +135,8 @@ type Report struct {
 	Summary Summary        `json:"summary"`
 }
 
-// Summary has aggregate counts.
+// Summary has aggregate counts. TotalServers counts active entries; Disabled
+// entries remain in Report.Servers and ClientConfig.ServerCount.
 type Summary struct {
 	TotalClients      int `json:"total_clients"`
 	TotalServers      int `json:"total_servers"`
@@ -141,6 +144,7 @@ type Summary struct {
 	ProtectedOther    int `json:"protected_other"`
 	Unprotected       int `json:"unprotected"`
 	Unknown           int `json:"unknown"`
+	Disabled          int `json:"disabled"`
 	HighRisk          int `json:"high_risk"`
 	ParseErrors       int `json:"parse_errors"`
 	SOPSExecEnv       int `json:"-"` // only the discover CLI emits this sub-count
@@ -342,10 +346,12 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 		// Classify each server
 		for i := range parsed {
 			parsed[i].Protection, parsed[i].Evidence = classifyServer(parsed[i])
-			risk, reason := classifyRisk(parsed[i])
-			parsed[i].Risk = risk
-			if parsed[i].Evidence == evidenceNoProxy {
-				parsed[i].Evidence = reason
+			if !parsed[i].Disabled {
+				risk, reason := classifyRisk(parsed[i])
+				parsed[i].Risk = risk
+				if parsed[i].Evidence == evidenceNoProxy {
+					parsed[i].Evidence = reason
+				}
 			}
 			if parsed[i].ParseWarnings == nil {
 				parsed[i].ParseWarnings = []string{}
@@ -446,6 +452,11 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 		}
 	}
 	for _, srv := range servers {
+		if srv.Disabled {
+			s.TotalServers--
+			s.Disabled++
+			continue
+		}
 		switch srv.Protection {
 		case ProtectedPipelock:
 			s.ProtectedPipelock++
@@ -453,7 +464,7 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 			s.ProtectedOther++
 		case Unprotected:
 			s.Unprotected++
-			if isSOPSExecEnv(srv.Command, srv.Args) {
+			if outcome, _ := inspectSOPSLauncher(srv.Command, srv.Args); outcome == sopsNestedVerified {
 				s.SOPSExecEnv++
 			}
 		case Unknown:

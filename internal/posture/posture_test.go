@@ -92,6 +92,10 @@ func TestDiscoverSignedPayloadBytesRemainVersionOne(t *testing.T) {
 	if bytes.Contains(payload, []byte("sops_exec_env")) {
 		t.Fatalf("signed payload added discover-only SOPS count: %s", payload)
 	}
+	const wantBytes = `{"config_hash":"abc123","evidence":{"discover":{"high_risk":0,"parse_errors":0,"protected_other":0,"protected_pipelock":1,"total_clients":1,"total_servers":2,"unknown":0,"unprotected":1},"flight_recorder":{"receipt_count":0,"scanner_verdict":null},"simulate":{"failed":0,"grade":"","known_limitations":0,"mode":"","passed":0,"percentage":0,"scenarios":null,"total":0},"verify_install":{"flight_recorder_active":false,"proxying":false,"receipt_count":0}},"expires_at":"2026-05-11T17:45:00Z","generated_at":"2026-04-11T17:45:00Z","schema_version":"1","tool_version":"0.0.0-dev.unknown"}`
+	if string(payload) != wantBytes {
+		t.Fatalf("signable bytes changed:\n got: %s\nwant: %s", payload, wantBytes)
+	}
 	sum := sha256.Sum256(payload)
 	const want = "3a7a5b12c389f6c63de2186638b6bd6955cf27d8775738db6e4181fee6fab8ca"
 	if got := hex.EncodeToString(sum[:]); got != want {
