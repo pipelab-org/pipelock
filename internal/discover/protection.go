@@ -5,17 +5,19 @@ package discover
 
 import "github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 
-// Evidence strings for proxy-shaped invocations that are not proven to run
-// this executable. Each keeps the server unprotected; they differ only so an
-// operator knows whether to repair a path, replace a binary, or check access.
+// Evidence distinguishes a verified wrapper from a verified client launch.
+// Unverified executable identities also explain whether the operator needs to
+// repair a path, replace a binary, or check access.
 const (
-	evidenceProtectedPipelock = "command is this pipelock executable and args begin mcp proxy"
-	evidenceProtectedOther    = "wrapped by recognized security proxy"
-	evidenceUnknown           = "no command or url configured"
-	evidenceWrapperRelative   = "mcp proxy wrapper found, but its executable is not an absolute path, so its identity is unconfirmed"
-	evidenceWrapperMissing    = "mcp proxy wrapper found, but its executable path does not exist"
-	evidenceWrapperDifferent  = "mcp proxy wrapper found, but its executable differs from this pipelock executable"
-	evidenceWrapperUncheck    = "mcp proxy wrapper found, but its executable identity could not be checked"
+	evidenceProjectLaunchUnconfirmed = "Wrapper found in the checked configuration layers; whether the client actually launches it is unconfirmed."
+	evidenceLaunchUnconfirmed        = "Wrapper found in this file; whether the client actually launches it is unconfirmed."
+	evidenceProtectedPipelock        = "command is this pipelock executable and args begin mcp proxy"
+	evidenceProtectedOther           = "wrapped by recognized security proxy"
+	evidenceUnknown                  = "no command or url configured"
+	evidenceWrapperRelative          = "mcp proxy wrapper found, but its executable is not an absolute path, so its identity is unconfirmed"
+	evidenceWrapperMissing           = "mcp proxy wrapper found, but its executable path does not exist"
+	evidenceWrapperDifferent         = "mcp proxy wrapper found, but its executable differs from this pipelock executable"
+	evidenceWrapperUncheck           = "mcp proxy wrapper found, but its executable identity could not be checked"
 )
 
 // classifyServer determines whether a server is wrapped by this executable's
@@ -72,6 +74,8 @@ func protectionEvidence(s MCPServer) string {
 		return evidenceProtectedOther
 	case Unknown:
 		return evidenceUnknown
+	case Unconfirmed:
+		return evidenceLaunchUnconfirmed
 	default:
 		if outcome, evidence := inspectSOPSLauncher(s.Command, s.Args); outcome != sopsNotLauncher {
 			return evidence

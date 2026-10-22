@@ -1665,3 +1665,51 @@ func TestCollectDiscoverEvidenceIncludesCodexHome(t *testing.T) {
 		t.Fatalf("capsule discover evidence = %+v, want the 1 unprotected server under CODEX_HOME", evidence)
 	}
 }
+
+func TestCollectDiscoverEvidenceUnconfirmedIsUnknown(t *testing.T) {
+	for _, scope := range []string{"user", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			t.Chdir(project)
+			defer patchUserHomeDir(func() (string, error) { return home, nil })()
+			t.Setenv("CODEX_HOME", "")
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			self, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := fmt.Sprintf(`{"mcpServers":{"probe":{"command":%q,"args":["mcp","proxy","--","child"]}}}`, self)
+			path := filepath.Join(home, ".claude.json")
+			if scope == "project" {
+				path = filepath.Join(project, ".grok", "config.toml")
+				content = fmt.Sprintf("[mcp_servers.probe]\ncommand=%q\nargs=['mcp','proxy','--','child']\n", self)
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := collectDiscoverEvidence()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.TotalServers != 1 || evidence.Unknown != 1 || evidence.ProtectedPipelock != 0 {
+				t.Fatalf("evidence = %+v", evidence)
+			}
+			if got := computeCleanlinessPct(evidence); got != 50 {
+				t.Fatalf("cleanliness = %d, want 50", got)
+			}
+			failures, _ := evaluatePolicyAt(PolicyStrict, EvidenceBundle{Discover: evidence}, VerifyOpts{}, time.Now())
+			found := false
+			for _, failure := range failures {
+				if failure.Rule == ruleUnknownServers {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("strict policy accepted unconfirmed evidence: %+v", failures)
+			}
+		})
+	}
+}

@@ -20,6 +20,7 @@ const (
 	ProtectedOther    ProtectionStatus = "protected_other"
 	Unprotected       ProtectionStatus = "unprotected"
 	Unknown           ProtectionStatus = "unknown"
+	Unconfirmed       ProtectionStatus = "unconfirmed"
 )
 
 // RiskLevel for unprotected servers based on capability heuristics.
@@ -144,6 +145,7 @@ type Summary struct {
 	ProtectedOther    int `json:"protected_other"`
 	Unprotected       int `json:"unprotected"`
 	Unknown           int `json:"unknown"`
+	Unconfirmed       int `json:"unconfirmed"`
 	Disabled          int `json:"disabled"`
 	HighRisk          int `json:"high_risk"`
 	ParseErrors       int `json:"parse_errors"`
@@ -204,6 +206,8 @@ var errClaudeConfigDirNotAbsolute = errors.New(EnvClaudeConfigDir + " must be an
 // itself, so its result is determined by its arguments; callers resolve
 // overrides at the CLI boundary (see AmbientOptions).
 type Options struct {
+	// ProjectDirs are explicit client working directories. No recursive search is made.
+	ProjectDirs []string
 	// ClaudeConfigDirs are CLAUDE_CONFIG_DIR values. Each contributes
 	// <dir>/.claude.json as an additional Claude Code config.
 	ClaudeConfigDirs []string
@@ -303,18 +307,27 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			})
 			continue
 		}
-		if !present {
+		if !present && cp.Client != clientCodex && cp.Client != clientGrok {
 			continue
 		}
 
 		var parsed []MCPServer
 		var err error
+		userServerCount := 0
 
 		// Claude Code has nested per-project servers
 		if cp.Client == clientClaudeCode {
 			parsed, err = parseClaudeCodeConfig(cp.Path)
 		} else if cp.Client == clientCodex || cp.Client == clientGrok {
-			parsed, err = parseTOMLConfig(cp.Path, cp.Client)
+			if present {
+				parsed, err = parseTOMLConfig(cp.Path, cp.Client)
+			}
+			if err == nil {
+				userServerCount = len(parsed)
+				projectServers, projectClients := discoverProjects(cp, opts.ProjectDirs)
+				parsed = append(parsed, projectServers...)
+				clients = append(clients, projectClients...)
+			}
 		} else if cp.Client == "continue" && (filepath.Ext(cp.Path) == ".yaml" || filepath.Ext(cp.Path) == ".yml") {
 			parsed, err = parseContinueYAMLConfig(cp.Path)
 		} else {
@@ -334,18 +347,30 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			continue
 		}
 
-		if len(parsed) > 0 {
+		count := len(parsed)
+		if cp.Client == clientCodex || cp.Client == clientGrok {
+			count = userServerCount
+		}
+		if count > 0 && present {
 			clients = append(clients, ClientConfig{
 				Client:      cp.Client,
 				ConfigPath:  cp.Path,
 				Scope:       cp.Scope,
-				ServerCount: len(parsed),
+				ServerCount: count,
 			})
 		}
 
 		// Classify each server
 		for i := range parsed {
 			parsed[i].Protection, parsed[i].Evidence = classifyServer(parsed[i])
+			if parsed[i].Protection == ProtectedPipelock || parsed[i].Protection == ProtectedOther {
+				parsed[i].Protection = Unconfirmed
+				parsed[i].Evidence = evidenceLaunchUnconfirmed
+				if parsed[i].ProjectPath != "" {
+					parsed[i].Evidence = evidenceProjectLaunchUnconfirmed
+				}
+				parsed[i].ParseWarnings = append(parsed[i].ParseWarnings, launchLimit(parsed[i].Client))
+			}
 			risk, reason := classifyRisk(parsed[i])
 			parsed[i].Risk = risk
 			if parsed[i].Evidence == evidenceNoProxy {
@@ -465,6 +490,8 @@ func buildSummary(clients []ClientConfig, servers []MCPServer) Summary {
 			}
 		case Unknown:
 			s.Unknown++
+		case Unconfirmed:
+			s.Unconfirmed++
 		}
 		if srv.Risk == RiskHigh {
 			s.HighRisk++
@@ -596,11 +623,9 @@ func configPathsForOS(home, goos string) []clientPath {
 			Key:    configKeyContextServers,
 			Scope:  scopeUser,
 		},
-		// Note: project-local .junie/mcp/mcp.json and project-local
-		// .zed/settings.json are not scanned here. Discover(home) must be
-		// deterministic from its inputs. Project-local scanning requires
-		// an explicit project root parameter (future work). Consistent
-		// with VS Code (.vscode/mcp.json also not scanned).
+		// Project-local .junie/mcp/mcp.json, .zed/settings.json, and
+		// .vscode/mcp.json are not scanned, including when ProjectDirs is
+		// provided. Project file layers are resolved only for Codex and Grok.
 	}
 	for _, extension := range continueConfigExtensions {
 		continueBlocks, _ := filepath.Glob(filepath.Join(home, ".continue", "mcpServers", "*"+extension))

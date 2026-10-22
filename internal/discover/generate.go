@@ -14,6 +14,9 @@ import (
 
 // GenerateWrapper returns a human-readable wrapper suggestion for an unprotected server.
 func GenerateWrapper(s MCPServer) string {
+	if s.Protection == Unconfirmed {
+		return evidenceLaunchUnconfirmed + " Check project files, profiles, plugins, and launch overrides; another wrapper cannot confirm the launch."
+	}
 	return generateWrapperForCurrent(s, os.Executable)
 }
 

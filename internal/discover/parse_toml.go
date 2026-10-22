@@ -60,6 +60,11 @@ func parseTOMLConfig(path, client string) ([]MCPServer, error) {
 	if _, err := toml.Decode(string(data), &document); err != nil {
 		return nil, invalid
 	}
+	return parseTOMLDocument(document, path, client)
+}
+
+func parseTOMLDocument(document map[string]any, path, client string) ([]MCPServer, error) {
+	invalid := fmt.Errorf("parsing %s: %w", path, errInvalidTOMLMCPConfig)
 	rawServers, present := document[tomlKeyServers]
 	if !present {
 		return nil, nil

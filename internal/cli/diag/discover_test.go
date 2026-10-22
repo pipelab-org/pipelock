@@ -123,7 +123,7 @@ func TestDiscoverCmdDisabledCodexServerStillFails(t *testing.T) {
 			if report.Summary.TotalServers != 1 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 1 || len(report.Servers) != 1 || report.Servers[0].Protection != discover.Unprotected || !report.Servers[0].Disabled {
 				t.Fatalf("JSON report = %+v", report)
 			}
-		} else if !strings.Contains(output.String(), "Unprotected servers:") || !strings.Contains(output.String(), "off") || !strings.Contains(output.String(), "so it is still counted") {
+		} else if !strings.Contains(output.String(), "Servers needing attention:") || !strings.Contains(output.String(), "off") || !strings.Contains(output.String(), "so it is still counted") {
 			t.Fatalf("human report = %s", output.String())
 		}
 	}
@@ -331,20 +331,21 @@ func TestDiscoverCmd_HumanOutput(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"--home", home})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
+	var exitErr *cliutil.ExitError
+	if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit 1, got %v", err)
 	}
 
 	output := buf.String()
 	if !bytes.Contains([]byte(output), []byte("Pipelock Discovery")) {
 		t.Error("expected 'Pipelock Discovery' header")
 	}
-	if !bytes.Contains([]byte(output), []byte("All servers are protected")) {
-		t.Errorf("expected 'All servers are protected', got:\n%s", output)
+	if !bytes.Contains([]byte(output), []byte("whether the client actually launches it is unconfirmed")) {
+		t.Errorf("expected 'whether the client actually launches it is unconfirmed', got:\n%s", output)
 	}
 }
 
-func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
+func TestDiscoverCmd_ExitCodeOneUnconfirmed(t *testing.T) {
 	home := t.TempDir()
 	content := protectedDiscoveryConfig(t)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
@@ -357,8 +358,9 @@ func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"--home", home})
 	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("expected nil error (exit 0), got %v", err)
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit 1, got %v", err)
 	}
 }
 

@@ -4,7 +4,7 @@
 
 This guide does **not** add a `pipelock grok install` command. There is no automatic config rewriter for Grok. Forward-proxy env vars and manual MCP wrapping are both in scope; do not treat this page as env-only or as “MCP unsupported.”
 
-Run `pipelock discover` to inventory MCP entries in `~/.grok/config.toml` and see which configured commands are wrapped. With `--home`, it reads `.grok/config.toml` under the selected home directory. The `via sops exec-env` sub-count includes only launchers whose literal inner command is verified as this Pipelock executable running `mcp proxy`. Those entries remain Unprotected because discovery cannot verify the outer `sops` launcher.
+Run `pipelock discover` to inventory MCP entries in `~/.grok/config.toml` and see which configured commands are wrapped. With `--home`, it reads `.grok/config.toml` under the selected home directory. Use `--project /absolute/project/path` to read applicable `.grok/config.toml` files from the Git root to that working directory; the nearest same-name server replaces the lower definition entirely. Without `--home`, discovery includes the current directory. Project views carry `project_path`; the user-file view remains listed for launches elsewhere. Wrapped entries are **unconfirmed**, because plugins, compatibility sources, environment expansion, managed settings, and launch overrides are not resolved. See [discovery coverage](../cli/discover.md). The `via sops exec-env` sub-count includes only launchers whose literal inner command is verified as this Pipelock executable running `mcp proxy`. Those entries remain Unprotected because discovery cannot verify the outer `sops` launcher.
 
 ## Why Grok Needs an Agent Firewall
 

@@ -580,11 +580,14 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 	}, nil
 }
 
-// discoverAmbient inventories the current user's configs, including the
-// documented CLAUDE_CONFIG_DIR override, so the capsule counts the same
-// servers pipelock discover reports for this user.
+// discoverAmbient inventories the current user's config directories and
+// current project, using the same inputs as pipelock discover.
 func discoverAmbient(home string) (*discover.Report, error) {
-	return discover.DiscoverWithOptions(home, discover.AmbientOptions(os.Getenv))
+	opts := discover.AmbientOptions(os.Getenv)
+	if cwd, err := os.Getwd(); err == nil {
+		opts.ProjectDirs = append(opts.ProjectDirs, cwd)
+	}
+	return discover.DiscoverWithOptions(home, opts)
 }
 
 func collectDiscoverEvidence() (DiscoverEvidence, error) {
@@ -604,9 +607,12 @@ func collectDiscoverEvidence() (DiscoverEvidence, error) {
 		ProtectedPipelock: report.Summary.ProtectedPipelock,
 		ProtectedOther:    report.Summary.ProtectedOther,
 		Unprotected:       report.Summary.Unprotected,
-		Unknown:           report.Summary.Unknown,
-		HighRisk:          report.Summary.HighRisk,
-		ParseErrors:       report.Summary.ParseErrors,
+		// The signed schema already has an unknown bucket. Unconfirmed launches
+		// must feed that bucket so cleanliness and strict policy cannot treat
+		// missing launch evidence as confirmed protection.
+		Unknown:     report.Summary.Unknown + report.Summary.Unconfirmed,
+		HighRisk:    report.Summary.HighRisk,
+		ParseErrors: report.Summary.ParseErrors,
 	}, nil
 }
 

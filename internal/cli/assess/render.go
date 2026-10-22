@@ -272,8 +272,8 @@ func execSummary(a *Assessment) string {
 		protected := s.ProtectedPipelock + s.ProtectedOther
 		if total > 0 {
 			parts = append(parts, fmt.Sprintf(
-				"%d of %d MCP servers are protected (%d unprotected).",
-				protected, total, s.Unprotected))
+				"%d of %d MCP servers are protected (%d unprotected, %d unconfirmed).",
+				protected, total, s.Unprotected, s.Unconfirmed))
 		}
 	}
 

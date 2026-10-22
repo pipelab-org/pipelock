@@ -55,6 +55,7 @@ type initDiscoverResult struct {
 	ServersFound int `json:"servers_found"`
 	Protected    int `json:"protected"`
 	Unprotected  int `json:"unprotected"`
+	Unconfirmed  int `json:"unconfirmed"`
 	Unknown      int `json:"unknown"`
 }
 
@@ -226,6 +227,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 		ServersFound: report.Summary.TotalServers,
 		Protected:    report.Summary.ProtectedPipelock + report.Summary.ProtectedOther,
 		Unprotected:  report.Summary.Unprotected,
+		Unconfirmed:  report.Summary.Unconfirmed,
 		Unknown:      report.Summary.Unknown,
 	}
 
@@ -544,6 +546,9 @@ func printDiscoverPhase(w io.Writer, report *discover.Report) {
 		_, _ = fmt.Fprintf(w, "  %d server(s) are not wrapped through pipelock.\n", report.Summary.Unprotected)
 		_, _ = fmt.Fprintln(w, "  Run 'pipelock discover --generate' for wrapper suggestions.")
 	}
+	if report.Summary.Unconfirmed > 0 {
+		_, _ = fmt.Fprintf(w, "  %d server(s) have wrappers in checked files; actual client launches are unconfirmed.\n", report.Summary.Unconfirmed)
+	}
 	_, _ = fmt.Fprintln(w)
 }
 
@@ -748,6 +753,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 	_, _ = fmt.Fprintf(w, "  MCP servers found:  %d\n", result.Discover.ServersFound)
 	_, _ = fmt.Fprintf(w, "  Protected:          %d\n", result.Discover.Protected)
 	_, _ = fmt.Fprintf(w, "  Unprotected:        %d\n", result.Discover.Unprotected)
+	_, _ = fmt.Fprintf(w, "  Unconfirmed:        %d\n", result.Discover.Unconfirmed)
 	if result.Discover.Unknown > 0 {
 		_, _ = fmt.Fprintf(w, "  Unknown:            %d\n", result.Discover.Unknown)
 	}
