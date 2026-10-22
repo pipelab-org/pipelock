@@ -341,7 +341,8 @@ func TestHTTPListener_GETStreamBlocksCompressedUpstream(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	logger, events := newListenerEventLogger(t)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), AuditLogger: logger})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, baseURL+"/", nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -365,6 +366,12 @@ func TestHTTPListener_GETStreamBlocksCompressedUpstream(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("upstream body must not leak")) {
 		t.Fatalf("compressed upstream body leaked: %s", body)
+	}
+	// The refusal follows a completed upstream exchange, so it is a withheld
+	// response even though no withhold helper wrote it.
+	got := events.String()
+	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"direction":"response"`) {
+		t.Fatalf("GET stream refusal lost its response direction: %s", got)
 	}
 }
 
