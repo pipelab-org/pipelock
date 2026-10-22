@@ -290,16 +290,7 @@ class TestReleaseArtifacts(unittest.TestCase):
         for job_name, job in parsed["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", job_name)
             for step in job.get("steps", []):
-                texts = [
-                    str(value)
-                    for block in (step.get("env") or {}, step.get("with") or {})
-                    for value in block.values()
-                ]
-                run = step.get("run")
-                if run is not None:
-                    texts.append(str(run))
-                texts.append(str(step.get("name", "")))
-                if any("HOMEBREW_TAP_TOKEN" in text.upper() for text in texts):
+                if "HOMEBREW_TAP_TOKEN" in str(step).upper():
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
             holders,
@@ -357,6 +348,10 @@ class TestReleaseArtifacts(unittest.TestCase):
         document = copy.deepcopy(parsed)
         document["jobs"]["release-build"]["steps"][0]["name"] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
         mutations["step name"] = document
+        for field in ("continue-on-error", "if", "working-directory", "shell", "timeout-minutes"):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"]["steps"][0][field] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            mutations["step " + field] = document
         for scope in ("job", "step"):
             document = copy.deepcopy(parsed)
             target = document["jobs"]["release-build"]

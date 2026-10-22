@@ -59,7 +59,7 @@ gh attestation verify "oci://${PIPELOCK_IMAGE}" \
   --deny-self-hosted-runners
 ```
 
-These commands use the v3.7.1 signing identity, `pipelab-org/pipelock`, for both `--repo` and `--signer-workflow`. The legacy image and chart addresses remain unchanged for v3.7.1.
+These commands use the v3.7.1 signing identity, `pipelab-org/pipelock`, for both `--repo` and `--signer-workflow`. The legacy image and chart addresses remain unchanged for v3.7.1: [the namespace script at that tag](https://github.com/pipelab-org/pipelock/blob/v3.7.1/scripts/release-image-namespace.sh) maps both release repositories to `ghcr.io/luckypipewrench`. Use the tagged script when checking a published release; the script on `main` may target a different namespace.
 
 Releases through v3.7.0 were signed by `luckyPipewrench/pipelock`, and `gh` rejects a mismatched `--repo` (`expected SourceRepositoryOwnerURI`). For their container images, set both `--repo luckyPipewrench/pipelock` and `--signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml`, and add `--bundle-from-oci`: GitHub's attestation service returns 404 for those older digests, so only the copy stored beside the image in the registry verifies. Checked for the `pipelock` images of v3.5.0, v3.6.0 and v3.7.0. The v3.7.0 `release-images.json` and the v3.6.0 and v3.7.0 Helm charts did not verify with these commands when checked. The complete set described here was verified for v3.7.1; verify other releases separately.
 
