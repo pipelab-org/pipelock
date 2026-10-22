@@ -584,9 +584,6 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 // current project, using the same inputs as pipelock discover.
 func discoverAmbient(home string) (*discover.Report, error) {
 	opts := discover.AmbientOptions(os.Getenv)
-	if cwd, err := os.Getwd(); err == nil {
-		opts.ProjectDirs = append(opts.ProjectDirs, cwd)
-	}
 	return discover.DiscoverWithOptions(home, opts)
 }
 

@@ -516,6 +516,61 @@ func TestDiscoverCmd_ProjectPathInGenerate(t *testing.T) {
 	}
 }
 
+func TestDiscoverCmd_GenerateNamesCommandConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, client, parent, child string
+		wantParent                  bool
+	}{
+		{name: "project command", client: "codex", child: "command='node'"},
+		{name: "enabled inherits parent command", client: "codex", parent: "command='node'", child: "enabled=true", wantParent: true},
+		{name: "Grok project command", client: "grok", child: "command='node'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			nested := filepath.Join(project, "nested")
+			writeConfig := func(path, text string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			writeConfig(filepath.Join(home, "."+tc.client, "config.toml"),
+				fmt.Sprintf("[projects.%q]\ntrust_level='trusted'\n", project))
+			parentPath := filepath.Join(project, "."+tc.client, "config.toml")
+			childPath := filepath.Join(nested, "."+tc.client, "config.toml")
+			if tc.parent != "" {
+				writeConfig(parentPath, "[mcp_servers.local]\n"+tc.parent+"\n")
+			}
+			writeConfig(childPath, "[mcp_servers.local]\n"+tc.child+"\n")
+			var output, errOutput bytes.Buffer
+			cmd := DiscoverCmd()
+			cmd.SetOut(&output)
+			cmd.SetErr(&errOutput)
+			cmd.SetArgs([]string{"--generate", "--home", home, "--project", nested})
+			var exitErr *cliutil.ExitError
+			if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+				t.Fatalf("discover error = %v, want exit 1", err)
+			}
+			wantPath := childPath
+			if tc.wantParent {
+				wantPath = parentPath
+			}
+			// Check the suggestion for the requested directory itself: the
+			// inventory can also contain a registered parent project view.
+			header := fmt.Sprintf("Server: local (%s, project: %s)\nConfig: %s\n", tc.client, nested, wantPath)
+			if !strings.Contains(output.String(), header) {
+				t.Fatalf("suggestion does not name command config %s: %s", wantPath, output.String())
+			}
+		})
+	}
+}
+
 func TestDiscoverCmd_PartialParseFailureSurfaced(t *testing.T) {
 	home := t.TempDir()
 	content := `{

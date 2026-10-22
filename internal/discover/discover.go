@@ -230,7 +230,7 @@ const codexConfigName = "config.toml"
 var errCodexHomeNotAbsolute = errors.New(EnvCodexHome + " must be an absolute path")
 
 // AmbientOptions returns the documented overrides set in the given
-// environment lookup, normally os.Getenv.
+// environment lookup, normally os.Getenv, and the current project directory.
 func AmbientOptions(getenv func(string) string) Options {
 	var opts Options
 	if dir := getenv(EnvClaudeConfigDir); dir != "" {
@@ -238,6 +238,9 @@ func AmbientOptions(getenv func(string) string) Options {
 	}
 	if dir := getenv(EnvCodexHome); dir != "" {
 		opts.CodexHomes = append(opts.CodexHomes, dir)
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		opts.ProjectDirs = append(opts.ProjectDirs, cwd)
 	}
 	return opts
 }

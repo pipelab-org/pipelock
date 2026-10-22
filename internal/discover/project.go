@@ -91,6 +91,7 @@ func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientC
 		dirs := projectAncestors(root)
 		effective := cloneTOMLTable(base)
 		origins := map[string]string{}
+		urlOrigins := map[string]string{}
 		found, failed := false, false
 		trust := ""
 		for _, dir := range dirs {
@@ -146,7 +147,16 @@ func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientC
 			clients = append(clients, layerClient)
 			found = true
 			for _, server := range parsed {
-				origins[server.ServerName] = path
+				// Codex inherits unspecified fields. A layer that only toggles
+				// enabled does not define the command to edit when wrapping.
+				entries := layer[tomlKeyServers].(map[string]any)
+				entry := entries[server.ServerName].(map[string]any)
+				if _, definesCommand := entry[tomlKeyCommand]; definesCommand || cp.Client == clientGrok {
+					origins[server.ServerName] = path
+				}
+				if _, definesURL := entry[tomlKeyURL]; definesURL {
+					urlOrigins[server.ServerName] = path
+				}
 			}
 			if cp.Client == clientGrok {
 				replaceGrokServers(effective, layer)
@@ -165,7 +175,11 @@ func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientC
 		}
 		for i := range parsed {
 			parsed[i].ProjectPath = root
-			if path := origins[parsed[i].ServerName]; path != "" {
+			path := origins[parsed[i].ServerName]
+			if parsed[i].Command == "" && parsed[i].URL != "" {
+				path = urlOrigins[parsed[i].ServerName]
+			}
+			if path != "" {
 				parsed[i].ConfigPath = path
 			}
 		}

@@ -64,9 +64,6 @@ Examples:
 				}
 				homeDir = h
 				opts = discover.AmbientOptions(os.Getenv)
-				if cwd, err := os.Getwd(); err == nil {
-					opts.ProjectDirs = append(opts.ProjectDirs, cwd)
-				}
 			}
 			opts.ClaudeConfigDirs = append(opts.ClaudeConfigDirs, claudeConfigDirs...)
 			opts.ProjectDirs = append(opts.ProjectDirs, projectDirs...)
@@ -236,6 +233,7 @@ func printDiscoverGenerate(cmd *cobra.Command, report *discover.Report) {
 			_, _ = fmt.Fprintf(w, "Server: %s (%s)\n", s.ServerName, s.Client)
 		}
 		suggestion := discover.GenerateWrapper(safeServer)
+		_, _ = fmt.Fprintf(w, "Config: %s\n", safeServer.ConfigPath)
 		_, _ = fmt.Fprintln(w, suggestion)
 	}
 }

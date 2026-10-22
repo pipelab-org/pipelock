@@ -22,6 +22,65 @@ func writeProjectConfig(t *testing.T, path, content string) {
 	}
 }
 
+func TestDiscoverProjectCommandOrigins(t *testing.T) {
+	for _, tc := range []struct {
+		name, client, base, parent, child, origin, command, url string
+	}{
+		{name: "enabled inherits user command", client: clientCodex, base: "command='node'", child: "enabled=true", origin: "user", command: testCmdNode},
+		{name: "enabled inherits project command", client: clientCodex, base: "command='base'", parent: "command='node'", child: "enabled=true", origin: "parent", command: testCmdNode},
+		{name: "args inherit project command", client: clientCodex, base: "command='base'", parent: "command='node'", child: "args=['server.js']", origin: "parent", command: testCmdNode},
+		{name: "nearest command wins", client: clientCodex, base: "command='base'", parent: "command='outer'", child: "command='node'", origin: "child", command: testCmdNode},
+		{name: "enabled inherits user URL", client: clientCodex, base: "url='https://api.vendor.example/mcp'", child: "enabled=true", origin: "user", url: "https://api.vendor.example/mcp"},
+		{name: "enabled inherits project URL", client: clientCodex, parent: "url='https://api.vendor.example/mcp'", child: "enabled=true", origin: "parent", url: "https://api.vendor.example/mcp"},
+		{name: "URL does not shadow inherited command", client: clientCodex, base: "command='node'", child: "url='https://api.vendor.example/mcp'", origin: "user", command: testCmdNode, url: "https://api.vendor.example/mcp"},
+		{name: "empty command exposes inherited URL", client: clientCodex, base: "url='https://api.vendor.example/mcp'", parent: "command='outer'", child: "command=''", origin: "user", url: "https://api.vendor.example/mcp"},
+		{name: "Grok replaces entire entry", client: clientGrok, base: "command='base'", parent: "command='outer'", child: "command='node'", origin: "child", command: testCmdNode},
+		{name: "Grok enabled does not inherit command", client: clientGrok, base: "command='base'", parent: "command='outer'", child: "enabled=true", origin: "child"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			nested := filepath.Join(project, "nested")
+			if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			paths := map[string]string{
+				"user":   filepath.Join(home, "."+tc.client, codexConfigName),
+				"parent": filepath.Join(project, "."+tc.client, codexConfigName),
+				"child":  filepath.Join(nested, "."+tc.client, codexConfigName),
+			}
+			base := fmt.Sprintf("[projects.%q]\ntrust_level='trusted'\n", project)
+			if tc.base != "" {
+				base += "[mcp_servers.probe]\n" + tc.base + "\n"
+			}
+			writeProjectConfig(t, paths["user"], base)
+			if tc.parent != "" {
+				writeProjectConfig(t, paths["parent"], "[mcp_servers.probe]\n"+tc.parent+"\n")
+			}
+			writeProjectConfig(t, paths["child"], "[mcp_servers.probe]\n"+tc.child+"\n")
+			report, err := DiscoverWithOptions(home, Options{ProjectDirs: []string{nested}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.ParseErrors != 0 {
+				t.Fatalf("unexpected parse errors: %+v", report.Clients)
+			}
+			found := false
+			for _, server := range report.Servers {
+				if server.Client != tc.client || server.ProjectPath != nested {
+					continue
+				}
+				found = true
+				if server.ConfigPath != paths[tc.origin] || server.Command != tc.command || server.URL != tc.url {
+					t.Errorf("server = %+v, want config %s, command %q, URL %q", server, paths[tc.origin], tc.command, tc.url)
+				}
+			}
+			if !found {
+				t.Fatal("no nested project server discovered")
+			}
+		})
+	}
+}
+
 // Trusted/untrusted semantics: https://developers.openai.com/codex/config-basic/
 // Field inheritance also reproduced with codex-cli 0.162.0 via
 // CODEX_HOME=<fixture> codex mcp list --json in a registered trusted project:

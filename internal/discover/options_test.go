@@ -31,8 +31,13 @@ func serverNames(r *Report) map[string]string {
 }
 
 func TestAmbientOptions(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
 	env := map[string]string{EnvClaudeConfigDir: "/srv/claude-work"}
 	got := AmbientOptions(func(k string) string { return env[k] })
+	if len(got.ProjectDirs) != 1 || got.ProjectDirs[0] != cwd {
+		t.Fatalf("ambient project directories = %v, want [%s]", got.ProjectDirs, cwd)
+	}
 	if len(got.ClaudeConfigDirs) != 1 || got.ClaudeConfigDirs[0] != "/srv/claude-work" {
 		t.Fatalf("AmbientOptions = %+v", got)
 	}
