@@ -162,8 +162,14 @@ func TestAdaptiveLateEvidenceStillDenies(t *testing.T) {
 				if !injected.Load() || w.Code != http.StatusForbidden || calls.Load() != 0 {
 					t.Fatalf("late evidence bypassed final admission: injected=%v status=%d calls=%d body=%s", injected.Load(), w.Code, calls.Load(), w.Body.String())
 				}
-				if !strings.Contains(w.Body.String()+w.Header().Get(headerAdaptiveDetail), "escalation_threshold") {
-					t.Fatalf("late denial omitted adaptive diagnostics: body=%s headers=%v", w.Body.String(), w.Header())
+				caller := w.Body.String() + w.Header().Get(headerAdaptiveDetail)
+				if !strings.Contains(caller, "recovery:") || !strings.Contains(caller, "category=") {
+					t.Fatalf("late denial omitted recovery guidance: body=%s headers=%v", w.Body.String(), w.Header())
+				}
+				for _, forbidden := range []string{"score=", "threshold=", "level=", "minutes=", "seconds=", "decay="} {
+					if strings.Contains(caller, forbidden) {
+						t.Errorf("late denial exposes %s: %s", forbidden, caller)
+					}
 				}
 			})
 		}

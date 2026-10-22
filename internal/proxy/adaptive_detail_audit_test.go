@@ -84,6 +84,13 @@ func testAdaptiveRefusalAudit(t *testing.T, mode string) {
 	if body.BlockReason == "" {
 		t.Fatal("adaptive refusal carried no explanation")
 	}
+	if !strings.Contains(body.BlockReason, "recovery:") {
+		t.Fatalf("adaptive refusal omitted recovery guidance: %s", body.BlockReason)
+	}
+	// Fetch carries guidance in its JSON body; fixed-body transports use the header.
+	if detail := w.Header().Get(headerAdaptiveDetail); detail != "" {
+		t.Fatalf("fetch unexpectedly emitted adaptive detail header: %q", detail)
+	}
 	for _, forbidden := range []string{"score=", "threshold=", "level=", "auto_recover_at=", "decay=", "minutes=", "seconds="} {
 		if strings.Contains(w.Body.String(), forbidden) {
 			t.Fatalf("caller response exposes %s: %s", forbidden, w.Body.String())
