@@ -828,4 +828,10 @@ func assertAirlockCallerRefusal(t *testing.T, response string) {
 		t.Fatalf("response = %q, want structured airlock refusal", response)
 	}
 	assertAdaptiveCallerPrivacy(t, body.Error.Message)
+	assertAdaptiveCallerPrivacy(t, response)
+	for _, field := range []string{"score", "threshold", "escalation_threshold", "level", "duration", "minutes", "seconds", "recovery", "decay", "hard_minutes", "soft_minutes", "clean_request_decay", "clean_requests_to_deescalate"} {
+		if strings.Contains(response, `"`+field+`"`) {
+			t.Errorf("refusal exposes adaptive field %q: %s", field, response)
+		}
+	}
 }

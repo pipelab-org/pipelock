@@ -87,6 +87,28 @@ func TestCrossAgentContaminationEscalatesTierOnSustainedSpread(t *testing.T) {
 	}
 }
 
+func TestCrossAgentAdaptiveSignalScore(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		enforced      bool
+		indeterminate bool
+		want          float64
+	}{
+		{name: "allowed observation"},
+		{name: "enforced denial", enforced: true, want: session.SignalPoints[session.SignalCrossAgentContamination]},
+		{name: "unreadable risk", indeterminate: true, want: session.SignalPoints[session.SignalCrossAgentContamination]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sess := &SessionState{}
+			observation := decide.CrossAgentResult{ShouldEscalate: true, Indeterminate: tc.indeterminate}
+			decide.RecordSignal(sess, observation.AdaptiveSignal(tc.enforced), decide.EscalationParams{Threshold: 100})
+			if got := sess.ThreatScore(); got != tc.want {
+				t.Fatalf("score = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Laundering: a session reset (operator-gated, auth-required, on the isolated
 // API port) clears the adaptive score but NOT the sticky taint contamination.
 // An attacker who could trigger a reset still cannot launder contamination.
