@@ -358,3 +358,15 @@ func TestMCPDenialListenerSessionLayerDescriptors(t *testing.T) {
 		t.Errorf("session_capacity: kind=%s", got)
 	}
 }
+
+// A revoked listener state withholds the reply on every listener path. The
+// error-reply relay must label it like the JSON and SSE paths, not as an
+// infrastructure failure.
+func TestMCPDenialListenerRevokedStateWithholdLabel(t *testing.T) {
+	if got := mcpListenerWithholdAudit("listener state revoked").kind; got != "listener_admission" {
+		t.Fatalf("revoked state withhold kind=%s want listener_admission", got)
+	}
+	if got := mcpListenerWithholdAudit("reply cannot be read for scanning").kind; got != "listener_inspection" {
+		t.Fatalf("unreadable reply kind=%s want listener_inspection", got)
+	}
+}

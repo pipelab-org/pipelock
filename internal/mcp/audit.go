@@ -338,6 +338,9 @@ func mcpListenerWithholdAudit(reason string) mcpDenialAudit {
 		return mcpDenialAudit{kind: "identity_mcp_response"}
 	case "session escalation blocks responses":
 		return mcpDenialAudit{kind: "adaptive_response"}
+	case "listener state revoked":
+		// Same refusal as a revoked state on the JSON and SSE reply paths.
+		return mcpListenerAdmissionDenialAudit()
 	default:
 		return mcpDenialAudit{kind: "listener_inspection"}
 	}
