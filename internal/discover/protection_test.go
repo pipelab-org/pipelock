@@ -176,7 +176,7 @@ func TestClassifyServerPermissionDeniedIsNotMissing(t *testing.T) {
 	if err := os.Chmod(dir, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // restore for TempDir cleanup
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
 
 	state, evidence := classifyServer(MCPServer{Command: target, Args: []string{wrapperArgMCP, wrapperArgProxy}})
 	if state != Unprotected || evidence != evidenceWrapperUncheck {

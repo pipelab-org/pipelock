@@ -204,7 +204,7 @@ func TestDiscoverReportsUninspectableConfigPaths(t *testing.T) {
 		if err := os.Chmod(dir, 0o000); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = os.Chmod(dir, 0o750) }) //nolint:gosec // restore for TempDir cleanup
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // #nosec G302 -- cleanup only: TempDir removal needs write and exec back on the directory.
 		// A locked directory hides both the current and legacy config
 		// names, so neither can be proven absent.
 		assertInspectionErrors(t, dir, errConfigUninspectable, 2)
