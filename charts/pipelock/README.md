@@ -5,10 +5,10 @@ Pipelock is an agent firewall: a network proxy that sits between AI agents and t
 ## TL;DR
 
 ```bash
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock
+helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock
 ```
 
-The chart is published as an OCI artifact to the same registry as the images it deploys, so there is no repository to add. Installing a specific revision takes `--version`, which selects the chart version; Pipelock intentionally keeps that version equal to its release version. To install from a checkout instead, point Helm at the directory: `helm install pipelock ./charts/pipelock`.
+The chart is published as an OCI artifact to the same registry as the images it deploys, so there is no repository to add. Installing a specific revision takes `--version`, which selects the chart version; Pipelock intentionally keeps that version equal to its release version. To install from a checkout instead, point Helm at the directory: `helm install pipelock ./charts/pipelock --set image.repository=ghcr.io/pipelab-org/pipelock`.
 
 Pipelock runs as a non-root container with a read-only root filesystem, drops all Linux capabilities, and binds the standard Pipelock proxy on port 8888.
 
@@ -19,9 +19,9 @@ Pipelock runs as a non-root container with a read-only root filesystem, drops al
 Enterprise examples:
 
 ```bash
-helm install pipelock-conductor ./charts/pipelock -f charts/pipelock/examples/values-enterprise-conductor.yaml
-helm install pipelock-follower ./charts/pipelock -f charts/pipelock/examples/values-enterprise-follower.yaml
-helm install pipelock-fleet-sink ./charts/pipelock -f charts/pipelock/examples/values-enterprise-devfleet.yaml
+helm install pipelock-conductor ./charts/pipelock -f charts/pipelock/examples/values-enterprise-conductor.yaml --set image.repository=ghcr.io/pipelab-org/pipelock
+helm install pipelock-follower ./charts/pipelock -f charts/pipelock/examples/values-enterprise-follower.yaml --set image.repository=ghcr.io/pipelab-org/pipelock
+helm install pipelock-fleet-sink ./charts/pipelock -f charts/pipelock/examples/values-enterprise-devfleet.yaml --set image.repository=ghcr.io/pipelab-org/pipelock
 ```
 
 ## Values
@@ -29,6 +29,8 @@ helm install pipelock-fleet-sink ./charts/pipelock -f charts/pipelock/examples/v
 The chart is configured by passing values to `helm install -f values.yaml`. The most commonly used values are listed below. See [`values.yaml`](values.yaml) for the full set.
 
 ### Image
+
+Release charts from v3.7.1 onward use `ghcr.io/pipelab-org/pipelock`. The source values below retain the legacy repository for the release packaging step to replace. When installing this chart directly from a checkout, set `image.repository=ghcr.io/pipelab-org/pipelock`. Charts v3.6.0 and v3.7.0 remain at `oci://ghcr.io/luckypipewrench/charts/pipelock`.
 
 | Key | Default | Description |
 |---|---|---|
