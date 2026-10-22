@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -20,6 +21,13 @@ import (
 // An adaptive refusal is one request decision. Its explanation must not reach
 // external audit sinks as an extra block event detached from the request.
 func TestAdaptiveRefusalExplanationKeepsBlockEventsRequestScoped(t *testing.T) {
+	for _, mode := range []string{"block_all", "upgrade_warn"} {
+		t.Run(mode, func(t *testing.T) { testAdaptiveRefusalAudit(t, mode) })
+	}
+}
+
+func testAdaptiveRefusalAudit(t *testing.T, mode string) {
+	t.Helper()
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -40,6 +48,15 @@ func TestAdaptiveRefusalExplanationKeepsBlockEventsRequestScoped(t *testing.T) {
 	cfg.AdaptiveEnforcement.EscalationThreshold = 3.0
 	blockAll := true
 	cfg.AdaptiveEnforcement.Levels.Critical.BlockAll = &blockAll
+	level := 3
+	if mode == "upgrade_warn" {
+		level = 1
+		enforce := false
+		cfg.Enforce = &enforce
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+		block := config.ActionBlock
+		cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = &block
+	}
 
 	logger, sink := newCorrelationAuditLogger(t)
 	sc := scanner.MustNew(cfg)
@@ -51,7 +68,7 @@ func TestAdaptiveRefusalExplanationKeepsBlockEventsRequestScoped(t *testing.T) {
 	defer p.Close()
 	sm := p.sessionMgrPtr.Load()
 	const clientIP = "10.50.50.51"
-	_ = escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, 3)
+	_ = escalateSession(sm, clientIP, "", cfg.AdaptiveEnforcement.EscalationThreshold, level)
 
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+backend.URL+"/clean", nil)
 	req.RemoteAddr = clientIP + ":12345"
@@ -71,13 +88,22 @@ func TestAdaptiveRefusalExplanationKeepsBlockEventsRequestScoped(t *testing.T) {
 	// The emitter delivers in order; a later sentinel proves earlier events arrived.
 	logger.LogAdaptiveEscalation("sentinel", "none", "elevated", "", "", 0)
 	_ = waitForEvent(t, sink, emit.EventAdaptiveEscalation)
+	blockedEvents := 0
 	for _, ev := range sink.eventsSnapshot() {
 		if ev.Type != emit.EventBlocked {
 			continue
 		}
+		blockedEvents++
 		if ev.Fields["request_id"] == nil || ev.Fields["client_ip"] == nil {
 			t.Fatalf("block event lacks request correlation: %v", ev.Fields)
 		}
+		reason, _ := ev.Fields["reason"].(string)
+		if !strings.Contains(reason, "escalation_threshold=3") || !strings.Contains(reason, "score=") {
+			t.Fatalf("block event lost adaptive detail: %v", ev.Fields)
+		}
+	}
+	if blockedEvents != 1 {
+		t.Fatalf("blocked events = %d, want one per refusal", blockedEvents)
 	}
 }
 

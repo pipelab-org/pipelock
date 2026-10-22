@@ -1030,6 +1030,9 @@ func TestForwardScannedInput_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if rec.ThreatScore() != 0 {
 		t.Errorf("ThreatScore = %.1f, want 0 after warn->block upgrade", rec.ThreatScore())
 	}
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalWarning {
+		t.Errorf("signals = %v, want [SignalWarning] after warn->block upgrade", rec.signals)
+	}
 }
 
 // TestRecordSignal_NoEscalation verifies that when RecordSignal

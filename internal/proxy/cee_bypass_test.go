@@ -132,6 +132,16 @@ func TestCEEBypass_FetchWarnModeBlockAllUsesFoldedKey(t *testing.T) {
 		t.Fatalf("warning-only CEE must leave the folded session usable "+
 			"(code=%d blocked=%v)", code2, fr2.Blocked)
 	}
+	sm := p.sessionMgrPtr.Load()
+	folded := sm.SessionByKey(adaptiveSessionKeyLoopback)
+	if folded == nil || folded.ThreatScore() != 0 || folded.EscalationLevel() != 0 {
+		t.Fatalf("warning changed folded session state: %+v", folded)
+	}
+	for _, agent := range []string{"rot-agent-1", "rot-agent-2"} {
+		if raw := sm.SessionByKey(CeeSessionKey(agent, adaptiveSessionKeyLoopback)); raw != nil {
+			t.Fatalf("raw agent %q acquired separate session state", agent)
+		}
+	}
 }
 
 // TestCEEKeyAgent_TrustModel pins the trust classification that closes the

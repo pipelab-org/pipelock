@@ -839,6 +839,8 @@ A matched rule records a decision metric and an audit event with bounded, operat
 
 ## WebSocket Proxy
 
+Before the upstream handshake, Pipelock scans the complete supplied target URL, including userinfo and fragments. Core credential findings in those components refuse the handshake with HTTP 403, even when enforcement is disabled. Admission and session evidence use the same URL.
+
 WebSocket scanning via `/ws?url=ws://upstream:9090/path`. Client-to-server text frames are scanned for DLP and prompt injection (governed by `request_body_scanning`); server-to-client text frames are scanned for prompt injection only, with no DLP in that direction. Content split across messages is scanned joined (DLP for client messages, prompt injection for server messages): raw text through a trailing window, and JSON messages per string field plus a stream-level text window (see `cross_message_field_limit`). Prompt injection in client messages is scanned per message. Per-field tails retain JSON strings; numeric values use the separate typed numeric scanning path. Fragment reassembly handles split messages in scan-only mode; when `redaction.enabled` is on, outbound fragmented client messages fail closed because the proxy only rewrites complete JSON messages.
 
 ```yaml

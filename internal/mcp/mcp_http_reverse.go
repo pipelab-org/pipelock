@@ -978,8 +978,12 @@ func RunHTTPListenerProxy(
 			relayOpts.Rec = reqRec
 			relayOpts.AdaptiveCfg = adaptiveCfg
 			relayOpts.AdaptiveCfgFn = nil
-			if ok, reason := reply.writeIfActive(w, clientState, relayOpts); !ok {
-				withhold(reason, reason)
+			if ok, reason, detail := reply.writeIfActive(w, clientState, relayOpts); !ok {
+				if detail != "" {
+					withhold(reason, detail)
+				} else {
+					withhold(reason)
+				}
 			}
 			return true
 		}

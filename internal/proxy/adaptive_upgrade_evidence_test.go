@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -68,7 +69,7 @@ func TestAdaptiveUpgradedWarningRecordedAsBlock(t *testing.T) {
 					if err == nil {
 						_ = conn.Close()
 					}
-					refused = err != nil
+					refused = err != nil && strings.Contains(err.Error(), "403")
 				case "connect":
 					conn := dialProxy(t, proxyAddr)
 					defer func() { _ = conn.Close() }()

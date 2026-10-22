@@ -231,8 +231,9 @@ func (e upstreamClientError) write(w http.ResponseWriter) {
 // writeIfActive makes the final refusal write share the listener's revocation
 // boundary. Reading and scanning can take time; check live response gates after
 // both and before committing any upstream header or byte.
-func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpListenerClientState, opts MCPProxyOpts) (bool, string) {
+func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpListenerClientState, opts MCPProxyOpts) (bool, string, string) {
 	reason := ""
+	detail := ""
 	if !state.commitIfActive(func() {
 		if opts.checkServerIdentity() != nil {
 			reason = "upstream identity changed"
@@ -243,12 +244,13 @@ func (e upstreamClientError) writeIfActive(w http.ResponseWriter, state *mcpList
 			return
 		}
 		if opts.Rec != nil && decide.UpgradeAction("", opts.Rec.EscalationLevel(), opts.adaptiveCfg()) == config.ActionBlock {
-			reason = "session escalation blocks responses; " + mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
+			reason = "session escalation blocks responses"
+			detail = mcpAdaptiveBlockMessage(opts.Rec, opts.adaptiveCfg(), "mcp_response_scan", nil)
 			return
 		}
 		withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() { e.write(w) })
 	}) {
-		return false, "listener state revoked"
+		return false, "listener state revoked", ""
 	}
-	return reason == "", reason
+	return reason == "", reason, detail
 }

@@ -5673,7 +5673,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			adaptiveDetail := fmt.Sprintf("%s (escalated by %s level=%s auto_recover_at=%s hint=%s)", result.Reason, adaptiveEnforcementLayer, session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
-			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail, auditDetailFromResult(result))
+			responseDetail := adaptiveBlockDetail(adaptiveAudit{}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner)
+			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+responseDetail, auditDetailFromResult(result))
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			emitFetchReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
@@ -5709,7 +5710,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 					URL:         escalatedEchoURL,
 					Agent:       agent,
 					Blocked:     true,
-					BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner),
+					BlockReason: responseDetail,
 					Layer:       adaptiveEnforcementLayer,
 				})
 			return
@@ -5760,7 +5761,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		adaptiveDetail := fmt.Sprintf("session escalation level %s; auto_recover_at=%s; hint=%s", session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
-		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail)
+		responseDetail := adaptiveBlockDetail(adaptiveAudit{}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer)
+		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+responseDetail)
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,
@@ -5787,7 +5789,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				URL:         displayURL,
 				Agent:       agent,
 				Blocked:     true,
-				BlockReason: adaptiveBlockDetail(adaptiveAudit{log, clientIP, requestID}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer),
+				BlockReason: responseDetail,
 				Layer:       adaptiveEnforcementLayer,
 			})
 		return

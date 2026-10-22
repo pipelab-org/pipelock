@@ -402,6 +402,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	scanTarget := *parsed
 	scanTarget.Scheme = scanScheme
+	if scanTarget.Path == "" {
+		scanTarget.Path = "/"
+	}
 	scanURL := scanTarget.String()
 
 	actx := newHTTPAuditContext(r.Context(), log, httpAuditEvent{Method: "WS", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})

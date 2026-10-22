@@ -111,16 +111,19 @@ func TestAdaptiveRefusalCommitExplainsLateEscalation(t *testing.T) {
 	state := newMCPListenerClientState("token", "key")
 	reply := upstreamClientError{status: http.StatusBadRequest, header: http.Header{"Allow": {http.MethodPost}}, body: []byte("upstream refusal")}
 	w := httptest.NewRecorder()
-	allowed, reason := reply.writeIfActive(w, state, MCPProxyOpts{
+	allowed, reason, detail := reply.writeIfActive(w, state, MCPProxyOpts{
 		Rec:         &mockRecorder{score: 21, level: 3},
 		AdaptiveCfg: &cfg.AdaptiveEnforcement,
 	})
 	if allowed || w.Body.Len() != 0 || w.Header().Get("Allow") != "" {
 		t.Fatalf("late escalation leaked refusal: allowed=%v body=%q headers=%v", allowed, w.Body.String(), w.Header())
 	}
+	if reason != "session escalation blocks responses" {
+		t.Fatalf("unstable outcome reason: %q", reason)
+	}
 	for _, want := range []string{`category="mcp_response_scan"`, "score=21", "escalation_threshold=5", "level=critical", "wait 300s"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("late refusal reason missing %s: %s", want, reason)
+		if !strings.Contains(detail, want) {
+			t.Errorf("late refusal detail missing %s: %s", want, detail)
 		}
 	}
 }
