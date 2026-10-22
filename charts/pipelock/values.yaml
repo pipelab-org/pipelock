@@ -3,7 +3,7 @@ mode: proxy # proxy | conductor | fleetSink
 replicaCount: 1
 
 image:
-  repository: ghcr.io/pipelab-org/pipelock
+  repository: ghcr.io/luckypipewrench/pipelock
   # Tag falls through to .Chart.AppVersion when empty. To pin by digest instead,
   # set image.digest to a sha256 string and the chart renders repository@digest.
   # A digest and a tag are never combined; a digest must not go in tag.
