@@ -11,7 +11,7 @@
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml"><img alt="Security" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/security.yaml/badge.svg"></a>
   <a href="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml"><img alt="Gauntlet exam" src="https://github.com/luckyPipewrench/pipelock/actions/workflows/continuous-gauntlet.yaml/badge.svg"></a>
   <a href="go.mod"><img alt="Go 1.26+" src="https://img.shields.io/github/go-mod/go-version/luckyPipewrench/pipelock?logo=go&label=Go"></a>
-  <a href="https://github.com/luckyPipewrench/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/luckyPipewrench/pipelock"></a>
+  <a href="https://github.com/pipelab-org/pipelock/releases"><img alt="Release" src="https://img.shields.io/github/v/release/pipelab-org/pipelock"></a>
 </p>
 
 <p align="center">
@@ -126,7 +126,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 
 ```bash
 # Download a binary
-# See https://github.com/luckyPipewrench/pipelock/releases
+# See https://github.com/pipelab-org/pipelock/releases
 
 # Docker (after v3.7.1 image publication)
 docker pull ghcr.io/pipelab-org/pipelock:3.7.1
@@ -139,6 +139,8 @@ brew install luckyPipewrench/tap/pipelock
 
 <details>
 <summary>Verify release integrity</summary>
+
+For v3.7.1, download release archives from `pipelab-org/pipelock` and verify attestations against that repository and its release workflow.
 
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
