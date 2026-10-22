@@ -220,6 +220,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptOpts.ActionID = receipt.NewActionID()
 		}
 		if err := emitMCPToolReceipt(receiptOpts); err != nil && requiredReceipt && result.Blocked == nil {
+			logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 			result.Deferred = nil
 			result.Blocked = &BlockedRequest{
 				ID:             frame.ID,
@@ -572,6 +573,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case blockingGateChain:
 		_, _ = fmt.Fprintf(logW, "pipelock: chain detected: %s (severity=%s, action=%s)\n",
 			eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction)
+		logMCPChainBlock(auditLogger, eval.ChainPatternName)
 		if auditLogger != nil {
 			auditLogger.LogChainDetection(eval.ChainPatternName, eval.ChainSeverity, eval.ChainAction, enforcementTarget, auditSessionKey)
 		}
@@ -587,6 +589,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		return result
 	case blockingGateParseError:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: %s\n", verdict.Error)
+		logMCPInputBlock(auditLogger, verdict)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
@@ -688,6 +691,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			switch baselineDecision.Action {
 			case config.ActionBlock, config.ActionAsk:
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", baselineDecision.Detail)
+				logMCPBaselineBlock(auditLogger)
 				recordAdaptiveSignal(session.SignalBlock)
 				receiptVerdict = config.ActionBlock
 				errMsg := ""
@@ -711,6 +715,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		// session is at an escalation level with block_all=true.
 		if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
 			_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+			logMCPCleanAdaptiveBlock(auditLogger)
 			if m != nil {
 				m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
 			}
@@ -986,13 +991,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		})
 	}
 
-	contentBlock := inputBlockedByContent(verdict, action, matchedPolicyAction(policyVerdict), bindingAction, chainAction, baselineAction)
+	contentBlock := inputBlockedByContent(verdict, action)
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
-		if contentBlock {
-			logMCPInputBlock(auditLogger, verdict)
-		}
+		logMCPInputDecisionBlock(auditLogger, verdict, contentBlock, policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 		if !entropyOnlyDecision {
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		}
@@ -1063,6 +1066,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				Decision: taintEval, Report: redactionReport, RedactionProfile: redactionCfg.Profile,
 				RequireReceipt: true, RequireReceipts: true,
 			}); err != nil {
+				logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				receiptVerdict = config.ActionBlock
 				result.Blocked = &BlockedRequest{
 					ID: verdict.ID, IsNotification: isNotification,
@@ -1238,9 +1242,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionAsk:
 		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
-		if contentBlock {
-			logMCPInputBlock(auditLogger, verdict)
-		}
+		logMCPInputDecisionBlock(auditLogger, verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 		recordAdaptiveSignal(session.SignalBlock)
 		receiptVerdict = config.ActionBlock
 		result.Blocked = &BlockedRequest{

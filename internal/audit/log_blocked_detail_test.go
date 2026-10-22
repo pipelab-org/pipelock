@@ -46,6 +46,9 @@ func TestLogBlockedDetail_InfrastructureErrorOmitsMITRETechnique(t *testing.T) {
 			if tech, present := ev.Fields["mitre_technique"]; present && tech != "" {
 				t.Errorf("infrastructure_error must NOT carry mitre_technique; got %v", tech)
 			}
+			if got := ev.Fields["block_class"]; got != BlockClassInfrastructureError {
+				t.Errorf("block_class = %v, want %s", got, BlockClassInfrastructureError)
+			}
 			if got := ev.Fields["display_label"]; got != tc.wantDisplayLabel {
 				t.Errorf("display_label = %v, want %s", got, tc.wantDisplayLabel)
 			}

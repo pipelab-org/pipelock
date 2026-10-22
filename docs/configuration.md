@@ -1292,6 +1292,18 @@ See [`docs/guides/sse-streaming.md`](guides/sse-streaming.md) for the full guide
 
 Scans JSON-RPC requests from agent to MCP server for DLP leaks and injection in tool arguments.
 
+MCP blocked audit events distinguish `mcp_input_dlp`, `mcp_input_injection`,
+and `mcp_input_inspection`. The first two point to the MCP input controls below;
+inspection failures require correcting the request or scanner state. Tool-policy
+denials use `mcp_tool_policy` and point to the matched `mcp_tool_policy.rules`
+entry. Listener parameter-header findings use separate `mcp_header_*` labels
+because they are scanned as response text, not by this input action. A failed
+or unparseable MCP response uses `mcp_response_inspection` and an operational
+`block_class`; these events do not report an attack technique.
+Tool-definition blocks use `mcp_tool_scanning`; an inventory capacity or
+inspection refusal has an operational `block_class` and cannot be relaxed by
+`mcp_tool_scanning.action`.
+
 ```yaml
 mcp_input_scanning:
   enabled: true

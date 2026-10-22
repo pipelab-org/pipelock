@@ -531,6 +531,7 @@ func RunHTTPListenerProxy(
 		reqScanner := baseOpts.scanner()
 		if reqScanner == nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
+			logMCPOperationalBlock(baseOpts.AuditLogger, scanner.AuditScannerUnavailable, "mcp_input", "MCP scanner unavailable")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			resp, _ := json.Marshal(rpcError{
@@ -1069,6 +1070,7 @@ func RunHTTPListenerProxy(
 			})
 			if _, err := requestBaseOpts.emitReceiptDecision(MCPDecision{Receipt: admission, RequireReceipt: true}); err != nil {
 				logReceiptEmitFailure(safeLogW, err, true, config.ActionForward)
+				logMCPOperationalBlock(requestBaseOpts.AuditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				emitListenerBlockDecision(mcpListenerBlockDecision{
 					reason: blockreason.ReceiptEmissionFailed, headerSeverity: blockreason.SeverityCritical,
 					retry: blockreason.RetryTransient, layer: "receipt_emission_failed",

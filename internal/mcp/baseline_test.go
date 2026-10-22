@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -186,6 +187,12 @@ func TestScanHTTPInputDecision_A2ABehavioralBaselineDeviationBlocks(t *testing.T
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			var events bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
 			cfg := config.Defaults()
 			cfg.Internal = nil
 			sc := scanner.MustNew(cfg)
@@ -201,6 +208,7 @@ func TestScanHTTPInputDecision_A2ABehavioralBaselineDeviationBlocks(t *testing.T
 			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"SendMessage","params":{"message":{"parts":[{"text":"hello peer"}]}}}`)
 			decision := scanHTTPInputDecision(msg, io.Discard, "mcp-http-42", "mcp-http-42", MCPProxyOpts{
 				Scanner:                sc,
+				AuditLogger:            logger,
 				Rec:                    rec,
 				Baseline:               checker,
 				AddressProtectionAgent: "identity-k",
@@ -210,6 +218,11 @@ func TestScanHTTPInputDecision_A2ABehavioralBaselineDeviationBlocks(t *testing.T
 
 			if decision.Blocked == nil {
 				t.Fatal("A2A behavioral baseline deviation was allowed; want JSON-RPC block")
+			}
+			if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+				!strings.Contains(got, `"scanner":"`+scanner.AuditSessionAnomaly+`"`) ||
+				!strings.Contains(got, "pipelock baseline show") {
+				t.Fatalf("baseline denial audit event = %s", got)
 			}
 		})
 	}

@@ -27,6 +27,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
@@ -960,7 +961,12 @@ func TestForwardScanned_StripAction(t *testing.T) {
 
 func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionStrip)
-	var out, log bytes.Buffer
+	var out, log, events bytes.Buffer
+	auditLogger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(auditLogger.Close)
 	emitter, rec, _, _ := newReceiptTestHarness(t)
 	rec.SetSyncForTest(func(*os.File) error {
 		return errors.New("injected durable sync failure")
@@ -976,6 +982,7 @@ func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *t
 		tracker,
 		MCPProxyOpts{
 			Scanner:         sc,
+			AuditLogger:     auditLogger,
 			ReceiptEmitter:  emitter,
 			Transport:       transportMCPStdio,
 			RequireReceipts: true,
@@ -995,6 +1002,11 @@ func TestForwardScanned_StripRequireReceiptsDurabilityFailureBlocksResponse(t *t
 	}
 	if !strings.Contains(log.String(), "receipt emission failed") {
 		t.Fatalf("expected receipt failure log, got: %s", log.String())
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+		!strings.Contains(got, `"scanner":"`+scanner.AuditReceiptEmission+`"`) ||
+		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) {
+		t.Fatalf("required receipt failure missing one operational block: %s", got)
 	}
 }
 

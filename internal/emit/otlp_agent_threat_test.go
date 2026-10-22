@@ -113,6 +113,15 @@ func TestAgentThreatDetectionAttrs_ActionMappingForLegacyBlockedEvents(t *testin
 	}
 }
 
+func TestAgentThreatDetectionAttrsOmitsOperationalBlocks(t *testing.T) {
+	event := Event{Type: eventTypeBlocked, Fields: map[string]any{
+		fieldScanner: "mcp_response_inspection", "block_class": "infrastructure_error",
+	}}
+	if got := agentThreatDetectionAttrs(event, "test"); len(got) != 0 {
+		t.Fatalf("operational block projected as agent threat: %+v", got)
+	}
+}
+
 func TestAgentThreatDetectionAttrs_SeverityMapping(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

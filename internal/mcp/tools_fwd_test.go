@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -124,8 +125,15 @@ func TestForwardScanned_ToolInventoryCapacityAlwaysBlocks(t *testing.T) {
 	toolCfg := &tools.ToolScanConfig{Action: config.ActionWarn, Baseline: baseline}
 	line := string(makeToolsResponse(`[{"name":"overflow","description":"safe"}]`)) + "\n"
 
-	var out, log strings.Builder
-	found, err := fwdScanned(strings.NewReader(line), &out, &log, sc, nil, toolCfg)
+	var out, log, events strings.Builder
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	opts := buildTestOpts(sc, withToolCfg(toolCfg))
+	opts.AuditLogger = logger
+	found, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(line)), transport.NewStdioWriter(&out), &log, nil, opts)
 	if err != nil {
 		t.Fatalf("ForwardScanned: %v", err)
 	}
@@ -137,6 +145,11 @@ func TestForwardScanned_ToolInventoryCapacityAlwaysBlocks(t *testing.T) {
 	}
 	if baseline.IsKnownTool("overflow") {
 		t.Fatal("blocked overflow tool became a trusted baseline entry")
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.ScannerMCPToolScanning+`"`) ||
+		!strings.Contains(got, `"resource":"tools/list"`) || !strings.Contains(got, "current baseline") ||
+		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) || strings.Contains(got, "overflow") {
+		t.Fatalf("inventory capacity audit event = %s", got)
 	}
 }
 

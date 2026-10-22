@@ -960,7 +960,10 @@ func TestRunHTTPProxy_InputDLPBlocking(t *testing.T) {
 	if atomic.LoadInt32(&serverCalled) != 0 {
 		t.Error("server should NOT be called when input is blocked")
 	}
-	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), prefix+fakeKey) {
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 ||
+		!strings.Contains(events.String(), `"scanner":"`+scanner.AuditMCPInputDLP+`"`) ||
+		!strings.Contains(events.String(), "mcp_input_scanning.action") ||
+		strings.Contains(events.String(), prefix+fakeKey) {
 		t.Fatalf("HTTP input audit missing or leaked credential: %s", events.String())
 	}
 }
@@ -1235,6 +1238,12 @@ func TestUpstreamErrorResponse_NilID(t *testing.T) {
 }
 
 func TestScanHTTPInput_ParseError(t *testing.T) {
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -1248,12 +1257,17 @@ func TestScanHTTPInput_ParseError(t *testing.T) {
 	}
 
 	// Invalid JSON-RPC - not valid JSON.
-	blocked := scanHTTPInput([]byte(`not json`), io.Discard, "", "", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg})
+	blocked := scanHTTPInput([]byte(`not json`), io.Discard, "", "", MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, AuditLogger: logger})
 	if blocked == nil {
 		t.Fatal("expected parse error to block")
 	}
 	if blocked.LogMessage != "blocked (parse error)" {
 		t.Errorf("LogMessage = %q, want %q", blocked.LogMessage, "blocked (parse error)")
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+		!strings.Contains(got, `"scanner":"`+scanner.AuditMCPInputInspection+`"`) ||
+		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, "not json") {
+		t.Fatalf("HTTP parse denial audit event = %s", got)
 	}
 }
 
@@ -6393,6 +6407,12 @@ func TestScanHTTPInput_AdaptiveUpgradeWithAuditLogger(t *testing.T) {
 }
 
 func TestRunHTTPProxy_AdaptiveBlockAllCleanMessage(t *testing.T) {
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	// Server should NOT be called - blocked before upstream.
 	var serverCalled int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -6434,7 +6454,7 @@ func TestRunHTTPProxy_AdaptiveBlockAllCleanMessage(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Store: store, AdaptiveCfg: adaptiveCfg})
+	err = RunHTTPProxy(ctx, stdin, &stdout, &stderr, srv.URL, nil, MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, Store: store, AdaptiveCfg: adaptiveCfg, AuditLogger: logger})
 	if err != nil {
 		t.Fatalf("RunHTTPProxy: %v", err)
 	}
@@ -6462,6 +6482,11 @@ func TestRunHTTPProxy_AdaptiveBlockAllCleanMessage(t *testing.T) {
 	// Log must mention adaptive upgrade.
 	if !strings.Contains(stderr.String(), "adaptive upgrade") {
 		t.Errorf("expected adaptive upgrade log in stderr, got: %s", stderr.String())
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+		!strings.Contains(got, `"scanner":"`+scanner.AuditAdaptiveEnforcement+`"`) ||
+		!strings.Contains(got, "affected identity session") {
+		t.Fatalf("clean adaptive denial audit event = %s", got)
 	}
 }
 

@@ -37,8 +37,13 @@ var techniqueMap = map[string]string{
 	"redirect":  "T1071.001", // Redirect to blocked domain
 
 	// Command and scripting interpreter (response-side / MCP)
-	"response_scan": "T1059", // Command and Scripting Interpreter (prompt injection)
-	"policy":        "T1059", // MCP tool policy violation
+	"response_scan":        "T1059",     // Command and Scripting Interpreter (prompt injection)
+	"policy":               "T1059",     // MCP tool policy violation
+	"mcp_input_dlp":        "T1048",     // Credential in an MCP request
+	"mcp_input_injection":  "T1059",     // Instruction in MCP tool arguments
+	"mcp_header_dlp":       "T1048",     // Credential in an MCP parameter header
+	"mcp_header_injection": "T1059",     // Instruction in an MCP parameter header
+	"mcp_tool_scanning":    "T1195.002", // Poisoned MCP tool definition
 
 	// WebSocket transport protocol enforcement
 	"ws_protocol": "T1071", // Application Layer Protocol (binary frame / fragment violation)

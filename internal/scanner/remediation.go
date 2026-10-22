@@ -19,47 +19,55 @@ const (
 	// the URL scanner pipeline. Keeping their operator guidance in this table
 	// gives generic blocked/anomaly events and dedicated audit events one source
 	// of truth.
-	AuditResponseScan         = "response_scan"
-	AuditHeaderDLP            = "header_dlp"
-	AuditReverseURLDLP        = "dlp_reverse_url"
-	AuditBodyPromptInjection  = "body_prompt_injection"
-	AuditAddressProtection    = "address_protection"
-	AuditChainDetection       = "chain_detection"
-	AuditProvenance           = "provenance"
-	AuditMediaPolicy          = "media_policy"
-	AuditRequestPolicy        = "request_policy"
-	AuditAgentIdentity        = "agent_identity"
-	AuditTaintPolicy          = "taint_policy"
-	AuditSessionAnomaly       = "session_anomaly"
-	AuditAdaptiveEnforcement  = "adaptive_enforcement"
-	AuditMCPSessionBinding    = "mcp_session_binding"
-	AuditFrozenTool           = "frozen_tool"
-	AuditSNIMismatch          = "sni_mismatch"
-	AuditKillSwitch           = "kill_switch"
-	AuditAirlock              = "airlock"
-	AuditCrossRequestEntropy  = "cross_request_entropy"
-	AuditCrossRequestFragment = "cross_request_fragment"
-	AuditGitProtection        = "git_protection"
-	AuditAgentBudget          = "budget"
-	AuditResponseSize         = "response_size"
-	AuditShieldOversize       = "shield_oversize"
-	AuditContract             = "contract"
-	AuditSSEStream            = "sse_stream"
-	AuditUnscannable          = "unscannable_passthrough"
-	AuditA2AScan              = "a2a_scan"
-	AuditA2ACardSignature     = "a2a_card_signature"
-	AuditRedaction            = "redaction"
-	AuditScannerUnavailable   = "scanner_unavailable"
-	AuditMediationEnvelope    = "mediation_envelope"
-	AuditReceiptEmission      = "receipt_emission"
-	AuditReverseSubmit        = "reverse_proxy_submit"
-	AuditA2AHeader            = "a2a_header"
-	AuditA2AResponse          = "a2a_response"
-	AuditBudgetTruncated      = "budget_truncated"
-	AuditTLSResponseBlocked   = "tls_response_blocked"
-	AuditSessionDeny          = "session_deny"
-	AuditTLSHandshakeError    = "tls_handshake_error"
-	AuditTLSAuthorityMismatch = "tls_authority_mismatch"
+	AuditResponseScan          = "response_scan"
+	AuditHeaderDLP             = "header_dlp"
+	AuditReverseURLDLP         = "dlp_reverse_url"
+	AuditBodyPromptInjection   = "body_prompt_injection"
+	AuditAddressProtection     = "address_protection"
+	AuditChainDetection        = "chain_detection"
+	AuditProvenance            = "provenance"
+	AuditMediaPolicy           = "media_policy"
+	AuditRequestPolicy         = "request_policy"
+	AuditAgentIdentity         = "agent_identity"
+	AuditTaintPolicy           = "taint_policy"
+	AuditSessionAnomaly        = "session_anomaly"
+	AuditAdaptiveEnforcement   = "adaptive_enforcement"
+	AuditMCPSessionBinding     = "mcp_session_binding"
+	AuditMCPToolPolicy         = "mcp_tool_policy"
+	AuditMCPInputDLP           = "mcp_input_dlp"
+	AuditMCPInputInjection     = "mcp_input_injection"
+	AuditMCPInputInspection    = "mcp_input_inspection"
+	AuditMCPHeaderDLP          = "mcp_header_dlp"
+	AuditMCPHeaderInjection    = "mcp_header_injection"
+	AuditMCPHeaderInspection   = "mcp_header_inspection"
+	AuditMCPResponseInspection = "mcp_response_inspection"
+	AuditFrozenTool            = "frozen_tool"
+	AuditSNIMismatch           = "sni_mismatch"
+	AuditKillSwitch            = "kill_switch"
+	AuditAirlock               = "airlock"
+	AuditCrossRequestEntropy   = "cross_request_entropy"
+	AuditCrossRequestFragment  = "cross_request_fragment"
+	AuditGitProtection         = "git_protection"
+	AuditAgentBudget           = "budget"
+	AuditResponseSize          = "response_size"
+	AuditShieldOversize        = "shield_oversize"
+	AuditContract              = "contract"
+	AuditSSEStream             = "sse_stream"
+	AuditUnscannable           = "unscannable_passthrough"
+	AuditA2AScan               = "a2a_scan"
+	AuditA2ACardSignature      = "a2a_card_signature"
+	AuditRedaction             = "redaction"
+	AuditScannerUnavailable    = "scanner_unavailable"
+	AuditMediationEnvelope     = "mediation_envelope"
+	AuditReceiptEmission       = "receipt_emission"
+	AuditReverseSubmit         = "reverse_proxy_submit"
+	AuditA2AHeader             = "a2a_header"
+	AuditA2AResponse           = "a2a_response"
+	AuditBudgetTruncated       = "budget_truncated"
+	AuditTLSResponseBlocked    = "tls_response_blocked"
+	AuditSessionDeny           = "session_deny"
+	AuditTLSHandshakeError     = "tls_handshake_error"
+	AuditTLSAuthorityMismatch  = "tls_authority_mismatch"
 )
 
 // Decide*Label values identify non-URL blocks emitted by internal/decide.
@@ -93,6 +101,15 @@ const (
 	sessionAnomalyOperatorKnob          = "For a legitimate domain burst, raise the matched `session_profiling.domain_burst` threshold (global or per-agent) or the global-only `session_profiling.window_minutes`. For a behavioral baseline deviation, inspect the profile and explicitly relearn/ratify it with the baseline operator commands; do not auto-ratify an unexplained deviation."
 	adaptiveEnforcementOperatorKnob     = "Wait for the event's auto-recovery time, or inspect and reset only the affected identity session with the session operator commands after confirming the traffic is legitimate. Changing `adaptive_enforcement.levels` or thresholds affects every session and is broader."
 	mcpSessionBindingOperatorKnob       = "Refresh the MCP session only after verifying the server's current tool inventory. If inventory drift is intentionally non-blocking, change `mcp_session_binding.unknown_tool_action` (or `no_baseline_action` for a missing baseline) to `warn`; that applies to every matching inventory event."
+	mcpToolPolicyOperatorKnob           = "Inspect the matched `mcp_tool_policy.rules` entry and change only the intended tool or argument rule. A broad allow rule would admit unrelated calls."
+	mcpInputDLPOperatorKnob             = "Remove the matched sensitive value from the MCP request. For a non-core false positive, inspect the exact `dlp.patterns` rule; `mcp_input_scanning.action` controls non-core input findings. Core credentials still hard-block unless redaction fully removes them; URL `exempt_domains` does not apply to MCP arguments."
+	mcpInputInjectionOperatorKnob       = "Correct the MCP tool arguments carrying the instruction. `mcp_input_scanning.action` controls this input scan; URL and response suppressions do not apply to MCP arguments."
+	mcpInputInspectionOperatorKnob      = "Correct the malformed or uninspectable MCP request and retry. `mcp_input_scanning.on_parse_error` covers only configurable protocol parse errors; malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol aliases always block."
+	mcpHeaderDLPOperatorKnob            = "Remove the credential from the MCP parameter header. This header is scanned as response text; URL DLP `exempt_domains` and `mcp_input_scanning.action` do not govern this header gate."
+	mcpHeaderInjectionOperatorKnob      = "Correct the instruction in the MCP parameter header. The header response-text scan has no per-header suppression; investigate the matched pattern before changing response scanning globally."
+	mcpHeaderInspectionOperatorKnob     = "The decoded MCP parameter header could not be scanned. Correct its encoding or restore scanner health and retry; suppression cannot make it scannable."
+	mcpResponseInspectionOperatorKnob   = "The MCP response could not be inspected safely. Correct the malformed upstream response or restore scanner health and retry; no pattern suppression repairs a failed inspection."
+	mcpToolScanningOperatorKnob         = "Inspect the flagged tools/list definition and correct it at the upstream server. Review `mcp_tool_scanning` settings only after confirming the definition is intended."
 	sniMismatchOperatorKnob             = "Correct the CONNECT hostname or TLS client so the SNI name matches the requested authority. `forward_proxy.sni_verification: false` disables domain-fronting protection for every tunnel and is not a narrow remediation."
 	killSwitchOperatorKnob              = "Inspect and clear the active kill-switch source named by the event. Config, API, remote kill, stale bundle, unresolved policy application, SIGUSR1, and sentinel-file sources are OR-composed, so every active source must clear. HTTP and intercepted-request gates consult `kill_switch.allowlist_ips` except during unresolved Conductor policy application, which requires successful policy recovery. Pipelock health, metrics, and main-listener API endpoints have their own exemption flags. Raw/MCP kill-switch gates do not consult those HTTP exemptions."
 	airlockOperatorKnob                 = "Inspect the affected session and wait for its configured `airlock.timers` recovery, or use the authenticated session operator command to lower/reset only that session after confirming the traffic is legitimate. Weakening global triggers or tiers is broader."
@@ -290,47 +307,56 @@ var remediationGuidance = map[string]RemediationGuidance{
 		OperatorKnob: denialOfWalletOperatorKnob,
 		AgentReason:  denialOfWalletAgentReason,
 	},
-	AuditResponseScan:         {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditHeaderDLP:            {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
-	AuditReverseURLDLP:        {OperatorKnob: "Remove the credential from the request URL. Reverse-proxy URL text scanning does not consult top-level `suppress:` entries or per-pattern `exempt_domains`. Core DLP matches cannot be exempted; a genuine false positive requires a pattern-precision fix.", AgentReason: secretAgentReason},
-	AuditBodyPromptInjection:  {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditAddressProtection:    {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditChainDetection:       {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditProvenance:           {OperatorKnob: provenanceOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMediaPolicy:          {OperatorKnob: mediaPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditRequestPolicy:        {OperatorKnob: requestPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAgentIdentity:        {OperatorKnob: agentIdentityOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditTaintPolicy:          {OperatorKnob: taintPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditSessionAnomaly:       {OperatorKnob: sessionAnomalyOperatorKnob, AgentReason: auditAnomalyAgentReason},
-	AuditAdaptiveEnforcement:  {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditMCPSessionBinding:    {OperatorKnob: mcpSessionBindingOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditSNIMismatch:          {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditKillSwitch:           {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAirlock:              {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditCrossRequestEntropy:  {OperatorKnob: crossRequestEntropyOperatorKnob, AgentReason: auditAnomalyAgentReason},
-	AuditCrossRequestFragment: {OperatorKnob: crossRequestFragmentOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditGitProtection:        {OperatorKnob: gitProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditAgentBudget:          {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditResponseSize:         {OperatorKnob: responseSizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditShieldOversize:       {OperatorKnob: shieldOversizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditContract:             {OperatorKnob: contractOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditSSEStream:            {OperatorKnob: sseStreamOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditUnscannable:          {OperatorKnob: unscannableOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditA2AScan:              {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditA2ACardSignature:     {OperatorKnob: a2aCardSignatureOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditRedaction:            {OperatorKnob: redactionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditScannerUnavailable:   {OperatorKnob: scannerUnavailableOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
-	AuditMediationEnvelope:    {OperatorKnob: mediationEnvelopeOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditReceiptEmission:      {OperatorKnob: receiptEmissionOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditReverseSubmit:        {OperatorKnob: reverseSubmitOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditFrozenTool:           {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditA2AHeader:            {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditA2AResponse:          {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditBudgetTruncated:      {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
-	AuditTLSResponseBlocked:   {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
-	AuditSessionDeny:          {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
-	AuditTLSHandshakeError:    {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
-	AuditTLSAuthorityMismatch: {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditResponseScan:          {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditHeaderDLP:             {OperatorKnob: headerDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditReverseURLDLP:         {OperatorKnob: "Remove the credential from the request URL. Reverse-proxy URL text scanning does not consult top-level `suppress:` entries or per-pattern `exempt_domains`. Core DLP matches cannot be exempted; a genuine false positive requires a pattern-precision fix.", AgentReason: secretAgentReason},
+	AuditBodyPromptInjection:   {OperatorKnob: bodyPromptInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditAddressProtection:     {OperatorKnob: addressProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditChainDetection:        {OperatorKnob: chainDetectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditProvenance:            {OperatorKnob: provenanceOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMediaPolicy:           {OperatorKnob: mediaPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRequestPolicy:         {OperatorKnob: requestPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentIdentity:         {OperatorKnob: agentIdentityOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTaintPolicy:           {OperatorKnob: taintPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSessionAnomaly:        {OperatorKnob: sessionAnomalyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditAdaptiveEnforcement:   {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPSessionBinding:     {OperatorKnob: mcpSessionBindingOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPToolPolicy:         {OperatorKnob: mcpToolPolicyOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditMCPInputDLP:           {OperatorKnob: mcpInputDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditMCPInputInjection:     {OperatorKnob: mcpInputInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditMCPInputInspection:    {OperatorKnob: mcpInputInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPHeaderDLP:          {OperatorKnob: mcpHeaderDLPOperatorKnob, AgentReason: secretAgentReason},
+	AuditMCPHeaderInjection:    {OperatorKnob: mcpHeaderInjectionOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditMCPHeaderInspection:   {OperatorKnob: mcpHeaderInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditMCPResponseInspection: {OperatorKnob: mcpResponseInspectionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	ScannerMCPToolScanning:     {OperatorKnob: mcpToolScanningOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditSNIMismatch:           {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditKillSwitch:            {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAirlock:               {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditCrossRequestEntropy:   {OperatorKnob: crossRequestEntropyOperatorKnob, AgentReason: auditAnomalyAgentReason},
+	AuditCrossRequestFragment:  {OperatorKnob: crossRequestFragmentOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditGitProtection:         {OperatorKnob: gitProtectionOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditAgentBudget:           {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditResponseSize:          {OperatorKnob: responseSizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditShieldOversize:        {OperatorKnob: shieldOversizeOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditContract:              {OperatorKnob: contractOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditSSEStream:             {OperatorKnob: sseStreamOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditUnscannable:           {OperatorKnob: unscannableOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditA2AScan:               {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2ACardSignature:      {OperatorKnob: a2aCardSignatureOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditRedaction:             {OperatorKnob: redactionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditScannerUnavailable:    {OperatorKnob: scannerUnavailableOperatorKnob, Immutable: true, AgentReason: auditRuntimeAgentReason},
+	AuditMediationEnvelope:     {OperatorKnob: mediationEnvelopeOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReceiptEmission:       {OperatorKnob: receiptEmissionOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditReverseSubmit:         {OperatorKnob: reverseSubmitOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditFrozenTool:            {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditA2AHeader:             {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditA2AResponse:           {OperatorKnob: a2aScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditBudgetTruncated:       {OperatorKnob: agentBudgetOperatorKnob, AgentReason: protectiveCeilingAgentReason},
+	AuditTLSResponseBlocked:    {OperatorKnob: responseScanOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditSessionDeny:           {OperatorKnob: adaptiveEnforcementOperatorKnob, AgentReason: auditPolicyAgentReason},
+	AuditTLSHandshakeError:     {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
+	AuditTLSAuthorityMismatch:  {OperatorKnob: tlsFailureOperatorKnob, AgentReason: auditRuntimeAgentReason},
 	DecideInjectionLabel: {
 		OperatorKnob: decideInjectionOperatorKnob,
 		AgentReason:  promptInjectionAgentReason,
@@ -534,6 +560,12 @@ func hasQueryGrantValidityNote(reason string) bool {
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
+	if label == ScannerMCPToolScanning && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {
+		return RemediationGuidance{
+			OperatorKnob: "The tools/list inventory cannot be safely inspected or admitted into the current baseline. Correct or reduce the upstream inventory and retry; `mcp_tool_scanning.action` does not override this refusal.",
+			AgentReason:  auditRuntimeAgentReason,
+		}, true
+	}
 	if label == ScannerDLP && hasQueryGrantValidityNote(reason) {
 		return RemediationGuidance{
 			OperatorKnob: "Check the host clock and obtain a current GitHub URL. The grant validity window is required and is not extended by a DLP pattern exemption.",

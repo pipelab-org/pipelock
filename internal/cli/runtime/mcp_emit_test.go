@@ -16,6 +16,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // webhookRecorder captures every body POSTed to it.
@@ -157,4 +160,71 @@ func TestMCPProxyRefusesStartWhenEmitSinkCannotBeBuilt(t *testing.T) {
 	if strings.Contains(stdout, "test-mcp-helper") {
 		t.Fatalf("wrapped server answered initialize; startup did not abort before launch:\n%s", stdout)
 	}
+}
+
+func TestRunMCPListenerToolPolicyEmitsOneBlock(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		fetchAddr, mcpAddr := addrs[0], addrs[1]
+		recorder := &webhookRecorder{}
+		webhook := httptest.NewServer(recorder)
+		defer webhook.Close()
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+		cfgPath := writeServerTestConfig(t, fmt.Sprintf(`version: 1
+mode: balanced
+mcp_tool_policy:
+  enabled: true
+  action: block
+  rules:
+    - name: deny-read
+      tool_pattern: "^read_file$"
+      action: block
+fetch_proxy:
+  listen: %q
+logging:
+  format: json
+  output: stdout
+  include_blocked: true
+emit:
+  webhook:
+    url: %q
+    min_severity: info
+`, fetchAddr, webhook.URL))
+		s, buf := newTestServer(t, func(o *ServerOpts) {
+			o.ConfigFile = cfgPath
+			o.Listen = fetchAddr
+			o.ListenChanged = true
+			o.MCPListen = mcpAddr
+			o.MCPUpstream = upstream.URL
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		errCh := make(chan error, 1)
+		go func() { errCh <- s.Start(ctx) }()
+		defer func() {
+			_ = s.Shutdown(context.Background())
+			select {
+			case <-errCh:
+			case <-time.After(5 * time.Second):
+				t.Error("run MCP listener did not stop")
+			}
+		}()
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+			return err
+		}
+		body := postTokenlessListenerToolCall(t, mcpAddr, 1)
+		if !strings.Contains(body, `"error"`) {
+			t.Fatalf("tool policy did not block: %s", body)
+		}
+		testwait.For(t, 3*time.Second, func() bool {
+			return strings.Contains(strings.Join(recorder.snapshot(), "\n"), `"scanner":"mcp_tool_policy"`)
+		}, "MCP listener webhook block event")
+		got := strings.Join(recorder.snapshot(), "\n")
+		if strings.Count(got, `"type":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"mcp_tool_policy"`) || !strings.Contains(got, "mcp_tool_policy.rules") {
+			t.Fatalf("run MCP listener event missing or mislabeled: %s", got)
+		}
+		return nil
+	})
 }

@@ -113,6 +113,49 @@ emit:
 	}
 }
 
+func TestMCPProxyRefusesLockedForwarderBeforeLaunchingServer(t *testing.T) {
+	dir := t.TempDir()
+	forwarderCfg := config.ForwarderConfig{
+		URL: "http://127.0.0.1/events", DestinationAllowlist: []string{"127.0.0.1"},
+		SpoolFile: dir + "/spool", CursorFile: dir + "/cursor", MinSeverity: config.SeverityWarn,
+		TimeoutSeconds: 1, QueueSize: 4,
+	}
+	holderCfg := config.Defaults()
+	holderCfg.Emit.Forwarder = forwarderCfg
+	holder, err := BuildEmitSinks(holderCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := activateEmitSinks(holder); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		for _, sink := range holder {
+			_ = sink.Close()
+		}
+	})
+	configPath := writeMCPEmitConfig(t, fmt.Sprintf(`emit:
+  forwarder:
+    url: %q
+    destination_allowlist: ["127.0.0.1"]
+    spool_file: %q
+    cursor_file: %q
+`, forwarderCfg.URL, forwarderCfg.SpoolFile, forwarderCfg.CursorFile))
+	input := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n"
+	stdout, stderr, err := runMCPProxyCommandWithInput(t, mcpEmitProxyArgs(configPath), input)
+	if err == nil {
+		t.Fatalf("expected locked forwarder startup failure; stdout=%s stderr=%s", stdout, stderr)
+	}
+	for _, want := range []string{"locked by another Pipelock process", "emit.forwarder.spool_file", "emit.forwarder.cursor_file"} {
+		if !strings.Contains(err.Error(), want) || !strings.Contains(stderr, want) {
+			t.Fatalf("startup error missing %q: err=%v stderr=%s", want, err, stderr)
+		}
+	}
+	if strings.Contains(stdout, "test-mcp-helper") || strings.Contains(stdout, `"id":1`) {
+		t.Fatalf("wrapped server launched despite lock conflict: %s", stdout)
+	}
+}
+
 func TestServerReloadIgnoresEmitChangeBeforePolicyPublication(t *testing.T) {
 	t.Parallel()
 	s, buf := newTestServer(t, nil)

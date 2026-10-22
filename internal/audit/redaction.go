@@ -70,6 +70,14 @@ func IsContentScanner(name string) bool {
 
 func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTarget, loggedResource string) {
 	loggedResource = ctx.resource
+	// MCP block producers use these literal protocol markers. Preserve only
+	// the fixed markers, never an argument, resource URI, or tool name.
+	if ctx.method == "MCP" {
+		switch ctx.resource {
+		case "mcp_input", "mcp_listener_header", "mcp_response", "upstream_error_reply":
+			return redactContentBearingURL(ctx.url), redactContentBearingURL(ctx.target), ctx.resource
+		}
+	}
 	switch scannerContentFieldMode(scanner) {
 	case contentFieldModeDestination:
 		return dropURLContentSegments(ctx.url, false),

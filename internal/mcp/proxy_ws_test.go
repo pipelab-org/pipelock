@@ -755,11 +755,17 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 
 	stdin := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"text":"hi"}}}` + "\n")
 	var stdout, stderr bytes.Buffer
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg})
+	err = RunWSProxy(ctx, stdin, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, PolicyCfg: policyCfg, AuditLogger: logger})
 	if err != nil {
 		t.Fatalf("RunWSProxy: %v", err)
 	}
@@ -771,9 +777,18 @@ func TestRunWSProxy_ToolPolicyBlocks(t *testing.T) {
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Errorf("tool policy block forwarded %d frame(s) upstream, want 0", got)
 	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditMCPToolPolicy+`"`) || !strings.Contains(got, "mcp_tool_policy.rules") {
+		t.Fatalf("WS tool policy block missing one correctly labeled event: %s", got)
+	}
 }
 
 func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
+	var events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	// Server echoes a response for every client message.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
@@ -831,7 +846,7 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher})
+		proxyErr = RunWSProxy(ctx, pr, &stdout, &stderr, wsURL(srv), MCPProxyOpts{Scanner: sc, InputCfg: inputCfg, ChainMatcher: chainMatcher, AuditLogger: logger})
 	}()
 
 	// First tool call: read_file.
@@ -847,6 +862,11 @@ func TestRunWSProxy_ChainDetectionBlocks(t *testing.T) {
 
 	if !strings.Contains(stderr.String(), "chain detected") {
 		t.Errorf("expected chain detection log, got stderr: %s", stderr.String())
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+		!strings.Contains(got, `"scanner":"`+scanner.AuditChainDetection+`"`) ||
+		!strings.Contains(got, "tool_chain_detection.pattern_overrides") {
+		t.Fatalf("WS chain denial audit event = %s", got)
 	}
 }
 
@@ -893,7 +913,10 @@ func TestRunWSProxy_InputDLPWithAuditLogger(t *testing.T) {
 	if got := upstreamFrames.Load(); got != 0 {
 		t.Errorf("blocked audit-logged input forwarded %d frame(s) upstream, want 0", got)
 	}
-	if !strings.Contains(events.String(), `"event":"blocked"`) || strings.Contains(events.String(), fakeKey) {
+	if strings.Count(events.String(), `"event":"blocked"`) != 1 ||
+		!strings.Contains(events.String(), `"scanner":"`+scanner.AuditMCPInputDLP+`"`) ||
+		!strings.Contains(events.String(), "mcp_input_scanning.action") ||
+		strings.Contains(events.String(), fakeKey) {
 		t.Fatalf("WS input audit missing or leaked credential: %s", events.String())
 	}
 }

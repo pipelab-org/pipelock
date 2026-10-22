@@ -864,6 +864,7 @@ func ForwardScannedInput(
 			_ = emitToolReceipt(config.ActionBlock)
 			continue
 		case blockingGateChain:
+			logMCPChainBlock(auditLogger, eval.ChainPatternName)
 			recordAdaptiveFinding(session.SignalBlock, "chain", eval.ChainPatternName)
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
@@ -876,6 +877,7 @@ func ForwardScannedInput(
 			continue
 		case blockingGateParseError:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: %s\n", lineNum, verdict.Error)
+			logMCPInputBlock(auditLogger, verdict)
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isRPCNotification(verdict.ID),
@@ -928,6 +930,7 @@ func ForwardScannedInput(
 				case config.ActionBlock, config.ActionAsk:
 					_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 						lineNum, verdict.Method, baselineDecision.Detail)
+					logMCPBaselineBlock(auditLogger)
 					recordAdaptiveSignal(session.SignalBlock)
 					errMsg := ""
 					if baselineDecision.Action == config.ActionAsk {
@@ -952,6 +955,7 @@ func ForwardScannedInput(
 			// session is at an escalation level with block_all=true.
 			if rec != nil && decide.UpgradeAction("", rec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
 				_, _ = fmt.Fprintf(logW, "pipelock: adaptive upgrade (clean) -> block (level %s)\n", session.EscalationLabel(rec.EscalationLevel()))
+				logMCPCleanAdaptiveBlock(auditLogger)
 				if m != nil {
 					m.RecordAdaptiveUpgrade("", config.ActionBlock, session.EscalationLabel(rec.EscalationLevel()))
 				}
@@ -1091,6 +1095,7 @@ func ForwardScannedInput(
 				receiptVerdict = config.ActionForward
 			}
 			if err := emitToolReceipt(receiptVerdict, contractGate); err != nil {
+				logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),
@@ -1230,14 +1235,12 @@ func ForwardScannedInput(
 
 		redirectSucceeded := false
 		var contractGateForReceipt *mcpContractGateOutput
-		contentBlock := inputBlockedByContent(verdict, action, matchedPolicyAction(policyVerdict), bindingAction, chainAction, baselineAction)
+		contentBlock := inputBlockedByContent(verdict, action)
 		switch effectiveAction {
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
-			if contentBlock {
-				logMCPInputBlock(auditLogger, verdict)
-			}
+			logMCPInputDecisionBlock(auditLogger, verdict, contentBlock, policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
 			if bindingReason != "" && bindingAction == config.ActionBlock {
 				blockReason = blockreason.SessionBinding
@@ -1292,6 +1295,7 @@ func ForwardScannedInput(
 			// admission must precede the handler, not just its synthetic response.
 			if opts.requireReceipts() {
 				if err := emitToolReceipt(config.ActionRedirect); err != nil {
+					logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 					blockedCh <- BlockedRequest{
 						ID: verdict.ID, IsNotification: isNotification,
 						LogMessage: "receipt emission failed", ErrorCode: -32007,
@@ -1442,6 +1446,7 @@ func ForwardScannedInput(
 			receiptSessionID = captureSessionID(opts.Transport)
 			receiptSessionIDOriginal = captureSessionIDOriginal(opts.Transport)
 			if err := emitToolReceipt(config.ActionDefer); err != nil {
+				logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isNotification,
@@ -1609,9 +1614,7 @@ func ForwardScannedInput(
 			// HITL for input scanning is impractical - fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
-			if contentBlock {
-				logMCPInputBlock(auditLogger, verdict)
-			}
+			logMCPInputDecisionBlock(auditLogger, verdict, contentBlock || (!verdict.Clean && !policyVerdict.Matched && bindingAction == "" && chainAction == "" && baselineAction == ""), policyVerdict, bindingAction, chainAction, eval.ChainPatternName, baselineAction)
 			blockedCh <- BlockedRequest{
 				ID:             verdict.ID,
 				IsNotification: isNotification,
@@ -1747,6 +1750,7 @@ func ForwardScannedInput(
 				}
 			}
 			if err := emitToolReceipt(effectiveAction, contractGate); err != nil {
+				logMCPOperationalBlock(auditLogger, scanner.AuditReceiptEmission, "mcp_input", mcpReceiptEmissionReason)
 				blockedCh <- BlockedRequest{
 					ID:             verdict.ID,
 					IsNotification: isRPCNotification(verdict.ID),

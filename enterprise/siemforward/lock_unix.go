@@ -25,7 +25,7 @@ func acquireStateLock(spoolPath string) (*os.File, error) {
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("siem forwarder state files %q are locked by another process: %w", spoolPath, err)
+		return nil, fmt.Errorf("siem forwarder spool %q is locked by another Pipelock process; give each process its own emit.forwarder.spool_file and emit.forwarder.cursor_file pair: %w", spoolPath, err)
 	}
 	return file, nil
 }

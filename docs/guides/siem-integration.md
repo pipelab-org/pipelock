@@ -71,6 +71,25 @@ on a sink to receive the info events as well.
 | `response_scan_suppressed` | Response-scan finding withheld from enforcement | `mode`, `pattern`, `surface`, `reason` (`suppressed` or `core_observed`), `observe_host`, `observe_owner`, `observe_expires`, `observe_reason` (`core_observed` only), `client_ip`, `request_id` |
 | `error` | Internal error during request processing | `method`, `url`, `client_ip`, `request_id`, `error` |
 
+MCP `blocked` events use `fields.scanner` for the gate that denied the call.
+`mcp_input_dlp`, `mcp_input_injection`, and `mcp_input_inspection` distinguish
+credential, instruction, and inspection failures in requests;
+`mcp_header_dlp`, `mcp_header_injection`, and `mcp_header_inspection` do the
+same for listener parameter headers. `mcp_tool_policy` identifies a tool rule.
+`mcp_tool_scanning` identifies a blocked tool definition; a tools/list capacity
+or inspection refusal under that label is operational (`block_class:
+infrastructure_error`) and carries no MITRE technique.
+Session binding, chain detection, and behavioral baseline blocks retain
+`mcp_session_binding`, `chain_detection`, and `session_anomaly`. Scanner
+availability and required receipt failures retain `scanner_unavailable` and
+`receipt_emission`. Response
+inspection failures use `mcp_response_inspection` with
+`block_class: infrastructure_error`, no MITRE technique, and no agent-threat
+projection. A fixed protocol marker is the only MCP resource in these events;
+request arguments, header values, tool names, and response bodies are omitted.
+Rules that currently filter `fields.scanner == "dlp"` for all credentials should
+also select `mcp_input_dlp` and `mcp_header_dlp` when MCP blocks are in scope.
+
 ### Info (sent only when a sink sets `min_severity: info`)
 
 These go to the local log (except the seven events named below when `logging.include_allowed` is `false`), and reach a sink only when that sink's
@@ -225,6 +244,13 @@ Operator lifecycle:
   enforced by an exclusive advisory lock on a `<spool_file>.lock` sidecar — a
   second process pointed at the same spool fails to start delivery rather than
   racing the cursor.
+
+  For two MCP wrappers, use separate config files with stable pairs: set
+  `emit.forwarder.spool_file: /var/lib/pipelock/mcp-calendar.spool` and
+  `emit.forwarder.cursor_file: /var/lib/pipelock/mcp-calendar.cursor` in the
+  calendar wrapper's config, and use `mcp-files.spool` / `mcp-files.cursor`
+  for the files wrapper. Keep each pair across that wrapper's restarts so
+  pending events can replay.
 - Inspect: watch the forwarder metrics and the cursor's offset/hash while
   treating the spool as the delivery source of truth.
 - Rotate: stop Pipelock, confirm the cursor offset equals the spool size,

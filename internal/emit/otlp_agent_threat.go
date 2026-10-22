@@ -74,6 +74,12 @@ const (
 // matched rule did not come from a loaded bundle. Callers should pass
 // the build-time-injected Pipelock version (cliutil.Version).
 func agentThreatDetectionAttrs(event Event, binaryVersion string) []*commonpb.KeyValue {
+	// An operational refusal is a block, but it is not an observed agent
+	// threat. Keep its native event and block_class without projecting it as
+	// an agent.threat.detection record.
+	if class, _ := event.Fields["block_class"].(string); class != "" && class != "threat" {
+		return nil
+	}
 	action, ok := mapConventionAction(event)
 	if !ok {
 		return nil

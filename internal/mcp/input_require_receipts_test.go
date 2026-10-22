@@ -10,10 +10,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // runStdioToolCall drives ForwardScannedInput for a single clean tools/call
@@ -192,7 +194,12 @@ func TestForwardScannedInput_WarnRequireReceiptsDurabilityFailureDoesNotForward(
 		return errors.New("injected durable sync failure")
 	})
 
-	var serverBuf, logBuf bytes.Buffer
+	var serverBuf, logBuf, events bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
 	blockedCh := make(chan BlockedRequest, 10)
 	ForwardScannedInput(
 		transport.NewStdioReader(strings.NewReader(msg)),
@@ -205,6 +212,7 @@ func TestForwardScannedInput_WarnRequireReceiptsDurabilityFailureDoesNotForward(
 		nil,
 		MCPProxyOpts{
 			Scanner:         sc,
+			AuditLogger:     logger,
 			Transport:       transportMCPStdio,
 			ReceiptEmitter:  emitter,
 			RequireReceipts: true,
@@ -230,6 +238,11 @@ func TestForwardScannedInput_WarnRequireReceiptsDurabilityFailureDoesNotForward(
 	}
 	if !strings.Contains(logBuf.String(), "receipt emission failed") {
 		t.Fatalf("expected receipt failure log, got: %s", logBuf.String())
+	}
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 ||
+		!strings.Contains(got, `"scanner":"`+scanner.AuditReceiptEmission+`"`) ||
+		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) {
+		t.Fatalf("warn receipt failure audit event = %s", got)
 	}
 }
 

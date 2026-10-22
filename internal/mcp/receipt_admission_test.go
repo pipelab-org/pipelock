@@ -17,11 +17,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func receiptAdmissionOpts(t *testing.T, grouped bool, failure string) (MCPProxyOpts, *atomic.Int32) {
@@ -103,6 +105,13 @@ func TestRedirectRequiredReceiptAdmission(t *testing.T) {
 				}
 				t.Run(surface+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
 					opts, syncs := receiptAdmissionOpts(t, grouped, failure)
+					var events bytes.Buffer
+					logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(logger.Close)
+					opts.AuditLogger = logger
 					opts.Scanner = testInputScanner(t)
 					opts.Transport = surface
 					marker := filepath.Join(t.TempDir(), "executed")
@@ -145,6 +154,13 @@ func TestRedirectRequiredReceiptAdmission(t *testing.T) {
 					} else if blocked.SyntheticResponse != nil || blocked.ErrorCode != -32007 {
 						t.Fatalf("receipt refusal=%+v, want -32007 without synthetic output", blocked)
 					}
+					if !wantExecute {
+						got := events.String()
+						if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditReceiptEmission+`"`) ||
+							!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) {
+							t.Fatalf("receipt refusal audit event = %s", got)
+						}
+					}
 				})
 			}
 		}
@@ -160,6 +176,13 @@ func TestHTTPListenerRequiredLegacyMethodAdmission(t *testing.T) {
 				}
 				t.Run(method+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
 					opts, syncs := receiptAdmissionOpts(t, grouped, failure)
+					var events bytes.Buffer
+					logger, err := audit.NewWithStream("json", "stdout", "", true, true, &events)
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(logger.Close)
+					opts.AuditLogger = logger
 					opts.Scanner = testScannerForHTTP(t)
 					var hits, syncedAtEntry atomic.Int32
 					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -198,6 +221,13 @@ func TestHTTPListenerRequiredLegacyMethodAdmission(t *testing.T) {
 					}
 					if !wantForward && (resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ReceiptEmissionFailed)) {
 						t.Fatalf("refusal status=%d reason=%s body=%s", resp.StatusCode, resp.Header.Get(blockreason.HeaderReason), body)
+					}
+					if !wantForward {
+						got := events.String()
+						if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditReceiptEmission+`"`) ||
+							!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) {
+							t.Fatalf("listener receipt refusal audit event = %s", got)
+						}
 					}
 				})
 			}

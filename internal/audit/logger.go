@@ -390,6 +390,7 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 		optStr("subject_discriminator", l.subjectDiscriminator(ctx.dowSubjectKey)).
 		optStr("subject_trust", ctx.dowSubjectTrust).
 		optStr("display_label", displayLabel).
+		optStr("block_class", detail.Class).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, reason)).
 		optStr("mitre_technique", technique)
 	if len(detail.Patterns) > 0 {

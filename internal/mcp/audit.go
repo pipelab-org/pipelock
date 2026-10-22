@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	dowSubjectKeyDefault   = "_default"
-	dowSubjectTrustDefault = "default"
-	dowAuditFallbackTarget = "invalid-mcp-resource"
+	dowSubjectKeyDefault     = "_default"
+	dowSubjectTrustDefault   = "default"
+	dowAuditFallbackTarget   = "invalid-mcp-resource"
+	mcpReceiptEmissionReason = "MCP receipt emission failed"
 )
 
 func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.LogContext {
@@ -30,58 +31,87 @@ func mustMCPAuditContext(logger *audit.Logger, method, resource string) audit.Lo
 	return ctx
 }
 
-// logMCPInputBlock uses only scanner-owned labels and configured pattern names.
+// logMCPInputBlock uses finding-kind labels and configured pattern names.
 // Input verdict reasons can contain request bytes (notably URL and parse errors).
 func logMCPInputBlock(logger *audit.Logger, verdict InputVerdict) {
 	if logger == nil {
 		return
 	}
-	scannerName := scanner.ScannerParser
+	scannerName := scanner.AuditMCPInputInspection
 	reason := string(mcpScannerBlockReason(verdict, policy.Verdict{}, false))
+	detail := audit.BlockDetail{Class: audit.BlockClassInfrastructureError}
 	switch {
+	case verdict.Error != "":
+		// A failed inspection is the enforcing gate even if a raw fallback
+		// found content. No attacker-controlled parse diagnostic enters audit.
 	case len(verdict.Matches) > 0:
-		scannerName = scanner.ScannerDLP
+		scannerName = scanner.AuditMCPInputDLP
 		reason = verdict.Matches[0].PatternName
+		detail.Class = audit.BlockClassThreat
 	case len(verdict.Inject) > 0:
-		scannerName = scanner.AuditResponseScan
+		scannerName = scanner.AuditMCPInputInjection
 		reason = verdict.Inject[0].PatternName
+		detail.Class = audit.BlockClassThreat
 	case len(verdict.URLFindings) > 0:
 		scannerName = verdict.URLFindings[0].Scanner
+		detail.Class = audit.BlockClassThreat
 	case len(verdict.AddressFindings) > 0:
 		scannerName = scanner.AuditAddressProtection
 		reason = "address protection blocked"
+		detail.Class = audit.BlockClassThreat
 	}
-	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scannerName, reason)
+	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "mcp_input"), scannerName, reason, detail)
 }
 
-// inputBlockedByContent reports whether the content scan is what blocked an
-// input request: it blocks on its own, or no other control (tool policy,
-// session binding, chain detection, behavioral baseline) enforced anything, so
-// the block is the content verdict after any adaptive upgrade. A request
-// blocked by another control must not be attributed to a scanner pattern: the
-// event's remediation hint would send the operator to a suppression that the
-// blocking control never consults.
-func inputBlockedByContent(verdict InputVerdict, contentAction string, otherActions ...string) bool {
-	if verdict.Clean {
-		return false
+// logMCPInputDecisionBlock records exactly one final denial. Content wins when
+// its own action blocks; otherwise the first enforcing control in this fixed
+// precedence supplies the label. Reasons are fixed or policy-owned strings.
+func logMCPInputDecisionBlock(logger *audit.Logger, verdict InputVerdict, contentBlock bool, policyVerdict policy.Verdict, bindingAction, chainAction, chainPattern, baselineAction string) {
+	if logger == nil {
+		return
 	}
-	if inputVerdictEffectiveAction(verdict, contentAction) == config.ActionBlock {
-		return true
+	if contentBlock {
+		logMCPInputBlock(logger, verdict)
+		return
 	}
-	for _, other := range otherActions {
-		if other != "" && other != config.ActionWarn && other != config.ActionAllow {
-			return false
-		}
+	label, reason := scanner.AuditAdaptiveEnforcement, "MCP input action upgraded to block"
+	switch {
+	case policyVerdict.Matched && policyVerdict.Action == config.ActionBlock:
+		label, reason = scanner.AuditMCPToolPolicy, "MCP tool policy blocked"
+	case bindingAction == config.ActionBlock:
+		label, reason = scanner.AuditMCPSessionBinding, "MCP session binding blocked"
+	case chainAction == config.ActionBlock:
+		label, reason = scanner.AuditChainDetection, chainPattern
+	case baselineAction == config.ActionBlock:
+		label, reason = scanner.AuditSessionAnomaly, "baseline_deviation"
 	}
-	return true
+	// If no control independently blocked, adaptive enforcement made the
+	// warning into a denial. Its session guidance is the narrowest remedy.
+	logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), label, reason)
 }
 
-// matchedPolicyAction is the tool policy action, or "" when no rule matched.
-func matchedPolicyAction(verdict policy.Verdict) string {
-	if !verdict.Matched {
-		return ""
+func logMCPChainBlock(logger *audit.Logger, pattern string) {
+	if logger != nil {
+		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditChainDetection, pattern)
 	}
-	return verdict.Action
+}
+
+func logMCPBaselineBlock(logger *audit.Logger) {
+	if logger != nil {
+		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditSessionAnomaly, "baseline_deviation")
+	}
+}
+
+func logMCPCleanAdaptiveBlock(logger *audit.Logger) {
+	if logger != nil {
+		logger.LogBlocked(mustMCPAuditContext(logger, "MCP", "mcp_input"), scanner.AuditAdaptiveEnforcement, "MCP clean input action upgraded to block")
+	}
+}
+
+// inputBlockedByContent is true only when the content verdict independently
+// blocks. An adaptive upgrade of a warning uses the adaptive label instead.
+func inputBlockedByContent(verdict InputVerdict, contentAction string) bool {
+	return !verdict.Clean && inputVerdictEffectiveAction(verdict, contentAction) == config.ActionBlock
 }
 
 // logMCPListenerHeaderBlock records a listener header DLP, injection or
@@ -92,21 +122,37 @@ func logMCPListenerHeaderBlock(logger *audit.Logger, result *mcpListenerHeaderDL
 		return
 	}
 	_, pattern := listenerHeaderBlockClassification(result)
-	scannerName := scanner.ScannerParser
-	detail := audit.BlockDetail{}
+	scannerName := scanner.AuditMCPHeaderInspection
+	detail := audit.BlockDetail{Class: audit.BlockClassInfrastructureError}
 	switch {
 	case len(result.matches) > 0:
-		scannerName = scanner.ScannerDLP
+		scannerName = scanner.AuditMCPHeaderDLP
+		detail.Class = audit.BlockClassThreat
 	case result.reason == blockreason.PromptInjection:
-		scannerName = scanner.AuditResponseScan
+		scannerName = scanner.AuditMCPHeaderInjection
+		detail.Class = audit.BlockClassThreat
 	case result.reason == blockreason.ParseError:
 		// The decoded header could not be scanned; it is not evidence of
 		// an attack pattern or a malformed client header.
-		scannerName = scanner.AuditResponseScan
+		scannerName = scanner.AuditMCPHeaderInspection
 		pattern = "response scan parse error in MCP parameter header"
 		detail.Class = audit.BlockClassInfrastructureError
 	}
 	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", "mcp_listener_header"), scannerName, pattern, detail)
+}
+
+// logMCPResponseInspectionBlock classifies a failed response inspection as
+// operational. detail and response bytes must never enter the event.
+func logMCPResponseInspectionBlock(logger *audit.Logger, reason string) {
+	logMCPOperationalBlock(logger, scanner.AuditMCPResponseInspection, "mcp_response", reason)
+}
+
+func logMCPOperationalBlock(logger *audit.Logger, label, resource, reason string) {
+	if logger == nil {
+		return
+	}
+	logger.LogBlockedDetail(mustMCPAuditContext(logger, "MCP", resource), label, reason,
+		audit.BlockDetail{Class: audit.BlockClassInfrastructureError})
 }
 
 // logMCPListenerReplyBlock records an upstream HTTP error reply withheld by
