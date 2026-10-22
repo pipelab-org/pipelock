@@ -44,7 +44,9 @@ func TestInterceptTunnelStreamIntegrity(t *testing.T) {
 					select {
 					case <-release:
 					case <-r.Context().Done():
-						return
+						// Do not send a clean chunk terminator for the cancelled
+						// response: it can race the proxy's cancellation read.
+						panic(http.ErrAbortHandler)
 					}
 					if ending == "chunked_break" {
 						panic(http.ErrAbortHandler)

@@ -600,6 +600,8 @@ func TestRetainShieldScan(t *testing.T) {
 		want    string
 	}{
 		{"clean final", scanner.ResponseScanResult{Clean: true}, "Shield output"},
+		{"suppressed final", scanner.ResponseScanResult{Clean: true, SuppressedMatches: []scanner.ResponseMatch{match}}, "Shield output"},
+		{"failed suppressed final", scanner.ResponseScanResult{Clean: true, SuppressedMatches: []scanner.ResponseMatch{match}, ScanError: "incomplete"}, ""},
 		{"stripped final", scanner.ResponseScanResult{Matches: []scanner.ResponseMatch{match}, TransformedContent: "safe strip"}, "safe strip"},
 		{"failed final", scanner.ResponseScanResult{ScanError: "incomplete"}, ""},
 	} {
@@ -607,6 +609,9 @@ func TestRetainShieldScan(t *testing.T) {
 			got := retainShieldScan(&original, tc.current, []byte("Shield output"))
 			if got.Clean || len(got.Matches) != 1 || got.TransformedContent != tc.want {
 				t.Fatalf("retained result = %+v", got)
+			}
+			if len(got.SuppressedMatches) != len(tc.current.SuppressedMatches) || got.Failed() != tc.current.Failed() {
+				t.Fatalf("final scan classification lost: %+v", got)
 			}
 		})
 	}
