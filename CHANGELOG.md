@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.7.1] - 2026-10-21
 
+### Upgrade Notes
+
+- Replace the binary or container image and restart running Pipelock processes to apply these fixes. This patch retains the 3.7 configuration format and Go module path.
+- Receipt verification now refuses success when a required seal is missing. Preserve complete recorder directories when copying or archiving receipts.
+
+### Added
+
+- No new product features; this release backports security fixes to 3.7.0.
+
 ### Fixed
 
 - Build release binaries and published container images with Go 1.26.10, and the source Dockerfile with Go 1.27.3, including the standard-library security fixes for GO-2026-6809.
