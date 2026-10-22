@@ -106,7 +106,7 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ## Quick Start
 
-These examples target v3.7.0 once its release artifacts are published. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
+These examples target v3.7.1 once its release artifacts are published. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
@@ -573,7 +573,7 @@ docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
-# Kubernetes with Helm (after v3.7.0 chart publication, Helm 3.8+)
+# Kubernetes with Helm (after v3.7.1 chart publication, Helm 3.8+)
 helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version 3.7.1
 ```
 
@@ -583,13 +583,13 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ## CI Integration
 
-The source commit below pins the action implementation, not a release tag. Its explicit `version` selects the v3.7.0 binary once that release is published.
+The source commit below pins the action implementation, not a release tag. Its explicit `version` selects the v3.7.1 binary once that release is published.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.1 action source
+- uses: luckyPipewrench/pipelock@67efe35ca1fd502283e675c80987408af11f70b9 # v3.7.1 action source
   with:
-    version: '3.7.0'
+    version: '3.7.1'
     scan-diff: 'true'
     fail-on-findings: 'true'
 ```

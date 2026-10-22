@@ -18,6 +18,7 @@ import (
 func hostileSplitHexInputs() map[string]string {
 	const size = 1 << 20
 	return map[string]string{
+		"many short runs":   strings.Repeat("abcde abcde x ", size/14),
 		"two-char pieces":   strings.Repeat("ab ", size/3),
 		"four-char pieces":  strings.Repeat("abcd ", size/5),
 		"eight-char pieces": strings.Repeat("0123abcd\n", size/9),
