@@ -186,6 +186,8 @@ func protectionColor(status string) string {
 		return colorBlue
 	case "unprotected":
 		return colorRed
+	case "unconfirmed":
+		return colorYellow
 	default:
 		return colorGray
 	}
@@ -200,6 +202,8 @@ func protectionLabel(status string) string {
 		return "OTHER"
 	case "unprotected":
 		return "UNPROTECTED"
+	case "unconfirmed":
+		return "UNCONFIRMED"
 	default:
 		return "UNKNOWN"
 	}

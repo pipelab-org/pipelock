@@ -626,6 +626,23 @@ func TestFormatEvidence(t *testing.T) {
 	})
 }
 
+func TestRenderAssessmentHTML_UnconfirmedProtection(t *testing.T) {
+	a := minimalAssessment(assessGradeA, 95)
+	a.Sources.Discover = &AssessDiscoverReport{
+		Servers: []AssessDiscoverServer{{MCPServer: discover.MCPServer{
+			ServerName: "wrapped", Protection: discover.Unconfirmed,
+		}}},
+	}
+	var buf bytes.Buffer
+	if err := renderAssessmentHTML(&buf, a); err != nil {
+		t.Fatal(err)
+	}
+	want := `style="background: ` + colorYellow + `;">UNCONFIRMED</span>`
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("inventory does not contain the unconfirmed badge %q", want)
+	}
+}
+
 func TestProtectionColor(t *testing.T) {
 	cases := []struct {
 		status string
@@ -634,6 +651,7 @@ func TestProtectionColor(t *testing.T) {
 		{"protected_pipelock", colorGreen},
 		{"protected_other", colorBlue},
 		{"unprotected", colorRed},
+		{"unconfirmed", colorYellow},
 		{"unknown", colorGray},
 		{"", colorGray},
 	}
@@ -655,6 +673,7 @@ func TestProtectionLabel(t *testing.T) {
 		{"protected_pipelock", "PIPELOCK"},
 		{"protected_other", "OTHER"},
 		{"unprotected", "UNPROTECTED"},
+		{"unconfirmed", "UNCONFIRMED"},
 		{"unknown_status", "UNKNOWN"},
 		{"", "UNKNOWN"},
 	}

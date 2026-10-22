@@ -43,7 +43,7 @@ func launchLimit(client string) string {
 // layers, never proof of the client's actual launch (see launchLimit).
 func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientConfig) {
 	base, err := readTOMLDocument(cp.Path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err != nil && !configPathAbsent(err) {
 		return nil, nil
 	} // caller records base parse errors
 	if base == nil {

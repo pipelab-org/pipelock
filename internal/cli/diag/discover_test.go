@@ -722,6 +722,7 @@ func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
 	}
 
 	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 	if got := run(); got.Summary.TotalServers != 1 {
 		t.Fatalf("default run ignored the ambient CLAUDE_CONFIG_DIR: %+v", got.Summary)
 	}
@@ -731,6 +732,25 @@ func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
 	if got := run("--home", t.TempDir(), "--claude-config-dir", altDir); got.Summary.TotalServers != 1 {
 		t.Fatalf("--claude-config-dir not inspected: %+v", got.Summary)
 	}
+}
+
+// Ambient-source fixtures must choose their own working directory, even when
+// invoked from a project that supplies additional MCP servers.
+func TestDiscoverCmd_AmbientSourceFixturesIgnoreCallerProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, ".grok"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(project, ".grok", "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.caller]\ncommand='node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	t.Run("Claude config directory", TestDiscoverCmd_ClaudeConfigDirSources)
+	t.Run("Codex home", TestDiscoverCmd_CodexHomeSource)
 }
 
 // TestDiscoverCmd_CodexHomeSource proves the CLI boundary applies the same
@@ -760,6 +780,7 @@ func TestDiscoverCmd_CodexHomeSource(t *testing.T) {
 	}
 
 	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 	if got := run(); got.Summary.TotalServers != 1 {
 		t.Fatalf("default run ignored the ambient CODEX_HOME: %+v", got.Summary)
 	}

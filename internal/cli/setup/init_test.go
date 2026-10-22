@@ -910,12 +910,29 @@ func TestInitCmd_ClaudeConfigDirSources(t *testing.T) {
 	}
 
 	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 	if got := serversFound(); got != 1 {
 		t.Fatalf("default init found %d servers, want the 1 under CLAUDE_CONFIG_DIR", got)
 	}
 	if got := serversFound("--scan-home", t.TempDir()); got != 0 {
 		t.Fatalf("--scan-home inspected the ambient CLAUDE_CONFIG_DIR: %d servers", got)
 	}
+}
+
+func TestInitCmd_AmbientSourceFixtureIgnoresCallerProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, ".grok"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(project, ".grok", "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.caller]\ncommand='node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	t.Run("Claude config directory", TestInitCmd_ClaudeConfigDirSources)
 }
 
 func TestInitCmd_CurrentProjectSources(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"syscall"
 )
 
 // ProtectionStatus classifies how (or if) an MCP server is wrapped.
@@ -369,7 +370,7 @@ func DiscoverWithOptions(home string, opts Options) (*Report, error) {
 			if parsed[i].Protection == ProtectedPipelock || parsed[i].Protection == ProtectedOther {
 				parsed[i].Protection = Unconfirmed
 				parsed[i].Evidence = evidenceLaunchUnconfirmed
-				if parsed[i].ProjectPath != "" {
+				if parsed[i].ProjectPath != "" && (parsed[i].Client == clientCodex || parsed[i].Client == clientGrok) {
 					parsed[i].Evidence = evidenceProjectLaunchUnconfirmed
 				}
 				parsed[i].ParseWarnings = append(parsed[i].ParseWarnings, launchLimit(parsed[i].Client))
@@ -512,12 +513,13 @@ var (
 )
 
 // inspectConfigPath reports whether a config file is present. Only proven
-// absence (fs.ErrNotExist) means "no config"; every other failure, such as a
-// permission error or a symlink loop, is returned so the caller reports it.
+// absence (fs.ErrNotExist or a non-directory parent) means "no config". Every
+// other failure, such as a permission error or a symlink loop, is returned so
+// the caller reports it.
 func inspectConfigPath(path string) (bool, error) {
 	info, err := os.Stat(path)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
+	case configPathAbsent(err):
 		return false, nil
 	case err != nil:
 		return false, errConfigUninspectable
@@ -525,6 +527,12 @@ func inspectConfigPath(path string) (bool, error) {
 		return false, errConfigNotFile
 	}
 	return true, nil
+}
+
+// ENOTDIR means a parent component cannot contain the requested file. Keep
+// permission errors and symlink loops visible, since they can hide real configs.
+func configPathAbsent(err error) bool {
+	return errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)
 }
 
 // configPaths returns all known MCP client config paths for the given home directory.
