@@ -196,6 +196,39 @@ func TestSpacedCredentialRequestOffersCandidate(t *testing.T) {
 	}
 }
 
+// Changing which normalized view finds the request changes the tool definition
+// and invalidates the acknowledgment in both directions.
+func TestCredentialAckRefusesNormalizedViewSwitch(t *testing.T) {
+	plain := strings.ReplaceAll(spacedRequestDesc, "\n", " ")
+	for _, tc := range []struct {
+		name, before, after string
+	}{
+		{"spaced to stripped", spacedRequestDesc, plain},
+		{"stripped to spaced", plain, spacedRequestDesc},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := ackScanConfig()
+			cfg.Action = config.ActionBlock
+			original := ScanTools(toolsListLine(spacedRequestTool(tc.before)), testScanner(t), cfg)
+			match, ok := credentialMatch(original)
+			if !ok || match.CredentialAckCandidate == nil {
+				t.Fatalf("original has no acknowledgment candidate: %+v", original)
+			}
+			acked := ackScanConfig(candidateToEntry(t, match.CredentialAckCandidate))
+			acked.Action = config.ActionBlock
+			control := ScanTools(toolsListLine(spacedRequestTool(tc.before)), testScanner(t), acked)
+			if !control.Clean || !control.CredentialAckApplied() {
+				t.Fatalf("unchanged tool was not acknowledged: %+v", control)
+			}
+			changed := ScanTools(toolsListLine(spacedRequestTool(tc.after)), testScanner(t), acked)
+			match, ok = credentialMatch(changed)
+			if !ok || changed.Clean || !changed.CredentialAckRefused() || match.CredentialAck != CredentialAckToolChanged {
+				t.Fatalf("changed normalization view was not refused as tool_changed: %+v", changed)
+			}
+		})
+	}
+}
+
 // When no candidate can be offered for a finding only the spaced view
 // raises, the match says why and the finding keeps enforcing.
 func TestSpacedCredentialRequestWithoutCandidateGivesReason(t *testing.T) {
