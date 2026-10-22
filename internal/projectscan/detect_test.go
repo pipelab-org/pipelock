@@ -757,6 +757,7 @@ func TestDetectHostileTooling_RequirementsShapes(t *testing.T) {
 		{"URL reference", "obliteratus @ https://api.vendor.example/pkg.whl\n", "obliteratus"},
 		{"per-requirement hash option", "obliteratus==0.1 --hash=sha256:abc\n", "obliteratus"},
 		{"bare name with hash option", "obliteratus --hash=sha256:abc\n", "obliteratus"},
+		{"tab before hash option", "obliteratus\t--hash=sha256:abc\n", "obliteratus"},
 		{"line continuation", "torch \\\n  --hash=sha256:abc\nobliteratus \\\n  >=0.1\n", "obliteratus"},
 		{"underscore separator", "refusal_ablation==1\n", "refusal-ablation"},
 		{"dot separator and case", "Refusal.Ablation>=1\n", "refusal-ablation"},

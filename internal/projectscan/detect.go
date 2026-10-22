@@ -383,6 +383,11 @@ func inspectionWarning(file, reason string) Finding {
 // backslash. https://pip.pypa.io/en/stable/reference/requirements-file-format/
 var requirementComment = regexp.MustCompile(`(?:^|\s)#.*$`)
 
+// requirementOption matches a per-requirement option such as --hash after
+// any whitespace. pip only splits on a space, but a tab-separated line still
+// names its package, so the name is reported rather than dropped.
+var requirementOption = regexp.MustCompile(`\s--`)
+
 // utf8BOM is the byte order mark pip accepts at the start of a requirements file.
 const utf8BOM = "\xef\xbb\xbf"
 
@@ -397,8 +402,8 @@ func requirementNames(data []byte) (map[string]bool, error) {
 	names := make(map[string]bool)
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(requirementComment.ReplaceAllString(line, ""))
-		if i := strings.Index(line, " --"); i >= 0 {
-			line = line[:i]
+		if loc := requirementOption.FindStringIndex(line); loc != nil {
+			line = line[:loc[0]]
 		}
 		if name := pep508DependencyName(line); name != "" {
 			names[name] = true
