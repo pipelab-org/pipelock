@@ -45,11 +45,14 @@ func ExplainInvocation(command string, args []string) (WrapperState, ForeignReas
 
 // explainExecutable is the single identity check behind both
 // ClassifyInvocation and ExplainInvocation, so a state and its explanation can
-// never disagree. The state logic is unchanged from the original
-// classifier: only os.SameFile with this executable yields WrapperSelf. The
-// reason only describes why a WrapperForeign result was reached.
+// never disagree. Only an absolute command that is os.SameFile with this
+// executable yields WrapperSelf. A relative command is never self: os.Stat
+// resolves it against this process's working directory, while the client that
+// launches it resolves it against its own directory or PATH, so a match here
+// would depend on where this process happens to run and prove nothing about
+// what the client starts. The reason only describes why a WrapperForeign
+// result was reached.
 func explainExecutable(command, self string, executableErr error) (WrapperState, ForeignReason) {
-	relative := !filepath.IsAbs(command)
 	if executableErr != nil {
 		return WrapperForeign, ForeignUncheckable
 	}
@@ -57,12 +60,13 @@ func explainExecutable(command, self string, executableErr error) (WrapperState,
 	if err != nil {
 		return WrapperForeign, ForeignUncheckable
 	}
+	if !filepath.IsAbs(command) {
+		return WrapperForeign, ForeignRelativePath
+	}
 	commandInfo, err := os.Stat(command)
 	switch {
 	case err == nil && os.SameFile(selfInfo, commandInfo):
 		return WrapperSelf, ForeignNone
-	case relative:
-		return WrapperForeign, ForeignRelativePath
 	case errors.Is(err, fs.ErrNotExist):
 		return WrapperForeign, ForeignMissing
 	case err != nil:
