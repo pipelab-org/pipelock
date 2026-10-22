@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // webhookRecorder captures every body POSTed to it.
@@ -23,7 +24,14 @@ type webhookRecorder struct {
 	bodies []string
 }
 
+// webhookRecorderDelay holds each delivery open past the point where the proxy
+// command returns, so an event only reaches the recorder if the emitter's Close
+// waits for the in-flight send. Without it the sink wins the race by chance and
+// a missing Close would go unnoticed.
+const webhookRecorderDelay = 250 * time.Millisecond
+
 func (r *webhookRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	time.Sleep(webhookRecorderDelay)
 	body, _ := io.ReadAll(req.Body)
 	r.mu.Lock()
 	r.bodies = append(r.bodies, string(body))

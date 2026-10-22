@@ -908,9 +908,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 	}
 
+	baselineAction := ""
 	if baselineIdentity != "" {
 		baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 		if baselineDecision.Action != "" {
+			baselineAction = baselineDecision.Action
 			reasons = append(reasons, baselineDecision.Detail)
 			effectiveAction = mergeAction(effectiveAction, baselineDecision.Action)
 			if baselineDecision.Action == config.ActionAsk {
@@ -984,10 +986,11 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		})
 	}
 
+	contentBlock := inputBlockedByContent(verdict, action, matchedPolicyAction(policyVerdict), bindingAction, chainAction, baselineAction)
 	switch effectiveAction {
 	case config.ActionBlock:
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s)\n", joinStrings(reasons))
-		if !verdict.Clean {
+		if contentBlock {
 			logMCPInputBlock(auditLogger, verdict)
 		}
 		if !entropyOnlyDecision {
@@ -1235,7 +1238,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	case config.ActionAsk:
 		// HITL for input scanning is impractical - fall back to block (same as stdio proxy).
 		_, _ = fmt.Fprintf(logW, "pipelock: input: blocked (%s) [ask not supported for input scanning]\n", joinStrings(reasons))
-		if !verdict.Clean {
+		if contentBlock {
 			logMCPInputBlock(auditLogger, verdict)
 		}
 		recordAdaptiveSignal(session.SignalBlock)

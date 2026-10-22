@@ -962,6 +962,7 @@ func RunHTTPListenerProxy(
 				return true
 			}
 			if ok, finding := reply.scan(requestBaseOpts); !ok {
+				logMCPListenerReplyBlock(requestBaseOpts.AuditLogger, finding)
 				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
 				withhold(finding)
 				return true
@@ -982,6 +983,7 @@ func RunHTTPListenerProxy(
 			}
 			reason, pattern := listenerHeaderBlockClassification(headerResult)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s in %s header: %s\n", reason, headerResult.header, pattern)
+			logMCPListenerHeaderBlock(requestBaseOpts.AuditLogger, headerResult)
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason:          reason,
 				headerSeverity:  blockreason.SeverityCritical,
@@ -1617,6 +1619,7 @@ func RunHTTPListenerProxy(
 		if headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL); headerResult != nil {
 			reason, pattern := listenerHeaderBlockClassification(headerResult)
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: %s in %s header: %s\n", reason, headerResult.header, pattern)
+			logMCPListenerHeaderBlock(requestBaseOpts.AuditLogger, headerResult)
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason:          reason,
 				headerSeverity:  blockreason.SeverityCritical,

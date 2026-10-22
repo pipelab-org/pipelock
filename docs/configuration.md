@@ -2411,7 +2411,16 @@ MCP proxy input DLP and injection blocks emit `blocked` events. Response scan
 blocks emit `blocked`; response strip and warn decisions emit `response_scan`.
 These events use scanner pattern names or fixed block reasons, without matched
 request or response text. They apply to subprocess, HTTP upstream, WebSocket
-upstream, and HTTP listener modes, including `run --mcp-listen`.
+upstream, and HTTP listener modes, including `run --mcp-listen`. In listener
+modes this includes credential or injection findings in request headers and
+upstream HTTP error replies withheld by response scanning.
+
+Each `pipelock mcp proxy` process builds its sinks from `emit` once at startup
+(it does not hot-reload) and refuses to start if a configured sink cannot be
+created or activated. Every wrapper process has its own sinks, so a destination
+that allows only one writer cannot be shared: the Enterprise `emit.forwarder`
+takes an exclusive lock on its `spool_file`, and a second process pointed at the
+same spool, such as another wrapped MCP server or `pipelock run`, fails to start.
 
 OTLP events are sent as log records over HTTP/protobuf. Each pipelock audit event maps to one OTLP LogRecord with `service.name=pipelock` as a resource attribute. Retries on 429, 502, 503, 504, and network errors with bounded exponential backoff (3 attempts, 1s/2s/4s). 500 and 501 are not retried. No gRPC, no batching timer.
 

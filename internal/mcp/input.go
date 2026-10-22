@@ -1211,9 +1211,11 @@ func ForwardScannedInput(
 			}
 		}
 
+		baselineAction := ""
 		if baselineIdentity != "" {
 			baselineDecision := checkMCPToolCallBaselineAttempt(opts, baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if baselineDecision.Action != "" {
+				baselineAction = baselineDecision.Action
 				reasons = append(reasons, baselineDecision.Detail)
 				// Recompute so the block/warn reason includes the baseline
 				// deviation detail (reasonStr was built before this append).
@@ -1228,11 +1230,12 @@ func ForwardScannedInput(
 
 		redirectSucceeded := false
 		var contractGateForReceipt *mcpContractGateOutput
+		contentBlock := inputBlockedByContent(verdict, action, matchedPolicyAction(policyVerdict), bindingAction, chainAction, baselineAction)
 		switch effectiveAction {
 		case config.ActionBlock:
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s)\n",
 				lineNum, method, reasonStr)
-			if !verdict.Clean {
+			if contentBlock {
 				logMCPInputBlock(auditLogger, verdict)
 			}
 			blockReason := mcpScannerBlockReason(verdict, policyVerdict, chainAction != "")
@@ -1606,7 +1609,7 @@ func ForwardScannedInput(
 			// HITL for input scanning is impractical - fall back to block.
 			_, _ = fmt.Fprintf(logW, "pipelock: input line %d: blocked %s request (%s) [ask not supported for input scanning]\n",
 				lineNum, method, reasonStr)
-			if !verdict.Clean {
+			if contentBlock {
 				logMCPInputBlock(auditLogger, verdict)
 			}
 			blockedCh <- BlockedRequest{

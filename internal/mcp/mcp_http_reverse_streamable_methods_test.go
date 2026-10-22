@@ -175,6 +175,11 @@ func readStreamableAuditSessions(t *testing.T, path string) []string {
 		if err := json.Unmarshal(line, &entry); err != nil {
 			t.Fatalf("Unmarshal(audit): %v; line=%s", err, line)
 		}
+		// A block event carries the scanner finding, not a session key; the
+		// adaptive events it accompanies are the ones that bind to a session.
+		if _, hasSession := entry["session"]; !hasSession && entry["event"] == "blocked" {
+			continue
+		}
 		sessionValue, ok := entry["session"].(string)
 		if !ok {
 			t.Fatalf("audit session missing or non-string in %s", line)
@@ -995,6 +1000,18 @@ func TestHTTPListener_AuditSessionKeySanitizedForAdaptiveSignals(t *testing.T) {
 			}
 			if got := upstreamCalls.Load(); got != afterSetup {
 				t.Fatalf("listener-header DLP block reached upstream: calls = %d, want %d", got, afterSetup)
+			}
+			rawAudit, err := os.ReadFile(filepath.Clean(auditPath))
+			if err != nil {
+				t.Fatalf("ReadFile(audit): %v", err)
+			}
+			if !bytes.Contains(rawAudit, []byte(`"event":"blocked"`)) {
+				t.Fatalf("listener-header DLP block emitted no blocked event: %s", rawAudit)
+			}
+			for _, secret := range []string{dlpToken, rawSessionID, token} {
+				if bytes.Contains(rawAudit, []byte(secret)) {
+					t.Fatalf("audit stream leaked header credential or routing data: %s", rawAudit)
+				}
 			}
 		})
 	}
