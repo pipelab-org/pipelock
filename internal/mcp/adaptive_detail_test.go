@@ -26,14 +26,15 @@ func TestAdaptiveMessageReachesCallerAndLog(t *testing.T) {
 	rec := &mockRecorder{score: 3, level: 1}
 	got := mcpAdaptiveBlockMessage(rec, &cfg.AdaptiveEnforcement, "mcp_input", &log)
 	for _, want := range []string{`category="mcp_input"`, "score=3", "escalation_threshold=0.25", "wait 300s", "clean_request_decay=0.5"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("message missing %s: %s", want, got)
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("diagnostic log missing %s: %s", want, log.String())
 		}
 	}
-	if log.String() != got+"\n" {
-		t.Fatalf("caller and diagnostic log differ: %q vs %q", got, log.String())
+	assertAdaptiveCallerPrivacy(t, got)
+	if !strings.Contains(got, `category="mcp_input"`) {
+		t.Fatal(got)
 	}
-	if got := mcpAdaptiveBlockMessage(nil, nil, "session_deny", nil); !strings.Contains(got, "score=0") {
+	if got := mcpAdaptiveBlockMessage(nil, nil, "session_deny", nil); !strings.Contains(got, `category="session_deny"`) {
 		t.Fatal(got)
 	}
 }
@@ -46,14 +47,24 @@ func TestAirlockDiagnosticReachesCallerAndLog(t *testing.T) {
 	rec := &mockRecorder{score: 6, level: 1}
 	message := mcpAirlockDiagnostic(MCPInputEvaluation{AirlockTier: config.AirlockTierHard}, MCPProxyOpts{AdaptiveCfg: &cfg.AdaptiveEnforcement, AirlockCfg: &cfg.Airlock}, rec, &log)
 	for _, want := range []string{"hard airlock", `category="airlock"`, "score=6", "escalation_threshold=5", "hard_minutes="} {
-		if !strings.Contains(message, want) {
-			t.Errorf("missing %s: %s", want, message)
+		if !strings.Contains(log.String(), want) {
+			t.Errorf("audit missing %s: %s", want, log.String())
 		}
 	}
-	if log.String() != message+"\n" {
-		t.Fatal("caller and log differ")
-	}
+	assertAdaptiveCallerPrivacy(t, message)
 	_ = mcpAirlockDiagnostic(MCPInputEvaluation{}, MCPProxyOpts{}, nil, nil)
+}
+
+func assertAdaptiveCallerPrivacy(t *testing.T, message string) {
+	t.Helper()
+	for _, forbidden := range []string{"score=", "threshold=", "level=", "minutes=", "seconds=", "decay=", "wait 300s"} {
+		if strings.Contains(message, forbidden) {
+			t.Errorf("caller message exposes %s: %s", forbidden, message)
+		}
+	}
+	if !strings.Contains(message, "recovery:") {
+		t.Errorf("caller message lacks recovery guidance: %s", message)
+	}
 }
 
 func TestAdaptiveGateWarningsDoNotEarnCleanRecovery(t *testing.T) {
@@ -121,7 +132,8 @@ func TestAdaptiveRefusalCommitExplainsLateEscalation(t *testing.T) {
 	if reason != "session escalation blocks responses" {
 		t.Fatalf("unstable outcome reason: %q", reason)
 	}
-	for _, want := range []string{`category="mcp_response_scan"`, "score=21", "escalation_threshold=5", "level=critical", "wait 300s"} {
+	assertAdaptiveCallerPrivacy(t, detail)
+	for _, want := range []string{`category="mcp_response_scan"`, "recovery:"} {
 		if !strings.Contains(detail, want) {
 			t.Errorf("late refusal detail missing %s: %s", want, detail)
 		}
@@ -156,6 +168,7 @@ func TestAdaptiveResponseAndInventoryWarnings(t *testing.T) {
 					t.Fatalf("finding missing: found=%v err=%v log=%s", found, err, log.String())
 				}
 				if elevated {
+					assertAdaptiveCallerPrivacy(t, out.String())
 					if !strings.Contains(out.String(), `"error"`) || !strings.Contains(log.String(), "escalation_threshold=5") {
 						t.Fatalf("upgrade omitted denial detail: output=%s log=%s", out.String(), log.String())
 					}

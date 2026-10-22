@@ -1947,7 +1947,7 @@ session_profiling:
 | Field | Default | Description |
 |-------|---------|-------------|
 | `enabled` | `false` | Enable profiling |
-| `anomaly_action` | `"warn"` | warn or block on anomaly |
+| `anomaly_action` | `"warn"` | Warn or block on anomaly. The default warning adds zero adaptive points; repeated warned bursts do not escalate. Enforced `block` anomalies retain their score contributions. |
 | `domain_burst` | `5` | New unique domains in window to flag |
 | `window_minutes` | `5` | Rolling window duration |
 | `max_sessions` | `1000` | Hard cap on concurrent sessions |
@@ -2114,11 +2114,11 @@ Unchanged and unrelated configuration reloads retain existing security state. Di
 
 ### Block diagnostics
 
-An adaptive or upgraded block explains its category, current enforcement-scope score, configured initial threshold, level, and recovery settings to the caller and in the audit log. The audit copy is a `blocked` event with scanner `adaptive_enforcement` or `airlock` that carries the request ID and client IP but not the URL or target. Entering quarantine is recorded as `airlock_enter`, not as a block. HTTP paths with a fixed error body use `X-Pipelock-Adaptive-Detail` for the explanation. MCP JSON-RPC errors carry it in `error.message`. MCP proxy diagnostics go to stderr in stdio mode, including when `logging.output` is `stdout`; stdout carries only protocol messages.
+An adaptive or upgraded block gives the caller its category and guidance to ask the operator to inspect or reset the session. Exact scores, thresholds, levels, and recovery settings stay in operator diagnostics; they are not included in caller errors or headers. The full audit explanation is a `blocked` event with scanner `adaptive_enforcement` or `airlock` that carries the request ID and client IP but not the URL or target. Entering quarantine is recorded as `airlock_enter`, not as a block. HTTP paths with a fixed error body use `X-Pipelock-Adaptive-Detail` for the explanation. MCP JSON-RPC errors carry it in `error.message`. MCP proxy diagnostics go to stderr in stdio mode, including when `logging.output` is `stdout`; stdout carries only protocol messages.
 
-WebSocket close frames carry the block category and, when the RFC 6455 byte budget permits, optional `adaptive` metadata with `score`, `threshold`, and `wait_s`. The wait is the configured duration per level, rather than an exact recovery time. The complete explanation remains in the audit log. See the [block-reason wire contract](specs/block-reason-header.md#adaptive-decision-details). Clean-request score decay alone does not clear an active level, and blocked retries do not earn clean-request recovery. At the default critical level, time recovery clears `block_all` after the first level drop; lower-level upgrades remain until their own blocking levels clear. Airlock quarantine has separate tier timers, which its denial explanation also reports. A zero airlock timer disables that automatic transition; an operator session reset can clear it.
+WebSocket close frames carry the block category and request ID within the RFC 6455 byte budget. They contain no adaptive score, threshold, or timer settings. The complete explanation remains in the audit log. See the [block-reason wire contract](specs/block-reason-header.md#adaptive-decision-details). Clean-request score decay alone does not clear an active level, and blocked retries do not earn clean-request recovery. At the default critical level, time recovery clears `block_all` after the first level drop; lower-level upgrades remain until their own blocking levels clear. Airlock quarantine has separate tier timers, which its operator diagnostics report. A zero airlock timer disables that automatic transition; an operator session reset can clear it.
 
-Quarantine that starts after a CONNECT tunnel or WebSocket relay has been established cancels the connection. An opaque CONNECT tunnel can't carry an HTTP error after its 200 handshake, so the audit log records the `airlock_enter` transition with its scope, tier and trigger, and `pipelock session explain` shows the scope's score. The next request receives the normal admission refusal and the full explanation.
+Quarantine that starts after a CONNECT tunnel or WebSocket relay has been established cancels the connection. An opaque CONNECT tunnel can't carry an HTTP error after its 200 handshake, so the audit log records the `airlock_enter` transition with its scope, tier and trigger, and `pipelock session explain` shows the scope's score. The next request receives the normal admission refusal and recovery guidance.
 
 ### Domain Burst Scoring
 

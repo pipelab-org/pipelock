@@ -991,7 +991,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if clientConn != nil {
 				_ = airlockBlockDetail(adaptiveAudit{log, clientIP, requestID}, wsSess, cfg, wsScope, tier)
 				plwsutil.WriteCloseFrame(clientConn, ws.StatusPolicyViolation,
-					adaptiveCloseFrame(wsSess, cfg, wsScope, blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID)))
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID).CloseFramePayload())
 			} else {
 				writeBlockedError(w,
 					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID),

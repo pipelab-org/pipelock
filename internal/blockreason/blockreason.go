@@ -276,7 +276,6 @@ type Info struct {
 	Layer     string
 	Receipt   string
 	RequestID string
-	adaptive  *adaptiveCloseDetail
 }
 
 // WithRequestID attaches the ID recorded for this block. Invalid IDs clear
@@ -547,14 +546,13 @@ func StripRecordedReceipt(h http.Header) {
 // closeFramePayload is the JSON shape carried in WebSocket close-frame Reason
 // fields. Field names mirror the header set without the X-Pipelock prefix.
 type closeFramePayload struct {
-	BlockReason string               `json:"block_reason"`
-	Version     string               `json:"version,omitempty"`
-	Severity    string               `json:"severity,omitempty"`
-	Retry       string               `json:"retry,omitempty"`
-	Layer       string               `json:"layer,omitempty"`
-	Receipt     string               `json:"receipt,omitempty"`
-	RequestID   string               `json:"request_id,omitempty"`
-	Adaptive    *adaptiveCloseDetail `json:"adaptive,omitempty"`
+	BlockReason string `json:"block_reason"`
+	Version     string `json:"version,omitempty"`
+	Severity    string `json:"severity,omitempty"`
+	Retry       string `json:"retry,omitempty"`
+	Layer       string `json:"layer,omitempty"`
+	Receipt     string `json:"receipt,omitempty"`
+	RequestID   string `json:"request_id,omitempty"`
 }
 
 // closeFrameMaxBytes is RFC 6455's close-frame reason payload limit (125 bytes
@@ -570,7 +568,7 @@ const closeFrameOverflowFallback = `{"block_reason":"block_reason_overflow","ver
 // CloseFramePayload returns a JSON document for the WebSocket close-frame
 // Reason field. The result is GUARANTEED to be at most closeFrameMaxBytes
 // bytes (RFC 6455's 123-byte ceiling). To honor the ceiling, optional
-// fields drop in this order: receipt, layer, retry, severity, version, adaptive, request_id.
+// fields drop in this order: receipt, layer, retry, severity, version, request_id.
 // If even the bare {"block_reason":"<code>"} would overflow because the
 // Reason value is unusually long, CloseFramePayload returns
 // closeFrameOverflowFallback (block_reason_overflow). The fallback
@@ -590,7 +588,6 @@ func (i Info) CloseFramePayload() string {
 		Retry:       string(i.Retry),
 		Layer:       i.Layer,
 		Receipt:     i.Receipt,
-		Adaptive:    i.adaptive,
 	}
 	if receiptcontent.ValidRequestID(i.RequestID) {
 		p.RequestID = i.RequestID
@@ -605,9 +602,6 @@ func (i Info) CloseFramePayload() string {
 		func(p *closeFramePayload) { p.Retry = "" },
 		func(p *closeFramePayload) { p.Severity = "" },
 		func(p *closeFramePayload) { p.Version = "" },
-		// Adaptive numbers yield to the request ID, which locates the
-		// complete explanation in the audit log.
-		func(p *closeFramePayload) { p.Adaptive = nil },
 		func(p *closeFramePayload) { p.RequestID = "" },
 	}
 	for _, drop := range dropFields {
@@ -621,7 +615,7 @@ func (i Info) CloseFramePayload() string {
 }
 
 // mustMarshal is json.Marshal with a known-good fixed-shape struct. The
-// struct has only strings and validated finite adaptive numbers, so
+// struct has only strings, so
 // json.Marshal cannot fail on real input. The error fallback is defensive
 // code; it would surface the BlockReasonOverflow sentinel rather than a
 // silent zero value.

@@ -5673,8 +5673,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: baseAction, ToAction: effectiveAction, Scanner: result.Scanner, ClientIP: clientIP, RequestID: requestID})
 			adaptiveDetail := fmt.Sprintf("%s (escalated by %s level=%s auto_recover_at=%s hint=%s)", result.Reason, adaptiveEnforcementLayer, session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
-			responseDetail := adaptiveBlockDetail(adaptiveAudit{}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner)
-			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+responseDetail, auditDetailFromResult(result))
+			responseDetail := decide.AdaptiveBlockMessage(result.Scanner)
+			log.LogBlockedDetail(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+adaptiveAuditDetail(sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), result.Scanner), auditDetailFromResult(result))
 			p.metrics.RecordBlocked(parsed.Hostname(), result.Scanner, time.Since(start), agentLabel)
 			emitFetchReceipt(receipt.EmitOpts{
 				ActionID:            receipt.NewActionID(),
@@ -5761,8 +5761,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		sessionKey := sessionKeyFor(cfg, agent, clientIP, id.Auth)
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sr.Level), FromAction: "", ToAction: config.ActionBlock, Scanner: adaptiveSessionDeny, ClientIP: clientIP, RequestID: requestID})
 		adaptiveDetail := fmt.Sprintf("session escalation level %s; auto_recover_at=%s; hint=%s", session.EscalationLabel(sr.Level), sr.AutoRecoverAt.Format(time.RFC3339), adaptiveRecoverHint)
-		responseDetail := adaptiveBlockDetail(adaptiveAudit{}, sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer)
-		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+responseDetail)
+		responseDetail := decide.AdaptiveBlockMessage(adaptiveEnforcementLayer)
+		log.LogBlocked(actx, adaptiveEnforcementLayer, adaptiveDetail+"; "+adaptiveAuditDetail(sr.recorder, cfg, adaptiveScopeForHost(parsed.Hostname()), adaptiveEnforcementLayer))
 		emitFetchReceipt(receipt.EmitOpts{
 			ActionID:            receipt.NewActionID(),
 			Verdict:             config.ActionBlock,

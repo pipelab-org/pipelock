@@ -84,6 +84,11 @@ func testAdaptiveRefusalAudit(t *testing.T, mode string) {
 	if body.BlockReason == "" {
 		t.Fatal("adaptive refusal carried no explanation")
 	}
+	for _, forbidden := range []string{"score=", "threshold=", "level=", "auto_recover_at=", "decay=", "minutes=", "seconds="} {
+		if strings.Contains(w.Body.String(), forbidden) {
+			t.Fatalf("caller response exposes %s: %s", forbidden, w.Body.String())
+		}
+	}
 
 	// The emitter delivers in order; a later sentinel proves earlier events arrived.
 	logger.LogAdaptiveEscalation("sentinel", "none", "elevated", "", "", 0)

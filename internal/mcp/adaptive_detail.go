@@ -12,8 +12,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// The same detail reaches the caller and the diagnostic stream. In stdio mode
-// the command supplies stderr; stdout is reserved for JSON-RPC messages.
+// Full detail stays in the diagnostic stream. In stdio mode the command
+// supplies stderr; stdout is reserved for JSON-RPC messages.
 func mcpAdaptiveBlockMessage(rec session.Recorder, cfg *config.AdaptiveEnforcement, category string, logW io.Writer) string {
 	var score float64
 	var level int
@@ -24,7 +24,7 @@ func mcpAdaptiveBlockMessage(rec session.Recorder, cfg *config.AdaptiveEnforceme
 	if logW != nil {
 		_, _ = fmt.Fprintln(logW, message)
 	}
-	return message
+	return "pipelock: " + decide.AdaptiveBlockMessage(category)
 }
 
 func mcpAirlockDiagnostic(eval MCPInputEvaluation, opts MCPProxyOpts, rec session.Recorder, logW io.Writer) string {
@@ -37,5 +37,5 @@ func mcpAirlockDiagnostic(eval MCPInputEvaluation, opts MCPProxyOpts, rec sessio
 	if logW != nil {
 		_, _ = fmt.Fprintln(logW, message)
 	}
-	return message
+	return "pipelock: " + decide.AdaptiveBlockMessage("airlock")
 }

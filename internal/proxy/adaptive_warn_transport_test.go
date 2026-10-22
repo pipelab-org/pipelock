@@ -270,8 +270,8 @@ func TestAdaptiveCONNECTUsesDestinationScope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(body), "score=") {
-				t.Fatalf("adaptive refusal omitted diagnostics: %s", body)
+			if !strings.Contains(string(body), "recovery:") || strings.Contains(string(body), "score=") || strings.Contains(string(body), "threshold=") {
+				t.Fatalf("adaptive refusal lost guidance or exposed scoring state: %s", body)
 			}
 		}
 	}

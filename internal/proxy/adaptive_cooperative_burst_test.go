@@ -91,6 +91,35 @@ func TestAdaptiveNonCooperativeBurstStillEscalates(t *testing.T) {
 	}
 }
 
+func TestAdaptiveDefaultAnomalyActionDoesNotScore(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.LoadBytes([]byte("session_profiling:\n  enabled: true\n  domain_burst: 2\nadaptive_enforcement:\n  enabled: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SessionProfiling.AnomalyAction != config.ActionWarn {
+		t.Fatalf("omitted anomaly_action = %q, want warn", cfg.SessionProfiling.AnomalyAction)
+	}
+	cfg.Internal = nil
+	p := newTestProxyWithConfig(t, cfg)
+	logger := audit.NewNop()
+	for _, host := range []string{"first.vendor.example", "second.vendor.example", "third.vendor.example"} {
+		if result := p.recordSessionActivityWithUserAgent(cooperativeBurstActivityOpts(host, "req-default", cooperativeUAMozilla, cfg, logger)); result.Blocked {
+			t.Fatal("default warning anomaly refused activity")
+		}
+	}
+	rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyLoopback)
+	if rec.ThreatScore() != 0 || rec.EscalationLevel() != 0 {
+		t.Fatalf("default warning anomaly changed score/level: %v/%v", rec.ThreatScore(), rec.EscalationLevel())
+	}
+	for _, event := range rec.RecentEvents() {
+		if event.Kind == "anomaly" && event.Type == testDomainBurst {
+			return
+		}
+	}
+	t.Fatal("test did not produce a domain-burst anomaly")
+}
+
 func TestAdaptiveCooperativeDownweightCanBeDisabled(t *testing.T) {
 	t.Parallel()
 	cfg := cooperativeBurstTestConfig()

@@ -30,10 +30,14 @@ func (a adaptiveAudit) logBlocked(layer, detail string) {
 
 // Report the enforcement scope's score, not an aggregate from unrelated hosts.
 func adaptiveBlockDetail(aa adaptiveAudit, rec session.Recorder, cfg *config.Config, scope, category string) string {
-	score, level := adaptiveBlockState(rec, scope)
-	detail := decide.AdaptiveBlockDetail(category, score, level, &cfg.AdaptiveEnforcement)
+	detail := adaptiveAuditDetail(rec, cfg, scope, category)
 	aa.logBlocked(adaptiveEnforcementLayer, detail)
-	return detail
+	return decide.AdaptiveBlockMessage(category)
+}
+
+func adaptiveAuditDetail(rec session.Recorder, cfg *config.Config, scope, category string) string {
+	score, level := adaptiveBlockState(rec, scope)
+	return decide.AdaptiveBlockDetail(category, score, level, &cfg.AdaptiveEnforcement)
 }
 
 // HeaderAdaptiveDetail contains no request content or identity. It supplements
@@ -67,23 +71,12 @@ func adaptiveBlockState(rec session.Recorder, scope string) (float64, int) {
 
 func adaptiveWSClosePayload(aa adaptiveAudit, rec session.Recorder, cfg *config.Config, scope string, info blockreason.Info) string {
 	_ = adaptiveBlockDetail(aa, rec, cfg, scope, string(info.Reason))
-	return adaptiveCloseFrame(rec, cfg, scope, info)
-}
-
-// adaptiveCloseFrame builds the close payload without an audit copy, for a
-// caller that already recorded a more specific explanation.
-func adaptiveCloseFrame(rec session.Recorder, cfg *config.Config, scope string, info blockreason.Info) string {
-	score, _ := adaptiveBlockState(rec, scope)
-	duration := cfg.AdaptiveEnforcement.LevelDurationSeconds
-	if duration <= 0 {
-		duration = config.Defaults().AdaptiveEnforcement.LevelDurationSeconds
-	}
-	return info.WithAdaptiveRecovery(score, cfg.AdaptiveEnforcement.EscalationThreshold, duration).CloseFramePayload()
+	return info.CloseFramePayload()
 }
 
 func airlockBlockDetail(aa adaptiveAudit, rec session.Recorder, cfg *config.Config, scope, tier string) string {
 	score, level := adaptiveBlockState(rec, scope)
 	detail := decide.AdaptiveBlockDetail("airlock", score, level, &cfg.AdaptiveEnforcement) + "; " + decide.AirlockRecoveryDetail(tier, &cfg.Airlock)
 	aa.logBlocked("airlock", detail)
-	return detail
+	return decide.AdaptiveBlockMessage("airlock")
 }
