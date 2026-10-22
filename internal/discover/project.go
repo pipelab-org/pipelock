@@ -50,6 +50,10 @@ func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientC
 		base = map[string]any{}
 	}
 	roots := append([]string(nil), requested...)
+	explicit := make(map[string]bool, len(requested))
+	for _, root := range requested {
+		explicit[filepath.Clean(root)] = true
+	}
 	projects, _ := base["projects"].(map[string]any)
 	if cp.Client == clientCodex {
 		// projects.<path>.trust_level is documented in the configuration reference:
@@ -72,6 +76,13 @@ func discoverProjects(cp clientPath, requested []string) ([]MCPServer, []ClientC
 		seen[root] = true
 		failure := ClientConfig{Client: cp.Client, ConfigPath: root, Scope: "project"}
 		info, statErr := os.Stat(root)
+		// A registered trust entry outlives the directory it names (a deleted
+		// clone or worktree). No process can start in a missing directory, so
+		// such an entry has no layers to check. A requested directory, and any
+		// failure other than absence, is still reported.
+		if filepath.IsAbs(root) && errors.Is(statErr, fs.ErrNotExist) && !explicit[root] {
+			continue
+		}
 		if !filepath.IsAbs(root) || statErr != nil || !info.IsDir() {
 			failure.ParseError = "project directory is missing, unreadable, or not absolute"
 			clients = append(clients, failure)

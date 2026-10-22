@@ -38,7 +38,8 @@ func TestDiscoverProjectLayers(t *testing.T) {
 		{name: "unknown trust ignored", client: clientCodex, layer: "command='node'"},
 		{name: "malformed trusted file", client: clientCodex, trust: "trusted", layer: "command=[", wantErrors: 1},
 		{name: "malformed untrusted ignored", client: clientCodex, trust: "untrusted", layer: "command=["},
-		{name: "missing trusted directory", client: clientCodex, trust: "trusted", missing: true, wantErrors: 1},
+		{name: "missing registered trusted directory skipped", client: clientCodex, trust: "trusted", missing: true},
+		{name: "missing requested directory (Codex and Grok views)", client: clientCodex, trust: "untrusted", missing: true, wantErrors: 2},
 		{name: "enabled inherits wrapper", client: clientCodex, trust: "trusted", layer: "enabled=true", command: "self", wantProjects: 1, wantArgs: true},
 		{name: "wrong type rejected", client: clientCodex, trust: "trusted", layer: "args=42", wantErrors: 1},
 		{name: "Grok replacement drops args", client: clientGrok, layer: "command='node'", command: testCmdNode, wantProjects: 1},
@@ -245,5 +246,37 @@ func TestProjectReadFailuresAndEmptyLayers(t *testing.T) {
 				t.Fatalf("parse errors=%d, want %d: %+v", report.Summary.ParseErrors, wantErrors, report.Clients)
 			}
 		})
+	}
+}
+
+// A failed layer must not leave a partial project view behind: the view would
+// describe a merge the client never performs (it refuses to load the file).
+func TestDiscoverProjectParseErrorSuppressesPartialView(t *testing.T) {
+	home, project := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(project, "nested")
+	writeProjectConfig(t, filepath.Join(home, ".codex", codexConfigName),
+		fmt.Sprintf("[mcp_servers.probe]\ncommand='node'\n[projects.%q]\ntrust_level='trusted'\n", project))
+	writeProjectConfig(t, filepath.Join(project, ".codex", codexConfigName), "[mcp_servers.probe]\ncommand='outer'\n")
+	malformed := filepath.Join(nested, ".codex", codexConfigName)
+	writeProjectConfig(t, malformed, "[mcp_servers.probe]\ncommand=[\n")
+
+	report, err := DiscoverWithOptions(home, Options{ProjectDirs: []string{nested}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := false
+	for _, c := range report.Clients {
+		failed = failed || (c.ConfigPath == malformed && c.ParseError != "")
+	}
+	if !failed {
+		t.Fatalf("malformed nested layer not reported: %+v", report.Clients)
+	}
+	for _, s := range report.Servers {
+		if s.ProjectPath == nested {
+			t.Fatalf("partial view emitted for the failed project: %+v", s)
+		}
 	}
 }
