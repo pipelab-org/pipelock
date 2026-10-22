@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,9 +15,62 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
+
+type adaptiveResponseObserver struct {
+	capture.NopObserver
+	onResponse func()
+}
+
+func (o adaptiveResponseObserver) ObserveResponseVerdict(context.Context, *capture.ResponseVerdictRecord) {
+	o.onResponse()
+}
+
+func TestFetchAdaptiveResponseUsesLatestScopedEvidence(t *testing.T) {
+	for _, sameScope := range []bool{true, false} {
+		t.Run(fmt.Sprintf("same_scope=%v", sameScope), func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+			cfg.Airlock.Enabled = false
+			cfg.AdaptiveEnforcement.EscalationThreshold = session.SignalPoints[session.SignalBlock]
+			block := config.ActionBlock
+			cfg.AdaptiveEnforcement.Levels.Elevated.UpgradeWarn = &block
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Action = config.ActionWarn
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response_marker", Regex: "response marker"}}
+			_, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = fmt.Fprint(w, "response marker")
+			})
+			rec := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+			scope := adaptiveScopeForHost(upstream.Hostname())
+			if !sameScope {
+				scope = adaptiveScopeForHost("unrelated.example")
+			}
+			injected := false
+			p.captureObs = adaptiveResponseObserver{onResponse: func() {
+				injected = true
+				rec.RecordScopedSignal(scope, session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+			}}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.String()), nil)
+			req.RemoteAddr = airlockAdmissionClient + ":12345"
+			w := httptest.NewRecorder()
+			p.handleFetch(w, req)
+			want := http.StatusOK
+			if sameScope {
+				want = http.StatusForbidden
+			}
+			if !injected || w.Code != want {
+				t.Fatalf("injected=%v status=%d want=%d body=%s", injected, w.Code, want, w.Body.String())
+			}
+			if got := rec.ThreatScore(); got != session.SignalPoints[session.SignalBlock] {
+				t.Fatalf("warning changed independent evidence score: %v", got)
+			}
+		})
+	}
+}
 
 // Independent enforced evidence may arrive after admission. A warning must
 // neither create that evidence nor hide an existing block at the final gate.

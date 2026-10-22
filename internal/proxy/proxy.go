@@ -6849,6 +6849,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 		// Use live escalation level so mid-request CEE escalations are reflected.
 		// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
+		_, responseLevel = adaptiveBlockState(fetchRec, adaptiveScopeForHost(finalHost))
 		blocked, newContent, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
 			requestContext: r.Context(),
 			shard:          selectedReceiptShard,
