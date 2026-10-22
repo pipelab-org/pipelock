@@ -21,6 +21,7 @@ import (
 //   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
 	mcp             bool
+	mcpMarker       bool
 	mcpTransport    string
 	mcpDirection    string
 	method          string
@@ -195,6 +196,17 @@ func NewClientRequestLogContext(method, clientIP, requestID string) LogContext {
 func NewMethodLogContext(method string) LogContext {
 	ctx, _ := newLogContext(LogContextOpts{Method: method})
 	return ctx
+}
+
+// WithMCPProtocolMarker records that the MCP denial finalizer chose this
+// context's resource from its fixed catalog. Only such a resource can bypass
+// content redaction; a tool name supplied by a client or upstream never can,
+// even when it spells a marker.
+func (c LogContext) WithMCPProtocolMarker() LogContext {
+	if c.mcp {
+		c.mcpMarker = true
+	}
+	return c
 }
 
 // WithMCPRoute attaches proxy-owned routing metadata. HTTP contexts cannot opt

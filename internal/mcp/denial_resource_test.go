@@ -14,6 +14,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
 
@@ -121,5 +123,27 @@ func TestMCPDenialListenerDirectionIndependentOfResource(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// An upstream controls tool names. Naming an unsigned tool after a protocol
+// marker must not lift the released provenance redaction.
+func TestMCPDenialMarkerNamedUnsignedToolStaysRedacted(t *testing.T) {
+	hexPub, _ := provenanceTestKeys(t)
+	for _, toolName := range []string{"echo", "mcp_input", "mcp_listener_header", "mcp_response", "mcp_redirect_output", "upstream_error_reply", "mcp_listener", "mcp_startup"} {
+		t.Run(toolName, func(t *testing.T) {
+			logger, events := newListenerEventLogger(t)
+			opts := buildTestOpts(testScannerWithAction(t, config.ActionWarn), withToolCfg(&tools.ToolScanConfig{Action: config.ActionWarn}))
+			opts.AuditLogger = logger
+			opts.ProvenanceCfg = &config.MCPToolProvenance{Enabled: true, Action: config.ActionWarn, Mode: config.ProvenanceModePipelock, TrustedKeys: []string{hexPub}, OfflineOnly: true}
+			resp := buildUnsignedToolsListResponse(t, []provenance.ToolDef{{Name: toolName, Description: "Reads a file", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+			if _, err := ForwardScanned(transport.NewStdioReader(strings.NewReader(string(resp)+"\n")), transport.NewStdioWriter(io.Discard), io.Discard, nil, opts); err != nil {
+				t.Fatal(err)
+			}
+			got := events.String()
+			if !strings.Contains(got, `"scanner":"provenance"`) || !strings.Contains(got, `"resource":"[redacted]"`) || strings.Contains(got, `"resource":"`+toolName+`"`) {
+				t.Fatalf("unsigned tool resource lost its redaction: %s", got)
+			}
+		})
 	}
 }

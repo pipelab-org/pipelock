@@ -81,7 +81,7 @@ func finishMCPDenial(d *mcpDenial, adapter mcpDenialAdapter) error {
 		if reason == "" {
 			reason = spec.label
 		}
-		ctx := mustMCPAuditContext(terminal.logger, terminal.scope.method, spec.resource)
+		ctx := mustMCPAuditContext(terminal.logger, terminal.scope.method, spec.resource).WithMCPProtocolMarker()
 		if terminal.audit.context != nil {
 			ctx = *terminal.audit.context
 		}
