@@ -186,6 +186,8 @@ func protectionColor(status string) string {
 		return colorBlue
 	case "unprotected":
 		return colorRed
+	case "unconfirmed":
+		return colorYellow
 	default:
 		return colorGray
 	}
@@ -200,6 +202,8 @@ func protectionLabel(status string) string {
 		return "OTHER"
 	case "unprotected":
 		return "UNPROTECTED"
+	case "unconfirmed":
+		return "UNCONFIRMED"
 	default:
 		return "UNKNOWN"
 	}
@@ -272,8 +276,8 @@ func execSummary(a *Assessment) string {
 		protected := s.ProtectedPipelock + s.ProtectedOther
 		if total > 0 {
 			parts = append(parts, fmt.Sprintf(
-				"%d of %d MCP servers are protected (%d unprotected).",
-				protected, total, s.Unprotected))
+				"%d of %d MCP servers are protected (%d unprotected, %d unconfirmed).",
+				protected, total, s.Unprotected, s.Unconfirmed))
 		}
 	}
 

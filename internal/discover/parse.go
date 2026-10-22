@@ -24,6 +24,38 @@ type rawServer struct {
 	Headers   map[string]string `json:"headers"`
 }
 
+// UnmarshalJSON reads a server entry matching keys exactly. encoding/json
+// also accepts a case-variant key for a struct field ("Command" for
+// "command"), but the clients read these files with case-sensitive keys, so a
+// variant key they ignore must not shadow the one they run and make an
+// unwrapped server look wrapped.
+func (r *rawServer) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*r = rawServer{}
+	for key, target := range map[string]any{
+		"name":      &r.Name,
+		"type":      &r.Type,
+		"command":   &r.Command,
+		"args":      &r.Args,
+		"env":       &r.Env,
+		"url":       &r.URL,
+		"serverUrl": &r.ServerURL,
+		"headers":   &r.Headers,
+	} {
+		raw, present := fields[key]
+		if !present {
+			continue
+		}
+		if err := json.Unmarshal(raw, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // parseConfigFile reads a JSON config file and extracts MCP server entries
 // from the given top-level key (e.g., "mcpServers" or "servers").
 func parseConfigFile(path, key, client string) ([]MCPServer, error) {

@@ -55,7 +55,7 @@ var (
 	canonicalize     = canonicalJSON
 	jsonMarshal      = json.Marshal
 	userHomeDir      = os.UserHomeDir
-	discoverConfigs  = discover.Discover
+	discoverConfigs  = discoverAmbient
 	readRecorderFile = recorder.ReadHistoryEntries
 )
 
@@ -580,6 +580,13 @@ func collectEvidence(cfg *config.Config) (EvidenceBundle, error) {
 	}, nil
 }
 
+// discoverAmbient inventories the current user's config directories and
+// current project, using the same inputs as pipelock discover.
+func discoverAmbient(home string) (*discover.Report, error) {
+	opts := discover.AmbientOptions(os.Getenv)
+	return discover.DiscoverWithOptions(home, opts)
+}
+
 func collectDiscoverEvidence() (DiscoverEvidence, error) {
 	home, err := userHomeDir()
 	if err != nil {
@@ -597,9 +604,12 @@ func collectDiscoverEvidence() (DiscoverEvidence, error) {
 		ProtectedPipelock: report.Summary.ProtectedPipelock,
 		ProtectedOther:    report.Summary.ProtectedOther,
 		Unprotected:       report.Summary.Unprotected,
-		Unknown:           report.Summary.Unknown,
-		HighRisk:          report.Summary.HighRisk,
-		ParseErrors:       report.Summary.ParseErrors,
+		// The signed schema already has an unknown bucket. Unconfirmed launches
+		// must feed that bucket so cleanliness and strict policy cannot treat
+		// missing launch evidence as confirmed protection.
+		Unknown:     report.Summary.Unknown + report.Summary.Unconfirmed,
+		HighRisk:    report.Summary.HighRisk,
+		ParseErrors: report.Summary.ParseErrors,
 	}, nil
 }
 

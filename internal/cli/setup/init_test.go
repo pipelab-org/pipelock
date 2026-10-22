@@ -876,3 +876,127 @@ func assertFlightRecorderPublicKeySidecar(t *testing.T, keyPath string) {
 		}
 	}
 }
+
+// TestInitCmd_ClaudeConfigDirSources proves init inventories the running
+// user's CLAUDE_CONFIG_DIR like pipelock discover, and that an explicit
+// --scan-home inspects only that tree.
+func TestInitCmd_ClaudeConfigDirSources(t *testing.T) {
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+	t.Setenv(discover.EnvCodexHome, "") // an operator's own value must not add servers
+
+	serversFound := func(args ...string) int {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := InitCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{
+			"--output", filepath.Join(t.TempDir(), "pipelock.yaml"),
+			"--json", "--dry-run", "--skip-canary", "--skip-validate", "--no-auditor",
+		}, args...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("init failed: %v\n%s", err, errBuf.String())
+		}
+		var result initResult
+		if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return result.Discover.ServersFound
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	if got := serversFound(); got != 1 {
+		t.Fatalf("default init found %d servers, want the 1 under CLAUDE_CONFIG_DIR", got)
+	}
+	if got := serversFound("--scan-home", t.TempDir()); got != 0 {
+		t.Fatalf("--scan-home inspected the ambient CLAUDE_CONFIG_DIR: %d servers", got)
+	}
+}
+
+func TestInitCmd_AmbientSourceFixtureIgnoresCallerProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, ".grok"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(project, ".grok", "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.caller]\ncommand='node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	t.Run("Claude config directory", TestInitCmd_ClaudeConfigDirSources)
+}
+
+func TestInitCmd_CurrentProjectSources(t *testing.T) {
+	home, project := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv(discover.EnvClaudeConfigDir, "")
+	t.Setenv(discover.EnvCodexHome, "")
+	t.Chdir(project)
+	if err := os.Mkdir(filepath.Join(project, ".grok"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".grok", "config.toml"),
+		[]byte("[mcp_servers.local]\ncommand='node'\nargs=['server.js']\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		explicit bool
+	}{
+		{name: "ambient current project"},
+		{name: "explicit home excludes current project", explicit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, jsonOutput := range []bool{false, true} {
+				var output, errOutput bytes.Buffer
+				cmd := InitCmd()
+				cmd.SetOut(&output)
+				cmd.SetErr(&errOutput)
+				args := []string{
+					"--output", filepath.Join(t.TempDir(), "pipelock.yaml"),
+					"--dry-run", "--skip-canary", "--skip-validate", "--no-auditor",
+				}
+				if tc.explicit {
+					args = append(args, "--scan-home", home)
+				}
+				if jsonOutput {
+					args = append(args, "--json")
+				}
+				cmd.SetArgs(args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("init failed: %v\n%s", err, errOutput.String())
+				}
+				want := 1
+				if tc.explicit {
+					want = 0
+				}
+				if jsonOutput {
+					var result initResult
+					if err := json.Unmarshal(output.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if result.Discover.ServersFound != want || result.Discover.Unprotected != want {
+						t.Fatalf("discovery = %+v, want %d unprotected server(s)", result.Discover, want)
+					}
+				} else if tc.explicit {
+					if !strings.Contains(output.String(), "No IDE or agent configs found.") {
+						t.Fatalf("explicit home included current project: %s", output.String())
+					}
+				} else if !strings.Contains(output.String(), "Found 1 client(s), 1 MCP server(s)") ||
+					!strings.Contains(output.String(), "1 server(s) are not wrapped through pipelock.") {
+					t.Fatalf("current project absent from human output: %s", output.String())
+				}
+			}
+		})
+	}
+}

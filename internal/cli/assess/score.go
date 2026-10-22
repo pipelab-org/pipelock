@@ -329,12 +329,18 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		}
 	}
 
-	// Count parse errors across clients.
+	// Count parse errors. Persisted evidence redacts each client's
+	// ParseError text (it can embed local paths) and keeps the count in
+	// the summary, so the summary is authoritative; per-client text is
+	// counted too for reports built in memory, taking the larger.
 	parseErrors := 0
 	for _, c := range disc.Clients {
 		if c.ParseError != "" {
 			parseErrors++
 		}
+	}
+	if disc.Summary.ParseErrors > parseErrors {
+		parseErrors = disc.Summary.ParseErrors
 	}
 
 	totalServers := len(disc.Servers)
@@ -378,8 +384,8 @@ func scoreMCPProtection(disc *AssessDiscoverReport) AssessmentSection {
 		switch s.Protection {
 		case discover.ProtectedPipelock, discover.ProtectedOther:
 			numerator += 100
-		case discover.Unknown:
-			// 50% credit for unknown servers.
+		case discover.Unknown, discover.Unconfirmed:
+			// Unconfirmed launches, like unknown servers, receive only 50% credit.
 			numerator += 50
 		}
 		// unprotected = 0
@@ -644,10 +650,11 @@ func generateFindings(sources AssessSources) []Finding {
 		}
 	}
 
-	// From discover: each server with Protection=="unprotected".
+	// From discover: unprotected or unconfirmed inventory entries.
 	if sources.Discover != nil {
+		ids := make(map[string]bool)
 		for _, s := range sources.Discover.Servers {
-			if s.Protection != discover.Unprotected {
+			if s.Protection != discover.Unprotected && s.Protection != discover.Unconfirmed {
 				continue
 			}
 			sev := assessSevMedium
@@ -656,18 +663,27 @@ func generateFindings(sources AssessSources) []Finding {
 				sev = assessSevHigh
 				remediation = "Wrap this MCP server with pipelock: `pipelock mcp proxy --config pipelock.yaml -- <original-command>`. High-risk servers with database or shell access should be prioritized."
 			}
+			if s.Protection == discover.Unconfirmed {
+				remediation = "Wrapper found in a checked file. Verify the effective project, profile, plugin, and launch settings before claiming protection."
+			}
 			evidence, _ := json.Marshal(map[string]string{
 				"client": s.Client,
 				"server": s.ServerName,
 				"risk":   string(s.Risk),
 			})
+			id := "find-discover-" + slugify(s.Client+"-"+s.ServerName)
+			baseID := id
+			for suffix := 2; ids[id]; suffix++ {
+				id = fmt.Sprintf("%s-%d", baseID, suffix)
+			}
+			ids[id] = true
 			findings = append(findings, Finding{
 				SchemaVersion: assessSchemaVersion,
-				ID:            "find-discover-" + slugify(s.Client+"-"+s.ServerName),
+				ID:            id,
 				Severity:      sev,
 				Category:      sectionMCPProtection,
 				Source:        sourceDiscover,
-				Title:         fmt.Sprintf("MCP server %q (%s) is unprotected", s.ServerName, s.Client),
+				Title:         fmt.Sprintf("MCP server %q (%s) is %s", s.ServerName, s.Client, s.Protection),
 				Remediation:   remediation,
 				Evidence:      evidence,
 			})

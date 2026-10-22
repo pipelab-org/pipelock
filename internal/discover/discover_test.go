@@ -257,8 +257,8 @@ func TestDiscoverWithTestFixtures(t *testing.T) {
 	if report.Summary.TotalServers != 2 {
 		t.Errorf("total servers = %d, want 2", report.Summary.TotalServers)
 	}
-	if report.Summary.ProtectedPipelock != 1 {
-		t.Errorf("protected_pipelock = %d, want 1", report.Summary.ProtectedPipelock)
+	if report.Summary.Unconfirmed != 1 {
+		t.Errorf("unconfirmed = %d, want 1", report.Summary.Unconfirmed)
 	}
 	if report.Summary.Unprotected != 1 {
 		t.Errorf("unprotected = %d, want 1", report.Summary.Unprotected)
@@ -376,11 +376,11 @@ func TestDiscoverFindsZedAllChannels(t *testing.T) {
 	}
 }
 
-// TestDiscoverZedWrappedShowsProtected covers the case where Zed's
+// TestDiscoverZedWrappedShowsUnconfirmed covers the case where Zed's
 // settings.json carries a pipelock-wrapped context_server entry: discover
-// must classify it as ProtectedPipelock, matching what it does for other
+// must classify it as Unconfirmed, matching what it does for other
 // IDEs that share the same wrap shape and current-executable identity check.
-func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
+func TestDiscoverZedWrappedShowsUnconfirmed(t *testing.T) {
 	home := t.TempDir()
 	self, err := os.Executable()
 	if err != nil {
@@ -408,8 +408,8 @@ func TestDiscoverZedWrappedShowsProtected(t *testing.T) {
 	if got.Client != clientZed {
 		t.Errorf("client = %q, want zed", got.Client)
 	}
-	if got.Protection != ProtectedPipelock {
-		t.Errorf("protection = %q, want %q", got.Protection, ProtectedPipelock)
+	if got.Protection != Unconfirmed {
+		t.Errorf("protection = %q, want %q", got.Protection, Unconfirmed)
 	}
 }
 

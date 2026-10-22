@@ -20,36 +20,55 @@ func DiscoverCmd() *cobra.Command {
 	var jsonOutput bool
 	var generate bool
 	var homeDir string
+	var claudeConfigDirs []string
+	var projectDirs []string
 
 	cmd := &cobra.Command{
 		Use:   "discover",
 		Short: "Scan for AI agent configs and report MCP server protection status",
 		Long: `Scan the local machine for AI agent client configurations (Claude Code,
-Claude Desktop, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
+Claude Desktop, Codex, Grok, Cursor, VS Code, Cline, Continue.dev, JetBrains/Junie, Zed
 stable, Zed Preview, Flatpak Zed stable, Flatpak Zed Preview) and report
 which MCP servers are configured, their protection status, and risk level.
 
+Claude Code configs under CLAUDE_CONFIG_DIR (<dir>/.claude.json) are included
+when that variable is set and --home is not, and for every --claude-config-dir.
+Codex configs under CODEX_HOME (<dir>/config.toml) are included when that
+variable is set and --home is not.
+
+Registered trusted Codex projects are included. --project adds a Codex/Grok
+working directory; without --home, the current directory is included too.
+Wrapper detection is a file observation: unchecked client launch settings
+leave wrapped entries unconfirmed. See docs/cli/discover.md for coverage.
+
 Exit codes:
-  0  All servers protected (or none found)
-  1  Unprotected, unknown, or unparseable configs found
+  0  No servers found, or every server has confirmed protection evidence
+  1  Unprotected, unconfirmed, unknown, or unparseable configs found
   2  Usage or runtime error
 
 Examples:
   pipelock discover
   pipelock discover --json
   pipelock discover --generate
-  pipelock discover --home /home/otheruser`,
+  pipelock discover --home /home/otheruser
+  pipelock discover --claude-config-dir /home/me/.claude-work`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// An explicit --home suppresses ambient directory overrides and
+			// implicit cwd; those inputs describe this user, not that one.
+			var opts discover.Options
 			if homeDir == "" {
 				h, err := os.UserHomeDir()
 				if err != nil {
 					return cliutil.ExitCodeError(2, fmt.Errorf("determining home directory: %w", err))
 				}
 				homeDir = h
+				opts = discover.AmbientOptions(os.Getenv)
 			}
+			opts.ClaudeConfigDirs = append(opts.ClaudeConfigDirs, claudeConfigDirs...)
+			opts.ProjectDirs = append(opts.ProjectDirs, projectDirs...)
 
-			report, err := discover.Discover(homeDir)
+			report, err := discover.DiscoverWithOptions(homeDir, opts)
 			if err != nil {
 				return cliutil.ExitCodeError(2, fmt.Errorf("discovery failed: %w", err))
 			}
@@ -64,9 +83,9 @@ Examples:
 				printDiscoverGenerate(cmd, report)
 			}
 
-			if report.Summary.Unprotected > 0 || report.Summary.Unknown > 0 || report.Summary.ParseErrors > 0 {
+			if report.Summary.Unprotected > 0 || report.Summary.Unknown > 0 || report.Summary.Unconfirmed > 0 || report.Summary.ParseErrors > 0 {
 				return &cliutil.ExitError{
-					Err:  errors.New("unprotected MCP servers or config parse errors found"),
+					Err:  errors.New("unprotected, unconfirmed, or unknown MCP servers or config parse errors found"),
 					Code: 1,
 				}
 			}
@@ -75,9 +94,11 @@ Examples:
 		},
 	}
 
+	cmd.Flags().StringArrayVar(&projectDirs, "project", nil, "Inspect Codex/Grok project files for this working directory (repeatable; absolute path)")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output machine-readable JSON")
 	cmd.Flags().BoolVar(&generate, "generate", false, "Print pipelock wrapper suggestions for unprotected servers")
 	cmd.Flags().StringVar(&homeDir, "home", "", "Override home directory (default: $HOME)")
+	cmd.Flags().StringArrayVar(&claudeConfigDirs, "claude-config-dir", nil, "Also inspect <dir>/.claude.json for a Claude Code CLAUDE_CONFIG_DIR (repeatable; absolute path)")
 
 	return cmd
 }
@@ -85,13 +106,26 @@ Examples:
 func printDiscoverJSON(cmd *cobra.Command, report *discover.Report) error {
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(discover.RedactReportForOutput(report)); err != nil {
+	safeReport := discover.RedactReportForOutput(report)
+	// The SOPS subset is an operator-facing discover detail. Keep it out of
+	// shared Summary JSON, which assess embeds and posture signs separately.
+	output := struct {
+		Clients []discover.ClientConfig `json:"clients"`
+		Servers []discover.MCPServer    `json:"servers"`
+		Summary struct {
+			discover.Summary
+			SOPSExecEnv int `json:"sops_exec_env"`
+		} `json:"summary"`
+	}{Clients: safeReport.Clients, Servers: safeReport.Servers}
+	output.Summary.Summary = safeReport.Summary
+	output.Summary.SOPSExecEnv = safeReport.Summary.SOPSExecEnv
+	if err := enc.Encode(output); err != nil {
 		return cliutil.ExitCodeError(2, fmt.Errorf("encoding JSON: %w", err))
 	}
 
-	if report.Summary.Unprotected > 0 || report.Summary.Unknown > 0 || report.Summary.ParseErrors > 0 {
+	if report.Summary.Unprotected > 0 || report.Summary.Unknown > 0 || report.Summary.Unconfirmed > 0 || report.Summary.ParseErrors > 0 {
 		return &cliutil.ExitError{
-			Err:  errors.New("unprotected MCP servers or config parse errors found"),
+			Err:  errors.New("unprotected, unconfirmed, or unknown MCP servers or config parse errors found"),
 			Code: 1,
 		}
 	}
@@ -136,15 +170,18 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 	_, _ = fmt.Fprintf(w, "  Protected (pipelock):  %d\n", safeReport.Summary.ProtectedPipelock)
 	_, _ = fmt.Fprintf(w, "  Protected (other):     %d\n", safeReport.Summary.ProtectedOther)
 	_, _ = fmt.Fprintf(w, "  Unprotected:           %d\n", safeReport.Summary.Unprotected)
+	_, _ = fmt.Fprintf(w, "    via sops exec-env:   %d\n", safeReport.Summary.SOPSExecEnv)
+	_, _ = fmt.Fprintf(w, "  Unconfirmed:           %d\n", safeReport.Summary.Unconfirmed)
 	_, _ = fmt.Fprintf(w, "  Unknown:               %d\n", safeReport.Summary.Unknown)
+	_, _ = fmt.Fprintf(w, "  Marked enabled=false:  %d (still counted above)\n", safeReport.Summary.Disabled)
 	_, _ = fmt.Fprintln(w)
 
 	// List unprotected servers sorted by risk
 	unprotected := false
 	for _, s := range safeReport.Servers {
-		if s.Protection == discover.Unprotected || s.Protection == discover.Unknown {
+		if s.Protection == discover.Unprotected || s.Protection == discover.Unknown || s.Protection == discover.Unconfirmed {
 			if !unprotected {
-				_, _ = fmt.Fprintln(w, "Unprotected servers:")
+				_, _ = fmt.Fprintln(w, "Servers needing attention:")
 				unprotected = true
 			}
 			risk := strings.ToUpper(string(s.Risk))
@@ -154,6 +191,7 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 			}
 			_, _ = fmt.Fprintf(w, "  [%-6s] [%-16s] %-20s %s\n",
 				risk, s.Client, s.ServerName, desc)
+			_, _ = fmt.Fprintf(w, "           %s: %s\n", s.Protection, s.Evidence)
 			for _, warn := range s.ParseWarnings {
 				_, _ = fmt.Fprintf(w, "           WARNING: %s\n", warn)
 			}
@@ -172,6 +210,9 @@ func printDiscoverHuman(cmd *cobra.Command, report *discover.Report) {
 func printDiscoverGenerate(cmd *cobra.Command, report *discover.Report) {
 	w := cmd.OutOrStdout()
 	printed := false
+	if report.Summary.Unconfirmed > 0 {
+		_, _ = fmt.Fprintln(w, "Unconfirmed entries already contain a wrapper. Check project files, profiles, plugins, and launch overrides; another wrapper suggestion cannot confirm what the client launches.")
+	}
 
 	for _, s := range report.Servers {
 		if s.Protection != discover.Unprotected {
@@ -192,6 +233,7 @@ func printDiscoverGenerate(cmd *cobra.Command, report *discover.Report) {
 			_, _ = fmt.Fprintf(w, "Server: %s (%s)\n", s.ServerName, s.Client)
 		}
 		suggestion := discover.GenerateWrapper(safeServer)
+		_, _ = fmt.Fprintf(w, "Config: %s\n", safeServer.ConfigPath)
 		_, _ = fmt.Fprintln(w, suggestion)
 	}
 }

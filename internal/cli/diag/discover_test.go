@@ -36,6 +36,161 @@ func TestDiscoverCmd_JSONEmptyHome(t *testing.T) {
 	}
 }
 
+func TestDiscoverCmd_SOPSSubsetInHumanAndJSON(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".codex"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	content := "[mcp_servers.nested]\ncommand = 'sops'\nargs = ['exec-env', 'secrets.yaml', 'exec " + self + " mcp proxy']\n"
+	if err := os.WriteFile(filepath.Join(home, ".codex", "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{name: "human", args: []string{"--home", home}},
+		{name: "JSON", args: []string{"--json", "--home", home}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			cmd := DiscoverCmd()
+			cmd.SetOut(&output)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			cmd.SetArgs(tc.args)
+			var exitErr *cliutil.ExitError
+			if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+				t.Fatalf("Execute() error = %v, want exit 1", err)
+			}
+			if tc.name == "human" {
+				if !strings.Contains(output.String(), "Unprotected:           1") || !strings.Contains(output.String(), "via sops exec-env:   1") {
+					t.Fatalf("human summary = %s", output.String())
+				}
+				return
+			}
+			var report discover.Report
+			if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			var raw struct {
+				Summary struct {
+					SOPSExecEnv int `json:"sops_exec_env"`
+				} `json:"summary"`
+			}
+			if err := json.Unmarshal(output.Bytes(), &raw); err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.Unprotected != 1 || raw.Summary.SOPSExecEnv != 1 {
+				t.Fatalf("JSON summary = %+v", report.Summary)
+			}
+		})
+	}
+}
+
+// TestDiscoverCmdDisabledCodexServerStillFails proves an unwrapped Codex server
+// marked enabled = false still fails discover, because a trusted project layer
+// or a -c override re-enables it when Codex runs.
+func TestDiscoverCmdDisabledCodexServerStillFails(t *testing.T) {
+	home := t.TempDir()
+	dir := filepath.Join(home, ".codex")
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[mcp_servers.off]\ncommand = 'npx'\nenabled = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"--home", home}, {"--json", "--home", home}} {
+		var output bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&output)
+		cmd.SetErr(&bytes.Buffer{})
+		cmd.SetArgs(args)
+		var exitErr *cliutil.ExitError
+		if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+			t.Fatalf("Execute(%v) = %v, want exit 1", args, err)
+		}
+		if args[0] == "--json" {
+			var report discover.Report
+			if err := json.NewDecoder(&output).Decode(&report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Summary.TotalServers != 1 || report.Summary.Disabled != 1 || report.Summary.Unprotected != 1 || len(report.Servers) != 1 || report.Servers[0].Protection != discover.Unprotected || !report.Servers[0].Disabled {
+				t.Fatalf("JSON report = %+v", report)
+			}
+		} else if !strings.Contains(output.String(), "Servers needing attention:") || !strings.Contains(output.String(), "off") || !strings.Contains(output.String(), "so it is still counted") {
+			t.Fatalf("human report = %s", output.String())
+		}
+	}
+}
+
+func TestDiscoverComplianceGuideNamesTOMLClients(t *testing.T) {
+	const guide = "../../../docs/compliance/owasp-mcp-top10.md"
+	data, err := os.ReadFile(guide)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var discoveryLine string
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "- **Discovery:**") {
+			discoveryLine = line
+			break
+		}
+	}
+	for _, client := range []string{"Codex", "Grok"} {
+		if !strings.Contains(discoveryLine, client) {
+			t.Fatalf("compliance discovery list omits %s", client)
+		}
+	}
+}
+
+func TestDiscoverCmd_TOMLRedactsSecrets(t *testing.T) {
+	home := t.TempDir()
+	for _, tc := range []struct {
+		dir     string
+		content string
+	}{
+		{dir: ".codex", content: "[mcp_servers.local]\ncommand = 'npx'\nenv = { API_TOKEN = 'secret-env-value' }\n"},
+		{dir: ".grok", content: "[mcp_servers.remote]\nurl = 'https://api.vendor.example/mcp?" + "token=secret-url-value'\nheaders = { Authorization = 'secret-header-value' }\n"},
+	} {
+		dir := filepath.Join(home, tc.dir)
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(tc.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var output bytes.Buffer
+	cmd := DiscoverCmd()
+	cmd.SetOut(&output)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--json", "--home", home})
+	var exitErr *cliutil.ExitError
+	if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("Execute() error = %v, want exit 1", err)
+	}
+	for _, secret := range []string{"secret-env-value", "secret-url-value", "secret-header-value"} {
+		if strings.Contains(output.String(), secret) {
+			t.Fatalf("JSON output leaked %q: %s", secret, output.String())
+		}
+	}
+	var report discover.Report
+	if err := json.Unmarshal(output.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.TotalServers != 2 || report.Summary.Unprotected != 2 {
+		t.Fatalf("summary = %+v", report.Summary)
+	}
+}
+
 func TestDiscoverCmd_JSONWithServers(t *testing.T) {
 	home := t.TempDir()
 
@@ -176,20 +331,21 @@ func TestDiscoverCmd_HumanOutput(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"--home", home})
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
+	var exitErr *cliutil.ExitError
+	if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit 1, got %v", err)
 	}
 
 	output := buf.String()
 	if !bytes.Contains([]byte(output), []byte("Pipelock Discovery")) {
 		t.Error("expected 'Pipelock Discovery' header")
 	}
-	if !bytes.Contains([]byte(output), []byte("All servers are protected")) {
-		t.Errorf("expected 'All servers are protected', got:\n%s", output)
+	if !bytes.Contains([]byte(output), []byte("whether the client actually launches it is unconfirmed")) {
+		t.Errorf("expected 'whether the client actually launches it is unconfirmed', got:\n%s", output)
 	}
 }
 
-func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
+func TestDiscoverCmd_ExitCodeOneUnconfirmed(t *testing.T) {
 	home := t.TempDir()
 	content := protectedDiscoveryConfig(t)
 	if err := os.WriteFile(filepath.Join(home, ".claude.json"), []byte(content), 0o600); err != nil {
@@ -202,8 +358,9 @@ func TestDiscoverCmd_ExitCodeZeroAllProtected(t *testing.T) {
 	cmd.SetErr(&buf)
 	cmd.SetArgs([]string{"--home", home})
 	err := cmd.Execute()
-	if err != nil {
-		t.Errorf("expected nil error (exit 0), got %v", err)
+	var exitErr *cliutil.ExitError
+	if !errors.As(err, &exitErr) || exitErr.Code != 1 {
+		t.Fatalf("expected exit 1, got %v", err)
 	}
 }
 
@@ -359,6 +516,61 @@ func TestDiscoverCmd_ProjectPathInGenerate(t *testing.T) {
 	}
 }
 
+func TestDiscoverCmd_GenerateNamesCommandConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, client, parent, child string
+		wantParent                  bool
+	}{
+		{name: "project command", client: "codex", child: "command='node'"},
+		{name: "enabled inherits parent command", client: "codex", parent: "command='node'", child: "enabled=true", wantParent: true},
+		{name: "Grok project command", client: "grok", child: "command='node'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			nested := filepath.Join(project, "nested")
+			writeConfig := func(path, text string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			writeConfig(filepath.Join(home, "."+tc.client, "config.toml"),
+				fmt.Sprintf("[projects.%q]\ntrust_level='trusted'\n", project))
+			parentPath := filepath.Join(project, "."+tc.client, "config.toml")
+			childPath := filepath.Join(nested, "."+tc.client, "config.toml")
+			if tc.parent != "" {
+				writeConfig(parentPath, "[mcp_servers.local]\n"+tc.parent+"\n")
+			}
+			writeConfig(childPath, "[mcp_servers.local]\n"+tc.child+"\n")
+			var output, errOutput bytes.Buffer
+			cmd := DiscoverCmd()
+			cmd.SetOut(&output)
+			cmd.SetErr(&errOutput)
+			cmd.SetArgs([]string{"--generate", "--home", home, "--project", nested})
+			var exitErr *cliutil.ExitError
+			if err := cmd.Execute(); !errors.As(err, &exitErr) || exitErr.Code != 1 {
+				t.Fatalf("discover error = %v, want exit 1", err)
+			}
+			wantPath := childPath
+			if tc.wantParent {
+				wantPath = parentPath
+			}
+			// Check the suggestion for the requested directory itself: the
+			// inventory can also contain a registered parent project view.
+			header := fmt.Sprintf("Server: local (%s, project: %s)\nConfig: %s\n", tc.client, nested, wantPath)
+			if !strings.Contains(output.String(), header) {
+				t.Fatalf("suggestion does not name command config %s: %s", wantPath, output.String())
+			}
+		})
+	}
+}
+
 func TestDiscoverCmd_PartialParseFailureSurfaced(t *testing.T) {
 	home := t.TempDir()
 	content := `{
@@ -477,5 +689,102 @@ func TestServerDescription(t *testing.T) {
 				t.Errorf("serverDescription() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDiscoverCmd_ClaudeConfigDirSources proves the CLI boundary owns override
+// resolution: --home ignores the running user's CLAUDE_CONFIG_DIR, while an
+// explicit --claude-config-dir is always inspected.
+func TestDiscoverCmd_ClaudeConfigDirSources(t *testing.T) {
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvClaudeConfigDir, altDir)
+	t.Setenv(discover.EnvCodexHome, "") // an operator's own value must not add servers
+
+	run := func(args ...string) discover.Report {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--json"}, args...))
+		_ = cmd.Execute() // exit code 1 is expected when servers are unprotected
+		var report discover.Report
+		// The report is the first JSON value; an unprotected result also
+		// returns exit code 1, whose message may follow it.
+		if err := json.NewDecoder(&buf).Decode(&report); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return report
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	if got := run(); got.Summary.TotalServers != 1 {
+		t.Fatalf("default run ignored the ambient CLAUDE_CONFIG_DIR: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir()); got.Summary.TotalServers != 0 {
+		t.Fatalf("--home inspected the ambient CLAUDE_CONFIG_DIR: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir(), "--claude-config-dir", altDir); got.Summary.TotalServers != 1 {
+		t.Fatalf("--claude-config-dir not inspected: %+v", got.Summary)
+	}
+}
+
+// Ambient-source fixtures must choose their own working directory, even when
+// invoked from a project that supplies additional MCP servers.
+func TestDiscoverCmd_AmbientSourceFixturesIgnoreCallerProject(t *testing.T) {
+	project := t.TempDir()
+	if err := os.Mkdir(filepath.Join(project, ".git"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(project, ".grok"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(project, ".grok", "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.caller]\ncommand='node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	t.Run("Claude config directory", TestDiscoverCmd_ClaudeConfigDirSources)
+	t.Run("Codex home", TestDiscoverCmd_CodexHomeSource)
+}
+
+// TestDiscoverCmd_CodexHomeSource proves the CLI boundary applies the same
+// rule to CODEX_HOME: the default run inspects it, --home does not.
+func TestDiscoverCmd_CodexHomeSource(t *testing.T) {
+	altDir := t.TempDir()
+	content := "[mcp_servers.alt]\ncommand = 'node'\nargs = ['alt.js']\n"
+	if err := os.WriteFile(filepath.Join(altDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(discover.EnvCodexHome, altDir)
+	t.Setenv(discover.EnvClaudeConfigDir, "")
+
+	run := func(args ...string) discover.Report {
+		t.Helper()
+		var buf, errBuf bytes.Buffer
+		cmd := DiscoverCmd()
+		cmd.SetOut(&buf)
+		cmd.SetErr(&errBuf)
+		cmd.SetArgs(append([]string{"--json"}, args...))
+		_ = cmd.Execute() // exit code 1 is expected when servers are unprotected
+		var report discover.Report
+		if err := json.NewDecoder(&buf).Decode(&report); err != nil {
+			t.Fatalf("invalid JSON output: %v\n%s", err, buf.String())
+		}
+		return report
+	}
+
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+	if got := run(); got.Summary.TotalServers != 1 {
+		t.Fatalf("default run ignored the ambient CODEX_HOME: %+v", got.Summary)
+	}
+	if got := run("--home", t.TempDir()); got.Summary.TotalServers != 0 {
+		t.Fatalf("--home inspected the ambient CODEX_HOME: %+v", got.Summary)
 	}
 }

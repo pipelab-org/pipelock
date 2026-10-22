@@ -63,6 +63,14 @@ For procurement and security questionnaires:
 3. The bundle's `compliance` array reports per-framework `covered / partial / not_covered` counts for the runtime, which can be pasted directly into the response.
 4. The detached attestation (`attestation.json` + `.sig`) supplies cryptographic provenance for the report, signed with the operator's Ed25519 key. Verify with `pipelock assess verify-attestation`.
 
+## Discovery and assessment scoring
+
+`pipelock assess run` collects MCP discovery directly; assessment scoring doesn't use the posture capsule's `strict` or `enterprise` policy. File-only discovery now reports wrappers as `unconfirmed`, because configuration files can't establish what a client launched. Previously protected entries receive 50% MCP Protection credit, the same as `unknown`, instead of 100%. Unprotected entries receive 0%. Each client parse error adds a zero-credit entry to the denominator. With only unconfirmed entries and no parse errors, the MCP Protection section scores 50 out of 100, which can also reduce the weighted overall score. The scoring weights and grade caps haven't changed.
+
+Unconfirmed entries produce findings asking the operator to verify effective project, profile, plugin, and launch settings. Wrapping fixes unprotected configured commands but can't confirm a launch. Launch-evidence confirmation is planned.
+
+Consumers of `assessment.json` must handle `sources.discover.servers[].protection_state: "unconfirmed"` and `sources.discover.summary.unconfirmed`. Free `summary.json` exposes the count as `server_counts.unconfirmed` without server names. These entries are excluded from protected counts. This inventory evidence doesn't verify runtime MCP coverage; see [discovery coverage and migration](../cli/discover.md#consumer-migration).
+
 ## Limitations to disclose
 
 When sharing an assessment bundle as evidence:
