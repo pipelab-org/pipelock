@@ -310,3 +310,51 @@ func TestMCPDenialListenerFallbackRetainsTerminal(t *testing.T) {
 		t.Fatal(events.String())
 	}
 }
+
+// A refusal for a missing listener state token is an admission refusal. It
+// must not tell the operator that state capacity is exhausted.
+func TestMCPDenialListenerStateTokenRefusalLabel(t *testing.T) {
+	logger, events := newListenerEventLogger(t)
+	upstream, calls := countingUpstream(t)
+	required := true
+	base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+		Scanner:                      testScannerForHTTP(t),
+		AuditLogger:                  logger,
+		ListenerStateTokenRequiredFn: func() *bool { return &required },
+	})
+	body := strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{}}}`)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base, body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden || calls.Load() != 0 {
+		t.Fatalf("status=%d upstream calls=%d", resp.StatusCode, calls.Load())
+	}
+	got := events.String()
+	if strings.Count(got, `"event":"blocked"`) != 1 || strings.Contains(got, "capacity exhausted") || !strings.Contains(got, "MCP listener admission refused") {
+		t.Fatalf("missing-token refusal mislabeled: %s", got)
+	}
+}
+
+func TestMCPDenialListenerSessionLayerDescriptors(t *testing.T) {
+	for pattern, want := range map[string]mcpDenialKind{
+		"listener_session_token_required":           "listener_admission",
+		"legacy_listener_token_on_current_protocol": "listener_protocol",
+		"listener_principal_state_capacity":         "listener_capacity",
+	} {
+		got := mcpListenerBlockAudit(mcpListenerBlockDecision{layer: "mcp_listener_session", pattern: pattern}).kind
+		if got != want {
+			t.Errorf("pattern %s: kind=%s want %s", pattern, got, want)
+		}
+	}
+	if got := mcpListenerBlockAudit(mcpListenerBlockDecision{layer: "session_capacity"}).kind; got != "listener_capacity" {
+		t.Errorf("session_capacity: kind=%s", got)
+	}
+}

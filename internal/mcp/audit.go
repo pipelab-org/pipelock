@@ -289,8 +289,19 @@ func mcpListenerBlockAudit(dec mcpListenerBlockDecision) mcpDenialAudit {
 		return mcpDenialAudit{kind: "listener_metadata"}
 	}
 	switch dec.layer {
-	case "session_capacity", "mcp_listener_session":
+	case "session_capacity":
 		return mcpDenialAudit{kind: "listener_capacity"}
+	case "mcp_listener_session":
+		// One receipt layer covers three refusals; its fixed receipt pattern
+		// names which one. Only the principal-state cap is a capacity refusal.
+		switch dec.pattern {
+		case "listener_principal_state_capacity":
+			return mcpDenialAudit{kind: "listener_capacity"}
+		case "legacy_listener_token_on_current_protocol":
+			return mcpDenialAudit{kind: "listener_protocol"}
+		default:
+			return mcpDenialAudit{kind: "listener_admission"}
+		}
 	case mcpContractReceiptLayer:
 		return mcpDenialAudit{kind: "listener_contract"}
 	case mcpReceiptLayerA2A:
