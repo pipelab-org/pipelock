@@ -255,9 +255,9 @@ func TestMCP_Adaptive_DLPBlockRecordsSignalBlock(t *testing.T) {
 	}
 }
 
-// TestMCP_Adaptive_WarnRecordsNearMiss verifies that a DLP hit with warn action
-// records SignalNearMiss (+1 point) and never SignalBlock.
-func TestMCP_Adaptive_WarnRecordsNearMiss(t *testing.T) {
+// TestMCP_Adaptive_WarnRecordsObservation verifies that a DLP hit with warn action
+// records SignalWarning (zero points) and never SignalBlock.
+func TestMCP_Adaptive_WarnRecordsObservation(t *testing.T) {
 	rec := &mockRecorder{}
 	adaptiveCfg := adaptiveCfgEnabled()
 
@@ -265,17 +265,17 @@ func TestMCP_Adaptive_WarnRecordsNearMiss(t *testing.T) {
 	dirtyMsg := makeRequest(5, methodToolsCall, map[string]string{"api_key": secret}) + "\n"
 	runAdaptiveInput(dirtyMsg, rec, adaptiveCfg, nil, config.ActionWarn)
 
-	hasNearMiss := false
+	hasWarning := false
 	for _, sig := range rec.signals {
-		if sig == session.SignalNearMiss {
-			hasNearMiss = true
+		if sig == session.SignalWarning {
+			hasWarning = true
 		}
 		if sig == session.SignalBlock {
 			t.Errorf("unexpected SignalBlock for warn-action request, signals: %v", rec.signals)
 		}
 	}
-	if !hasNearMiss {
-		t.Errorf("expected SignalNearMiss in signals for warn-action hit, got: %v", rec.signals)
+	if !hasWarning {
+		t.Errorf("expected SignalWarning in signals for warn-action hit, got: %v", rec.signals)
 	}
 }
 
@@ -1026,10 +1026,12 @@ func TestForwardScannedInput_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 	if strings.Contains(output, secret) {
 		t.Error("DLP secret was forwarded to server instead of being blocked after escalation upgrade")
 	}
-	// The block must have recorded SignalBlock on the session.
-	wantPoints := session.SignalPoints[session.SignalBlock]
-	if rec.ThreatScore() < wantPoints {
-		t.Errorf("ThreatScore = %.1f, want >= %.1f after warn->block upgrade", rec.ThreatScore(), wantPoints)
+	// The refusal is caused by the existing level, not new enforced evidence.
+	if rec.ThreatScore() != 0 {
+		t.Errorf("ThreatScore = %.1f, want 0 after warn->block upgrade", rec.ThreatScore())
+	}
+	if len(rec.signals) != 1 || rec.signals[0] != session.SignalWarning {
+		t.Errorf("signals = %v, want [SignalWarning] after warn->block upgrade", rec.signals)
 	}
 }
 
@@ -1069,7 +1071,7 @@ func TestBlockSessionDenyResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data := blockSessionDenyResponse(tt.id, "critical")
+			data := blockSessionDenyResponse(tt.id, wantMessage)
 			if len(data) == 0 {
 				t.Fatal("expected non-empty response bytes")
 			}

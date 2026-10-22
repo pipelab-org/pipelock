@@ -4549,8 +4549,9 @@ func TestWebSocketHandshake_CEEPathFragmentsBlockSecondUpgrade(t *testing.T) {
 	}
 }
 
-func TestWebSocketHandshake_CEEPathWarnEscalatesBlockAll(t *testing.T) {
-	backendAddr, handshakes, _, _ := websocketBoundaryBackend(t)
+func TestWebSocketHandshake_CEEPathWarnCannotEscalateBlockAll(t *testing.T) {
+	backendAddr, backendCleanup := wsEchoServer(t)
+	defer backendCleanup()
 	proxyAddr, proxyCleanup := setupWSProxy(t, func(cfg *config.Config) {
 		cfg.CrossRequestDetection.Enabled = true
 		cfg.CrossRequestDetection.Action = config.ActionWarn
@@ -4572,14 +4573,12 @@ func TestWebSocketHandshake_CEEPathWarnEscalatesBlockAll(t *testing.T) {
 		t.Fatalf("first incomplete handshake failed: %v", err)
 	}
 	defer func() { _ = first.Close() }()
-	waitForUpstreamHandshakes(t, handshakes, 1)
 
-	if _, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2); err == nil {
-		t.Fatal("warn-mode CEE match did not escalate the completing handshake to block_all")
+	second, err := dialWSConnToTarget(proxyAddr, "ws://"+backendAddr+"/upload/"+half2)
+	if err != nil {
+		t.Fatalf("warn-mode CEE match blocked the completing handshake: %v", err)
 	}
-	if got := handshakes.Load(); got != 1 {
-		t.Fatalf("upstream handshakes = %d, want only the first incomplete handshake", got)
-	}
+	defer func() { _ = second.Close() }()
 }
 
 // TestWSProxyInjectionStrip verifies that the response scanning strip action

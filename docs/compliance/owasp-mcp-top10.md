@@ -60,7 +60,7 @@ trigger fields.
 
 - **Session binding:** `mcp_session_binding` pins the tool inventory (names + schemas) at session start. If tools are added mid-session (scope expansion), the change is detected and flagged.
 - **Tool policy rules:** `mcp_tool_policy` enforces pre-execution allow/deny rules on tool calls. Rules constrain which tools an agent can invoke and with what arguments, regardless of what the MCP server offers.
-- **Adaptive enforcement:** automatic escalation from warn to block based on session risk patterns. An agent that triggers multiple warnings gets progressively restricted.
+- **Adaptive enforcement:** enforced findings raise a per-session risk score, and an escalated session can upgrade later warnings to blocks. Warnings on their own don't escalate a session.
 - **Per-agent budgets:** rate limiting and data budgets constrain how much each agent identity can do per time window.
 
 **Configuration:** `mcp_session_binding`, `mcp_tool_policy`, `adaptive_enforcement`

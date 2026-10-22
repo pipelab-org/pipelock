@@ -5310,8 +5310,8 @@ func TestConnectHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 		t.Fatal("expected session manager to be created")
 	}
 	score := sm.GetOrCreate(clientIP).ThreatScore()
-	if score != 1.0 {
-		t.Fatalf("expected threat score 1.0 after warn-only CONNECT header DLP, got %.1f", score)
+	if score != 0 {
+		t.Fatalf("expected threat score 0 after warn-only CONNECT header DLP, got %.1f", score)
 	}
 }
 
@@ -5590,8 +5590,8 @@ func TestForwardHTTPHeaderDLPAuditMode_NoCleanDecay(t *testing.T) {
 		t.Fatal("expected session manager to be created")
 	}
 	score := sm.GetOrCreate("10.10.10.10").ThreatScore()
-	if score != 1.0 {
-		t.Fatalf("expected threat score 1.0 after warn-only forward header DLP, got %.1f", score)
+	if score != 0 {
+		t.Fatalf("expected threat score 0 after warn-only forward header DLP, got %.1f", score)
 	}
 }
 
@@ -5872,11 +5872,9 @@ func TestForwardHTTPResponseInjection_NonMatchingSuppressStillBlocks(t *testing.
 	}
 }
 
-// TestForwardHTTP_AdaptiveUpgrade_WarnToBlock verifies that an escalated
-// session causes a forward proxy URL scan "warn" (audit mode) to be upgraded
-// to "block" via UpgradeAction. This is the integration test for the forward
-// HTTP transport.
-func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
+// TestForwardHTTP_AdaptiveWarningsStayObservational exercises audit-mode URL
+// findings through the forward transport, followed by a clean request.
+func TestForwardHTTP_AdaptiveWarningsStayObservational(t *testing.T) {
 	testSecret := "FWDSECRET" + "VALUE789"
 	testSecret2 := "FWDSECRET" + "VALUE790"
 
@@ -5908,9 +5906,6 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	})
 	defer cleanup()
 
-	// For the escalation to work, the session must be pre-populated. Since we
-	// can't easily pre-load sessions through the test setup, we verify that
-	// without escalation, audit mode allows the DLP finding through (warn).
 	transport := &http.Transport{
 		Proxy: func(_ *http.Request) (*url.URL, error) {
 			return url.Parse("http://" + proxyAddr)
@@ -5918,45 +5913,35 @@ func TestForwardHTTP_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	}
 	client := &http.Client{Transport: transport}
 
-	// DLP pattern fires on the query string. In audit mode with no escalation,
-	// the proxy must warn and allow - not block.
-	reqURL := backend.URL + "/?" + testSecret + "=1"
-	reqURL2 := backend.URL + "/?" + testSecret2 + "=1"
-	req, reqErr := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
-	if reqErr != nil {
-		t.Fatalf("new request: %v", reqErr)
+	for i := range 25 {
+		marker := testSecret
+		if i%2 != 0 {
+			marker = testSecret2
+		}
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL+"/?"+marker+"=1", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("warning %d: expected 200, got %d", i, resp.StatusCode)
+		}
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL+"/clean", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("unexpected transport error (proxy should forward, not block): %v", err)
+		t.Fatal(err)
 	}
-	_ = resp.Body.Close()
-	// If the proxy returned 403, it blocked (unexpected without escalation).
-	if resp.StatusCode == http.StatusForbidden {
-		t.Fatalf("expected audit-mode allow (no escalation), got 403")
-	}
-
-	// Phase 2: a second, distinct DLP finding (2 x SignalBlock = 6.0 > 5.0).
-	// Identical retries of one classified denial no longer add score.
-	req2, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL2, nil)
-	resp2, err := client.Do(req2)
-	if err != nil {
-		t.Fatalf("second request transport error: %v", err)
-	}
-	_ = resp2.Body.Close()
-
-	// Phase 3: the session should now be escalated. The next DLP-matching
-	// request should be blocked (403) because UpgradeAction upgrades
-	// warn -> block at the elevated level.
-	req3, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, nil)
-	resp3, err := client.Do(req3)
-	if err != nil {
-		t.Fatalf("third request transport error: %v", err)
-	}
-	_ = resp3.Body.Close()
-
-	if resp3.StatusCode != http.StatusForbidden {
-		t.Errorf("expected 403 after escalation (warn->block upgrade), got %d", resp3.StatusCode)
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("clean request after warnings: expected 200, got %d", resp.StatusCode)
 	}
 }
 

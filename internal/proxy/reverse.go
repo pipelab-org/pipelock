@@ -761,12 +761,12 @@ func (rp *ReverseProxyHandler) recordBodyBlockSignal(r *http.Request, cfg *confi
 	rp.recordRequestBlockSignal(r, in.Agent, clientIP, requestID, in.ActorAuth, cfg, layer, reason)
 }
 
-// recordRequestNearMissSignal feeds the same destination-scoped adaptive
-// near-miss used by forward request-header DLP when a reverse URL or header DLP
+// recordRequestWarningSignal records the same zero-point observation used
+// by forward request-header DLP when a reverse URL or header DLP
 // finding is observed without an enforce-mode block. The ordinary session
 // activity recorded later tracks the request but deliberately defers clean
 // decay, so it cannot stand in for this finding signal.
-func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) *SessionState {
+func (rp *ReverseProxyHandler) recordRequestWarningSignal(agent, clientIP, requestID string, actorAuth envelope.ActorAuth, cfg *config.Config) *SessionState {
 	if rp.owner == nil || !cfg.AdaptiveEnforcement.Enabled || isAdaptiveExempt(rp.upstream.Hostname(), cfg.AdaptiveEnforcement.ExemptDomains) {
 		return nil
 	}
@@ -776,7 +776,7 @@ func (rp *ReverseProxyHandler) recordRequestNearMissSignal(agent, clientIP, requ
 	}
 	key := sessionKeyFor(cfg, agent, clientIP, actorAuth)
 	rec := sm.GetOrCreate(key)
-	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalNearMiss, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
+	recordAdaptiveSignalForScope(rec, adaptiveScopeForHost(rp.upstream.Hostname()), session.SignalWarning, &cfg.AdaptiveEnforcement, &cfg.Airlock, decide.EscalationParams{
 		Threshold: cfg.AdaptiveEnforcement.EscalationThreshold,
 		Logger:    rp.logger,
 		Metrics:   rp.metrics,
@@ -1125,7 +1125,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
-			requestSignalRecorders[0] = rp.recordRequestNearMissSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
+			requestSignalRecorders[0] = rp.recordRequestWarningSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 		}
 	}
 
@@ -1188,7 +1188,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					reason)
 				return
 			}
-			requestSignalRecorders[1] = rp.recordRequestNearMissSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
+			requestSignalRecorders[1] = rp.recordRequestWarningSignal(agent, clientIP, requestID, resolvedIdentity.Auth, cfg)
 		}
 	}
 
@@ -1296,7 +1296,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 					Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
-					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID), reason)
+					blockInfoFor(blockreason.AirlockActive, "").WithRequestID(requestID), reason+"; "+airlockBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, airlockSess, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), tier))
 				return true
 			}
 		}
@@ -1371,7 +1371,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			})
 			writeReverseProxyBlock(w, http.StatusForbidden,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-				adaptiveBlockedReason)
+				adaptiveBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, sessionResult.recorder, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
 			return
 		}
 
@@ -1539,7 +1539,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 				})
 				writeReverseProxyBlock(w, http.StatusForbidden,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(requestID),
-					adaptiveBlockedReason)
+					adaptiveBlockDetail(adaptiveAudit{rp.logger, clientIP, requestID}, ceeRec, cfg, adaptiveScopeForHost(rp.upstream.Hostname()), adaptiveSessionDeny))
 				return
 			}
 		}

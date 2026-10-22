@@ -990,9 +990,11 @@ func ceeRecordSignals(result ceeResult, sm *SessionManager, sessionKey string, t
 		RequestID: requestID,
 	}
 	if result.FragmentHit {
-		// Fragment DLP match is high-confidence (reconstructed secret from fragments).
-		// Use SignalFragmentDLP (3 points, same as SignalBlock) for strong escalation.
-		decide.RecordSignal(sess, session.SignalFragmentDLP, ep)
+		sig := session.SignalWarning
+		if result.Blocked {
+			sig = session.SignalFragmentDLP
+		}
+		decide.RecordSignal(sess, sig, ep)
 	}
 	return sess
 }

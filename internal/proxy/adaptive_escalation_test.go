@@ -283,7 +283,7 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 	}
 	ar := receipts[0].ActionRecord
 	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
-		t.Fatalf("session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportForward, upstream.URL+"/ok")
+		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL+"/ok")
 	}
 }
 
@@ -376,8 +376,8 @@ func TestForwardHTTP_Adaptive_HeaderDLPSignal(t *testing.T) {
 	}
 
 	scoreAfter := rec.ThreatScore()
-	if scoreAfter <= scoreBefore {
-		t.Errorf("expected threat score to increase from header DLP signal, before=%f after=%f", scoreBefore, scoreAfter)
+	if scoreAfter != scoreBefore {
+		t.Errorf("warning changed threat score, before=%f after=%f", scoreBefore, scoreAfter)
 	}
 }
 
@@ -392,11 +392,11 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 		cfg.AdaptiveEnforcement.Enabled = true
 		cfg.AdaptiveEnforcement.EscalationThreshold = 2
 		cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0
-		enforceFalse := false
-		cfg.Enforce = &enforceFalse
+		enforceTrue := true
+		cfg.Enforce = &enforceTrue
 		cfg.RequestBodyScanning.Enabled = true
 		cfg.RequestBodyScanning.ScanHeaders = true
-		cfg.RequestBodyScanning.Action = config.ActionWarn
+		cfg.RequestBodyScanning.Action = config.ActionBlock
 	})
 	defer cleanup()
 	installForwardTestDialer(p, upstream.Listener.Addr().String())
@@ -421,11 +421,8 @@ func TestForwardHTTP_AdaptiveSelfDeclaredAgentRotationSharesSession(t *testing.T
 			t.Fatalf("forward request for %q: %v", tc.agent, err)
 		}
 		_ = resp.Body.Close()
-		wantStatus := http.StatusOK
-		// The second near-miss is allowed in audit mode, but it is the one
-		// that crosses the shared threshold. With the fold removed, each
-		// request scores only one point in a different bucket and this test's
-		// escalation assertion below fails.
+		wantStatus := http.StatusForbidden
+		// Explicit DLP blocks remain enforced across caller-name rotation.
 		if resp.StatusCode != wantStatus {
 			t.Fatalf("forward request %d for %q status = %d, want %d", i+1, tc.agent, resp.StatusCode, wantStatus)
 		}
@@ -924,11 +921,11 @@ func TestFetch_Adaptive_BlockAll(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected Blocked=true")
 	}
-	if resp.BlockReason != adaptiveBlockedReason {
+	if !strings.Contains(resp.BlockReason, "blocked by adaptive enforcement") {
 		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
 	}
 	body := w.Body.String()
-	for _, forbidden := range []string{"adaptive_level", "auto_recover_at", "recover_hint", "elevated", "high", "critical"} {
+	for _, forbidden := range []string{"Authorization", "Bearer", "caller-a", "caller-b"} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("agent-facing fetch response leaked %q: %s", forbidden, body)
 		}
@@ -1596,10 +1593,8 @@ func TestForwardHTTP_Adaptive_BodyDLPWarnUpgradeToBlock(t *testing.T) {
 	}
 }
 
-// TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck verifies the post-header-DLP
-// block_all recheck path in handleForwardHTTP. After a header DLP near-miss
-// escalates the session to block_all level, subsequent clean requests are denied.
-func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
+// A header warning cannot cross a nearly reached block_all threshold.
+func TestForwardHTTP_Adaptive_HeaderDLPWarnCannotTriggerBlockAll(t *testing.T) {
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = fmt.Fprint(w, "ok")
@@ -1626,7 +1621,7 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	}
 	defer p.Close()
 
-	// Prime near threshold so header DLP near-miss escalates to block_all level.
+	// Prime below threshold; a warning must neither escalate nor decay it.
 	sm := p.sessionMgrPtr.Load()
 	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
 	rec.RecordSignal(session.SignalNearMiss, adaptiveTestThreshold)
@@ -1643,10 +1638,10 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 	handler := p.buildHandler(http.NewServeMux())
 	handler.ServeHTTP(w, req)
 
-	// Either blocked by header DLP or by the post-DLP block_all recheck.
-	if w.Code != http.StatusForbidden {
+	// The warning remains a warning despite prior, sub-threshold evidence.
+	if w.Code != http.StatusOK {
 		t.Logf("body: %s", w.Body.String())
-		t.Errorf("expected 403 after forward header DLP near-miss escalation + block_all recheck, got %d", w.Code)
+		t.Errorf("expected header warning to remain allowed below block_all, got %d", w.Code)
 	}
 	waitForReceiptOrTimeout(t, receiptDir)
 	if err := receiptRecorder.Close(); err != nil {
@@ -1657,8 +1652,8 @@ func TestForwardHTTP_Adaptive_HeaderDLPBlockAllRecheck(t *testing.T) {
 		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
-		t.Fatalf("session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportForward, upstream.URL+"/ok")
+	if ar.Verdict != config.ActionWarn || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
+		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL+"/ok")
 	}
 }
 

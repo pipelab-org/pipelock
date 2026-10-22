@@ -113,7 +113,7 @@ func TestAirlockTunnelRetainsFindingRecorder(t *testing.T) {
 					original := originalManager.GetOrCreate(airlockAdmissionClient)
 					var replaced atomic.Bool
 					var scopedAudit atomic.Bool
-					logger, err := audit.NewWithStream("json", "stdout", "", true, true, airlockLogCallback(func(record []byte) {
+					logger := airlockEvidenceLogger(t, cfg, p, original, adaptiveScopeForHost(upstream.Hostname()), func(record []byte) {
 						if bytes.Contains(record, []byte(`"event":"airlock_enter"`)) && bytes.Contains(record, []byte(fmt.Sprintf(`"scope":%q`, adaptiveScopeForHost(upstream.Hostname())))) {
 							scopedAudit.Store(true)
 						}
@@ -123,12 +123,8 @@ func TestAirlockTunnelRetainsFindingRecorder(t *testing.T) {
 						current := NewSessionManager(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, p.metrics)
 						current.UpdateConfig(&cfg.SessionProfiling, &cfg.AdaptiveEnforcement, &cfg.Airlock)
 						p.sessionMgrPtr.Store(current)
-					}))
-					if err != nil {
-						t.Fatal(err)
-					}
+					})
 					p.logger = logger
-					t.Cleanup(logger.Close)
 					listener := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						r.RemoteAddr = airlockAdmissionClient + ":12345"
 						if transport == TransportConnect {

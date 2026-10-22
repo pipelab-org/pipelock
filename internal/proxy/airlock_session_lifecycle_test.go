@@ -52,7 +52,7 @@ func TestAirlockAdmissionSessionReplacement(t *testing.T) {
 					original := oldManager.GetOrCreate(airlockAdmissionClient)
 					scope := adaptiveScopeForHost(upstream.Hostname())
 					var replaced atomic.Bool
-					logger, err := audit.NewWithStream("json", "stdout", "", true, true, airlockLogCallback(func(record []byte) {
+					logger := airlockEvidenceLogger(t, cfg, p, original, adaptiveScopeForHost(upstream.Hostname()), func(record []byte) {
 						if !bytes.Contains(record, []byte(`"event":"`+string(audit.EventHeaderDLP)+`"`)) || !replaced.CompareAndSwap(false, true) {
 							return
 						}
@@ -78,10 +78,7 @@ func TestAirlockAdmissionSessionReplacement(t *testing.T) {
 						if got := airlockTierForScope(current, scope); got != tc.currentTier {
 							t.Errorf("current session tier = %q, want %q", got, tc.currentTier)
 						}
-					}))
-					if err != nil {
-						t.Fatal(err)
-					}
+					})
 					p.logger = logger
 					target := upstream.String() + "/control"
 					if transport == TransportFetch {
@@ -217,6 +214,7 @@ func TestReverseAirlockRetainsRequestRecorder(t *testing.T) {
 	for _, tier := range []string{config.AirlockTierDrain, config.AirlockTierNone} {
 		t.Run(tier, func(t *testing.T) {
 			cfg := airlockAdmissionConfig(t, tier)
+			cfg.RequestBodyScanning.Action = config.ActionBlock
 			var calls atomic.Int32
 			rp, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
 				calls.Add(1)
@@ -237,6 +235,7 @@ func TestReverseAirlockRetainsRequestRecorder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(logger.Close)
 			rp.logger, p.logger = logger, logger
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://reverse.example/control", nil)
 			req.RemoteAddr = airlockAdmissionClient + ":12345"
@@ -249,12 +248,8 @@ func TestReverseAirlockRetainsRequestRecorder(t *testing.T) {
 			if got := airlockTierForScope(original, adaptiveScopeForHost(upstream.Hostname())); got != tier {
 				t.Fatalf("request recorder tier = %q, want %q", got, tier)
 			}
-			if tier == config.AirlockTierDrain {
-				if w.Code != http.StatusForbidden || calls.Load() != 0 {
-					t.Fatalf("quarantined request: status=%d upstream_calls=%d", w.Code, calls.Load())
-				}
-			} else if w.Code != http.StatusOK || calls.Load() != 1 {
-				t.Fatalf("positive control: status=%d upstream_calls=%d", w.Code, calls.Load())
+			if w.Code != http.StatusForbidden || calls.Load() != 0 {
+				t.Fatalf("enforced finding reached upstream: status=%d upstream_calls=%d", w.Code, calls.Load())
 			}
 		})
 	}

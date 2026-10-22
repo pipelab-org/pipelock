@@ -22,6 +22,11 @@ import (
 
 const severityCritical = "critical"
 
+// maxScanFileBytes is the largest config or manifest file the project scan
+// reads. Files over it are skipped for secrets and reported as uninspected
+// for dependencies.
+const maxScanFileBytes = 1 << 20
+
 // Finding represents a single security finding from the project scan.
 type Finding struct {
 	Severity string `json:"severity"` // critical, warning, info
@@ -362,7 +367,7 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 
 		// Skip large files (>1MB)
 		info, err := d.Info()
-		if err != nil || info.Size() > 1<<20 {
+		if err != nil || info.Size() > maxScanFileBytes {
 			return nil
 		}
 

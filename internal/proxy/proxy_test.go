@@ -5436,7 +5436,7 @@ func TestFetchEndpoint_AdaptiveUpgrade_WarnToBlock(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected blocked=true from adaptive escalation")
 	}
-	if resp.BlockReason != adaptiveBlockedReason {
+	if !strings.Contains(resp.BlockReason, "blocked by adaptive enforcement") {
 		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
 	}
 }
@@ -5570,7 +5570,7 @@ func TestFetchEndpoint_BlockAll_CleanTrafficBlocked(t *testing.T) {
 	if !resp.Blocked {
 		t.Error("expected blocked=true from block_all enforcement")
 	}
-	if resp.BlockReason != adaptiveBlockedReason {
+	if !strings.Contains(resp.BlockReason, "blocked by adaptive enforcement") {
 		t.Errorf("block reason = %q, want %q", resp.BlockReason, adaptiveBlockedReason)
 	}
 

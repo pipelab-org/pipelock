@@ -783,7 +783,7 @@ func newInterceptHandler(
 					ic.Metrics.RecordTLSRequestBlocked("airlock")
 					writeBlockedError(w,
 						blockInfoFor(blockreason.AirlockActive, "").WithRequestID(ic.RequestID),
-						"airlock: "+reason, http.StatusForbidden)
+						"airlock: "+reason+"; "+airlockBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, interceptSess, ic.Config, interceptAdaptiveScope(ic), tier), http.StatusForbidden)
 					return
 				}
 			}
@@ -1066,20 +1066,15 @@ func newInterceptHandler(
 				effectiveAction = decide.UpgradeAction(baseAction, level, &ic.Config.AdaptiveEnforcement)
 			}
 			if effectiveAction == config.ActionBlock {
+				setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), urlResult.Scanner)
 				sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 				var m *metrics.Metrics
 				if ic.Proxy != nil {
 					m = ic.Proxy.metrics
 				}
 				recordAdaptiveUpgrade(ic.Logger, m, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(level), FromAction: baseAction, ToAction: effectiveAction, Scanner: urlResult.Scanner, ClientIP: ic.ClientIP, RequestID: ic.RequestID})
-				switch {
-				case urlResult.IsInfrastructureError():
-					// Score-neutral: see scan path above for rationale.
-				case urlResult.IsEntropyOnly():
-				case urlResult.IsConfigMismatch():
-					interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
-				default:
-					interceptRecordFinding(ic, session.SignalBlock, urlResult.Scanner, urlResult.Reason)
+				if !urlResult.IsAdaptiveNeutral() {
+					interceptRecordFinding(ic, session.SignalWarning, urlResult.Scanner, urlResult.Reason)
 				}
 				ic.Logger.LogBlockedDetail(actx, urlResult.Scanner, urlResult.Reason+" (escalated)", auditDetailFromResult(urlResult))
 				ic.Metrics.RecordTLSRequestBlocked("url_scan")
@@ -1103,7 +1098,7 @@ func newInterceptHandler(
 			// evidence of misbehavior and must not feed adaptive scoring via
 			// the audit path either.
 			if !urlResult.IsAdaptiveNeutral() {
-				interceptRecordFinding(ic, session.SignalNearMiss, urlResult.Scanner, urlResult.Reason)
+				interceptRecordFinding(ic, session.SignalWarning, urlResult.Scanner, urlResult.Reason)
 			}
 			ic.Logger.LogAnomaly(actx, urlResult.Scanner, urlResult.Reason, urlResult.Score)
 		}
@@ -1215,8 +1210,8 @@ func newInterceptHandler(
 					"blocked: "+reason, http.StatusForbidden)
 				return
 			}
-			if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
-				interceptRecordSignal(ic, session.SignalCrossAgentContamination)
+			if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+				interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 			}
 			a2aBodyResult := mcp.ScanA2ARequestBody(r.Context(), bodyBytes, ic.Scanner, &ic.Config.A2AScanning, a2aContentEntropyOptions(r.URL.Hostname(), ic.Config))
 			if !a2aBodyResult.Clean {
@@ -1335,8 +1330,8 @@ func newInterceptHandler(
 			// source (evidence) and hostile escalation are captured even when the
 			// request is blocked for another reason (e.g. a secret in the body).
 			if isA2A && bodyBytes != nil {
-				if decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest).ShouldEscalate {
-					interceptRecordSignal(ic, session.SignalCrossAgentContamination)
+				if observation := decide.ObserveCrossAgentContamination(ic.Recorder, &ic.Config.Taint, session.CrossAgentBoundaryA2ARequest); observation.ShouldEscalate {
+					interceptRecordSignal(ic, observation.AdaptiveSignal(false))
 				}
 			}
 
@@ -1452,6 +1447,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalBodyAction {
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scannerLabel)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
@@ -1469,7 +1465,11 @@ func newInterceptHandler(
 				// tunnels, so it fails closed here.
 				if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) || action == config.ActionAsk || (action == config.ActionBlock && ic.Config.EnforceEnabled()) {
 					if !bodyAdaptiveExempt {
-						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, receiptPattern)
+						sig := session.SignalBlock
+						if !isFailClosedBodyResult(result, bodyBytes) {
+							sig = decide.UpgradedWarningSignal(originalBodyAction, sig)
+						}
+						interceptRecordFinding(ic, sig, scannerLabel, receiptPattern)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason)
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
@@ -1496,7 +1496,7 @@ func newInterceptHandler(
 				// without any escalation, which is not the intent.
 				if action == config.ActionBlock && action != originalBodyAction && !ic.Config.EnforceEnabled() {
 					if !bodyAdaptiveExempt {
-						interceptRecordFinding(ic, session.SignalBlock, scannerLabel, receiptPattern)
+						interceptRecordFinding(ic, decide.UpgradedWarningSignal(originalBodyAction, session.SignalBlock), scannerLabel, receiptPattern)
 					}
 					ic.Logger.LogBlocked(actx, scannerLabel, reason+" (escalated)")
 					ic.Metrics.RecordTLSRequestBlocked(scannerLabel)
@@ -1678,6 +1678,7 @@ func newInterceptHandler(
 				action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				escalatedBlock := action == config.ActionBlock && originalAction != config.ActionBlock
 				if action != originalAction {
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), scanner.ScannerDLP)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var metricSet *metrics.Metrics
 					if ic.Proxy != nil {
@@ -1701,7 +1702,7 @@ func newInterceptHandler(
 				reason := headerResult.withAudienceExplanation(receiptPattern)
 				// ActionAsk: no HITL terminal in intercepted tunnels, fail closed.
 				if headerHardBlock || action == config.ActionAsk || (action == config.ActionBlock && (ic.Config.EnforceEnabled() || escalatedBlock)) {
-					interceptRecordFinding(ic, session.SignalBlock, scanner.ScannerDLP, receiptPattern)
+					interceptRecordFinding(ic, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), scanner.ScannerDLP, receiptPattern)
 					ic.Logger.LogBlockedDetail(actx, "header_dlp", reason, audit.BlockDetail{
 						Header: headerResult.HeaderName, Patterns: dlpMatchNames(headerResult.DLPMatches),
 						Cookies: cookieNamesWithDLPMatch(r.Context(), scanHeaders, ic.Scanner),
@@ -1875,7 +1876,7 @@ func newInterceptHandler(
 				}))
 				writeBlockedError(w,
 					blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
-					adaptiveBlockedReason, http.StatusForbidden)
+					adaptiveBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ceeRec, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny), http.StatusForbidden)
 				return
 			}
 		}
@@ -1918,7 +1919,7 @@ func newInterceptHandler(
 			}))
 			writeBlockedError(w,
 				blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(ic.RequestID),
-				adaptiveBlockedReason,
+				adaptiveBlockDetail(adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), adaptiveSessionDeny),
 				http.StatusForbidden)
 			return
 		}
@@ -2960,6 +2961,7 @@ func newInterceptHandler(
 					action = decide.UpgradeAction(action, level, &ic.Config.AdaptiveEnforcement)
 				}
 				if action != originalAction {
+					setAdaptiveBlockDetail(w, adaptiveAudit{ic.Logger, ic.ClientIP, ic.RequestID}, ic.Recorder, ic.Config, interceptAdaptiveScope(ic), responseScanLayer)
 					sessionKey := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 					var m *metrics.Metrics
 					if ic.Proxy != nil {
@@ -2987,7 +2989,7 @@ func newInterceptHandler(
 					// ActionAsk: no HITL terminal available inside intercepted tunnels,
 					// so fail-closed to block (consistent with HITL non-terminal default).
 					if !interceptRespExempt {
-						interceptRecordFinding(ic, session.SignalBlock, responseScanLayer, reason)
+						interceptRecordFinding(ic, decide.UpgradedWarningSignal(originalAction, session.SignalBlock), responseScanLayer, reason)
 					}
 					ic.Logger.LogBlocked(actx, responseScanLayer, reason)
 					ic.Metrics.RecordTLSResponseBlocked("injection")

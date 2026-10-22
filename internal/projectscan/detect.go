@@ -4,12 +4,22 @@
 package projectscan
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
+	"unicode/utf16"
+	"unicode/utf8"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Agent type constants.
@@ -277,41 +287,44 @@ var hostileToolingPackages = []string{
 func detectHostileTooling(dir string) []Finding {
 	var findings []Finding
 
-	// Check requirements.txt (parsed line-by-line, exact match)
-	deps := readPythonDeps(dir)
-	for _, dep := range deps {
+	// readPythonDeps/parsePyprojectDeps only looks for agent frameworks, so
+	// the dependency-bearing manifests are inspected separately here.
+	manifests := []struct {
+		file  string
+		names func([]byte) (map[string]bool, error)
+	}{
+		{"requirements.txt", requirementNames},
+		{"pyproject.toml", pyprojectDependencyNames},
+	}
+	for _, m := range manifests {
+		data, err := readManifest(filepath.Join(dir, m.file))
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			// A manifest we cannot read cannot establish that the project is clean.
+			reason := "unreadable"
+			if errors.Is(err, errManifestTooLarge) {
+				reason = "larger than the scan size limit"
+			}
+			findings = append(findings, inspectionWarning(m.file, reason))
+			continue
+		}
+		deps, namesErr := m.names(data)
 		for _, hostile := range hostileToolingPackages {
-			if dep == hostile {
+			if deps[hostile] && !hasHostileFinding(findings, hostile) {
 				findings = append(findings, Finding{
 					Severity: "warning",
 					Category: "tooling",
-					Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider `pipelock generate config --preset hostile-model`.", dep),
+					Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider `pipelock generate config --preset hostile-model`.", hostile),
 					Pattern:  hostile,
 				})
 			}
 		}
-	}
-
-	// Also check pyproject.toml directly for hostile packages.
-	// readPythonDeps/parsePyprojectDeps only looks for agent frameworks,
-	// so we do a separate check. Two dependency formats exist:
-	//   PEP 621:  dependencies = ["obliteratus>=0.1"]  (quoted in array)
-	//   Poetry:   obliteratus = "^0.1"                 (TOML key = value)
-	// We match both while avoiding false positives from prose descriptions.
-	pyprojectPath := filepath.Join(dir, "pyproject.toml")
-	if data, err := os.ReadFile(filepath.Clean(pyprojectPath)); err == nil {
-		lower := strings.ToLower(string(data))
-		for _, hostile := range hostileToolingPackages {
-			if pyprojectHasHostileDep(lower, hostile) {
-				if !hasHostileFinding(findings, hostile) {
-					findings = append(findings, Finding{
-						Severity: "warning",
-						Category: "tooling",
-						Message:  fmt.Sprintf("Guardrail-removal toolchain detected: %s. Consider `pipelock generate config --preset hostile-model`.", hostile),
-						Pattern:  hostile,
-					})
-				}
-			}
+		if namesErr != nil {
+			// Names found before the problem are reported above; the rest of
+			// the manifest could not be read, so say so instead of staying quiet.
+			findings = append(findings, inspectionWarning(m.file, "malformed"))
 		}
 	}
 
@@ -336,28 +349,348 @@ func detectHostileTooling(dir string) []Finding {
 	return findings
 }
 
-// pyprojectHasHostileDep checks if a lowercased pyproject.toml contains a
-// hostile package as an actual dependency (not in prose). Matches per-line:
-//   - PEP 621 array entries: line starts with "pkg or 'pkg (indented items)
-//   - Poetry table keys: line starts with pkg followed by space or = sign
-func pyprojectHasHostileDep(lower, pkg string) bool {
-	for _, line := range strings.Split(lower, "\n") {
-		trimmed := strings.TrimSpace(line)
-		// PEP 621: dependency array entry starts with quoted package name
-		//   e.g. "obliteratus>=0.1",
-		if strings.HasPrefix(trimmed, `"`+pkg) || strings.HasPrefix(trimmed, `'`+pkg) {
-			return true
+// errManifestTooLarge reports a manifest over maxScanFileBytes. The TOML
+// decoder recurses once per nesting level, so a few MB of nested brackets
+// overflows the goroutine stack, which Go cannot recover from.
+var errManifestTooLarge = errors.New("manifest exceeds the scan size limit")
+
+// readManifest reads a dependency manifest, refusing anything over the same
+// size limit scanFiles applies to config files.
+func readManifest(path string) ([]byte, error) {
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxScanFileBytes {
+		return nil, errManifestTooLarge
+	}
+	return data, nil
+}
+
+// inspectionWarning reports a manifest whose dependencies could not be fully
+// read, so an incomplete scan never looks the same as a clean one.
+func inspectionWarning(file, reason string) Finding {
+	return Finding{
+		Severity: "warning",
+		Category: "tooling",
+		File:     file,
+		Message:  fmt.Sprintf("Could not inspect %s dependencies (%s); fix the manifest and scan again.", file, reason),
+	}
+}
+
+// requirementComment matches a comment in a pip requirements file: a line
+// starting with # or whitespace followed by #. Line continuation is a trailing
+// backslash. https://pip.pypa.io/en/stable/reference/requirements-file-format/
+var requirementComment = regexp.MustCompile(`(?:^|\s)#.*$`)
+
+// requirementOption matches a per-requirement option such as --hash after
+// any whitespace. pip only splits on a space, but a tab-separated line still
+// names its package, so the name is reported rather than dropped.
+var requirementOption = regexp.MustCompile(`\s--`)
+
+// Python str.splitlines recognizes these boundaries in addition to CRLF:
+// https://docs.python.org/3/library/stdtypes.html#str.splitlines.
+var requirementLineBreak = regexp.MustCompile("\r\n|[\n\r\v\f\x1c-\x1e\u0085\u2028\u2029]")
+
+// requirementNames returns the normalized package names in a pip requirements
+// file. Option lines (-r, -e, --index-url) start with a dash, which is not a
+// PEP 508 name, so they yield no name; per-requirement options (--hash) are
+// cut off before the requirement is read.
+func requirementNames(data []byte) (map[string]bool, error) {
+	text, err := decodeRequirementText(data)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]bool)
+	record := func(line string) {
+		line = strings.TrimSpace(requirementComment.ReplaceAllString(line, ""))
+		if loc := requirementOption.FindStringIndex(line); loc != nil {
+			line = line[:loc[0]]
 		}
-		// Poetry: package name as a TOML key at the start of a line
-		//   e.g. obliteratus = "^0.1"
-		if strings.HasPrefix(trimmed, pkg) {
-			rest := trimmed[len(pkg):]
-			if len(rest) > 0 && (rest[0] == ' ' || rest[0] == '=') {
-				return true
-			}
+		if name := pep508DependencyName(line); name != "" {
+			names[name] = true
 		}
 	}
-	return false
+	// pip's join_lines runs before ignore_comments. A comment line cannot
+	// continue, and its leading space keeps a pending requirement separate
+	// from the comment. https://github.com/pypa/pip/blob/main/src/pip/_internal/req/req_file.py
+	var pending strings.Builder
+	for _, line := range requirementLineBreak.Split(text, -1) {
+		comment := strings.HasPrefix(strings.TrimSpace(line), "#")
+		if strings.HasSuffix(line, `\`) && !comment {
+			pending.WriteString(strings.Trim(line, `\`))
+			continue
+		}
+		if comment {
+			line = " " + line
+		}
+		if pending.Len() > 0 {
+			pending.WriteString(line)
+			line = pending.String()
+			pending.Reset()
+		}
+		record(line)
+	}
+	if pending.Len() > 0 {
+		record(pending.String())
+	}
+	return names, nil
+}
+
+// pip decodes a leading UTF-8, UTF-16, or UTF-32 BOM before it splits lines:
+// https://github.com/pypa/pip/blob/main/src/pip/_internal/req/req_file.py
+// Invalid text is reported so an incomplete inspection cannot look clean.
+func decodeRequirementText(data []byte) (string, error) {
+	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		data = data[3:]
+	}
+	var order binary.ByteOrder
+	width := 0
+	switch {
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe, 0x00, 0x00}):
+		order, width, data = binary.LittleEndian, 4, data[4:]
+	case bytes.HasPrefix(data, []byte{0x00, 0x00, 0xfe, 0xff}):
+		order, width, data = binary.BigEndian, 4, data[4:]
+	case bytes.HasPrefix(data, []byte{0xff, 0xfe}):
+		order, width, data = binary.LittleEndian, 2, data[2:]
+	case bytes.HasPrefix(data, []byte{0xfe, 0xff}):
+		order, width, data = binary.BigEndian, 2, data[2:]
+	}
+	if width == 0 {
+		if !utf8.Valid(data) {
+			return "", errors.New("invalid UTF-8 requirements file")
+		}
+		return string(data), nil
+	}
+	if len(data)%width != 0 {
+		return "", errors.New("incomplete requirements file character")
+	}
+	if width == 4 {
+		var result strings.Builder
+		for i := 0; i < len(data); i += 4 {
+			codepoint := order.Uint32(data[i:])
+			if codepoint > utf8.MaxRune {
+				return "", errors.New("invalid UTF-32 requirements file")
+			}
+			r := rune(codepoint)
+			if !utf8.ValidRune(r) {
+				return "", errors.New("invalid UTF-32 requirements file")
+			}
+			result.WriteRune(r)
+		}
+		return result.String(), nil
+	}
+	units := make([]uint16, 0, len(data)/2)
+	for i := 0; i < len(data); i += 2 {
+		units = append(units, order.Uint16(data[i:]))
+	}
+	runes := utf16.Decode(units)
+	if !slices.Equal(units, utf16.Encode(runes)) {
+		return "", errors.New("invalid UTF-16 requirements file")
+	}
+	return string(runes), nil
+}
+
+// dependencyWalk collects package names from the dependency-bearing tables of
+// a decoded pyproject.toml. A node with an unexpected type is recorded in
+// problems, never skipped silently, so one malformed table cannot hide names
+// that other tables declare.
+type dependencyWalk struct {
+	root     map[string]any
+	names    map[string]bool
+	problems []string
+}
+
+func (w *dependencyWalk) bad(path string) { w.problems = append(w.problems, path) }
+
+// lookup returns the node at keys and its dotted path. A missing key is not a
+// problem; a non-table where a table is required is.
+func (w *dependencyWalk) lookup(keys ...string) (any, string, bool) {
+	var cur any = w.root
+	path := ""
+	for _, key := range keys {
+		table, ok := cur.(map[string]any)
+		if !ok {
+			w.bad(path)
+			return nil, "", false
+		}
+		next, found := table[key]
+		if !found {
+			return nil, "", false
+		}
+		cur = next
+		if path != "" {
+			path += "."
+		}
+		path += key
+	}
+	return cur, path, true
+}
+
+// requirements reads an array of PEP 508 strings. PEP 735 groups may also hold
+// {include-group = "name"} tables, which name no package.
+func (w *dependencyWalk) requirements(path string, node any, allowInclude bool) {
+	items, ok := node.([]any)
+	if !ok {
+		w.bad(path)
+		return
+	}
+	for _, item := range items {
+		switch it := item.(type) {
+		case string:
+			if name := pep508DependencyName(it); name != "" {
+				w.names[name] = true
+			}
+		case map[string]any:
+			if _, isInclude := it["include-group"].(string); !allowInclude || !isInclude || len(it) != 1 {
+				w.bad(path)
+			}
+		default:
+			w.bad(path)
+		}
+	}
+}
+
+// groups reads a table whose values are requirement arrays.
+func (w *dependencyWalk) groups(path string, node any, allowInclude bool) {
+	table, ok := node.(map[string]any)
+	if !ok {
+		w.bad(path)
+		return
+	}
+	for name, group := range table {
+		w.requirements(path+"."+name, group, allowInclude)
+	}
+}
+
+// keyed reads a Poetry-style table whose keys are package names.
+func (w *dependencyWalk) keyed(path string, node any) {
+	table, ok := node.(map[string]any)
+	if !ok {
+		w.bad(path)
+		return
+	}
+	for name := range table {
+		w.names[normalizePythonPackageName(name)] = true
+	}
+}
+
+// each visits every table in a table of tables (Poetry groups, Hatch envs).
+func (w *dependencyWalk) each(path string, node any, visit func(path string, table map[string]any)) {
+	outer, ok := node.(map[string]any)
+	if !ok {
+		w.bad(path)
+		return
+	}
+	for name, inner := range outer {
+		table, ok := inner.(map[string]any)
+		if !ok {
+			w.bad(path + "." + name)
+			continue
+		}
+		visit(path+"."+name, table)
+	}
+}
+
+// pyprojectDependencyNames returns the normalized package names declared in
+// the dependency-bearing pyproject.toml tables. Sources:
+//   - build-system.requires: PEP 518, https://peps.python.org/pep-0518/
+//   - project.dependencies, project.optional-dependencies: PEP 621,
+//     https://peps.python.org/pep-0621/
+//   - dependency-groups: PEP 735, https://peps.python.org/pep-0735/
+//   - tool.poetry dependencies, dev-dependencies and group.*.dependencies:
+//     https://python-poetry.org/docs/pyproject/
+//   - tool.uv.dev-dependencies:
+//     https://docs.astral.sh/uv/concepts/projects/dependencies/
+//   - tool.pdm.dev-dependencies, the pre-PEP 735 PDM groups that PDM still reads
+//   - tool.hatch.envs.*.dependencies and extra-dependencies:
+//     https://hatch.pypa.io/latest/config/environment/overview/
+//
+// On a parse failure the returned map is nil. On an unexpected node type the
+// names found elsewhere are still returned alongside the error.
+func pyprojectDependencyNames(data []byte) (map[string]bool, error) {
+	var root map[string]any
+	if err := toml.Unmarshal(data, &root); err != nil {
+		return nil, fmt.Errorf("parse pyproject.toml: %w", err)
+	}
+	w := &dependencyWalk{root: root, names: make(map[string]bool)}
+
+	if node, path, ok := w.lookup("build-system", "requires"); ok {
+		w.requirements(path, node, false)
+	}
+	if node, path, ok := w.lookup("project", "dependencies"); ok {
+		w.requirements(path, node, false)
+	}
+	if node, path, ok := w.lookup("project", "optional-dependencies"); ok {
+		w.groups(path, node, false)
+	}
+	if node, path, ok := w.lookup("dependency-groups"); ok {
+		w.groups(path, node, true)
+	}
+	if node, path, ok := w.lookup("tool", "poetry", "dependencies"); ok {
+		w.keyed(path, node)
+	}
+	if node, path, ok := w.lookup("tool", "poetry", "dev-dependencies"); ok {
+		w.keyed(path, node)
+	}
+	if node, path, ok := w.lookup("tool", "poetry", "group"); ok {
+		w.each(path, node, func(path string, table map[string]any) {
+			if deps, found := table["dependencies"]; found {
+				w.keyed(path+".dependencies", deps)
+			}
+		})
+	}
+	if node, path, ok := w.lookup("tool", "uv", "dev-dependencies"); ok {
+		w.requirements(path, node, false)
+	}
+	if node, path, ok := w.lookup("tool", "pdm", "dev-dependencies"); ok {
+		w.groups(path, node, false)
+	}
+	if node, path, ok := w.lookup("tool", "hatch", "envs"); ok {
+		w.each(path, node, func(path string, table map[string]any) {
+			for _, key := range []string{"dependencies", "extra-dependencies"} {
+				if deps, found := table[key]; found {
+					w.requirements(path+"."+key, deps, false)
+				}
+			}
+		})
+	}
+
+	if len(w.problems) > 0 {
+		return w.names, fmt.Errorf("unexpected dependency shape in %s", strings.Join(w.problems, ", "))
+	}
+	return w.names, nil
+}
+
+// PEP 508's name grammar starts with an ASCII letter or digit, permits
+// internal [-_.], and ends with a letter or digit:
+// https://peps.python.org/pep-0508/#complete-grammar.
+var pep508PackageName = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?`)
+
+func pep508DependencyName(requirement string) string {
+	requirement = strings.TrimSpace(requirement)
+	name := pep508PackageName.FindString(requirement)
+	if name == "" {
+		return ""
+	}
+	rest := strings.TrimSpace(requirement[len(name):])
+	if rest != "" && !strings.ContainsRune("[(@<>=!~;", rune(rest[0])) {
+		return ""
+	}
+	return normalizePythonPackageName(name)
+}
+
+// PEP 503 normalizes runs of hyphens, underscores, and dots to one hyphen,
+// then lowercases: https://peps.python.org/pep-0503/#normalized-names.
+var pythonPackageSeparators = regexp.MustCompile(`[-_.]+`)
+
+func normalizePythonPackageName(name string) string {
+	return strings.ToLower(pythonPackageSeparators.ReplaceAllString(name, "-"))
 }
 
 func hasHostileFinding(findings []Finding, pattern string) bool {

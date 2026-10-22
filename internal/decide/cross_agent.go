@@ -25,6 +25,17 @@ type CrossAgentResult struct {
 	ShouldEscalate bool
 }
 
+// AdaptiveSignal separates exposure evidence from enforced behavior. Allowed
+// propagation remains visible but cannot turn a warned response into a session
+// quarantine. An enforced denial or unreadable risk state retains the existing
+// fail-closed contamination signal.
+func (r CrossAgentResult) AdaptiveSignal(enforced bool) session.SignalType {
+	if r.ShouldEscalate && (r.Indeterminate || enforced) {
+		return session.SignalCrossAgentContamination
+	}
+	return session.SignalWarning
+}
+
 // ObserveCrossAgentContamination records cross-agent taint propagation when a
 // contaminated session emits to another agent over a proxied boundary (an A2A
 // request body or an MCP tools/call).
