@@ -29,3 +29,36 @@ func TestScanTextForDLP_HexCredentialSplitAcrossValues(t *testing.T) {
 		t.Errorf("benign adjacent hex flagged: %+v", r.Matches)
 	}
 }
+
+func TestScanTextForDLP_SplitHexWarningDoesNotHideBlock(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns,
+		config.DLPPattern{Name: "Advisory marker", Regex: "advisorymarker", Severity: config.SeverityLow, Action: config.ActionWarn},
+		config.DLPPattern{Name: "Enforced marker", Regex: "enforcedmarker", Severity: config.SeverityHigh},
+	)
+	s := MustNew(cfg)
+	defer s.Close()
+	split := func(value string) string {
+		h := hex.EncodeToString([]byte(value))
+		return h[:12] + " " + h[12:]
+	}
+	for _, tc := range []struct {
+		name, text string
+		blocked    bool
+	}{
+		{"warn only", split("advisorymarker"), false},
+		{"warn before block", split("advisorymarker") + " separator " + split("enforcedmarker"), true},
+		{"block before warn", split("enforcedmarker") + " separator " + split("advisorymarker"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := s.ScanTextForDLP(context.Background(), tc.text)
+			if r.Clean == tc.blocked {
+				t.Fatalf("clean=%v want blocked=%v matches=%+v", r.Clean, tc.blocked, r.Matches)
+			}
+			if len(r.Matches)+len(r.InformationalMatches) == 0 {
+				t.Fatal("split-hex findings lost")
+			}
+		})
+	}
+}

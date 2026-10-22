@@ -72,7 +72,7 @@ func TestRunWritesStableImageBundle(t *testing.T) {
 }
 
 func TestBuildManifestAcceptsEachReleaseNamespace(t *testing.T) {
-	for _, namespace := range releaseNamespaces {
+	for _, namespace := range []string{"ghcr.io/luckypipewrench", "ghcr.io/pipelab-org"} {
 		manifest, err := buildManifest("v3.4.0", strings.Repeat("a", 40), []string{
 			"pipelock=" + namespace + "/pipelock@" + testDigest,
 			"pipelock-init=" + namespace + "/pipelock-init@" + testDigest,

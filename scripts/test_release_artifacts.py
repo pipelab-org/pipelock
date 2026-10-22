@@ -345,6 +345,25 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotIn("image.source=https://github.com/luckyPipewrench", self.goreleaser)
 
     @unittest.skipIf(os.name == "nt", "release workflow guard requires bash")
+    def test_build_namespace_guard_precedes_publication(self) -> None:
+        steps = yaml.load(self.workflow, Loader=WorkflowLoader)["jobs"]["release-build"]["steps"]
+        index = next(i for i, step in enumerate(steps)
+                     if step.get("name") == "Verify release image namespace")
+        self.assertEqual(index, 1)  # Immediately after checkout, before build or upload.
+        guard = steps[index]
+        self.assertEqual(guard["env"], {"REPOSITORY": "${{ github.repository }}"})
+        for repository, expected in (("pipelab-org/pipelock", "ghcr.io/pipelab-org"),
+                                     ("luckyPipewrench/pipelock", "ghcr.io/luckypipewrench")):
+            for value in (None, "", expected, "ghcr.io/other", expected + "/extra"):
+                with self.subTest(repository=repository, value=value):
+                    env = {"PATH": os.environ["PATH"], "REPOSITORY": repository}
+                    if value is not None:
+                        env["IMAGE_NAMESPACE"] = value
+                    result = subprocess.run(["bash", "-c", guard["run"]], cwd=ROOT,
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, value == expected, result.stderr)
+
+    @unittest.skipIf(os.name == "nt", "release workflow guard requires bash")
     def test_chart_namespace_guard_rejects_missing_or_malformed_values(self) -> None:
         jobs = yaml.load(self.workflow, Loader=WorkflowLoader)["jobs"]
         package = next(

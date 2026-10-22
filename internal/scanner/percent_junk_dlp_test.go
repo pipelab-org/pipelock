@@ -16,6 +16,8 @@ func TestScanTextForDLP_JunkPercentEscapeInsideCredential(t *testing.T) {
 	key := "AKIA" + "IOSFODNN7" + "EXAMPLQ"
 	for _, text := range []string{
 		"AKIA%zz%49OSFODNN7EXAMPLQ",
+		"AKIA%25zzIOSFODNN7EXAMPLQ",
+		"AKIA%2525zzIOSFODNN7EXAMPLQ",
 		"AKIA%zzIOSFODNN7EXAMPLQ",
 		"AKIAIOSF%G1ODNN7EXAMPLQ",
 		"key=AKIA%%49OSFODNN7EXAMPLQ",

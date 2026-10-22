@@ -632,8 +632,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 	}
 	// Iterative URL-decode and re-check DLP patterns (catches %2D → - etc.).
 	// Uses IterativeDecode to defeat multi-layer encoding.
-	if decoded := IterativeDecode(cleaned); decoded != cleaned {
-		matches = append(matches, s.matchDLPPatterns(decoded, "url")...)
+	decodedURL := IterativeDecode(cleaned)
+	if decodedURL != cleaned {
+		matches = append(matches, s.matchDLPPatterns(decodedURL, "url")...)
 	}
 
 	segmentViews := textDLPEncodingSegmentViews(cleaned)
@@ -647,9 +648,12 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
 	// percent-decoding give up on the whole token. A receiver that drops the
 	// invalid escapes recovers the credential, so match that view too.
-	if strings.Contains(cleaned, "%") {
-		for _, dropped := range invalidPercentEscapeViews(cleaned) {
-			if dropped != cleaned {
+	for _, percentView := range []string{cleaned, decodedURL} {
+		if !strings.Contains(percentView, "%") {
+			continue
+		}
+		for _, dropped := range invalidPercentEscapeViews(percentView) {
+			if dropped != percentView {
 				matches = append(matches, s.matchDLPPatternsInView(IterativeDecode(dropped), encodingURL, cleaned)...)
 			}
 		}
@@ -1355,6 +1359,7 @@ func isHexByte(c byte) bool {
 // bytes around it. The work is linear in the input, with no window search,
 // piece-length floor or budget.
 func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+	var matches []TextDLPMatch
 	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
@@ -1367,12 +1372,14 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 				continue
 			}
 			d := string(decoded)
-			if m := s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d); len(m) > 0 {
-				return m
+			m := s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d)
+			matches = append(matches, m...)
+			if hasEnforcedMatch(m) {
+				return matches
 			}
 		}
 	}
-	return nil
+	return matches
 }
 
 // adjacentHexRuns joins each maximal run of two or more consecutive hex-only

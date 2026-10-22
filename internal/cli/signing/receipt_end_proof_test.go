@@ -478,6 +478,9 @@ func TestWholeRecorderEvidenceOnlyPrefix(t *testing.T) {
 					code = ee.Code
 				}
 			}
+			if (strings.HasPrefix(tc.name, "session-require-seal") || strings.HasPrefix(tc.name, "dir-require-seal")) && !errors.Is(err, errUnsealedRecorder) {
+				t.Fatalf("error=%v want missing-seal error", err)
+			}
 			if code != tc.code {
 				t.Fatalf("exit=%d want=%d: %v\n%s", code, tc.code, err, out.String())
 			}

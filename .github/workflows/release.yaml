@@ -246,6 +246,15 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify release image namespace
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          expected="$(scripts/release-image-namespace.sh "$REPOSITORY")"
+          test -n "$expected"
+          test "$IMAGE_NAMESPACE" = "$expected"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: '1.26.10'

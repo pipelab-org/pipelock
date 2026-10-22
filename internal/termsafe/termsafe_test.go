@@ -6,6 +6,7 @@ package termsafe
 import (
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -82,4 +83,24 @@ func assertTerminalInert(t *testing.T, s string) {
 			t.Fatalf("escaped output still contains %U: %q", r, s)
 		}
 	}
+}
+
+func FuzzEscape(f *testing.F) {
+	for _, seed := range []string{"", "plain", "\x1b[2K\r", "a\xff\xfeb", "\u202Eabc", `a\x1bb`, "\U000E0041", "\u2028\u2029"} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, in string) {
+		out := Escape(in)
+		if !utf8.ValidString(out) {
+			t.Fatalf("invalid UTF-8 output: %q", out)
+		}
+		for _, r := range out {
+			if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
+				t.Fatalf("unsafe rune %U in %q", r, out)
+			}
+		}
+		if got, want := Escape(out), strings.ReplaceAll(out, `\`, `\\`); got != want {
+			t.Fatalf("second escape=%q want=%q", got, want)
+		}
+	})
 }

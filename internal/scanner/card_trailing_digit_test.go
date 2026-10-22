@@ -104,9 +104,21 @@ func TestTrailingDigitRetryScopedToShippedRule(t *testing.T) {
 	if RetriesCardPrefixes(exactCustom) {
 		t.Fatal("operator pattern with the shipped regex gained prefix retry")
 	}
-	if RetriesCardPrefixes(custom) || !RetriesCardPrefixes(config.DLPPattern{Name: cardPatternName, Regex: shippedCardPattern, Validator: config.ValidatorLuhn}) ||
-		RetriesCardPrefixes(config.DLPPattern{Regex: shippedCardPattern, Validator: config.ValidatorMod97}) {
-		t.Fatal("prefix retry scope is wrong")
+	for _, tc := range []struct {
+		name    string
+		pattern config.DLPPattern
+		want    bool
+	}{
+		{"canonical", config.DLPPattern{Name: cardPatternName, Regex: shippedCardPattern, Validator: config.ValidatorLuhn}, true},
+		{"different name", config.DLPPattern{Name: "Operator Card", Regex: shippedCardPattern, Validator: config.ValidatorLuhn}, false},
+		{"different regex", config.DLPPattern{Name: cardPatternName, Regex: custom.Regex, Validator: config.ValidatorLuhn}, false},
+		{"different validator", config.DLPPattern{Name: cardPatternName, Regex: shippedCardPattern, Validator: config.ValidatorMod97}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RetriesCardPrefixes(tc.pattern); got != tc.want {
+				t.Fatalf("RetriesCardPrefixes()=%v want=%v", got, tc.want)
+			}
+		})
 	}
 	for _, pattern := range []config.DLPPattern{custom, exactCustom} {
 		t.Run(pattern.Name, func(t *testing.T) {

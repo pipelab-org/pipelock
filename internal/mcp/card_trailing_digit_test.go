@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -46,6 +47,14 @@ func TestTrailingDigitCardMCP(t *testing.T) {
 			err = ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledSSECfg())
 			if (err == nil) != tt.Clean {
 				t.Fatalf("SSE error=%v want clean=%v", err, tt.Clean)
+			}
+			if !tt.Clean {
+				if !errors.Is(err, ErrSSEStreamFinding) {
+					t.Fatalf("SSE error=%v want stream finding", err)
+				}
+				if strings.Contains(forwarded.String(), tt.Card) {
+					t.Fatal("SSE forwarded blocked card")
+				}
 			}
 		})
 	}
