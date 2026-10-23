@@ -252,12 +252,9 @@ class TestReleaseArtifacts(unittest.TestCase):
         parsed = load_workflow(WORKFLOW)
         holders = []
         # Keep workflow and job scopes separate even for a job named workflow.
-        scopes = [("workflow", {k: v for k, v in parsed.items() if k != "jobs"})]
+        scopes = [("workflow", {k: v for k, v in parsed.items() if k != "jobs"}, ())]
         for job_name, job in parsed["jobs"].items():
-            scopes.append((job_name, {k: v for k, v in job.items() if k != "steps"}))
-        for scope, config in scopes:
-            self.assertNotIn("HOMEBREW_TAP_TOKEN", str(config).upper(), scope)
-
+            scopes.append((job_name, {k: v for k, v in job.items() if k != "steps"}, ("jobs", job_name)))
         def expressions(value, path=()):
             """Read braced expressions and GitHub's implicit job/step if expressions."""
             if isinstance(value, dict):
@@ -277,6 +274,27 @@ class TestReleaseArtifacts(unittest.TestCase):
                     # Quoted expression strings may contain closing braces.
                     yield from re.findall(r"\$\{\{((?:'(?:[^']|'')*'|[^'])*?)\}\}", value, re.DOTALL)
 
+        def holds_tap_token(value, path=()):
+            """Recognize credential bindings and named secret access, not prose or vars."""
+            if isinstance(value, dict):
+                return any(
+                    str(key).upper() == "HOMEBREW_TAP_TOKEN" or holds_tap_token(child, (*path, key))
+                    for key, child in value.items()
+                )
+            if isinstance(value, list):
+                return any(holds_tap_token(child, (*path, index)) for index, child in enumerate(value))
+            return any(
+                re.search(
+                    r"\bsecrets\s*\.\s*HOMEBREW_TAP_TOKEN\b",
+                    re.sub(r"'(?:[^']|'')*'", "''", expression),
+                    re.IGNORECASE,
+                )
+                for expression in expressions(value, path)
+            )
+
+        for scope, config, path in scopes:
+            self.assertFalse(holds_tap_token(config, path), scope)
+
         # Conservatively require named dot access to secrets. Inspect decoded
         # strings so newlines stay whitespace. This is not an expression parser.
         # GitHub's expressions reference defines property dereference syntax;
@@ -289,8 +307,8 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.assertIsNone(whole_secrets.search(expression))
         for job_name, job in parsed["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", job_name)
-            for step in job.get("steps", []):
-                if "HOMEBREW_TAP_TOKEN" in str(step).upper():
+            for index, step in enumerate(job.get("steps", [])):
+                if holds_tap_token(step, ("jobs", job_name, "steps", index)):
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
             holders,
@@ -346,6 +364,11 @@ class TestReleaseArtifacts(unittest.TestCase):
         }
         mutations["build step"] = document
         document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["env"] = {
+            "HOMEBREW_TAP_TOKEN": "${{ secrets.OTHER_TOKEN }}"
+        }
+        mutations["credential binding"] = document
+        document = copy.deepcopy(parsed)
         document["jobs"]["release-build"]["steps"][0]["name"] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
         mutations["step name"] = document
         for field in ("continue-on-error", "if", "working-directory", "shell", "timeout-minutes"):
@@ -359,6 +382,12 @@ class TestReleaseArtifacts(unittest.TestCase):
                 target = target["steps"][0]
             target["if"] = "contains(toJSON(secrets), 'example')"
             mutations[scope + " implicit if"] = document
+            document = copy.deepcopy(document)
+            target = document["jobs"]["release-build"]
+            if scope == "step":
+                target = target["steps"][0]
+            target["if"] = "secrets.HOMEBREW_TAP_TOKEN != ''"
+            mutations[scope + " implicit named token"] = document
         document = copy.deepcopy(parsed)
         document["jobs"]["release-build"]["steps"][0]["run"] = "echo ${{ format('}}', toJSON(secrets)) }}"
         mutations["quoted closing braces"] = document
@@ -374,6 +403,9 @@ class TestReleaseArtifacts(unittest.TestCase):
         document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
         document["jobs"]["release-build"]["steps"][0]["name"] = "Explain secrets handling"
         document["jobs"]["release-build"]["steps"][0]["run"] = "echo 'secrets documentation'\necho ${{ 'secrets' }}"
+        document["jobs"]["release-build"]["steps"][0]["if"] = "${{ vars.HOMEBREW_TAP_TOKEN_ENABLED == 'true' }}"
+        document["jobs"]["release-build"]["steps"][0]["name"] = "Explain HOMEBREW_TAP_TOKEN handling"
+        document["jobs"]["release-build"]["steps"][0]["run"] += "\necho ${{ 'secrets.HOMEBREW_TAP_TOKEN' }}"
         with mock.patch(__name__ + ".load_workflow", return_value=document):
             self.test_tap_token_reaches_only_the_protected_publish_step()
 
