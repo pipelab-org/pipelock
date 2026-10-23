@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -128,7 +129,7 @@ func TestMCPBridgeDispositionDelivery(t *testing.T) {
 	if runtime.GOOS == osWindows {
 		t.Skip("redirect command requires Unix")
 	}
-	for _, surface := range []string{"http", "ws"} {
+	for _, surface := range []string{"http", "ws", "stdio"} {
 		for _, disposition := range []string{"redirect", "redirect_notification", "redirect_write_error", "denial_write_error"} {
 			t.Run(surface+"/"+disposition, func(t *testing.T) {
 				logger, events := newListenerEventLogger(t)
@@ -154,31 +155,46 @@ func TestMCPBridgeDispositionDelivery(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
 				defer cancel()
 				var err error
-				if surface == "http" {
+				switch surface {
+				case "http":
 					upstream, calls := countingUpstream(t)
 					err = RunHTTPProxy(ctx, strings.NewReader(request+"\n"), writer, &logs, upstream.URL, nil, opts)
 					if calls.Load() != 0 {
 						t.Fatalf("local disposition reached upstream: %d", calls.Load())
 					}
-				} else {
+				case "ws":
 					upstream, frames := wsDrainServer(t)
 					defer upstream.Close()
 					err = RunWSProxy(ctx, strings.NewReader(request+"\n"), writer, &logs, "ws"+strings.TrimPrefix(upstream.URL, "http"), opts)
 					if frames.Load() != 0 {
 						t.Fatalf("local disposition reached upstream: %d", frames.Load())
 					}
+				case "stdio":
+					var forwarded bytes.Buffer
+					blocked := make(chan BlockedRequest, 1)
+					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(request+"\n")), transport.NewStdioWriter(&forwarded), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					if forwarded.Len() != 0 {
+						t.Fatalf("local disposition reached upstream: %s", forwarded.String())
+					}
+					for br := range blocked {
+						err = deliverMCPInputResult(opts, br, transport.NewStdioWriter(writer))
+					}
 				}
-				if err != nil {
+				if surface == "stdio" && strings.HasSuffix(disposition, "write_error") {
+					if !errors.Is(err, io.ErrClosedPipe) {
+						t.Fatalf("delivery error=%v", err)
+					}
+				} else if err != nil {
 					t.Fatal(err)
 				}
 				switch disposition {
 				case "denial_write_error":
-					if failed.calls != 1 || !strings.Contains(logs.String(), "failed to send input result") {
+					if failed.calls != 1 || (surface != "stdio" && !strings.Contains(logs.String(), "failed to send input result")) {
 						t.Fatalf("writes=%d log=%s", failed.calls, logs.String())
 					}
 					assertDenialRoute(t, events.String(), scanner.AuditMCPToolPolicy, audit.BlockClassProtective, mcpResourceInput, "input")
 				case "redirect_write_error":
-					if failed.calls != 1 || !strings.Contains(logs.String(), "synthetic response write error") {
+					if failed.calls != 1 || (surface != "stdio" && !strings.Contains(logs.String(), "synthetic response write error")) {
 						t.Fatalf("writes=%d log=%s", failed.calls, logs.String())
 					}
 				case "redirect":
@@ -201,6 +217,7 @@ func TestMCPBridgeDispositionDelivery(t *testing.T) {
 // Exercise the HTTP adapter as a streaming ResponseWriter: flushing before a
 // body must finalize once, while an ordinary stream must not become a denial.
 func TestMCPListenerDenialStreamingAdapter(t *testing.T) {
+	t.Run("setup_responses", testMCPListenerSetupDenials)
 	for _, denied := range []bool{false, true} {
 		t.Run(strconv.FormatBool(denied), func(t *testing.T) {
 			logger, events := newListenerEventLogger(t)
@@ -395,6 +412,7 @@ func TestMCPStartupDenialRoutes(t *testing.T) {
 }
 
 func TestMCPInputFragmentOwnerDenial(t *testing.T) {
+	t.Run("inspection_limit", testMCPFragmentInspectionLimit)
 	buffer := scanner.NewFragmentBuffer(1024, 10, testMCPWindowSecs)
 	t.Cleanup(buffer.Close)
 	cee := &CEEDeps{Buffer: buffer, Config: &config.CrossRequestDetection{Enabled: true, Action: config.ActionBlock, FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 1024, WindowMinutes: testMCPWindowSecs / 60}}}
@@ -426,31 +444,38 @@ func TestMCPInputFragmentOwnerDenial(t *testing.T) {
 }
 
 func TestMCPListenerAmbiguousRoutingDenial(t *testing.T) {
-	logger, events := newListenerEventLogger(t)
-	upstream, calls := countingUpstream(t)
-	base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), AuditLogger: logger})
-	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
-	defer cancel()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base, strings.NewReader(makeRequest(83, methodToolsCall, map[string]any{"name": "echo"})))
-	if err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct{ name, header, first, second, message string }{
+		{"method", listenerMCPMethod, methodToolsCall, "tools/list", "invalid MCP routing header"},
+		{"session_token", listenerSessionTokenHeader, "invalid", "duplicate", "invalid " + listenerSessionTokenHeader + " header"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, events := newListenerEventLogger(t)
+			upstream, calls := countingUpstream(t)
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), AuditLogger: logger})
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
+			defer cancel()
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, base, strings.NewReader(makeRequest(83, methodToolsCall, map[string]any{"name": "echo"})))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Add(tc.header, tc.first)
+			request.Header.Add(tc.header, tc.second)
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), tc.message) || calls.Load() != 0 {
+				t.Fatalf("status=%d calls=%d body=%s", response.StatusCode, calls.Load(), body)
+			}
+			assertDenialRoute(t, events.String(), scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, "input")
+		})
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Add(listenerMCPMethod, methodToolsCall)
-	request.Header.Add(listenerMCPMethod, "tools/list")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "invalid MCP routing header") || calls.Load() != 0 {
-		t.Fatalf("status=%d calls=%d body=%s", response.StatusCode, calls.Load(), body)
-	}
-	assertDenialRoute(t, events.String(), scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, "input")
 }
 
 // A hot reload may disable the manager after the scan has written its defer
@@ -630,5 +655,94 @@ func testMCPBridgeKillDelivery(t *testing.T) {
 				assertDenialRoute(t, events.String(), scanner.AuditKillSwitch, audit.BlockClassProtective, mcpResourceInput, "input")
 			})
 		}
+	}
+}
+
+func testMCPFragmentInspectionLimit(t *testing.T) {
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	logger, events := newListenerEventLogger(t)
+	opts := MCPProxyOpts{Scanner: sc, CEE: newCEERuntimeMatrixDeps(t), AuditLogger: logger}
+	// Fragment inspection requires two contributions. Their concatenation is
+	// valid JSON beyond jsonnumber's published maxNumberExpAbs=10000 bound.
+	first := makeRequest(86, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `{"n":1e`}})
+	second := makeRequest(87, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `10001}`}})
+	seeded := scanHTTPInputDecision([]byte(first), io.Discard, "limit-session", "audit", opts)
+	if seeded.Blocked != nil || !bytes.Equal(seeded.ForwardMessage, []byte(first)) {
+		t.Fatalf("first fragment refused: %+v", seeded.Blocked)
+	}
+	decision := scanHTTPInputDecision([]byte(second), io.Discard, "limit-session", "audit", opts)
+	if decision.Blocked == nil || decision.Blocked.ErrorCode != mcpCEEBlockErrorCode {
+		t.Fatalf("inspection limit was admitted: %+v", decision.Blocked)
+	}
+	reply := httptest.NewRecorder()
+	writeMCPHTTPInputResult(opts, *decision.Blocked, reply)
+	if reply.Code != http.StatusOK || !strings.Contains(reply.Body.String(), `"id":87`) || !strings.Contains(reply.Body.String(), `"code":-32005`) {
+		t.Fatalf("inspection denial reply=%d %s", reply.Code, reply.Body.String())
+	}
+	assertDenialRoute(t, events.String(), scanner.AuditCrossRequestFragment, audit.BlockClassProtective, "[redacted]", "input")
+}
+
+type setupCapacityStore struct{ full atomic.Bool }
+
+func (s *setupCapacityStore) GetOrCreate(string) session.Recorder {
+	if s.full.Load() {
+		return nil
+	}
+	return &mockRecorder{}
+}
+func (*setupCapacityStore) Delete(string) {}
+
+func testMCPListenerSetupDenials(t *testing.T) {
+	for _, tc := range []struct {
+		name, contentType, message, label, class string
+		status                                   int
+	}{
+		{"sse", "text/event-stream", "MCP session setup response must be application/json", scanner.AuditMCPResponseInspection, audit.BlockClassInfrastructureError, http.StatusBadGateway},
+		{"capacity", "application/json", "pipelock session setup unavailable", scanner.AuditMCPProtocol, audit.BlockClassProtective, http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, events := newListenerEventLogger(t)
+			store := &setupCapacityStore{}
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				w.Header().Set("Content-Type", tc.contentType)
+				if tc.contentType == "application/json" {
+					store.full.Store(true)
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":94,"result":{}}`)
+				} else {
+					_, _ = io.WriteString(w, "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":94,\"result\":{}}\n\n")
+				}
+			}))
+			t.Cleanup(upstream.Close)
+			required := true
+			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), AuditLogger: logger, listenerStateTokenRequired: &required}
+			if tc.name == "capacity" {
+				opts.Store = store
+			}
+			base, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
+			defer cancel()
+			payload := makeRequest(94, "initialize", map[string]any{"protocolVersion": "2025-03-26", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "test-client", "version": "1"}})
+			request, err := http.NewRequestWithContext(ctx, http.MethodPost, base, strings.NewReader(payload))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Content-Type", "application/json")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if response.StatusCode != tc.status || calls.Load() != 1 || !strings.Contains(string(body), `"id":94`) || !strings.Contains(string(body), tc.message) || strings.Contains(string(body), `"result"`) || response.Header.Get(listenerSessionTokenHeader) != "" {
+				t.Fatalf("setup refusal status=%d calls=%d body=%s", response.StatusCode, calls.Load(), body)
+			}
+			assertDenialRoute(t, events.String(), tc.label, tc.class, mcpResourceListener, "response")
+		})
 	}
 }
