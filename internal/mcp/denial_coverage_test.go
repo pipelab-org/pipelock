@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -288,7 +289,8 @@ func TestMCPDeferredNotificationDenial(t *testing.T) {
 	for _, surface := range []string{"stdio", "http"} {
 		for _, cause := range []string{"operator", "kill", "receipt"} {
 			t.Run(surface+"/"+cause, func(t *testing.T) {
-				logger, events := newListenerEventLogger(t)
+				denialSeen := make(chan struct{})
+				logger, events := newListenerEventLogger(t, sync.OnceFunc(func() { close(denialSeen) }))
 				manager := newDeferKillManager(t)
 				emitter, rec, _, _ := newReceiptTestHarness(t)
 				ks := deferKillTestController()
@@ -318,12 +320,11 @@ func TestMCPDeferredNotificationDenial(t *testing.T) {
 				}
 				testwait.For(t, 3*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "notification hold")
 				held := manager.Snapshot()[0]
-				decision, source := config.ActionBlock, deferred.SourceOperator
+				decision := config.ActionBlock
 				label, class := scanner.AuditMCPDefer, audit.BlockClassProtective
 				switch cause {
 				case "kill":
 					ks.SetAPI(true)
-					source = deferred.SourceKillSwitch
 					label = scanner.AuditKillSwitch
 				case "receipt":
 					_ = rec.Close()
@@ -331,8 +332,17 @@ func TestMCPDeferredNotificationDenial(t *testing.T) {
 					label = scanner.AuditReceiptEmission
 					class = audit.BlockClassInfrastructureError
 				}
-				if _, err := manager.ResolveApprovalResult(held.DeferID, decision, source); err != nil {
-					t.Fatal(err)
+				// Once active, the kill watcher owns resolution. Other cases model an
+				// operator decision. Await finalization, not just removal from the holds.
+				if cause != "kill" {
+					if _, err := manager.ResolveApprovalResult(held.DeferID, decision, deferred.SourceOperator); err != nil {
+						t.Fatal(err)
+					}
+				}
+				select {
+				case <-denialSeen:
+				case <-ctx.Done():
+					t.Fatalf("notification denial did not finalize: %s", logs.String())
 				}
 				if err := inputW.Close(); err != nil {
 					t.Fatal(err)
