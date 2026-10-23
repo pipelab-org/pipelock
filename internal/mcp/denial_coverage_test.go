@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -555,7 +556,7 @@ func (r *denialActivationReader) Read(p []byte) (int, error) {
 }
 
 func testMCPBridgeKillDelivery(t *testing.T) {
-	for _, surface := range []string{"http", "ws"} {
+	for _, surface := range []string{"http", "ws", "stdio"} {
 		for _, disposition := range []string{"batch", "batch_write_error", "request", "request_write_error", "notification"} {
 			t.Run(surface+"/kill_"+disposition, func(t *testing.T) {
 				logger, events := newListenerEventLogger(t)
@@ -579,21 +580,36 @@ func testMCPBridgeKillDelivery(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(3*time.Second))
 				defer cancel()
 				var err error
-				if surface == "http" {
+				switch surface {
+				case "http":
 					upstream, calls := countingUpstream(t)
 					err = RunHTTPProxy(ctx, input, writer, &logs, upstream.URL, nil, opts)
 					if calls.Load() != 0 {
 						t.Fatalf("kill refusal reached upstream: %d", calls.Load())
 					}
-				} else {
+				case "ws":
 					upstream, frames := wsDrainServer(t)
 					defer upstream.Close()
 					err = RunWSProxy(ctx, input, writer, &logs, "ws"+strings.TrimPrefix(upstream.URL, "http"), opts)
 					if frames.Load() != 0 {
 						t.Fatalf("kill refusal reached upstream: %d", frames.Load())
 					}
+				case "stdio":
+					var forwarded bytes.Buffer
+					blocked := make(chan BlockedRequest, 1)
+					ForwardScannedInput(transport.NewStdioReader(input), transport.NewStdioWriter(&forwarded), &logs, config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+					if forwarded.Len() != 0 {
+						t.Fatalf("kill refusal reached upstream: %s", forwarded.String())
+					}
+					for br := range blocked {
+						err = deliverMCPInputResult(opts, br, transport.NewStdioWriter(writer))
+					}
 				}
-				if err != nil {
+				if surface == "stdio" && strings.HasSuffix(disposition, "write_error") {
+					if !errors.Is(err, io.ErrClosedPipe) {
+						t.Fatalf("delivery error=%v", err)
+					}
+				} else if err != nil {
 					t.Fatal(err)
 				}
 				switch disposition {
@@ -603,7 +619,7 @@ func testMCPBridgeKillDelivery(t *testing.T) {
 						t.Fatalf("batch refusal=%s", out.String())
 					}
 				case "batch_write_error", "request_write_error":
-					if failed.calls != 1 || !strings.Contains(logs.String(), "write error") && !strings.Contains(logs.String(), "failed to send kill switch response") {
+					if failed.calls != 1 || (surface != "stdio" && !strings.Contains(logs.String(), "write error") && !strings.Contains(logs.String(), "failed to send kill switch response")) {
 						t.Fatalf("writes=%d logs=%s", failed.calls, logs.String())
 					}
 				case "notification":
