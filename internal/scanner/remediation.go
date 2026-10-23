@@ -534,7 +534,7 @@ func isJSONInspectionLimitReason(label, reason string) bool {
 			}
 		}
 	case AuditCrossRequestFragment:
-		return reason == "fragment reassembly DLP match: "+UninspectableJSONNumberPattern ||
+		return reason == "cross-request fragment inspection limit exceeded" || reason == "fragment reassembly DLP match: "+UninspectableJSONNumberPattern ||
 			reason == "cross-request fragment refused: "+UninspectableJSONNumberPattern+"; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"
 	}
 	return false

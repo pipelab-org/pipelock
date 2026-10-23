@@ -663,6 +663,11 @@ func testMCPFragmentInspectionLimit(t *testing.T) {
 	t.Cleanup(sc.Close)
 	logger, events := newListenerEventLogger(t)
 	opts := MCPProxyOpts{Scanner: sc, CEE: newCEERuntimeMatrixDeps(t), AuditLogger: logger}
+	// A fixed inspection limit remains a refusal even with ordinary CEE findings set to warn.
+	opts.CEE.Reconfigure(config.CrossRequestDetection{
+		Enabled: true, Action: config.ActionWarn,
+		FragmentReassembly: config.CrossRequestFragments{Enabled: true, MaxBufferBytes: 4096, WindowMinutes: 5},
+	}, nil)
 	// Fragment inspection requires two contributions. Their concatenation is
 	// valid JSON beyond jsonnumber's published maxNumberExpAbs=10000 bound.
 	first := makeRequest(86, methodToolsCall, map[string]any{"name": "echo", "arguments": map[string]string{"payload": `{"n":1e`}})
@@ -681,6 +686,9 @@ func testMCPFragmentInspectionLimit(t *testing.T) {
 		t.Fatalf("inspection denial reply=%d %s", reply.Code, reply.Body.String())
 	}
 	assertDenialRoute(t, events.String(), scanner.AuditCrossRequestFragment, audit.BlockClassProtective, "[redacted]", "input")
+	if !strings.Contains(events.String(), "Typed JSON number and depth limits are fixed") || strings.Contains(events.String(), "cross_request_detection.action: warn") {
+		t.Fatalf("inspection refusal offered an ineffective policy change: %s", events.String())
+	}
 }
 
 type setupCapacityStore struct{ full atomic.Bool }

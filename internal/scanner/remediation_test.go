@@ -856,6 +856,7 @@ func TestJSONInspectionRemediationReasonFormats(t *testing.T) {
 		{ScannerDLP, "DLP match: " + UninspectableJSONNumberPattern + " (escalated)"},
 		{ScannerDLP, "DLP: " + UninspectableJSONNumberPattern},
 		{AuditCrossRequestFragment, "fragment reassembly DLP match: " + UninspectableJSONNumberPattern},
+		{AuditCrossRequestFragment, "cross-request fragment inspection limit exceeded"},
 		{AuditCrossRequestFragment, "cross-request fragment refused: " + UninspectableJSONNumberPattern + "; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"},
 		{AuditA2AResponse, "a2a: DLP: " + UninspectableJSONNumberPattern},
 		{AuditA2AResponse, "a2a: 2 URL/SSRF finding(s); injection: ordinary; DLP: " + UninspectableJSONNumberPattern},
@@ -896,6 +897,7 @@ func TestJSONInspectionRemediationIgnoresBlankPatterns(t *testing.T) {
 		{ScannerCoreDLP, "core DLP match: " + UninspectableJSONNumberPattern + " (high)"},
 		{AuditA2AResponse, "a2a: DLP: " + UninspectableJSONNumberPattern},
 		{AuditCrossRequestFragment, "fragment reassembly DLP match: " + UninspectableJSONNumberPattern},
+		{AuditCrossRequestFragment, "cross-request fragment inspection limit exceeded"},
 	} {
 		t.Run(tt.label, func(t *testing.T) {
 			// Positive control: this genuine reason must be recognized on its own.
