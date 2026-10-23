@@ -274,6 +274,10 @@ class TestReleaseArtifacts(unittest.TestCase):
                     # Quoted expression strings may contain closing braces.
                     yield from re.findall(r"\$\{\{((?:'(?:[^']|'')*'|[^'])*?)\}\}", value, re.DOTALL)
 
+        def expression_code(expression):
+            """Remove quoted literals and whitespace before checking context tokens."""
+            return re.sub(r"\s+", "", re.sub(r"'(?:[^']|'')*'", "''", expression))
+
         def holds_tap_token(value, path=()):
             """Recognize credential bindings and named secret access, not prose or vars."""
             if isinstance(value, dict):
@@ -285,8 +289,8 @@ class TestReleaseArtifacts(unittest.TestCase):
                 return any(holds_tap_token(child, (*path, index)) for index, child in enumerate(value))
             return any(
                 re.search(
-                    r"\bsecrets\s*\.\s*HOMEBREW_TAP_TOKEN\b",
-                    re.sub(r"'(?:[^']|'')*'", "''", expression),
+                    r"(?<![\w.-])secrets\.HOMEBREW_TAP_TOKEN(?![\w-])",
+                    expression_code(expression),
                     re.IGNORECASE,
                 )
                 for expression in expressions(value, path)
@@ -300,10 +304,10 @@ class TestReleaseArtifacts(unittest.TestCase):
         # GitHub's expressions reference defines property dereference syntax;
         # its secrets reference defines case-insensitive secret names.
         whole_secrets = re.compile(
-            r"\bsecrets\b(?!\s*\.\s*[a-z_][a-z0-9_-]*)", re.IGNORECASE
+            r"(?<![\w.-])secrets\b(?!\.[a-z_][a-z0-9_-]*)", re.IGNORECASE
         )
         for text in expressions(parsed):
-            expression = re.sub(r"'(?:[^']|'')*'", "''", text)
+            expression = expression_code(text)
             self.assertIsNone(whole_secrets.search(expression))
         for job_name, job in parsed["jobs"].items():
             self.assertNotEqual(job.get("secrets"), "inherit", job_name)
@@ -332,6 +336,8 @@ class TestReleaseArtifacts(unittest.TestCase):
             "${{ toJSON((secrets)) }}",
             "${{ SECRETS['HOMEBREW_TAP_TOKEN'] }}",
             "${{ (secrets)['HOMEBREW_TAP_TOKEN'] }}",
+            "${{ github.event.client_payload.secrets.HOMEBREW_TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ SECRETS . HOMEBREW_TAP_TOKEN }}",
         ):
             document = copy.deepcopy(parsed)
             document["env"] = {"EXPOSURE": expression}
@@ -408,6 +414,18 @@ class TestReleaseArtifacts(unittest.TestCase):
         document["jobs"]["release-build"]["steps"][0]["run"] += "\necho ${{ 'secrets.HOMEBREW_TAP_TOKEN' }}"
         with mock.patch(__name__ + ".load_workflow", return_value=document):
             self.test_tap_token_reaches_only_the_protected_publish_step()
+
+        for expression in (
+            "${{ github.event.client_payload.secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ github.event.client_payload . secrets . HOMEBREW_TAP_TOKEN }}",
+            "${{ toJSON(github.event.client_payload.secrets) }}",
+            "${{ vars.HOMEBREW_TAP_TOKEN_ENABLED == 'true' }}",
+        ):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"]["steps"][0]["env"] = {"METADATA": expression}
+            with self.subTest(noncredential=expression):
+                with mock.patch(__name__ + ".load_workflow", return_value=document):
+                    self.test_tap_token_reaches_only_the_protected_publish_step()
 
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
