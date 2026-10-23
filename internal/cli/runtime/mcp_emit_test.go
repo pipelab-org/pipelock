@@ -23,18 +23,27 @@ import (
 
 // webhookRecorder captures every body POSTed to it.
 type webhookRecorder struct {
-	mu     sync.Mutex
-	bodies []string
+	mu          sync.Mutex
+	bodies      []string
+	arrived     chan struct{}
+	release     <-chan struct{}
+	arrivedOnce sync.Once
 }
 
-// webhookRecorderDelay holds each delivery open past the point where the proxy
-// command returns, so an event only reaches the recorder if the emitter's Close
-// waits for the in-flight send. Without it the sink wins the race by chance and
-// a missing Close would go unnoticed.
-const webhookRecorderDelay = 250 * time.Millisecond
-
 func (r *webhookRecorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	time.Sleep(webhookRecorderDelay)
+	if r.arrived != nil {
+		r.arrivedOnce.Do(func() { close(r.arrived) })
+	}
+	if r.release != nil {
+		select {
+		case <-r.release:
+		case <-req.Context().Done():
+			return
+		case <-time.After(testwait.Deadline(10 * time.Second)):
+			w.WriteHeader(http.StatusGatewayTimeout)
+			return
+		}
+	}
 	body, _ := io.ReadAll(req.Body)
 	r.mu.Lock()
 	r.bodies = append(r.bodies, string(body))
@@ -85,16 +94,23 @@ func mcpEmitProxyArgs(configPath string) []string {
 // a blocked tool call reaches the configured webhook, and the event carries
 // the finding rather than the secret that triggered it.
 func TestMCPProxyDeliversBlockedEventToWebhook(t *testing.T) {
-	recorder := &webhookRecorder{}
+	arrived := make(chan struct{})
+	release := make(chan struct{})
+	recorder := &webhookRecorder{arrived: arrived, release: release}
 	srv := httptest.NewServer(recorder)
 	defer srv.Close()
+	var releaseOnce sync.Once
+	releaseDelivery := func() { releaseOnce.Do(func() { close(release) }) }
+	// Release before closing the server, including every assertion failure.
+	defer releaseDelivery()
 
 	configPath := writeMCPEmitConfig(t, fmt.Sprintf(`emit:
   instance_id: mcp-emit-test
   webhook:
     url: %q
     min_severity: info
-`, srv.URL))
+    timeout_seconds: %d
+`, srv.URL, int(testwait.Deadline(10*time.Second)/time.Second)+1))
 
 	// Built at runtime so the repository holds no credential-shaped literal.
 	secret := "AKIA" + "Z7VRSQ5TJN2XMPLQ"
@@ -103,7 +119,38 @@ func TestMCPProxyDeliversBlockedEventToWebhook(t *testing.T) {
 		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"play_game","arguments":{"player":"` + secret + `"}}}`,
 	}, "\n") + "\n"
 
-	stdout, stderr, err := runMCPProxyCommandWithInput(t, mcpEmitProxyArgs(configPath), input)
+	type commandResult struct {
+		stdout, stderr string
+		err            error
+	}
+	cmdDone := make(chan commandResult, 1)
+	go func() {
+		stdout, stderr, err := runMCPProxyCommandWithInput(t, mcpEmitProxyArgs(configPath), input)
+		cmdDone <- commandResult{stdout: stdout, stderr: stderr, err: err}
+	}()
+	select {
+	case <-arrived:
+	case result := <-cmdDone:
+		t.Fatalf("proxy returned before webhook arrival: %v\nstderr:\n%s", result.err, result.stderr)
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("webhook delivery did not arrive")
+	}
+	// Give the proxy time to finish its other shutdown work while the send
+	// remains in flight. A Close that does not wait must fail here, even if
+	// the recorder could finish the delivery after the command returns.
+	select {
+	case result := <-cmdDone:
+		t.Fatalf("proxy returned while webhook delivery was held: %v\nstderr:\n%s", result.err, result.stderr)
+	case <-time.After(testwait.Deadline(2 * time.Second)):
+	}
+	releaseDelivery()
+	var result commandResult
+	select {
+	case result = <-cmdDone:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("proxy did not finish after webhook delivery was released")
+	}
+	stdout, stderr, err := result.stdout, result.stderr, result.err
 	if err != nil {
 		t.Fatalf("mcp proxy: %v\nstderr:\n%s", err, stderr)
 	}
