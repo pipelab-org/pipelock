@@ -555,9 +555,6 @@ func RunHTTPListenerProxy(
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditScannerUnavailable, "mcp_input", "MCP scanner unavailable")
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerCapacityDenialAudit()
-			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 			resp, _ := json.Marshal(rpcError{
 				JSONRPC: jsonrpc.Version,
@@ -777,9 +774,6 @@ func RunHTTPListenerProxy(
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerCapacityDenialAudit()
-			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write(upstreamErrorResponse(nil, session.ErrCapacity))
 			return
@@ -795,9 +789,6 @@ func RunHTTPListenerProxy(
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerInspectionDenialAudit()
-			}
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("stateful MCP listener request requires an authenticated principal or a legacy Pipelock session token")))
 		}
@@ -817,9 +808,6 @@ func RunHTTPListenerProxy(
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerCapacityDenialAudit()
-			}
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("verified principal state capacity exhausted; retry after an existing principal state expires")))
 		}
@@ -834,9 +822,6 @@ func RunHTTPListenerProxy(
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerInspectionDenialAudit()
-			}
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("legacy Pipelock session token cannot select current-protocol listener state")))
 		}
@@ -882,9 +867,6 @@ func RunHTTPListenerProxy(
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
-			if denialAudit.kind == "" {
-				denialAudit = mcpListenerInspectionDenialAudit()
-			}
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write(upstreamErrorResponse(id, fmt.Errorf("upstream resolves to a cloud metadata endpoint")))
 			return true
@@ -906,9 +888,6 @@ func RunHTTPListenerProxy(
 					intent:          intent,
 				})
 				w.Header().Set("Content-Type", "application/json")
-				if denialAudit.kind == "" {
-					denialAudit = mcpListenerInspectionDenialAudit()
-				}
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, mcpContractGateOutput{}, "pipelock: contract upstream evaluation failed")))
 				return true
@@ -930,9 +909,6 @@ func RunHTTPListenerProxy(
 					outcomeReason: mcpContractDeniedReason,
 				})
 				w.Header().Set("Content-Type", "application/json")
-				if denialAudit.kind == "" {
-					denialAudit = mcpListenerInspectionDenialAudit()
-				}
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(blockRequestResponse(mcpContractBlockRequest(rpcID, gate, "pipelock: upstream URL blocked by live-lock contract")))
 				return true
@@ -1148,9 +1124,6 @@ func RunHTTPListenerProxy(
 					receiptSeverity: config.SeverityHigh,
 				})
 				w.Header().Set("Content-Type", "application/json")
-				if denialAudit.kind == "" {
-					denialAudit = mcpListenerInspectionDenialAudit()
-				}
 				w.WriteHeader(http.StatusForbidden)
 				_, _ = w.Write(upstreamErrorResponse(nil, fmt.Errorf("receipt emission failed")))
 				return false

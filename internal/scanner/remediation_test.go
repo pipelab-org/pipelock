@@ -966,3 +966,39 @@ func TestMCPProtocolHintOnlyForBatchRequests(t *testing.T) {
 		}
 	}
 }
+
+// Operational refusals must identify the failed prerequisite, rather than
+// recommending the generic content-policy controls for the same label.
+func TestMCPRemediationReasonPrerequisites(t *testing.T) {
+	cases := []struct {
+		label, reason, want string
+		immutable           bool
+	}{
+		{AuditContract, "MCP contract evaluation failed", "Restore the active contract loader", false},
+		{AuditA2AScan, "A2A input could not be inspected", "does not override a failed inspection", false},
+		{AuditA2AScan, "A2A input URL check refused", "cloud metadata and core-critical destination blocks remain enforced", false},
+		{AuditA2AScan, "A2A input inspection budget exceeded", "budget-only refusal after fallback scanning", false},
+		{AuditA2AScan, "A2A input configuration mismatch", "does not repair a configuration mismatch", false},
+		{AuditMCPProtocol, "MCP batch responses are unsupported", "correct the upstream server", true},
+		{AuditMCPProtocol, "MCP listener admission refused", "listener_require_state_token", true},
+		{AuditMCPProtocol, "MCP listener protocol refused", "no scanner or policy setting relaxes protocol validation", true},
+		{AuditMCPProtocol, "MCP listener state capacity exhausted", "Retry after an existing state expires", true},
+		{AuditMCPProtocol, "session capacity exhausted; release active quarantine or increase max_sessions", "session_profiling.max_sessions", true},
+		{ScannerMCPToolScanning, "tools/list cannot be safely inspected: oversized inventory", "does not override this refusal", false},
+		{AuditToolScanning, "tools/list cannot be safely inspected: malformed inventory", "does not override this refusal", false},
+		{AuditResponseScan, "response scan parse error in MCP parameter header", "cannot make the header scannable", false},
+		{AuditResponseScan, "response scan cannot be scanned: response scanner unavailable", "policy suppression cannot provide the missing scan", false},
+		{AuditResponseScan, "response scan returned an incomplete verdict", "a pattern suppression has no identified match to change", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label+"/"+tc.reason, func(t *testing.T) {
+			guidance, ok := GuidanceForResult(tc.label, tc.reason)
+			if !ok || !strings.Contains(guidance.OperatorKnob, tc.want) || guidance.Immutable != tc.immutable || guidance.AgentReason != auditRuntimeAgentReason {
+				t.Fatalf("guidance = %+v, ok=%v; want prerequisite %q, immutable=%v and runtime refusal", guidance, ok, tc.want, tc.immutable)
+			}
+			if hint := OperatorHintForResult(tc.label, tc.reason); !strings.Contains(hint, tc.want) {
+				t.Fatalf("operator hint lost prerequisite: %q", hint)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http/httptest"
 	"runtime"
 	"strings"
 	"testing"
@@ -138,12 +139,27 @@ func TestMCPInputGateDenialAuditParity(t *testing.T) {
 					if len(blocked) != 1 || forwarded.Len() != 0 {
 						t.Fatalf("stdio denial missing: blocked=%d forwarded=%q", len(blocked), forwarded.String())
 					}
-				} else if decision := scanHTTPInputDecision([]byte(tc.request), io.Discard, "session", "session", opts); decision.Blocked == nil {
-					t.Fatal("HTTP input denial missing")
+					var reply bytes.Buffer
+					if err := deliverMCPInputResult(opts, <-blocked, transport.NewStdioWriter(&reply)); err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(reply.String(), `"error"`) || strings.Contains(reply.String(), `"result"`) {
+						t.Fatalf("denial reply: %s", reply.String())
+					}
+				} else {
+					decision := scanHTTPInputDecision([]byte(tc.request), io.Discard, "session", "session", opts)
+					if decision.Blocked == nil {
+						t.Fatal("HTTP input denial missing")
+					}
+					reply := httptest.NewRecorder()
+					writeMCPHTTPInputResult(opts, *decision.Blocked, reply)
+					if reply.Code != 200 || !strings.Contains(reply.Body.String(), `"error"`) || reply.Header().Get("Content-Type") != "application/json" {
+						t.Fatalf("HTTP denial status=%d body=%s", reply.Code, reply.Body.String())
+					}
 				}
 				got := events.String()
 				if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+tc.label+`"`) ||
-					!strings.Contains(got, `"block_class":"`+tc.class+`"`) || !strings.Contains(got, `"resource":"mcp_input"`) ||
+					!strings.Contains(got, `"block_class":"`+tc.class+`"`) || !strings.Contains(got, `"resource":"mcp_input"`) || !strings.Contains(got, `"direction":"input"`) ||
 					strings.Contains(got, `"mitre_technique"`) {
 					t.Fatalf("denial audit mismatch: %s", got)
 				}
