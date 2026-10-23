@@ -152,6 +152,9 @@ func TestMCPResponseWarnAuditEvent(t *testing.T) {
 	if !strings.Contains(events.String(), `"event":"response_scan"`) || !strings.Contains(events.String(), `"action":"warn"`) {
 		t.Fatalf("warn audit event missing: %s", events.String())
 	}
+	if strings.Contains(events.String(), `"event":"blocked"`) {
+		t.Fatalf("warn-only response emitted a blocked event: %s", events.String())
+	}
 	if strings.Contains(events.String(), payload) {
 		t.Fatalf("response audit leaked matched content: %s", events.String())
 	}
@@ -219,7 +222,7 @@ func TestHTTPListenerHeaderBlockAuditEvent(t *testing.T) {
 				t.Fatalf("header was not blocked locally: calls=%d body=%s", capture.calls.Load(), body)
 			}
 			got := events.String()
-			if !strings.Contains(got, `"event":"blocked"`) || !strings.Contains(got, `"scanner":"`+tc.wantScanner+`"`) {
+			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+tc.wantScanner+`"`) {
 				t.Fatalf("listener header block audit event missing: %s", got)
 			}
 			if strings.Contains(got, tc.value) || strings.Contains(strings.ToLower(got), "attackername") {
@@ -286,7 +289,7 @@ func TestHTTPListenerUpstreamErrorReplyBlockAuditEvent(t *testing.T) {
 		t.Fatalf("injected error reply was relayed: status=%d body=%s", resp.StatusCode, body)
 	}
 	got := events.String()
-	if !strings.Contains(got, `"event":"blocked"`) || !strings.Contains(got, `"scanner":"`+scanner.AuditResponseScan+`"`) {
+	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditResponseScan+`"`) {
 		t.Fatalf("withheld error reply audit event missing: %s", got)
 	}
 	if strings.Contains(got, reply) {
@@ -321,7 +324,7 @@ func TestMCPListenerScanFailureAuditClassification(t *testing.T) {
 			t.Cleanup(logger.Close)
 			tc.log(logger)
 			got := events.String()
-			if !strings.Contains(got, `"event":"blocked"`) || !strings.Contains(got, `"scanner":"`+tc.scannerName+`"`) {
+			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+tc.scannerName+`"`) {
 				t.Fatalf("scan failure block event missing: %s", got)
 			}
 			if strings.Contains(got, `"mitre_technique"`) || !strings.Contains(got, tc.wantHint) ||
@@ -432,7 +435,7 @@ func TestHTTPListenerNonPostHeaderBlockAuditEvent(t *testing.T) {
 				t.Fatalf("header credential was not blocked locally: reached=%d body=%s", reached.Load(), body)
 			}
 			got := events.String()
-			if !strings.Contains(got, `"event":"blocked"`) || !strings.Contains(got, `"scanner":"`+scanner.AuditMCPHeaderDLP+`"`) {
+			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditMCPHeaderDLP+`"`) {
 				t.Fatalf("non-POST header block audit event missing: %s", got)
 			}
 			if strings.Contains(got, secret) {
@@ -675,5 +678,34 @@ func TestMCPToolInventoryCapacityAuditEvent(t *testing.T) {
 		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) ||
 		!strings.Contains(got, "does not override this refusal") || !strings.Contains(got, `"resource":"[redacted]"`) {
 		t.Fatalf("inventory capacity refusal mislabeled: %s", got)
+	}
+}
+
+func TestMCPFrozenToolAuditResource(t *testing.T) {
+	for _, tc := range []struct{ name, params, resource string }{
+		{"missing", `{}`, dowAuditFallbackTarget},
+		{"empty", `{"name":"","arguments":{}}`, dowAuditFallbackTarget},
+		{"named", `{"name":"unlisted_tool","arguments":{}}`, "unlisted_tool"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logger, events := newListenerEventLogger(t)
+			opts := MCPProxyOpts{
+				Scanner: testInputScanner(t), AuditLogger: logger,
+				ToolFreezer:         &stubToolFreezer{frozen: true, allowed: map[string]bool{"read_file": true}},
+				FrozenToolStableKey: testFrozenSessionKey,
+			}
+			request := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + tc.params + `}`
+			var forwarded bytes.Buffer
+			blocked := make(chan BlockedRequest, 1)
+			ForwardScannedInput(transport.NewStdioReader(strings.NewReader(request+"\n")), transport.NewStdioWriter(&forwarded), io.Discard,
+				config.ActionWarn, config.ActionBlock, blocked, nil, nil, opts)
+			if len(blocked) != 1 || forwarded.Len() != 0 {
+				t.Fatalf("frozen request not refused: blocked=%d forwarded=%q", len(blocked), forwarded.String())
+			}
+			got := events.String()
+			if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"frozen_tool"`) || !strings.Contains(got, `"resource":"`+tc.resource+`"`) {
+				t.Fatalf("frozen-tool audit missing or wrong resource: %s", got)
+			}
+		})
 	}
 }

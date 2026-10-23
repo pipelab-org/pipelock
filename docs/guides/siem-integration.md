@@ -147,6 +147,17 @@ an uninspectable response under `mcp_response_inspection` use
 agent-threat attributes. MCP operational blocks retain their native OTLP
 record. Each finalized denial attempts one canonical `blocked` emission before
 reply delivery or a deliberate silent drop. Sink delivery remains best effort.
+
+Local blocked logging also records pre-authentication listener refusals, one
+record per refusal when `logging.include_blocked` is enabled (the default).
+Before exposing a listener with local blocked logging enabled, configure log
+rotation by size or time and retention in the log collector. Alert on sustained
+increases in `mcp_protocol` events with reason `MCP listener admission refused`
+and on log storage approaching the collector's configured capacity. Set
+thresholds from the deployment's normal request rate and storage budget. External sink queues are bounded and may drop events under
+load. Operators who need only external blocked events can disable
+`logging.include_blocked`; this does not disable external emission.
+
 `protocol: mcp`, `transport`, and `direction` identify the trusted MCP route,
 including CEE events. HTTP events retain their existing field set. MCP `resource` values follow these contracts. Existing content-bearing
 resources retain audit redaction; route fields do not make their content safe.
@@ -154,7 +165,7 @@ resources retain audit redaction; route fields do not make their content safe.
 | Denial surface | Serialized `resource` |
 |---|---|
 | Tool inventory scanning (`tool_scanning`) | `[redacted]` |
-| Frozen tool inventory (`frozen_tool`) | Refused tool name |
+| Frozen tool inventory (`frozen_tool`) | Refused tool name, or `invalid-mcp-resource` when omitted or empty |
 | Response content, provenance, media policy, denial-of-wallet, and CEE | `[redacted]` |
 | Newly logged input failures | `mcp_input` |
 | Listener header failures | `mcp_listener_header` |

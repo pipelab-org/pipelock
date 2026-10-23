@@ -4,7 +4,6 @@
 package mcp
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"go/ast"
@@ -312,9 +311,12 @@ type denialSourcePackage struct {
 // the guard independent of third-party analyzer dependencies.
 func loadDenialSource(t *testing.T, tags string, platform ...string) denialSourcePackage {
 	t.Helper()
-	command := exec.CommandContext(context.Background(), "go", "list", "-export", "-deps", "-json", "-tags=", ".")
+	if testing.Short() && len(platform) != 0 {
+		t.Skip("cross-platform source contract skipped in short mode")
+	}
+	command := exec.CommandContext(t.Context(), "go", "list", "-export", "-deps", "-json", "-tags=", ".")
 	if tags == "enterprise" {
-		command = exec.CommandContext(context.Background(), "go", "list", "-export", "-deps", "-json", "-tags=enterprise", ".")
+		command = exec.CommandContext(t.Context(), "go", "list", "-export", "-deps", "-json", "-tags=enterprise", ".")
 	} else if tags != "" {
 		t.Fatalf("unsupported source contract build tags %q", tags)
 	}

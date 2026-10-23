@@ -377,7 +377,7 @@ func mcpDeferHoldDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "def
 // Preserve the released frozen-tool resource: it is the refused tool name,
 // unlike content-bearing resources that the audit logger redacts.
 func mcpFrozenDenialAudit(opts MCPProxyOpts, toolName string) mcpDenialAudit {
-	ctx := mustMCPAuditContext(opts.AuditLogger, "MCP", toolName)
+	ctx := mustMCPAuditContext(opts.AuditLogger, "MCP", firstNonEmpty(toolName, dowAuditFallbackTarget))
 	return mcpDenialAudit{kind: "frozen", context: &ctx}
 }
 

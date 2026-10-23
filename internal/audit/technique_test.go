@@ -44,6 +44,15 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 		// Command/scripting interpreter
 		{"response_scan", "T1059"},
 		{"policy", "T1059"},
+		{"mcp_input_dlp", "T1048"},
+		{"mcp_input_injection", "T1059"},
+		{"mcp_header_dlp", "T1048"},
+		{"mcp_header_injection", "T1059"},
+		{"mcp_tool_scanning", "T1195.002"},
+		{"context", "T1190"},
+		{"core_dlp", "T1048"},
+		{"core_ssrf", "T1046"},
+		{"core_response", "T1059"},
 		{"mcp_redirect_output_dlp", "T1048"},
 		{"mcp_redirect_output_injection", "T1059"},
 
@@ -82,7 +91,15 @@ func TestTechniqueForScanner_AllMappedEntries(t *testing.T) {
 		{"persist", "T1053"},
 	}
 
+	if len(tests) != len(techniqueMap) {
+		t.Fatalf("mapping expectations = %d, registered entries = %d", len(tests), len(techniqueMap))
+	}
+	seen := make(map[string]bool)
 	for _, tt := range tests {
+		if seen[tt.scanner] {
+			t.Fatalf("duplicate mapping expectation %q", tt.scanner)
+		}
+		seen[tt.scanner] = true
 		t.Run(tt.scanner, func(t *testing.T) {
 			got := TechniqueForScanner(tt.scanner)
 			if got != tt.technique {
