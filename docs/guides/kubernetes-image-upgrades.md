@@ -15,13 +15,15 @@ updates your cluster.
 
 ## Get the exact image set
 
-This downloads the v3.7.0 immutable image set into the current directory.
+This downloads the v3.7.1 immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.7.0
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.7.0
-cat pipelock-v3.7.0/release-images.json
+PIPELOCK_RELEASE=v3.7.1
+PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
+mkdir -p "pipelock-${PIPELOCK_RELEASE}"
+gh release download "$PIPELOCK_RELEASE" --repo pipelab-org/pipelock --pattern release-images.json --dir "pipelock-${PIPELOCK_RELEASE}"
+cat "$PIPELOCK_BUNDLE"
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -32,16 +34,14 @@ GitHub CLI login and registry access when the image is not public.
 Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 ```bash
-PIPELOCK_RELEASE=v3.7.0
-PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/pipelab-org/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
   | awk '$2 ~ /\^\{\}$/ { peeled = $1 } $2 !~ /\^\{\}$/ { direct = $1 } END { print peeled ? peeled : direct }')"
 test -n "$PIPELOCK_COMMIT"
 
 gh attestation verify "$PIPELOCK_BUNDLE" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners
@@ -52,12 +52,16 @@ jq -e --arg tag "$PIPELOCK_RELEASE" --arg commit "$PIPELOCK_COMMIT" \
 
 PIPELOCK_IMAGE="$(jq -er '.images[] | select(.name == "pipelock") | "\(.repository)@\(.digest)"' "$PIPELOCK_BUNDLE")"
 gh attestation verify "oci://${PIPELOCK_IMAGE}" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners
 ```
+
+These commands use the v3.7.1 signing identity, `pipelab-org/pipelock`, for both `--repo` and `--signer-workflow`. The legacy image and chart addresses remain unchanged for v3.7.1: [the namespace script at that tag](https://github.com/pipelab-org/pipelock/blob/v3.7.1/scripts/release-image-namespace.sh) maps both release repositories to `ghcr.io/luckypipewrench`. Use the tagged script when checking a published release; the script on `main` may target a different namespace.
+
+Releases through v3.7.0 were signed by `luckyPipewrench/pipelock`, and `gh` rejects a mismatched `--repo` (`expected SourceRepositoryOwnerURI`). For their container images, set both `--repo luckyPipewrench/pipelock` and `--signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml`, and add `--bundle-from-oci`: GitHub's attestation service returns 404 for those older digests, so only the copy stored beside the image in the registry verifies. Checked for the `pipelock` images of v3.5.0, v3.6.0 and v3.7.0. The v3.7.0 `release-images.json` and the v3.6.0 and v3.7.0 Helm charts did not verify with these commands when checked. The complete set described here was verified for v3.7.1; verify other releases separately.
 
 Run the same command for `pipelock-init` and `pipelock-license-service` when
 your upgrade uses those images.
@@ -67,7 +71,7 @@ The file has this shape:
 ```json
 {
   "schema": "pipelock-release-images-v1",
-  "tag": "v3.7.0",
+  "tag": "v3.7.1",
   "commit": "the release commit",
   "images": [
     {
@@ -79,15 +83,13 @@ The file has this shape:
 }
 ```
 
-Use a `repository@digest` reference. A tag such as `:3.7.0` can be moved; a
+Use a `repository@digest` reference. A tag such as `:3.7.1` can be moved; a
 manifest digest cannot.
 
 ## Helm chart
 
 The chart itself is published as an OCI artifact next to the images, at
-`ghcr.io/luckypipewrench/charts/pipelock`. From v3.6.0 on it carries the same
-kind of provenance attestation as the container images above; earlier charts
-have none, so set `PIPELOCK_RELEASE` to v3.6.0 or later for this step, and
+`ghcr.io/luckypipewrench/charts/pipelock`. The v3.7.1 chart verifies through GitHub's attestation service. The v3.6.0 and v3.7.0 charts did not verify when checked. Use v3.7.1 for this step, and
 look its commit up again, because the source check must name the commit of the
 release you are verifying. Verify the chart, keep the digest the attestation
 names, and confirm the archive you pull has that same digest:
@@ -100,8 +102,8 @@ test -n "$PIPELOCK_COMMIT"
 
 PIPELOCK_CHART_DIGEST="sha256:$(gh attestation verify \
   "oci://ghcr.io/luckypipewrench/charts/pipelock:${PIPELOCK_RELEASE#v}" \
-  --repo luckyPipewrench/pipelock \
-  --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+  --repo pipelab-org/pipelock \
+  --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml \
   --source-ref "refs/tags/${PIPELOCK_RELEASE}" \
   --source-digest "$PIPELOCK_COMMIT" \
   --deny-self-hosted-runners \
@@ -132,18 +134,18 @@ image.
 image:
   repository: ghcr.io/luckypipewrench/pipelock
   tag: ""
-  digest: "sha256:3936eaa3a400e61584d67212d25aa9000c60b0e32850d72b1e459e3559aa159a"
+  digest: "sha256:20402f0df5d2fb3ef50dadd8f70f758b49d878c3d90b2797eaadcb0f2f0c2ebd"
 ```
 
-That is the v3.7.0 `pipelock` digest. For another release, replace it with the `pipelock`
+That is the v3.7.1 `pipelock` digest. For another release, replace it with the `pipelock`
 digest from that release's verified bundle.
 
 Render the exact values before applying them:
 
 ```bash
-helm lint charts/pipelock -f values-pipelock-v3.7.0.yaml
-helm template pipelock charts/pipelock -f values-pipelock-v3.7.0.yaml > rendered-pipelock-v3.7.0.yaml
-grep 'image:' rendered-pipelock-v3.7.0.yaml
+helm lint charts/pipelock -f values-pipelock-v3.7.1.yaml
+helm template pipelock charts/pipelock -f values-pipelock-v3.7.1.yaml > rendered-pipelock-v3.7.1.yaml
+grep 'image:' rendered-pipelock-v3.7.1.yaml
 ```
 
 The output must contain `ghcr.io/luckypipewrench/pipelock@sha256:`. It must not
@@ -159,15 +161,15 @@ separate on purpose and are not configured by the Pipelock Helm chart.
 ```yaml
 initContainers:
   - name: pipelock-init
-    image: ghcr.io/luckypipewrench/pipelock-init@sha256:64b5e62dd93585ff4a11eae2ef3ba9360375833601d48c27d7b013dae2aa7202
+    image: ghcr.io/luckypipewrench/pipelock-init@sha256:fe7d480c4817a4eccabf94410d92a17af1385322bbb95febd42a33a778cb928d
     args: ["cp", "/pipelock", "/shared-bin/pipelock"]
 
 containers:
   - name: license-service
-    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:460a76f70ee62891643bb5b369aab454045469c787527e1e6382c67e24a7c2cc
+    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:b6919f0ae8cd56b821622c40ced0dd43755875c61caabfb698b82e517e8b7c15
 ```
 
-Those are the v3.7.0 digests. For another release, replace each with its
+Those are the v3.7.1 digests. For another release, replace each with its
 matching entry from that release's verified bundle.
 
 ## Prove the cluster changed

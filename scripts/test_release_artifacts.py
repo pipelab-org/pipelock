@@ -18,6 +18,7 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
@@ -250,17 +251,68 @@ class TestReleaseArtifacts(unittest.TestCase):
         """
         parsed = load_workflow(WORKFLOW)
         holders = []
+        # Keep workflow and job scopes separate even for a job named workflow.
+        scopes = [("workflow", {k: v for k, v in parsed.items() if k != "jobs"}, ())]
         for job_name, job in parsed["jobs"].items():
-            for step in job.get("steps", []):
-                texts = [
-                    str(value)
-                    for block in (step.get("env") or {}, step.get("with") or {})
-                    for value in block.values()
-                ]
-                run = step.get("run")
-                if run is not None:
-                    texts.append(str(run))
-                if any("HOMEBREW_TAP_TOKEN" in text for text in texts):
+            scopes.append((job_name, {k: v for k, v in job.items() if k != "steps"}, ("jobs", job_name)))
+        def expressions(value, path=()):
+            """Read braced expressions and GitHub's implicit job/step if expressions."""
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    yield from expressions(child, (*path, key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    yield from expressions(child, (*path, index))
+            elif isinstance(value, str):
+                implicit_if = (
+                    path[:1] == ("jobs",) and path[-1:] == ("if",)
+                    and (len(path) == 3 or (len(path) == 5 and path[2] == "steps"))
+                )
+                if implicit_if and "${{" not in value:
+                    yield value
+                else:
+                    # Quoted expression strings may contain closing braces.
+                    yield from re.findall(r"\$\{\{((?:'(?:[^']|'')*'|[^'])*?)\}\}", value, re.DOTALL)
+
+        def expression_code(expression):
+            """Remove quoted literals and whitespace before checking context tokens."""
+            return re.sub(r"\s+", "", re.sub(r"'(?:[^']|'')*'", "''", expression))
+
+        def holds_tap_token(value, path=()):
+            """Recognize credential bindings and named secret access, not prose or vars."""
+            if isinstance(value, dict):
+                return any(
+                    str(key).upper() == "HOMEBREW_TAP_TOKEN" or holds_tap_token(child, (*path, key))
+                    for key, child in value.items()
+                )
+            if isinstance(value, list):
+                return any(holds_tap_token(child, (*path, index)) for index, child in enumerate(value))
+            return any(
+                re.search(
+                    r"(?<![\w.-])secrets\.HOMEBREW_TAP_TOKEN(?![\w-])",
+                    expression_code(expression),
+                    re.IGNORECASE,
+                )
+                for expression in expressions(value, path)
+            )
+
+        for scope, config, path in scopes:
+            self.assertFalse(holds_tap_token(config, path), scope)
+
+        # Conservatively require named dot access to secrets. Inspect decoded
+        # strings so newlines stay whitespace. This is not an expression parser.
+        # GitHub's expressions reference defines property dereference syntax;
+        # its secrets reference defines case-insensitive secret names.
+        whole_secrets = re.compile(
+            r"(?<![\w.-])secrets\b(?!\.[a-z_][a-z0-9_-]*)", re.IGNORECASE
+        )
+        for text in expressions(parsed):
+            expression = expression_code(text)
+            self.assertIsNone(whole_secrets.search(expression))
+        for job_name, job in parsed["jobs"].items():
+            self.assertNotEqual(job.get("secrets"), "inherit", job_name)
+            for index, step in enumerate(job.get("steps", [])):
+                if holds_tap_token(step, ("jobs", job_name, "steps", index)):
                     holders.append((job_name, step.get("name", "")))
         self.assertEqual(
             holders,
@@ -269,6 +321,111 @@ class TestReleaseArtifacts(unittest.TestCase):
                 ("release-publish", "Publish Homebrew formula"),
             ],
         )
+
+    def test_tap_token_guard_rejects_broader_secret_scopes(self) -> None:
+        """Reject broad credential exposure while accepting unrelated workflow text."""
+        parsed = load_workflow(WORKFLOW)
+        mutations = {}
+        for expression in (
+            "${{ secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ secrets.homebrew_tap_token }}",
+            "${{ toJSON(secrets) }}",
+            "${{ toJson(secrets) }}",
+            "${{ toJSON (secrets) }}",
+            "${{ toJSON(\nsecrets\n) }}",
+            "${{ toJSON((secrets)) }}",
+            "${{ SECRETS['HOMEBREW_TAP_TOKEN'] }}",
+            "${{ (secrets)['HOMEBREW_TAP_TOKEN'] }}",
+            "${{ github.event.client_payload.secrets.HOMEBREW_TAP_TOKEN || secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ SECRETS . HOMEBREW_TAP_TOKEN }}",
+        ):
+            document = copy.deepcopy(parsed)
+            document["env"] = {"EXPOSURE": expression}
+            mutations[expression] = document
+        for field in ("env", "with", "secrets", "outputs"):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"][field] = {
+                "EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            }
+            mutations[field] = document
+        for field in ("container", "services"):
+            document = copy.deepcopy(parsed)
+            container = {"image": "alpine", "env": {
+                "EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            }}
+            document["jobs"]["release-build"][field] = (
+                container if field == "container" else {"service": container}
+            )
+            mutations[field] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["secrets"] = "inherit"
+        mutations["inherit"] = document
+        document = copy.deepcopy(parsed)
+        document["env"] = {"EXPOSURE": "${{ secrets.HOMEBREW_TAP_TOKEN }}"}
+        document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
+        mutations["job named workflow"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["env"] = {
+            "EXPOSURE": "${{ secrets.homebrew_tap_token }}"
+        }
+        mutations["build step"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["env"] = {
+            "HOMEBREW_TAP_TOKEN": "${{ secrets.OTHER_TOKEN }}"
+        }
+        mutations["credential binding"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["name"] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+        mutations["step name"] = document
+        for field in ("continue-on-error", "if", "working-directory", "shell", "timeout-minutes"):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"]["steps"][0][field] = "${{ secrets.HOMEBREW_TAP_TOKEN }}"
+            mutations["step " + field] = document
+        for scope in ("job", "step"):
+            document = copy.deepcopy(parsed)
+            target = document["jobs"]["release-build"]
+            if scope == "step":
+                target = target["steps"][0]
+            target["if"] = "contains(toJSON(secrets), 'example')"
+            mutations[scope + " implicit if"] = document
+            document = copy.deepcopy(document)
+            target = document["jobs"]["release-build"]
+            if scope == "step":
+                target = target["steps"][0]
+            target["if"] = "secrets.HOMEBREW_TAP_TOKEN != ''"
+            mutations[scope + " implicit named token"] = document
+        document = copy.deepcopy(parsed)
+        document["jobs"]["release-build"]["steps"][0]["run"] = "echo ${{ format('}}', toJSON(secrets)) }}"
+        mutations["quoted closing braces"] = document
+
+        for label, document in mutations.items():
+            with self.subTest(mutation=label):
+                with mock.patch(__name__ + ".load_workflow", return_value=document):
+                    with self.assertRaises(AssertionError):
+                        self.test_tap_token_reaches_only_the_protected_publish_step()
+
+        document = copy.deepcopy(parsed)
+        document["env"] = {"METADATA": "${{ toJSON(github) }}"}
+        document["jobs"]["workflow"] = {"runs-on": "ubuntu-latest", "steps": []}
+        document["jobs"]["release-build"]["steps"][0]["name"] = "Explain secrets handling"
+        document["jobs"]["release-build"]["steps"][0]["run"] = "echo 'secrets documentation'\necho ${{ 'secrets' }}"
+        document["jobs"]["release-build"]["steps"][0]["if"] = "${{ vars.HOMEBREW_TAP_TOKEN_ENABLED == 'true' }}"
+        document["jobs"]["release-build"]["steps"][0]["name"] = "Explain HOMEBREW_TAP_TOKEN handling"
+        document["jobs"]["release-build"]["steps"][0]["run"] += "\necho ${{ 'secrets.HOMEBREW_TAP_TOKEN' }}"
+        with mock.patch(__name__ + ".load_workflow", return_value=document):
+            self.test_tap_token_reaches_only_the_protected_publish_step()
+
+        for expression in (
+            "${{ github.event.client_payload.secrets.HOMEBREW_TAP_TOKEN }}",
+            "${{ github.event.client_payload . secrets . HOMEBREW_TAP_TOKEN }}",
+            "${{ toJSON(github.event.client_payload.secrets) }}",
+            "${{ vars.HOMEBREW_TAP_TOKEN_ENABLED == 'true' }}",
+        ):
+            document = copy.deepcopy(parsed)
+            document["jobs"]["release-build"]["steps"][0]["env"] = {"METADATA": expression}
+            with self.subTest(noncredential=expression):
+                with mock.patch(__name__ + ".load_workflow", return_value=document):
+                    self.test_tap_token_reaches_only_the_protected_publish_step()
 
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
