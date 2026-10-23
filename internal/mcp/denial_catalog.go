@@ -78,9 +78,10 @@ var mcpDenialCatalog = [...]mcpDenialSpec{
 	{"authority", scanner.AuditRequestPolicy, audit.BlockClassProtective, mcpResourceInput, "MCP action authority denied the request"},
 	{"frozen", scanner.AuditFrozenTool, audit.BlockClassProtective, mcpResourceInput, "tool not in frozen inventory"},
 	{"dow", scanner.ScannerDenialOfWallet, audit.BlockClassProtective, mcpResourceInput, ""},
-	{"tool_finding", scanner.ScannerMCPToolScanning, audit.BlockClassThreat, "tools/list", ""},
-	{"tool_capacity", scanner.ScannerMCPToolScanning, audit.BlockClassInfrastructureError, "tools/list", "tools/list cannot be safely inspected: tool_inventory_capacity"},
-	{"tool_inspection", scanner.ScannerMCPToolScanning, audit.BlockClassInfrastructureError, "tools/list", ""},
+	// Preserve the released label and its content-redaction mode.
+	{"tool_finding", scanner.AuditToolScanning, audit.BlockClassThreat, "tools/list", ""},
+	{"tool_capacity", scanner.AuditToolScanning, audit.BlockClassInfrastructureError, "tools/list", "tools/list cannot be safely inspected: tool_inventory_capacity"},
+	{"tool_inspection", scanner.AuditToolScanning, audit.BlockClassInfrastructureError, "tools/list", ""},
 	{"provenance", scanner.AuditProvenance, audit.BlockClassThreat, "tools/list", "MCP tool provenance verification failed"},
 	{"media_finding", scanner.AuditMediaPolicy, audit.BlockClassThreat, "server_response", "MCP response media policy refused content"},
 	{"media_inspection", scanner.AuditMediaPolicy, audit.BlockClassInfrastructureError, "server_response", "MCP response media could not be inspected"},

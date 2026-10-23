@@ -1308,7 +1308,7 @@ action. A failed
 or unparseable MCP response uses `mcp_response_inspection` and an operational
 `block_class`; these events do not report an attack technique.
 Malformed upstream responses are blocked and classified as operational even when a raw fallback detects instruction-like content, matching the input inspection-failure rule.
-Tool-definition blocks use `mcp_tool_scanning`; an inventory capacity or
+Tool-definition blocks preserve the released `tool_scanning` audit label and `[redacted]` resource; an inventory capacity or
 inspection refusal has an operational `block_class` and cannot be relaxed by
 `mcp_tool_scanning.action`.
 
@@ -2504,12 +2504,14 @@ Coverage by transport:
 | WebSocket (`/ws`) | Yes, from the upgrade request, on every event for that connection including frame scans and close |
 | CONNECT with TLS interception | Yes. Each inner request uses its own header value; when an inner request has none, the CONNECT request's value is used. Tunnel-level events use the CONNECT request's value. |
 | CONNECT passthrough (no interception) | Only from headers on the CONNECT request itself (for example `curl --proxy-header`). Headers inside the encrypted tunnel are not visible. |
-| MCP HTTP listener (`--listen`) | Yes, per HTTP request, including SSE responses to that request |
+| MCP HTTP listener (`--listen`) | Yes, after the correlation header is vetted, including SSE responses to that request. Earlier refusals omit it; see the known gaps below. |
 | MCP stdio, MCP to an HTTP or WebSocket upstream from stdio | No. There are no inbound request headers, so the field is absent. |
 
-Allow and block decisions carry the field on every transport listed above. On fetch, WebSocket, TLS-intercepted requests, and the MCP HTTP listener, the request's session-level events (such as `session_anomaly` and adaptive escalation) carry it too; on the forward proxy, CONNECT, and reverse proxy paths those session-level events do not. Warn-mode DLP findings (`dlp_warn`) do not carry it on any transport. Events not tied to a request, such as startup and config reload, never carry it.
+Allow and block decisions carry the field on the transports marked Yes above, subject to the known gaps below. On fetch, WebSocket, TLS-intercepted requests, and the MCP HTTP listener, the request's session-level events (such as `session_anomaly` and adaptive escalation) carry it too; on the forward proxy, CONNECT, and reverse proxy paths those session-level events do not. Warn-mode DLP findings (`dlp_warn`) do not carry it on any transport. Events not tied to a request, such as startup and config reload, never carry it.
 
 Known gaps, where an event for a tagged request has no `correlation_id`:
+
+- MCP HTTP listener refusals before header vetting: Origin, authentication, Host, HTTP method, protocol headers, scanner availability, and server identity checks. These events omit the unvetted client value. Later header-DLP, tool-policy, and response refusals carry the vetted value.
 
 - MCP stdio, and stdio to an HTTP or WebSocket upstream: no inbound request headers exist.
 - CONNECT passthrough: headers inside the encrypted tunnel are not visible.

@@ -44,6 +44,7 @@ var techniqueMap = map[string]string{
 	"mcp_header_dlp":                "T1048",     // Credential in an MCP listener request header
 	"mcp_header_injection":          "T1059",     // Instruction in a decoded MCP parameter header
 	"mcp_tool_scanning":             "T1195.002", // Poisoned MCP tool definition
+	"tool_scanning":                 "T1195.002", // Released MCP blocked-event label
 	"mcp_redirect_output_dlp":       "T1048",     // Credential in redirect handler output
 	"mcp_redirect_output_injection": "T1059",     // Instruction in redirect handler output
 

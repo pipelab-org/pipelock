@@ -605,6 +605,7 @@ func RunHTTPListenerProxy(
 		// key this; the logger copy is scoped to this request instead.
 		requestBaseOpts.AuditLogger = baseOpts.AuditLogger.WithCorrelation(
 			audit.CorrelationIDFromHeader(r.Context(), r.Header, opts.CorrelationHeader, reqScanner))
+		w.opts.AuditLogger = requestBaseOpts.AuditLogger
 		fullRequestBaseOpts := requestBaseOpts
 		reset := listenerClients.resetUpstreamToolDriftStateIfRequested(opts.toolCfg(), io.Discard)
 		reportReset := reset.Result == ResetAuthorityAccepted

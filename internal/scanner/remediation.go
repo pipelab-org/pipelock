@@ -34,6 +34,7 @@ const (
 	AuditAdaptiveEnforcement               = "adaptive_enforcement"
 	AuditMCPSessionBinding                 = "mcp_session_binding"
 	AuditMCPToolPolicy                     = "mcp_tool_policy"
+	AuditToolScanning                      = "tool_scanning" // Released MCP blocked-event label
 	AuditMCPInputDLP                       = "mcp_input_dlp"
 	AuditMCPInputInjection                 = "mcp_input_injection"
 	AuditMCPInputInspection                = "mcp_input_inspection"
@@ -347,6 +348,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 	AuditMCPRedirectOutputInjection:        {OperatorKnob: mcpRedirectOutputInjectionOperatorKnob, AgentReason: auditContentAgentReason},
 	AuditMCPDefer:                          {OperatorKnob: mcpDeferOperatorKnob, AgentReason: auditRuntimeAgentReason},
 	ScannerMCPToolScanning:                 {OperatorKnob: mcpToolScanningOperatorKnob, AgentReason: auditContentAgentReason},
+	AuditToolScanning:                      {OperatorKnob: mcpToolScanningOperatorKnob, AgentReason: auditContentAgentReason},
 	AuditSNIMismatch:                       {OperatorKnob: sniMismatchOperatorKnob, AgentReason: auditPolicyAgentReason},
 	AuditKillSwitch:                        {OperatorKnob: killSwitchOperatorKnob, AgentReason: auditPolicyAgentReason},
 	AuditAirlock:                           {OperatorKnob: airlockOperatorKnob, AgentReason: auditPolicyAgentReason},
@@ -615,7 +617,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted. Release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		}
 	}
-	if label == ScannerMCPToolScanning && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {
+	if (label == ScannerMCPToolScanning || label == AuditToolScanning) && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {
 		return RemediationGuidance{
 			OperatorKnob: "The tools/list inventory cannot be safely inspected or admitted into the current baseline. Correct or reduce the upstream inventory and retry; `mcp_tool_scanning.action` does not override this refusal.",
 			AgentReason:  auditRuntimeAgentReason,

@@ -671,9 +671,9 @@ func TestMCPToolInventoryCapacityAuditEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := events.String()
-	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.ScannerMCPToolScanning+`"`) ||
+	if strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditToolScanning+`"`) ||
 		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) ||
-		!strings.Contains(got, "does not override this refusal") || !strings.Contains(got, `"resource":"tools/list"`) {
+		!strings.Contains(got, "does not override this refusal") || !strings.Contains(got, `"resource":"[redacted]"`) {
 		t.Fatalf("inventory capacity refusal mislabeled: %s", got)
 	}
 }

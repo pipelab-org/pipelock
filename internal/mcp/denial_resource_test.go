@@ -33,9 +33,9 @@ func (*mcpResourceSink) Close() error { return nil }
 // already redacted their resources; routing metadata must not undo that.
 func TestMCPDenialResourceContract(t *testing.T) {
 	for _, tc := range []struct{ kind, want string }{
-		{"tool_finding", "tools/list"},
-		{"tool_capacity", "tools/list"},
-		{"tool_inspection", "tools/list"},
+		{"tool_finding", "[redacted]"},
+		{"tool_capacity", "[redacted]"},
+		{"tool_inspection", "[redacted]"},
 		{"provenance", "[redacted]"},
 		{"response_content", "[redacted]"},
 		{"media_finding", "[redacted]"},
@@ -73,6 +73,9 @@ func TestMCPDenialResourceContract(t *testing.T) {
 			}
 			if event.Resource != tc.want || len(sink.events) != 1 || sink.events[0].Fields["resource"] != tc.want {
 				t.Fatalf("resource contract: local=%q external=%v want=%q", event.Resource, sink.events, tc.want)
+			}
+			if strings.HasPrefix(tc.kind, "tool_") && sink.events[0].Fields["scanner"] != "tool_scanning" {
+				t.Fatalf("released tool scanner label changed: %v", sink.events[0].Fields)
 			}
 		})
 	}

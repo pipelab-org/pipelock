@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -145,5 +146,58 @@ func TestEmitCorrelation_MCPHTTPListenerPerRequest(t *testing.T) {
 		if got, ok := ev.Fields[audit.FieldCorrelationID]; ok {
 			t.Fatalf("second request inherited correlation_id %v from the first", got)
 		}
+	}
+}
+
+// Listener-writer and input-pipeline refusals must use the same vetted tag.
+// Early admission refusals never copy a header that has not been vetted.
+func TestEmitCorrelation_MCPHTTPListenerRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name, tag, want, label string
+		headers                func(http.Header)
+	}{
+		{"header_dlp", mcpCorrTag, mcpCorrTag, scanner.AuditMCPHeaderDLP, func(h http.Header) { h.Set("Authorization", "Bearer AKIA"+"Z7VRSQ5TJN2XMPLQ") }},
+		{"tool_policy", mcpCorrTag, mcpCorrTag, scanner.AuditMCPToolPolicy, nil},
+		{"invalid_tag", "invalid tag", "", scanner.AuditMCPToolPolicy, nil},
+		{"secret_tag", "AKIA" + "Z7VRSQ5TJN2XMPLQ", "", scanner.AuditMCPToolPolicy, nil},
+		{"absent_tag", "", "", scanner.AuditMCPToolPolicy, nil},
+		{"origin_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("Origin", "https://untrusted.example") }},
+		{"protocol_before_vetting", mcpCorrTag, "", scanner.AuditMCPProtocol, func(h http.Header) { h.Set("MCP-Protocol-Version", "invalid") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sink := &mcpCorrelationSink{}
+			emitter := emit.NewEmitter("correlation-test", sink)
+			t.Cleanup(func() { _ = emitter.Close() })
+			logger := audit.NewNop()
+			logger.SetEmitter(emitter)
+			upstream, _ := newWireContractUpstream(t)
+			opts := MCPProxyOpts{
+				Scanner: testScannerForHTTP(t), AuditLogger: logger, CorrelationHeader: mcpCorrHeader,
+				PolicyCfg: buildPolicyConfig(config.ActionBlock, []config.ToolPolicyRule{{Name: "deny-echo", ToolPattern: "^echo$", Action: config.ActionBlock}}),
+			}
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			headers := currentWireHeaders("tools/call", "echo")
+			if tc.tag != "" {
+				headers.Set(mcpCorrHeader, tc.tag)
+			}
+			if tc.headers != nil {
+				tc.headers(headers)
+			}
+			postWireContractRequest(t, baseURL, currentWireBody(1, "tools/call", `"name":"echo","arguments":{}`), headers)
+			blocked := 0
+			for _, ev := range sink.snapshot() {
+				if ev.Type != "blocked" {
+					continue
+				}
+				blocked++
+				got, present := ev.Fields[audit.FieldCorrelationID]
+				if ev.Fields["scanner"] != tc.label || (tc.want == "" && present) || (tc.want != "" && got != tc.want) {
+					t.Fatalf("block fields=%v, want scanner=%s correlation_id=%q", ev.Fields, tc.label, tc.want)
+				}
+			}
+			if blocked != 1 {
+				t.Fatalf("blocked events=%d, want 1", blocked)
+			}
+		})
 	}
 }

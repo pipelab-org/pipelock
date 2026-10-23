@@ -146,8 +146,8 @@ func TestForwardScanned_ToolInventoryCapacityAlwaysBlocks(t *testing.T) {
 	if baseline.IsKnownTool("overflow") {
 		t.Fatal("blocked overflow tool became a trusted baseline entry")
 	}
-	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.ScannerMCPToolScanning+`"`) ||
-		!strings.Contains(got, `"resource":"tools/list"`) || !strings.Contains(got, "current baseline") ||
+	if got := events.String(); strings.Count(got, `"event":"blocked"`) != 1 || !strings.Contains(got, `"scanner":"`+scanner.AuditToolScanning+`"`) ||
+		!strings.Contains(got, `"resource":"[redacted]"`) || !strings.Contains(got, "current baseline") ||
 		!strings.Contains(got, `"block_class":"infrastructure_error"`) || strings.Contains(got, `"mitre_technique"`) || strings.Contains(got, "overflow") {
 		t.Fatalf("inventory capacity audit event = %s", got)
 	}

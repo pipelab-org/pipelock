@@ -116,7 +116,6 @@ protective, configuration, and inspection refusals.
 | `mcp_response_inspection` | Uninspectable upstream response |
 | `mcp_session_binding` | Session inventory mismatch |
 | `mcp_tool_policy` | Matched tool rule |
-| `mcp_tool_scanning` | Tool definition finding or operational inventory refusal |
 | `media_policy` | Response media policy or inspection refusal |
 | `mediation_envelope` | Mediation envelope injection failure |
 | `parser` | Embedded URL destination check; see the scanner guidance for this label |
@@ -134,6 +133,7 @@ protective, configuration, and inspection refusals.
 | `ssrf_metadata` | Embedded URL destination check; see the scanner guidance for this label |
 | `subdomain_entropy` | Embedded URL destination check; see the scanner guidance for this label |
 | `taint_policy` | Tainted action refusal |
+| `tool_scanning` | Tool definition finding or operational inventory refusal |
 <!-- END MCP blocked scanner labels -->
 
 Listener header DLP scans selected request header names and values as text.
@@ -141,7 +141,7 @@ Decoded `Mcp-Param-*` values receive response injection scanning too.
 `Last-Event-ID`, `Mcp-Param-*`, and `Mcp-Session-Id` are always selected;
 `Authorization` is selected by default. The other selections follow
 `request_body_scanning.scan_headers`, `header_mode`, `sensitive_headers`, and
-`ignore_headers`. A tools/list capacity refusal under `mcp_tool_scanning` and
+`ignore_headers`. A tools/list capacity refusal under `tool_scanning` and
 an uninspectable response under `mcp_response_inspection` use
 `block_class: infrastructure_error`, carry no MITRE technique, and omit
 agent-threat attributes. MCP operational blocks retain their native OTLP
@@ -153,7 +153,7 @@ resources retain audit redaction; route fields do not make their content safe.
 
 | Denial surface | Serialized `resource` |
 |---|---|
-| Tool inventory scanning (`mcp_tool_scanning`) | `tools/list` |
+| Tool inventory scanning (`tool_scanning`) | `[redacted]` |
 | Frozen tool inventory (`frozen_tool`) | Refused tool name |
 | Response content, provenance, media policy, denial-of-wallet, and CEE | `[redacted]` |
 | Newly logged input failures | `mcp_input` |
@@ -164,11 +164,7 @@ resources retain audit redaction; route fields do not make their content safe.
 | Listener admission and inspection failures | `mcp_listener` |
 | Startup refusals | `mcp_startup` |
 
-The tool inventory and frozen-tool resource inputs predate this finalizer and
-remain compatible with released versions. Tool scanning now uses the documented
-`mcp_tool_scanning` label; versions using the older `tool_scanning` spelling
-redact its resource. New failure markers omit request arguments, header values,
-and response bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
+Tool inventory blocks preserve the released `tool_scanning` label and `[redacted]` resource. The configuration section remains `mcp_tool_scanning`. Frozen-tool blocks retain the refused tool name. New failure markers omit request arguments, header values, and response bodies. Rules filtering `fields.scanner == "dlp"` for credentials should also
 select `mcp_input_dlp`, `mcp_header_dlp`, and `mcp_redirect_output_dlp` when MCP
 blocks are in scope.
 
