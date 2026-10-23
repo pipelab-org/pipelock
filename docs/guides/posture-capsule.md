@@ -71,14 +71,7 @@ err := posture.Verify(capsule, trustedPublicKey)
 
 ## `pipelock posture verify`
 
-Verify a signed capsule against a named policy, with optional freshness and minimum-score gates. Intended for CI pipelines and release signing.
-
-```bash
-pipelock posture verify \
-  --proof .pipelock/posture/proof.json \
-  --key /path/to/pipelock-posture.pub \
-  --policy strict
-```
+Verify a signed capsule against a named policy, with optional freshness and minimum-score gates. File-only collection cannot currently satisfy `strict`, including when no MCP servers are found. A newly emitted capsule with any discovered servers also falls below the default minimum score of 85, even under `enterprise`. See [file-only collection limits](#file-only-collection-limits) before using verification as a CI gate.
 
 Flags:
 
@@ -109,9 +102,9 @@ Flags:
 
 Three named policies ship with the current `PolicyVersion = "2"`:
 
-- **`enterprise`** (default) — standard hard gates. Suitable for most environments. Zero discovered MCP servers is a warning rather than a hard failure so non-MCP deployments and empty home directories still verify.
-- **`strict`** — recommended for new installations that deliberately target MCP coverage. Requires flight recorder active, MCP discovery to have found at least one server (zero discovered is a hard failure, closes the vacuous-truth gap), receipts fresh within `--max-receipt-age`, and no parse errors in discovery.
-- **`none`** — no named policy gates; only the minimum-score gate applies. Useful for pipelines that want to enforce score but not the opinionated MCP/recorder gates.
+- **`enterprise`** (default) requires no unprotected servers, no simulation category with zero detection, an active flight recorder, and recorded receipts fresh within `--max-receipt-age`. Zero discovered MCP servers produces a warning rather than a hard failure; other gates and the minimum score still apply.
+- **`strict`** adds hard failures for zero discovered MCP servers, unknown discovery entries, and discovery parse errors. Capsules count file-only wrappers as unknown, so current file-only collection cannot pass this policy.
+- **`none`** skips named policy gates. Signature, validity, configured freshness, and minimum-score checks still apply. It doesn't verify MCP launch coverage.
 
 The policy evaluation produces hard failures (gate-blocking) and warnings (informational). JSON output lists both categories separately.
 
@@ -126,23 +119,38 @@ The score (0-100) is a weighted sum of evidence factors. High-level factor group
 
 The weighting is encoded in `internal/posture/score.go` and bumps `PolicyVersion` whenever weights change. Capsule consumers should record the `policy_version` alongside score for reproducibility across pipelock upgrades.
 
-### CI example
+### File-only collection limits
 
-```yaml
-- name: Verify pipelock posture
-  run: |
-    pipelock posture emit \
-      --config pipelock.yaml \
-      --output .pipelock/posture
-    pipelock posture verify \
-      --proof .pipelock/posture/proof.json \
-      --key "${{ secrets.POSTURE_PUB_KEY_PATH }}" \
-      --policy strict \
-      --min-score 80 \
-      --json > posture-result.json
+Discovery inventories configuration files without starting clients or MCP servers. This applies across supported discovery clients. A wrapper in a checked file is `unconfirmed` because it can't establish what the client launched. Capsules fold that status into the existing signed `discover.unknown` count. Wrapping an unprotected entry fixes its configured command, but adding or repeating a wrapper can't supply launch evidence. See [discovery coverage](../cli/discover.md).
+
+For a nonempty file-only inventory, the best case is all entries wrapped, no parse errors, an active recorder with recent receipts, and perfect simulation. The current functions in [`internal/posture/score.go`](../../internal/posture/score.go) compute:
+
+```text
+computeTransportPct:   100 * (protected_pipelock + protected_other)
+                          / (total_servers + parse_errors) = 0
+computeRecorderPctAt:  100 with an active recorder and recent receipts
+computeSimulatePct:    100 with every scorable scenario detected
+computeCleanlinessPct: 50 because discover.unknown > 0
+
+factor(raw, weight) = floor(raw * weight / 100)
+score = 0 * 25 / 100 + 100 * 15 / 100 + 100 * 35 / 100
+        + floor(50 * 25 / 100)
+      = 0 + 15 + 35 + 12 = 62
 ```
 
-An exit code of `2` from the verify step fails the CI job for one of two reasons, and they have different remediations. A policy gate or the minimum score was not met — remediation is "fix the environment or relax the policy". Or a workspace change statement was supplied, verified and bound, but is incomplete — remediation is to read the statement's incomplete reason, because relaxing policy will not change that result. A `1` fails because the capsule is not trustworthy — remediation is "regenerate the capsule, check the public key, or investigate tampering".
+Switching from `strict` to `enterprise` alone therefore won't pass the default minimum of 85. A minimum of 80 also exceeds the best-case 62. Lowering the score requirement doesn't remove strict's hard failures: unwrapped entries fail `unprotected_servers`, wrapped or unknown entries fail `unknown_servers`, parse errors fail `discovery_parse_errors`, and an empty inventory fails `no_servers_discovered`.
+
+Using `--policy none --min-score 0` is a deliberate reduction to capsule authenticity, validity, and freshness checks. It provides no MCP coverage verification. `none` alone retains the default score gate; `--min-score 0` alone retains the selected policy's hard gates. Optional config-hash and workspace-statement checks still apply when requested. No default, scoring weight, or policy gate has been lowered. Launch-evidence confirmation is planned; current file-only collection has no equivalent replacement for a successful strict MCP coverage gate.
+
+### CI upgrade impact
+
+CI that emits a capsule and verifies it with `strict` now fails policy verification for file-only evidence. Jobs using the default `enterprise` policy and minimum 85 also fail for a nonempty inventory. The former strict/minimum-80 example can't pass with current file-only collection and has been removed. Keep a required MCP coverage gate failing until suitable evidence is available; any reduction in verification requirements must be an explicit operator decision.
+
+Exit `2` means the capsule's signature is valid but a policy gate or the minimum score failed. If a bound workspace statement is incomplete, read its incomplete reason; relaxing policy won't change that result. Exit `1` means verification couldn't complete, for example because the capsule expired or its signature didn't verify.
+
+### Existing capsules
+
+The signed schema remains version `1`. Verification evaluates the signed counts without recollecting discovery or reclassifying historical protected counts. Older signed capsules can still pass until their existing validity, freshness, score, or policy checks fail. Re-emitting collects the new conservative evidence and can produce a different policy result with a valid signature. That difference isn't signature corruption.
 
 ## Artifact shape
 
@@ -156,10 +164,10 @@ Minimal example:
       "high_risk":0,
       "parse_errors":0,
       "protected_other":0,
-      "protected_pipelock":2,
+      "protected_pipelock":0,
       "total_clients":1,
       "total_servers":2,
-      "unknown":0,
+      "unknown":2,
       "unprotected":0
     },
     "flight_recorder":{

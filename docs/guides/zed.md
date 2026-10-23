@@ -165,12 +165,10 @@ still spawns.
 including all four Zed channels:
 
 ```bash
-$ pipelock discover
-zed                  1 server,  1 protected
-zed-preview          1 server,  0 protected   <-- channel missed during install
-zed-flatpak          0 servers
-zed-preview-flatpak  0 servers
+pipelock discover
 ```
+
+A wrapper found in a Zed settings file is reported as **unconfirmed**. Discovery cannot verify the client's project settings or actual launch context. An entry without a verified wrapper is reported as unprotected. See [discovery coverage](../cli/discover.md).
 
 Use `pipelock discover --json` for a machine-readable report.
 

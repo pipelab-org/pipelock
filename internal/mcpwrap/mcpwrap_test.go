@@ -487,3 +487,40 @@ func normalize(m map[string]interface{}) map[string]interface{} {
 	}
 	return out
 }
+
+// TestExplainExecutableAgreesWithClassifier proves the explanation never
+// changes the state: every reason accompanies WrapperForeign, and an
+// unavailable self executable is uncheckable rather than missing.
+func TestExplainExecutableAgreesWithClassifier(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "pipelock")
+	cases := []struct {
+		name    string
+		command string
+		self    string
+		exeErr  error
+		want    ForeignReason
+	}{
+		{"self", self, self, nil, ForeignNone},
+		{"missing", missing, self, nil, ForeignMissing},
+		{"self unknown", self, "", errors.New("no executable"), ForeignUncheckable},
+		{"self unreadable", self, missing, nil, ForeignUncheckable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state, reason := explainExecutable(tc.command, tc.self, tc.exeErr)
+			if reason != tc.want {
+				t.Fatalf("reason = %v, want %v", reason, tc.want)
+			}
+			if got := classifyExecutable(tc.command, tc.self, tc.exeErr); got != state {
+				t.Fatalf("classifyExecutable = %v, explainExecutable state = %v", got, state)
+			}
+			if (reason == ForeignNone) != (state == WrapperSelf) {
+				t.Fatalf("state %v inconsistent with reason %v", state, reason)
+			}
+		})
+	}
+}

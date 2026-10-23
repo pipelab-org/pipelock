@@ -6,6 +6,7 @@ package posture
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -70,6 +71,35 @@ func TestCapsuleMarshalJSONDeterministic(t *testing.T) {
 				t.Fatalf("canonical JSON mismatch:\n got: %s\nwant: %s", got, expectedJSON)
 			}
 		})
+	}
+}
+
+func TestDiscoverSignedPayloadBytesRemainVersionOne(t *testing.T) {
+	capsule := Capsule{
+		SchemaVersion: "1",
+		GeneratedAt:   time.Date(2026, time.April, 11, 17, 45, 0, 0, time.UTC),
+		ExpiresAt:     time.Date(2026, time.May, 11, 17, 45, 0, 0, time.UTC),
+		ToolVersion:   "0.0.0-dev.unknown",
+		ConfigHash:    "abc123",
+		Evidence: EvidenceBundle{Discover: DiscoverEvidence{
+			TotalClients: 1, TotalServers: 2, ProtectedPipelock: 1, Unprotected: 1,
+		}},
+	}
+	payload, err := capsule.signableJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(payload, []byte("sops_exec_env")) {
+		t.Fatalf("signed payload added discover-only SOPS count: %s", payload)
+	}
+	const wantBytes = `{"config_hash":"abc123","evidence":{"discover":{"high_risk":0,"parse_errors":0,"protected_other":0,"protected_pipelock":1,"total_clients":1,"total_servers":2,"unknown":0,"unprotected":1},"flight_recorder":{"receipt_count":0,"scanner_verdict":null},"simulate":{"failed":0,"grade":"","known_limitations":0,"mode":"","passed":0,"percentage":0,"scenarios":null,"total":0},"verify_install":{"flight_recorder_active":false,"proxying":false,"receipt_count":0}},"expires_at":"2026-05-11T17:45:00Z","generated_at":"2026-04-11T17:45:00Z","schema_version":"1","tool_version":"0.0.0-dev.unknown"}`
+	if string(payload) != wantBytes {
+		t.Fatalf("signable bytes changed:\n got: %s\nwant: %s", payload, wantBytes)
+	}
+	sum := sha256.Sum256(payload)
+	const want = "3a7a5b12c389f6c63de2186638b6bd6955cf27d8775738db6e4181fee6fab8ca"
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("signed payload changed: SHA-256 %s, want %s", got, want)
 	}
 }
 
@@ -1589,5 +1619,97 @@ func TestWriteProofMarkdown_NilCapsule(t *testing.T) {
 	_, err := WriteProofMarkdown(t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "capsule is required") {
 		t.Fatalf("WriteProofMarkdown(nil) error = %v, want capsule required", err)
+	}
+}
+
+// TestCollectDiscoverEvidenceIncludesClaudeConfigDir proves the signed capsule
+// counts servers under the current user's CLAUDE_CONFIG_DIR, matching what
+// pipelock discover reports for that user.
+func TestCollectDiscoverEvidenceIncludesClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	defer patchUserHomeDir(func() (string, error) { return home, nil })()
+	altDir := t.TempDir()
+	content := `{"mcpServers":{"alt":{"command":"node","args":["alt.js"]}}}`
+	if err := os.WriteFile(filepath.Join(altDir, ".claude.json"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", altDir)
+
+	evidence, err := collectDiscoverEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.TotalServers != 1 {
+		t.Fatalf("capsule discover evidence = %+v, want the 1 server under CLAUDE_CONFIG_DIR", evidence)
+	}
+}
+
+// TestCollectDiscoverEvidenceIncludesCodexHome proves the signed capsule
+// counts servers under the current user's CODEX_HOME, where Codex reads and
+// writes its MCP servers in place of ~/.codex.
+func TestCollectDiscoverEvidenceIncludesCodexHome(t *testing.T) {
+	home := t.TempDir()
+	defer patchUserHomeDir(func() (string, error) { return home, nil })()
+	altDir := t.TempDir()
+	content := "[mcp_servers.alt]\ncommand = 'node'\nargs = ['alt.js']\n"
+	if err := os.WriteFile(filepath.Join(altDir, "config.toml"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", altDir)
+
+	evidence, err := collectDiscoverEvidence()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if evidence.TotalServers != 1 || evidence.Unprotected != 1 {
+		t.Fatalf("capsule discover evidence = %+v, want the 1 unprotected server under CODEX_HOME", evidence)
+	}
+}
+
+func TestCollectDiscoverEvidenceUnconfirmedIsUnknown(t *testing.T) {
+	for _, scope := range []string{"user", "project"} {
+		t.Run(scope, func(t *testing.T) {
+			home, project := t.TempDir(), t.TempDir()
+			t.Chdir(project)
+			defer patchUserHomeDir(func() (string, error) { return home, nil })()
+			t.Setenv("CODEX_HOME", "")
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
+			self, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := fmt.Sprintf(`{"mcpServers":{"probe":{"command":%q,"args":["mcp","proxy","--","child"]}}}`, self)
+			path := filepath.Join(home, ".claude.json")
+			if scope == "project" {
+				path = filepath.Join(project, ".grok", "config.toml")
+				content = fmt.Sprintf("[mcp_servers.probe]\ncommand=%q\nargs=['mcp','proxy','--','child']\n", self)
+				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := collectDiscoverEvidence()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if evidence.TotalServers != 1 || evidence.Unknown != 1 || evidence.ProtectedPipelock != 0 {
+				t.Fatalf("evidence = %+v", evidence)
+			}
+			if got := computeCleanlinessPct(evidence); got != 50 {
+				t.Fatalf("cleanliness = %d, want 50", got)
+			}
+			failures, _ := evaluatePolicyAt(PolicyStrict, EvidenceBundle{Discover: evidence}, VerifyOpts{}, time.Now())
+			found := false
+			for _, failure := range failures {
+				if failure.Rule == ruleUnknownServers {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("strict policy accepted unconfirmed evidence: %+v", failures)
+			}
+		})
 	}
 }

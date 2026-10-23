@@ -16,6 +16,7 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 | [`pipelock git scan-diff`](git.md) | Scan a unified diff on stdin for credentials before it is committed or merged. |
 | [`pipelock scan`](scan.md) | Scan files for invisible-Unicode and bidi-control injection. |
 | [`pipelock skill-scan`](skill-scan.md) | Inventory skill files, compare lock drift, and flag conservative source-to-sink combinations. |
+| [`pipelock discover`](discover.md) | Inventory MCP configurations, apply checked project overrides, and report unconfirmed launch coverage. |
 | [`pipelock doctor`](doctor.md) | Audit whether configured protections are actually enforceable in the current topology. |
 | [`pipelock explain`](explain.md) | Explain a URL verdict and the exact, per-scanner remediation knob for a block. |
 | [`pipelock verify-install`](verify-install.md) | Deterministic smoke checks that scanning is wired plus direct-egress probes with explicit exposed or inconclusive outcomes. |

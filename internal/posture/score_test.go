@@ -58,6 +58,32 @@ func TestComputeScore(t *testing.T) {
 			wantClean:    100,
 		},
 		{
+			// Keep the file-only maximum in docs/guides/posture-capsule.md
+			// pinned to the score, including integer weighting of cleanliness.
+			name: "file-only wrapped inventory maximum is 62",
+			evidence: EvidenceBundle{
+				Discover: DiscoverEvidence{
+					TotalServers: 5,
+					Unknown:      5,
+				},
+				VerifyInstall: VerifyInstallEvidence{
+					FlightRecorderActive: true,
+					ReceiptCount:         100,
+				},
+				Simulate: audit.SimulateResult{Percentage: 100},
+				FlightRecorder: FlightRecorderCounts{
+					ReceiptCount:  100,
+					LastReceiptAt: &recentReceipt,
+				},
+			},
+			maxAgeDays:   MaxReceiptAgeDays,
+			wantScore:    62,
+			wantTransp:   0,
+			wantRecorder: 100,
+			wantSim:      100,
+			wantClean:    50,
+		},
+		{
 			name: "zero score all bad",
 			evidence: EvidenceBundle{
 				Discover: DiscoverEvidence{

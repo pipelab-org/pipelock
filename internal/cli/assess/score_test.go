@@ -190,6 +190,23 @@ func TestScoreDeploymentVerification_AllNA(t *testing.T) {
 	}
 }
 
+// TestScoreMCPProtectionCountsDisabledCodexEntries proves a Codex entry marked
+// enabled = false is scored by its protection state: Codex config layers can
+// re-enable it, so excluding it would score an unwrapped server as absent.
+func TestScoreMCPProtectionCountsDisabledCodexEntries(t *testing.T) {
+	disc := &AssessDiscoverReport{
+		Servers: []AssessDiscoverServer{
+			{MCPServer: discover.MCPServer{ServerName: "off", Client: "codex", Disabled: true, Protection: discover.Unprotected}},
+			{MCPServer: discover.MCPServer{ServerName: "on", Client: "codex", Protection: discover.ProtectedPipelock}},
+		},
+		Summary: AssessDiscoverSummary{Summary: discover.Summary{TotalServers: 2, Disabled: 1, ProtectedPipelock: 1, Unprotected: 1}},
+	}
+	section := scoreMCPProtection(disc)
+	if section.Score != 50 || section.Applicable != 2 || section.Total != 2 {
+		t.Fatalf("disabled unwrapped entry was not scored: %+v", section)
+	}
+}
+
 func TestScoreMCPProtection(t *testing.T) {
 	t.Run("unknown gets 50% credit", func(t *testing.T) {
 		disc := &AssessDiscoverReport{
@@ -915,5 +932,30 @@ func TestAuditRemediation(t *testing.T) {
 				t.Errorf("auditRemediation(%q) = %q, want substring %q", tc.category, got, tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestScoreMCPProtection_RedactedParseErrorsAreNotClean proves the scorer
+// reads the summary's parse-error count. Persisted evidence blanks each
+// client's ParseError text, so counting only that text scored an unreadable
+// config as a perfect, clean scan.
+func TestScoreMCPProtection_RedactedParseErrorsAreNotClean(t *testing.T) {
+	report, err := discover.DiscoverWithOptions(t.TempDir(), discover.Options{ClaudeConfigDirs: []string{"relative/claude"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Summary.ParseErrors != 1 {
+		t.Fatalf("precondition: want 1 parse error, got %+v", report.Summary)
+	}
+	wrapped := wrapDiscoverReport(report, "")
+	for _, c := range wrapped.Clients {
+		if c.ParseError != "" {
+			t.Fatalf("precondition: redaction kept parse error text %q", c.ParseError)
+		}
+	}
+
+	section := scoreMCPProtection(&wrapped)
+	if section.Score == 100 || section.Grade == assessGradeA {
+		t.Fatalf("unreadable config scored as clean: score=%d grade=%s detail=%q", section.Score, section.Grade, section.Detail)
 	}
 }

@@ -39,7 +39,7 @@ func classifyRisk(s MCPServer) (RiskLevel, string) {
 	if s.Protection == ProtectedPipelock || s.Protection == ProtectedOther {
 		return RiskLow, "wrapped by security proxy"
 	}
-	if s.Protection == Unknown {
+	if s.Protection == Unknown || s.Protection == Unconfirmed {
 		return RiskLow, "unknown protection state"
 	}
 

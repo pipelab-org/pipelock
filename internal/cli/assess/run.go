@@ -424,7 +424,8 @@ func runPrimitiveDiscover(evidenceDir string) error {
 		return fmt.Errorf("discover home dir: %w", err)
 	}
 
-	report, err := discover.Discover(home)
+	opts := discover.AmbientOptions(os.Getenv)
+	report, err := discover.DiscoverWithOptions(home, opts)
 	if err != nil {
 		return fmt.Errorf("discover: %w", err)
 	}

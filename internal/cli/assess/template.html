@@ -646,7 +646,7 @@
         {{if .Sources.Discover}}
         <!-- MCP Server Inventory -->
         <section>
-            <h2>MCP Server Inventory ({{addInts .Sources.Discover.Summary.ProtectedPipelock .Sources.Discover.Summary.ProtectedOther}} protected, {{.Sources.Discover.Summary.Unprotected}} unprotected, {{.Sources.Discover.Summary.TotalServers}} total)</h2>
+            <h2>MCP Server Inventory ({{addInts .Sources.Discover.Summary.ProtectedPipelock .Sources.Discover.Summary.ProtectedOther}} protected, {{.Sources.Discover.Summary.Unprotected}} unprotected, {{.Sources.Discover.Summary.Unconfirmed}} unconfirmed, {{.Sources.Discover.Summary.TotalServers}} total)</h2>
             {{if .Sources.Discover.Servers}}
             <table>
                 <thead>
