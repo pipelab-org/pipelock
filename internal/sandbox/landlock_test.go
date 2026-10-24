@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/landlock-lsm/go-landlock/landlock"
+
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	guardruntime "github.com/luckyPipewrench/pipelock/internal/guard"
@@ -122,7 +124,20 @@ func runLandlockTestChild(op string) {
 	}
 
 	policy := DefaultPolicy(workspace)
-	status, err := ApplyLandlock(policy)
+	if op == "reparent" {
+		root := os.Getenv("PIPELOCK_TEST_REFER_ROOT")
+		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Join(root, "writable"))
+		policy.AllowReadDirs = append(policy.AllowReadDirs, filepath.Join(root, "readonly"))
+		policy.AllowRWFiles = append(policy.AllowRWFiles, filepath.Join(root, "files/source"))
+	}
+	var status LayerStatus
+	var err error
+	if op == "reparent" && os.Getenv("PIPELOCK_TEST_REFER_ABI1") == "true" {
+		err = landlock.V1.RestrictPaths(buildRules(policy, 1)...)
+		status = LayerStatus{Name: LayerLandlock, Active: err == nil, Version: 1}
+	} else {
+		status, err = ApplyLandlock(policy)
+	}
 	if err != nil {
 		_, _ = os.Stderr.WriteString("landlock: " + err.Error() + "\n")
 		os.Exit(2)
@@ -133,6 +148,26 @@ func runLandlockTestChild(op string) {
 	}
 
 	switch op {
+	case "reparent":
+		root := os.Getenv("PIPELOCK_TEST_REFER_ROOT")
+		source := filepath.Join(root, os.Getenv("PIPELOCK_TEST_REFER_SOURCE"))
+		target := filepath.Join(root, os.Getenv("PIPELOCK_TEST_REFER_TARGET"))
+		if os.Getenv("PIPELOCK_TEST_REFER_LINK") == "true" {
+			err = os.Link(source, target)
+		} else {
+			err = os.Rename(source, target)
+		}
+		switch {
+		case err == nil:
+			_, _ = fmt.Fprintln(os.Stdout, "allowed")
+		case errors.Is(err, syscall.EXDEV), errors.Is(err, syscall.EACCES):
+			_, _ = fmt.Fprintln(os.Stdout, "denied")
+		default:
+			_, _ = fmt.Fprintf(os.Stderr, "unexpected filesystem error: %v\n", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+
 	case "read-home":
 		home := os.Getenv("REAL_HOME")
 		_, err := os.ReadDir(home)
@@ -375,7 +410,7 @@ func TestBuildRules_HandlesNonexistentPaths(t *testing.T) {
 	// IgnoreIfMissing() at the library level handles this gracefully.
 	policy := DefaultPolicy(t.TempDir())
 	policy.AllowReadDirs = append(policy.AllowReadDirs, "/nonexistent/path/xyz")
-	rules := buildRules(policy)
+	rules := buildRules(policy, 1)
 	if len(rules) == 0 {
 		t.Error("expected at least one rule")
 	}

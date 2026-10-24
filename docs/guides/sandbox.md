@@ -37,6 +37,14 @@ On `linux/arm64` below Landlock ABI 9, a strict launch reports the missing Unix 
 
 `--strict` requires seccomp and descendant cleanup (the Linux child subreaper) as well as the network namespace; it refuses to start without either. A non-strict launch prints one startup warning when descendant cleanup is degraded: a detached descendant can then outlive the session and hold proxy shutdown open. On `linux/arm64`, the normal non-strict launch can be `partial` because the seccomp filter is not built for that architecture. Do not describe that launch as fully contained.
 
+## Workspace renames and hard links
+
+On Landlock ABI 2 or newer, the sandbox permits renames and hard links between directories within the writable workspace and explicitly writable directory grants. Read-only and ungranted directories do not receive this permission. Renaming or linking out to those paths, or renaming from a read-only path into the workspace, remains denied. Writable individual-file grants do not authorize reparenting their containing directory's entries.
+
+Landlock ABI 1 permits same-directory operations but denies cross-directory renames and hard links with `EXDEV`, including moves within the workspace. Use a kernel supporting ABI 2 or newer for extract-then-move workflows.
+
+The filesystem and IPC scope rules remain separate layers. Both layers explicitly grant `LANDLOCK_ACCESS_FS_REFER` on the writable directory grants: unlike other rights, an unhandled `REFER` is denied even by a scope-only ruleset. See the kernel's [Filesystem flags](https://docs.kernel.org/userspace-api/landlock.html#filesystem-flags), [Layers of file path access rights](https://docs.kernel.org/userspace-api/landlock.html#layers-of-file-path-access-rights), and [File renaming and linking (ABI < 2)](https://docs.kernel.org/userspace-api/landlock.html#file-renaming-and-linking-abi-2) documentation (`Documentation/userspace-api/landlock.rst`).
+
 ## Ubuntu and AppArmor user-namespace restriction
 
 Ubuntu 24.04 and later restrict unprivileged user namespaces with AppArmor by default (`kernel.apparmor_restrict_unprivileged_userns = 1`). On such a host `pipelock sandbox --dry-run` can report `CAPABILITIES_OK` with the network layer `available`, because the dry run only probes capabilities, and the real launch then fails after the network layer reports `ACTIVE`:
