@@ -702,6 +702,9 @@ Examples:
 			if bundleResult.Degraded {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
+			if err := strictRuleBundleIntegrityError(cfg, bundleResult); err != nil {
+				return err
+			}
 			sc, err := scanner.New(cfg)
 			if err != nil {
 				return fmt.Errorf("create scanner: %w", err)
