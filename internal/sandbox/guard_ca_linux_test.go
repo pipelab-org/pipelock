@@ -107,7 +107,7 @@ func runGuardCAChild(t *testing.T, mode, root string) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := landlock.V8.RestrictPaths(buildRules(policy)...); err != nil {
+		if err := landlock.V8.RestrictPaths(buildRules(policy, 1)...); err != nil {
 			t.Fatal(err)
 		}
 	}

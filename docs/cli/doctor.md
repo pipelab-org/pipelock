@@ -21,6 +21,9 @@ The command does not make network requests. It checks local config, file readabi
 | `request_body_scanning` | HTTP | Whether request-body scanning is enabled with blocking action. |
 | `browser_shield` | HTTP | Whether Browser Shield is enabled and whether HTTPS body visibility depends on TLS interception. |
 | `mcp_wrapper_scanning` | MCP | Which wrapper-dependent MCP features are configured and need proof that the agent launches through `pipelock mcp proxy` or a Pipelock MCP listener. |
+| `taint.mcp_recorder` | Config | Session recorder prerequisites for both HTTP and MCP; informational even when session profiling is disabled. |
+| `taint.mcp_listener` | MCP | Caller-binding limits. Anonymous current-protocol listener calls are request-local only; cross-request taint protection isn't active. A config-only report never proves a live recorder. |
+| `taint.mcp_origin`, `taint.mcp_recovery` | MCP | Subprocess stdio's undeclared-origin default (`internal_generated`), lack of inline terminal approval, and the scopes of usable taint recovery. Admin task boundaries and runtime grants are rejected for every MCP session; source trust doesn't clear hostile history. |
 | `mcp_binary_integrity` | MCP | Whether binary integrity is enabled, has a manifest path, and the manifest is readable. |
 | `mcp_tool_provenance` | MCP | Whether tool-provenance enforcement is configured and still depends on live `tools/list` traffic through the MCP wrapper/listener path. |
 | `mcp_identities` | MCP | How many verified local services are registered under `mcp_identities`, and for each one its name, what it matches (scheme, host, path), whether it declares a session header, how many mapped files and control-environment pins it carries, and the acknowledgment binding mode it produces (`verified-local-session`). On a non-Linux host this warns, because a launch whose upstream matches a registration refuses to start where the kernel owner of the connection cannot be verified. |
@@ -69,3 +72,5 @@ Default settings can produce warnings, so a valid default config does not necess
 - Use `--startup` on the host where Pipelock runs, with its mounted files present. It adds secrets-file loading and TLS CA parsing checks; it does not test every runtime prerequisite. Config-only `pipelock check` validates config shape and path permissions without parsing the configured secrets or TLS CA files. With `--url`, it also loads the configured secrets file.
 - Use `--no-color` to disable colored terminal output.
 - Use `--json` for CI gates and dashboards. The JSON report includes per-check `configured`, `reachable`, `enforcing`, `detail`, and `next` fields.
+
+All four taint checks are informational and do not add warnings or affect the exit status. With session profiling disabled, neither the HTTP proxy nor MCP has a session taint recorder; enable session profiling and restart to provide one. Config guidance cannot prove listener state admission or capacity. Other doctor warnings and failures still determine the exit status.

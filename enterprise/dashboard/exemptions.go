@@ -34,6 +34,8 @@ type ExemptionInventory struct {
 	InertCount       int
 	MisdirectedCount int
 	TrackingNote     string
+	// Diagnostics contain fixed configuration guidance, with no raw values.
+	Diagnostics []config.Warning
 	// RawRedacted is true when this view was rendered without raw access, so
 	// the sensitive configured values (destinations, IPs, addresses, paths,
 	// rules, reasons) have been stripped and the template shows a "raw access
@@ -159,6 +161,7 @@ func (m *ReadModel) Exemptions() ExemptionInventory {
 		Entries:         entries,
 		ConfiguredCount: len(entries),
 		TrackingNote:    trackingNote,
+		Diagnostics:     m.cfg.MCPTaintDiagnostics(),
 	}
 	for _, entry := range entries {
 		switch entry.State {

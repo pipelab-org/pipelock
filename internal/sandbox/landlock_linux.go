@@ -36,7 +36,18 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 	// Build path rules from policy. BestEffort automatically downgrades
 	// access rights the kernel doesn't support. IgnoreIfMissing skips
 	// paths that don't exist on this distro (e.g., /lib64/, /etc/pki/).
-	rules := buildRules(policy)
+	// REFER is granted only when the kernel reports Landlock erratum 3
+	// (disconnected directory handling) fixed. Without that fix a rename or
+	// link through a bind mount can widen access and bypass REFER limits
+	// (Documentation/userspace-api/landlock.rst, "Errata"). Kernels without
+	// the fix, or that cannot report errata, keep the pre-REFER behavior:
+	// cross-directory renames and links fail with EXDEV.
+	refer := referAllowed(abi, landlockErrata)
+	referABI := 1
+	if refer {
+		referABI = abi
+	}
+	rules := buildRules(policy, referABI)
 	if abi >= 9 && len(proxySocket) > 0 && proxySocket[0] != "" {
 		// Admit the exact parent doorway inode, never its directory. Ordinary
 		// filesystem grants do not authorize connections to host sockets.
@@ -48,7 +59,20 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 		return status, fmt.Errorf("applying landlock: %w", err)
 	}
 	if abi >= 6 {
-		if err := landlock.V6.RestrictScoped(); err != nil {
+		// REFER is exceptional: even a scope-only ruleset denies it unless
+		// explicitly granted. Keep IPC in a separate layer, but permit the
+		// same writable hierarchies as the filesystem layer. See
+		// Documentation/userspace-api/landlock.rst, "Filesystem flags"
+		// and "Layers of file path access rights".
+		ipc := landlock.Config{
+			HandledAccessFS: landlock.AccessFSSet(llsys.AccessFSRefer),
+			Scoped:          landlock.V6.Scoped,
+		}
+		var referRules []landlock.Rule
+		if refer && len(policy.AllowRWDirs) > 0 {
+			referRules = append(referRules, landlock.PathAccess(llsys.AccessFSRefer, policy.AllowRWDirs...).IgnoreIfMissing())
+		}
+		if err := ipc.Restrict(referRules...); err != nil {
 			status.Reason = fmt.Sprintf("IPC scope failed: %v", err)
 			return status, fmt.Errorf("applying landlock IPC scope: %w", err)
 		}
@@ -61,7 +85,7 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 // buildRules constructs landlock.Rule entries from the sandbox policy.
 // Uses IgnoreIfMissing() so distro-specific paths (e.g., /lib64/, /etc/pki/)
 // don't cause errors when absent.
-func buildRules(policy Policy) []landlock.Rule {
+func buildRules(policy Policy, abi int) []landlock.Rule {
 	var rules []landlock.Rule
 
 	// Read-only directories.
@@ -76,7 +100,13 @@ func buildRules(policy Policy) []landlock.Rule {
 
 	// Read-write directories.
 	if len(policy.AllowRWDirs) > 0 {
-		rules = append(rules, landlock.RWDirs(policy.AllowRWDirs...).IgnoreIfMissing())
+		rule := landlock.RWDirs(policy.AllowRWDirs...).IgnoreIfMissing()
+		// Asking for REFER on ABI 1 would make BestEffort drop enforcement.
+		// ABI 1 retains its cross-directory rename/link denial.
+		if abi >= 2 {
+			rule = rule.WithRefer()
+		}
+		rules = append(rules, rule)
 	}
 
 	// Read-write individual files (e.g., /dev/null, /dev/urandom).
