@@ -1545,7 +1545,13 @@ func RunHTTPListenerProxy(
 				headerBaseline = toolCfg.Baseline
 			}
 			if !validateMCPParamHeaders(r.Header, frame, headerBaseline) {
-				_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header disagrees with accepted tool schema and request body\n")
+				message := "pipelock: MCP parameter header does not match the request body"
+				if mcpToolContractRejected(frame, headerBaseline) {
+					message = "pipelock: tool definition was excluded because its x-mcp-header schema is invalid"
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: call refused for tool %q excluded for an invalid x-mcp-header contract\n", frame.RoutingName)
+				} else {
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header disagrees with accepted tool schema and request body\n")
+				}
 				w.Header().Set("Content-Type", "application/json")
 				denialAudit = mcpListenerProtocolDenialAudit()
 				w.WriteHeader(http.StatusBadRequest)
@@ -1554,7 +1560,7 @@ func RunHTTPListenerProxy(
 					ID:      frame.ID,
 					Error: rpcErrorDetail{
 						Code:    mcpHeaderMismatchCode,
-						Message: "pipelock: MCP parameter header does not match the request body",
+						Message: message,
 					},
 				})
 				_, _ = w.Write(mismatch)

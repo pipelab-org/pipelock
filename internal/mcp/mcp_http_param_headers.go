@@ -18,6 +18,14 @@ const (
 	maxMCPMirrorInteger  = int64(9007199254740991)
 )
 
+// mcpToolContractRejected reports a tools/call naming a tool whose listed
+// x-mcp-header contract was invalid. The caller cannot fix that by changing
+// headers, so the refusal says the definition was rejected.
+func mcpToolContractRejected(frame MCPFrame, baseline *tools.ToolBaseline) bool {
+	return frame.Method == methodToolsCall && frame.RoutingNameErr == nil && frame.RoutingName != "" &&
+		baseline.HeaderContract(frame.RoutingName).State == tools.HeaderContractInvalid
+}
+
 // validateMCPParamHeaders verifies every recognized 2026-07-28 mirrored tool
 // parameter against the exact property path in the accepted tools/list schema.
 // Unknown headers remain intermediary data and are forwarded after scanning, as

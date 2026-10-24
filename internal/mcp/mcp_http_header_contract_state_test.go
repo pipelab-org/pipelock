@@ -205,6 +205,13 @@ func TestHTTPListener_HeaderContractSchemaLocations(t *testing.T) {
 			if !tc.valid {
 				f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
 				f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "header"}, http.StatusBadRequest)
+				// The refusal names the cause; no header change could satisfy it.
+				headers := currentWireHeaders(methodToolsCall, "echo")
+				headers.Set("Proxy-Authorization", headerStateBearer)
+				_, _, body := postWireContractRequest(t, f.url, currentWireBody(3, methodToolsCall, `"name":"echo","arguments":{}`), headers)
+				if !strings.Contains(body, "x-mcp-header schema is invalid") {
+					t.Fatalf("rejected-tool refusal does not name its cause: %s", body)
+				}
 			} else if strings.HasPrefix(tc.name, "unannotated") {
 				f.call(t, "echo", `{"region":"body"}`, nil, http.StatusOK)
 			} else {
@@ -213,6 +220,12 @@ func TestHTTPListener_HeaderContractSchemaLocations(t *testing.T) {
 					args = `{"x-mcp-header":"body"}`
 				}
 				f.call(t, "echo", args, map[string]string{"Region": "header"}, http.StatusBadRequest)
+				headers := currentWireHeaders(methodToolsCall, "echo")
+				headers.Set("Proxy-Authorization", headerStateBearer)
+				_, _, body := postWireContractRequest(t, f.url, currentWireBody(3, methodToolsCall, `"name":"echo","arguments":`+args), headers)
+				if !strings.Contains(body, "parameter header does not match") {
+					t.Fatalf("mirror mismatch reported as a rejected definition: %s", body)
+				}
 				f.call(t, "echo", args, nil, http.StatusBadRequest)
 				f.call(t, "echo", args, map[string]string{"Region": "body"}, http.StatusOK)
 				f.call(t, "echo", `{}`, nil, http.StatusOK)
