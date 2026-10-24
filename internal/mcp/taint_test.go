@@ -827,6 +827,37 @@ func TestEvaluateMCPTaint_TrustOverrideStillMatchesSingleEscalatingSource(t *tes
 	}
 }
 
+func nowPlusHour(t *testing.T) time.Time {
+	t.Helper()
+	return time.Now().UTC().Add(time.Hour)
+}
+
+// This is an evaluator defense-in-depth test, not evidence of MCP runtime grant
+// support. The session manager rejects MCP invocation keys before any producer
+// can supply these overrides to the MCP evaluator.
+func TestTaintRuntimeTrustOverrideApplies_TaskBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name, currentTask, overrideTask string
+		want                            bool
+	}{
+		{"same task", "task-1", "task-1", true},
+		{"different task", "task-2", "task-1", false},
+		{"missing current task", "", "task-1", false},
+		{"missing override task", "task-1", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grants := []session.TrustOverride{{Scope: taintScopeTask, TaskID: tc.overrideTask}}
+			got := taintRuntimeTrustOverrideApplies(grants, session.TaskContext{CurrentTaskID: tc.currentTask}, session.SessionRisk{}, nil)
+			if got != tc.want {
+				t.Fatalf("override applies=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+// Evaluator defense in depth, like the test above: it pins that the allow
+// branch records TaskOverrideApplied for receipts and stops applying at a task
+// boundary. It is not evidence that MCP sessions can receive runtime grants.
 func TestEvaluateMCPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
 	t.Parallel()
 
@@ -863,9 +894,4 @@ func TestEvaluateMCPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
 	if decision.Result.Decision != session.PolicyAsk {
 		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
 	}
-}
-
-func nowPlusHour(t *testing.T) time.Time {
-	t.Helper()
-	return time.Now().UTC().Add(time.Hour)
 }

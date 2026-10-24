@@ -1409,37 +1409,32 @@ func TestDecodeJSONBodyRejectsValidPrefixHiddenAtSizeLimit(t *testing.T) {
 // the SessionManager layer rejects invocation sessions directly (not just
 // via the HTTP handler).
 func TestSessionManager_BeginNewTask_InvocationRejected(t *testing.T) {
-	sm, cleanup := setupSessionAPITestManager(t)
-	defer cleanup()
-
-	sm.GetOrCreate("mcp-stdio-99")
-	_, _, _, found, err := sm.BeginNewTask("mcp-stdio-99", "label")
-	if !found {
-		t.Fatal("expected found=true for existing invocation session")
-	}
-	if !errors.Is(err, ErrInvocationReset) {
-		t.Fatalf("err = %v, want ErrInvocationReset", err)
+	for _, key := range mcpDiagnosticInvocationKeys {
+		t.Run(key, func(t *testing.T) {
+			sm, cleanup := setupSessionAPITestManager(t)
+			defer cleanup()
+			sm.GetOrCreate(key)
+			_, _, _, found, err := sm.BeginNewTask(key, "label")
+			if !found || !errors.Is(err, ErrInvocationReset) {
+				t.Fatalf("found=%t err=%v", found, err)
+			}
+		})
 	}
 }
 
-// TestSessionManager_AddRuntimeTrustOverride_InvocationRejected asserts
-// the guard at the SessionManager layer for AddRuntimeTrustOverride.
-func TestSessionManager_AddRuntimeTrustOverride_InvocationRejected(t *testing.T) {
-	sm, cleanup := setupSessionAPITestManager(t)
-	defer cleanup()
+var mcpDiagnosticInvocationKeys = []string{"mcp-stdio-99", "mcp-http-99", "mcp-ws-99", "mcp-http-listener-principal:fixture", "mcp-http-listener:fixture", "mcp-http-listener-transient-99"}
 
-	sm.GetOrCreate("mcp-stdio-101")
-	override := session.TrustOverride{
-		Scope:       "task",
-		ActionMatch: "x",
-		ExpiresAt:   time.Now().UTC().Add(time.Hour),
-	}
-	_, found, err := sm.AddRuntimeTrustOverride("mcp-stdio-101", override)
-	if !found {
-		t.Fatal("expected found=true for existing invocation session")
-	}
-	if !errors.Is(err, ErrInvocationReset) {
-		t.Fatalf("err = %v, want ErrInvocationReset", err)
+func TestSessionManager_AddRuntimeTrustOverride_InvocationRejected(t *testing.T) {
+	for _, key := range mcpDiagnosticInvocationKeys {
+		t.Run(key, func(t *testing.T) {
+			sm, cleanup := setupSessionAPITestManager(t)
+			defer cleanup()
+			sm.GetOrCreate(key)
+			_, found, err := sm.AddRuntimeTrustOverride(key, session.TrustOverride{Scope: "task", ActionMatch: "x", ExpiresAt: time.Now().UTC().Add(time.Hour)})
+			if !found || !errors.Is(err, ErrInvocationReset) {
+				t.Fatalf("found=%t err=%v", found, err)
+			}
+		})
 	}
 }
 
