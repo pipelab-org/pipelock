@@ -61,12 +61,12 @@ RACE_LANE_CONDITION = "${{ github.event_name != 'pull_request' }}"
 RACE_AGGREGATE_CONDITION = "${{ always() && github.event_name != 'pull_request' }}"
 # Concurrent-job cap per race matrix. The main race lane gets six per build
 # variant; the Go 1.27 matrix, which runs beside a pull request's own no-race
-# lane, gets four.
+# lane, gets ten under the 60-job GitHub Team limit.
 RACE_MAX_PARALLEL = {
     "test-oss-go126": 6,
     "test-enterprise-go126": 6,
-    "test-oss-go127": 4,
-    "test-enterprise-go127": 4,
+    "test-oss-go127": 10,
+    "test-enterprise-go127": 10,
 }
 # The no-race lane every pull request waits on. Heavy trees run whole; the rest
 # shards are the planner's rest buckets.
@@ -708,7 +708,7 @@ test "${{ needs.test-replay-go127.result }}" = "success"
             ("test-enterprise-go126", None),
             ("test-enterprise-go126", 7),
             ("test-oss-go127", None),
-            ("test-oss-go127", 5),
+            ("test-oss-go127", RACE_MAX_PARALLEL["test-oss-go127"] + 1),
             ("test-oss-go126", 0),
             ("test-oss-go126", True),
         ):
