@@ -173,9 +173,11 @@ const (
 	// but is a distinct gate with a distinct knob. The table is keyed by label
 	// alone, so this variant is selected by GuidanceForResult from the scan
 	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
-	queryEntropyOperatorKnob = "If the blocked URL is a known exact endpoint and parameter, add that tuple to `fetch_proxy.monitoring.query_entropy_param_exclusions`; this skips only query-value entropy for that exact scheme+host+path+param. " +
-		"If the whole host legitimately carries opaque query values across many endpoints, use `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
-	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the endpoint-parameter exemption first, then the host-wide exclusion only when the broad host contract needs it."
+	queryEntropyOperatorKnob = "For a blocked query value at a stable endpoint path, add the exact scheme+host+path+param tuple to `fetch_proxy.monitoring.query_entropy_param_exclusions`; this skips only query-value entropy for that exact scheme+host+path+param. " +
+		"An exact tuple covers only that path, not future paths with new upload UUIDs or other changing segments. If the host legitimately carries opaque query keys or values across changing paths or many endpoints, use `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
+	queryEntropyKeyOperatorKnob = "A high-entropy query key is not covered by `fetch_proxy.monitoring.query_entropy_param_exclusions`, which skips only query-value entropy. " +
+		"If the host legitimately carries opaque query keys, add it to `fetch_proxy.monitoring.query_entropy_exclusions`; that skips query-key and query-value entropy for the whole host. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
+	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the narrowest applicable exclusion above."
 
 	secretAgentReason             = "Request blocked: the destination or content matched a secret/credential pattern."
 	highEntropyAgentReason        = "Request blocked: high-entropy content resembling exfiltration was detected."
@@ -860,8 +862,14 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 		}
 	}
 	if label == ScannerEntropy && isQueryEntropyReason(reason) {
+		knob := queryEntropyOperatorKnob
+		if strings.HasPrefix(reason, queryEntropyKeyReasonPrefix) {
+			// Parameter exclusions skip only value entropy, so a key finding
+			// needs the host-wide exclusion.
+			knob = queryEntropyKeyOperatorKnob
+		}
 		return RemediationGuidance{
-			OperatorKnob:    queryEntropyOperatorKnob,
+			OperatorKnob:    knob,
 			OperatorBroader: queryEntropyOperatorBroader,
 			AgentReason:     highEntropyAgentReason,
 		}, true
