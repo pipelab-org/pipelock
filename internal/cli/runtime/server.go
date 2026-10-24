@@ -251,6 +251,7 @@ type Server struct {
 	// refresh. proxy.Reload has its own lock, but that only covers lower-level
 	// pointer publication; the server-level gates also depend on s.stateMu-backed
 	// mirrors such as mcpToolExtraPoison.
+	finishDiagnostics     func() // closes only the stderr owner constructed here
 	taintReloadDiagnostic string // guarded by reloadMu
 	reloadMu              sync.Mutex
 	reloadOutcome         proxy.ReloadOutcome // guarded by reloadMu
@@ -288,7 +289,14 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
-	opts.Stderr = &stderrSyncWriter{Writer: diaglog.New(opts.Stderr), w: opts.Stderr}
+	diagnostics, finishDiagnostics := diaglog.Scope(opts.Stderr)
+	constructed := false
+	defer func() {
+		if !constructed {
+			finishDiagnostics()
+		}
+	}()
+	opts.Stderr = &stderrSyncWriter{Writer: diagnostics, w: opts.Stderr}
 	startupVerification, stopStartupProgress := startupVerificationOptions(opts)
 	defer stopStartupProgress()
 	if opts.Stdout == nil {
@@ -385,6 +393,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	s := &Server{
 		opts:                      opts,
+		finishDiagnostics:         finishDiagnostics,
 		hasMCPListen:              hasMCPListen,
 		containmentManaged:        containmentManagedRuntime(),
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
@@ -806,6 +815,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 	}
 
+	constructed = true
 	return s, nil
 }
 

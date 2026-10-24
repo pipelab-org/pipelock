@@ -41,7 +41,8 @@ func RunWSProxy(
 	// rather than observe PID 1 and become inert.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := diaglog.New(logW)
+	safeLogW, finishDiagnostics := diaglog.Scope(logW)
+	defer finishDiagnostics()
 	ctx, stopSession, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
 

@@ -6,6 +6,7 @@ package diaglog
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -172,5 +173,147 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	}
 	if n, err := nilWriter.Write([]byte("ignored")); n != 0 || !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("nil write=%d,%v", n, err)
+	}
+}
+
+// Returning from the owner must fence healthy diagnostics without requiring the
+// caller's buffer to implement its own synchronization.
+func TestWriter_ShutdownFencesOptionalWrites(t *testing.T) {
+	for _, wedged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wedged=%t", wedged), func(t *testing.T) {
+			sink := &gatedWriter{entered: make(chan struct{}), release: make(chan struct{})}
+			w := New(sink)
+			closer, ok := any(w).(interface{ Close() })
+			if !ok {
+				t.Fatal("diagnostic owner has no shutdown fence")
+			}
+			done := w.TryWrite("before shutdown")
+			<-sink.entered
+			released := false
+			defer func() {
+				if !released {
+					close(sink.release)
+				}
+				awaitDiagnostic(t, done)
+			}()
+			closed := make(chan struct{})
+			go func() { closer.Close(); close(closed) }()
+			if wedged {
+				select {
+				case <-closed:
+				case <-time.After(2 * time.Second):
+					t.Fatal("wedged diagnostic held shutdown indefinitely")
+				}
+			} else {
+				select {
+				case <-closed:
+					t.Fatal("shutdown returned before the healthy diagnostic settled")
+				case <-time.After(30 * time.Millisecond):
+				}
+				close(sink.release)
+				released = true
+				select {
+				case <-closed:
+				case <-time.After(2 * time.Second):
+					t.Fatal("healthy diagnostic shutdown did not finish")
+				}
+				if got := sink.output.String(); got != "before shutdown" {
+					t.Fatal(got)
+				}
+			}
+			for range 5000 {
+				if w.TryWrite("after shutdown") != nil {
+					t.Fatal("shutdown admitted a new diagnostic")
+				}
+			}
+			if !released {
+				close(sink.release)
+				released = true
+			}
+			awaitDiagnostic(t, done)
+			if w.TryWrite("after recovery") != nil {
+				t.Fatal("recovered sink reopened diagnostic admission")
+			}
+			closer.Close()
+			if _, err := w.Write([]byte("ordinary")); err != nil {
+				t.Fatal(err)
+			}
+			if got := sink.output.String(); got != "before shutdownordinary" {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestWriter_ShutdownPlainBuffer(t *testing.T) {
+	var out bytes.Buffer
+	w := New(&out)
+	closer, ok := any(w).(interface{ Close() })
+	if !ok {
+		t.Fatal("diagnostic owner has no shutdown fence")
+	}
+	if w.TryWrite("final diagnostic") == nil {
+		t.Fatal("diagnostic not admitted")
+	}
+	closer.Close()
+	if got := out.String(); got != "final diagnostic" {
+		t.Fatalf("shutdown lost healthy output: %q", got)
+	}
+	if w.TryWrite("too late") != nil {
+		t.Fatal("idle closed owner admitted a diagnostic")
+	}
+}
+
+func TestWriter_ScopeKeepsBorrowedOwnerOpen(t *testing.T) {
+	var output bytes.Buffer
+	owner := New(&output)
+	borrowed, finish := Scope(owner)
+	if borrowed != owner || New(borrowed) != owner {
+		t.Fatal("borrow split shared ownership")
+	}
+	if owner.TryWrite("borrowed diagnostic") == nil {
+		t.Fatal("diagnostic not admitted")
+	}
+	finish()
+	// Read immediately after the nested scope returns; no test-side flush.
+	if output.String() != "borrowed diagnostic" {
+		t.Fatal(output.String())
+	}
+	if owner.TryWrite("outer diagnostic") == nil {
+		t.Fatal("borrower closed its caller's owner")
+	}
+	owner.Close()
+	if output.String() != "borrowed diagnosticouter diagnostic" {
+		t.Fatal(output.String())
+	}
+	owned, closeOwned := Scope(&output)
+	if owned.TryWrite("owned diagnostic") == nil {
+		t.Fatal("diagnostic not admitted")
+	}
+	closeOwned()
+	if owned.TryWrite("after scope") != nil {
+		t.Fatal("owned scope left diagnostic admission open")
+	}
+	_, closeNil := Scope(nil)
+	closeNil()
+	var nilWriter *Writer
+	nilWriter.Stop()
+	nilWriter.Close()
+	nilWriter.Flush()
+}
+
+func TestWriter_BorrowedScopeWaitsForInFlightDiagnostic(t *testing.T) {
+	sink := &gatedWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	owner := New(sink)
+	done := owner.TryWrite("borrowed diagnostic")
+	<-sink.entered
+	_, finish := Scope(owner)
+	finished := make(chan struct{})
+	go func() { finish(); close(finished) }()
+	defer func() { close(sink.release); awaitDiagnostic(t, done); awaitDiagnostic(t, finished); owner.Close() }()
+	select {
+	case <-finished:
+		t.Fatal("borrowed scope returned before its in-flight diagnostic settled")
+	case <-time.After(30 * time.Millisecond):
 	}
 }

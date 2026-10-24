@@ -105,7 +105,8 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	defer recordMCPBaselineSample(opts, rec)
 
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := diaglog.New(logW)
+	safeLogW, finishDiagnostics := diaglog.Scope(logW)
+	defer finishDiagnostics()
 	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_subprocess")
 
 	serverIn, err := sandboxCmd.StdinPipe()

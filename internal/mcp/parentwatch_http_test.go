@@ -195,7 +195,7 @@ func TestSessionExit_HTTPListenerLiveSessionIsNotTornDown(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	done := make(chan error, 1)
 	go func() {
 		done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &logBuf, MCPProxyOpts{

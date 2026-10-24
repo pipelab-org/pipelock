@@ -8,6 +8,7 @@ import (
 	"io"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // Writer shares one lock for ordinary output and optional diagnostics. Ordinary
@@ -20,6 +21,7 @@ type Writer struct {
 	mu      sync.Mutex
 	state   sync.Mutex
 	pending chan struct{}
+	closed  bool
 }
 
 // New returns the existing shared writer when available. Owners must retain and
@@ -32,6 +34,57 @@ func New(w io.Writer) *Writer {
 		return shared.DiagnosticWriter()
 	}
 	return &Writer{w: w}
+}
+
+// FlushGrace is the existing bounded operator-log grace period. A healthy sink
+// settles within it; an arbitrary blocked io.Writer cannot be cancelled.
+const FlushGrace = time.Second
+
+// Scope establishes an owner only when the caller has not supplied one. The
+// returned finish function drains the writer, but only closes an owner created
+// here. Nested consumers leave a caller-owned writer open for other producers.
+func Scope(w io.Writer) (*Writer, func()) {
+	if shared, ok := w.(interface{ DiagnosticWriter() *Writer }); ok {
+		owner := shared.DiagnosticWriter()
+		return owner, owner.Flush
+	}
+	owner := New(w)
+	return owner, owner.Close
+}
+
+// Stop prevents further optional admission. Ordinary Write remains synchronous.
+func (w *Writer) Stop() {
+	if w == nil {
+		return
+	}
+	w.state.Lock()
+	w.closed = true
+	w.state.Unlock()
+}
+
+// Close stops optional admission and waits at most FlushGrace for the already
+// admitted write. A timed-out write may start or finish later: io.Writer has no
+// cancellation contract. At most one optional goroutine can outlive this owner;
+// callers of a wedged sink must not reuse it unsafely until that write settles.
+func (w *Writer) Close() {
+	if w == nil {
+		return
+	}
+	w.Stop()
+	w.Flush()
+}
+
+// Flush gives an already-admitted diagnostic a bounded delivery attempt without
+// closing a borrowed owner. Producers must be joined before the final drain.
+func (w *Writer) Flush() {
+	if done := w.Pending(); done != nil {
+		timer := time.NewTimer(FlushGrace)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		}
+	}
 }
 
 // DiagnosticWriter exposes the shared owner through embedding wrappers.
@@ -56,6 +109,9 @@ func (w *Writer) TryWrite(message string) <-chan struct{} {
 		return nil
 	}
 	defer w.state.Unlock()
+	if w.closed {
+		return nil
+	}
 	if !w.mu.TryLock() {
 		return nil
 	}

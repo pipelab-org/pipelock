@@ -1031,7 +1031,9 @@ Key-free evidence capture:
 			// reflects the effective policy every downstream emitter,
 			// scanner, and receipt stamp consumes.
 			var bundleResult *rules.LoadResult
-			cmd.SetErr(diaglog.New(cmd.ErrOrStderr()))
+			diagnostics, finishDiagnostics := diaglog.Scope(cmd.ErrOrStderr())
+			defer finishDiagnostics()
+			cmd.SetErr(diagnostics)
 			cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 				Mode: config.RuntimeMCPProxy,
 				MergeBundles: func(c *config.Config) {

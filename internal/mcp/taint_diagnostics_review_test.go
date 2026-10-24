@@ -34,7 +34,7 @@ func taintDiagnosticMetric(t *testing.T, m *metrics.Metrics, binding, status str
 }
 
 func TestMCPTaintDiagnostics_ListenerLogsThrottledMetricsComplete(t *testing.T) {
-	var log *bytes.Buffer
+	var log *syncBuffer
 	t.Run("requests", func(t *testing.T) {
 		upstream, _ := principalStateUpstream(t)
 		cfg := config.Defaults()
@@ -70,7 +70,7 @@ func (s *taintAdmissionFailureStore) GetOrCreate(key string) session.Recorder {
 }
 
 func TestMCPTaintDiagnostics_ListenerAdmissionFailureNotActive(t *testing.T) {
-	var log *bytes.Buffer
+	var log *syncBuffer
 	t.Run("request", func(t *testing.T) {
 		upstream, calls := principalStateUpstream(t)
 		cfg := config.Defaults()
@@ -100,7 +100,7 @@ func TestMCPTaintDiagnostics_ListenerAdmissionFailureNotActive(t *testing.T) {
 func TestMCPTaintDiagnostics_ListenerJunkTokenDoesNotChooseBinding(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprint(legacy), func(t *testing.T) {
-			var log *bytes.Buffer
+			var log *syncBuffer
 			t.Run("request", func(t *testing.T) {
 				upstream, _ := principalStateUpstream(t)
 				cfg := config.Defaults()
@@ -247,7 +247,7 @@ func (s *hostileDiagnosticStore) GetOrCreate(key string) session.Recorder {
 }
 
 func TestMCPTaintDiagnostics_ListenerRecoveryThrottled(t *testing.T) {
-	var log *bytes.Buffer
+	var log *syncBuffer
 	t.Run("requests", func(t *testing.T) {
 		upstream, calls := principalStateUpstream(t)
 		cfg := config.Defaults()

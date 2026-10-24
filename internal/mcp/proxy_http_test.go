@@ -2796,7 +2796,7 @@ func startListenerProxy(
 	inputCfg *InputScanConfig,
 	toolCfg *tools.ToolScanConfig,
 	policyCfg *policy.Config,
-) (string, context.CancelFunc, *bytes.Buffer) {
+) (string, context.CancelFunc, *syncBuffer) {
 	return startListenerProxyWithStateMode(t, listenerProxyTestOpts{
 		upstreamURL: upstreamURL,
 		sc:          sc,
@@ -2812,7 +2812,7 @@ func startListenerProxyRequiringToken(
 	sc *scanner.Scanner,
 	inputCfg *InputScanConfig,
 	toolCfg *tools.ToolScanConfig,
-) (string, context.CancelFunc, *bytes.Buffer) {
+) (string, context.CancelFunc, *syncBuffer) {
 	required := true
 	return startListenerProxyWithStateMode(t, listenerProxyTestOpts{
 		upstreamURL:        upstreamURL,
@@ -2832,7 +2832,7 @@ type listenerProxyTestOpts struct {
 	stateTokenRequired *bool
 }
 
-func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpts) (string, context.CancelFunc, *bytes.Buffer) {
+func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpts) (string, context.CancelFunc, *syncBuffer) {
 	t.Helper()
 
 	// Bind a free port and pass the listener directly.
@@ -2842,7 +2842,7 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 	}
 	addr := ln.Addr().String()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -2864,13 +2864,13 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 	return baseURL, cancel, &logBuf
 }
 
-func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer) {
+func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *syncBuffer) {
 	t.Helper()
 	base, log, _ := startListenerProxyWithDiagnosticLog(t, upstreamURL, opts)
 	return base, log
 }
 
-func startListenerProxyWithDiagnosticLog(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer, *diaglog.Writer) {
+func startListenerProxyWithDiagnosticLog(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *syncBuffer, *diaglog.Writer) {
 	t.Helper()
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -2879,7 +2879,7 @@ func startListenerProxyWithDiagnosticLog(t *testing.T, upstreamURL string, opts 
 	}
 	addr := ln.Addr().String()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	logW := diaglog.New(&logBuf)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -3920,7 +3920,7 @@ func TestHTTPListener_ConfiguredSensitiveHeaderDLP(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -5371,7 +5371,7 @@ func startListenerProxyFull(
 	inputCfg *InputScanConfig,
 	ks *killswitch.Controller,
 	cm *chains.Matcher,
-) (string, *bytes.Buffer) {
+) (string, *syncBuffer) {
 	t.Helper()
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -5380,7 +5380,7 @@ func startListenerProxyFull(
 	}
 	addr := ln.Addr().String()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
@@ -8404,7 +8404,7 @@ func TestHTTPListener_A2AHeaderBlockReceiptFailureLogsAuditGap(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	addr := ln.Addr().String()
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

@@ -196,7 +196,8 @@ func RunHTTPListenerProxy(
 	// startup race. A launcher can still exit before this first syscall; closing
 	// that earlier window needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	safeLogW := diaglog.New(logW)
+	safeLogW, finishDiagnostics := diaglog.Scope(logW)
+	defer finishDiagnostics()
 	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)

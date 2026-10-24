@@ -4,8 +4,14 @@
 package runtime
 
 import (
+	"bytes"
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -152,4 +158,99 @@ func (w *reloadDiagnosticProbe) DiagnosticWriter() *diaglog.Writer {
 func (w *reloadDiagnosticProbe) Write(p []byte) (int, error) {
 	w.once.Do(func() { w.t.Logf("ordinary reload write: %s", p); close(w.ordinary) })
 	return w.Writer.Write(p)
+}
+
+// The owner survives config reloads and is drained when Start returns. A caller
+// may read its ordinary bytes.Buffer only after that return, without a mutex.
+func TestMCPTaintDiagnostics_ShutdownFencesReloadPlainBuffer(t *testing.T) {
+	for _, source := range []string{"startup", "reload"} {
+		t.Run(source, func(t *testing.T) {
+			var output bytes.Buffer
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{}`) }))
+			defer upstream.Close()
+			opts := func(o *ServerOpts) {
+				o.Stderr = &output
+				o.Stdout = io.Discard
+				o.Listen = serverTestEphemeralListen
+				o.ListenChanged = true
+				o.MCPListen = serverTestEphemeralListen
+				o.MCPUpstream = upstream.URL
+				o.allowEphemeralListenersForTesting = true
+			}
+			s, _ := newTestServer(t, opts)
+			if source == "reload" {
+				for range 16 {
+					s.lastReloadAt = time.Time{}
+					if err := s.Reload(s.proxy.CurrentConfig().Clone()); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			assertTaintShutdownPlainBuffer(t, s, &output)
+		})
+	}
+}
+
+func assertTaintShutdownPlainBuffer(t *testing.T, s *Server, output *bytes.Buffer) {
+	t.Helper()
+	owner := diaglog.New(s.opts.Stderr)
+	if diaglog.New(s.opts.Stderr) != owner {
+		t.Fatal("shared owner lookup split ownership")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.Start(ctx) }()
+	waitForServerCancel(t, s)
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server shutdown stalled")
+	}
+	// Read immediately after Start returns, without a Pending wait or owner lock.
+	if got := output.String(); !strings.Contains(got, "taint.mcp_listener:") {
+		t.Fatalf("diagnostic missing: %q", got)
+	}
+	if owner.TryWrite("after server return") != nil {
+		t.Fatal("server return left diagnostic admission open")
+	}
+	if owner.Pending() != nil {
+		t.Fatal("server return left a healthy diagnostic in flight")
+	}
+}
+
+func TestMCPTaintDiagnostics_CleanupDrainsOptionalWrite(t *testing.T) {
+	s, _ := newTestServer(t, nil)
+	originalFinish := s.finishDiagnostics
+	originalFinish()
+	sink := &taintRuntimeWriter{entered: make(chan struct{}), release: make(chan struct{})}
+	owner, finish := diaglog.Scope(sink)
+	s.opts.Stderr = owner
+	s.finishDiagnostics = finish
+	pending := owner.TryWrite("final operator diagnostic")
+	<-sink.entered
+	finished := make(chan struct{})
+	go func() { s.cleanup(); close(finished) }()
+	defer func() {
+		close(sink.release)
+		select {
+		case <-finished:
+		case <-time.After(5 * time.Second):
+			t.Error("cleanup did not settle")
+		}
+		if pending != nil {
+			<-pending
+		}
+	}()
+	select {
+	case <-finished:
+		t.Fatal("server cleanup returned before the healthy diagnostic settled")
+	case <-time.After(30 * time.Millisecond):
+	}
 }

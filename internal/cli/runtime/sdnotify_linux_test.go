@@ -454,10 +454,10 @@ func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", "")
 	var stderr bytes.Buffer
 	s, _ := newTestServer(t, func(opts *ServerOpts) {
+		opts.Stderr = &stderr
 		opts.Listen = serverTestEphemeralListen
 		opts.ListenChanged = true
 	})
-	s.opts.Stderr = &stderr
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- s.Start(context.Background()) }()

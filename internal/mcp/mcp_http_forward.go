@@ -144,7 +144,8 @@ func RunHTTPProxy(
 	// syscall race; that needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := diaglog.New(logW)
+	safeLogW, finishDiagnostics := diaglog.Scope(logW)
+	defer finishDiagnostics()
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
 

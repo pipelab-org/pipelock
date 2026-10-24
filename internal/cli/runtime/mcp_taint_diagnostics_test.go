@@ -5,12 +5,15 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 )
@@ -30,14 +33,12 @@ func TestMCPProxyTaintDiagnostics_Startup(t *testing.T) {
 			cmd := McpCmd()
 			var out, log bytes.Buffer
 			cmd.SetOut(&out)
-			logW := diaglog.New(&log)
-			cmd.SetErr(logW)
+			cmd.SetErr(&log)
 			cmd.SetIn(strings.NewReader(""))
 			cmd.SetArgs([]string{"proxy", "--config", path, "--", "/bin/true"})
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("proxy: %v; %s", err, log.String())
 			}
-			waitRuntimeTaintDiagnostic(t, logW)
 			recorder := "recorder_risk_state=false cross_request_recording=inactive"
 			if tc.name == "true" {
 				recorder = "recorder_risk_state=true cross_request_recording=active"
@@ -85,5 +86,36 @@ func TestMCPListenerTaintDiagnostics_ActualReload(t *testing.T) {
 		if !strings.Contains(log, want) {
 			t.Errorf("reload has stale setting; want %q: %s", want, log)
 		}
+	}
+}
+
+// The config report can be the final stderr producer on an early setup error.
+func TestMCPProxyTaintDiagnostics_ConfigErrorReturnFencesPlainBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("mode: balanced\nrules:\n  rules_dir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stop := errors.New("stop before launch")
+	cmd := mcpCmdWithAuditLoggerFactory(func(_, _, _ string, _, _ bool, _ io.Writer) (*audit.Logger, error) { return nil, stop })
+	var output bytes.Buffer
+	cmd.SetErr(&output)
+	cmd.SetOut(io.Discard)
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"proxy", "--config", path, "--", "unused-command"})
+	if err := cmd.Execute(); !errors.Is(err, stop) {
+		t.Fatalf("setup error=%v", err)
+	}
+	// No test-side owner lookup or wait before this plain-buffer read.
+	if got := output.String(); !strings.Contains(got, "taint.mcp_recorder:") {
+		t.Fatalf("config diagnostic missing: %q", got)
+	}
+	proxyCmd, _, err := cmd.Find([]string{"proxy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diaglog.New(proxyCmd.ErrOrStderr()).TryWrite("after command return") != nil {
+		t.Fatal("command return left diagnostic admission open")
 	}
 }

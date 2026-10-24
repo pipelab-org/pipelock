@@ -1505,7 +1505,7 @@ func newConductorApplyTestServer(t *testing.T) (*Server, runtimePolicySigner) {
 	return newConductorApplyTestServerWithConfig(t, "")
 }
 
-func newConductorApplyTestServerWithConfig(t *testing.T, extraConfig string) (*Server, runtimePolicySigner) {
+func newConductorApplyTestServerWithConfig(t *testing.T, extraConfig string, mutate ...func(*ServerOpts)) (*Server, runtimePolicySigner) {
 	t.Helper()
 	// conductor.enabled triggers the fleet-license gate; install a real
 	// Enterprise token for the test so the production gate path is exercised.
@@ -1579,7 +1579,11 @@ func newConductorApplyTestServerWithConfig(t *testing.T, extraConfig string) (*S
 	}, "\n"))
 
 	buf := &syncBuffer{}
-	server, err := NewServer(ServerOpts{ConfigFile: cfgPath, Stdout: buf, Stderr: buf})
+	opts := ServerOpts{ConfigFile: cfgPath, Stdout: buf, Stderr: buf}
+	for _, fn := range mutate {
+		fn(&opts)
+	}
+	server, err := NewServer(opts)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

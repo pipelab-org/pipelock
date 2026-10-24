@@ -396,3 +396,59 @@ func (w *taintTeardownWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+func TestMCPTaintDiagnostics_ListenerReturnFencesPlainBuffer(t *testing.T) {
+	upstream, _ := principalStateUpstream(t)
+	cfg := config.Defaults()
+	m := metrics.New()
+	opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Store: &listenerDiagnosisStore{}, Metrics: m}
+	opts.ListenerPrincipalResolver = func(*http.Request) (ListenerPrincipal, error) {
+		return ListenerPrincipal{Provider: "test", Subject: "verified"}, nil
+	}
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPListenerProxy(ctx, ln, upstream.URL, &output, opts) }()
+	base := "http://" + ln.Addr().String()
+	waitForHTTPHealth(t, base)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/", bytes.NewReader(principalControlToolCall(1, "read_file", `{}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Mcp-Protocol-Version", currentMCPVersion)
+	req.Header.Set("Mcp-Method", "tools/call")
+	req.Header.Set("Mcp-Name", "read_file")
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatal(resp.StatusCode)
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("listener shutdown stalled")
+	}
+	// No owner lookup, mutex or test-side wait before reading the caller's buffer.
+	if got := output.String(); !strings.Contains(got, "MCP taint binding=listener_principal") {
+		t.Fatalf("listener report missing: %q", got)
+	}
+	if got := taintDiagnosticMetric(t, m, "listener_principal", "active"); got != "1" {
+		t.Fatal(got)
+	}
+}

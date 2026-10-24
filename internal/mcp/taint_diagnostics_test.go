@@ -140,7 +140,7 @@ func TestMCPTaintDiagnostics_ListenerBindings(t *testing.T) {
 		{"legacy_with_store", "listener_legacy", "active", true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var log *bytes.Buffer
+			var log *syncBuffer
 			// Explicitly flush admitted diagnostics before reading the raw buffer.
 			t.Run("request", func(t *testing.T) {
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

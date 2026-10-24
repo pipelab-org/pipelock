@@ -4,7 +4,6 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -936,7 +935,7 @@ logging:
 		cmd := RunCmd()
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"--config", tmpFile.Name()})
-		var stderr bytes.Buffer
+		var stderr syncBuffer
 		cmd.SetErr(&stderr)
 		cmd.SetOut(&stderr)
 

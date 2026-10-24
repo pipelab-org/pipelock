@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 )
 
 // Default cadence and drain window for the session-bound exit. The poll
@@ -350,7 +352,7 @@ func logSessionExitAsync(logW io.Writer) {
 
 // logFlushGrace bounds how long an operator message may delay teardown. A
 // healthy writer completes far inside it; a wedged one costs at most this.
-const logFlushGrace = time.Second
+const logFlushGrace = diaglog.FlushGrace
 
 // logAsync emits an operator message without letting a blocked writer stall
 // teardown, and without silently dropping the message.
@@ -373,8 +375,8 @@ func logAsync(logW io.Writer, format string, args ...any) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Keep teardown's existing bounded delivery attempt even while an
-		// optional diagnostic owns the sink; ordinary request logs may drop.
+		// Ordinary writes wait for the shared writer (including behind one
+		// in-flight optional diagnostic); logFlushGrace bounds this wait.
 		if w, ok := logW.(interface{ WriteBlocking([]byte) (int, error) }); ok {
 			_, _ = w.WriteBlocking(fmt.Appendf(nil, format, args...))
 			return

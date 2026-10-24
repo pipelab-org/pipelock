@@ -1370,6 +1370,9 @@ func preserveLicenseInputsRestartOnly(newCfg, oldCfg *config.Config) {
 // mirrors the original RunCmd deferred closures so shutdown sequencing is
 // preserved.
 func (s *Server) cleanup() {
+	if s.finishDiagnostics != nil {
+		defer s.finishDiagnostics()
+	}
 	if s.recorder != nil {
 		_ = s.recorder.Close()
 		s.recorder = nil

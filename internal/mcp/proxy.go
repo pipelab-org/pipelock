@@ -1769,7 +1769,8 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := diaglog.New(logW)
+	safeLogW, finishDiagnostics := diaglog.Scope(logW)
+	defer finishDiagnostics()
 	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_subprocess")
 
 	// Restrict child process environment to safe variables only.
