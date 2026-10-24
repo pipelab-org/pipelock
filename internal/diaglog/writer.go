@@ -87,3 +87,15 @@ func (w *Writer) Pending() <-chan struct{} {
 	defer w.state.Unlock()
 	return w.pending
 }
+
+// WriteBlocking preserves the existing bounded teardown logger's delivery
+// attempt. Only callers that already bound their wait may use this path;
+// optional request/refusal/reload diagnostics must use Emit instead.
+func (w *Writer) WriteBlocking(p []byte) (int, error) {
+	if w == nil {
+		return len(p), nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.w.Write(p)
+}

@@ -339,3 +339,60 @@ func TestMCPTaintDiagnostics_WedgedSinkBoundsGoroutinesAndCountsEveryContext(t *
 		t.Fatalf("busy log lost metrics: %s", got)
 	}
 }
+
+// Teardown's existing bounded logging must still attempt its explanation after
+// a temporarily busy diagnostic sink recovers.
+func TestMCPTaintDiagnostics_TeardownLogSurvivesPendingDiagnostic(t *testing.T) {
+	sink := &taintTeardownWriter{entered: make(chan struct{}), release: make(chan struct{}), written: make(chan struct{}), overlap: make(chan struct{})}
+	w := diaglog.New(sink)
+	pending := w.Emit("pipelock: MCP taint binding=stdio_subprocess\n")
+	if pending == nil {
+		t.Fatal("startup diagnostic was not admitted")
+	}
+	select {
+	case <-sink.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("diagnostic did not reach sink")
+	}
+	logAsync(w, "pipelock: spawning session exited; shutting down MCP proxy\n")
+	select {
+	case <-sink.overlap:
+		t.Error("teardown log bypassed shared writer serialization")
+	default:
+	}
+	close(sink.release)
+	select {
+	case <-pending:
+	case <-time.After(5 * time.Second):
+		t.Fatal("diagnostic cleanup stalled")
+	}
+	select {
+	case <-sink.written:
+	case <-time.After(2 * time.Second):
+		t.Fatal("existing teardown explanation was dropped behind optional diagnostic")
+	}
+}
+
+type taintTeardownWriter struct {
+	entered     chan struct{}
+	release     chan struct{}
+	written     chan struct{}
+	overlap     chan struct{}
+	overlapOnce sync.Once
+	active      atomic.Int32
+}
+
+func (w *taintTeardownWriter) Write(p []byte) (int, error) {
+	if w.active.Add(1) > 1 {
+		w.overlapOnce.Do(func() { close(w.overlap) })
+	}
+	defer w.active.Add(-1)
+	if strings.Contains(string(p), "MCP taint binding=") {
+		close(w.entered)
+		<-w.release
+	}
+	if strings.Contains(string(p), "spawning session exited") {
+		close(w.written)
+	}
+	return len(p), nil
+}

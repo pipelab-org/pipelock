@@ -373,6 +373,12 @@ func logAsync(logW io.Writer, format string, args ...any) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		// Keep teardown's existing bounded delivery attempt even while an
+		// optional diagnostic owns the sink; ordinary request logs may drop.
+		if w, ok := logW.(interface{ WriteBlocking([]byte) (int, error) }); ok {
+			_, _ = w.WriteBlocking(fmt.Appendf(nil, format, args...))
+			return
+		}
 		_, _ = fmt.Fprintf(logW, format, args...)
 	}()
 	select {

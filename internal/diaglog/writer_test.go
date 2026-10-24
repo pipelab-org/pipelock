@@ -127,6 +127,9 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	if out.String() != "ordinary\noptional\n" {
 		t.Fatal(out.String())
 	}
+	if n, err := w.WriteBlocking([]byte("teardown")); n != 8 || err != nil {
+		t.Fatalf("blocking write=%d,%v", n, err)
+	}
 	if w.Pending() != nil {
 		t.Fatal("idle drainer retained")
 	}
@@ -139,7 +142,13 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	if _, err := failed.Write([]byte("failed")); err == nil || !strings.Contains(err.Error(), "sink unavailable") {
 		t.Fatalf("ordinary write error lost: %v", err)
 	}
+	if _, err := failed.WriteBlocking([]byte("failed")); err == nil {
+		t.Fatal("blocking write lost error")
+	}
 	var nilWriter *Writer
+	if n, err := nilWriter.WriteBlocking([]byte("ignored")); n != 7 || err != nil {
+		t.Fatalf("nil blocking write=%d,%v", n, err)
+	}
 	if New(nil) != nil || nilWriter.Emit("ignored") != nil || nilWriter.Pending() != nil {
 		t.Fatal("nil sink was not inert")
 	}
