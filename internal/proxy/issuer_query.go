@@ -626,13 +626,13 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		}
 	}
 	// RFC 9110 section 10.2.2 defines Location for 201 and 3xx responses.
-	// The OCI Distribution Spec "Pushing blobs" flow also uses 202 Location
-	// to issue an opaque upload URL for later chunks:
+	// The OCI Distribution Spec "Pushing blobs" flow also uses 202 and 204
+	// Location headers to issue upload URLs for later chunks and resumption:
 	// https://github.com/opencontainers/distribution-spec/blob/main/spec.md#pushing-blobs
 	// Same-origin checks apply to every Location. Only redirects may use the
 	// declared OAuth callback exception for another host.
 	redirect := response.StatusCode >= http.StatusMultipleChoices && response.StatusCode < http.StatusBadRequest
-	if redirect || response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusAccepted {
+	if redirect || response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusAccepted || response.StatusCode == http.StatusNoContent {
 		if location := response.Header.Get("Location"); location != "" {
 			observe(location, redirect, false)
 		}

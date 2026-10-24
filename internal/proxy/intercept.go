@@ -2439,6 +2439,7 @@ func newInterceptHandler(
 				return
 			}
 			recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
+			recordDeliveredIssuerQuery(ic, resp, nil, true)
 			// The outcome receipt is the durable record that an exempt host
 			// streamed a body past the scan ceiling unscanned, or that the
 			// stream broke before the body was delivered.

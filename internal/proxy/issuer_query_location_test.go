@@ -23,22 +23,33 @@ import (
 func TestInterceptIssuerUploadLocation(t *testing.T) {
 	const uploadPath = "/v2/project/blobs/uploads/12345678-1234-1234-1234-123456789abc"
 	for _, tc := range []struct {
-		name, method string
-		status       int
-		foreign      bool
-		unissued     bool
-		secret       bool
-		want         int
+		name, method   string
+		status         int
+		foreign        bool
+		unissued       bool
+		secret         bool
+		responseExempt bool
+		want           int
 	}{
 		{name: "201 PATCH", status: http.StatusCreated, method: http.MethodPatch, want: http.StatusOK},
 		{name: "201 PUT", status: http.StatusCreated, method: http.MethodPut, want: http.StatusOK},
 		{name: "202 PATCH", status: http.StatusAccepted, method: http.MethodPatch, want: http.StatusOK},
 		{name: "202 PUT", status: http.StatusAccepted, method: http.MethodPut, want: http.StatusOK},
+		{name: "204 PATCH", status: http.StatusNoContent, method: http.MethodPatch, want: http.StatusOK},
+		{name: "204 PUT", status: http.StatusNoContent, method: http.MethodPut, want: http.StatusOK},
+		{name: "response exempt 202 PATCH", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, want: http.StatusOK},
+		{name: "response exempt 204 PUT", status: http.StatusNoContent, method: http.MethodPut, responseExempt: true, want: http.StatusOK},
+		{name: "response exempt unissued", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, unissued: true, want: http.StatusForbidden},
+		{name: "response exempt foreign", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, foreign: true, want: http.StatusForbidden},
+		{name: "response exempt secret", status: http.StatusAccepted, method: http.MethodPatch, responseExempt: true, secret: true, want: http.StatusForbidden},
 		{name: "unissued value", status: http.StatusAccepted, method: http.MethodPatch, unissued: true, want: http.StatusForbidden},
+		{name: "unissued value 204", status: http.StatusNoContent, method: http.MethodPatch, unissued: true, want: http.StatusForbidden},
 		{name: "foreign 201", status: http.StatusCreated, method: http.MethodPut, foreign: true, want: http.StatusForbidden},
 		{name: "foreign 202", status: http.StatusAccepted, method: http.MethodPatch, foreign: true, want: http.StatusForbidden},
+		{name: "foreign 204", status: http.StatusNoContent, method: http.MethodPatch, foreign: true, want: http.StatusForbidden},
 		{name: "issued secret 201", status: http.StatusCreated, method: http.MethodPut, secret: true, want: http.StatusForbidden},
 		{name: "issued secret 202", status: http.StatusAccepted, method: http.MethodPatch, secret: true, want: http.StatusForbidden},
+		{name: "issued secret 204", status: http.StatusNoContent, method: http.MethodPatch, secret: true, want: http.StatusForbidden},
 		{name: "200 Location", status: http.StatusOK, method: http.MethodPatch, want: http.StatusForbidden},
 		{name: "404 Location", status: http.StatusNotFound, method: http.MethodPut, want: http.StatusForbidden},
 	} {
@@ -62,6 +73,10 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 			defer upstream.Close()
 			cache, pool, cfg, _, _, m := testInterceptSetup(t)
 			issuerCookieTestConfig(t, cfg)
+			if tc.responseExempt {
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.ExemptDomains = []string{mustIssuerQueryURL(t, upstream.URL).Hostname()}
+			}
 			auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
 			logger, err := audit.New("json", "file", auditPath, true, true)
 			if err != nil {
@@ -124,7 +139,7 @@ func TestInterceptIssuerUploadLocation(t *testing.T) {
 }
 
 func TestIssuerUploadLocationDLP(t *testing.T) {
-	for _, status := range []int{http.StatusCreated, http.StatusAccepted} {
+	for _, status := range []int{http.StatusCreated, http.StatusAccepted, http.StatusNoContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			cfg := config.Defaults()
 			cfg.TLSInterception.Enabled = true
