@@ -854,3 +854,44 @@ func TestTaintRuntimeTrustOverrideApplies_TaskBoundary(t *testing.T) {
 		})
 	}
 }
+
+// Evaluator defense in depth, like the test above: it pins that the allow
+// branch records TaskOverrideApplied for receipts and stops applying at a task
+// boundary. It is not evidence that MCP sessions can receive runtime grants.
+func TestEvaluateMCPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.Defaults()
+	rec := &taintRecorder{
+		task: session.TaskContext{CurrentTaskID: "task-1"},
+		risk: session.SessionRisk{
+			Level:        session.TaintExternalUntrusted,
+			Contaminated: true,
+			Sources: []session.TaintSourceRef{{
+				URL:   "https://evil.example/issue/123",
+				Kind:  "http_response",
+				Level: session.TaintExternalUntrusted,
+			}},
+		},
+		overrides: []session.TrustOverride{{
+			Scope:       "task",
+			TaskID:      "task-1",
+			ActionMatch: "mcp:write_file:/repo/auth/middleware.go",
+			ExpiresAt:   time.Now().UTC().Add(time.Hour),
+		}},
+	}
+
+	decision := evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAllow {
+		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
+	}
+	if !decision.TaskOverrideApplied {
+		t.Fatal("expected runtime task override to be recorded")
+	}
+
+	rec.task = session.TaskContext{CurrentTaskID: "task-2"}
+	decision = evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
+	if decision.Result.Decision != session.PolicyAsk {
+		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
+	}
+}
