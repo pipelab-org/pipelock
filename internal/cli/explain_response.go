@@ -167,11 +167,13 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	// the raw YAML field. When response_scanning.enabled is false, that method
 	// returns block for core-floor hits even if the file still says warn.
 	report.Action = sc.ResponseAction()
-	if cfg.PromptInjectionMode() == config.ActionAllow {
+	if result.Clean && cfg.PromptInjectionMode() == config.ActionAllow {
 		report.Action = config.ActionAllow
 	}
 	if len(result.WarnedMatches) > 0 {
-		report.Action = config.ActionWarn
+		if result.Clean {
+			report.Action = config.ActionWarn
+		}
 		for _, match := range result.WarnedMatches {
 			report.Notes = append(report.Notes, "warn-only wording match: "+escapeExplainEventTerminalControls(match.PatternName))
 		}
