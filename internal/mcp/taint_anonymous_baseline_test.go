@@ -16,13 +16,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
-// Known gap: anonymous stateless callers have no cross-request taint history.
-// This pins the observed compatibility behavior, not a protection guarantee.
-// The verified_principal_control case runs the same calls under the same
-// default taint policy with a verified caller identity and must be refused,
-// so a pass of the anonymous cases shows the gap rather than calls that would
-// never have been refused.
-func TestAnonymousStatelessListener_NoCrossRequestTaint_Baseline(t *testing.T) {
+// Anonymous stateless listener callers have no cross-request taint history;
+// that gap is documented in docs/configuration.md and reported by doctor and
+// explain. These cases cover the controls that do close it: requiring caller
+// identity refuses anonymous calls before any taint allowance applies, and a
+// verified caller making the same read-then-exec calls under the default taint
+// policy is refused on the exec.
+func TestHTTPListener_TaintControlsForStatelessCallers(t *testing.T) {
 	for _, tc := range []struct {
 		name            string
 		withStore       bool
@@ -30,8 +30,6 @@ func TestAnonymousStatelessListener_NoCrossRequestTaint_Baseline(t *testing.T) {
 		withOverride    bool
 		verified        bool
 	}{
-		{name: "no_store"},
-		{name: "store_only", withStore: true},
 		{name: "store_and_identity_required", withStore: true, requireIdentity: true},
 		{name: "store_and_identity_required_with_override", withStore: true, requireIdentity: true, withOverride: true},
 		{name: "verified_principal_control", withStore: true, verified: true},
@@ -83,8 +81,6 @@ func TestAnonymousStatelessListener_NoCrossRequestTaint_Baseline(t *testing.T) {
 				if !strings.Contains(read, "authenticated principal") || !strings.Contains(exec, "authenticated principal") || upstreamCalls.Load() != 0 {
 					t.Fatal("expected identity-required anonymous calls to refuse before the scoped taint allowance can help")
 				}
-			case principalControlRPCError(t, read) != "" || principalControlRPCError(t, exec) != "" || upstreamCalls.Load() != 2:
-				t.Fatal("expected anonymous compatibility calls to reach the upstream with taint enabled")
 			}
 		})
 	}
