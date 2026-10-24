@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -215,6 +216,9 @@ func TestPromptInjectionDetectionAnnouncementSinks(t *testing.T) {
 }
 
 func TestPromptInjectionDetectionSandboxStartupDisclosure(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("standalone sandbox mode requires Linux; other platforms return before workspace validation")
+	}
 	for _, policy := range []string{"", "prompt_injection_detection: {enabled: false}\n", "prompt_injection_detection: {action: warn}\n"} {
 		t.Run(policy, func(t *testing.T) {
 			configPath := filepath.Join(t.TempDir(), "config.yaml")
