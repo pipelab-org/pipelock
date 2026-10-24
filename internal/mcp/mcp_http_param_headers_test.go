@@ -169,3 +169,71 @@ func TestMCPParamHeaderScanClassifiesItsEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPListener_MCPParamContractLargeSchemaNumbers(t *testing.T) {
+	for _, number := range []string{"1e999", strings.Repeat("9", 400)} {
+		t.Run(number[:5], func(t *testing.T) {
+			schema := `{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"limit":{"type":"number","maximum":` + number + `}}}`
+			capture := &wireContractUpstreamCapture{}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capture.calls.Add(1)
+				var request struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode upstream request: %v", err)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if request.Method == "tools/list" {
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo input","inputSchema":%s}]}}`, request.ID, schema)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+			}))
+			t.Cleanup(upstream.Close)
+			opts := paramContractOpts(t)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
+			listHeaders := currentWireHeaders("tools/list", "")
+			listHeaders.Set("Proxy-Authorization", "Bearer current-client-token")
+			status, _, body := postWireContractRequest(t, baseURL, currentWireBody(0, "tools/list", ""), listHeaders)
+			if status != http.StatusOK || capture.calls.Load() != 1 {
+				t.Fatalf("seed tools/list status=%d calls=%d body=%s", status, capture.calls.Load(), body)
+			}
+			for _, tc := range []struct {
+				name       string
+				arguments  string
+				mirror     string
+				wantStatus int
+			}{
+				{name: "mismatching", arguments: `{"region":"us-east-1"}`, mirror: "us-west-2", wantStatus: http.StatusBadRequest},
+				{name: "missing", arguments: `{"region":"us-west-2"}`, wantStatus: http.StatusBadRequest},
+				{name: "extra", arguments: `{}`, mirror: "us-west-2", wantStatus: http.StatusBadRequest},
+				{name: "matching", arguments: `{"region":"us-west-2"}`, mirror: "us-west-2", wantStatus: http.StatusOK},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					headers := currentWireHeaders("tools/call", "echo")
+					headers.Set("Proxy-Authorization", "Bearer current-client-token")
+					if tc.mirror != "" {
+						headers.Set("Mcp-Param-Region", tc.mirror)
+					}
+					before := capture.calls.Load()
+					status, _, body := postWireContractRequest(t, baseURL, currentWireBody(1, "tools/call", `"name":"echo","arguments":`+tc.arguments), headers)
+					if status != tc.wantStatus {
+						t.Errorf("status = %d body = %s, want %d", status, body, tc.wantStatus)
+					}
+					wantCalls := before
+					if tc.wantStatus == http.StatusOK {
+						wantCalls++
+					} else {
+						requireWireHeaderMismatch(t, status, body)
+					}
+					if got := capture.calls.Load(); got != wantCalls {
+						t.Errorf("upstream calls = %d, want %d", got, wantCalls)
+					}
+				})
+			}
+		})
+	}
+}

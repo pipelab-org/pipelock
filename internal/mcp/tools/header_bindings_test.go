@@ -138,3 +138,26 @@ func TestToolBaseline_HeaderBindingsRespectCaps(t *testing.T) {
 		t.Fatalf("schema above per-tool header cap %d was accepted", maxToolHeaderBindings)
 	}
 }
+
+func TestExtractHeaderBindings_LargeSchemaNumbers(t *testing.T) {
+	for _, number := range []string{"1e999", strings.Repeat("9", 400)} {
+		t.Run(number[:5], func(t *testing.T) {
+			schema := `{"type":"object","properties":{"region":{"type":"string","x-mcp-header":"Region"},"limit":{"type":"number","maximum":` + number + `}}}`
+			bindings, err := ExtractHeaderBindings(json.RawMessage(schema))
+			if err != nil {
+				t.Fatalf("ExtractHeaderBindings() error = %v, want Region contract", err)
+			}
+			if len(bindings) != 1 || bindings[0].HeaderName != "Region" || bindings[0].Type != "string" || len(bindings[0].Path) != 1 || bindings[0].Path[0] != "region" {
+				t.Fatalf("bindings = %#v, want Region at region", bindings)
+			}
+		})
+	}
+}
+
+func TestExtractHeaderBindings_CompleteJSONDocument(t *testing.T) {
+	for _, suffix := range []string{` {}`, ` trailing`, ` 1e999`} {
+		if _, err := ExtractHeaderBindings(json.RawMessage(`{"type":"object"}` + suffix)); err == nil {
+			t.Fatalf("schema with suffix %q accepted", suffix)
+		}
+	}
+}

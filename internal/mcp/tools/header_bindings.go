@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 )
 
 const (
@@ -130,7 +132,7 @@ func ExtractHeaderBindings(schema json.RawMessage) ([]HeaderBinding, error) {
 		return nil, nil
 	}
 	var root any
-	if err := json.Unmarshal(schema, &root); err != nil {
+	if err := extract.DecodeJSON(schema, &root); err != nil {
 		return nil, fmt.Errorf("decode input schema: %w", err)
 	}
 	obj, ok := root.(map[string]any)
