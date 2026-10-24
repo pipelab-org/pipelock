@@ -65,18 +65,22 @@ make docker         # Docker image
 make stats          # Canonical local stats for docs
 ```
 
-Pre-commit parity for OSS and enterprise builds:
+Before committing, run targeted tests with `-race` for changed packages and affected consumers in both build modes, plus lint for new issues. For example, for a change confined to `internal/gitprotect`:
 
 ```bash
+go test -race -count=1 ./internal/gitprotect
+go test -race -count=1 -tags enterprise ./internal/gitprotect
 golangci-lint run --new-from-rev=HEAD ./...
 golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
-make test
-make test-sharded-enterprise
 ```
 
-Full-repo CI-equivalent lint:
+Choose the packages for your change; the example isn't a fixed test list. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge. CI owns the full OSS and enterprise race suites on pushes to `main` and before releases; CI-policy pull requests also run the Go 1.27 race suites before merge.
+
+Optional full-repository validation:
 
 ```bash
+make test
+make test-sharded-enterprise
 golangci-lint run ./...
 golangci-lint run --build-tags enterprise ./...
 ```
@@ -141,7 +145,7 @@ Emission is non-blocking for webhook output through an async buffer; syslog is s
 
 ## Testing
 
-- Race detector command: `make test` (OSS) or `make test-sharded-enterprise` (enterprise)
+- Local tests: targeted `go test -race -count=1` in both build modes as above. Optional full race suites: `make test` (OSS) and `make test-sharded-enterprise` (enterprise).
 - Coverage target for new code: 95%, including error paths.
 - Test-count command: `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
 - Synchronization uses channels or poll-with-deadline, not `time.Sleep`.

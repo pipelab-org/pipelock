@@ -245,10 +245,11 @@ exit "$DEFAULT_STATUS"
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
 
-        self.assertEqual(0, run("pull_request", "success"))
-        for classifier in ("failure", "cancelled", "skipped", ""):
-            with self.subTest(classifier=classifier):
-                self.assertNotEqual(0, run("pull_request", classifier))
+        for event in ("pull_request", "merge_group"):
+            self.assertEqual(0, run(event, "success"))
+            for classifier in ("failure", "cancelled", "skipped", ""):
+                with self.subTest(event=event, classifier=classifier):
+                    self.assertNotEqual(0, run(event, classifier))
         # changed-files runs only on pull requests, so a push to main skips it.
         self.assertEqual(0, run("push", "skipped"))
 
@@ -263,24 +264,25 @@ exit "$DEFAULT_STATUS"
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
 
-        skipped = dict.fromkeys(DOCS_SKIPPABLE_RESULTS, "skipped")
-        self.assertEqual(0, run("pull_request", "success", "true", **skipped))
-        for docs in ("false", "", "TRUE"):
-            with self.subTest(docs=docs):
-                self.assertNotEqual(0, run("pull_request", "success", docs, **skipped))
-        for classifier in ("failure", "cancelled", "skipped", ""):
-            with self.subTest(classifier=classifier):
-                self.assertNotEqual(0, run("pull_request", classifier, "true", **skipped))
-        # A push never has a documentation-only proof.
-        self.assertNotEqual(0, run("push", "skipped", "true", **skipped))
-        # The skip covers only "skipped": a docs-only change cannot hide a failure.
-        for name in DOCS_SKIPPABLE_RESULTS:
-            with self.subTest(failed=name):
-                self.assertNotEqual(0, run("pull_request", "success", "true", **(skipped | {name: "failure"})))
-        # Producers a documentation-only change still needs can never skip.
-        for name in sorted(set(BUILD_GATE_RESULTS) - set(DOCS_SKIPPABLE_RESULTS)):
-            with self.subTest(always_required=name):
-                self.assertNotEqual(0, run("pull_request", "success", "true", **(skipped | {name: "skipped"})))
+        for event in ("pull_request", "merge_group"):
+            skipped = dict.fromkeys(DOCS_SKIPPABLE_RESULTS, "skipped")
+            self.assertEqual(0, run(event, "success", "true", **skipped))
+            for docs in ("false", "", "TRUE"):
+                with self.subTest(docs=docs):
+                    self.assertNotEqual(0, run(event, "success", docs, **skipped))
+            for classifier in ("failure", "cancelled", "skipped", ""):
+                with self.subTest(classifier=classifier):
+                    self.assertNotEqual(0, run(event, classifier, "true", **skipped))
+            # A push never has a documentation-only proof.
+            self.assertNotEqual(0, run("push", "skipped", "true", **skipped))
+            # The skip covers only "skipped": a docs-only change cannot hide a failure.
+            for name in DOCS_SKIPPABLE_RESULTS:
+                with self.subTest(failed=name):
+                    self.assertNotEqual(0, run(event, "success", "true", **(skipped | {name: "failure"})))
+            # Producers a documentation-only change still needs can never skip.
+            for name in sorted(set(BUILD_GATE_RESULTS) - set(DOCS_SKIPPABLE_RESULTS)):
+                with self.subTest(always_required=name):
+                    self.assertNotEqual(0, run(event, "success", "true", **(skipped | {name: "skipped"})))
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)

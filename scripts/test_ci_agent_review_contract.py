@@ -49,7 +49,7 @@ class AgentReviewContractJobTest(unittest.TestCase):
         self.assertNotIn("if", self.job)
         self.assertEqual(["security-scan"], self.job["needs"])
         # YAML reads the bare `on` key as True.
-        self.assertEqual({"push", "pull_request"}, set(self.document[True]))
+        self.assertEqual({"push", "pull_request", "merge_group"}, set(self.document[True]))
 
     def test_checkouts_are_pinned_and_hold_no_credentials(self) -> None:
         checkouts = [step for step in self.steps if "uses" in step]
@@ -61,10 +61,10 @@ class AgentReviewContractJobTest(unittest.TestCase):
         # The base branch's caller, read only on pull requests, supplies the pin
         # the new one must descend from. Its ref is GitHub's base commit, never a
         # name the pull request controls.
-        self.assertEqual("github.event_name == 'pull_request'", base["if"])
+        self.assertEqual("(github.event_name == 'pull_request' || github.event_name == 'merge_group')", base["if"])
         self.assertEqual(
             {
-                "ref": "${{ github.event.pull_request.base.sha }}",
+                "ref": "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
                 "path": "base",
                 "persist-credentials": False,
                 "sparse-checkout": ".github/workflows/agent-review.yaml\n",
@@ -169,7 +169,7 @@ class AgentReviewContractJobTest(unittest.TestCase):
     def test_base_pin_read_distinguishes_absence_from_errors(self) -> None:
         step = self.step("Read the base branch engine revision")
         self.assertEqual("base_pin", step["id"])
-        self.assertEqual("github.event_name == 'pull_request'", step["if"])
+        self.assertEqual("(github.event_name == 'pull_request' || github.event_name == 'merge_group')", step["if"])
         self.assertEqual(
             "${{ steps.base_pin.outputs.sha }}",
             self.step("Require the pin on the engine main branch")["env"]["BASE_PIN"],

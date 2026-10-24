@@ -149,6 +149,26 @@ class DocsClassifierTest(unittest.TestCase):
         self.commit("prose")
         self.assertEqual(self.classify(base), (0, "docs_only=false"))
 
+    def test_queue_range_keeps_policy_changes_from_earlier_members(self) -> None:
+        self.write(".github/workflows/ci.yaml", "name: policy change\n")
+        self.commit("queued policy member")
+        earlier_head = self.rev()
+        self.write("docs/guide.md", "queued prose change\n")
+        self.commit("queued prose member")
+        # Looking only at the last member would miss the policy change.
+        self.assertEqual(self.classify(earlier_head), (0, "docs_only=true"))
+        self.assert_full_ci()
+        steps = yaml.safe_load(WORKFLOW.read_text())["jobs"]["changed-files"]["steps"]
+        policy = next(step["run"] for step in steps if step.get("id") == "check")
+        with tempfile.NamedTemporaryFile("r", encoding="utf-8") as output:
+            result = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", policy], cwd=self.repo,
+                env=os.environ | {"BASE_SHA": self.base, "HEAD_SHA": self.rev(), "GITHUB_OUTPUT": output.name},
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true")
+
     def test_empty_diff_runs_everything(self) -> None:
         self.commit("empty")
         self.assert_full_ci()

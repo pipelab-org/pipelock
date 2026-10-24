@@ -39,7 +39,7 @@ NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
 # The one aggregate gate that tolerates a skipped producer, the producers it
 # tolerates, and the producer-side condition that makes tolerating them correct.
 # Named once so the gate's expectation and its justification cannot drift apart.
-EVENT_NAMES = ("push", "pull_request")
+EVENT_NAMES = ("push", "pull_request", "merge_group")
 SKIP_CARVEOUT_AGGREGATE = "test-go127"
 SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # The COMPLETE approved predicate, not a fragment of it. A substring test here
@@ -51,22 +51,22 @@ SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 # producer actually skips.
 SKIP_CARVEOUT_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
-    "&& github.event_name == 'pull_request' "
+    "&& (github.event_name == 'pull_request' || github.event_name == 'merge_group') "
     "&& needs.changed-files.outputs.ci_policy == 'true' }}"
 )
-# Go 1.26 race lane: main pushes and other non-pull-request events only.
+# Go 1.26 race lane: main pushes only, never merge-group validation.
 RACE_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
 RACE_AGGREGATE = "race-go126"
-RACE_LANE_CONDITION = "${{ github.event_name != 'pull_request' }}"
-RACE_AGGREGATE_CONDITION = "${{ always() && github.event_name != 'pull_request' }}"
+RACE_LANE_CONDITION = "${{ github.event_name == 'push' }}"
+RACE_AGGREGATE_CONDITION = "${{ always() && github.event_name == 'push' }}"
 # Concurrent-job cap per race matrix. The main race lane gets six per build
 # variant; the Go 1.27 matrix, which runs beside a pull request's own no-race
-# lane, gets four.
+# lane, gets ten under the 60-job GitHub Team limit.
 RACE_MAX_PARALLEL = {
     "test-oss-go126": 6,
     "test-enterprise-go126": 6,
-    "test-oss-go127": 4,
-    "test-enterprise-go127": 4,
+    "test-oss-go127": 10,
+    "test-enterprise-go127": 10,
 }
 # The no-race lane every pull request waits on. Heavy trees run whole; the rest
 # shards are the planner's rest buckets.
@@ -132,10 +132,10 @@ def gate_script_is_safe(run: str) -> bool:
             set\ -u|
             echo\ "[^"]*"|
             test\ "[^"]*"\ =\ "(?:success|true|false)"(?:\ \|\|\ \{)?|
-            if\ \[\ "\$EVENT_NAME"\ =\ "pull_request"\ \];\ then|
+            if\ \[\ "\$EVENT_NAME"\ (?:=|!=)\ "(?:pull_request|push)"\ \];\ then|
             if\ \[\ "[^"]*"\ !=\ "false"\ \];\ then|
             if\ !\ test\ "[^"]*"\ =\ "success";\ then|
-            if\ \[\ "\$EVENT_NAME"\ !=\ "pull_request"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
+            if\ \[\ "\$EVENT_NAME"\ (?:=|!=)\ "(?:pull_request|push)"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
             if\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
             \[\ "\$EVENT_NAME"\ (?:=|!=)\ "pull_request"\ \]\ \&\&|
             \[\ "[^"]*"\ (?:=|!=)\ "skipped"\ \]|
@@ -274,6 +274,10 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
     # Ordinary cases run with docs_only false; docs cases with CI policy false.
     all_cases = [(d, v, e, p, x, "false") for d, v, e, p, x in cases]
     all_cases += [(d, v, e, "false", x, docs) for d, v, e, docs, x in docs_cases]
+    all_cases += [
+        (d, v, "merge_group", p, x, docs)
+        for d, v, e, p, x, docs in all_cases if e == "pull_request"
+    ]
     for description, values, event_name, policy, expected, docs in all_cases:
         try:
             actual = execute_gate(run, values, event_name, policy, docs)
@@ -320,7 +324,7 @@ def race_lane_errors(jobs: dict) -> list[str]:
     errors = []
     for producer in sorted(RACE_PRODUCERS):
         if jobs.get(producer, {}).get("if") != RACE_LANE_CONDITION:
-            errors.append(f"{producer} must run on every non-pull-request event and only those")
+            errors.append(f"{producer} must run on main pushes only")
     # Every race matrix, including the Go 1.27 one CI-policy pull requests run,
     # shares the account's runners with pull requests that are waiting.
     for producer in sorted(RACE_PRODUCERS | SKIP_CARVEOUT_PRODUCERS):
@@ -579,6 +583,41 @@ class CIWorkflowTopologyTest(unittest.TestCase):
     def setUp(self):
         self.jobs = workflow_jobs()
 
+    def test_required_workflows_run_on_the_combined_queue_commit(self):
+        for name in ("ci.yaml", "security.yaml"):
+            with self.subTest(workflow=name):
+                document = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+                self.assertEqual(
+                    {"types": ["checks_requested"], "branches": ["main"]},
+                    document[True]["merge_group"],
+                )
+                if name == "security.yaml":
+                    codeql = document["jobs"]["codeql"]
+                    self.assertNotIn("if", codeql)
+                    self.assertNotIn("ref", codeql["steps"][0]["with"])
+        detector = self.jobs["changed-files"]
+        self.assertEqual(
+            "${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}",
+            detector["if"],
+        )
+        for step in detector["steps"]:
+            if step.get("id") in ("check", "docs"):
+                for endpoint in ("BASE", "HEAD"):
+                    field = endpoint.lower()
+                    self.assertEqual(
+                        "${{ github.event_name == 'pull_request' && "
+                        f"github.event.pull_request.{field}.sha || "
+                        f"github.event.merge_group.{field}_sha }}}}",
+                        step["env"][f"{endpoint}_SHA"],
+                    )
+        # Default checkout must test the synthetic group commit, not a PR head.
+        for job in self.jobs.values():
+            for step in job.get("steps", []):
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    if step.get("with", {}).get("path") in ("engine", "base"):
+                        continue
+                    self.assertNotIn("ref", step.get("with", {}))
+
     def test_topology_is_truthful_and_complete(self):
         self.assertEqual(topology_errors(self.jobs), [])
 
@@ -701,14 +740,14 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         broken["test-oss-go126"].pop("if")
         errors = race_lane_errors(broken)
         self.assertEqual(len(errors), 1)
-        self.assertIn("test-oss-go126 must run on every non-pull-request event", errors[0])
+        self.assertIn("test-oss-go126 must run on main pushes only", errors[0])
 
     def test_uncapped_race_lane_fails_the_contract(self):
         for producer, value in (
             ("test-enterprise-go126", None),
             ("test-enterprise-go126", 7),
             ("test-oss-go127", None),
-            ("test-oss-go127", 5),
+            ("test-oss-go127", RACE_MAX_PARALLEL["test-oss-go127"] + 1),
             ("test-oss-go126", 0),
             ("test-oss-go126", True),
         ):

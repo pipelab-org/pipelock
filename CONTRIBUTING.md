@@ -14,8 +14,6 @@ Thanks for your interest in making AI agents more secure.
 git clone https://github.com/pipelab-org/pipelock.git
 cd pipelock
 make build
-make test
-make lint
 ```
 
 ## Development Workflow
@@ -34,11 +32,24 @@ Branch naming:
 
 ### Pre-Commit Checklist
 
-Run both before opening a pull request. They cover the core local Go checks; CI also runs platform, build, dependency, workflow, and security jobs.
+Before committing, run targeted tests with `-race` for changed packages and affected consumers in both build modes, plus lint for new issues. For example, for a change confined to `internal/gitprotect`:
 
 ```bash
-golangci-lint run ./...          # Full lint (19 linters, see .golangci.yml)
-go test -race -count=1 ./...     # All tests with race detector
+go test -race -count=1 ./internal/gitprotect
+go test -race -count=1 -tags enterprise ./internal/gitprotect
+golangci-lint run --new-from-rev=HEAD ./...
+golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
+```
+
+Choose the packages for your change; the example isn't a fixed test list. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge. CI owns the full OSS and enterprise race suites on pushes to `main` and before releases; CI-policy pull requests also run the Go 1.27 race suites before merge.
+
+Full-repository checks are optional locally:
+
+```bash
+make test
+make test-sharded-enterprise
+golangci-lint run ./...
+golangci-lint run --build-tags enterprise ./...
 ```
 
 ## Pull Requests
