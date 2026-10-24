@@ -44,7 +44,7 @@ STATUS_DOCS: dict[str, str] = {
     "STALE_CHECK": "A collected check run or status context is tied to an older head SHA.",
     "REVIEW_CHANGES_REQUESTED": "A current-head review requested changes.",
     "CONFLICTED": "GitHub reports merge conflicts or a dirty merge state.",
-    "BEHIND_BASE": "The PR head is behind its base branch or stacked base PR.",
+    "BEHIND_BASE": "The PR head is behind its base branch without a verified required merge queue.",
     "MERGE_BLOCKED": "GitHub reports a blocked, draft, closed, or unknown merge state.",
     "CHANGED_DURING_WINDOW": "A comment, review, check, or commit changed since the prior snapshot.",
     "SNAPSHOT_MISSING": "A snapshot path was requested but no prior snapshot existed yet.",
@@ -290,7 +290,7 @@ class GhClient:
             args.extend(["--paginate", "--slurp"])
             pages = self.run(args)
             if pages is None:
-                return []
+                return None
             if isinstance(pages, list) and all(isinstance(page, list) for page in pages):
                 flattened: list[Any] = []
                 for page in pages:
@@ -545,6 +545,16 @@ def gather_sibling_overlaps(
     return result
 
 
+def merge_queue_required(rules: Any) -> bool | None:
+    """Return None when effective branch rules are unavailable or malformed."""
+    if not isinstance(rules, list) or any(
+        not isinstance(rule, dict) or not isinstance(rule.get("type"), str) or not rule["type"]
+        for rule in rules
+    ):
+        return None
+    return any(rule["type"] == "merge_queue" for rule in rules)
+
+
 def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     client = GhClient(repo)
     data: dict[str, Any] = {"repo": repo, "pr_number": pr_number, "errors": []}
@@ -566,6 +576,25 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     default_branch = str(dotted_get(pull_data, "base", "repo", "default_branch") or "")
     head_sha = str(dotted_get(pull_data, "head", "sha") or "")
     base_sha = str(dotted_get(pull_data, "base", "sha") or "")
+
+    def read_base_branch_rules() -> Any:
+        # This endpoint returns only active rules applying to this branch,
+        # including organization rules. Do not infer policy from merge state.
+        # https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch
+        rules = client.api(
+            f"repos/{repo}/rules/branches/{quote(base_ref, safe='')}?per_page=100",
+            paginate=True,
+            accept="application/vnd.github+json",
+        )
+        if merge_queue_required(rules) is None:
+            raise GhReadError("effective base-branch rules were not a list of typed rules")
+        return rules
+
+    if base_ref:
+        data["base_branch_rules"] = read_source("base_branch_rules", read_base_branch_rules)
+    else:
+        data["base_branch_rules"] = None
+        data["errors"].append({"source": "base_branch_rules", "message": "pull base ref unavailable"})
 
     data["issue_comments"] = read_source(
         "issue_comments",
@@ -978,6 +1007,7 @@ def normalize_stack(data: dict[str, Any], pr_number: int) -> dict[str, Any]:
         "base_is_open_pr": base_pr is not None,
         "base_pr": base_pr,
         "head_behind_base": behind_by > 0,
+        "merge_queue_required": merge_queue_required(data.get("base_branch_rules")),
         "compare_status": compare.get("status"),
         "behind_by": behind_by,
         "ahead_by": int(compare.get("ahead_by") or 0),
@@ -1110,7 +1140,7 @@ def choose_status(result: dict[str, Any], snapshot_missing: bool) -> str:
         return "CHANGED_DURING_WINDOW"
     if merge.get("mergeable") is False or merge_state in CONFLICT_MERGE_STATES:
         return "CONFLICTED"
-    if result["stack"]["head_behind_base"]:
+    if result["stack"]["head_behind_base"] and result["stack"]["merge_queue_required"] is not True:
         return "BEHIND_BASE"
     if result["required_checks"]["stale_count"] > 0:
         return "STALE_CHECK"
@@ -1265,6 +1295,7 @@ def compact_summary(result: dict[str, Any]) -> str:
             "stack: "
             f"base_is_open_pr={stack['base_is_open_pr']} "
             f"behind_base={stack['head_behind_base']} "
+            f"merge_queue_required={stack['merge_queue_required']} "
             f"compare={stack['compare_status']} "
             f"sibling_overlaps={stack.get('sibling_overlap_count', 0)}"
         ),

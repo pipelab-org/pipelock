@@ -523,6 +523,108 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertEqual(result["status"], "BEHIND_BASE")
         self.assertTrue(result["stack"]["head_behind_base"])
 
+    def test_merge_queue_behind_base_policy(self) -> None:
+        strict_rules = [{
+            "type": "required_status_checks",
+            "parameters": {"strict_required_status_checks_policy": True},
+        }]
+        for name, rules, mergeable, merge_state, errors, expected in (
+            ("queue", [{"type": "merge_queue"}], True, "behind", [], "READY"),
+            ("no_queue", [], True, "behind", [], "BEHIND_BASE"),
+            ("strict_without_queue", strict_rules, True, "behind", [], "BEHIND_BASE"),
+            ("missing_rules", None, True, "behind", [], "BEHIND_BASE"),
+            ("malformed_rules", {"type": "merge_queue"}, True, "behind", [], "BEHIND_BASE"),
+            ("partial_rules", [{"type": "merge_queue"}, None], True, "behind", [], "BEHIND_BASE"),
+            ("unreadable_rules", None, True, "behind",
+             [{"source": "base_branch_rules", "message": "rate limited"}], "DATA_SOURCE_UNAVAILABLE"),
+            ("queue_conflict", [{"type": "merge_queue"}], False, "behind", [], "CONFLICTED"),
+            ("queue_dirty", [{"type": "merge_queue"}], True, "dirty", [], "CONFLICTED"),
+            ("queue_blocked", [{"type": "merge_queue"}], True, "blocked", [], "MERGE_BLOCKED"),
+        ):
+            with self.subTest(name=name):
+                data = load_fixture()
+                data["compare"].update(behind_by=2, status="diverged")
+                data["pull"].update(mergeable=mergeable, mergeable_state=merge_state)
+                data["base_branch_rules"] = rules
+                data["errors"] = errors
+                result = classify(data)
+                self.assertEqual(result["status"], expected)
+                self.assertEqual(result["ready"], expected == "READY")
+                self.assertTrue(result["stack"]["head_behind_base"])
+                if name == "queue":
+                    self.assertIs(result["stack"]["merge_queue_required"], True)
+                    self.assertIn("behind_base=True merge_queue_required=True",
+                                  pr_convergence.compact_summary(result))
+
+    def test_effective_base_branch_rules_are_read_fail_closed(self) -> None:
+        for name, rules, expected_required, expected_status in (
+            ("queue", [{"type": "merge_queue"}], True, "READY"),
+            ("no_queue", [], False, "BEHIND_BASE"),
+            ("unreadable", pr_convergence.GhReadError("forbidden"), None, "DATA_SOURCE_UNAVAILABLE"),
+            ("null", None, None, "DATA_SOURCE_UNAVAILABLE"),
+            ("object", {"type": "merge_queue"}, None, "DATA_SOURCE_UNAVAILABLE"),
+            ("untyped", [{"parameters": {}}], None, "DATA_SOURCE_UNAVAILABLE"),
+            ("partial", [{"type": "merge_queue"}, None], None, "DATA_SOURCE_UNAVAILABLE"),
+        ):
+            with self.subTest(name=name):
+                fixture = load_fixture()
+                fixture["pull"]["base"]["ref"] = "release/next"
+                fixture["pull"]["head"]["repo"]["full_name"] = "contributor/repo"
+                fixture["compare"].update(behind_by=2, status="diverged")
+                fixture["pull"]["mergeable_state"] = "behind"
+                rules_path = "repos/owner/repo/rules/branches/release%2Fnext?per_page=100"
+                payloads = {
+                    "repos/owner/repo/pulls/7": fixture["pull"],
+                    "repos/owner/repo/issues/7/comments?per_page=100": fixture["issue_comments"],
+                    "repos/owner/repo/pulls/7/reviews?per_page=100": fixture["reviews"],
+                    "repos/owner/repo/pulls/7/comments?per_page=100": fixture["review_comments"],
+                    "repos/owner/repo/pulls/7/commits?per_page=100": fixture["commits"],
+                    "repos/owner/repo/commits/head222/check-runs?per_page=100": fixture["check_runs"],
+                    "repos/owner/repo/commits/head222/status": fixture["status"],
+                    "repos/owner/repo/compare/base111...head222": fixture["compare"],
+                    "repos/owner/repo/pulls/7/files?per_page=100": [{"filename": "scripts/example.py"}],
+                    rules_path: rules,
+                }
+
+                def read_api(path: str, **_kwargs: object) -> object:
+                    payload = payloads[path]
+                    if isinstance(payload, Exception):
+                        raise payload
+                    return payload
+
+                client = mock.Mock(spec=pr_convergence.GhClient)
+                client.api.side_effect = read_api
+                client.graphql_review_threads.return_value = []
+                client.graphql_open_pulls_by_head_ref.return_value = []
+                client.open_pulls_by_base_ref.return_value = []
+                with mock.patch.object(pr_convergence, "GhClient", return_value=client):
+                    result = classify(pr_convergence.gather_pr_state("owner/repo", 7))
+                client.api.assert_any_call(
+                    rules_path, paginate=True, accept="application/vnd.github+json",
+                )
+                self.assertEqual(result["status"], expected_status)
+                self.assertIs(result["stack"]["merge_queue_required"], expected_required)
+                self.assertEqual(result["ready"], expected_status == "READY")
+                if expected_status == "DATA_SOURCE_UNAVAILABLE":
+                    self.assertEqual([error["source"] for error in result["errors"]], ["base_branch_rules"])
+
+    def test_merge_queue_rule_on_later_page(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+        pages = [[{"type": "pull_request"}], [{"type": "merge_queue"}]]
+        with mock.patch.object(client, "run", return_value=pages) as run:
+            rules = client.api("repos/owner/repo/rules/branches/main?per_page=100", paginate=True)
+        self.assertIs(pr_convergence.merge_queue_required(rules), True)
+        self.assertEqual(run.call_args.args[0], [
+            "api", "repos/owner/repo/rules/branches/main?per_page=100", "--paginate", "--slurp",
+        ])
+
+    def test_empty_paginated_output_does_not_mean_no_rules(self) -> None:
+        client = pr_convergence.GhClient("owner/repo")
+        with mock.patch.object(client, "run", return_value=None):
+            rules = client.api("repos/owner/repo/rules/branches/main?per_page=100", paginate=True)
+        self.assertIsNone(rules)
+        self.assertIsNone(pr_convergence.merge_queue_required(rules))
+
     def test_conflicted_blocks(self) -> None:
         data = load_fixture()
         data["pull"]["mergeable"] = False
