@@ -7,11 +7,12 @@ package diaglog
 import (
 	"io"
 	"sync"
+	"syscall"
 )
 
 // Writer shares one lock for ordinary output and optional diagnostics. Ordinary
-// writes remain synchronous unless an optional diagnostic owns the sink: then
-// they are dropped, so that optional I/O cannot indirectly stall an operation.
+// writes always wait their turn and return the sink's actual result, including
+// errors. Only optional diagnostics are skipped when the sink is busy.
 // Diagnostics are best-effort, with one in-flight message and no pending queue.
 // A permanently wedged sink retains at most one diagnostic goroutine per Writer.
 type Writer struct {
@@ -36,19 +37,13 @@ func New(w io.Writer) *Writer {
 // DiagnosticWriter exposes the shared owner through embedding wrappers.
 func (w *Writer) DiagnosticWriter() *Writer { return w }
 
-// Write serializes normal output. While optional output is in flight, dropping
-// a concurrent log is preferable to letting that diagnostic block its caller.
+// Write serializes ordinary output without dropping or falsely acknowledging it.
+// Like any synchronous shared writer, it waits for the current write to finish.
 func (w *Writer) Write(p []byte) (int, error) {
 	if w == nil {
-		return len(p), nil
-	}
-	w.state.Lock()
-	if w.pending != nil {
-		w.state.Unlock()
-		return len(p), nil
+		return 0, syscall.EINVAL
 	}
 	w.mu.Lock()
-	w.state.Unlock()
 	defer w.mu.Unlock()
 	return w.w.Write(p)
 }
@@ -88,14 +83,8 @@ func (w *Writer) Pending() <-chan struct{} {
 	return w.pending
 }
 
-// WriteBlocking preserves the existing bounded teardown logger's delivery
-// attempt. Only callers that already bound their wait may use this path;
-// optional request/refusal/reload diagnostics must use Emit instead.
+// WriteBlocking is the bounded teardown logger's compatibility entry point.
+// Its delivery contract is identical to Write; the caller bounds its own wait.
 func (w *Writer) WriteBlocking(p []byte) (int, error) {
-	if w == nil {
-		return len(p), nil
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.w.Write(p)
+	return w.Write(p)
 }

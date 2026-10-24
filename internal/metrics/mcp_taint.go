@@ -10,7 +10,11 @@ func (m *Metrics) registerMCPTaintMetrics(reg *prometheus.Registry) {
 		Namespace: "pipelock", Name: "mcp_taint_contexts_total",
 		Help: "MCP invocation or listener request contexts by actual taint recorder status; not a count of protected sessions or enforced decisions.",
 	}, []string{"binding", "status"})
-	reg.MustRegister(m.mcpTaintContexts)
+	m.mcpTaintReportsSkipped = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: "pipelock", Name: "mcp_taint_reports_skipped_total",
+		Help: "Optional MCP invocation, listener and refusal reports skipped because the shared log writer was busy; excludes throttled contexts and config-only notices.",
+	})
+	reg.MustRegister(m.mcpTaintContexts, m.mcpTaintReportsSkipped)
 }
 
 // RecordMCPTaintContext records bounded state-registry outcomes without caller
@@ -27,5 +31,13 @@ func (m *Metrics) RecordMCPTaintContext(binding, status string) {
 	switch status {
 	case "active", "inactive", "disabled":
 		m.mcpTaintContexts.WithLabelValues(binding, status).Inc()
+	}
+}
+
+// RecordMCPTaintReportSkipped counts busy-writer admission refusals without
+// labels or caller-controlled values. A delivered report is not guaranteed.
+func (m *Metrics) RecordMCPTaintReportSkipped() {
+	if m != nil && m.mcpTaintReportsSkipped != nil {
+		m.mcpTaintReportsSkipped.Inc()
 	}
 }

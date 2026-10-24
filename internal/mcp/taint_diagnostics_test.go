@@ -141,7 +141,7 @@ func TestMCPTaintDiagnostics_ListenerBindings(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var log *bytes.Buffer
-			// Read the log only after listener shutdown, so the buffer has no writer.
+			// Explicitly flush admitted diagnostics before reading the raw buffer.
 			t.Run("request", func(t *testing.T) {
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
@@ -158,8 +158,9 @@ func TestMCPTaintDiagnostics_ListenerBindings(t *testing.T) {
 						return ListenerPrincipal{Provider: "test", Subject: "verified-subject"}, nil
 					}
 				}
-				var base string
-				base, log = startListenerProxyWithOpts(t, upstream.URL, opts)
+				base, buf, logW := startListenerProxyWithDiagnosticLog(t, upstream.URL, opts)
+				log = buf
+				defer waitTaintDiagnostic(t, logW)
 				if tc.legacy {
 					req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{}}}`))
 					if err != nil {
@@ -264,7 +265,7 @@ func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
 	}
 	var log bytes.Buffer
 	logW := diaglog.New(&log)
-	mcpTaintBlockMessage(taintDecision{}, logW)
+	mcpTaintBlockMessage(taintDecision{}, logW, MCPProxyOpts{})
 	waitTaintDiagnostic(t, logW)
 	if !strings.Contains(log.String(), guidance) {
 		t.Fatal("operator recovery and config differ")

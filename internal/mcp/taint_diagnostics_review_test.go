@@ -106,7 +106,8 @@ func TestMCPTaintDiagnostics_ListenerJunkTokenDoesNotChooseBinding(t *testing.T)
 				cfg := config.Defaults()
 				m := metrics.New()
 				opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), TaintCfg: &cfg.Taint, Metrics: m, Store: &listenerDiagnosisStore{}}
-				base, buf := startListenerProxyWithOpts(t, upstream.URL, opts)
+				base, buf, logW := startListenerProxyWithDiagnosticLog(t, upstream.URL, opts)
+				defer waitTaintDiagnostic(t, logW)
 				log = buf
 				req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{}}}`))
 				if err != nil {
@@ -281,7 +282,7 @@ func TestMCPTaintDiagnostics_NilRecoveryWriter(t *testing.T) {
 			t.Errorf("nil recovery writer panicked: %v", r)
 		}
 	}()
-	if got := mcpTaintBlockMessage(taintDecision{}, nil); got != "pipelock: " {
+	if got := mcpTaintBlockMessage(taintDecision{}, nil, MCPProxyOpts{}); got != "pipelock: " {
 		t.Errorf("client reason=%q", got)
 	}
 }

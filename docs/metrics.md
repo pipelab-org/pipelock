@@ -8,6 +8,8 @@ Contained deployments keep the dedicated listener on loopback by default. A cont
 
 `pipelock_mcp_taint_contexts_total{binding,status}` counts MCP invocation startups or listener request contexts by the actual recorder's taint-state support. Bindings distinguish `stdio_subprocess`, `stdio_http`, `stdio_ws`, `listener_principal`, `listener_legacy`, `listener_token`, and `listener_stateless`. Status is `active`, `inactive`, or `disabled`. Active means an enabled taint recorder within that in-memory scope; it doesn't prove a particular policy decision or persistence after restart. Anonymous stateless contexts never report active cross-request protection. This counter counts observations, not unique sessions, and contains no caller identifiers.
 
+`pipelock_mcp_taint_reports_skipped_total` counts optional MCP invocation, listener and refusal reports skipped because their shared writer was busy. It has no labels. It excludes contexts suppressed by the listener throttle and config-only startup/reload notices. An admitted write can still fail at the sink, so neither this counter nor the context counter acknowledges delivery. Skipped listener reports retain their aggregate and reporting window for the next request.
+
 ```yaml
 # prometheus.yml
 scrape_configs:

@@ -126,6 +126,15 @@ func newMCPListenerDegradationReporter(interval time.Duration, now func() time.T
 // after each interval, returning the count since the last emission. The
 // counter saturates rather than wrapping.
 func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
+	var count uint64
+	admitted := r.observeIf(func(n uint64) bool { count = n; return true })
+	return count, admitted
+}
+
+// observeIf consumes the reporting window only after non-blocking admission.
+// submit must not perform I/O or wait for sink ownership. A refused submission
+// retains the aggregate so the next request can retry immediately.
+func (r *mcpListenerDegradationReporter) observeIf(submit func(uint64) bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pending != ^uint64(0) {
@@ -133,12 +142,14 @@ func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
 	}
 	now := r.now()
 	if !r.lastReported.IsZero() && now.Sub(r.lastReported) < r.interval {
-		return 0, false
+		return false
 	}
-	count := r.pending
+	if !submit(r.pending) {
+		return false
+	}
 	r.pending = 0
 	r.lastReported = now
-	return count, true
+	return true
 }
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {

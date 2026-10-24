@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
@@ -2865,6 +2866,12 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 
 func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer) {
 	t.Helper()
+	base, log, _ := startListenerProxyWithDiagnosticLog(t, upstreamURL, opts)
+	return base, log
+}
+
+func startListenerProxyWithDiagnosticLog(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer, *diaglog.Writer) {
+	t.Helper()
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -2873,10 +2880,11 @@ func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyO
 	addr := ln.Addr().String()
 
 	var logBuf bytes.Buffer
+	logW := diaglog.New(&logBuf)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, opts)
+		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, logW, opts)
 	}()
 
 	baseURL := "http://" + addr
@@ -2885,9 +2893,10 @@ func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyO
 	t.Cleanup(func() {
 		cancel()
 		waitForListenerProxyStop(t, done)
+		waitTaintDiagnostic(t, logW)
 	})
 
-	return baseURL, &logBuf
+	return baseURL, &logBuf, logW
 }
 
 func TestHTTPListener_HealthEndpoint(t *testing.T) {

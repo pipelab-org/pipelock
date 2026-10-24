@@ -324,7 +324,7 @@ func TestMCPTaintDiagnostics_WedgedSinkBoundsGoroutinesAndCountsEveryContext(t *
 		for range 10000 {
 			now = now.Add(listenerDegradationReportInterval)
 			states.reportTaint(w, opts, nil, "listener_stateless")
-			mcpTaintBlockMessage(taintDecision{}, w)
+			mcpTaintBlockMessage(taintDecision{}, w, opts)
 		}
 	}()
 	select {

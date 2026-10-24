@@ -73,6 +73,7 @@ type Metrics struct {
 	sessionAutoDeescalations *prometheus.CounterVec
 	chainDetections          *prometheus.CounterVec
 	mcpTaintContexts         *prometheus.CounterVec
+	mcpTaintReportsSkipped   prometheus.Counter
 
 	// TLS interception (tls.go).
 	tlsInterceptTotal    *prometheus.CounterVec

@@ -9,11 +9,13 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
 
 type gatedWriter struct {
+	output  bytes.Buffer
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
@@ -22,7 +24,7 @@ type gatedWriter struct {
 func (w *gatedWriter) Write(p []byte) (int, error) {
 	w.once.Do(func() { close(w.entered) })
 	<-w.release
-	return len(p), nil
+	return w.output.Write(p)
 }
 
 func awaitDiagnostic(t *testing.T, done <-chan struct{}) {
@@ -37,37 +39,53 @@ func awaitDiagnostic(t *testing.T, done <-chan struct{}) {
 	}
 }
 
-func TestWriter_WedgedDiagnosticBoundsWorkAndDoesNotHoldOrdinaryOutput(t *testing.T) {
+// Only optional diagnostics may be skipped. Ordinary writes keep the synchronous
+// delivery contract, even while an optional write owns the sink.
+func TestWriter_WedgedDiagnosticBoundsWorkAndPreservesOrdinaryOutput(t *testing.T) {
 	sink := &gatedWriter{entered: make(chan struct{}), release: make(chan struct{})}
 	w := New(sink)
 	done := w.Emit("diagnostic")
-	defer func() { close(sink.release); awaitDiagnostic(t, done) }()
-	select {
-	case <-sink.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("diagnostic never entered sink")
+	released := false
+	defer func() {
+		if !released {
+			close(sink.release)
+		}
+		awaitDiagnostic(t, done)
+	}()
+	<-sink.entered
+	for range 10000 {
+		if w.Emit("discard while wedged") != nil {
+			t.Fatal("wedged writer admitted another diagnostic")
+		}
+	}
+	if w.Pending() != done {
+		t.Fatal("in-flight writer ownership changed")
 	}
 	completed := make(chan struct{})
 	go func() {
 		defer close(completed)
-		for range 10000 {
-			if w.Emit("discard while wedged") != nil {
-				t.Error("wedged writer admitted another diagnostic")
-				return
-			}
-			if n, err := w.Write([]byte("ordinary output")); err != nil || n != len("ordinary output") {
-				t.Errorf("best-effort write=%d,%v", n, err)
-				return
-			}
+		if n, err := w.Write([]byte("ordinary output")); n != len("ordinary output") || err != nil {
+			t.Errorf("ordinary write=%d,%v", n, err)
 		}
 	}()
 	select {
 	case <-completed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("optional I/O stalled a later log or submission")
+		t.Error("ordinary write falsely acknowledged before sink was released")
+	case <-time.After(50 * time.Millisecond):
 	}
-	if w.Pending() != done {
-		t.Fatal("in-flight writer ownership changed")
+	close(sink.release)
+	released = true
+	awaitDiagnostic(t, completed)
+	awaitDiagnostic(t, done)
+	if got := sink.output.String(); got != "diagnosticordinary output" {
+		t.Fatalf("ordinary output lost: %q", got)
+	}
+}
+
+func TestWriter_NilOrdinaryWriteIsNotAcknowledged(t *testing.T) {
+	var w *Writer
+	if n, err := w.Write([]byte("ordinary")); n != 0 || !errors.Is(err, syscall.EINVAL) {
+		t.Fatalf("nil ordinary write=%d,%v, want 0, EINVAL", n, err)
 	}
 }
 
@@ -146,13 +164,13 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 		t.Fatal("blocking write lost error")
 	}
 	var nilWriter *Writer
-	if n, err := nilWriter.WriteBlocking([]byte("ignored")); n != 7 || err != nil {
+	if n, err := nilWriter.WriteBlocking([]byte("ignored")); n != 0 || !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("nil blocking write=%d,%v", n, err)
 	}
 	if New(nil) != nil || nilWriter.Emit("ignored") != nil || nilWriter.Pending() != nil {
 		t.Fatal("nil sink was not inert")
 	}
-	if n, err := nilWriter.Write([]byte("ignored")); n != 7 || err != nil {
+	if n, err := nilWriter.Write([]byte("ignored")); n != 0 || !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("nil write=%d,%v", n, err)
 	}
 }

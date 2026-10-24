@@ -75,7 +75,7 @@ func reportMCPTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, bindin
 func reportMCPTaintStartup(w *diaglog.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) {
 	var b strings.Builder
 	reportMCPTaint(&b, opts, rec, binding)
-	if done := w.Emit(b.String()); done != nil {
+	if done := emitMCPTaintReport(w, opts, b.String()); done != nil {
 		select {
 		case <-done:
 		case <-time.After(logFlushGrace):
@@ -85,9 +85,9 @@ func reportMCPTaintStartup(w *diaglog.Writer, opts MCPProxyOpts, rec session.Rec
 
 // mcpTaintBlockMessage follows adaptive diagnostics: detail to the operator,
 // the original stable reason to the JSON-RPC client.
-func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
+func mcpTaintBlockMessage(decision taintDecision, logW io.Writer, opts MCPProxyOpts) string {
 	if logW != nil {
-		diaglog.New(logW).Emit(fmt.Sprintf("pipelock: taint refusal (%s); recovery: %s\n", decision.Result.Reason, config.MCPTaintRecoveryGuidance))
+		emitMCPTaintReport(diaglog.New(logW), opts, fmt.Sprintf("pipelock: taint refusal (%s); recovery: %s\n", decision.Result.Reason, config.MCPTaintRecoveryGuidance))
 	}
 	return "pipelock: " + decision.Result.Reason
 }
@@ -95,16 +95,32 @@ func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
 // reportTaint reuses the listener's bounded aggregation contract. Metrics still
 // count each context even when this listener-wide log interval is suppressed.
 func (s *mcpListenerClientStates) reportTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) bool {
-	count, emit := s.taintReporter.observe()
-	var b strings.Builder
-	var renderW io.Writer
-	if emit && w != nil {
-		renderW = &b
+	// Count every context independently of whether an optional report is admitted.
+	reportMCPTaint(nil, opts, rec, binding)
+	return s.taintReporter.observeIf(func(count uint64) bool {
+		if w == nil {
+			return false
+		}
+		var b strings.Builder
+		if count > 1 {
+			_, _ = fmt.Fprintf(&b, "pipelock: MCP taint listener contexts since last report=%d (see pipelock_mcp_taint_contexts_total)\n", count)
+		}
+		renderOpts := opts
+		renderOpts.Metrics = nil // Rendering must not count the same context twice.
+		reportMCPTaint(&b, renderOpts, rec, binding)
+		return emitMCPTaintReport(diaglog.New(w), opts, b.String()) != nil
+	})
+}
+
+// Admission never waits for I/O. Nil sinks disable output; busy sinks count a
+// skipped report, without treating context metrics as delivery acknowledgements.
+func emitMCPTaintReport(w *diaglog.Writer, opts MCPProxyOpts, message string) <-chan struct{} {
+	if w == nil || message == "" {
+		return nil
 	}
-	if count > 1 && renderW != nil {
-		_, _ = fmt.Fprintf(renderW, "pipelock: MCP taint listener contexts since last report=%d (see pipelock_mcp_taint_contexts_total)\n", count)
+	done := w.Emit(message)
+	if done == nil {
+		opts.Metrics.RecordMCPTaintReportSkipped()
 	}
-	reportMCPTaint(renderW, opts, rec, binding)
-	diaglog.New(w).Emit(b.String())
-	return emit
+	return done
 }

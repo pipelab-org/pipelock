@@ -4,7 +4,8 @@
 package runtime
 
 import (
-	"strings"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,32 +15,42 @@ import (
 )
 
 type taintRuntimeWriter struct {
+	output  syncBuffer
 	entered chan struct{}
 	release chan struct{}
 	once    sync.Once
 }
 
 func (w *taintRuntimeWriter) Write(p []byte) (int, error) {
-	if strings.Contains(string(p), "pipelock: diagnostic:") {
-		w.once.Do(func() { close(w.entered) })
-		<-w.release
-	}
-	return len(p), nil
+	w.once.Do(func() { close(w.entered) })
+	<-w.release
+	return w.output.Write(p)
 }
 
 func TestMCPTaintDiagnostics_BlockedLogDoesNotHoldReload(t *testing.T) {
 	w := &taintRuntimeWriter{entered: make(chan struct{}), release: make(chan struct{})}
-	s, _ := newTestServer(t, func(opts *ServerOpts) { opts.Stderr = w })
+	// Isolate installed bundles: their pre-existing version warnings are ordinary
+	// output, which must retain its synchronous behavior even on a wedged sink.
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "pipelock.yaml")
+	if err := os.WriteFile(cfgPath, []byte("mode: balanced\nrules:\n  rules_dir: "+dir+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newTestServer(t, func(opts *ServerOpts) { opts.ConfigFile = cfgPath })
 	s.runtimeMode = config.RuntimeForwardWithMCPListener
-	s.opts.Stderr = &reloadDiagnosticProbe{Writer: diaglog.New(s.opts.Stderr), t: t, lock: &s.reloadMu}
-	next := s.proxy.CurrentConfig().Clone()
+	probe := &reloadDiagnosticProbe{Writer: diaglog.New(w), t: t, lock: &s.reloadMu, ordinary: make(chan struct{})}
+	s.opts.Stderr = probe
+	next, _ := s.proxy.CurrentConfig().ResolveRuntime(config.RuntimeResolveOpts{Mode: s.runtimeMode})
 	next.KillSwitch.Enabled = true
 
 	done := make(chan error, 1)
 	active := true
+	released := false
 	go func() { done <- s.Reload(next) }()
 	defer func() {
-		close(w.release)
+		if !released {
+			close(w.release)
+		}
 		if active {
 			select {
 			case <-done:
@@ -70,20 +81,38 @@ func TestMCPTaintDiagnostics_BlockedLogDoesNotHoldReload(t *testing.T) {
 		t.Fatal("diagnostic I/O still owns reloadMu")
 	}
 	s.reloadMu.Unlock()
-	// A second reload must complete while the first diagnostic is still wedged.
+	// An existing ordinary reload warning must wait for a truly stalled stderr,
+	// just as the synchronous writer did before optional diagnostics existed.
 	next = s.proxy.CurrentConfig().Clone()
-	next.Logging.IncludeAllowed = !next.Logging.IncludeAllowed
+	next.MetricsListen = "127.0.0.1:0"
 	s.lastReloadAt = time.Time{}
 	active = true
 	go func() { done <- s.Reload(next) }()
+	select {
+	case <-probe.ordinary:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second reload did not attempt its ordinary warning")
+	}
+	select {
+	case err := <-done:
+		active = false
+		t.Fatalf("ordinary reload warning falsely completed while sink stalled: %v", err)
+	default:
+	}
+	close(w.release)
+	released = true
 	select {
 	case err := <-done:
 		active = false
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("next reload held by prior diagnostic")
+	case <-time.After(5 * time.Second):
+		t.Fatal("reload did not resume after sink recovered")
+	}
+
+	if !w.output.contains("metrics_listen changed") {
+		t.Fatalf("ordinary reload warning lost: %s", w.output.String())
 	}
 	if !s.killswitch.IsActive() {
 		t.Fatal("second reload weakened kill switch")
@@ -105,8 +134,10 @@ func waitRuntimeTaintDiagnostic(t *testing.T, w *diaglog.Writer) {
 // diagnostic goroutine happens to run.
 type reloadDiagnosticProbe struct {
 	*diaglog.Writer
-	t    *testing.T
-	lock *sync.Mutex
+	t        *testing.T
+	lock     *sync.Mutex
+	ordinary chan struct{}
+	once     sync.Once
 }
 
 func (w *reloadDiagnosticProbe) DiagnosticWriter() *diaglog.Writer {
@@ -116,4 +147,9 @@ func (w *reloadDiagnosticProbe) DiagnosticWriter() *diaglog.Writer {
 		w.lock.Unlock()
 	}
 	return w.Writer
+}
+
+func (w *reloadDiagnosticProbe) Write(p []byte) (int, error) {
+	w.once.Do(func() { w.t.Logf("ordinary reload write: %s", p); close(w.ordinary) })
+	return w.Writer.Write(p)
 }

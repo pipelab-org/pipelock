@@ -628,7 +628,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked by taint policy",
 			ErrorCode:      -32002,
-			ErrorMessage:   mcpTaintBlockMessage(eval.TaintDecision, taintLogW),
+			ErrorMessage:   mcpTaintBlockMessage(eval.TaintDecision, taintLogW, opts),
 		}
 		return result
 	}

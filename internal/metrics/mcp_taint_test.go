@@ -37,3 +37,32 @@ func TestMCPTaintContextMetrics_ZeroValue(t *testing.T) {
 	}()
 	(&Metrics{}).RecordMCPTaintContext("listener_principal", "inactive")
 }
+
+func TestMCPTaintReportSkippedMetrics(t *testing.T) {
+	var absent *Metrics
+	absent.RecordMCPTaintReportSkipped()
+	(&Metrics{}).RecordMCPTaintReportSkipped()
+	m := New()
+	for want := 0; want < 3; want++ {
+		if body := scrapeMetrics(t, m); !strings.Contains(body, fmt.Sprintf("pipelock_mcp_taint_reports_skipped_total %d\n", want)) {
+			t.Fatalf("missing skipped report count %d", want)
+		}
+		m.RecordMCPTaintReportSkipped()
+	}
+}
+
+func TestMCPTaintReportSkippedMetrics_UninitializedIsSafe(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		m    *Metrics
+	}{{"nil", nil}, {"zero", &Metrics{}}} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() != nil {
+					t.Error("uninitialized skipped counter did not remain inert")
+				}
+			}()
+			tc.m.RecordMCPTaintReportSkipped()
+		})
+	}
+}
