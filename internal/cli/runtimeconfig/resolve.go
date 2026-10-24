@@ -24,7 +24,19 @@ func ResolveAndReportConfig(cfg *config.Config, opts config.RuntimeResolveOpts, 
 	}
 	resolved, info := cfg.ResolveRuntime(opts)
 	EmitResolveInfoLogs(w, info, modeLabel)
+	EmitMCPTaintDiagnostics(w, resolved, opts.Mode)
 	return resolved, info
+}
+
+// EmitMCPTaintDiagnostics reports MCP prerequisites at startup and reload.
+// Forward-only and one-shot scan commands have no MCP session to diagnose.
+func EmitMCPTaintDiagnostics(w io.Writer, cfg *config.Config, mode config.RuntimeMode) {
+	if w == nil || !mode.WrapsMCP() {
+		return
+	}
+	for _, diagnostic := range cfg.MCPTaintDiagnostics() {
+		_, _ = fmt.Fprintf(w, "pipelock: diagnostic: %s: %s\n", diagnostic.Field, diagnostic.Message)
+	}
 }
 
 // EmitResolveInfoLogs writes the operator-facing notices that correspond to the

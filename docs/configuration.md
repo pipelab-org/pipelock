@@ -1921,6 +1921,8 @@ On the HTTP reverse listener, authenticated requests use persistent state owned 
 
 Protocol revision `2026-07-28` does not use `initialize` or protocol sessions. Each authenticated request uses the configured listener bearer or credentials resolved by the verifier, and principal-owned protection begins on the first authenticated request. No Pipelock-specific response header is required. `Mcp-Session-Id`, `_meta.clientInfo`, forwarded client-IP headers, routing names, and other client-declared values never select or rekey authenticated principal state; `Mcp-Session-Id` remains the isolated legacy compatibility partition when `listener_require_state_token` is omitted or false.
 
+Anonymous current-protocol listener calls are request-local only. Cross-request taint protection is **not active**, even when taint is enabled and a session store exists. A later call cannot use exposure history from an earlier anonymous call. Use verified caller identity and successful persistent recorder admission for workflows that need that history. The opt-in identity requirement refuses anonymous calls before forwarding; a taint trust override cannot lift that identity refusal. A shared listener bearer gives all its holders one principal, not separate identities. The verifier-backed resolver is an integration interface; this does not imply a built-in OAuth or mTLS verifier.
+
 Current HTTP requests carry `Mcp-Method` and, where applicable, `Mcp-Name` plus schema-selected `Mcp-Param-*` mirrors. Pipelock checks the standard routing headers against the body before forwarding. When tool scanning accepts a `tools/list` response for an authenticated principal, Pipelock records valid `x-mcp-header` contracts and checks each recognized parameter mirror against the exact body argument path. Missing, duplicate, malformed, or mismatched recognized mirrors fail locally. A contract from a warned or invalid definition is not trusted. Its parameter headers remain transparent intermediary data for protocol compatibility, but their raw and decoded values are always scanned. Base64 is transport encoding, not secrecy; do not mark credentials or personal data with `x-mcp-header`.
 
 When `listener_require_state_token` is `true` and a request has neither an authenticated principal nor a Pipelock-issued session token, Pipelock performs its request-local scan and then refuses the request before it reaches the upstream. It does not silently remove the configured control. The omitted default is `false`, so existing MCP HTTP clients that do not perform the Pipelock handshake keep working; set the field to `true` to require a principal or token. Pure request scanning, tool-poison scanning, upstream-scoped tool drift, and network-grade denial-of-wallet remain usable without a principal.
@@ -3981,6 +3983,10 @@ Profile lifecycle: `observe` → `learn` → `ratify` → `locked`. Enforcement 
 
 Classifies each session by how recently it observed untrusted content and escalates scrutiny on protected operations. Under `strict` or `balanced`, a session that fetched untrusted content from a non-allowlisted source is evaluated before it edits a file under `*/auth/*`: a protected write returns `PolicyAsk` when authority is below `AuthorityUserExact`, and `PolicyAllow` with exact user authority. An allowlisted source does not raise taint, and hostile taint returns `PolicyBlock` for sensitive actions. Under `permissive` the taint is still recorded and the operation is allowed (`taint_permissive_observe_only`), so that policy observes without restricting. Runs across fetch, forward proxy, reverse proxy, WebSocket, MCP stdio, MCP HTTP/SSE, and A2A.
 
+MCP history requires an active taint recorder. Standalone `pipelock mcp proxy` creates its session store only with `session_profiling.enabled: true`; taint enabled alone doesn't create one. Subprocess stdio and stdio-to-HTTP/WS upstreams use invocation-scoped, in-memory state. Listener state uses authenticated principals or the legacy session partition described above. These scopes don't promise persistence across process restarts or state expiry/eviction. Startup/request logs report the actual recorder's taint-state support; `pipelock doctor`, `explain mcp-response`, and the dashboard report configuration prerequisites without claiming live coverage.
+
+For subprocess stdio, content origin is **undeclared**. Clean responses default to `internal_generated`; that label doesn't establish that the content was generated locally or is trustworthy. The embedding API's `TaintExternalSource` option can declare external content, but `mcp proxy` has no corresponding CLI flag. HTTP/SSE and WS upstreams declare external content by default. `taint.trusted_mcp_servers` accepts risk for future clean responses from the resolved server; it doesn't clear existing hostile history, and prompt-injection hits can still raise hostile taint. No classification default changes based on these diagnostics.
+
 ```yaml
 taint:
   enabled: true                        # default: true
@@ -4067,12 +4073,9 @@ taint without any taint-policy enforcement while tuning a deployment, set
 `taint.policy: permissive`; other scanners such as DLP and response scanning
 keep their configured enforcement behavior.
 
-When taint policy returns `decision: "ask"`, Pipelock can only prompt an
-operator if it was started with an interactive terminal. The prompt appears in
-the terminal running Pipelock and accepts allow/block input. In headless
-deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
-fails closed and blocks; configure an allowlist, a narrow trust override, or
-`taint.policy: permissive` during tuning, then retry the request.
+When taint policy returns `decision: "ask"`, Pipelock needs an available terminal approver. MCP stdio carries JSON-RPC on stdin, so inline terminal approval is unavailable, including when bridging to HTTP/WS upstreams. Without a terminal approver, `ask` fails closed. A hostile `block` doesn't consult inline approval. For existing hostile history, the taint blocking path consults scoped `taint.trust_overrides`, or a runtime task boundary/grant on a mutable identity session. A source allowlist or trusted-server change affects future clean observations only. Deferred tool approvals aren't recovery for a taint refusal.
+
+Admin task boundaries and runtime trust grants reject invocation-scoped MCP sessions. A task boundary clears the mutable identity session's taint and task grants; it must represent a real task change, not an approval for one pending action. Configured action/source overrides accept risk only within their matching scope and expiry; they don't remove taint or override another scanner or identity gate. MCP source observations have no origin URL, so a `source_match` filter cannot match them. Use only an action-scoped override whose actual action references match if that risk is acceptable; adding server names to a URL filter won't make it effective.
 
 ### Trust overrides
 

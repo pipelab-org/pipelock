@@ -453,6 +453,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
 	}, nil, "listener")
 	runtimeconfig.EmitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
+	runtimeconfig.EmitMCPTaintDiagnostics(opts.Stderr, cfg, runtimeMode)
 	if err := s.reportStartupRuleBundleResult(cfg, bundleResult); err != nil {
 		s.cleanup()
 		return nil, err

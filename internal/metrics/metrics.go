@@ -72,6 +72,7 @@ type Metrics struct {
 	adaptiveSessionsCurrent  *adaptiveSessionGauge
 	sessionAutoDeescalations *prometheus.CounterVec
 	chainDetections          *prometheus.CounterVec
+	mcpTaintContexts         *prometheus.CounterVec
 
 	// TLS interception (tls.go).
 	tlsInterceptTotal    *prometheus.CounterVec
@@ -272,6 +273,7 @@ func New() *Metrics {
 	m.registerEvidenceMetrics(reg)
 	m.registerRuleBundleMetrics(reg)
 	m.registerSIEMForwarderMetrics(reg)
+	m.registerMCPTaintMetrics(reg)
 	m.auditSinkCollector = newAuditSinkCollector()
 	reg.MustRegister(m.auditSinkCollector)
 

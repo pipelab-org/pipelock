@@ -898,7 +898,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
 				ErrorCode:      -32002,
-				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
+				ErrorMessage:   mcpTaintRefusalMessage(taintDecision),
 			}, blockedCh)
 			_ = emitToolReceipt(config.ActionBlock)
 			continue

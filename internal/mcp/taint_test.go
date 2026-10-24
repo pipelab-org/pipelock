@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -292,7 +293,7 @@ func TestScanHTTPInput_TaintProtectedWriteRequiresApproval(t *testing.T) {
 	if blocked == nil {
 		t.Fatal("expected taint policy to block without approval")
 	}
-	if blocked.ErrorMessage != "pipelock: protected_write_after_untrusted_external_exposure" {
+	if !strings.HasPrefix(blocked.ErrorMessage, "pipelock: protected_write_after_untrusted_external_exposure;") {
 		t.Fatalf("error = %q", blocked.ErrorMessage)
 	}
 }

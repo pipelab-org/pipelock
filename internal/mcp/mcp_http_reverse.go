@@ -705,6 +705,23 @@ func RunHTTPListenerProxy(
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
 		principalStateAdmissionDenied := statefulControls && listenerPrincipal.key != "" && !stateBound
+		taintBinding := "listener_stateless"
+		switch {
+		case listenerPrincipal.key != "":
+			taintBinding = "listener_principal"
+		case stateBound && listenerSessionToken != "":
+			taintBinding = "listener_token"
+		case stateBound && r.Header.Get("Mcp-Session-Id") != "":
+			taintBinding = "listener_legacy"
+		}
+		if clientState != nil {
+			diagnosticOpts := requestBaseOpts
+			// Stateless enforcement options deliberately omit taint. Report the
+			// operator's live setting separately from recorder availability.
+			diagnosticOpts.TaintCfg = opts.taintCfg()
+			diagnosticOpts.TaintCfgFn = nil
+			reportMCPTaint(safeLogW, diagnosticOpts, clientState.recorder, taintBinding)
+		}
 		listenerStateAuditKey := func() string {
 			if requireStateToken || principalBound {
 				return listenerAuditSessionKey("", clientStateKey)

@@ -761,6 +761,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())
+	runtimeconfig.EmitMCPTaintDiagnostics(s.opts.Stderr, newCfg, s.runtimeMode)
 	publishDegradedRuleBundleMetrics(s.metrics, newCfg)
 	if reloadErr := s.proxy.LoadCertCache(newCfg); reloadErr != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),

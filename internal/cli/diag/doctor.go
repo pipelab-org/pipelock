@@ -178,6 +178,12 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		})
 	}
 	report.Checks = append(report.Checks, checkDoctorConfigSemantics(cfg)...)
+	for _, diagnostic := range cfg.MCPTaintDiagnostics() {
+		report.Checks = append(report.Checks, doctorReportCheck{
+			Name: diagnostic.Field, Surface: doctorSurfaceMCP, Status: doctorStatusWarn,
+			Configured: cfg.Taint.Enabled, Detail: diagnostic.Message,
+		})
+	}
 	report.Checks = append(report.Checks, checkDoctorAvailableKnobs(cfg)...)
 	report.Summary = retallyDoctorSummary(report.Checks)
 	return report

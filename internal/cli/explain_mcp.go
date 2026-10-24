@@ -327,6 +327,10 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	}
 	action := cfg.MCPResponseActionForServer(serverName)
 	report.TrustClass = trust
+	for _, diagnostic := range cfg.MCPTaintDiagnostics() {
+		report.Notes = append(report.Notes, diagnostic.Field+": "+diagnostic.Message)
+	}
+	report.Notes = append(report.Notes, "This one-shot response explanation has no live recorder or caller history; it cannot decide whether a later action will be refused by taint policy.")
 
 	// Scan with NO suppression so explain reports what WOULD be detected; the
 	// remediation then names the suppress entry that lifts a blocking untrusted

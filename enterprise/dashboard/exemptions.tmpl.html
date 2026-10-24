@@ -203,6 +203,12 @@
         </section>
 
         <section class="section">
+          <h2>MCP taint diagnostics</h2>
+          <p class="muted">Configuration guidance; live recorder allocation and caller binding are unproven here.</p>
+          {{range .Inventory.Diagnostics}}<p><code>{{.Field}}</code>: {{.Message}}</p>{{end}}
+        </section>
+
+        <section class="section">
           <h2>Attention</h2>
           {{if .Inventory.Attention}}
             <div class="attention">
