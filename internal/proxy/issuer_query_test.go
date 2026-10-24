@@ -570,8 +570,8 @@ func TestIssuerQueryDigestIsByteExact(t *testing.T) {
 }
 
 // An authorization server issues its state value in a redirect's Location
-// header with an empty body. Only a same-origin redirect from a delivered
-// 3xx response issues it.
+// header with an empty body. Delivered redirects, creation responses and
+// accepted upload responses can issue same-origin URLs through Location.
 func TestIssuerQueryRedirectLocation(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.TLSInterception.Enabled = true
@@ -594,11 +594,17 @@ func TestIssuerQueryRedirectLocation(t *testing.T) {
 		delivered bool
 		want      bool
 	}{
+		{"same-origin 201", http.StatusCreated, "/u/login?state=" + value, true, true},
+		{"same-origin 202", http.StatusAccepted, "/u/login?state=" + value, true, true},
 		{"same-origin 302", http.StatusFound, "/u/login?state=" + value, true, true},
 		{"absolute same-origin 303", http.StatusSeeOther, "https://login.vendor.example/u/login?state=" + value, true, true},
+		{"foreign 201", http.StatusCreated, "https://other.vendor.example/u/login?state=" + value, true, false},
+		{"foreign 202", http.StatusAccepted, "https://other.vendor.example/u/login?state=" + value, true, false},
+		{"undelivered 202", http.StatusAccepted, "/u/login?state=" + value, false, false},
 		{"foreign redirect", http.StatusFound, "https://other.vendor.example/u/login?state=" + value, true, false},
 		{"not delivered", http.StatusFound, "/u/login?state=" + value, false, false},
-		{"non-redirect status", http.StatusOK, "/u/login?state=" + value, true, false},
+		{"error status", http.StatusNotFound, "/u/login?state=" + value, true, false},
+		{"non-issuing status", http.StatusOK, "/u/login?state=" + value, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p.issuerCookieRuntime.Load().query = newIssuerQueryStore()

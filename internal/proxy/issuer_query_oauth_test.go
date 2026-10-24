@@ -212,6 +212,8 @@ func TestOAuthRedirectBindingScope(t *testing.T) {
 		{name: "different callback host", status: http.StatusFound, location: "https://evil.vendor.example/auth/callback?code=" + code, want: false},
 		{name: "different callback port", status: http.StatusFound, location: "https://app.vendor.example:8443/auth/callback?code=" + code, want: false},
 		{name: "cleartext callback", status: http.StatusFound, location: "http://app.vendor.example/auth/callback?code=" + code, want: false},
+		{name: "201 is not an OAuth redirect", status: http.StatusCreated, location: callback + "?code=" + code, want: false},
+		{name: "202 is not an OAuth redirect", status: http.StatusAccepted, location: callback + "?code=" + code, want: false},
 		{name: "non-redirect status", status: http.StatusOK, location: callback + "?code=" + code, want: false},
 		{name: "not delivered", status: http.StatusFound, location: callback + "?code=" + code, undelivered: true, want: false},
 		{name: "value not in the redirect", status: http.StatusFound, location: callback + "?code=other", want: false},

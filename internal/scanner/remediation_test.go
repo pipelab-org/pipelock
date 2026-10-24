@@ -1004,3 +1004,27 @@ func TestMCPRemediationReasonPrerequisites(t *testing.T) {
 		})
 	}
 }
+
+func TestQueryEntropyHintChangingPaths(t *testing.T) {
+	for _, reason := range []string{
+		`high entropy query param "_state" (5.58 > 4.50 threshold)`,
+		`nested URL in query parameter "next": high entropy query param "_state"`,
+		`high entropy query key "opaque"`,
+		`nested URL in query parameter "next": high entropy query key "opaque"`,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			hint := OperatorHintForResult(ScannerEntropy, reason)
+			for _, want := range []string{
+				"For a blocked query value at a stable endpoint path",
+				"query_entropy_param_exclusions",
+				"not future paths with new upload UUIDs or other changing segments",
+				"query_entropy_exclusions",
+				"broader host-wide fallback",
+			} {
+				if !strings.Contains(hint, want) {
+					t.Errorf("hint %q missing %q", hint, want)
+				}
+			}
+		})
+	}
+}
