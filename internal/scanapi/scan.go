@@ -321,6 +321,10 @@ func (h *Handler) scanPromptInjection(ctx context.Context, cfg *config.Config, s
 	}
 	if result.Clean {
 		resp.Decision = DecisionAllow
+		if len(result.WarnedMatches) > 0 {
+			resp.Decision = DecisionWarn
+			resp.Findings = warnedInjectionFindings(result)
+		}
 	} else {
 		resp.Decision = DecisionDeny
 		resp.Findings = injectionFindings(result, req.Options)
@@ -437,6 +441,13 @@ func (h *Handler) scanToolCall(
 	}
 	if len(injResult.Matches) > 0 {
 		resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
+	}
+	if len(injResult.WarnedMatches) > 0 {
+		// Global warn-only wording findings only escalate allow to warn.
+		if resp.Decision == DecisionAllow {
+			resp.Decision = DecisionWarn
+		}
+		resp.Findings = append(resp.Findings, warnedInjectionFindings(injResult)...)
 	}
 
 	// Stage 3: Policy check.
@@ -556,6 +567,21 @@ func injectionFindings(result scanner.ResponseScanResult, opts *RequestOptions) 
 		// and does not reliably map to original input bytes.
 		_ = opts // intentionally unused for injection evidence
 		findings = append(findings, f)
+	}
+	return findings
+}
+
+// warnedInjectionFindings reports wording matches that the global
+// prompt_injection_detection warn-only policy withheld from enforcement.
+func warnedInjectionFindings(result scanner.ResponseScanResult) []Finding {
+	findings := make([]Finding, 0, len(result.WarnedMatches))
+	for _, m := range result.WarnedMatches {
+		findings = append(findings, Finding{
+			Scanner:  "prompt_injection",
+			RuleID:   "INJ-" + m.PatternName,
+			Severity: "medium",
+			Message:  "Prompt injection pattern matched (warn-only): " + m.PatternName,
+		})
 	}
 	return findings
 }

@@ -458,14 +458,24 @@ func evidenceFromInjection(result scanner.ResponseScanResult, cfgAction string) 
 	if result.Failed() {
 		return []Evidence{{Scanner: scanner.DecideStructuralLabel, Detail: "response scan failed: " + result.ScanError, Action: config.ActionBlock}}
 	}
+	// Global warn-only wording findings are advisory evidence: they surface to
+	// the user without enforcing, and never carry the matched text.
+	var ev []Evidence
+	for _, m := range result.WarnedMatches {
+		ev = append(ev, Evidence{
+			Scanner: scanner.DecideInjectionLabel,
+			Pattern: m.PatternName,
+			Detail:  "prompt_injection_detection: warn-only",
+			Action:  config.ActionWarn,
+		})
+	}
 	if result.Clean {
-		return nil
+		return ev
 	}
 	action := cfgAction
 	if action == "" {
 		action = config.ActionBlock // fail-closed default
 	}
-	var ev []Evidence
 	for _, m := range result.Matches {
 		ev = append(ev, Evidence{
 			Scanner: scanner.DecideInjectionLabel,

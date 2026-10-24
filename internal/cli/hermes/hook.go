@@ -183,6 +183,11 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: scanner startup failed: %v", err)))
 	}
 	defer sc.Close()
+	// Global warn-only wording findings never change the decision; report
+	// them by pattern name so warn-only is not silent.
+	sc.SetInjectionWarnHook(func(_ context.Context, names []string) {
+		_, _ = fmt.Fprintf(stderr, "pipelock: warning: warn-only prompt-injection wording match: %s\n", strings.Join(names, ", "))
+	})
 
 	decision := evaluate(ctx, sc, &event)
 	for _, warning := range decision.warnings {
