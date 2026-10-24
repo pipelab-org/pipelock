@@ -267,14 +267,14 @@ func (pre toolPrescan) credentialRequestAttribution() credentialRequestAttributi
 	return attributeWithNorm(pre.text, pre.norm, pre.spans)
 }
 
-func prescanTool(cfg *ToolScanConfig, tool ToolDef) toolPrescan {
+func prescanTool(cfg *ToolScanConfig, tool ToolDef, wording bool) toolPrescan {
 	text, spans := toolScanTextOrdered(tool, cfg.textOrder())
 	pre := toolPrescan{text: text, spans: spans}
 	if text != "" {
 		pre.norm = normalize.ForToolText(text)
-		pre.poison = checkToolPoison(pre.norm)
+		pre.poison = checkToolPoisonWithWording(pre.norm, wording)
 		pre.spacedNorm = normalize.ForToolTextSpaced(text)
-		pre.spacedPoison = spacedOnlyToolPoison(pre.spacedNorm, pre.norm, pre.poison)
+		pre.spacedPoison = spacedOnlyToolPoison(pre.spacedNorm, pre.norm, pre.poison, wording)
 	}
 	return pre
 }
@@ -282,17 +282,17 @@ func prescanTool(cfg *ToolScanConfig, tool ToolDef) toolPrescan {
 // checkSpacedToolPoison returns the tool-poison findings of the spaced view
 // of text that are not already in found, the findings of its stripped view.
 func checkSpacedToolPoison(text, norm string, found []string) []string {
-	return spacedOnlyToolPoison(normalize.ForToolTextSpaced(text), norm, found)
+	return spacedOnlyToolPoison(normalize.ForToolTextSpaced(text), norm, found, true)
 }
 
 // spacedOnlyToolPoison returns the tool-poison findings of spaced, the spaced
 // view, that are not already in found, the findings of norm.
-func spacedOnlyToolPoison(spaced, norm string, found []string) []string {
+func spacedOnlyToolPoison(spaced, norm string, found []string, wording bool) []string {
 	if spaced == norm {
 		return nil
 	}
 	var extra []string
-	for _, name := range checkToolPoison(spaced) {
+	for _, name := range checkToolPoisonWithWording(spaced, wording) {
 		if !slices.Contains(found, name) {
 			extra = append(extra, name)
 		}
@@ -1241,6 +1241,8 @@ const toolPoisonKeywords = `IMPORTANT|CRITICAL|SYSTEM|INSTRUCTION|SECRET|HIDDEN|
 // "Send ~/.aws/credentials" blocked.
 const handoverRequestFinding = "Credential Request Directive"
 
+const dangerousCapabilityFinding = "Dangerous Capability"
+
 // handoverRequestVerb is the base-form imperative a poisoned description uses
 // to ask the agent to hand over secret material. Third-person forms
 // ("provides", "supplies") are deliberately absent: they describe what a
@@ -1360,7 +1362,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		re:   regexp.MustCompile(`(?i)(instead\s+of|rather\s+than|don't\s+use|never\s+use|always\s+prefer)\s+(using\s+)?(the\s+)?\w+\s+(tool|function|command)`),
 	},
 	{
-		name: "Dangerous Capability",
+		name: dangerousCapabilityFinding,
 		// Detects tools that describe executing local files, scripts, or commands.
 		// Standalone "script"/"file" require a determiner (a/the/any) to avoid
 		// false positives on "Execute the deployment script" or "Run the build
@@ -1381,7 +1383,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		),
 	},
 	{
-		name: "Dangerous Capability",
+		name: dangerousCapabilityFinding,
 		// Detects tools that download from URLs then execute the result.
 		// Requires "it"/"them" after the execute verb to avoid false positives
 		// on "Fetch data and run the analysis" where fetch and run act on
@@ -1389,7 +1391,7 @@ var toolPoisonPatterns = []*compiledToolPattern{
 		re: regexp.MustCompile(`(?i)(download|fetch|retriev)\w*\s+.{0,60}(execut|run|launch)\w*\s+(?:it|them)\b`),
 	},
 	{
-		name: "Dangerous Capability",
+		name: dangerousCapabilityFinding,
 		// Detects tools that instruct calling external commands via tool chain.
 		// Catches "call the bash tool to run: curl", "use the shell tool to execute",
 		// and similar patterns where a tool description directs the agent to invoke
@@ -1479,8 +1481,8 @@ var directiveParamPattern = regexp.MustCompile(
 // scan path reads neither the top-level suppress list nor response-scanning
 // server trust. The only operator controls are mcp_tool_scanning.action (warn
 // instead of block) and mcp_tool_scanning.enabled, and the latter turns off
-// every tool-poison check. The global prompt_injection_detection switch also
-// disables or caps wording findings before adaptive enforcement. The per-surface
+// every tool-poison check. Parameter-name checks are independent of the global
+// prompt_injection_detection wording switch. The per-surface
 // warn action alone is not a stable remedy while adaptive enforcement is on:
 // each warned finding records a near-miss, and enough of
 // them escalate the session until the same list is blocked. The one built-in
@@ -2217,8 +2219,15 @@ func parseToolsList(result json.RawMessage) ([]ToolDef, error) {
 
 // checkToolPoison runs tool-specific poisoning patterns against normalized text.
 func checkToolPoison(text string) []string {
+	return checkToolPoisonWithWording(text, true)
+}
+
+func checkToolPoisonWithWording(text string, wording bool) []string {
 	var findings []string
 	for _, p := range toolPoisonPatterns {
+		if !wording && p.name != dangerousCapabilityFinding {
+			continue
+		}
 		// FindStringIndex on the remaining suffix has FindAll's non-overlap
 		// semantics without allocating an index slice for every match.
 		for offset := 0; offset < len(text); {
@@ -2738,14 +2747,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	responseAckRefused := false
 	for i, tool := range tools {
 		_, hasAck := findCredentialAck(cfg, tool.Name)
-		if sc.PromptInjectionMode() != config.ActionAllow || hasAck {
-			prescans[i] = prescanTool(cfg, tool)
-		} else {
-			// Keep definition text for independent drift hashing without running
-			// wording regexes. Explicit acknowledgment bindings still validate.
-			text, spans := toolScanTextOrdered(tool, cfg.textOrder())
-			prescans[i] = toolPrescan{text: text, spans: spans}
-		}
+		prescans[i] = prescanTool(cfg, tool, sc.PromptInjectionMode() != config.ActionAllow || hasAck)
 		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
 			ackOutcomes[i] = outcome
 			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
@@ -2761,7 +2763,6 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
 			hasFinding = true
 		}
-		structuralPoisonCount := len(match.ToolPoison)
 
 		// Extract param names once for both text scanning and drift tracking.
 		var paramNames []string
@@ -2772,6 +2773,16 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 		pre := prescans[toolIndex]
 		text := pre.text
+
+		// Capability rules describe executable behavior rather than instructions
+		// to the agent. They retain the tool scanner's action in every mode.
+		for _, findings := range [][]string{pre.poison, pre.spacedPoison} {
+			if slices.Contains(findings, dangerousCapabilityFinding) && !slices.Contains(match.ToolPoison, dangerousCapabilityFinding) {
+				match.ToolPoison = append(match.ToolPoison, dangerousCapabilityFinding)
+				hasFinding = true
+			}
+		}
+		structuralPoisonCount := len(match.ToolPoison)
 
 		// Explicit acknowledgment bindings still refuse stale or invalid entries
 		// even when the operator disables wording detection.
@@ -2791,8 +2802,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			poison := slices.Clone(pre.poison)
-			spacedPoison := slices.Clone(pre.spacedPoison)
+			isCapability := func(name string) bool { return name == dangerousCapabilityFinding }
+			poison := slices.DeleteFunc(slices.Clone(pre.poison), isCapability)
+			spacedPoison := slices.DeleteFunc(slices.Clone(pre.spacedPoison), isCapability)
 			hasRequest := pre.hasCredentialRequest()
 			// A configured entry is evaluated whether or not its finding is
 			// still present: a reviewed tool whose wording changed or was
@@ -2833,64 +2845,6 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				match.ToolPoison = append(match.ToolPoison, poison...)
 				hasFinding = true
 			}
-
-			// Exfiltration + context-leak param patterns: run per-param to avoid
-			// false positives from action words in the description pairing with
-			// sensitive targets in unrelated parameters. Each param is checked
-			// against both patterns; the first match per pattern is reported.
-			var exfilHit, contextHit bool
-			directiveHit := len(directiveKeys) > 0
-			if directiveHit {
-				match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
-				hasFinding = true
-			}
-			for _, name := range paramNames {
-				if exfilHit && contextHit && directiveHit {
-					break
-				}
-				expanded := normalize.ForToolText(expandParamName(name))
-				if !directiveHit && directiveParamPattern.MatchString(expanded) {
-					match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
-					hasFinding = true
-					directiveHit = true
-				}
-				if !exfilHit && exfilParamPattern.MatchString(expanded) {
-					match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
-					hasFinding = true
-					exfilHit = true
-				}
-				if !contextHit && !isOrdinaryContextLeakIdentifier(name) && contextLeakParamPattern.MatchString(expanded) {
-					match.ToolPoison = append(match.ToolPoison, "Context-Leak Parameter Name")
-					hasFinding = true
-					contextHit = true
-				}
-			}
-
-			// Community rule bundle extra-poison patterns.
-			if cfg != nil && len(cfg.ExtraPoison) > 0 {
-				name := tool.Name
-				desc := extractToolRuleDescriptionText(tool)
-				normName := [2]string{normalize.ForToolText(name), normalize.ForToolTextSpaced(name)}
-				normDesc := [2]string{normalize.ForToolText(desc), normalize.ForToolTextSpaced(desc)}
-				for _, ep := range cfg.ExtraPoison {
-					if ep == nil || ep.Re == nil || ep.Name == "" {
-						continue
-					}
-					var target [2]string
-					switch ep.ScanField {
-					case "name":
-						target = normName
-					case "", "description":
-						target = normDesc
-					default:
-						continue
-					}
-					if ep.Re.MatchString(target[0]) || ep.Re.MatchString(target[1]) {
-						match.ToolPoison = append(match.ToolPoison, ep.Name)
-						hasFinding = true
-					}
-				}
-			}
 		}
 
 		// The operator cap applies only to wording findings, before drift
@@ -2902,6 +2856,72 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: wording})
 			match.ToolPoison = match.ToolPoison[:structuralPoisonCount]
 			hasFinding = len(match.ToolPoison) > 0 || len(match.Injection) > 0 || (match.CredentialAck != "" && match.CredentialAck != CredentialAckAcknowledged)
+		}
+
+		// Exfiltration + context-leak param patterns: run per-param to avoid
+		// false positives from action words in the description pairing with
+		// sensitive targets in unrelated parameters. Each param is checked
+		// against both patterns; the first match per pattern is reported.
+		var exfilHit, contextHit bool
+		directiveHit := len(directiveKeys) > 0
+		if directiveHit {
+			match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
+			hasFinding = true
+		}
+		for _, name := range paramNames {
+			if exfilHit && contextHit && directiveHit {
+				break
+			}
+			expanded := normalize.ForToolText(expandParamName(name))
+			if !directiveHit && directiveParamPattern.MatchString(expanded) {
+				match.ToolPoison = append(match.ToolPoison, "Directive Parameter Name")
+				hasFinding = true
+				directiveHit = true
+			}
+			if !exfilHit && exfilParamPattern.MatchString(expanded) {
+				match.ToolPoison = append(match.ToolPoison, "Exfiltration Parameter Name")
+				hasFinding = true
+				exfilHit = true
+			}
+			if !contextHit && !isOrdinaryContextLeakIdentifier(name) && contextLeakParamPattern.MatchString(expanded) {
+				match.ToolPoison = append(match.ToolPoison, "Context-Leak Parameter Name")
+				hasFinding = true
+				contextHit = true
+			}
+		}
+
+		// Community rule bundle extra-poison patterns.
+		if cfg != nil && len(cfg.ExtraPoison) > 0 {
+			name := tool.Name
+			desc := extractToolRuleDescriptionText(tool)
+			normName := [2]string{normalize.ForToolText(name), normalize.ForToolTextSpaced(name)}
+			normDesc := [2]string{normalize.ForToolText(desc), normalize.ForToolTextSpaced(desc)}
+			for _, ep := range cfg.ExtraPoison {
+				if ep == nil || ep.Re == nil || ep.Name == "" {
+					continue
+				}
+				var target [2]string
+				switch ep.ScanField {
+				case "name":
+					target = normName
+				case "", "description":
+					if sc.PromptInjectionMode() == config.ActionAllow {
+						continue
+					}
+					target = normDesc
+				default:
+					continue
+				}
+				if ep.Re.MatchString(target[0]) || ep.Re.MatchString(target[1]) {
+					if ep.ScanField != "name" && sc.PromptInjectionMode() == config.ActionWarn {
+						sc.ReportInjectionWarnings(context.Background(), []string{ep.Name})
+						observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: []string{ep.Name}})
+						continue
+					}
+					match.ToolPoison = append(match.ToolPoison, ep.Name)
+					hasFinding = true
+				}
+			}
 		}
 
 		// Drift detection (rug pull).

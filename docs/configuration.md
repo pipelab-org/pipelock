@@ -1162,7 +1162,9 @@ trust is tracked separately from wording suspicion. Warn-only also produces no
 injection-driven taint. DLP, including the core credential floor, and destination
 controls still protect traffic leaving the machine through Pipelock. SSRF, tool
 policy, tool drift and structural checks, contracts, action limits, and the kill
-switch retain their existing behavior. Browser shield structural protections
+switch retain their existing behavior. Tool-name rules, dangerous-capability
+checks and parameter-name checks keep using `mcp_tool_scanning.action`, including
+when wording detection is off or warn-only. Browser shield structural protections
 also remain active. That includes `browser_shield.strip_hidden_traps`, which
 removes hidden HTML and SVG elements and comments that contain instruction words such
 as "ignore" or "instruction"; this setting does not change it. Set
