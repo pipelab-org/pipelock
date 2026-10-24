@@ -82,7 +82,7 @@ jobs:
             tags: ''
           - name: enterprise
             tags: enterprise
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
         # 1.26.10 is the floor and mirrors the pin already verified in ci.yaml's
         # govulncheck job. It includes the crypto/x509 fix for GO-2026-6809.
         # Keep this pin in lockstep with that job. The matrix guard checks only

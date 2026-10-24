@@ -256,7 +256,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -540,14 +540,14 @@ jobs:
       fail-fast: false
       # Size for GitHub Team's 60 standard concurrent jobs:
       # https://docs.github.com/en/actions/reference/limits#job-concurrency-limits-for-github-hosted-runners
-      # Two 20-shard race matrices get 10 slots each (two waves). The PR also
+      # Two 21-shard race matrices get 10 slots each (three waves). The PR also
       # has 22 unit shards and 23 companion jobs, plus up to 16 jobs in other
       # PR workflows. Those short jobs can queue initially; after they drain,
       # the 20 race slots leave 40 for other PRs to make progress. Re-size if
       # the plan limit, job counts, or ordinary PR workload (~52 jobs) changes.
       max-parallel: 10
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -622,7 +622,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -712,14 +712,14 @@ jobs:
       fail-fast: false
       # Size for GitHub Team's 60 standard concurrent jobs:
       # https://docs.github.com/en/actions/reference/limits#job-concurrency-limits-for-github-hosted-runners
-      # Two 20-shard race matrices get 10 slots each (two waves). The PR also
+      # Two 21-shard race matrices get 10 slots each (three waves). The PR also
       # has 22 unit shards and 23 companion jobs, plus up to 16 jobs in other
       # PR workflows. Those short jobs can queue initially; after they drain,
       # the 20 race slots leave 40 for other PRs to make progress. Re-size if
       # the plan limit, job counts, or ordinary PR workload (~52 jobs) changes.
       max-parallel: 10
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

@@ -61,7 +61,7 @@ HEAVY_TREES = {
 # single shard named after the tree.
 TEST_SPLITS = {
     "proxy": 5,
-    "scanner": 3,
+    "scanner": 4,
     "mcp": 6,
     "runtime": 2,
 }
