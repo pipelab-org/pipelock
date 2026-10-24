@@ -1099,10 +1099,7 @@ Key-free evidence capture:
 			}
 			defer auditLogger.Close()
 			wirePromptInjectionAudit(sc, auditLogger)
-			logPromptInjectionPolicy(cfg, auditLogger)
-			if notice := cfg.PromptInjectionNotice(); notice != "" {
-				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: "+notice)
-			}
+			announcePromptInjectionPolicy(cfg, auditLogger, cmd.ErrOrStderr())
 			upstreamDialContext := verifiedDialContext(
 				mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc }),
 				launchIdentity,

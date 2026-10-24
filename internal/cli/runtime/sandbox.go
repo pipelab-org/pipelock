@@ -188,6 +188,10 @@ Examples:
 
 			m := metrics.New()
 			logger := audit.NewNop() // standalone sandbox uses stderr, not structured audit
+			// No structured audit sink here: disclose the policy and report
+			// warn-only wording observations on stderr instead.
+			announcePromptInjectionPolicy(cfg, nil, cmd.ErrOrStderr())
+			wirePromptInjectionStderr(sc, cmd.ErrOrStderr())
 
 			// Build the proxy once, share across connections.
 			p, pErr := proxy.New(cfg, logger, sc, m)

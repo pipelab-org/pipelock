@@ -21,6 +21,19 @@ func (s *Scanner) SetInjectionWarnHook(hook InjectionWarnHook) {
 	s.injectionWarnHook.Store(&hook)
 }
 
+// ForwardInjectionWarnings reports this scanner's wording observations through
+// parent's hook, read at report time. A derived scanner, such as a per-agent
+// profile, then reaches the runtime audit sink whichever order the hooks were
+// installed in. Warn-only must never become silent for derived scanners.
+func (s *Scanner) ForwardInjectionWarnings(parent *Scanner) {
+	if s == nil || parent == nil || parent == s {
+		return
+	}
+	s.SetInjectionWarnHook(func(ctx context.Context, names []string) {
+		parent.ReportInjectionWarnings(ctx, names)
+	})
+}
+
 // PromptInjectionMode is the immutable wording policy of this scanner snapshot.
 func (s *Scanner) PromptInjectionMode() string {
 	if s == nil || s.injectionMode == "" {

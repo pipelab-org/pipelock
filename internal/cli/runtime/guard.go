@@ -148,6 +148,8 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 		return fmt.Errorf("create guard audit logger: %w", err)
 	}
 	defer logger.Close()
+	wirePromptInjectionAudit(sc, logger)
+	announcePromptInjectionPolicy(runtimeCfg, logger, opts.Stderr)
 
 	guardMetrics := metrics.New()
 	baseCtx := ctxOrBackground(opts.Context)

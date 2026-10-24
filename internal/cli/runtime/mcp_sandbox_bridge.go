@@ -141,6 +141,7 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	bridge.scanner.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(opts.AuditLogger, opts.Metrics, opts.ReceiptEmitter, ctx, patternName, severity)
 	})
+	wirePromptInjectionAudit(bridge.scanner, opts.AuditLogger)
 
 	proxyOptions := []proxy.Option{
 		proxy.WithKillSwitch(opts.KillSwitch),

@@ -100,6 +100,9 @@ func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner)
 		if err != nil {
 			return nil, fmt.Errorf("agent %q scanner: %w", name, err)
 		}
+		if len(fallbackScanners) > 0 {
+			sc.ForwardInjectionWarnings(fallbackScanners[0])
+		}
 		bt := NewBudgetTracker(&profile.Budget)
 
 		// BudgetTracker → BudgetChecker interface.
