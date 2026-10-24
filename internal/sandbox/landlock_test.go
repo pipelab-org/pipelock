@@ -115,6 +115,14 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// addNestedReparentingGrants nests a writable grant inside a read-only grant
+// and a read-only grant inside the workspace. Landlock rights accumulate down
+// the tree, so the nested read-only grant stays writable.
+func addNestedReparentingGrants(policy *Policy, root string) {
+	policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Join(root, "readonly/rw"))
+	policy.AllowReadDirs = append(policy.AllowReadDirs, filepath.Join(root, "workspace/ro"))
+}
+
 // runLandlockTestChild is executed in the sandboxed child process.
 func runLandlockTestChild(op string) {
 	workspace := os.Getenv("SANDBOX_WORKSPACE")
@@ -129,6 +137,7 @@ func runLandlockTestChild(op string) {
 		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Join(root, "writable"))
 		policy.AllowReadDirs = append(policy.AllowReadDirs, filepath.Join(root, "readonly"))
 		policy.AllowRWFiles = append(policy.AllowRWFiles, filepath.Join(root, "files/source"))
+		addNestedReparentingGrants(&policy, root)
 	}
 	var status LayerStatus
 	var err error

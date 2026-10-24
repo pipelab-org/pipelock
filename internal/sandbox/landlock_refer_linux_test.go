@@ -74,18 +74,23 @@ func reparentingCases() []reparentingCase {
 		{name: "hard link from read-only grant", source: "readonly/source", target: "workspace/target", link: true},
 		{name: "rename from writable file grant", source: "files/source", target: "workspace/target"},
 		{name: "hard link from writable file grant", source: "files/source", target: "workspace/target", link: true},
+		{name: "nested writable grant rename into workspace", source: "readonly/rw/source", target: "workspace/d/target", allow: true},
+		{name: "rename from nested writable grant to read-only parent", source: "readonly/rw/source", target: "readonly/target"},
+		{name: "hard link from read-only parent into nested writable grant", source: "readonly/source", target: "readonly/rw/target", link: true},
+		{name: "rename nested writable grant root", source: "readonly/rw", target: "workspace/rw"},
+		{name: "read-only grant inside workspace hard link", source: "workspace/ro/source", target: "workspace/d/target", link: true, allow: true},
 	}
 }
 
 func reparentingFixture(t *testing.T) (string, Policy) {
 	t.Helper()
 	root := t.TempDir()
-	for _, dir := range []string{"workspace/d", "workspace/other", "writable", "readonly", "outside", "files"} {
+	for _, dir := range []string{"workspace/d", "workspace/other", "workspace/ro", "writable", "readonly/rw", "outside", "files"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, dir := range []string{"workspace", "writable", "readonly", "files"} {
+	for _, dir := range []string{"workspace", "workspace/ro", "writable", "readonly", "readonly/rw", "files"} {
 		if err := os.WriteFile(filepath.Join(root, dir, "source"), []byte("fixture"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -94,6 +99,7 @@ func reparentingFixture(t *testing.T) (string, Policy) {
 	policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Join(root, "writable"))
 	policy.AllowReadDirs = append(policy.AllowReadDirs, filepath.Join(root, "readonly"))
 	policy.AllowRWFiles = append(policy.AllowRWFiles, filepath.Join(root, "files/source"))
+	addNestedReparentingGrants(&policy, root)
 	return root, policy
 }
 
