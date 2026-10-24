@@ -22,7 +22,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -1769,9 +1768,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW, finishDiagnostics := diaglog.Scope(logW)
-	defer finishDiagnostics()
-	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_subprocess")
+	safeLogW := &syncWriter{w: logW}
 
 	// Restrict child process environment to safe variables only.
 	// Prevents leaking secrets from the proxy's environment to the MCP server.

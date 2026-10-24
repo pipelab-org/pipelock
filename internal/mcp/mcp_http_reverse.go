@@ -30,7 +30,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -196,8 +195,7 @@ func RunHTTPListenerProxy(
 	// startup race. A launcher can still exit before this first syscall; closing
 	// that earlier window needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	safeLogW, finishDiagnostics := diaglog.Scope(logW)
-	defer finishDiagnostics()
+	safeLogW := &syncWriter{w: logW}
 	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)
@@ -707,29 +705,6 @@ func RunHTTPListenerProxy(
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
 		principalStateAdmissionDenied := statefulControls && listenerPrincipal.key != "" && !stateBound
-		taintBinding := "listener_stateless"
-		switch {
-		case listenerPrincipal.key != "":
-			taintBinding = "listener_principal"
-		case stateBound && requireStateToken:
-			taintBinding = "listener_token"
-		case stateBound && r.Header.Get("Mcp-Session-Id") != "":
-			taintBinding = "listener_legacy"
-		}
-		if clientState != nil {
-			diagnosticOpts := requestBaseOpts
-			// Stateless enforcement options deliberately omit taint. Report the
-			// operator's live setting separately from recorder availability.
-			diagnosticOpts.TaintCfg = opts.taintCfg()
-			diagnosticOpts.TaintCfgFn = nil
-			// Request-local evidence is discarded after an unbound request. It
-			// cannot justify an active cross-request recording observation.
-			taintRec := clientState.recorder
-			if !stateBound {
-				taintRec = nil
-			}
-			requestBaseOpts.taintRecoveryLogSuppressed = !listenerClients.reportTaint(safeLogW, diagnosticOpts, taintRec, taintBinding)
-		}
 		listenerStateAuditKey := func() string {
 			if requireStateToken || principalBound {
 				return listenerAuditSessionKey("", clientStateKey)

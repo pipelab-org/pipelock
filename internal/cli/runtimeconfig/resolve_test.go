@@ -9,9 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -109,15 +106,7 @@ func TestResolveAndReportConfig_MCPCompatibility(t *testing.T) {
 	cfg := loadConfigYAML(t, "mcp_input_scanning: {enabled: false}\nmcp_tool_scanning: {enabled: false, action: null}\nmcp_tool_policy: {enabled: false}\n")
 	for _, mode := range []config.RuntimeMode{config.RuntimeMCPProxy, config.RuntimeForwardWithMCPListener, config.RuntimeMCPScan, config.RuntimeForward} {
 		var stderr bytes.Buffer
-		w := diaglog.New(&stderr)
-		resolved, _ := ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{Mode: mode}, w, "test")
-		if done := w.Pending(); done != nil {
-			select {
-			case <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatal("diagnostic did not finish")
-			}
-		}
+		resolved, _ := ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{Mode: mode}, &stderr, "test")
 		for _, warning := range cfg.MCPCompatibilityWarnings() {
 			if !strings.Contains(stderr.String(), warning.Message) {
 				t.Fatalf("startup omitted warning: %s", stderr.String())

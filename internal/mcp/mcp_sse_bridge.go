@@ -105,7 +105,7 @@ func startGETStream(
 	ctx context.Context,
 	httpClient *transport.HTTPClient,
 	safeClientOut *syncWriter,
-	safeLogW io.Writer,
+	safeLogW *syncWriter,
 	opts MCPProxyOpts,
 	tracker *RequestTracker,
 	wg *sync.WaitGroup,

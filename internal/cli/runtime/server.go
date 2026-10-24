@@ -23,7 +23,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
@@ -251,11 +250,9 @@ type Server struct {
 	// refresh. proxy.Reload has its own lock, but that only covers lower-level
 	// pointer publication; the server-level gates also depend on s.stateMu-backed
 	// mirrors such as mcpToolExtraPoison.
-	finishDiagnostics     func() // closes only the stderr owner constructed here
-	taintReloadDiagnostic string // guarded by reloadMu
-	reloadMu              sync.Mutex
-	reloadOutcome         proxy.ReloadOutcome // guarded by reloadMu
-	reloadDurablePending  bool                // Conductor owns final success until durable activation
+	reloadMu             sync.Mutex
+	reloadOutcome        proxy.ReloadOutcome // guarded by reloadMu
+	reloadDurablePending bool                // Conductor owns final success until durable activation
 
 	stateMu            sync.RWMutex
 	toolPolicyCfg      *policy.Config
@@ -277,8 +274,14 @@ func (s *Server) constructScanner(cfg *config.Config) (*scanner.Scanner, error) 
 // startup log path) cannot interleave or race a shared bytes.Buffer when
 // tests substitute one.
 type stderrSyncWriter struct {
-	*diaglog.Writer
-	w io.Writer
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *stderrSyncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
 }
 
 // NewServer validates opts, loads config, applies CLI overrides, and builds
@@ -289,14 +292,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = io.Discard
 	}
-	diagnostics, finishDiagnostics := diaglog.Scope(opts.Stderr)
-	constructed := false
-	defer func() {
-		if !constructed {
-			finishDiagnostics()
-		}
-	}()
-	opts.Stderr = &stderrSyncWriter{Writer: diagnostics, w: opts.Stderr}
+	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
 	startupVerification, stopStartupProgress := startupVerificationOptions(opts)
 	defer stopStartupProgress()
 	if opts.Stdout == nil {
@@ -393,7 +389,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 
 	s := &Server{
 		opts:                      opts,
-		finishDiagnostics:         finishDiagnostics,
 		hasMCPListen:              hasMCPListen,
 		containmentManaged:        containmentManagedRuntime(),
 		containmentMetricsDenyLog: rate.NewLimiter(rate.Every(time.Second), 5),
@@ -458,7 +453,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		DefaultToolPolicyRules: policy.DefaultToolPolicyRules,
 	}, nil, "listener")
 	runtimeconfig.EmitResolveInfoLogs(opts.Stderr, resolveInfo, "listener")
-	runtimeconfig.EmitMCPTaintDiagnostics(diaglog.New(opts.Stderr), cfg, runtimeMode)
 	if err := s.reportStartupRuleBundleResult(cfg, bundleResult); err != nil {
 		s.cleanup()
 		return nil, err
@@ -815,7 +809,6 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		}
 	}
 
-	constructed = true
 	return s, nil
 }
 

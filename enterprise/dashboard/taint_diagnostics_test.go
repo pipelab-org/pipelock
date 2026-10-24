@@ -8,6 +8,7 @@ package dashboard
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -25,6 +26,9 @@ func TestDashboardMCPTaintDiagnostics_RenderedWithoutRawValues(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/exemptions", nil))
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(html.UnescapeString(w.Body.String()), config.MCPTaintRecoveryGuidance) {
+		t.Error("dashboard recovery guidance differs from configuration")
 	}
 	for _, want := range []string{"MCP taint diagnostics", "taint.mcp_recorder", "taint.mcp_listener", "taint.mcp_origin", "taint.mcp_recovery", "cross-request taint protection is NOT active", "live recorder allocation and caller binding are unproven"} {
 		if !strings.Contains(w.Body.String(), want) {

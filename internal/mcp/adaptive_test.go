@@ -504,7 +504,7 @@ func startListenerProxyWithStore(
 	inputCfg *InputScanConfig,
 	store session.Store,
 	adaptiveCfg *config.AdaptiveEnforcement,
-) (string, context.CancelFunc, *syncBuffer) {
+) (string, context.CancelFunc, *bytes.Buffer) {
 	t.Helper()
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -513,7 +513,7 @@ func startListenerProxyWithStore(
 	}
 	addr := ln.Addr().String()
 
-	var logBuf syncBuffer
+	var logBuf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Wrap static adaptiveCfg in a function for the AdaptiveConfigFunc parameter.

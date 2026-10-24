@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // Known gap: anonymous stateless callers have no cross-request taint history.
@@ -67,5 +68,14 @@ func TestAnonymousStatelessListener_NoCrossRequestTaint_Baseline(t *testing.T) {
 				t.Fatal("expected anonymous compatibility calls to reach the upstream with taint enabled")
 			}
 		})
+	}
+}
+
+// This documents the existing undeclared-origin default, not verified provenance.
+func TestStdioUndeclaredOrigin_InternalGenerated_Baseline(t *testing.T) {
+	opts := MCPProxyOpts{}
+	observation := session.ClassifyMCPResponseObservation(mcpTaintSourceKind, opts.mcpResponseTaintExternal(), false)
+	if observation.Source.Level != session.TaintInternalGenerated {
+		t.Fatalf("level %s", observation.Source.Level)
 	}
 }

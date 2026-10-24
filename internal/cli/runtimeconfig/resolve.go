@@ -6,10 +6,8 @@ package runtimeconfig
 import (
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 )
 
 // ResponseScanningMCPDisabledWarning is the single operator-facing notice for
@@ -26,28 +24,7 @@ func ResolveAndReportConfig(cfg *config.Config, opts config.RuntimeResolveOpts, 
 	}
 	resolved, info := cfg.ResolveRuntime(opts)
 	EmitResolveInfoLogs(w, info, modeLabel)
-	EmitMCPTaintDiagnostics(diaglog.New(w), resolved, opts.Mode)
 	return resolved, info
-}
-
-// EmitMCPTaintDiagnostics reports MCP prerequisites at startup and reload.
-// Forward-only and one-shot scan commands have no MCP session to diagnose.
-func EmitMCPTaintDiagnostics(w *diaglog.Writer, cfg *config.Config, mode config.RuntimeMode) {
-	if w != nil {
-		w.TryWrite(RenderMCPTaintDiagnostics(cfg, mode))
-	}
-}
-
-// RenderMCPTaintDiagnostics prepares immutable operator text without I/O.
-func RenderMCPTaintDiagnostics(cfg *config.Config, mode config.RuntimeMode) string {
-	if cfg == nil || !mode.WrapsMCP() {
-		return ""
-	}
-	var b strings.Builder
-	for _, diagnostic := range cfg.MCPTaintDiagnostics() {
-		_, _ = fmt.Fprintf(&b, "pipelock: diagnostic: %s: %s\n", diagnostic.Field, diagnostic.Message)
-	}
-	return b.String()
 }
 
 // EmitResolveInfoLogs writes the operator-facing notices that correspond to the

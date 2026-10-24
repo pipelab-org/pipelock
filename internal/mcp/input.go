@@ -22,7 +22,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -276,7 +275,6 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
-	logW = diaglog.New(logW)
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch
@@ -900,7 +898,7 @@ func ForwardScannedInput(
 				IsNotification: isRPCNotification(verdict.ID),
 				LogMessage:     fmt.Sprintf("pipelock: input line %d: blocked by taint policy", lineNum),
 				ErrorCode:      -32002,
-				ErrorMessage:   mcpTaintBlockMessage(taintDecision, logW, opts),
+				ErrorMessage:   "pipelock: " + taintDecision.Result.Reason,
 			}, blockedCh)
 			_ = emitToolReceipt(config.ActionBlock)
 			continue

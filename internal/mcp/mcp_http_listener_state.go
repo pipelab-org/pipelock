@@ -85,7 +85,6 @@ type mcpListenerClientStates struct {
 	resetAuthorityToolCfgFn func() *tools.ToolScanConfig
 	degradationReporter     mcpListenerDegradationReporter
 	resetDecisionReporter   mcpListenerDegradationReporter
-	taintReporter           mcpListenerDegradationReporter
 	principalSecret         [32]byte
 	principalSecretErr      error
 	activeBearer            [32]byte
@@ -126,15 +125,6 @@ func newMCPListenerDegradationReporter(interval time.Duration, now func() time.T
 // after each interval, returning the count since the last emission. The
 // counter saturates rather than wrapping.
 func (r *mcpListenerDegradationReporter) observe() (uint64, bool) {
-	var count uint64
-	admitted := r.observeIf(func(n uint64) bool { count = n; return true })
-	return count, admitted
-}
-
-// observeIf consumes the reporting window only after non-blocking admission.
-// submit must not perform I/O or wait for sink ownership. A refused submission
-// retains the aggregate so the next request can retry immediately.
-func (r *mcpListenerDegradationReporter) observeIf(submit func(uint64) bool) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.pending != ^uint64(0) {
@@ -142,14 +132,12 @@ func (r *mcpListenerDegradationReporter) observeIf(submit func(uint64) bool) boo
 	}
 	now := r.now()
 	if !r.lastReported.IsZero() && now.Sub(r.lastReported) < r.interval {
-		return false
+		return 0, false
 	}
-	if !submit(r.pending) {
-		return false
-	}
+	count := r.pending
 	r.pending = 0
 	r.lastReported = now
-	return true
+	return count, true
 }
 
 func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
@@ -159,7 +147,6 @@ func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 		upstreamToolBaseline:  tools.NewToolBaseline(),
 		degradationReporter:   newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 		resetDecisionReporter: newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
-		taintReporter:         newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 		now:                   time.Now,
 	}
 	_, states.principalSecretErr = rand.Read(states.principalSecret[:])

@@ -17,7 +17,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -72,7 +71,6 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
 func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) (result httpInputDecision) {
-	logW = diaglog.New(logW)
 	// Strip any inbound com.pipelock/mediation from _meta before
 	// parsing, scanning, or forwarding. Prevents an agent (or compromised
 	// upstream that managed to send back through the listener) from
@@ -619,16 +617,12 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		denialAudit = mcpTaintDenialAudit()
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock
-		taintLogW := logW
-		if opts.taintRecoveryLogSuppressed {
-			taintLogW = nil
-		}
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked by taint policy",
 			ErrorCode:      -32002,
-			ErrorMessage:   mcpTaintBlockMessage(eval.TaintDecision, taintLogW, opts),
+			ErrorMessage:   "pipelock: " + eval.TaintDecision.Result.Reason,
 		}
 		return result
 	}

@@ -79,7 +79,7 @@ func (s *Server) setReloadWatcherState(state string) {
 // The returned value belongs to this call's transaction, never a later poll.
 func (s *Server) ReloadFile() proxy.ReloadOutcome {
 	s.reloadMu.Lock()
-	defer s.unlockReloadAndReport()
+	defer s.reloadMu.Unlock()
 	if !s.reloadOutcome.ReloadAvailable {
 		s.reloadOutcome.Trigger = "api"
 		s.reloadOutcome.Verdict = proxy.ReloadUnavailable

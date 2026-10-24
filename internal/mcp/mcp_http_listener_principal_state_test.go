@@ -246,9 +246,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *t
 		return adaptiveCfg
 	}
 	opts.Store = &listenerDiagnosisStore{}
-	cfg := config.Defaults()
-	opts.TaintCfg = &cfg.Taint
-	opts.Metrics = metrics.New()
 	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, opts)
 
 	holdOld.Store(true)
@@ -303,12 +300,6 @@ func TestHTTPListener_PrincipalState_RotatedBearerStateAdmissionFailsClosed(t *t
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("upstream calls = %d, want 1; state-capacity block must not forward", calls.Load())
-	}
-	if got := taintDiagnosticMetric(t, opts.Metrics, "listener_principal", "active"); got != "1" {
-		t.Errorf("rotated principal counted active=%s want 1", got)
-	}
-	if got := taintDiagnosticMetric(t, opts.Metrics, "listener_principal", "inactive"); got != "1" {
-		t.Errorf("retired principal inactive=%s want 1", got)
 	}
 }
 

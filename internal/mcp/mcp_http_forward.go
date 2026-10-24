@@ -18,7 +18,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -144,8 +143,7 @@ func RunHTTPProxy(
 	// syscall race; that needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW, finishDiagnostics := diaglog.Scope(logW)
-	defer finishDiagnostics()
+	safeLogW := &syncWriter{w: logW}
 	ctx, cancel, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer cancel()
 
@@ -189,7 +187,6 @@ func RunHTTPProxy(
 		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
-	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_http")
 
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
 	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys

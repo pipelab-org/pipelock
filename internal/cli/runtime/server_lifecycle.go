@@ -1439,7 +1439,7 @@ func (s *Server) handleConfigReload(event config.ReloadEvent) {
 	} else {
 		s.notifyReloadStatusLocked()
 	}
-	s.unlockReloadAndReport()
+	s.reloadMu.Unlock()
 
 	// Signal reload-cycle completion for tests (no-op in production). Fires per
 	// delivered config so reload tests can block on the event instead of polling

@@ -4,6 +4,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -73,5 +74,59 @@ func TestMCPTaintDiagnostics_ConfigAndReload(t *testing.T) {
 	var absent *Config
 	if absent.MCPTaintDiagnostics() != nil {
 		t.Fatal("nil config produced diagnostics")
+	}
+}
+
+func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
+	cfg := Defaults()
+	var guidance string
+	for _, d := range cfg.MCPTaintDiagnostics() {
+		if d.Field == "taint.mcp_recovery" {
+			guidance = d.Message
+		}
+	}
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Doctor, explain and the dashboard serve this canonical guidance. The docs
+	// must retain the same paragraph without implying a runtime log producer.
+	if guidance != MCPTaintRecoveryGuidance || guidance == "" || !strings.Contains(string(docs), guidance) {
+		t.Fatal("configuration recovery guidance and docs differ")
+	}
+	for _, want := range []string{"Every MCP session", "runtime trust grants are rejected for all", "action-scoped taint.trust_overrides entry without source_match", "pipelock run applies it on reload", "standalone pipelock mcp proxy reads taint config only at startup"} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("recovery omitted %q", want)
+		}
+	}
+}
+
+func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing.T) {
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(docs)), " ")
+	start := strings.Index(text, "### Common taint decisions")
+	end := strings.Index(text, "### Trust overrides")
+	if start < 0 || end <= start {
+		t.Fatal("common taint documentation missing")
+	}
+	section := text[start:end]
+	for _, want := range []string{
+		"the agent sends chat requests through the forward proxy",
+		"When taint policy returns `decision: \"ask\"`, Pipelock can only prompt an operator if it was started with an interactive terminal.",
+		"The prompt appears in the terminal running Pipelock and accepts allow/block input.",
+		"In headless deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask` fails closed and blocks; configure an allowlist, a narrow trust override, or `taint.policy: permissive` during tuning, then retry the request.",
+		"Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match)",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("common taint guidance omitted %q", want)
+		}
+	}
+	headless := strings.Index(section, "When taint policy returns")
+	mcp := strings.Index(section, MCPTaintRecoveryGuidance)
+	if headless < 0 || mcp <= headless {
+		t.Error("generic headless guidance must precede the unchanged MCP-specific paragraph")
 	}
 }

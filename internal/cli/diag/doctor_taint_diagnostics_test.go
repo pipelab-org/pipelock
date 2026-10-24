@@ -30,6 +30,13 @@ func TestDoctorMCPTaintDiagnostics_NoLiveCoverageClaim(t *testing.T) {
 				for _, c := range report.Checks {
 					if c.Name == d.Field {
 						found = true
+						wantSurface := doctorSurfaceMCP
+						if d.Field == "taint.mcp_recorder" {
+							wantSurface = doctorSurfaceConfig
+						}
+						if c.Surface != wantSurface {
+							t.Errorf("%s surface=%s want=%s", c.Name, c.Surface, wantSurface)
+						}
 						if c.Reachable || c.Enforcing || c.Configured != cfg.Taint.Enabled || c.Detail != d.Message {
 							t.Fatalf("configuration confused with live coverage: %+v", c)
 						}

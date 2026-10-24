@@ -17,7 +17,7 @@ func TestExplainMCPTaintDiagnostics_NoSessionPrediction(t *testing.T) {
 		t.Fatal(err)
 	}
 	notes := strings.Join(report.Notes, "\n")
-	for _, want := range []string{"taint.mcp_recorder:", "taint.mcp_listener:", "taint.mcp_origin:", "taint.mcp_recovery:", "no live recorder or caller history"} {
+	for _, want := range []string{"taint.mcp_recorder:", "taint.mcp_listener:", "taint.mcp_origin:", "taint.mcp_recovery:", "no live recorder or caller history", config.MCPTaintRecoveryGuidance} {
 		if !strings.Contains(notes, want) {
 			t.Errorf("explain omitted %q: %s", want, notes)
 		}

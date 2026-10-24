@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
@@ -105,9 +104,7 @@ func runProxyWithSandbox(ctx context.Context, sandboxCmd *exec.Cmd, start func()
 	defer recordMCPBaselineSample(opts, rec)
 
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW, finishDiagnostics := diaglog.Scope(logW)
-	defer finishDiagnostics()
-	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_subprocess")
+	safeLogW := &syncWriter{w: logW}
 
 	serverIn, err := sandboxCmd.StdinPipe()
 	if err != nil {
