@@ -413,7 +413,7 @@ func (rp *ReverseProxyHandler) emitRequiredReceiptWithEmitter(opts receipt.EmitO
 	}
 	if rp.cfgPtr != nil {
 		if cfg := rp.cfgPtr.Load(); cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, cfg)
 		}
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseIntent
@@ -472,7 +472,7 @@ func (rp *ReverseProxyHandler) emitOutcomeReceiptWithPattern(cfg *config.Config,
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = pattern
-	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	opts = withReceiptConfig(opts, cfg)
 	e := rp.receiptEmitter()
 	if e == nil {
 		return
@@ -514,7 +514,7 @@ func (rp *ReverseProxyHandler) emitReceiptWithEmitter(opts receipt.EmitOpts, e *
 	}
 	if rp.cfgPtr != nil {
 		if cfg := rp.cfgPtr.Load(); cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, cfg)
 		}
 	}
 	var err error
@@ -810,7 +810,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		if snap.cfg != nil {
-			opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, snap.cfg)
 		}
 		if rp.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -1577,7 +1577,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			Emit: func(opts receipt.EmitOpts) error {
 				opts = withReceiptShard(opts, selectedReceiptShard)
 				if snap.cfg != nil {
-					opts = withReceiptPolicyHash(opts, snap.cfg.CanonicalPolicyHash())
+					opts = withReceiptConfig(opts, snap.cfg)
 				}
 				return rp.emitRequestPolicyReceipt(opts)
 			},
@@ -1680,7 +1680,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		// no-op. Mirrors the forward/fetch/websocket required-allow call
 		// sites, which pre-apply the snapshot hash so a hot reload between
 		// admission and emit cannot bind the allow to a successor policy.
-		if err := rp.emitRequiredReceipt(withReceiptPolicyHash(reverseAllowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+		if err := rp.emitRequiredReceipt(withReceiptConfig(reverseAllowReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), blockedErr.layer, blockedErr.detail)
 			rp.metrics.RecordReverseProxyRequest(r.Method, "403")
@@ -1695,7 +1695,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	}
 	var outcomeTracker *reverseOutcomeTracker
 	if cfg.FlightRecorder.RequireReceipts {
-		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptPolicyHash(reverseAllowReceipt, cfg.CanonicalPolicyHash()))
+		outcomeTracker = newReverseOutcomeTracker(cfg, withReceiptConfig(reverseAllowReceipt, cfg))
 		defer outcomeTracker.EmitOnce(rp)
 	}
 	ctx = context.WithValue(r.Context(), ctxKeyReverseActionID, reverseActionID)
@@ -1961,7 +1961,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, receiptShardFromContext(r.Context()))
 		if cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, cfg)
 		}
 		if rp.emitRecordedReceipt(opts) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -2297,7 +2297,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, receiptShardFromContext(resp.Request.Context()))
 		if cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, cfg)
 		}
 		if opts.Verdict == config.ActionBlock && rp.emitRecordedReceipt(opts) {
 			if responseReceiptState != nil {
@@ -3654,7 +3654,7 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 			Agent:     agent,
 		}
 		if cfg, _ := r.Context().Value(ctxKeyReverseEnvelopeCfg).(*config.Config); cfg != nil {
-			opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+			opts = withReceiptConfig(opts, cfg)
 		}
 		if rp.emitRecordedReceipt(withReceiptShard(opts, receiptShardFromContext(r.Context()))) {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)

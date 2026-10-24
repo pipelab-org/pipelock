@@ -79,7 +79,7 @@ func (c *responseVerdictCache) put(key responseVerdictKey, size int, result Resp
 	// A suppressed or observed finding is evidence, even when the verdict is clean.
 	// It must be produced again for every request and can depend on time.
 	if size < 0 || size > responseVerdictMaxBody || !result.Clean || result.Failed() || len(result.Matches) != 0 ||
-		len(result.SuppressedMatches) != 0 || len(result.ObservedCoreMatches) != 0 || result.TransformedContent != "" {
+		len(result.WarnedMatches) != 0 || len(result.SuppressedMatches) != 0 || len(result.ObservedCoreMatches) != 0 || result.TransformedContent != "" {
 		return
 	}
 	c.mu.Lock()
@@ -111,6 +111,7 @@ func (c *responseVerdictCache) put(key responseVerdictKey, size int, result Resp
 
 func (s *Scanner) responsePatternRevision() [32]byte {
 	h := sha256.New()
+	writeCacheField(h, s.PromptInjectionMode())
 	writeCacheField(h, s.responseAction)
 	if s.responseEnabled {
 		writeCacheField(h, "enabled")

@@ -14,7 +14,7 @@ import (
 // configured family before the caller changes state or delivers bytes.
 func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
 	if cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
 		return p.emitAllowPathReceipt(cfg, opts)
@@ -27,7 +27,7 @@ func (p *Proxy) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpt
 
 func (rp *ReverseProxyHandler) confirmResponseDecision(cfg *config.Config, opts receipt.EmitOpts) error {
 	if cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	if cfg != nil && cfg.FlightRecorder.RequireReceipts {
 		return rp.emitAllowPathReceipt(cfg, opts)

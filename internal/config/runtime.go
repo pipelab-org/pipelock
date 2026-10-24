@@ -265,6 +265,14 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	clone := *c
+	if c.PromptInjectionDetection != nil {
+		p := *c.PromptInjectionDetection
+		if p.Enabled != nil {
+			enabled := *p.Enabled
+			p.Enabled = &enabled
+		}
+		clone.PromptInjectionDetection = &p
+	}
 	clone.lapsedScannerExceptions = slices.Clone(c.lapsedScannerExceptions)
 	clone.FetchProxy.Monitoring.PathEntropyExclusions = slices.Clone(c.FetchProxy.Monitoring.PathEntropyExclusions)
 	clone.FetchProxy.Monitoring.QueryEntropyParamExclusions = slices.Clone(c.FetchProxy.Monitoring.QueryEntropyParamExclusions)

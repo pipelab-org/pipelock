@@ -129,6 +129,15 @@ type canonicalPolicyView struct {
 
 func (c *Config) policySemanticView() canonicalPolicyView {
 	view := *c
+	switch c.PromptInjectionMode() {
+	case ActionAllow:
+		enabled := false
+		view.PromptInjectionDetection = &PromptInjectionDetection{Enabled: &enabled}
+	case ActionWarn:
+		view.PromptInjectionDetection = &PromptInjectionDetection{Action: ActionWarn}
+	default:
+		view.PromptInjectionDetection = nil
+	}
 
 	// Transport structs (FetchProxy, ForwardProxy, WebSocketProxy,
 	// ReverseProxy) stay in the canonical view because they carry

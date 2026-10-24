@@ -147,7 +147,7 @@ func (r *wsRelay) escalationLevel() int {
 }
 
 func (r *wsRelay) emitReceipt(opts receipt.EmitOpts) error {
-	return r.proxy.emitReceipt(withReceiptPolicyHash(withReceiptShard(opts, r.receiptShard), r.cfg.CanonicalPolicyHash()))
+	return r.proxy.emitReceipt(withReceiptConfig(withReceiptShard(opts, r.receiptShard), r.cfg))
 }
 
 func (r *wsRelay) resetCredentialAudienceAllows() {
@@ -315,7 +315,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitWebSocketReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -852,7 +852,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 		DeferBodyPredicate: true,
 	}); rpRes.Block {
@@ -1123,7 +1123,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptPolicyHash(admissionReceipt, cfg.CanonicalPolicyHash())); err != nil {
+		if err := p.emitRequiredReceipt(withReceiptConfig(admissionReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordWSBlocked()
@@ -1682,7 +1682,7 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 	in.Agent = r.agent
 	in.AuditCtx = newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})
 	in.Emit = func(opts receipt.EmitOpts) error {
-		return r.proxy.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, r.receiptShard), r.cfg.CanonicalPolicyHash()))
+		return r.proxy.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, r.receiptShard), r.cfg))
 	}
 	res := r.proxy.applyRequestPolicy(in)
 	if !res.Block {

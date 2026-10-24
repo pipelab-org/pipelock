@@ -580,6 +580,8 @@ func (e *Emitter) SignerKeyHex() string {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
+	promptInjectionModeSet bool
+	promptInjectionMode    string
 	// ShardIndex is selected once at admission and copied into later outcome,
 	// failure-marker, and v2 emissions. It is runtime-only, never signed JSON.
 	ShardIndex            int

@@ -1127,6 +1127,51 @@ Recommended rollout flow:
 4. Remove the `action` line (or set it to empty string) to revert the pattern to normal DLP enforcement semantics — the actual verdict then follows the transport-level DLP action and the session's `mode`/`enforce` state rather than being unconditionally block.
 5. Roll out the change through your normal config-review process.
 
+## Prompt-injection wording detection
+
+Regex wording detection is enabled by default. The global
+`prompt_injection_detection` setting applies to core wording rules, configured
+response patterns, request bodies, MCP responses and inputs, MCP tool
+descriptions, A2A, and browser response wording scans across mediated transports.
+It does not change the existing per-surface actions unless you select warn-only.
+
+To disable the wording family:
+
+```yaml
+prompt_injection_detection:
+  enabled: false
+```
+
+To retain wording observations without blocking, stripping, asking, or producing
+injection-driven taint:
+
+```yaml
+prompt_injection_detection:
+  action: warn
+```
+
+Omitting the section, or using `enabled: true` with `action: block`, preserves the
+existing per-surface policy. A missing, blank, or null `enabled` value means true.
+The action accepts `block` and `warn`; `block` preserves the existing surface
+action rather than forcing every surface to block. `enabled: false` takes
+precedence over the action.
+
+With wording detection disabled on local stdio MCP servers, no injection-driven
+taint is produced, so no prompt-injection protection remains there until source
+trust is tracked separately from wording suspicion. Warn-only also produces no
+injection-driven taint. DLP, including the core credential floor, and destination
+controls still protect traffic leaving the machine through Pipelock. SSRF, tool
+policy, tool drift and structural checks, contracts, action limits, and the kill
+switch retain their existing behavior. Browser shield structural protections
+also remain active.
+
+Startup logs, `pipelock doctor`, and `pipelock explain` disclose the selected
+coverage reduction. Audit logs record the selected policy and warn-only pattern
+names without matched content. Action receipts include the wording policy in
+existing signed reason fields; their schema is unchanged. Hot reload updates the
+scanner snapshot; strict-mode security downgrade checks still apply, so a
+weakening rejected on reload requires an explicit restart with the new config.
+
 ## Response Scanning
 
 Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection.

@@ -491,6 +491,10 @@ type Config struct {
 	LicenseFile              string                  `yaml:"license_file,omitempty"`                       // path to file containing the license token (read at startup)
 	LicenseCRLFile           string                  `yaml:"license_crl_file,omitempty" json:"-"`          // path to signed license revocation list (read at startup)
 	LicenseIntermediateFile  string                  `yaml:"license_intermediate_file,omitempty" json:"-"` // path to root-signed intermediate license-signing certificate
+
+	// Global wording policy; other scanner families remain independent.
+	PromptInjectionDetection *PromptInjectionDetection `yaml:"prompt_injection_detection,omitempty" json:",omitempty"`
+
 	// LicenseRequireIntermediate, when true, refuses any license that is not
 	// validated through a root-certified intermediate (the offline-root PKI
 	// tier). A *bool distinguishes omitted (nil -> env fallback, default false)

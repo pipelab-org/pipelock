@@ -151,7 +151,7 @@ func (p *Proxy) emitAllowPathReceipt(cfg *config.Config, opts receipt.EmitOpts) 
 		cfg = p.cfgPtr.Load()
 	}
 	if cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
@@ -254,7 +254,7 @@ func (rp *ReverseProxyHandler) emitAllowPathReceipt(cfg *config.Config, opts rec
 		cfg = rp.cfgPtr.Load()
 	}
 	if cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	e := rp.receiptEmitter()
 	if e == nil {

@@ -393,6 +393,7 @@ func mcpOutcomeReceiptOpts(opts receipt.EmitOpts, status string, bytesTransferre
 // record that event as a single-phase diagnostic so it cannot appear to close
 // an intent. Preserve the legacy single-chain outcome bytes.
 func emitMCPStandaloneStreamReceipt(proxyOpts MCPProxyOpts, logW io.Writer, opts receipt.EmitOpts, status, reason string) {
+	opts = proxyOpts.withReceiptPolicyHash(opts)
 	if proxyOpts.ReceiptGroup == nil {
 		emitMCPOutcomeReceipt(proxyOpts.receiptEmitter(), proxyOpts.v2ReceiptEmitter(), nil, logW, opts, status, -1, reason, proxyOpts.requireReceipts())
 		return
@@ -456,6 +457,7 @@ func mcpV2DecisionFromReceipt(opts receipt.EmitOpts) (proxydecision.Decision, bo
 		d.SelectorID = opts.ContractSelectorID
 		d.ContractGeneration = opts.ContractGeneration
 	}
+	d.RuleID = opts.PromptInjectionPattern(d.RuleID)
 	return d, true
 }
 

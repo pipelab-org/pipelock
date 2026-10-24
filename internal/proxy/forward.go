@@ -138,7 +138,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyReceiptShard, selectedReceiptShard))
 	emitConnectReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
@@ -572,7 +572,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    targetCtx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 	}
 	if rp := p.applyRequestPolicy(connectRPInput); rp.Block {
@@ -703,7 +703,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		allowReceipt = withContractReceipt(connectGate, allowReceipt)
 	}
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptPolicyHash(allowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+		if err := p.emitRequiredReceipt(withReceiptConfig(allowReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordTunnelBlocked(agentLabel)
@@ -1025,7 +1025,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitForwardReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
 				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -2066,7 +2066,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Agent:       agent,
 		AuditCtx:    actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 	}
 	if rp := p.prepareRequestPolicyBody(r, &rpInput); rp.Block {
@@ -2273,7 +2273,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		forwardAllowReceipt = withContractReceipt(forwardGate, forwardAllowReceipt)
 	}
 	if cfg.FlightRecorder.RequireReceipts {
-		if err := p.emitRequiredReceipt(withReceiptPolicyHash(forwardAllowReceipt, cfg.CanonicalPolicyHash())); err != nil {
+		if err := p.emitRequiredReceipt(withReceiptConfig(forwardAllowReceipt, cfg)); err != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(err)
 			p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(r.URL.Hostname(), blockedErr.layer, time.Since(start), agentLabel)

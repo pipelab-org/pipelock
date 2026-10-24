@@ -146,6 +146,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		Version:    cliutil.Version,
 	}
 	report.Checks = []doctorReportCheck{
+		checkDoctorPromptInjectionDetection(cfg),
 		checkDoctorHTTPProxy(cfg),
 		checkDoctorTLSInterception(cfg),
 		checkDoctorTLSInterceptionCoverage(cfg),

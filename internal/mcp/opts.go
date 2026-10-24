@@ -837,6 +837,7 @@ func (o MCPProxyOpts) v2ReceiptEmitter() *proxydecision.Emitter {
 }
 
 func (o MCPProxyOpts) emitReceiptDecision(d MCPDecision) ([]byte, error) {
+	d.Receipt = o.withReceiptPolicyHash(d.Receipt)
 	if o.ReceiptGroup != nil {
 		if o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)
@@ -866,7 +867,7 @@ func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitO
 	if opts.PolicyHash == "" {
 		opts.PolicyHash = o.receiptPolicyHash()
 	}
-	return opts
+	return receipt.WithPromptInjectionMode(opts, o.scanner().PromptInjectionMode())
 }
 
 func (o MCPProxyOpts) deferManager() *deferred.Manager {

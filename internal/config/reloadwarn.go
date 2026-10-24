@@ -51,6 +51,9 @@ func defaultMCPResponseTrust(trust string, existed bool) string {
 // potential security downgrades. Warnings don't block the reload.
 func ValidateReload(old, updated *Config) []ReloadWarning {
 	var warnings []ReloadWarning
+	if (old.PromptInjectionMode() == ActionBlock && updated.PromptInjectionMode() != ActionBlock) || (old.PromptInjectionMode() == ActionWarn && updated.PromptInjectionMode() == ActionAllow) {
+		warnings = append(warnings, ReloadWarning{Field: "prompt_injection_detection", Message: updated.PromptInjectionNotice()})
+	}
 
 	// Mode downgrade: strict → balanced → audit
 	modeRank := map[string]int{ModeStrict: 3, ModeBalanced: 2, ModeAudit: 1}

@@ -1479,8 +1479,10 @@ var directiveParamPattern = regexp.MustCompile(
 // scan path reads neither the top-level suppress list nor response-scanning
 // server trust. The only operator controls are mcp_tool_scanning.action (warn
 // instead of block) and mcp_tool_scanning.enabled, and the latter turns off
-// every tool-poison check. Warn is not a stable remedy while adaptive
-// enforcement is on: each warned finding records a near-miss, and enough of
+// every tool-poison check. The global prompt_injection_detection switch also
+// disables or caps wording findings before adaptive enforcement. The per-surface
+// warn action alone is not a stable remedy while adaptive enforcement is on:
+// each warned finding records a near-miss, and enough of
 // them escalate the session until the same list is blocked. The one built-in
 // exception is isOrdinaryContextLeakIdentifier.
 var contextLeakParamPattern = regexp.MustCompile(
@@ -2735,7 +2737,15 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	prescans := make([]toolPrescan, len(tools))
 	responseAckRefused := false
 	for i, tool := range tools {
-		prescans[i] = prescanTool(cfg, tool)
+		_, hasAck := findCredentialAck(cfg, tool.Name)
+		if sc.PromptInjectionMode() != config.ActionAllow || hasAck {
+			prescans[i] = prescanTool(cfg, tool)
+		} else {
+			// Keep definition text for independent drift hashing without running
+			// wording regexes. Explicit acknowledgment bindings still validate.
+			text, spans := toolScanTextOrdered(tool, cfg.textOrder())
+			prescans[i] = toolPrescan{text: text, spans: spans}
+		}
 		if outcome, ok := credentialAckOutcome(cfg, tool, prescans[i], ackNow); ok {
 			ackOutcomes[i] = outcome
 			responseAckRefused = responseAckRefused || outcome != CredentialAckAcknowledged
@@ -2751,6 +2761,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
 			hasFinding = true
 		}
+		structuralPoisonCount := len(match.ToolPoison)
 
 		// Extract param names once for both text scanning and drift tracking.
 		var paramNames []string
@@ -2762,16 +2773,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		pre := prescans[toolIndex]
 		text := pre.text
 
-		if text == "" {
-			// A reviewed tool can shrink to no scanner text at all. Its entry
-			// is still evaluated, against no occurrences, so it refuses like
-			// any other stale entry instead of being skipped.
-			if outcome := ackOutcomes[toolIndex]; outcome != "" {
-				match.CredentialAck = outcome
-				hasFinding = true
-			}
+		// Explicit acknowledgment bindings still refuse stale or invalid entries
+		// even when the operator disables wording detection.
+		if outcome := ackOutcomes[toolIndex]; outcome != "" && outcome != CredentialAckAcknowledged {
+			match.CredentialAck = outcome
+			hasFinding = true
 		}
-		if text != "" {
+		if text != "" && sc.PromptInjectionMode() != config.ActionAllow {
 			// This is the dedicated tool scanner, whose action is independent of
 			// response scanning. The response path itself never scans tool
 			// descriptions, preserving the tools/list false-positive carve-out.
@@ -2883,6 +2891,17 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 					}
 				}
 			}
+		}
+
+		// The operator cap applies only to wording findings, before drift
+		// admission. Structural collisions and acknowledgment refusals retain
+		// their existing behavior, as does drift below.
+		if sc.PromptInjectionMode() == config.ActionWarn && len(match.ToolPoison) > structuralPoisonCount {
+			wording := slices.Clone(match.ToolPoison[structuralPoisonCount:])
+			sc.ReportInjectionWarnings(context.Background(), wording)
+			observations = append(observations, ToolScanMatch{ToolName: tool.Name, ToolPoison: wording})
+			match.ToolPoison = match.ToolPoison[:structuralPoisonCount]
+			hasFinding = len(match.ToolPoison) > 0 || len(match.Injection) > 0 || (match.CredentialAck != "" && match.CredentialAck != CredentialAckAcknowledged)
 		}
 
 		// Drift detection (rug pull).

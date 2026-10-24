@@ -320,6 +320,9 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 		return report, fmt.Errorf("create scanner: %w", err)
 	}
 	defer sc.Close()
+	if notice := cfg.PromptInjectionNotice(); notice != "" {
+		report.Notes = append(report.Notes, notice)
+	}
 
 	trust := config.ResponseTrustUntrusted
 	if configuredTrust, ok := cfg.MCPResponseTrustForServer(serverName); ok {

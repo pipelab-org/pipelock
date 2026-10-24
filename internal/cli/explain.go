@@ -404,6 +404,10 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		Version:    cliutil.Version,
 	}
 
+	if notice := cfg.PromptInjectionNotice(); notice != "" {
+		report.Notes = append(report.Notes, notice)
+	}
+
 	// Merge any installed rule bundles into the config exactly as the runtime
 	// scanner would, so URL-DLP patterns from bundles are reflected in the
 	// verdict. Surface bundle load errors as warnings, not a hard failure.
@@ -638,6 +642,9 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 		Mode:          cfg.Mode,
 		Version:       cliutil.Version,
 		TargetView:    surface,
+	}
+	if notice := cfg.PromptInjectionNotice(); notice != "" {
+		report.Notes = append(report.Notes, notice)
 	}
 
 	bundleResult := rules.MergeIntoConfig(cfg, cliutil.Version)

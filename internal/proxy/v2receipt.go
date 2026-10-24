@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -72,6 +73,7 @@ func v2DecisionFromOpts(opts receipt.EmitOpts) (proxydecision.Decision, bool) {
 		d.PolicySources = []string{proxydecision.SourceScanner}
 		d.RuleID = opts.Pattern
 	}
+	d.RuleID = opts.PromptInjectionPattern(d.RuleID)
 	return d, true
 }
 
@@ -80,6 +82,11 @@ func withReceiptPolicyHash(opts receipt.EmitOpts, canonicalHash string) receipt.
 		opts.PolicyHash = canonicalHash
 	}
 	return opts
+}
+
+func withReceiptConfig(opts receipt.EmitOpts, cfg *config.Config) receipt.EmitOpts {
+	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	return receipt.WithPromptInjectionMode(opts, cfg.PromptInjectionMode())
 }
 
 // killSwitchLayer is the EmitOpts.Layer label used by kill-switch block sites

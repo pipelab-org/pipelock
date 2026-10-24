@@ -2362,6 +2362,12 @@ func normalizeQueryEntropyParamName(raw string) (string, error) {
 }
 
 func (c *Config) validateResponseScanning(warnings *[]Warning) error {
+	if err := c.validatePromptInjectionDetection(); err != nil {
+		return err
+	}
+	if notice := c.PromptInjectionNotice(); notice != "" {
+		*warnings = append(*warnings, Warning{Field: "prompt_injection_detection", Message: notice})
+	}
 	// Validate response scanning config
 	if c.ResponseScanning.Enabled {
 		switch c.ResponseScanning.Action {

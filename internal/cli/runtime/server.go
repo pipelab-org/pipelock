@@ -502,6 +502,8 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})
+	wirePromptInjectionAudit(sc, logger)
+	logPromptInjectionPolicy(cfg, logger)
 
 	ks := killswitch.New(cfg)
 	m.RegisterKillSwitchState(ks.Sources)

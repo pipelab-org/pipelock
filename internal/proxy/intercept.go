@@ -212,7 +212,7 @@ func interceptEmitReceipt(ic *InterceptContext, opts receipt.EmitOpts) error {
 		return nil
 	}
 	if ic.Config != nil {
-		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if ic.Proxy.receiptGroupPtr.Load() != nil {
@@ -291,7 +291,7 @@ func interceptEmitRequiredReceipt(ic *InterceptContext, opts receipt.EmitOpts) e
 		return errReceiptEmitterUnavailable
 	}
 	if ic.Config != nil {
-		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if ic.Proxy.receiptGroupPtr.Load() != nil {
@@ -337,7 +337,7 @@ func interceptEmitOutcomeReceipt(ic *InterceptContext, opts receipt.EmitOpts, ve
 		return
 	}
 	if ic.Config != nil {
-		opts = withReceiptPolicyHash(opts, ic.Config.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, ic.Config)
 	}
 	opts = withReceiptShard(opts, ic.receiptShard)
 	if group := ic.Proxy.receiptGroupPtr.Load(); group != nil {
@@ -1943,7 +1943,7 @@ func newInterceptHandler(
 				AuditCtx:    actx,
 				Emit: func(o receipt.EmitOpts) error {
 					return ic.Proxy.emitRequestPolicyReceipt(
-						withReceiptPolicyHash(withReceiptShard(o, ic.receiptShard), ic.Config.CanonicalPolicyHash()),
+						withReceiptConfig(withReceiptShard(o, ic.receiptShard), ic.Config),
 					)
 				},
 			}

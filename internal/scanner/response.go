@@ -29,6 +29,10 @@ import (
 type ResponseScanResult struct {
 	Clean   bool
 	Matches []ResponseMatch
+	// WarnedMatches retains wording findings withheld from enforcement by the
+	// global operator policy. Like ObservedCoreMatches, these are evidence,
+	// not enforcing matches and never injection-driven taint.
+	WarnedMatches []ResponseMatch `json:"warned_matches,omitempty"`
 	// ScanError records why scanning could not complete. It is deliberately
 	// separate from Matches: an incomplete scan must fail closed, but it is not
 	// evidence that response content matched a prompt-injection pattern.
@@ -197,6 +201,7 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 					return decodedResult
 				}
 				rawResult := s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
+				rawResult.WarnedMatches = append(decodedResult.WarnedMatches, rawResult.WarnedMatches...)
 				rawResult.SuppressedMatches = append(decodedResult.SuppressedMatches, rawResult.SuppressedMatches...)
 				rawResult.ObservedCoreMatches = append(decodedResult.ObservedCoreMatches, rawResult.ObservedCoreMatches...)
 				if decodedResult.StegoDensity > rawResult.StegoDensity {
@@ -237,6 +242,7 @@ func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, supp
 
 	separatorView := string(bytes.ToValidUTF8(body, []byte(" ")))
 	separatorResult := s.ScanResponseWithSuppress(ctx, separatorView, suppressTarget, suppress)
+	separatorResult.WarnedMatches = append(rawResult.WarnedMatches, separatorResult.WarnedMatches...)
 	separatorResult.SuppressedMatches = append(rawResult.SuppressedMatches, separatorResult.SuppressedMatches...)
 	separatorResult.ObservedCoreMatches = append(rawResult.ObservedCoreMatches, separatorResult.ObservedCoreMatches...)
 	if rawResult.StegoDensity > separatorResult.StegoDensity {
@@ -288,6 +294,7 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 			reconstructedResult = s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
 		}
 		reconstructedResult = requireFragmentBoundaryMatch(reconstructed, reconstructedResult)
+		reconstructedResult.WarnedMatches = append(result.WarnedMatches, reconstructedResult.WarnedMatches...)
 		reconstructedResult.SuppressedMatches = append(result.SuppressedMatches, reconstructedResult.SuppressedMatches...)
 		reconstructedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, reconstructedResult.ObservedCoreMatches...)
 		if result.StegoDensity > reconstructedResult.StegoDensity {
@@ -347,6 +354,13 @@ func requireFragmentBoundaryMatch(content string, result ResponseScanResult) Res
 		}
 	}
 	result.SuppressedMatches = suppressed
+	warned := result.WarnedMatches[:0]
+	for _, match := range result.WarnedMatches {
+		if crossesBoundary(match) {
+			warned = append(warned, match)
+		}
+	}
+	result.WarnedMatches = warned
 	observed := result.ObservedCoreMatches[:0]
 	for _, match := range result.ObservedCoreMatches {
 		if crossesBoundary(match.Match) {
@@ -617,6 +631,17 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		out.ObservedCoreMatches = observedCoreMatches
 		out.StegoDensity = stegoDensity
 		out.StegoDetected = stegoDetected
+		if !out.Failed() && s.PromptInjectionMode() == config.ActionWarn && len(out.Matches) > 0 {
+			out.WarnedMatches = out.Matches
+			out.Matches = nil
+			out.Clean = true
+			out.TransformedContent = ""
+			names := make([]string, 0, len(out.WarnedMatches))
+			for _, match := range out.WarnedMatches {
+				names = append(names, match.PatternName)
+			}
+			s.ReportInjectionWarnings(ctx, names)
+		}
 	}()
 
 	// Fail-closed: if context is already canceled, block immediately.
@@ -625,6 +650,10 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 			Clean:     false,
 			ScanError: ctx.Err().Error(),
 		}
+	}
+
+	if s.PromptInjectionMode() == config.ActionAllow {
+		return ResponseScanResult{Clean: true}
 	}
 
 	if options.decodeOnly {
@@ -641,8 +670,8 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		return ResponseScanResult{Clean: len(matches) == 0, Matches: matches}
 	}
 
-	// Core response patterns run FIRST - immutable safety floor.
-	// These run regardless of response_scanning.enabled.
+	// Core response patterns run first whenever the global wording policy
+	// enables detection, regardless of response_scanning.enabled.
 	if coreSet := s.scanCoreResponseWithMemo(content, filterSuppressed, options.forceEncodedDecode, memo); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
@@ -1710,8 +1739,9 @@ func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) respo
 }
 
 // ResponseScanningEnabled returns whether response scanning is active.
-// Always returns true when core response patterns exist, even if the
-// user disabled response_scanning.enabled - core is the safety floor.
+// Core patterns keep the response pipeline available even when the optional
+// layer or global wording detection is disabled. Structural scan failures
+// still need the pipeline; the wording policy is applied inside the matcher.
 func (s *Scanner) ResponseScanningEnabled() bool {
 	if s.core != nil && len(s.core.responsePatterns) > 0 {
 		return true
@@ -1729,7 +1759,7 @@ func (s *Scanner) ResponseLayerEnabled() bool {
 
 // ResponseAction returns the configured response scanning action (strip, warn, block).
 // When main response scanning is disabled but core patterns are active,
-// defaults to "block" - core findings are non-negotiable.
+// defaults to block. The global wording cap is applied inside the matcher.
 func (s *Scanner) ResponseAction() string {
 	if s.responseAction == "" && s.core != nil && len(s.core.responsePatterns) > 0 {
 		return config.ActionBlock

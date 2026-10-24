@@ -724,6 +724,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
 		return rejectErr
 	}
+	wirePromptInjectionAudit(newSc, s.logger)
 	newSc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
 		emitDLPWarn(s.logger, s.metrics, s.liveReceiptEmitter(), ctx, patternName, severity)
 	})
@@ -777,6 +778,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 		return nil
 	}
 	s.logger.LogConfigReload("success", fmt.Sprintf("mode=%s", newCfg.Mode), reloadHash)
+	logPromptInjectionPolicy(newCfg, s.logger)
 	s.recordReloadSuccess(reloadHash)
 	return nil
 }

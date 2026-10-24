@@ -1098,6 +1098,11 @@ Key-free evidence capture:
 				return fmt.Errorf("create MCP audit logger: %w", err)
 			}
 			defer auditLogger.Close()
+			wirePromptInjectionAudit(sc, auditLogger)
+			logPromptInjectionPolicy(cfg, auditLogger)
+			if notice := cfg.PromptInjectionNotice(); notice != "" {
+				_, _ = fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: "+notice)
+			}
 			upstreamDialContext := verifiedDialContext(
 				mcp.NewMetadataSafeDialContext(func() *scanner.Scanner { return sc }),
 				launchIdentity,

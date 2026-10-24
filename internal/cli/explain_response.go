@@ -128,13 +128,16 @@ func newResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte) 
 	if body != nil {
 		report.BodySHA256 = sha256Hex(body)
 	}
+	if notice := cfg.PromptInjectionNotice(); notice != "" {
+		report.Notes = append(report.Notes, notice)
+	}
 	if len(cfg.Suppress) > 0 {
 		report.Notes = append(report.Notes, "destination-scoped suppress entries were not applied; this command has no request URL and cannot prove the live final URL")
 	}
 	if cfg.AdaptiveEnforcement.Enabled {
 		report.Notes = append(report.Notes, "adaptive enforcement uses live session state and did not run; it can upgrade this scanner action at runtime")
 	}
-	if !cfg.ResponseScanning.Enabled {
+	if !cfg.ResponseScanning.Enabled && cfg.PromptInjectionMode() == config.ActionBlock {
 		report.Notes = append(report.Notes, "response_scanning.enabled is false; only the immutable core response floor ran, and runtime treats those hits as block")
 	}
 	return report
@@ -164,6 +167,15 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	// the raw YAML field. When response_scanning.enabled is false, that method
 	// returns block for core-floor hits even if the file still says warn.
 	report.Action = sc.ResponseAction()
+	if cfg.PromptInjectionMode() == config.ActionAllow {
+		report.Action = config.ActionAllow
+	}
+	if len(result.WarnedMatches) > 0 {
+		report.Action = config.ActionWarn
+		for _, match := range result.WarnedMatches {
+			report.Notes = append(report.Notes, "warn-only wording match: "+escapeExplainEventTerminalControls(match.PatternName))
+		}
+	}
 	if result.Failed() {
 		report.Allowed = false
 		// The scan error reaches a terminal and a JSON consumer. Two of its

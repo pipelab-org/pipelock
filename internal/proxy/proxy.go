@@ -1218,7 +1218,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				AuditCtx:    newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName}),
 				Emit: func(opts receipt.EmitOpts) error {
 					// The outer handler also records the final block on this shard.
-					return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, receiptShardFromContext(req.Context())), currentCfg.CanonicalPolicyHash()))
+					return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, receiptShardFromContext(req.Context())), currentCfg))
 				},
 			}); rpRes.Block {
 				return newRedirectBlockedRequest(blockLayerRequestPolicy, rpRes.Reason)
@@ -1594,7 +1594,7 @@ func (p *Proxy) recordDecision(verdict, layer, pattern, transport, requestID str
 // this and fail toward silence.
 func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	e := p.receiptEmitterPtr.Load()
 	return e != nil && p.emitReceiptWithEmitter(opts, e) == nil
@@ -1602,7 +1602,7 @@ func (p *Proxy) emitRecordedReceipt(opts receipt.EmitOpts) bool {
 
 func (p *Proxy) emitReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	return p.emitReceiptWithEmitter(opts, p.receiptEmitterPtr.Load())
 }
@@ -1661,7 +1661,7 @@ func requiredReceiptBlockMetricReason(err error) string {
 
 func (p *Proxy) emitRequiredReceipt(opts receipt.EmitOpts) error {
 	if cfg := p.cfgPtr.Load(); cfg != nil {
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 	}
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
@@ -1735,7 +1735,7 @@ func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, st
 	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
 	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
-	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+	opts = withReceiptConfig(opts, cfg)
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
 		return
@@ -5362,7 +5362,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
 	emitFetchReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
-		opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
+		opts = withReceiptConfig(opts, cfg)
 		if e := p.receiptEmitterPtr.Load(); e != nil && p.emitReceiptWithEmitter(opts, e) == nil {
 			if opts.Verdict == config.ActionBlock {
 				blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
@@ -6148,7 +6148,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Agent:     agent,
 		AuditCtx:  actx,
 		Emit: func(opts receipt.EmitOpts) error {
-			return p.emitRequestPolicyReceipt(withReceiptPolicyHash(withReceiptShard(opts, selectedReceiptShard), cfg.CanonicalPolicyHash()))
+			return p.emitRequestPolicyReceipt(withReceiptConfig(withReceiptShard(opts, selectedReceiptShard), cfg))
 		},
 	}); rpRes.Block {
 		p.metrics.RecordBlocked(parsed.Hostname(), blockLayerRequestPolicy, time.Since(start), agentLabel)
@@ -6367,7 +6367,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		fetchAllowReceipt = withContractReceipt(fetchGate, fetchAllowReceipt)
 	}
 	if cfg.FlightRecorder.RequireReceipts {
-		if rcptErr := p.emitRequiredReceipt(withReceiptPolicyHash(fetchAllowReceipt, cfg.CanonicalPolicyHash())); rcptErr != nil {
+		if rcptErr := p.emitRequiredReceipt(withReceiptConfig(fetchAllowReceipt, cfg)); rcptErr != nil {
 			blockedErr := newReceiptEmissionBlockedRequest(rcptErr)
 			log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
 			p.metrics.RecordBlocked(parsed.Hostname(), blockedErr.layer, time.Since(start), agentLabel)

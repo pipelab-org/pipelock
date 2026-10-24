@@ -400,7 +400,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 		Transport:             opts.Transport,
 		Method:                opts.Method,
 		Layer:                 opts.Layer,
-		Pattern:               opts.Pattern,
+		Pattern:               opts.PromptInjectionPattern(opts.Pattern),
 		Severity:              opts.Severity,
 		Redaction:             redactionSummaryFromReport(opts.RedactionProfile, opts.RedactionReport),
 		Shield:                cloneShieldSummary(opts.Shield),
