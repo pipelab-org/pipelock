@@ -701,11 +701,11 @@ Examples:
 			for _, w := range bundleResult.Warnings {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: %s\n", w)
 			}
-			if bundleResult.Degraded {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
-			}
 			if err := strictRuleBundleIntegrityError(cfg, bundleResult); err != nil {
 				return err
+			}
+			if bundleResult.Degraded {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
 			sc, err := scanner.New(cfg)
 			if err != nil {
@@ -1043,15 +1043,15 @@ Key-free evidence capture:
 			for _, w := range bundleResult.Warnings {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: %s\n", w)
 			}
-			if bundleResult.Degraded {
-				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
-			}
 			// Fail closed in strict mode on installed-bundle integrity loss,
 			// matching the main proxy server's startup path. Without this a
 			// strict `mcp proxy` would silently boot on core patterns only when
 			// a tampered bundle failed verification.
 			if err := strictRuleBundleIntegrityError(cfg, bundleResult); err != nil {
 				return err
+			}
+			if bundleResult.Degraded {
+				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: DEGRADED — standard pack failed, running core patterns only\n")
 			}
 			extraPoison := rules.ConvertToolPoison(bundleResult.ToolPoison)
 

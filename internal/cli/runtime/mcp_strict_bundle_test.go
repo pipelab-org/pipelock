@@ -63,6 +63,9 @@ func TestMCPProxyCmd_StrictBundleIntegrityFailsClosed(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") {
 				t.Fatalf("strict mcp proxy with integrity-failed bundle: err = %v, want integrity refusal\noutput:\n%s", err, out.String())
 			}
+			if strings.Contains(out.String(), "running core patterns only") {
+				t.Fatalf("refused proxy claimed degraded execution: %s", out.String())
+			}
 		})
 	}
 }
@@ -124,6 +127,10 @@ func TestMCPScanCmd_StrictBundleIntegrity(t *testing.T) {
 				}
 			} else if err != nil {
 				t.Fatalf("advisory bundle failure: %v", err)
+			}
+			wantDegraded := !tc.wantErr && !tc.unavailable
+			if got := strings.Contains(stderr.String(), "running core patterns only"); got != wantDegraded {
+				t.Fatalf("degraded execution message = %v, want %v: %s", got, wantDegraded, stderr.String())
 			}
 			if !strings.Contains(stderr.String(), "warning: bundle") {
 				t.Fatalf("missing bundle warning: %s", stderr.String())
