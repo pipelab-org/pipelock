@@ -659,13 +659,16 @@ def gather_pr_state(repo: str, pr_number: int) -> dict[str, Any]:
     # Keep the uncoalesced result: read_source returns None only on a failed
     # read, and collapsing that to [] here would make a failed read
     # indistinguishable from a successful empty one. They are different states
-    # and they get different statuses.
+    # and they get different statuses. GhClient.api returns None for empty
+    # paginated output (so branch rules fail closed); here an empty successful
+    # read must stay [] so it reports CHANGED_PATHS_UNKNOWN below.
     pr_files_raw = read_source(
         "pr_files",
         lambda: client.api(
             f"repos/{repo}/pulls/{pr_number}/files?per_page=100",
             paginate=True,
-        ),
+        )
+        or [],
     )
     own_files = [
         str(as_dict(f).get("filename") or "")

@@ -1312,6 +1312,29 @@ class PrConvergenceStatusTest(unittest.TestCase):
         self.assertEqual(result["status"], "CHANGED_PATHS_UNKNOWN")
         self.assertFalse(result["ready"])
 
+    def test_empty_pr_files_output_from_client_fails_closed(self) -> None:
+        """Empty paginated output for PR files is a successful empty read.
+
+        GhClient.api returns None for empty paginated output so branch rules
+        fail closed; the PR-files read must still treat it as [] and report
+        unknown changed paths instead of skipping the check.
+        """
+        fixture = load_fixture()
+        base = recording_base_candidate_client(fixture, [], [], [])
+
+        class EmptyFilesClient(base):  # type: ignore[misc, valid-type]
+            def api(self, path: str, *, paginate: bool = False, accept: str | None = None) -> object:
+                if path.endswith("/files?per_page=100"):
+                    return None
+                return super().api(path, paginate=paginate, accept=accept)
+
+        with mock.patch.object(pr_convergence, "GhClient", EmptyFilesClient):
+            data = pr_convergence.gather_pr_state("owner/repo", 7)
+
+        self.assertEqual(data["pr_files"], [])
+        self.assertTrue(data["changed_paths_unknown"])
+        self.assertFalse(any(error["source"] == "pr_files" for error in data["errors"]))
+
     def test_normal_pr_with_changed_paths_still_ready(self) -> None:
         """The empty-read guard must not deny a PR that really has files.
 
