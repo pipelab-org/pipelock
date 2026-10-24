@@ -130,3 +130,30 @@ func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing
 		t.Error("generic headless guidance must precede the unchanged MCP-specific paragraph")
 	}
 }
+
+func TestMCPTaintDiagnostics_PromptHitNoteFollowsWordingMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, want, notWant string
+	}{
+		{"default", "", "prompt hits can still raise hostile taint", "raise no hostile taint"},
+		{"explicit_block", "prompt_injection_detection: {enabled: true, action: block}\n", "prompt hits can still raise hostile taint", "raise no hostile taint"},
+		{"off", "prompt_injection_detection: {enabled: false}\n", "prompt_injection_detection is off, so wording matches raise no hostile taint", "can still raise hostile taint"},
+		{"warn", "prompt_injection_detection: {action: warn}\n", "prompt_injection_detection is warn-only, so wording matches are logged but raise no hostile taint", "can still raise hostile taint"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var origin string
+			for _, w := range cfg.MCPTaintDiagnostics() {
+				if w.Field == "taint.mcp_origin" {
+					origin = w.Message
+				}
+			}
+			if !strings.Contains(origin, tc.want) || strings.Contains(origin, tc.notWant) {
+				t.Fatalf("taint.mcp_origin = %q, want %q and not %q", origin, tc.want, tc.notWant)
+			}
+		})
+	}
+}

@@ -27,7 +27,20 @@ func (c *Config) MCPTaintDiagnostics() []Warning {
 	return []Warning{
 		{Field: "taint.mcp_recorder", Message: recorder + "; config-only assessment, not proof of a running recorder"},
 		{Field: "taint.mcp_listener", Message: listener + "; anonymous 2026-07-28 stateless calls are request-local only: cross-request taint protection is NOT active; use verified caller identity and an admitted cross-request recorder, not a session header on the current protocol; a shared listener bearer shares one principal"},
-		{Field: "taint.mcp_origin", Message: "stdio subprocess content origin is undeclared: clean responses default to internal_generated, which is not verified provenance; the embedding TaintExternalSource option declares external content, but mcp proxy has no corresponding CLI flag; HTTP/WS upstreams declare external content unless taint.trusted_mcp_servers trusts the resolved server; that trust affects future clean observations only, and prompt hits can still raise hostile taint"},
+		{Field: "taint.mcp_origin", Message: "stdio subprocess content origin is undeclared: clean responses default to internal_generated, which is not verified provenance; the embedding TaintExternalSource option declares external content, but mcp proxy has no corresponding CLI flag; HTTP/WS upstreams declare external content unless taint.trusted_mcp_servers trusts the resolved server; that trust affects future clean observations only, and " + c.mcpPromptHitTaintNote()},
 		{Field: "taint.mcp_recovery", Message: MCPTaintRecoveryGuidance},
+	}
+}
+
+// mcpPromptHitTaintNote states whether prompt-injection wording matches can
+// still raise hostile taint under the configured prompt_injection_detection mode.
+func (c *Config) mcpPromptHitTaintNote() string {
+	switch c.PromptInjectionMode() {
+	case ActionAllow:
+		return "prompt_injection_detection is off, so wording matches raise no hostile taint"
+	case ActionWarn:
+		return "prompt_injection_detection is warn-only, so wording matches are logged but raise no hostile taint"
+	default:
+		return "prompt hits can still raise hostile taint"
 	}
 }
