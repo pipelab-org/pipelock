@@ -36,7 +36,18 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 	// Build path rules from policy. BestEffort automatically downgrades
 	// access rights the kernel doesn't support. IgnoreIfMissing skips
 	// paths that don't exist on this distro (e.g., /lib64/, /etc/pki/).
-	rules := buildRules(policy, abi)
+	// REFER is granted only when the kernel reports Landlock erratum 3
+	// (disconnected directory handling) fixed. Without that fix a rename or
+	// link through a bind mount can widen access and bypass REFER limits
+	// (Documentation/userspace-api/landlock.rst, "Errata"). Kernels without
+	// the fix, or that cannot report errata, keep the pre-REFER behavior:
+	// cross-directory renames and links fail with EXDEV.
+	refer := referAllowed(abi, landlockErrata)
+	referABI := 1
+	if refer {
+		referABI = abi
+	}
+	rules := buildRules(policy, referABI)
 	if abi >= 9 && len(proxySocket) > 0 && proxySocket[0] != "" {
 		// Admit the exact parent doorway inode, never its directory. Ordinary
 		// filesystem grants do not authorize connections to host sockets.
@@ -58,7 +69,7 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 			Scoped:          landlock.V6.Scoped,
 		}
 		var referRules []landlock.Rule
-		if len(policy.AllowRWDirs) > 0 {
+		if refer && len(policy.AllowRWDirs) > 0 {
 			referRules = append(referRules, landlock.PathAccess(llsys.AccessFSRefer, policy.AllowRWDirs...).IgnoreIfMissing())
 		}
 		if err := ipc.Restrict(referRules...); err != nil {

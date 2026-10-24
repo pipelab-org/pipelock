@@ -6,6 +6,7 @@
 package sandbox
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -108,14 +109,15 @@ func TestLandlock_Reparenting(t *testing.T) {
 	if err != nil || abi < 1 {
 		t.Skipf("Landlock unavailable: ABI=%d err=%v", abi, err)
 	}
-	for _, abi1 := range []bool{false, true} {
-		name := "native"
-		if abi1 {
-			name = "ABI1"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, variant := range []string{"native", "ABI1", "no-erratum3"} {
+		abi1 := variant == "ABI1"
+		noErratum3 := variant == "no-erratum3"
+		t.Run(variant, func(t *testing.T) {
 			if !abi1 && abi < 2 {
 				t.Skipf("cross-directory operations require Landlock ABI 2 (kernel ABI %d)", abi)
+			}
+			if variant == "native" && !referAllowed(abi, landlockErrata) {
+				t.Skip("kernel does not report Landlock erratum 3 fixed; REFER is withheld")
 			}
 			for _, tc := range reparentingCases() {
 				t.Run(tc.name, func(t *testing.T) {
@@ -125,11 +127,14 @@ func TestLandlock_Reparenting(t *testing.T) {
 					t.Setenv("PIPELOCK_TEST_REFER_TARGET", tc.target)
 					t.Setenv("PIPELOCK_TEST_REFER_LINK", strconv.FormatBool(tc.link))
 					t.Setenv("PIPELOCK_TEST_REFER_ABI1", strconv.FormatBool(abi1))
+					t.Setenv("PIPELOCK_TEST_REFER_NO_ERRATUM3", strconv.FormatBool(noErratum3))
 					out, code := runSandboxedChild(t, "reparent", policy.Workspace)
 					if code != 0 {
 						t.Fatalf("Landlock child exit %d: %s", code, out)
 					}
-					allow := tc.allow && (!abi1 || filepath.Dir(tc.source) == filepath.Dir(tc.target))
+					// Without REFER (ABI 1, or erratum 3 not reported fixed)
+					// only same-directory operations succeed.
+					allow := tc.allow && ((!abi1 && !noErratum3) || filepath.Dir(tc.source) == filepath.Dir(tc.target))
 					assertReparenting(t, root, tc, allow, out)
 				})
 			}
@@ -214,6 +219,33 @@ func TestLaunchSandboxed_Reparenting(t *testing.T) {
 				t.Fatalf("sandbox: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 			}
 			assertReparenting(t, root, tc, tc.allow, stdout.String())
+		})
+	}
+}
+
+func TestReferAllowed(t *testing.T) {
+	errFixed := func(bits int) func() (int, error) {
+		return func() (int, error) { return bits, nil }
+	}
+	queryFails := func() (int, error) { return 0, errors.New("errata query unsupported") }
+	tests := []struct {
+		name   string
+		abi    int
+		errata func() (int, error)
+		want   bool
+	}{
+		{"abi1 never", 1, errFixed(0xf), false},
+		{"abi2 erratum3 fixed", 2, errFixed(0x4), true},
+		{"abi9 erratum3 fixed among others", 9, errFixed(0xf), true},
+		{"abi9 erratum3 missing", 9, errFixed(0x3), false},
+		{"abi9 no errata", 9, errFixed(0), false},
+		{"abi9 query fails", 9, queryFails, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := referAllowed(tc.abi, tc.errata); got != tc.want {
+				t.Fatalf("referAllowed(%d) = %v, want %v", tc.abi, got, tc.want)
+			}
 		})
 	}
 }

@@ -145,6 +145,10 @@ func runLandlockTestChild(op string) {
 		err = landlock.V1.RestrictPaths(buildRules(policy, 1)...)
 		status = LayerStatus{Name: LayerLandlock, Active: err == nil, Version: 1}
 	} else {
+		if op == "reparent" && os.Getenv("PIPELOCK_TEST_REFER_NO_ERRATUM3") == "true" {
+			// Simulate a kernel that does not report Landlock erratum 3 fixed.
+			landlockErrata = func() (int, error) { return 0x3, nil }
+		}
 		status, err = ApplyLandlock(policy)
 	}
 	if err != nil {
