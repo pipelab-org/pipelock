@@ -1080,6 +1080,35 @@ func TestRunSidecar_RegeneratePatchedOutput(t *testing.T) {
 	}
 }
 
+func TestPrintSidecarSummary_HelmNextSteps(t *testing.T) {
+	t.Parallel()
+	for _, outputPath := range []string{"bundle", ""} {
+		t.Run("output="+outputPath, func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			result := &sidecarResult{Detect: &sidecarDetectResult{}, Patch: &sidecarPatchSummary{}}
+			result.Patch.EmitFormat = emitHelmValues
+			result.Patch.OutputPath = outputPath
+			printSidecarSummary(&buf, result, sidecarOptions{})
+			bundle := outputPath
+			if bundle == "" {
+				bundle = "<bundle-dir>"
+			}
+			for _, want := range []string{
+				"render and inspect first: see " + bundle + "/README.txt",
+				"oci://ghcr.io/luckypipewrench/charts/pipelock --version <chart-version> -f " + bundle + "/values.yaml",
+			} {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("summary missing %q: %s", want, &buf)
+				}
+			}
+			if strings.Contains(buf.String(), " pipelock/pipelock ") {
+				t.Errorf("summary uses unpublished chart alias: %s", &buf)
+			}
+		})
+	}
+}
+
 func TestRunSidecar_VerificationOutputFormats(t *testing.T) {
 	t.Parallel()
 	for _, format := range []string{emitPatch, emitKustomize, emitHelmValues} {
