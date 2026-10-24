@@ -154,14 +154,12 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 		return emitDecision(stdout, blockDecision(fmt.Sprintf("pipelock hermes hook: config load failed: %v", err)))
 	}
 
+	var bundleErr error
 	cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 		Mode: config.RuntimeMCPScan,
 		MergeBundles: func(c *config.Config) {
-			// Bundle merge errors are surfaced via stderr only; an empty
-			// bundle set still produces a valid (core-pattern-only) scanner.
-			// Blocking the whole hook on a bundle parse error would be a
-			// hostile-rules denial-of-service vector.
 			result := rules.MergeIntoConfig(c, cliutil.Version)
+			bundleErr = rules.StrictIntegrityError(c, result)
 			for _, e := range result.Errors {
 				_, _ = fmt.Fprintf(stderr, "pipelock hermes hook: warning: bundle %s: %s\n", e.Name, e.Reason)
 			}
@@ -170,6 +168,9 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 			}
 		},
 	}, stderr, "hermes hook")
+	if bundleErr != nil {
+		return emitDecision(stdout, blockDecision("pipelock hermes hook: "+bundleErr.Error()))
+	}
 
 	// A terminal command is code about to run, and a tool result or gateway
 	// message is text the agent receives; neither is sent anywhere as written.

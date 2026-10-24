@@ -72,19 +72,7 @@ func (s *Server) reportStartupRuleBundleResult(cfg *config.Config, result *rules
 // Availability failures (missing optional stores, transient read errors) never
 // refuse — only integrity loss does.
 func strictRuleBundleIntegrityError(cfg *config.Config, result *rules.LoadResult) error {
-	if result == nil || cfg.Mode != config.ModeStrict || cfg.Rules.AllowDegraded {
-		return nil
-	}
-	integrityErrs := result.IntegrityErrors()
-	if len(integrityErrs) == 0 {
-		return nil
-	}
-	details := make([]string, 0, len(integrityErrs))
-	for _, e := range integrityErrs {
-		details = append(details, fmt.Sprintf("%s: %s", e.Name, e.Reason))
-	}
-	return fmt.Errorf("rule bundle integrity failure in strict mode: %s (verify or reinstall the bundle(s), or set rules.allow_degraded: true only as an emergency override)",
-		strings.Join(details, "; "))
+	return rules.StrictIntegrityError(cfg, result)
 }
 
 func reportReloadRuleBundleResult(stderr io.Writer, logger ruleBundleAuditLogger, cfg *config.Config, result *rules.LoadResult) {
