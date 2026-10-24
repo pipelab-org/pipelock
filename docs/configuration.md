@@ -3449,6 +3449,8 @@ rules:
 | `trust_embedded_keys` | `true` | Trust the compiled official rules keyring. Set to `false` for private-root-only deployments that trust only `trusted_keys`; unsigned local bundles are rejected in this mode. |
 | `trusted_keys` | `[]` | Additional Ed25519 public keys to trust for signature verification |
 
+**One-shot consumers:** Claude Code, Cursor and Hermes hooks and `pipelock mcp scan` apply the same startup rule: strict mode denies the hook action, or makes `mcp scan` exit with status 1 and the error on stderr before it reads any input, when an installed bundle fails integrity checks unless `rules.allow_degraded: true` is set. Other modes and optional-store availability failures keep scanning with the available policy and warn on stderr. Hook denials use each host's normal hook response format.
+
 **Hot reload:** rule directory changes are re-resolved when config reload runs. A clean uninstall that removes live bundle patterns is rejected in strict mode unless `allow_degraded` is set; non-strict modes allow it and emit degraded-state telemetry. Installing or updating bundles still normally uses the `pipelock rules` commands and a config reload or restart to re-resolve the runtime policy.
 
 ## Sandbox

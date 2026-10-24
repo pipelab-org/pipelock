@@ -207,7 +207,9 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 
 	// Merge community rules into config before building scanner.
 	// Keep stdout JSON contract intact; warnings go to stderr.
-	reportBundleLoadResult(cmd.ErrOrStderr(), rules.MergeIntoConfig(cfg, cliutil.Version))
+	if err := reportBundleLoadResult(cmd.ErrOrStderr(), cfg, rules.MergeIntoConfig(cfg, cliutil.Version)); err != nil {
+		return claudeResult(cmd, exitCodeMode, payload.HookEventName, decisionDeny, "pipelock: "+err.Error())
+	}
 
 	// Route tool_name to decide.Action.
 	action, err := claudePayloadToAction(payload)

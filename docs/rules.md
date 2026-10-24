@@ -153,7 +153,7 @@ Pipelock separates rule-bundle load failures into two operator classes:
 - **Integrity failures:** bad signatures, missing or mismatched `bundle.lock`, bundle hash mismatch, malformed installed bundle content, expired bundles, signer/tier mismatch, and freshness rollback state tampering.
 - **Availability failures:** missing optional rules directory, bundle file read/stat failures, freshness lock failures, or a bundle that requires a newer engine feature.
 
-In `mode: strict`, an integrity failure for an installed bundle refuses startup unless `rules.allow_degraded: true` is explicitly set. The error names the bundle and class so the operator can verify or reinstall the bundle before retrying. Availability failures keep the process available but mark the bundle state degraded.
+In `mode: strict`, an integrity failure for an installed bundle refuses proxy startup, denies Claude Code, Cursor and Hermes hook calls, and fails `mcp scan` unless `rules.allow_degraded: true` is explicitly set. The error names the bundle and class so the operator can verify or reinstall the bundle before retrying. Availability failures keep the process available but mark the bundle state degraded.
 
 In non-strict modes, Pipelock starts with the remaining rules but emits a structured `rule_bundle_degraded` audit event and a startup warning. `/stats` reports degraded bundle count and names under `rule_bundles`; `/metrics` exposes `pipelock_rule_bundles_degraded`.
 

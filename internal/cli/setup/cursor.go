@@ -226,7 +226,10 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 
 	// Merge community rules into config before building scanner.
 	// Keep stdout JSON contract intact; warnings go to stderr.
-	reportBundleLoadResult(cmd.ErrOrStderr(), rules.MergeIntoConfig(cfg, cliutil.Version))
+	if err := reportBundleLoadResult(cmd.ErrOrStderr(), cfg, rules.MergeIntoConfig(cfg, cliutil.Version)); err != nil {
+		writeResponse(stdout, cursorResponse{Permission: decisionDeny, UserMessage: "pipelock: " + err.Error()})
+		return nil
+	}
 
 	// Build action from payload.
 	action := payloadToAction(payload)

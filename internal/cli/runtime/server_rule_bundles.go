@@ -65,26 +65,14 @@ func (s *Server) reportStartupRuleBundleResult(cfg *config.Config, result *rules
 
 // strictRuleBundleIntegrityError returns a non-nil error when strict mode must
 // refuse to start because an installed bundle failed INTEGRITY verification and
-// the operator has not opted into rules.allow_degraded. It is the shared
-// fail-closed decision for every long-running runtime that merges rule bundles
-// (the main proxy server and `pipelock mcp proxy`), so a tampered installed
-// bundle cannot silently boot a strict deployment on core patterns only.
-// Availability failures (missing optional stores, transient read errors) never
-// refuse — only integrity loss does.
+// the operator has not opted into rules.allow_degraded. It forwards to
+// rules.StrictIntegrityError, the one startup decision shared by every runtime
+// that merges rule bundles (the main proxy server, `pipelock mcp proxy` and the
+// one-shot hooks), so a tampered installed bundle cannot silently boot a strict
+// deployment on core patterns only. Availability failures (missing optional
+// stores, transient read errors) never refuse — only integrity loss does.
 func strictRuleBundleIntegrityError(cfg *config.Config, result *rules.LoadResult) error {
-	if result == nil || cfg.Mode != config.ModeStrict || cfg.Rules.AllowDegraded {
-		return nil
-	}
-	integrityErrs := result.IntegrityErrors()
-	if len(integrityErrs) == 0 {
-		return nil
-	}
-	details := make([]string, 0, len(integrityErrs))
-	for _, e := range integrityErrs {
-		details = append(details, fmt.Sprintf("%s: %s", e.Name, e.Reason))
-	}
-	return fmt.Errorf("rule bundle integrity failure in strict mode: %s (verify or reinstall the bundle(s), or set rules.allow_degraded: true only as an emergency override)",
-		strings.Join(details, "; "))
+	return rules.StrictIntegrityError(cfg, result)
 }
 
 func reportReloadRuleBundleResult(stderr io.Writer, logger ruleBundleAuditLogger, cfg *config.Config, result *rules.LoadResult) {
