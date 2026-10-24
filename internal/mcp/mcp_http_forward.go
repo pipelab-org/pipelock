@@ -187,7 +187,7 @@ func RunHTTPProxy(
 		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
-	reportMCPTaint(logW, opts, rec, "stdio_http")
+	reportMCPTaintStartup(logW, opts, rec, "stdio_http")
 
 	httpClient := transport.NewHTTPClientWithDialer(upstreamURL, extraHeaders, opts.DialContext)
 	httpClient.ResponseKeyValidator = jsonrpc.ValidateMessageKeys

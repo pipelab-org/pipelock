@@ -1763,7 +1763,7 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
-	reportMCPTaint(logW, opts, rec, "stdio_subprocess")
+	reportMCPTaintStartup(logW, opts, rec, "stdio_subprocess")
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW

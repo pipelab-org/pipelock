@@ -131,7 +131,7 @@ func RunWSProxy(
 	wsOpts.ToolCfgFn = nil
 	wsOpts.Transport = "mcp_ws"
 	wsOpts.TaintExternalSource = true
-	reportMCPTaint(safeLogW, wsOpts, rec, "stdio_ws")
+	reportMCPTaintStartup(safeLogW, wsOpts, rec, "stdio_ws")
 	wsOpts.WarnContext = innerCtx
 	wsOpts.sessionExit = sessionExit
 

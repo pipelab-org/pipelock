@@ -68,6 +68,23 @@ func reportMCPTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, bindin
 	_, _ = fmt.Fprintf(w, "pipelock: MCP taint origin=%s response_action=%s effective_response_action=%s terminal_approval=%t (finding-specific core/DLP rules still apply)\n", origin, action, effective, approval)
 }
 
+// reportMCPTaintStartup is the entry-point form of reportMCPTaint. The proxy's
+// main goroutine must never block on the operator log at startup: the log sink
+// can be wedged (a stalled pipe, or a child's stderr copy holding the shared
+// writer), and teardown already avoids exactly that with logAsync. Rendering
+// first keeps the metric and wording identical; only the write is bounded.
+func reportMCPTaintStartup(w io.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) {
+	if w == nil {
+		reportMCPTaint(nil, opts, rec, binding)
+		return
+	}
+	var b strings.Builder
+	reportMCPTaint(&b, opts, rec, binding)
+	if b.Len() > 0 {
+		logAsync(w, "%s", b.String())
+	}
+}
+
 // mcpTaintBlockMessage follows adaptive diagnostics: detail to the operator,
 // the original stable reason to the JSON-RPC client.
 func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
