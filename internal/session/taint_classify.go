@@ -4,7 +4,6 @@
 package session
 
 import (
-	"encoding/json"
 	"maps"
 	"net"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/chains"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -182,6 +182,12 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		targets.urls = compactNonEmpty(legacyURL)
 	}
 	pathClass := classifyMCPPathTargets(targets.refs, legacyPath, protectedPatterns, elevatedPatterns, opts)
+	if !parsed {
+		// Retain fallback references for compatibility, but unparsed arguments
+		// cannot establish that a write target is outside protected paths.
+		pathClass.Sensitivity = SensitivityProtected
+		pathClass.Confident = false
+	}
 	targetPath := pathClass.ActionRef
 	targetURL := compatibleFirstTarget(targets.urls, legacyURL)
 	category := chains.ClassifyTool(toolName, argsJSON, nil)
@@ -659,8 +665,8 @@ func flattenJSONStrings(raw string) []string {
 	if raw == "" {
 		return nil
 	}
-	var decoded any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+	decoded, ok := decodeJSONValue(raw)
+	if !ok {
 		return []string{raw}
 	}
 	var out []string
@@ -846,7 +852,7 @@ func decodeJSONValue(raw string) (any, bool) {
 		return nil, false
 	}
 	var decoded any
-	if err := json.Unmarshal([]byte(raw), &decoded); err != nil {
+	if err := extract.DecodeJSON([]byte(raw), &decoded); err != nil {
 		return nil, false
 	}
 	return decoded, true

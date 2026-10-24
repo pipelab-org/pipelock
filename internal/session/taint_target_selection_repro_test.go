@@ -104,10 +104,10 @@ func TestClassifyMCPToolCall_TargetSelection(t *testing.T) {
 			name:             "malformed arguments preserve legacy reference",
 			args:             `/tmp/legacy.txt`,
 			wantClass:        session.ActionClassWrite,
-			wantSensitivity:  session.SensitivityNormal,
+			wantSensitivity:  session.SensitivityProtected,
 			wantRef:          "/tmp/legacy.txt",
 			wantOverrideRefs: []string{"/tmp/legacy.txt"},
-			wantConfident:    true,
+			wantConfident:    false,
 		},
 		{
 			name:             "write URL preserves legacy target reference",
