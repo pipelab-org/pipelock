@@ -1163,7 +1163,10 @@ injection-driven taint. DLP, including the core credential floor, and destinatio
 controls still protect traffic leaving the machine through Pipelock. SSRF, tool
 policy, tool drift and structural checks, contracts, action limits, and the kill
 switch retain their existing behavior. Browser shield structural protections
-also remain active.
+also remain active. That includes `browser_shield.strip_hidden_traps`, which
+removes hidden HTML and SVG elements and comments that contain instruction words such
+as "ignore" or "instruction"; this setting does not change it. Set
+`browser_shield.strip_hidden_traps: false` to stop that stripping as well.
 
 Startup logs, `pipelock doctor`, and `pipelock explain` disclose the selected
 coverage reduction. Audit logs record the selected policy and warn-only pattern
