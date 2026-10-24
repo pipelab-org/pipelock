@@ -72,6 +72,9 @@ func TestHooksBundleIntegrity(t *testing.T) {
 						if (err == nil && want != 0) || (err != nil && cliutil.ExitCodeOf(err) != want) {
 							t.Fatalf("exit=%v want %d: %s", err, want, stderr.String())
 						}
+						if tc.deny && !strings.Contains(stderr.String(), "rule bundle integrity failure") {
+							t.Fatalf("wrong denial reason: %s", stderr.String())
+						}
 						return
 					}
 					if err != nil {

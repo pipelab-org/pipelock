@@ -659,7 +659,9 @@ tool-definition poisoning/drift) is detected, and 2 if any line could not be
 fully inspected and was therefore not verified clean - including a tools/list
 response scanned while mcp_tool_scanning is explicitly disabled by config; a
 verdict never reports clean:true over content it did not inspect. A finding
-outranks an inspection failure. Scanning covers response injection, inbound
+outranks an inspection failure. A strict-mode rule-bundle integrity refusal
+also exits with code 1 before stdin is read and produces no response verdict.
+Scanning covers response injection, inbound
 DLP, and (auto-enabled by default, like the proxy) tool-definition scanning
 for tools/list responses. It does not include tool call policy or request-side
 input scanning, because scan only ever sees one side of the conversation: the

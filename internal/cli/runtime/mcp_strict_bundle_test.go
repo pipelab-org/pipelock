@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 )
 
 // TestMCPProxyCmd_StrictBundleIntegrityFailsClosed proves `pipelock mcp proxy`
@@ -116,6 +118,9 @@ func TestMCPScanCmd_StrictBundleIntegrity(t *testing.T) {
 			if tc.wantErr {
 				if err == nil || !strings.Contains(err.Error(), "rule bundle integrity failure in strict mode") {
 					t.Fatalf("err = %v, want strict integrity refusal", err)
+				}
+				if code := cliutil.ExitCodeOf(err); code != 1 {
+					t.Fatalf("strict integrity refusal exit code = %d, want 1", code)
 				}
 			} else if err != nil {
 				t.Fatalf("advisory bundle failure: %v", err)
