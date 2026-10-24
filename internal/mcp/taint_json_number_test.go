@@ -43,3 +43,34 @@ func TestEvaluateMCPTaintJSONNumberApproval(t *testing.T) {
 		})
 	}
 }
+
+// Absent, null and empty-object arguments name no write target. Through the
+// real frame parser and taint gate they must reach one decision under the
+// default fail-safe setting; only an explicit target may raise sensitivity.
+func TestEvaluateMCPTaintArgumentlessWriteParity(t *testing.T) {
+	t.Parallel()
+
+	frames := map[string]string{
+		"absent":       `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_memory"}}`,
+		"null":         `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_memory","arguments":null}}`,
+		"empty_object": `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"save_memory","arguments":{}}}`,
+	}
+	for name, raw := range frames {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			rec := &taintRecorder{}
+			rec.ObserveRisk(session.RiskObservation{Source: session.TaintSourceRef{
+				URL: "https://api.vendor.example/document", Level: session.TaintExternalUntrusted,
+			}})
+			frame := ParseMCPFrame([]byte(raw))
+			got := evaluateMCPTaint(MCPProxyOpts{TaintCfg: &cfg.Taint, Rec: rec}, "save_memory", mcpFrameCallableArgs(frame))
+			if got.ActionClass != session.ActionClassWrite || got.Sensitivity != session.SensitivityNormal {
+				t.Fatalf("classification = %s/%s, want write/normal", got.ActionClass, got.Sensitivity)
+			}
+			if got.Result.Decision != session.PolicyAllow {
+				t.Fatalf("decision = %+v, want allow for a write that names no target", got.Result)
+			}
+		})
+	}
+}

@@ -82,7 +82,6 @@ func TestMCPMalformedWriteClassification(t *testing.T) {
 		{"adjacent_documents", `{"path":"/repo/auth/middleware.go"}{}`, `{"path":"/repo/auth/middleware.go"}{}`},
 		{"invalid_number", `{"path":"/repo/auth/middleware.go","n":1e}`, `{"path":"/repo/auth/middleware.go","n":1e}`},
 		{"raw_path", "/tmp/legacy.txt", "/tmp/legacy.txt"},
-		{"empty", "", ""},
 	}
 	for _, tt := range tests {
 		for _, failSafe := range []bool{false, true} {
@@ -115,6 +114,32 @@ func TestMCPJSONNumberStringExtraction(t *testing.T) {
 			want := []string{"outer", "n", "path", "/repo/auth/middleware.go"}
 			if !slices.Equal(got, want) {
 				t.Fatalf("strings = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// Absent and null MCP arguments reach the classifier as "" (the frame parser
+// normalizes both). They name no target, so they must classify exactly like
+// an explicit empty object under either fail-safe setting rather than taking
+// the malformed-input path.
+func TestMCPEmptyArgumentsMatchEmptyObject(t *testing.T) {
+	t.Parallel()
+
+	for _, failSafe := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failsafe_%t", failSafe), func(t *testing.T) {
+			opts := ClassificationOptions{FailSafe: failSafe}
+			want := ClassifyMCPToolCallWithOptions("write_file", "{}", []string{"*/auth/*"}, nil, opts)
+			got := ClassifyMCPToolCallWithOptions("write_file", "", []string{"*/auth/*"}, nil, opts)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("empty arguments = %+v, want {} classification %+v", got, want)
+			}
+			wantSensitivity := SensitivityNormal
+			if failSafe {
+				wantSensitivity = SensitivityProtected
+			}
+			if got.Class != ActionClassWrite || got.Sensitivity != wantSensitivity || got.Confident {
+				t.Fatalf("classification = %+v, want write/%s low confidence", got, wantSensitivity)
 			}
 		})
 	}

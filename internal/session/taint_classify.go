@@ -182,9 +182,13 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		targets.urls = compactNonEmpty(legacyURL)
 	}
 	pathClass := classifyMCPPathTargets(targets.refs, legacyPath, protectedPatterns, elevatedPatterns, opts)
-	if !parsed {
+	if !parsed && argsJSON != "" {
 		// Retain fallback references for compatibility, but unparsed arguments
 		// cannot establish that a write target is outside protected paths.
+		// Empty input is excluded: the MCP frame parser normalizes absent and
+		// null arguments to "", which names no target, exactly like {}. Both
+		// stay under fail_safe_classification rather than splitting one
+		// request's outcome by wire spelling.
 		pathClass.Sensitivity = SensitivityProtected
 		pathClass.Confident = false
 	}
