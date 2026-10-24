@@ -34,7 +34,7 @@ func ResolveAndReportConfig(cfg *config.Config, opts config.RuntimeResolveOpts, 
 // Forward-only and one-shot scan commands have no MCP session to diagnose.
 func EmitMCPTaintDiagnostics(w *diaglog.Writer, cfg *config.Config, mode config.RuntimeMode) {
 	if w != nil {
-		w.Emit(RenderMCPTaintDiagnostics(cfg, mode))
+		w.TryWrite(RenderMCPTaintDiagnostics(cfg, mode))
 	}
 }
 

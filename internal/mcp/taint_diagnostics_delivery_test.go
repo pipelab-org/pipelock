@@ -270,7 +270,7 @@ func TestMCPTaintDiagnostics_SkippedReportAccounting(t *testing.T) {
 			opts := MCPProxyOpts{TaintCfg: &cfg.Taint, Metrics: m}
 			sink := &taintStartupGate{entered: make(chan struct{}), release: make(chan struct{}), childLine: make(chan struct{})}
 			w := diaglog.New(sink)
-			pending := w.Emit("busy\n")
+			pending := w.TryWrite("busy\n")
 			if pending == nil {
 				t.Fatal("setup diagnostic not admitted")
 			}

@@ -1419,5 +1419,5 @@ func (s *Server) unlockReloadAndReport() {
 	text := s.taintReloadDiagnostic
 	s.taintReloadDiagnostic = ""
 	s.reloadMu.Unlock()
-	diaglog.New(s.opts.Stderr).Emit(text)
+	diaglog.New(s.opts.Stderr).TryWrite(text)
 }

@@ -118,7 +118,7 @@ func emitMCPTaintReport(w *diaglog.Writer, opts MCPProxyOpts, message string) <-
 	if w == nil || message == "" {
 		return nil
 	}
-	done := w.Emit(message)
+	done := w.TryWrite(message)
 	if done == nil {
 		opts.Metrics.RecordMCPTaintReportSkipped()
 	}

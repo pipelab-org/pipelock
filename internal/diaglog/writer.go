@@ -48,10 +48,10 @@ func (w *Writer) Write(p []byte) (int, error) {
 	return w.w.Write(p)
 }
 
-// Emit submits an immutable rendered message without waiting for I/O or a lock.
+// TryWrite submits an immutable rendered message without waiting for I/O or a lock.
 // It returns nil when busy or disabled, otherwise a delivery-completion signal.
 // Completion means the write returned, not that delivery succeeded.
-func (w *Writer) Emit(message string) <-chan struct{} {
+func (w *Writer) TryWrite(message string) <-chan struct{} {
 	if w == nil || message == "" || !w.state.TryLock() {
 		return nil
 	}

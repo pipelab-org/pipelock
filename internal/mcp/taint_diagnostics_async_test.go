@@ -313,7 +313,7 @@ func TestMCPTaintDiagnostics_WedgedSinkBoundsGoroutinesAndCountsEveryContext(t *
 	countDrainers := func() int {
 		stacks := make([]byte, 1<<20)
 		n := runtime.Stack(stacks, true)
-		return strings.Count(string(stacks[:n]), "internal/diaglog.(*Writer).Emit.func1()")
+		return strings.Count(string(stacks[:n]), "internal/diaglog.(*Writer).TryWrite.func1()")
 	}
 	if got := countDrainers(); got != 1 {
 		t.Fatalf("initial diagnostic goroutines=%d, want 1", got)
@@ -345,7 +345,7 @@ func TestMCPTaintDiagnostics_WedgedSinkBoundsGoroutinesAndCountsEveryContext(t *
 func TestMCPTaintDiagnostics_TeardownLogSurvivesPendingDiagnostic(t *testing.T) {
 	sink := &taintTeardownWriter{entered: make(chan struct{}), release: make(chan struct{}), written: make(chan struct{}), overlap: make(chan struct{})}
 	w := diaglog.New(sink)
-	pending := w.Emit("pipelock: MCP taint binding=stdio_subprocess\n")
+	pending := w.TryWrite("pipelock: MCP taint binding=stdio_subprocess\n")
 	if pending == nil {
 		t.Fatal("startup diagnostic was not admitted")
 	}

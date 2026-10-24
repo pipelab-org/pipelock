@@ -44,7 +44,7 @@ func awaitDiagnostic(t *testing.T, done <-chan struct{}) {
 func TestWriter_WedgedDiagnosticBoundsWorkAndPreservesOrdinaryOutput(t *testing.T) {
 	sink := &gatedWriter{entered: make(chan struct{}), release: make(chan struct{})}
 	w := New(sink)
-	done := w.Emit("diagnostic")
+	done := w.TryWrite("diagnostic")
 	released := false
 	defer func() {
 		if !released {
@@ -54,7 +54,7 @@ func TestWriter_WedgedDiagnosticBoundsWorkAndPreservesOrdinaryOutput(t *testing.
 	}()
 	<-sink.entered
 	for range 10000 {
-		if w.Emit("discard while wedged") != nil {
+		if w.TryWrite("discard while wedged") != nil {
 			t.Fatal("wedged writer admitted another diagnostic")
 		}
 	}
@@ -103,7 +103,7 @@ func TestWriter_BusyOrdinarySinkDoesNotHoldDiagnosticAdmission(t *testing.T) {
 				w.state.Lock()
 			}
 			submitted := make(chan (<-chan struct{}), 1)
-			go func() { submitted <- w.Emit("optional") }()
+			go func() { submitted <- w.TryWrite("optional") }()
 			defer func() {
 				if kind == "state" {
 					w.state.Unlock()
@@ -141,7 +141,7 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	if _, err := io.WriteString(w, "ordinary\n"); err != nil {
 		t.Fatal(err)
 	}
-	awaitDiagnostic(t, w.Emit("optional\n"))
+	awaitDiagnostic(t, w.TryWrite("optional\n"))
 	if out.String() != "ordinary\noptional\n" {
 		t.Fatal(out.String())
 	}
@@ -151,12 +151,12 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	if w.Pending() != nil {
 		t.Fatal("idle drainer retained")
 	}
-	if w.Emit("") != nil {
+	if w.TryWrite("") != nil {
 		t.Fatal("empty diagnostic admitted")
 	}
 	failed := New(failingWriter{})
-	awaitDiagnostic(t, failed.Emit("failed"))
-	awaitDiagnostic(t, failed.Emit("retry"))
+	awaitDiagnostic(t, failed.TryWrite("failed"))
+	awaitDiagnostic(t, failed.TryWrite("retry"))
 	if _, err := failed.Write([]byte("failed")); err == nil || !strings.Contains(err.Error(), "sink unavailable") {
 		t.Fatalf("ordinary write error lost: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestWriter_HealthyFailedNilAndSharedOwner(t *testing.T) {
 	if n, err := nilWriter.WriteBlocking([]byte("ignored")); n != 0 || !errors.Is(err, syscall.EINVAL) {
 		t.Fatalf("nil blocking write=%d,%v", n, err)
 	}
-	if New(nil) != nil || nilWriter.Emit("ignored") != nil || nilWriter.Pending() != nil {
+	if New(nil) != nil || nilWriter.TryWrite("ignored") != nil || nilWriter.Pending() != nil {
 		t.Fatal("nil sink was not inert")
 	}
 	if n, err := nilWriter.Write([]byte("ignored")); n != 0 || !errors.Is(err, syscall.EINVAL) {
