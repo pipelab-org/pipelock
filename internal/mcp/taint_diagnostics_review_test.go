@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -204,18 +205,21 @@ func TestMCPTaintDiagnostics_ListenerReportAggregation(t *testing.T) {
 	m := metrics.New()
 	opts := MCPProxyOpts{TaintCfg: &cfg.Taint, Metrics: m}
 	var out bytes.Buffer
-	if !states.reportTaint(&out, opts, nil, "listener_stateless") {
+	logW := diaglog.New(&out)
+	if !states.reportTaint(logW, opts, nil, "listener_stateless") {
 		t.Fatal("first context not emitted")
 	}
+	waitTaintDiagnostic(t, logW)
 	for range 2 {
-		if states.reportTaint(&out, opts, nil, "listener_stateless") {
+		if states.reportTaint(logW, opts, nil, "listener_stateless") {
 			t.Fatal("context not throttled")
 		}
 	}
 	now = now.Add(listenerDegradationReportInterval)
-	if !states.reportTaint(&out, opts, nil, "listener_stateless") {
+	if !states.reportTaint(logW, opts, nil, "listener_stateless") {
 		t.Fatal("interval report not emitted")
 	}
+	waitTaintDiagnostic(t, logW)
 	if !strings.Contains(out.String(), "contexts since last report=3") || strings.Count(out.String(), "MCP taint binding=") != 2 {
 		t.Fatalf("wrong aggregated reports: %s", out.String())
 	}

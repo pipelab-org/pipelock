@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cli/runtimeconfig"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -40,7 +41,7 @@ func (s *Server) Reload(newCfg *config.Config) (err error) {
 	fireReloadLockHook(false)
 	s.reloadMu.Lock()
 	fireReloadLockHook(true)
-	defer s.reloadMu.Unlock()
+	defer s.unlockReloadAndReport()
 	err = s.reloadLocked(newCfg)
 	s.notifyReloadStatusLocked()
 	return err
@@ -761,7 +762,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	}
 	fireReloadAfterProxySwapHook(s)
 	s.refreshRuntimeState(oldCfg, newCfg, reloadBundleResult, s.proxy.ScannerPtr().Load())
-	runtimeconfig.EmitMCPTaintDiagnostics(s.opts.Stderr, newCfg, s.runtimeMode)
+	s.taintReloadDiagnostic = runtimeconfig.RenderMCPTaintDiagnostics(newCfg, s.runtimeMode)
 	publishDegradedRuleBundleMetrics(s.metrics, newCfg)
 	if reloadErr := s.proxy.LoadCertCache(newCfg); reloadErr != nil {
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile),
@@ -1410,4 +1411,13 @@ func (s *Server) cleanup() {
 		s.sentry.Close()
 		s.sentry = nil
 	}
+}
+
+// unlockReloadAndReport takes the rendered snapshot while locked, then submits
+// only after releasing the activation boundary. No config pointer escapes.
+func (s *Server) unlockReloadAndReport() {
+	text := s.taintReloadDiagnostic
+	s.taintReloadDiagnostic = ""
+	s.reloadMu.Unlock()
+	diaglog.New(s.opts.Stderr).Emit(text)
 }

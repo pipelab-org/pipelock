@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -214,17 +215,19 @@ func TestMCPTaintDiagnostics_RefusalNamesConsultedRecovery(t *testing.T) {
 			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 			var blocked *BlockedRequest
 			var log bytes.Buffer
+			logW := diaglog.New(&log)
 			if surface == "http" {
-				blocked = scanHTTPInput(msg, &log, "session", "session", opts)
+				blocked = scanHTTPInput(msg, logW, "session", "session", opts)
 			} else {
 				ch := make(chan BlockedRequest, 1)
-				ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(msg, '\n'))), transport.NewStdioWriter(io.Discard), &log, config.ActionBlock, config.ActionBlock, ch, nil, nil, opts)
+				ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(msg, '\n'))), transport.NewStdioWriter(io.Discard), logW, config.ActionBlock, config.ActionBlock, ch, nil, nil, opts)
 				select {
 				case b := <-ch:
 					blocked = &b
 				default:
 				}
 			}
+			waitTaintDiagnostic(t, logW)
 			if blocked == nil {
 				t.Fatal("hostile exec was not refused")
 			}
@@ -260,7 +263,9 @@ func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
 		t.Fatal("config recovery and docs differ")
 	}
 	var log bytes.Buffer
-	mcpTaintBlockMessage(taintDecision{}, &log)
+	logW := diaglog.New(&log)
+	mcpTaintBlockMessage(taintDecision{}, logW)
+	waitTaintDiagnostic(t, logW)
 	if !strings.Contains(log.String(), guidance) {
 		t.Fatal("operator recovery and config differ")
 	}

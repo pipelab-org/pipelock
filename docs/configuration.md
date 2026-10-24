@@ -4082,6 +4082,8 @@ fails closed and blocks; configure an allowlist, a narrow trust override, or
 
 MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust affects only future clean observations; it does not clear hostile history. Inline approval cannot override a hostile block.
 
+Taint diagnostic logs are best-effort. A busy or stalled sink can drop a diagnostic or concurrent operator output; request decisions, refusal receipts, and reloads do not wait for that output. The context metric counts observations even when diagnostic output is dropped, rather than acknowledging log delivery.
+
 Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match); they don't remove taint or override another scanner or identity gate. Deferred tool approvals aren't recovery for a taint refusal.
 
 ### Trust overrides

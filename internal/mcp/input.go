@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
@@ -275,6 +276,7 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
+	logW = diaglog.New(logW)
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch

@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	decide "github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/envcontrol"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -1763,13 +1764,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 		}
 	}
 	defer recordMCPBaselineSample(opts, rec)
-	reportMCPTaintStartup(logW, opts, rec, "stdio_subprocess")
 
 	// Wrap shared writers in mutex adapters. Multiple goroutines write to
 	// clientOut (blocked request drainer + response scanner) and logW
 	// (input scanner + response scanner + child stderr).
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := &syncWriter{w: logW}
+	safeLogW := diaglog.New(logW)
+	reportMCPTaintStartup(safeLogW, opts, rec, "stdio_subprocess")
 
 	// Restrict child process environment to safe variables only.
 	// Prevents leaking secrets from the proxy's environment to the MCP server.

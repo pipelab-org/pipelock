@@ -126,7 +126,7 @@ func (s *Server) ApplyConductorPolicyBundle(bundle conductor.PolicyBundle, opts 
 	// compensation. An operator reload therefore cannot land between a failed
 	// candidate and restoration of the exact pre-apply live configuration.
 	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
+	defer s.unlockReloadAndReport()
 	beforeOutcome := s.reloadSnapshotLocked()
 	beforePolicy := s.liveConfig()
 	s.reloadDurablePending = true
@@ -224,7 +224,7 @@ func (s *Server) recoverActiveConductorPolicy() (recoverErr error) {
 	s.conductorApplyMu.Lock()
 	defer s.conductorApplyMu.Unlock()
 	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
+	defer s.unlockReloadAndReport()
 	if s.conductorDown.Load() {
 		return applycache.ErrEntitlementLost
 	}
@@ -297,7 +297,7 @@ func preserveConductorBundleLocalRuntimeState(oldCfg, newCfg *config.Config, bun
 
 func (s *Server) reloadConductorPolicyBundle(newCfg *config.Config, bundleYAML string) error {
 	s.reloadMu.Lock()
-	defer s.reloadMu.Unlock()
+	defer s.unlockReloadAndReport()
 	return s.reloadConductorPolicyBundleLocked(newCfg, bundleYAML)
 }
 

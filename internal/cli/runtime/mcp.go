@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	contractruntime "github.com/luckyPipewrench/pipelock/internal/contract/runtime"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
@@ -1030,6 +1031,7 @@ Key-free evidence capture:
 			// reflects the effective policy every downstream emitter,
 			// scanner, and receipt stamp consumes.
 			var bundleResult *rules.LoadResult
+			cmd.SetErr(diaglog.New(cmd.ErrOrStderr()))
 			cfg, _ = runtimeconfig.ResolveAndReportConfig(cfg, config.RuntimeResolveOpts{
 				Mode: config.RuntimeMCPProxy,
 				MergeBundles: func(c *config.Config) {

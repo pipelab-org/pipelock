@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
@@ -40,7 +41,7 @@ func RunWSProxy(
 	// rather than observe PID 1 and become inert.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
 	safeClientOut := &syncWriter{w: clientOut}
-	safeLogW := &syncWriter{w: logW}
+	safeLogW := diaglog.New(logW)
 	ctx, stopSession, sessionExit := newSessionBoundContext(ctx, startupParentWatch, clientIn, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
 

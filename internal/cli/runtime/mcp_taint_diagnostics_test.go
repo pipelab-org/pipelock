@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 )
 
 func TestMCPProxyTaintDiagnostics_Startup(t *testing.T) {
@@ -29,12 +30,14 @@ func TestMCPProxyTaintDiagnostics_Startup(t *testing.T) {
 			cmd := McpCmd()
 			var out, log bytes.Buffer
 			cmd.SetOut(&out)
-			cmd.SetErr(&log)
+			logW := diaglog.New(&log)
+			cmd.SetErr(logW)
 			cmd.SetIn(strings.NewReader(""))
 			cmd.SetArgs([]string{"proxy", "--config", path, "--", "/bin/true"})
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("proxy: %v; %s", err, log.String())
 			}
+			waitRuntimeTaintDiagnostic(t, logW)
 			recorder := "recorder_risk_state=false cross_request_recording=inactive"
 			if tc.name == "true" {
 				recorder = "recorder_risk_state=true cross_request_recording=active"
@@ -59,6 +62,7 @@ func TestMCPListenerTaintDiagnostics_ActualReload(t *testing.T) {
 		}
 		s.lastReloadAt = time.Time{}
 		err = s.Reload(updated)
+		waitRuntimeTaintDiagnostic(t, diaglog.New(s.opts.Stderr))
 		log := output.String()[before:]
 		if !updated.Taint.Enabled {
 			if err == nil || !s.proxy.CurrentConfig().Taint.Enabled || strings.Contains(log, "taint is disabled") {

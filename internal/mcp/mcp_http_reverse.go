@@ -30,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
@@ -195,7 +196,7 @@ func RunHTTPListenerProxy(
 	// startup race. A launcher can still exit before this first syscall; closing
 	// that earlier window needs a harness-owned lifetime primitive.
 	startupParentWatch := parentWatchOpts{startPPID: os.Getppid()}
-	safeLogW := &syncWriter{w: logW}
+	safeLogW := diaglog.New(logW)
 	ctx, stopSession, _ := newSessionBoundContext(ctx, startupParentWatch, nil, safeLogW, opts.sessionExitForTest)
 	defer stopSession()
 	opts.UpstreamHeaders = canonicalizeListenerUpstreamHeaders(opts.UpstreamHeaders)

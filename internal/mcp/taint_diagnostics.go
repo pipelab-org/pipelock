@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/diaglog"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -68,20 +70,16 @@ func reportMCPTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, bindin
 	_, _ = fmt.Fprintf(w, "pipelock: MCP taint origin=%s response_action=%s effective_response_action=%s terminal_approval=%t (finding-specific core/DLP rules still apply)\n", origin, action, effective, approval)
 }
 
-// reportMCPTaintStartup is the entry-point form of reportMCPTaint. The proxy's
-// main goroutine must never block on the operator log at startup: the log sink
-// can be wedged (a stalled pipe, or a child's stderr copy holding the shared
-// writer), and teardown already avoids exactly that with logAsync. Rendering
-// first keeps the metric and wording identical; only the write is bounded.
-func reportMCPTaintStartup(w io.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) {
-	if w == nil {
-		reportMCPTaint(nil, opts, rec, binding)
-		return
-	}
+// reportMCPTaintStartup counts and renders once, then gives healthy sinks the
+// existing bounded startup flush. The entry point supplies its shared writer.
+func reportMCPTaintStartup(w *diaglog.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) {
 	var b strings.Builder
 	reportMCPTaint(&b, opts, rec, binding)
-	if b.Len() > 0 {
-		logAsync(w, "%s", b.String())
+	if done := w.Emit(b.String()); done != nil {
+		select {
+		case <-done:
+		case <-time.After(logFlushGrace):
+		}
 	}
 }
 
@@ -89,7 +87,7 @@ func reportMCPTaintStartup(w io.Writer, opts MCPProxyOpts, rec session.Recorder,
 // the original stable reason to the JSON-RPC client.
 func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
 	if logW != nil {
-		_, _ = fmt.Fprintf(logW, "pipelock: taint refusal (%s); recovery: %s\n", decision.Result.Reason, config.MCPTaintRecoveryGuidance)
+		diaglog.New(logW).Emit(fmt.Sprintf("pipelock: taint refusal (%s); recovery: %s\n", decision.Result.Reason, config.MCPTaintRecoveryGuidance))
 	}
 	return "pipelock: " + decision.Result.Reason
 }
@@ -98,11 +96,15 @@ func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
 // count each context even when this listener-wide log interval is suppressed.
 func (s *mcpListenerClientStates) reportTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) bool {
 	count, emit := s.taintReporter.observe()
-	if !emit {
-		w = nil
-	} else if count > 1 && w != nil {
-		_, _ = fmt.Fprintf(w, "pipelock: MCP taint listener contexts since last report=%d (see pipelock_mcp_taint_contexts_total)\n", count)
+	var b strings.Builder
+	var renderW io.Writer
+	if emit && w != nil {
+		renderW = &b
 	}
-	reportMCPTaint(w, opts, rec, binding)
+	if count > 1 && renderW != nil {
+		_, _ = fmt.Fprintf(renderW, "pipelock: MCP taint listener contexts since last report=%d (see pipelock_mcp_taint_contexts_total)\n", count)
+	}
+	reportMCPTaint(renderW, opts, rec, binding)
+	diaglog.New(w).Emit(b.String())
 	return emit
 }
