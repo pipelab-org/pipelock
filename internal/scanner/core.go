@@ -326,7 +326,19 @@ func (s *Scanner) ScanCoreResponse(ctx context.Context, content string) []Respon
 	if ctx != nil && ctx.Err() != nil {
 		return nil
 	}
+	// The global wording policy caps every wording matcher, this one included.
+	if s.PromptInjectionMode() == config.ActionAllow {
+		return nil
+	}
 	coreSet := s.scanCoreResponse(content, nil, false)
+	if s.PromptInjectionMode() == config.ActionWarn && len(coreSet.matches) > 0 {
+		names := make([]string, 0, len(coreSet.matches))
+		for _, match := range coreSet.matches {
+			names = append(names, match.PatternName)
+		}
+		s.ReportInjectionWarnings(ctx, names)
+		return nil
+	}
 	return coreSet.matches
 }
 
