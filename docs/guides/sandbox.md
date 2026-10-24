@@ -37,6 +37,16 @@ On `linux/arm64` below Landlock ABI 9, a strict launch reports the missing Unix 
 
 `--strict` requires seccomp and descendant cleanup (the Linux child subreaper) as well as the network namespace; it refuses to start without either. A non-strict launch prints one startup warning when descendant cleanup is degraded: a detached descendant can then outlive the session and hold proxy shutdown open. On `linux/arm64`, the normal non-strict launch can be `partial` because the seccomp filter is not built for that architecture. Do not describe that launch as fully contained.
 
+## Workspace renames and hard links
+
+On Landlock ABI 2 or newer, when the kernel reports Landlock erratum 3 (disconnected directory handling) as fixed, the sandbox permits renames and hard links between directories within the writable workspace and explicitly writable directory grants. Landlock rights apply to everything beneath a granted directory, so a read-only grant nested inside a writable directory is already writable and can be reparented like the rest of that directory. Other read-only directories and ungranted directories don't get this permission: renaming or linking into them, or from them into the workspace, stays denied. Writable individual-file grants don't authorize reparenting their containing directory's entries.
+
+Landlock ABI 1 permits same-directory operations but denies cross-directory renames and hard links with `EXDEV`, including moves within the workspace. Use a kernel supporting ABI 2 or newer for extract-then-move workflows.
+
+A kernel that does not report erratum 3 as fixed, including one too old to report Landlock errata at all, gets the same `EXDEV` behavior as ABI 1. Without that fix, a rename or link through a bind mount can widen access and bypass `REFER` limits, so the sandbox withholds `REFER` rather than rely on it. See the kernel's [Errata](https://docs.kernel.org/userspace-api/landlock.html#landlock-errata) section.
+
+On Landlock ABI 6 or newer, the filesystem rules and the IPC scope rules stay separate layers. Both layers grant `LANDLOCK_ACCESS_FS_REFER` on the writable directory grants, because the kernel denies an ungranted `REFER` in every layer, even one that only sets IPC scopes. See the kernel's [Filesystem flags](https://docs.kernel.org/userspace-api/landlock.html#filesystem-flags), [Layers of file path access rights](https://docs.kernel.org/userspace-api/landlock.html#layers-of-file-path-access-rights), and [File renaming and linking (ABI < 2)](https://docs.kernel.org/userspace-api/landlock.html#file-renaming-and-linking-abi-2) documentation (`Documentation/userspace-api/landlock.rst`).
+
 ## Ubuntu and AppArmor user-namespace restriction
 
 Ubuntu 24.04 and later restrict unprivileged user namespaces with AppArmor by default (`kernel.apparmor_restrict_unprivileged_userns = 1`). On such a host `pipelock sandbox --dry-run` can report `CAPABILITIES_OK` with the network layer `available`, because the dry run only probes capabilities, and the real launch then fails after the network layer reports `ACTIVE`:

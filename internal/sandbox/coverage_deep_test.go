@@ -1442,7 +1442,7 @@ func TestDetect_SELinuxField(t *testing.T) {
 
 func TestBuildRules_EmptyPolicy(t *testing.T) {
 	policy := Policy{}
-	rules := buildRules(policy)
+	rules := buildRules(policy, 1)
 	if len(rules) != 0 {
 		t.Errorf("expected 0 rules for empty policy, got %d", len(rules))
 	}
@@ -1455,7 +1455,7 @@ func TestBuildRules_AllSlicesFilled(t *testing.T) {
 		AllowRWDirs:    []string{"/tmp/work"},
 		AllowRWFiles:   []string{"/dev/null"},
 	}
-	rules := buildRules(policy)
+	rules := buildRules(policy, 1)
 	if len(rules) != 4 {
 		t.Errorf("expected 4 rules, got %d", len(rules))
 	}
