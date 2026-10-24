@@ -6,6 +6,9 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
+	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -24,28 +27,54 @@ type HeaderBinding struct {
 	Type       string
 }
 
-// headerBindingsForDefs validates bindings before the baseline lock is held.
-// Invalid definitions deliberately have no returned entry so a later commit
-// clears their stale contract rather than enforcing an ambiguous schema.
-func headerBindingsForDefs(defs []ToolDef) map[string]map[string]HeaderBinding {
-	prepared := make(map[string]map[string]HeaderBinding, len(defs))
+// HeaderContractState distinguishes structural knowledge from delivery history
+// and from the drift baseline's trust decisions.
+type HeaderContractState uint8
+
+const (
+	HeaderContractUnknown HeaderContractState = iota
+	HeaderContractValidWithBindings
+	HeaderContractValidWithoutBindings
+	HeaderContractInvalid
+)
+
+// HeaderContract is a schema observation, not proof of client delivery or approval.
+// Future internal discovery can record this state without admitting knownTools.
+type HeaderContract struct {
+	State    HeaderContractState
+	Bindings map[string]HeaderBinding
+	Reason   string
+}
+
+// headerBindingsForDefs validates contracts before the baseline lock is held.
+// Invalid observations remain explicit: deleting them would mean unknown again.
+func headerBindingsForDefs(defs []ToolDef) map[string]HeaderContract {
+	prepared := make(map[string]HeaderContract, len(defs))
 	for _, def := range defs {
 		bindings, err := ExtractHeaderBindings(def.InputSchema)
+		contract := HeaderContract{State: HeaderContractValidWithoutBindings, Bindings: make(map[string]HeaderBinding, len(bindings))}
 		if err != nil {
-			continue
+			contract = HeaderContract{State: HeaderContractInvalid, Reason: err.Error()}
+		} else {
+			for _, binding := range bindings {
+				binding.Path = append([]string(nil), binding.Path...)
+				contract.Bindings[strings.ToLower(binding.HeaderName)] = binding
+			}
+			if len(bindings) > 0 {
+				contract.State = HeaderContractValidWithBindings
+			}
 		}
-		byName := make(map[string]HeaderBinding, len(bindings))
-		for _, binding := range bindings {
-			binding.Path = append([]string(nil), binding.Path...)
-			byName[strings.ToLower(binding.HeaderName)] = binding
+		// MCP tools#tool-names says names SHOULD be unique within a server.
+		// Conflicting definitions cannot identify one exact per-name contract.
+		if _, duplicate := prepared[def.Name]; duplicate {
+			contract = HeaderContract{State: HeaderContractInvalid, Reason: "duplicate tool definition"}
 		}
-		prepared[def.Name] = byName
+		prepared[def.Name] = contract
 	}
 	return prepared
 }
 
-// CanAdmitHeaderBindings reports whether every valid header-binding contract
-// can be recorded. A partial set of contracts is an ambiguous security state.
+// CanAdmitHeaderBindings includes rejected contracts in the bounded registry.
 func (tb *ToolBaseline) CanAdmitHeaderBindings(defs []ToolDef) bool {
 	if tb == nil {
 		return true
@@ -60,10 +89,8 @@ func (tb *ToolBaseline) CanAdmitHeaderBindings(defs []ToolDef) bool {
 	return namesFitCapacity(tb.headerBindings, names)
 }
 
-// SetToolHeaderBindings replaces the header-binding schema for definitions in
-// an accepted tools/list response. Invalid definitions clear their contract.
-// Capacity returns an explicit error before changing any contract; forwarding
-// a response with only some contracts would make header enforcement random.
+// SetToolHeaderBindings records structural observations only. It does not mark
+// tools client-seen, approve drift, or satisfy an inventory approval.
 func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) error {
 	prepared := headerBindingsForDefs(defs)
 	names := make([]string, 0, len(prepared))
@@ -73,54 +100,65 @@ func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) error {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
 	if tb.headerBindings == nil {
-		tb.headerBindings = make(map[string]map[string]HeaderBinding)
+		tb.headerBindings = make(map[string]HeaderContract)
 	}
-	if !namesFitCapacity(tb.headerBindings, names) {
+	if !namesFitCapacityWithPending(tb.headerBindings, tb.pendingTools, names) {
 		return ErrBaselineCapacity
 	}
-	for _, def := range defs {
-		bindings, valid := prepared[def.Name]
-		if !valid {
-			delete(tb.headerBindings, def.Name)
-			continue
+	tb.inventorySequence++
+	for name, contract := range prepared {
+		tb.headerBindings[name] = contract
+		if tb.headerContractVersions == nil {
+			tb.headerContractVersions = make(map[string]uint64)
 		}
-		tb.headerBindings[def.Name] = bindings
+		tb.headerContractVersions[name] = tb.inventorySequence
 	}
 	return nil
 }
 
-// ClearToolHeaderBindings removes contracts carried by a response that was
-// forwarded under warn policy but was not clean enough to become security
-// evidence. Clearing is essential: retaining the previous contract after the
-// upstream changed it would reject legitimate current clients against stale
-// schema state.
+// ClearToolHeaderBindings explicitly invalidates observations, independently of
+// drift trust. Ordinary scan warnings must not call this method.
 func (tb *ToolBaseline) ClearToolHeaderBindings(defs []ToolDef) {
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	tb.inventorySequence++
+	if tb.headerContractVersions == nil {
+		tb.headerContractVersions = make(map[string]uint64)
+	}
 	for _, def := range defs {
-		delete(tb.headerBindings, def.Name)
+		if _, exists := tb.headerBindings[def.Name]; exists {
+			// Retain a bounded unknown tombstone so old in-flight reservations
+			// cannot restore a cleared observation, or grow a separate version map.
+			tb.headerBindings[def.Name] = HeaderContract{State: HeaderContractUnknown}
+			tb.headerContractVersions[def.Name] = tb.inventorySequence
+		}
 	}
 }
 
-// HeaderBindings returns a copy of the accepted mirrored-parameter schema for
-// one tool. The boolean distinguishes a known tool with no annotations from a
-// tool whose schema has not been observed.
-func (tb *ToolBaseline) HeaderBindings(toolName string) (map[string]HeaderBinding, bool) {
+// HeaderContract returns an isolated snapshot of a tool's structural contract.
+func (tb *ToolBaseline) HeaderContract(toolName string) HeaderContract {
 	if tb == nil {
-		return nil, false
+		return HeaderContract{State: HeaderContractUnknown}
 	}
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
-	bindings, ok := tb.headerBindings[toolName]
-	if !ok {
-		return nil, false
+	contract := tb.headerBindings[toolName]
+	if contract.Bindings != nil {
+		out := make(map[string]HeaderBinding, len(contract.Bindings))
+		for name, binding := range contract.Bindings {
+			binding.Path = append([]string(nil), binding.Path...)
+			out[name] = binding
+		}
+		contract.Bindings = out
 	}
-	out := make(map[string]HeaderBinding, len(bindings))
-	for name, binding := range bindings {
-		binding.Path = append([]string(nil), binding.Path...)
-		out[name] = binding
-	}
-	return out, true
+	return contract
+}
+
+// HeaderBindings is the valid-contract compatibility view. Callers deciding
+// whether a tool is rejected must use HeaderContract instead.
+func (tb *ToolBaseline) HeaderBindings(toolName string) (map[string]HeaderBinding, bool) {
+	contract := tb.HeaderContract(toolName)
+	return contract.Bindings, contract.State == HeaderContractValidWithBindings || contract.State == HeaderContractValidWithoutBindings
 }
 
 // ExtractHeaderBindings validates and extracts x-mcp-header annotations along
@@ -147,18 +185,36 @@ func ExtractHeaderBindings(schema json.RawMessage) ([]HeaderBinding, error) {
 	return bindings, nil
 }
 
+// MCP 2026-07-28, Streamable HTTP "Schema Extension" requires an exact
+// properties-only path. JSON Schema core 2020-12 §9.4.2 says keyword semantics
+// determine subschema locations, not arbitrary JSON object keys:
+// https://json-schema.org/draft/2020-12/json-schema-core#section-9.4.2
 func walkHeaderSchema(node map[string]any, path []string, seen map[string]struct{}, out *[]HeaderBinding) error {
-	if len(path) > maxToolHeaderSchemaDepth {
-		return fmt.Errorf("input schema nests deeper than %d properties", maxToolHeaderSchemaDepth)
+	return walkHeaderSchemaAt(node, path, true, 0, seen, out)
+}
+
+func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, seen map[string]struct{}, out *[]HeaderBinding) error {
+	if depth > maxSchemaDepth || (reachable && len(path) > maxToolHeaderSchemaDepth) {
+		return fmt.Errorf("input schema exceeds header traversal depth")
+	}
+	// Core §4.3.1 permits object and boolean schemas, never arrays or instances.
+	if _, boolean := value.(bool); boolean {
+		return nil
+	}
+	node, ok := value.(map[string]any)
+	if !ok {
+		return fmt.Errorf("invalid schema at %s", strings.Join(path, "."))
 	}
 	if raw, exists := node["x-mcp-header"]; exists {
+		// MCP tools#x-mcp-header and RFC 9110 §5.1: token names, nonempty,
+		// case-insensitively unique, on supported primitives at property paths.
 		name, ok := raw.(string)
-		if !ok || name == "" || !validHTTPFieldToken(name) || len(path) == 0 {
+		if !reachable || len(path) == 0 || !ok || !validHTTPFieldToken(name) {
 			return fmt.Errorf("invalid x-mcp-header annotation at %s", strings.Join(path, "."))
 		}
-		typeName, _ := node["type"].(string)
-		if typeName != "string" && typeName != "integer" && typeName != "boolean" {
-			return fmt.Errorf("x-mcp-header %q has unsupported type %q", name, typeName)
+		typeName, err := headerPrimitiveType(node)
+		if err != nil {
+			return fmt.Errorf("x-mcp-header %q: %w", name, err)
 		}
 		folded := strings.ToLower(name)
 		if _, duplicate := seen[folded]; duplicate {
@@ -170,67 +226,131 @@ func walkHeaderSchema(node map[string]any, path []string, seen map[string]struct
 			return fmt.Errorf("input schema exceeds %d x-mcp-header annotations", maxToolHeaderBindings)
 		}
 	}
-
-	for key, value := range node {
-		if key == "properties" || key == "x-mcp-header" {
-			continue
-		}
-		if containsHeaderAnnotation(value) {
-			return fmt.Errorf("x-mcp-header is not statically reachable through properties at %s", strings.Join(path, "."))
-		}
-	}
-	properties, exists := node["properties"]
-	if !exists {
-		return nil
-	}
-	propertyMap, ok := properties.(map[string]any)
-	if !ok {
-		return fmt.Errorf("properties at %s must be an object", strings.Join(path, "."))
-	}
-	for name, rawChild := range propertyMap {
-		child, ok := rawChild.(map[string]any)
-		if !ok {
-			if containsHeaderAnnotation(rawChild) {
-				return fmt.Errorf("invalid property schema at %s", strings.Join(append(path, name), "."))
+	for key, child := range node {
+		switch key {
+		// Core §8.2.4 ($defs), §10.3.2 (object applicators): these are maps
+		// of schemas. Entry names, including "x-mcp-header", are not keywords.
+		case "properties", "$defs", "patternProperties", "dependentSchemas":
+			children, ok := child.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s at %s must be an object", key, strings.Join(path, "."))
 			}
-			continue
-		}
-		if err := walkHeaderSchema(child, append(path, name), seen, out); err != nil {
-			return err
+			for name, schema := range children {
+				childPath := append(append([]string(nil), path...), name)
+				if err := walkHeaderSchemaAt(schema, childPath, reachable && key == "properties", depth+1, seen, out); err != nil {
+					return err
+				}
+			}
+		// Core §§10.2, 10.3, 11 and validation §8.5 define single subschemas.
+		// Only properties is a static MCP path; even unused $defs are checked.
+		case "items", "contains", "additionalProperties", "unevaluatedProperties", "propertyNames", "unevaluatedItems", "not", "if", "then", "else", "contentSchema":
+			if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
+				return err
+			}
+		case "allOf", "anyOf", "oneOf", "prefixItems":
+			children, ok := child.([]any)
+			if !ok {
+				return fmt.Errorf("%s must be an array of schemas", key)
+			}
+			for _, schema := range children {
+				if err := walkHeaderSchemaAt(schema, path, false, depth+1, seen, out); err != nil {
+					return err
+				}
+			}
+			// Validation §§6.1.2, 6.1.3, 9.2, 9.5: enum, const, default,
+			// examples contain instance data. Core §6.5 treats unknown keywords
+			// as annotations. Neither supplies additional subschema positions.
 		}
 	}
 	return nil
 }
 
-func containsHeaderAnnotation(value any) bool {
-	return containsHeaderAnnotationDepth(value, 0)
+func supportedHeaderType(t string) bool { return t == "string" || t == "integer" || t == "boolean" }
+
+func headerPrimitiveType(node map[string]any) (string, error) {
+	// Validation 2020-12 §6.1.1 permits type arrays. MCP's primitive
+	// restriction plus null-omission (HTTP "Server Behavior for Custom
+	// Headers") is interpreted as one supported non-null type plus null.
+	// This is a supported interpretation, not an explicit MCP union rule.
+	// https://json-schema.org/draft/2020-12/json-schema-validation#section-6.1.1
+	if raw, exists := node["type"]; exists {
+		if t, ok := raw.(string); ok && supportedHeaderType(t) {
+			return t, nil
+		}
+		if types, ok := raw.([]any); ok {
+			primitive := ""
+			nullSeen := false
+			for _, rawType := range types {
+				t, ok := rawType.(string)
+				if !ok {
+					return "", fmt.Errorf("type array contains a non-string")
+				}
+				if t == "null" && !nullSeen {
+					nullSeen = true
+					continue
+				}
+				if !supportedHeaderType(t) || primitive != "" {
+					return "", fmt.Errorf("type array has no single supported primitive")
+				}
+				primitive = t
+			}
+			if primitive != "" {
+				return primitive, nil
+			}
+		}
+		return "", fmt.Errorf("unsupported primitive type")
+	}
+	// Validation §6.1.2: enum restricts the value to its listed instances
+	// without requiring type. Every value must prove the SAME MCP primitive
+	// domain; mixed, null-only, object, array and number domains are refused.
+	// https://json-schema.org/draft/2020-12/json-schema-validation#section-6.1.2
+	values, ok := node["enum"].([]any)
+	if !ok || len(values) == 0 {
+		return "", fmt.Errorf("no supported primitive domain")
+	}
+	kind := ""
+	for _, value := range values {
+		current := ""
+		switch v := value.(type) {
+		case string:
+			current = "string"
+		case bool:
+			current = "boolean"
+		case json.Number:
+			// Validation §6.1.1 defines integer by mathematical value, not
+			// lexical form. MCP tools#x-mcp-header bounds integers to ±(2^53-1).
+			if safeHeaderEnumInteger(v) {
+				current = "integer"
+			}
+		}
+		if current == "" || (kind != "" && current != kind) {
+			return "", fmt.Errorf("enum has no single supported primitive kind")
+		}
+		kind = current
+	}
+	return kind, nil
 }
 
-func containsHeaderAnnotationDepth(value any, depth int) bool {
-	// Bounded by the schema gate's depth, not the property-path bound: a
-	// subtree the gate admits is read to its end, so a deep annotation-free
-	// sibling cannot void a valid contract elsewhere in the schema.
-	if depth > maxSchemaDepth {
+// Bound the numeric domain before exact rational parsing: huge exponents in
+// otherwise small JSON must not allocate an exponent-sized integer. The bound
+// is MCP's published safe-integer range, not a schema-size heuristic.
+func safeHeaderEnumInteger(value json.Number) bool {
+	text := string(value)
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsInf(f, 0) || math.Trunc(f) != f || f < -9007199254740991 || f > 9007199254740991 {
+		return false
+	}
+	if f == 0 {
+		mantissa, _, _ := strings.Cut(strings.ToLower(text), "e")
+		for _, c := range mantissa {
+			if c >= '1' && c <= '9' {
+				return false
+			}
+		}
 		return true
 	}
-	switch typed := value.(type) {
-	case map[string]any:
-		if _, ok := typed["x-mcp-header"]; ok {
-			return true
-		}
-		for _, child := range typed {
-			if containsHeaderAnnotationDepth(child, depth+1) {
-				return true
-			}
-		}
-	case []any:
-		for _, child := range typed {
-			if containsHeaderAnnotationDepth(child, depth+1) {
-				return true
-			}
-		}
-	}
-	return false
+	n, valid := new(big.Rat).SetString(text)
+	return valid && n.IsInt() && n.Num().IsInt64() && n.Num().Int64() >= -9007199254740991 && n.Num().Int64() <= 9007199254740991
 }
 
 func validHTTPFieldToken(value string) bool {
@@ -243,4 +363,57 @@ func validHTTPFieldToken(value string) bool {
 		return false
 	}
 	return value != ""
+}
+
+// FilterInvalidHeaderTools applies MCP 2026-07-28 tools#x-mcp-header's
+// invalid-definition exclusion rule. Raw siblings and pagination metadata are
+// preserved. The caller retains defs (including rejected tools) for the
+// structural reservation, while only returned names become client-seen.
+func FilterInvalidHeaderTools(line []byte, defs []ToolDef) ([]byte, []string, map[string]string, error) {
+	contracts := headerBindingsForDefs(defs)
+	rejected := make(map[string]string)
+	for name, contract := range contracts {
+		if contract.State == HeaderContractInvalid {
+			rejected[name] = contract.Reason
+		}
+	}
+	names := make([]string, 0, len(defs))
+	for _, def := range defs {
+		if _, invalid := rejected[def.Name]; !invalid {
+			names = append(names, def.Name)
+		}
+	}
+	if len(rejected) == 0 {
+		return line, names, rejected, nil
+	}
+	var envelope map[string]json.RawMessage
+	if err := json.Unmarshal(line, &envelope); err != nil {
+		return nil, nil, nil, err
+	}
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(envelope["result"], &result); err != nil {
+		return nil, nil, nil, err
+	}
+	var rawTools []json.RawMessage
+	if err := json.Unmarshal(result["tools"], &rawTools); err != nil {
+		return nil, nil, nil, err
+	}
+	kept := make([]json.RawMessage, 0, len(rawTools))
+	for _, raw := range rawTools {
+		var def struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(raw, &def); err != nil {
+			return nil, nil, nil, err
+		}
+		if _, invalid := rejected[def.Name]; !invalid {
+			kept = append(kept, raw)
+		}
+	}
+	// Every retained raw value already passed JSON decoding; these marshals
+	// cannot fail and do not reinterpret numbers in schemas or extension data.
+	result["tools"], _ = json.Marshal(kept)
+	envelope["result"], _ = json.Marshal(result)
+	filtered, err := json.Marshal(envelope)
+	return filtered, names, rejected, err
 }

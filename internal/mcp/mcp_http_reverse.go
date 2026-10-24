@@ -1524,7 +1524,18 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(mismatch)
 			return
 		}
+		releaseContract := func() {}
 		if frame.ProtocolVersionPresent && frame.ProtocolVersion >= currentMCPVersion {
+			requestBaseOpts.validateToolHeaders = true
+			switch frame.Method {
+			case "tools/list":
+				clientState.contractMu.Lock()
+				releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
+				defer releaseContract()
+			case methodToolsCall:
+				clientState.contractMu.RLock()
+				defer clientState.contractMu.RUnlock()
+			}
 			var headerBaseline *tools.ToolBaseline
 			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
 				headerBaseline = toolCfg.Baseline
@@ -2031,11 +2042,19 @@ func RunHTTPListenerProxy(
 			w.Header().Set("Content-Type", "text/event-stream")
 			streamWriter := &sseMessageWriter{
 				w:              w,
-				responseWriter: w,
+				responseWriter: w.ResponseWriter,
 				writeTimeout:   listenerDownstreamWriteTimeout,
 			}
 			if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 				streamWriter.flusher = flusher
+			}
+			reqOpts.toolInventoryDelivery = func(commit, release func()) {
+				if !clientState.commitIfActive(commit) {
+					release()
+				}
+				// A completed tools/list must not hold up calls while an SSE stream
+				// remains open for subsequent notifications.
+				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			foundInjection, scanErr := ForwardScanned(reader, revocableWriter, safeLogW, responseTracker, reqOpts)
@@ -2083,6 +2102,36 @@ func RunHTTPListenerProxy(
 		var responseTerminal mcpDeferredTerminal
 		reqOpts.denialTerminal = &responseTerminal
 		w.opts.denialTerminal = &responseTerminal
+		var inventoryCommits []func()
+		var inventoryReleases []func()
+		reqOpts.toolInventoryDelivery = func(commit, release func()) {
+			inventoryCommits = append(inventoryCommits, commit)
+			inventoryReleases = append(inventoryReleases, release)
+		}
+		defer func() {
+			for _, release := range inventoryReleases {
+				release()
+			}
+		}()
+		writeOutput := func(output []byte) {
+			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
+				w.Header().Set("Content-Type", "application/json")
+				if len(output) == 0 {
+					w.WriteHeader(http.StatusAccepted)
+					return
+				}
+				n, err := w.Write(output)
+				if err == nil && n == len(output) {
+					// net/http buffers small writes. Flush before treating delivery as
+					// successful, so a failed socket write cannot seed client-seen state.
+					if flushErr := http.NewResponseController(w.ResponseWriter).Flush(); flushErr == nil {
+						for _, commit := range inventoryCommits {
+							commit()
+						}
+					}
+				}
+			})
+		}
 		foundInjection, scanErr := ForwardScanned(reader, bufWriter, safeLogW, responseTracker, reqOpts)
 		if scanErr == nil {
 			scanErr = reqOpts.checkServerIdentity()
@@ -2103,14 +2152,7 @@ func RunHTTPListenerProxy(
 		if foundInjection {
 			output := bytes.TrimSpace(buf.Bytes())
 			if !clientState.commitIfActive(func() {
-				withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
-					w.Header().Set("Content-Type", "application/json")
-					if len(output) == 0 {
-						w.WriteHeader(http.StatusAccepted)
-						return
-					}
-					_, _ = w.Write(output)
-				})
+				writeOutput(output)
 			}) {
 				rejectMissingListenerState(frame.ID)
 			}
@@ -2131,14 +2173,7 @@ func RunHTTPListenerProxy(
 		output := bytes.TrimSpace(buf.Bytes())
 		commitResponse := func() {
 			commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
-			withListenerWriteDeadline(w, listenerDownstreamWriteTimeout, func() {
-				w.Header().Set("Content-Type", "application/json")
-				if len(output) == 0 {
-					w.WriteHeader(http.StatusAccepted)
-					return
-				}
-				_, _ = w.Write(output)
-			})
+			writeOutput(output)
 		}
 		if setupState {
 			commitResponse()

@@ -4739,8 +4739,8 @@ func TestToolBaseline_ReserveToolInventoryCommitsOnlyForwardedState(t *testing.T
 	if !slices.Equal(added, []string{"write"}) {
 		t.Fatalf("updated baseline added = %v, want [write]", added)
 	}
-	if _, ok := baseline.HeaderBindings("read"); ok {
-		t.Fatal("non-clean response retained a stale header contract")
+	if bindings, ok := baseline.HeaderBindings("read"); !ok || len(bindings) != 0 {
+		t.Fatal("warned replacement did not install its current unannotated contract")
 	}
 }
 
@@ -4768,9 +4768,9 @@ func TestToolBaseline_ReserveToolInventoryRejectsCompetingAndOverCapacityState(t
 	}
 
 	headerBaseline := NewToolBaseline()
-	headerBaseline.headerBindings = make(map[string]map[string]HeaderBinding, maxBaselineTools)
+	headerBaseline.headerBindings = make(map[string]HeaderContract, maxBaselineTools)
 	for i := 0; i < maxBaselineTools; i++ {
-		headerBaseline.headerBindings[fmt.Sprintf("bound-%d", i)] = map[string]HeaderBinding{}
+		headerBaseline.headerBindings[fmt.Sprintf("bound-%d", i)] = HeaderContract{State: HeaderContractValidWithoutBindings}
 	}
 	overflowDef := ToolDef{
 		Name:        "overflow-binding",
@@ -4895,9 +4895,9 @@ func TestScanTools_ResourceLimitResponsesFailClosed(t *testing.T) {
 			name: "header binding capacity",
 			cfg: func() *ToolScanConfig {
 				baseline := NewToolBaseline()
-				baseline.headerBindings = make(map[string]map[string]HeaderBinding, maxBaselineTools)
+				baseline.headerBindings = make(map[string]HeaderContract, maxBaselineTools)
 				for i := 0; i < maxBaselineTools; i++ {
-					baseline.headerBindings[fmt.Sprintf("bound-%d", i)] = map[string]HeaderBinding{}
+					baseline.headerBindings[fmt.Sprintf("bound-%d", i)] = HeaderContract{State: HeaderContractValidWithoutBindings}
 				}
 				return &ToolScanConfig{Action: "warn", Baseline: baseline}
 			}(),

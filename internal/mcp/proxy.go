@@ -170,6 +170,11 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
+	if toolCfg != nil && opts.validateToolHeaders {
+		copyCfg := *toolCfg
+		copyCfg.RequireHeaderContracts = true
+		toolCfg = &copyCfg
+	}
 	ks := opts.KillSwitch
 	rec := opts.Rec
 	adaptiveCfg := opts.adaptiveCfg()
@@ -516,14 +521,14 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// response scanner.
 		var toolInventoryReservation *tools.ToolInventoryReservation
 		reserveToolInventory := func() error {
-			if !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 {
+			if !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 && len(toolResult.ToolDefs) == 0 {
 				return nil
 			}
 			var err error
 			toolInventoryReservation, err = toolCfg.Baseline.ReserveToolInventory(toolResult.ToolNames, toolResult.ToolDefs)
 			return err
 		}
-		commitToolInventory := func() {
+		applyToolInventory := func() {
 			if toolInventoryReservation == nil {
 				return
 			}
@@ -539,6 +544,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			if !toolInventoryResolved {
 				resolveToolInventory(decision)
+			}
+		}
+		commitToolInventory := func() {
+			if toolInventoryReservation == nil {
+				return
+			}
+			if opts.toolInventoryDelivery != nil {
+				opts.toolInventoryDelivery(applyToolInventory, toolInventoryReservation.Release)
+			} else {
+				applyToolInventory()
 			}
 		}
 		releaseToolInventory := func() {
@@ -759,6 +774,26 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				// never clean.
 				captureToolScan(config.ActionWarn)
 			}
+		}
+
+		if isToolsList && opts.validateToolHeaders {
+			filtered, names, rejected, err := tools.FilterInvalidHeaderTools(line, toolResult.ToolDefs)
+			if err != nil {
+				if writeErr := blockScanError("invalid tool header contract response"); writeErr != nil {
+					return foundInjection, writeErr
+				}
+				continue
+			}
+			if len(rejected) > 0 {
+				// A filtered inventory is not affirmative approval evidence for held
+				// actions, even when the remaining definitions scanned cleanly.
+				resolveToolInventory(config.ActionBlock)
+			}
+			for name, reason := range rejected {
+				_, _ = fmt.Fprintf(logW, "pipelock: tool %q excluded: %q\n", name, reason)
+			}
+			line = filtered
+			toolResult.ToolNames = names
 		}
 
 		// For tools/list responses, skip general scanning of the result field

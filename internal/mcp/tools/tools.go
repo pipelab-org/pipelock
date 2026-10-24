@@ -156,6 +156,9 @@ type ExtraPoisonPattern struct {
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
 // tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
+	// RequireHeaderContracts separates modern HTTP structural validation from
+	// drift trust: warned or rejected definitions never become trusted drift.
+	RequireHeaderContracts bool
 	// Baseline holds the caller-scoped baseline for session binding. It is also
 	// the drift baseline unless DriftBaseline is set.
 	Baseline *ToolBaseline
@@ -310,18 +313,20 @@ func (c *ToolScanConfig) now() time.Time {
 // ToolBaseline tracks SHA256 hashes of tool definitions for rug pull detection
 // and session binding (known tool inventory). Safe for concurrent use.
 type ToolBaseline struct {
-	mu             sync.Mutex
-	hashes         map[string]string                   // tool name → SHA256(description + inputSchema)
-	structural     map[string]string                   // tool name → digest of everything but the description
-	descs          map[string]string                   // tool name → last known description text
-	params         map[string][]string                 // tool name → last known parameter names (sorted)
-	knownTools     map[string]bool                     // session binding: tool name set from first tools/list
-	knownA2A       map[string]bool                     // session binding: A2A method identity set from trusted inventory
-	headerBindings map[string]map[string]HeaderBinding // tool name -> lower-case Mcp-Param name -> schema binding
-	pendingTools   map[string]struct{}                 // names admitted for a response that has not forwarded yet
-	hasBaseline    bool                                // true after first SetKnownTools call
-	hasA2A         bool                                // true after first SetKnownA2AMethods call
-	driftEpoch     uint64                              // increments when operator reset clears drift state
+	mu                     sync.Mutex
+	hashes                 map[string]string         // tool name → SHA256(description + inputSchema)
+	structural             map[string]string         // tool name → digest of everything but the description
+	descs                  map[string]string         // tool name → last known description text
+	params                 map[string][]string       // tool name → last known parameter names (sorted)
+	knownTools             map[string]bool           // session binding: tool name set from first tools/list
+	knownA2A               map[string]bool           // session binding: A2A method identity set from trusted inventory
+	headerBindings         map[string]HeaderContract // structural observations, independent of knownTools/drift trust
+	inventorySequence      uint64
+	headerContractVersions map[string]uint64
+	pendingTools           map[string]struct{} // names admitted for a response that has not forwarded yet
+	hasBaseline            bool                // true after first SetKnownTools call
+	hasA2A                 bool                // true after first SetKnownA2AMethods call
+	driftEpoch             uint64              // increments when operator reset clears drift state
 	// driftEstablished is true once a first tools/list inventory has FINISHED
 	// being evaluated against this baseline (EndInventoryResponse), not when
 	// it began. It is captured ONCE per response, before that response's own
@@ -385,7 +390,7 @@ func NewToolBaseline() *ToolBaseline {
 		structural:     make(map[string]string),
 		descs:          make(map[string]string),
 		params:         make(map[string][]string),
-		headerBindings: make(map[string]map[string]HeaderBinding),
+		headerBindings: make(map[string]HeaderContract),
 		pendingTools:   make(map[string]struct{}),
 	}
 }
@@ -438,7 +443,14 @@ func namesFitCapacity[T any](stored map[string]T, names []string) bool {
 }
 
 func namesFitCapacityWithPending[T any](stored map[string]T, pending map[string]struct{}, names []string) bool {
-	needed := len(stored) + len(pending)
+	// Delivery names and structural contracts reserve the same bounded union.
+	// A pending contract can already be a delivered name (and vice versa).
+	needed := len(stored)
+	for name := range pending {
+		if _, exists := stored[name]; !exists {
+			needed++
+		}
+	}
 	seen := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		if _, exists := stored[name]; exists {
@@ -1091,9 +1103,10 @@ func (tb *ToolBaseline) IsKnownA2AMethod(method string) bool {
 type ToolInventoryReservation struct {
 	baseline *ToolBaseline
 	names    []string
-	defs     []ToolDef
-	bindings map[string]map[string]HeaderBinding
+	bindings map[string]HeaderContract
 	reserved []string
+	sequence uint64
+	finished bool
 }
 
 // ReserveToolInventory reserves all state that a clean tools/list response
@@ -1122,10 +1135,12 @@ func (tb *ToolBaseline) ReserveToolInventory(names []string, defs []ToolDef) (*T
 		return nil, ErrBaselineCapacity
 	}
 
-	reserved := make([]string, 0, len(names))
+	reservationNames := append(append([]string(nil), names...), bindingNames...)
+	reserved := make([]string, 0, len(reservationNames))
 	claimed := make(map[string]struct{}, len(names))
-	for _, name := range names {
-		if _, known := tb.knownTools[name]; known {
+	for _, name := range reservationNames {
+		_, contractKnown := tb.headerBindings[name]
+		if _, known := tb.knownTools[name]; known && contractKnown {
 			continue
 		}
 		if _, repeat := claimed[name]; repeat {
@@ -1141,7 +1156,8 @@ func (tb *ToolBaseline) ReserveToolInventory(names []string, defs []ToolDef) (*T
 		claimed[name] = struct{}{}
 		reserved = append(reserved, name)
 	}
-	return &ToolInventoryReservation{baseline: tb, names: names, defs: defs, bindings: bindings, reserved: reserved}, nil
+	tb.inventorySequence++
+	return &ToolInventoryReservation{baseline: tb, names: append([]string(nil), names...), bindings: bindings, reserved: reserved, sequence: tb.inventorySequence}, nil
 }
 
 // Release discards a reservation after the response did not reach the client.
@@ -1151,21 +1167,30 @@ func (r *ToolInventoryReservation) Release() {
 	}
 	r.baseline.mu.Lock()
 	defer r.baseline.mu.Unlock()
+	if r.finished {
+		return
+	}
+	r.finished = true
 	for _, name := range r.reserved {
 		delete(r.baseline.pendingTools, name)
 	}
 	r.reserved = nil
 }
 
-// Commit makes a reserved tools/list response trusted after it has forwarded.
+// Commit records client delivery and structural contracts after forwarding.
+// The clean argument is retained for compatibility; drift trust is scan-owned.
 // It is infallible: Reserve already held every slot this response needs.
-func (r *ToolInventoryReservation) Commit(clean bool) []string {
+func (r *ToolInventoryReservation) Commit(_ bool) []string {
 	if r == nil || r.baseline == nil {
 		return nil
 	}
 	tb := r.baseline
 	tb.mu.Lock()
 	defer tb.mu.Unlock()
+	if r.finished {
+		return nil
+	}
+	r.finished = true
 	defer func() {
 		for _, name := range r.reserved {
 			delete(tb.pendingTools, name)
@@ -1188,16 +1213,21 @@ func (r *ToolInventoryReservation) Commit(clean bool) []string {
 	tb.hasBaseline = true
 
 	if tb.headerBindings == nil {
-		tb.headerBindings = make(map[string]map[string]HeaderBinding)
+		tb.headerBindings = make(map[string]HeaderContract)
 	}
-	for _, def := range r.defs {
-		bindings, valid := r.bindings[def.Name]
-		if !clean || !valid {
-			delete(tb.headerBindings, def.Name)
+	// Structural contracts follow the exact forwarded definition even under
+	// warn. The clean bit belongs to scan/drift trust, not schema interpretation.
+	if tb.headerContractVersions == nil {
+		tb.headerContractVersions = make(map[string]uint64)
+	}
+	for name, contract := range r.bindings {
+		if tb.headerContractVersions[name] > r.sequence {
 			continue
 		}
-		tb.headerBindings[def.Name] = bindings
+		tb.headerBindings[name] = contract
+		tb.headerContractVersions[name] = r.sequence
 	}
+
 	return added
 }
 
@@ -2758,6 +2788,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
+		observationsBeforeDefinition := len(observations)
 
 		if confusableNames[tool.Name] {
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
@@ -2956,6 +2987,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// change that block mode would otherwise accept.
 			promoteNew := !responseAckRefused && (!blocking || !hasFinding)
 			promoteChanged := !responseAckRefused && !blocking
+			promoteAccepted := !responseAckRefused && (!blocking || !hasFinding)
+			if cfg.RequireHeaderContracts {
+				_, contractErr := ExtractHeaderBindings(tool.InputSchema)
+				promoteNew = !responseAckRefused && !hasFinding && len(observations) == observationsBeforeDefinition && contractErr == nil
+				promoteChanged = false
+				promoteAccepted = promoteNew
+			}
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
 			// content-based promotion above: a scan-clean new tool would
@@ -2986,7 +3024,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 				EstablishedBeforeResponse: establishedBeforeResponse,
 				// hasFinding carries every earlier per-tool verdict in this
 				// loop: injection, poison, confusable name, exfil parameter.
-				PromoteAccepted: !responseAckRefused && (!blocking || !hasFinding),
+				PromoteAccepted: promoteAccepted,
 				Classify: func(prevDesc string, structuralChanged bool) []string {
 					return introducedDriftCues(prevDesc, tool.Description, structuralChanged)
 				},

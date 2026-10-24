@@ -83,7 +83,13 @@ func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 		return fmt.Errorf("writing sse event terminator: %w", err)
 	}
 	if sw.flusher != nil {
-		sw.flusher.Flush()
+		if sw.responseWriter != nil {
+			if err := http.NewResponseController(sw.responseWriter).Flush(); err != nil {
+				return fmt.Errorf("flushing sse event: %w", err)
+			}
+		} else {
+			sw.flusher.Flush()
+		}
 	}
 	return nil
 }

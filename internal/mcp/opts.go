@@ -134,6 +134,11 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	denialTerminal *mcpDeferredTerminal
+	// Modern HTTP lists enforce structural contracts independently of drift trust.
+	validateToolHeaders bool
+	// JSON listener scanning writes to a buffer. Defer inventory admission until
+	// the real downstream write succeeds; streaming transports commit directly.
+	toolInventoryDelivery func(commit, release func())
 	// OnResponseKeysValidated admits transport metadata only after message keys
 	// pass the shared guard. It must be set before response scanning starts.
 	OnResponseKeysValidated func()

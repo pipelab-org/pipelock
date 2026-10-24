@@ -30,8 +30,11 @@ func validateMCPParamHeaders(headers map[string][]string, frame MCPFrame, baseli
 	if frame.Method != methodToolsCall || baseline == nil || frame.RoutingName == "" {
 		return true
 	}
-	bindings, known := baseline.HeaderBindings(frame.RoutingName)
-	if !known {
+	contract := baseline.HeaderContract(frame.RoutingName)
+	if contract.State == tools.HeaderContractInvalid {
+		return false
+	}
+	if contract.State == tools.HeaderContractUnknown {
 		return true
 	}
 	paramHeaders := make(map[string][]string)
@@ -41,7 +44,7 @@ func validateMCPParamHeaders(headers map[string][]string, frame MCPFrame, baseli
 			paramHeaders[strings.TrimPrefix(lower, mcpParamHeaderPrefix)] = values
 		}
 	}
-	for lowerName, binding := range bindings {
+	for lowerName, binding := range contract.Bindings {
 		raw, present, ok := argumentAtPath(frame.Args, binding.Path)
 		if !ok {
 			return false
