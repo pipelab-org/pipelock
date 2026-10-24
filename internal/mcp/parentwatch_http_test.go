@@ -117,7 +117,7 @@ func TestSessionExit_HTTPForwardLiveSessionIsNotTornDown(t *testing.T) {
 	sc := testScannerForHTTP(t)
 
 	clientIn := newBlockingReader()
-	var clientOut, logBuf bytes.Buffer
+	var clientOut, logBuf lockedBuffer
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
