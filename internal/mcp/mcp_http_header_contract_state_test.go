@@ -538,3 +538,154 @@ func TestHTTPListener_HeaderContractUnknownRemainsForwarded(t *testing.T) {
 		t.Fatal("unknown-tool call performed unrequested discovery")
 	}
 }
+
+// A call holds the contract read lock only while its contract is chosen. A
+// long-running call must not hold up a list, and through RWMutex writer
+// preference every later call, for the same principal.
+func TestHTTPListener_HeaderContractLongCallDoesNotStallPrincipal(t *testing.T) {
+	releaseSlow := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(releaseSlow) }) }
+	defer unblock()
+	slowEntered := make(chan struct{}, 1)
+	listEntered := make(chan struct{}, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Name string `json:"name"`
+			} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "tools/list" {
+			listEntered <- struct{}{}
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"slow","description":"Slow job","inputSchema":{"type":"object"}},{"name":"fast","description":"Fast job","inputSchema":{"type":"object"}}]}}`, request.ID)
+			return
+		}
+		if request.Params.Name == "slow" {
+			slowEntered <- struct{}{}
+			select {
+			case <-releaseSlow:
+			case <-r.Context().Done():
+			}
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"ok"}]}}`, request.ID)
+	}))
+	t.Cleanup(func() { unblock(); upstream.Close() })
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, paramContractOpts(t))
+	if status, body := mustPrincipalControlRPC(t, baseURL, "current-client-token", principalControlToolsList(1)); status != http.StatusOK {
+		t.Fatalf("initial list status=%d body=%s", status, body)
+	}
+	<-listEntered
+	go func() {
+		_, _, _ = principalControlRPC(baseURL, "current-client-token", principalControlToolCall(2, "slow", `{}`))
+	}()
+	select {
+	case <-slowEntered:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("slow call did not reach upstream")
+	}
+	listDone := make(chan int, 1)
+	go func() {
+		status, _, _ := principalControlRPC(baseURL, "current-client-token", principalControlToolsList(3))
+		listDone <- status
+	}()
+	select {
+	case <-listEntered:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("tools/list waited for an unrelated in-flight tool call")
+	}
+	if status := <-listDone; status != http.StatusOK {
+		t.Fatalf("list status=%d", status)
+	}
+	if status, body := mustPrincipalControlRPC(t, baseURL, "current-client-token", principalControlToolCall(4, "fast", `{}`)); status != http.StatusOK || strings.Contains(body, `"error"`) {
+		t.Fatalf("fast call status=%d body=%s", status, body)
+	}
+}
+
+// The list hold ends when the request's own response has been handled, also
+// for an empty inventory and for a denied one, while the upstream keeps the
+// SSE stream open.
+func TestHTTPListener_HeaderContractSSEEmptyOrDeniedListReleasesBeforeEOF(t *testing.T) {
+	for name, definitions := range map[string]string{
+		"empty":  `[]`,
+		"denied": `[{"name":"echo","description":` + fmt.Sprintf("%q", headerStateWarning) + `,"inputSchema":{"type":"object"}}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			finish := make(chan struct{})
+			var once sync.Once
+			closeStream := func() { once.Do(func() { close(finish) }) }
+			defer closeStream()
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				if request.Method == "tools/list" {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":%s}}\n\n", request.ID, definitions)
+					if err := http.NewResponseController(w).Flush(); err != nil {
+						return
+					}
+					select {
+					case <-finish:
+					case <-r.Context().Done():
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, request.ID)
+			}))
+			t.Cleanup(func() { closeStream(); upstream.Close() })
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, paramContractOpts(t))
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL, strings.NewReader(string(principalControlToolsList(1))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header = currentWireHeaders("tools/list", "")
+			req.Header.Set("Proxy-Authorization", headerStateBearer)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			var event []byte
+			one := make([]byte, 1)
+			for !strings.HasSuffix(string(event), "\n\n") {
+				if _, err := io.ReadFull(resp.Body, one); err != nil {
+					t.Fatal(err)
+				}
+				event = append(event, one[0])
+			}
+			if denied := strings.Contains(string(event), `"error"`); denied != (name == "denied") {
+				t.Fatalf("list event = %s", event)
+			}
+			done := make(chan int, 1)
+			go func() {
+				status, _, err := principalControlRPC(baseURL, "current-client-token", principalControlToolCall(2, "other", `{}`))
+				if err != nil {
+					status = 0
+				}
+				done <- status
+			}()
+			select {
+			case status := <-done:
+				if status != http.StatusOK {
+					t.Fatalf("call status=%d", status)
+				}
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				closeStream()
+				t.Fatal("handled list held the contract lock until SSE EOF")
+			}
+		})
+	}
+}

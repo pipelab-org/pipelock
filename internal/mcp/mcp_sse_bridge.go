@@ -32,6 +32,24 @@ type sseMessageWriter struct {
 
 var _ transport.MessageWriter = (*sseMessageWriter)(nil)
 
+// requestDoneReader runs release before reading past the request's own
+// response. ForwardScanned reads the next message only after it has finished
+// the previous one (scan, delivery or denial, and inventory commit), so a
+// stream the upstream keeps open for later events cannot extend a hold that
+// belongs to the request, whether its response was delivered, empty or denied.
+type requestDoneReader struct {
+	transport.MessageReader
+	tracker *RequestTracker
+	release func()
+}
+
+func (r *requestDoneReader) ReadMessage() ([]byte, error) {
+	if !r.tracker.HasPending() {
+		r.release()
+	}
+	return r.MessageReader.ReadMessage()
+}
+
 type listenerStateMessageWriter struct {
 	opts   MCPProxyOpts
 	denied bool

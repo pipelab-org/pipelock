@@ -1533,8 +1533,12 @@ func RunHTTPListenerProxy(
 				releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
 				defer releaseContract()
 			case methodToolsCall:
+				// Hold the read lock only while choosing the contract. Holding it
+				// through upstream execution would let one long call plus a queued
+				// list (RWMutex writer preference) stall every call for this principal.
 				clientState.contractMu.RLock()
-				defer clientState.contractMu.RUnlock()
+				releaseContract = sync.OnceFunc(clientState.contractMu.RUnlock)
+				defer releaseContract()
 			}
 			var headerBaseline *tools.ToolBaseline
 			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
@@ -1555,6 +1559,9 @@ func RunHTTPListenerProxy(
 				})
 				_, _ = w.Write(mismatch)
 				return
+			}
+			if frame.Method == methodToolsCall {
+				releaseContract()
 			}
 		} else if hasMCPParamHeaders(r.Header) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header requires the current protocol version\n")
@@ -2057,7 +2064,8 @@ func RunHTTPListenerProxy(
 				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
-			foundInjection, scanErr := ForwardScanned(reader, revocableWriter, safeLogW, responseTracker, reqOpts)
+			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
+			foundInjection, scanErr := ForwardScanned(streamReader, revocableWriter, safeLogW, responseTracker, reqOpts)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
 			}
