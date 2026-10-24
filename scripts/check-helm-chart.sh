@@ -60,7 +60,9 @@ for manifest in "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
   "$render_dir/envfrom-state.yaml" "$render_dir/unrelated-envfrom.yaml"; do
   state_args+=(--set-file "manifests.$(basename "$manifest" .yaml)=$manifest")
 done
-helm template state-check scripts/helmstate "${state_args[@]}"
+helm template state-check scripts/helmstate "${state_args[@]}" >"$render_dir/state-check.out"
+# A checker that renders nothing exits 0, so require its pass marker.
+grep -q -- "decoded Helm proxy state checks passed" "$render_dir/state-check.out"
 
 expect_template_error() {
   local want="$1"

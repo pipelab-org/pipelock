@@ -439,6 +439,18 @@ func TestProxyStateContract(t *testing.T) {
 		{"subpath mount", func(_, c map[string]interface{}) {
 			c["volumeMounts"].([]interface{})[0].(map[string]interface{})["subPath"] = "nested"
 		}},
+		{"subpath expression mount", func(_, c map[string]interface{}) {
+			c["volumeMounts"].([]interface{})[0].(map[string]interface{})["subPathExpr"] = "$(POD_NAME)"
+		}},
+		{"foreign mount at state path", func(_, c map[string]interface{}) {
+			c["volumeMounts"] = append(c["volumeMounts"].([]interface{}), map[string]interface{}{"name": "other", "mountPath": proxyStateHome})
+		}},
+		{"memory backed state", func(pod, _ map[string]interface{}) {
+			pod["volumes"].([]interface{})[0].(map[string]interface{})["emptyDir"] = map[string]interface{}{"medium": "Memory"}
+		}},
+		{"second volume source", func(pod, _ map[string]interface{}) {
+			pod["volumes"].([]interface{})[0].(map[string]interface{})["hostPath"] = map[string]interface{}{"path": "/tmp"}
+		}},
 		{"other container", func(pod, c map[string]interface{}) { pod["containers"] = append(pod["containers"].([]interface{}), c) }},
 	}
 	for _, tt := range tests {
