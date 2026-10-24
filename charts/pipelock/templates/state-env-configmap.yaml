@@ -6,5 +6,5 @@ metadata:
   labels:
     {{- include "pipelock.labels" . | nindent 4 }}
 data:
-  HOME: /var/lib/pipelock
+  HOME: /var/lib/pipelock/home
 {{- end }}

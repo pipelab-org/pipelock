@@ -114,7 +114,7 @@ Validate mode and security-critical enterprise chart requirements.
 {{- end -}}
 {{- end -}}
 {{- range .Values.extraVolumeMounts -}}
-{{- if or (eq .name "pipelock-state") (eq .mountPath "/var/lib/pipelock") -}}
+{{- if or (eq .name "pipelock-state") (eq .mountPath "/var/lib/pipelock/home") -}}
 {{- fail "extraVolumeMounts conflicts with the default proxy state mount; set HOME or XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
 {{- end -}}
 {{- end -}}

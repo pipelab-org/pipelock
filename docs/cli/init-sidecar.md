@@ -124,13 +124,13 @@ Generated files:
 
 ```bash
 pipelock init sidecar --inject-spec deployment.yaml --emit helm-values --output ./pipelock-bundle
-helm search repo pipelock/pipelock --versions
+# The chart is an OCI artifact and Helm cannot list its tags: use an exact chart version, which equals a Pipelock release version.
 read -r -p 'Chart version to render and inspect: ' chart_version
-helm show chart pipelock/pipelock --version "$chart_version"
-helm template my-agent-pipelock pipelock/pipelock --version "$chart_version" \
+helm show chart oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version"
+helm template my-agent-pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version" \
   -f ./pipelock-bundle/values.yaml > ./pipelock-bundle/rendered.yaml
 # Inspect rendered.yaml before continuing (see Verification below).
-helm upgrade --install my-agent-pipelock pipelock/pipelock --version "$chart_version" \
+helm upgrade --install my-agent-pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version" \
   -f ./pipelock-bundle/values.yaml
 kubectl rollout status deployment/my-agent-pipelock
 kubectl apply -f ./pipelock-bundle/pipelock-networkpolicy.yaml \
@@ -211,7 +211,7 @@ The verify phase is static. For emitted `patch` and `kustomize` output, it check
 
 For `helm-values`, the CLI checks the generated config, emitted NetworkPolicies and disruption budget, and optional MCP client wiring. It doesn't render the selected Helm chart, so it reports `Verify: skipped` (`skipped: true`, `healthy: false`, `reachable: false` in JSON). This is an unknown chart result even when those checks pass. A failed config or emitted-policy check still fails the command.
 
-Render an exact chart version with the generated values before installing that same version. Inspect the rendered Deployment, Service and ConfigMaps for the expected selectors, listeners, security settings and proxy-only writable state. The default state wiring uses `HOME=/var/lib/pipelock` from the first `envFrom` ConfigMap and a writable private-home mount at `/var/lib/pipelock`. Cookie state uses `$HOME/.local/state`; other HOME-based metadata can also write within that private home. An operator HOME or XDG override needs its corresponding storage. Earlier chart versions may have no default writable state even with newly generated values. Static checks don't establish cluster reachability or a healthy deployment.
+Render an exact chart version with the generated values before installing that same version. Inspect the rendered Deployment, Service and ConfigMaps for the expected selectors, listeners, security settings and proxy-only writable state. The default state wiring uses `HOME=/var/lib/pipelock/home` from the first `envFrom` ConfigMap and a writable private-home mount at `/var/lib/pipelock/home`. Cookie state uses `$HOME/.local/state`; other HOME-based metadata can also write within that private home. An operator HOME or XDG override needs its corresponding storage. Earlier chart versions may have no default writable state even with newly generated values. Static checks don't establish cluster reachability or a healthy deployment.
 
 The canary phase runs locally against the generated config to confirm DLP blocks a synthetic secret. It validates generated policy coverage, not the live cluster deployment.
 

@@ -23,7 +23,7 @@ Decode with Helm itself so chart policy checks require no Go or YAML package.
 {{- $proxy := eq (first $container.args) "run" -}}
 {{- $custom := hasPrefix "custom-state" $case -}}
 {{- $home := contains "-home" $case -}}
-{{- $statePath := ternary "/custom/state" "/var/lib/pipelock" $custom -}}
+{{- $statePath := ternary "/custom/state" "/var/lib/pipelock/home" $custom -}}
 {{- if $home }}{{ $statePath = "/custom/home/.local/state" }}{{ end -}}
 {{- $envs := 0 -}}
 {{- $mounts := 0 -}}
@@ -70,10 +70,18 @@ Decode with Helm itself so chart policy checks require no Go or YAML package.
 {{- if ne (int $envs) 0 }}{{ fail (printf "%s: default state must not shadow operator envFrom" $case) }}{{ end -}}
 {{- if or (ne (dig "configMapRef" "name" "" (first $container.envFrom)) $stateMap) (get (first $container.envFrom) "prefix") }}{{ fail (printf "%s: default state ConfigMap must be first envFrom source without a prefix" $case) }}{{ end -}}
 {{- $data := get $maps $stateMap -}}
-{{- if or (ne (len $data) 1) (ne $data.HOME "/var/lib/pipelock") }}{{ fail (printf "%s: default state ConfigMap changed" $case) }}{{ end -}}
+{{- if or (ne (len $data) 1) (ne $data.HOME "/var/lib/pipelock/home") }}{{ fail (printf "%s: default state ConfigMap changed" $case) }}{{ end -}}
 {{- end -}}
 {{- if eq $case "unrelated-envfrom" -}}
 {{- if or (ne (len (default list $container.envFrom)) 2) (ne (dig "configMapRef" "name" "" (index $container.envFrom 1)) "unrelated-env") }}{{ fail "unrelated operator envFrom lost" }}{{ end -}}
+{{- end -}}
+{{- if eq $case "follower-nopersist" -}}
+{{/* Unpersisted follower state must stay on the read-only root so a missing volume fails at startup. */}}
+{{- range $mount := $container.volumeMounts -}}
+{{- range $dir := list "/var/lib/pipelock/conductor/bundles" "/var/lib/pipelock/conductor/audit-queue" -}}
+{{- if hasPrefix (printf "%s/" (trimSuffix "/" $mount.mountPath)) (printf "%s/" $dir) }}{{ fail (printf "%s: writable mount %s covers unpersisted follower state %s" $case $mount.mountPath $dir) }}{{ end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if hasPrefix "envfrom-state" $case -}}
 {{/* Kubernetes Pod API: last envFrom source wins; explicit env wins over envFrom. */}}

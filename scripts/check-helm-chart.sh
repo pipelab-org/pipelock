@@ -73,6 +73,16 @@ helm template pipelock "$chart" \
 helm template pipelock "$chart" \
   --set-json 'extraEnvFrom=[{"configMapRef":{"name":"unrelated-env"}}]' \
   >"$render_dir/unrelated-envfrom.yaml"
+# A follower without persistence still configures durable state paths under
+# /var/lib/pipelock. The default state mount must not make them writable.
+helm template pipelock "$chart" \
+  --set conductorFollower.enabled=true \
+  --set conductorFollower.conductorURL=https://conductor.example:8895 \
+  --set conductorFollower.serverCASecretRef.name=ca \
+  --set conductorFollower.clientSecretRef.name=client \
+  --set conductorFollower.trustRosterSecretRef.name=roster \
+  --set conductorFollower.auditQueueKeyringSecretRef.name=keyring \
+  >"$render_dir/follower-nopersist.yaml"
 # Helm's own YAML decoder checks actual producer output. The Helm-only CI job
 # needs neither a Go toolchain nor an additional YAML package.
 state_args=()
@@ -80,7 +90,8 @@ for manifest in "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
   "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml" \
   "$render_dir/custom-state-home.yaml" "$render_dir/custom-state-home-valuefrom.yaml" \
   "$render_dir/custom-state-secret-valuefrom.yaml" "$render_dir/custom-state-home-secret-valuefrom.yaml" \
-  "$render_dir/envfrom-state.yaml" "$render_dir/unrelated-envfrom.yaml"; do
+  "$render_dir/envfrom-state.yaml" "$render_dir/unrelated-envfrom.yaml" \
+  "$render_dir/follower-nopersist.yaml"; do
   state_args+=(--set-file "manifests.$(basename "$manifest" .yaml)=$manifest")
 done
 helm template state-check scripts/helmstate "${state_args[@]}" >"$render_dir/state-check.out"
@@ -107,7 +118,7 @@ expect_template_error "extraVolumes name pipelock-state conflicts" \
 expect_template_error "extraVolumeMounts conflicts" \
   --set-json 'extraVolumeMounts=[{"name":"pipelock-state","mountPath":"/other"}]'
 expect_template_error "extraVolumeMounts conflicts" \
-  --set-json 'extraVolumeMounts=[{"name":"other","mountPath":"/var/lib/pipelock"}]'
+  --set-json 'extraVolumeMounts=[{"name":"other","mountPath":"/var/lib/pipelock/home"}]'
 
 expect_template_error "/image/tag" \
   --set image.tag="@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"

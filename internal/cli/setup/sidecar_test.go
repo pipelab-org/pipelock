@@ -1133,6 +1133,12 @@ func TestRunSidecar_VerificationOutputFormats(t *testing.T) {
 							t.Fatalf("README missing %q: %s", want, readme)
 						}
 					}
+					// The chart is published only as an OCI artifact: every Helm command
+					// must name that reference, and a repo search cannot list it.
+					const ociChart = "oci://ghcr.io/luckypipewrench/charts/pipelock"
+					if got := bytes.Count(readme, []byte(ociChart)); got != 3 || bytes.Contains(readme, []byte("helm search repo")) || bytes.Contains(readme, []byte(" pipelock/pipelock ")) {
+						t.Fatalf("README must use the OCI chart reference in show, template and install (found %d): %s", got, readme)
+					}
 				}
 			})
 		}
