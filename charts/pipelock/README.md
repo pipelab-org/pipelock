@@ -12,6 +12,12 @@ The chart is published as an OCI artifact to the same registry as the images it 
 
 Pipelock runs as a non-root container with a read-only root filesystem, drops all Linux capabilities, and binds the standard Pipelock proxy on port 8888.
 
+### Proxy state
+
+Proxy mode mounts a writable `emptyDir` named `pipelock-state` at `/var/lib/pipelock/state` and sets `XDG_STATE_HOME` to that path. The root filesystem stays read-only. Kubernetes preserves this state across container restarts within the same Pod, but removes it on Pod replacement. Replicas have separate evidence; this isn't durable cross-Pod or shared cross-replica storage.
+
+To use existing storage, set `XDG_STATE_HOME` in `extraEnv` and provide its volume and mount through `extraVolumes` and `extraVolumeMounts`. That environment entry suppresses the default state environment, volume, and mount, including when it uses `valueFrom`. Mount evidence storage only in the proxy, never in an agent workload. Conductor and fleet-sink modes use their own storage settings.
+
 ### Chart version and Pipelock version
 
 `version` and `appVersion` both equal the Pipelock release. The release gate enforces the invariant because OCI registries address a chart by `version`; allowing it to lag would replace an existing version with a chart that deploys a different Pipelock release.

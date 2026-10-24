@@ -399,3 +399,70 @@ func containsFailure(failed []string, want string) bool {
 	}
 	return false
 }
+
+func TestProxyStateContract(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]interface{}, map[string]interface{})
+	}{
+		{"valid", func(_, _ map[string]interface{}) {}},
+		{"missing group", func(pod, _ map[string]interface{}) {
+			delete(pod["securityContext"].(map[string]interface{}), "fsGroup")
+		}},
+		{"wrong group", func(pod, _ map[string]interface{}) { pod["securityContext"].(map[string]interface{})["fsGroup"] = 1 }},
+		{"missing volume", func(pod, _ map[string]interface{}) { delete(pod, "volumes") }},
+		{"wrong volume source", func(pod, _ map[string]interface{}) {
+			pod["volumes"].([]interface{})[0].(map[string]interface{})["emptyDir"] = "invalid"
+		}},
+		{"duplicate volume", func(pod, _ map[string]interface{}) {
+			pod["volumes"] = append(pod["volumes"].([]interface{}), pod["volumes"].([]interface{})[0])
+		}},
+		{"wrong container", func(_, c map[string]interface{}) { c["name"] = "agent" }},
+		{"env from source", func(_, c map[string]interface{}) {
+			c["env"].([]interface{})[0].(map[string]interface{})["valueFrom"] = map[string]interface{}{}
+		}},
+		{"missing env", func(_, c map[string]interface{}) { delete(c, "env") }},
+		{"wrong home", func(_, c map[string]interface{}) {
+			c["env"].([]interface{})[0].(map[string]interface{})["value"] = "/elsewhere"
+		}},
+		{"duplicate env", func(_, c map[string]interface{}) {
+			c["env"] = append(c["env"].([]interface{}), c["env"].([]interface{})[0])
+		}},
+		{"missing mount", func(_, c map[string]interface{}) { delete(c, "volumeMounts") }},
+		{"read only mount", func(_, c map[string]interface{}) {
+			c["volumeMounts"].([]interface{})[0].(map[string]interface{})["readOnly"] = true
+		}},
+		{"wrong mount path", func(_, c map[string]interface{}) {
+			c["volumeMounts"].([]interface{})[0].(map[string]interface{})["mountPath"] = "/elsewhere"
+		}},
+		{"subpath mount", func(_, c map[string]interface{}) {
+			c["volumeMounts"].([]interface{})[0].(map[string]interface{})["subPath"] = "nested"
+		}},
+		{"other container", func(pod, c map[string]interface{}) { pod["containers"] = append(pod["containers"].([]interface{}), c) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced})
+			doc := decodeSidecarVerifyYAML(t, result.DeploymentYAML)
+			pod, err := getPodSpec(doc, kindDeployment)
+			if err != nil {
+				t.Fatal(err)
+			}
+			container := pod["containers"].([]interface{})[0].(map[string]interface{})
+			security := container["securityContext"].(map[string]interface{})
+			if security["readOnlyRootFilesystem"] != true || security["runAsNonRoot"] != true || security["runAsUser"] != 65534 || security["allowPrivilegeEscalation"] != false {
+				t.Fatalf("proxy security changed: %v", security)
+			}
+			tt.mutate(pod, container)
+			result.DeploymentYAML = encodeSidecarVerifyYAML(t, doc)
+			verification := runSidecarVerify(&bytes.Buffer{}, result, sidecarOptions{}, true)
+			if want := tt.name == "valid"; verification.Healthy != want {
+				t.Fatalf("healthy = %v, want %v: %s", verification.Healthy, want, verification.Detail)
+			}
+		})
+	}
+	if deploymentHasProxyState("[") || deploymentHasProxyState("kind: Deployment") {
+		t.Fatal("invalid deployment passed state check")
+	}
+}

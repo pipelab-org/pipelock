@@ -30,6 +30,10 @@ const (
 	sidecarConfigVolume    = "pipelock-config"
 	sidecarConfigMount     = "/etc/pipelock"
 	sidecarConfigFile      = "pipelock.yaml"
+	proxyStateVolume       = "pipelock-state"
+	proxyStateHome         = "/var/lib/pipelock/state"
+	envXDGStateHome        = "XDG_STATE_HOME"
+	proxyRunAsUser         = 65534
 	sidecarMCPConfigVolume = "pipelock-mcp-config"
 	sidecarMCPConfigMount  = "/etc/pipelock/mcp"
 	sidecarMCPConfigFile   = "mcp.json"
@@ -609,6 +613,8 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 					"automountServiceAccountToken":  false,
 					"terminationGracePeriodSeconds": proxyTerminationGracePeriodSeconds,
 					"securityContext": map[string]interface{}{
+						"fsGroup":             proxyRunAsUser,
+						"fsGroupChangePolicy": "OnRootMismatch",
 						"seccompProfile": map[string]interface{}{
 							"type": "RuntimeDefault",
 						},
@@ -635,7 +641,11 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 							"args":            args,
 							"imagePullPolicy": "IfNotPresent",
 							"ports":           ports,
+							"env": []interface{}{
+								map[string]interface{}{"name": envXDGStateHome, "value": proxyStateHome},
+							},
 							"volumeMounts": []interface{}{
+								map[string]interface{}{"name": proxyStateVolume, "mountPath": proxyStateHome},
 								map[string]interface{}{
 									"name":      sidecarConfigVolume,
 									"mountPath": sidecarConfigMount,
@@ -660,7 +670,7 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 								"readOnlyRootFilesystem":   true,
 								"allowPrivilegeEscalation": false,
 								"runAsNonRoot":             true,
-								"runAsUser":                65534,
+								"runAsUser":                proxyRunAsUser,
 								"capabilities": map[string]interface{}{
 									"drop": []interface{}{"ALL"},
 								},
@@ -668,6 +678,7 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 						},
 					},
 					"volumes": []interface{}{
+						map[string]interface{}{"name": proxyStateVolume, "emptyDir": map[string]interface{}{}},
 						map[string]interface{}{
 							"name": sidecarConfigVolume,
 							"configMap": map[string]interface{}{

@@ -209,7 +209,13 @@ func TestGenerateSidecarPatch_Deployment(t *testing.T) {
 		t.Fatalf("proxy imagePullPolicy = %v, want IfNotPresent", proxyContainer["imagePullPolicy"])
 	}
 	volumeMounts := proxyContainer["volumeMounts"].([]interface{})
-	volumeMount := volumeMounts[0].(map[string]interface{})
+	var volumeMount map[string]interface{}
+	for _, entry := range volumeMounts {
+		mount := entry.(map[string]interface{})
+		if mount["name"] == sidecarConfigVolume {
+			volumeMount = mount
+		}
+	}
 	if volumeMount["mountPath"] != sidecarConfigMount {
 		t.Fatalf("config mountPath = %v, want %q", volumeMount["mountPath"], sidecarConfigMount)
 	}
@@ -309,6 +315,9 @@ func TestGenerateSidecarPatch_Idempotent(t *testing.T) {
 		t.Fatalf("expected proxy env vars to remain singletons, got env=%v", envList)
 	}
 
+	if second.DeploymentYAML != first.DeploymentYAML {
+		t.Fatal("proxy Deployment changed across identical rerender")
+	}
 	if second.ProxyName != first.ProxyName {
 		t.Fatalf("ProxyName changed across idempotent run: %q vs %q", second.ProxyName, first.ProxyName)
 	}
@@ -950,5 +959,37 @@ func TestRenderAgentNetworkPolicy_EmptySelectorError(t *testing.T) {
 func TestRenderProxyNetworkPolicy_EmptySelectorError(t *testing.T) {
 	if _, err := renderProxyNetworkPolicy("default", "proxy", map[string]string{"app": "proxy"}, nil, ""); err == nil {
 		t.Fatal("expected error for empty agent selector labels")
+	}
+}
+
+func TestGenerateSidecarPatch_ProxyStateIsolation(t *testing.T) {
+	t.Parallel()
+	for _, fixture := range []string{"deployment.yaml", "statefulset.yaml", "job.yaml", "cronjob.yaml"} {
+		t.Run(fixture, func(t *testing.T) {
+			manifest, err := detectWorkload(testdataPath(t, fixture))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Enable, rerender, then disable MCP without touching proxy state.
+			for _, upstream := range []string{"http://mcp.vendor.example/mcp", "http://mcp.vendor.example/mcp", ""} {
+				result, err := generateSidecarPatch(manifest, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: upstream})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !deploymentHasProxyState(result.DeploymentYAML) {
+					t.Fatal("proxy state contract missing")
+				}
+				data, err := yaml.Marshal(result.PatchedManifest)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, forbidden := range []string{"XDG_STATE_HOME", "/var/lib/pipelock/state", "pipelock-state", "fsGroup"} {
+					if strings.Contains(string(data), forbidden) {
+						t.Fatalf("agent received proxy state: %s", data)
+					}
+				}
+				manifest.Raw = result.PatchedManifest
+			}
+		})
 	}
 }

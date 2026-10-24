@@ -18,6 +18,31 @@ for values in "$chart"/examples/*.yaml; do
   helm template pipelock "$chart" -f "$values" >"$render_dir/$name.yaml"
 done
 
+# Existing manual state homes replace the default wiring, without duplicate
+# environment names, mount paths, or volume names. Reuse the default volume name
+# here to ensure the default volume is omitted as well as its mount.
+cat >"$render_dir/custom-state-values.yaml" <<'EOF'
+extraEnv:
+  - name: XDG_STATE_HOME
+    value: /custom/state
+extraVolumes:
+  - name: pipelock-state
+    persistentVolumeClaim:
+      claimName: existing-state
+extraVolumeMounts:
+  - name: pipelock-state
+    mountPath: /custom/state
+EOF
+helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" >"$render_dir/custom-state.yaml"
+helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
+  --set-json 'extraEnv=[{"name":"XDG_STATE_HOME","valueFrom":{"configMapKeyRef":{"name":"state-home","key":"path"}}}]' \
+  >"$render_dir/custom-state-valuefrom.yaml"
+# Native YAML decoding checks the links and security settings on the actual
+# Deployment, including all proxy/follower and separate server examples.
+go run ./scripts/helmstate \
+  "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
+  "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml"
+
 expect_template_error() {
   local want="$1"
   shift

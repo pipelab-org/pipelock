@@ -6,10 +6,15 @@ package setup
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -881,5 +886,82 @@ func TestMCPUpstreamHostHasMalformedPort(t *testing.T) {
 		if got := mcpUpstreamHostHasMalformedPort(host); got != want {
 			t.Errorf("mcpUpstreamHostHasMalformedPort(%q) = %v, want %v", host, got, want)
 		}
+	}
+}
+
+func TestRunSidecar_EmittedProxyState(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"patch", "kustomize", "helm-values"} {
+		t.Run(format, func(t *testing.T) {
+			output := filepath.Join(t.TempDir(), "bundle")
+			var buf bytes.Buffer
+			cmd := SidecarCmd()
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
+			cmd.SetArgs([]string{"--inject-spec", testdataPath(t, "deployment.yaml"), "--emit", format, "--output", output, "--skip-canary"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("emit: %v: %s", err, buf.String())
+			}
+			var data []byte
+			var err error
+			switch format {
+			case "patch":
+				data, err = os.ReadFile(filepath.Clean(output))
+			case "kustomize":
+				data, err = os.ReadFile(filepath.Clean(filepath.Join(output, "pipelock-deployment.yaml")))
+			case "helm-values":
+				_, lookupErr := exec.LookPath("helm")
+				if lookupErr != nil {
+					t.Skip("Helm unavailable; chart policy checks cover rendering")
+				}
+				// #nosec G204 -- fixed chart and generated values in a private t.TempDir.
+				data, err = exec.CommandContext(t.Context(), "helm", "template", "pipelock", "../../../charts/pipelock", "-f", filepath.Join(output, "values.yaml")).CombinedOutput()
+			}
+			if err != nil {
+				t.Fatalf("read/render: %v: %s", err, data)
+			}
+			decoder := yaml.NewDecoder(bytes.NewReader(data))
+			proxies := 0
+			for {
+				var doc map[string]interface{}
+				if err := decoder.Decode(&doc); errors.Is(err, io.EOF) {
+					break
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if doc["kind"] != kindDeployment {
+					continue
+				}
+				pod, err := getPodSpec(doc, kindDeployment)
+				if err != nil {
+					t.Fatal(err)
+				}
+				containers := pod["containers"].([]interface{})
+				c := containers[0].(map[string]interface{})
+				if c["name"] == proxyContainerName {
+					encoded, err := yaml.Marshal(doc)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !deploymentHasProxyState(string(encoded)) {
+						t.Fatalf("emitted proxy lacks writable state: %s", encoded)
+					}
+					proxies++
+				} else {
+					for _, entry := range containers {
+						agent := entry.(map[string]interface{})
+						env, _ := agent["env"].([]interface{})
+						for _, variable := range env {
+							if variable.(map[string]interface{})["name"] == envXDGStateHome {
+								t.Fatal("state home leaked into agent")
+							}
+						}
+					}
+				}
+			}
+			if proxies != 1 {
+				t.Fatalf("got %d proxy Deployments, want 1", proxies)
+			}
+		})
 	}
 }

@@ -37,6 +37,9 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	if result.DeploymentYAML == "" {
 		failed = append(failed, "proxy Deployment YAML is empty")
 	}
+	if !deploymentHasProxyState(result.DeploymentYAML) {
+		failed = append(failed, "proxy Deployment is missing writable proxy-only state")
+	}
 	if result.ServiceYAML == "" {
 		failed = append(failed, "proxy Service YAML is empty")
 	}
@@ -265,4 +268,65 @@ func deploymentTerminationGrace(manifest string) (int64, bool) {
 		return 0, false
 	}
 	return *grace, true
+}
+
+// deploymentHasProxyState checks the linked state environment, mount and volume
+// on the companion proxy, with the group that makes emptyDir writable non-root.
+func deploymentHasProxyState(manifest string) bool {
+	var doc map[string]interface{}
+	if err := yaml.Unmarshal([]byte(manifest), &doc); err != nil {
+		return false
+	}
+	pod, err := getPodSpec(doc, kindDeployment)
+	if err != nil {
+		return false
+	}
+	security, _ := pod["securityContext"].(map[string]interface{})
+	if security["fsGroup"] != proxyRunAsUser {
+		return false
+	}
+	volumes, _ := pod["volumes"].([]interface{})
+	stateVolumes := 0
+	for _, entry := range volumes {
+		volume, _ := entry.(map[string]interface{})
+		if volume["name"] == proxyStateVolume {
+			empty, ok := volume["emptyDir"].(map[string]interface{})
+			if !ok || len(empty) != 0 || len(volume) != 2 {
+				return false
+			}
+			stateVolumes++
+		}
+	}
+	containers, _ := pod["containers"].([]interface{})
+	if stateVolumes != 1 || len(containers) != 1 {
+		return false
+	}
+	container, _ := containers[0].(map[string]interface{})
+	if container["name"] != proxyContainerName {
+		return false
+	}
+	env, _ := container["env"].([]interface{})
+	stateEnvs := 0
+	for _, entry := range env {
+		variable, _ := entry.(map[string]interface{})
+		if variable["name"] == envXDGStateHome {
+			if variable["value"] != proxyStateHome || variable["valueFrom"] != nil {
+				return false
+			}
+			stateEnvs++
+		}
+	}
+	mounts, _ := container["volumeMounts"].([]interface{})
+	stateMounts := 0
+	for _, entry := range mounts {
+		mount, _ := entry.(map[string]interface{})
+		if mount["name"] == proxyStateVolume || mount["mountPath"] == proxyStateHome {
+			if mount["name"] != proxyStateVolume || mount["mountPath"] != proxyStateHome ||
+				mount["readOnly"] == true || mount["subPath"] != nil || mount["subPathExpr"] != nil {
+				return false
+			}
+			stateMounts++
+		}
+	}
+	return stateEnvs == 1 && stateMounts == 1
 }
