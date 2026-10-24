@@ -190,6 +190,10 @@
         },
         {
           "kind": "config_section",
+          "value": "prompt_injection_detection"
+        },
+        {
+          "kind": "config_section",
           "value": "request_body_scanning"
         },
         {
