@@ -202,6 +202,10 @@ type MCPProxyOpts struct {
 	// historical explicit action-driven scan behavior.
 	stdioInputScanDisabled bool
 
+	// taintRecoveryLogSuppressed applies only to operator guidance after the
+	// listener report limiter has counted this request. It never affects a gate.
+	taintRecoveryLogSuppressed bool
+
 	// Session and adaptive enforcement
 	Store         session.Store
 	Rec           session.Recorder // set by RunProxy after Store.GetOrCreate

@@ -16,9 +16,9 @@ import (
 
 func TestMCPProxyTaintDiagnostics_Startup(t *testing.T) {
 	for _, tc := range []struct{ name, yaml, want string }{
-		{"omitted", "", "no persistent taint recorder"},
-		{"null", "session_profiling: {enabled: null}\n", "no persistent taint recorder"},
-		{"false", "session_profiling: {enabled: false}\n", "no persistent taint recorder"},
+		{"omitted", "", "no session taint recorder"},
+		{"null", "session_profiling: {enabled: null}\n", "no session taint recorder"},
+		{"false", "session_profiling: {enabled: false}\n", "no session taint recorder"},
 		{"true", "session_profiling: {enabled: true}\n", "invocation-scoped recorder"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,7 +74,7 @@ func TestMCPListenerTaintDiagnostics_ActualReload(t *testing.T) {
 				t.Errorf("reload omitted %q: %s", want, log)
 			}
 		}
-		want := "no persistent taint recorder"
+		want := "no session taint recorder"
 		if !updated.Taint.Enabled {
 			want = "taint is disabled"
 		}

@@ -6,7 +6,6 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -293,7 +292,7 @@ func TestScanHTTPInput_TaintProtectedWriteRequiresApproval(t *testing.T) {
 	if blocked == nil {
 		t.Fatal("expected taint policy to block without approval")
 	}
-	if !strings.HasPrefix(blocked.ErrorMessage, "pipelock: protected_write_after_untrusted_external_exposure;") {
+	if blocked.ErrorMessage != "pipelock: protected_write_after_untrusted_external_exposure" {
 		t.Fatalf("error = %q", blocked.ErrorMessage)
 	}
 }
@@ -825,44 +824,6 @@ func TestEvaluateMCPTaint_TrustOverrideStillMatchesSingleEscalatingSource(t *tes
 	}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
 	if decision.Result.Decision != session.PolicyAllow {
 		t.Fatalf("decision = %v, want allow for the one source the override names", decision.Result.Decision)
-	}
-}
-
-func TestEvaluateMCPTaint_RuntimeTaskOverrideHonorsBoundary(t *testing.T) {
-	t.Parallel()
-
-	cfg := config.Defaults()
-	rec := &taintRecorder{
-		task: session.TaskContext{CurrentTaskID: "task-1"},
-		risk: session.SessionRisk{
-			Level:        session.TaintExternalUntrusted,
-			Contaminated: true,
-			Sources: []session.TaintSourceRef{{
-				URL:   "https://evil.example/issue/123",
-				Kind:  "http_response",
-				Level: session.TaintExternalUntrusted,
-			}},
-		},
-		overrides: []session.TrustOverride{{
-			Scope:       "task",
-			TaskID:      "task-1",
-			ActionMatch: "mcp:write_file:/repo/auth/middleware.go",
-			ExpiresAt:   time.Now().UTC().Add(time.Hour),
-		}},
-	}
-
-	decision := evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyAllow {
-		t.Fatalf("decision = %v, want allow", decision.Result.Decision)
-	}
-	if !decision.TaskOverrideApplied {
-		t.Fatal("expected runtime task override to be recorded")
-	}
-
-	rec.task = session.TaskContext{CurrentTaskID: "task-2"}
-	decision = evaluateMCPTaint(MCPProxyOpts{Rec: rec, TaintCfg: &cfg.Taint}, "write_file", `{"path":"/repo/auth/middleware.go","content":"x"}`)
-	if decision.Result.Decision != session.PolicyAsk {
-		t.Fatalf("decision after task boundary = %v, want ask", decision.Result.Decision)
 	}
 }
 

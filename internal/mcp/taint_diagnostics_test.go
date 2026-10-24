@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -212,11 +213,12 @@ func TestMCPTaintDiagnostics_RefusalNamesConsultedRecovery(t *testing.T) {
 			opts := MCPProxyOpts{Scanner: testScannerWithAction(t, config.ActionWarn), Rec: rec, TaintCfg: &cfg.Taint}
 			msg := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"execute_command","arguments":{"command":"id"}}}`)
 			var blocked *BlockedRequest
+			var log bytes.Buffer
 			if surface == "http" {
-				blocked = scanHTTPInput(msg, &bytes.Buffer{}, "session", "session", opts)
+				blocked = scanHTTPInput(msg, &log, "session", "session", opts)
 			} else {
 				ch := make(chan BlockedRequest, 1)
-				ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(msg, '\n'))), transport.NewStdioWriter(io.Discard), &bytes.Buffer{}, config.ActionBlock, config.ActionBlock, ch, nil, nil, opts)
+				ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(append(msg, '\n'))), transport.NewStdioWriter(io.Discard), &log, config.ActionBlock, config.ActionBlock, ch, nil, nil, opts)
 				select {
 				case b := <-ch:
 					blocked = &b
@@ -226,13 +228,66 @@ func TestMCPTaintDiagnostics_RefusalNamesConsultedRecovery(t *testing.T) {
 			if blocked == nil {
 				t.Fatal("hostile exec was not refused")
 			}
-			for _, want := range []string{"taint recovery:", "scoped taint.trust_overrides", "source_match requires a recorded origin URL", "mutable identity sessions", "admin invocation grants are rejected", "does not clear hostile history", "Inline approval cannot override a hostile block"} {
-				if !strings.Contains(blocked.ErrorMessage, want) {
-					t.Errorf("refusal omitted %q: %s", want, blocked.ErrorMessage)
+			if blocked.ErrorMessage != "pipelock: sensitive_action_after_hostile_external_exposure" || blocked.ErrorCode != -32002 {
+				t.Errorf("client error changed: %+v", blocked)
+			}
+			for _, want := range []string{"Every MCP session", "runtime trust grants are rejected for all", "action-scoped taint.trust_overrides entry without source_match", "pipelock run applies it on reload", "standalone pipelock mcp proxy reads taint config only at startup", "restart", "history"} {
+				if !strings.Contains(log.String(), want) {
+					t.Errorf("operator log missing %q: %s", want, log.String())
 				}
 			}
 			if rec.RiskSnapshot().Level != session.TaintExternalHostile {
 				t.Fatal("diagnostic cleared hostile state")
+			}
+		})
+	}
+}
+
+func TestMCPTaintDiagnostics_RecoveryParity(t *testing.T) {
+	cfg := config.Defaults()
+	var guidance string
+	for _, d := range cfg.MCPTaintDiagnostics() {
+		if d.Field == "taint.mcp_recovery" {
+			guidance = d.Message
+		}
+	}
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The same canonical recovery paragraph belongs in config, logs, and docs.
+	if guidance == "" || !strings.Contains(string(docs), guidance) {
+		t.Fatal("config recovery and docs differ")
+	}
+	var log bytes.Buffer
+	mcpTaintBlockMessage(taintDecision{}, &log)
+	if !strings.Contains(log.String(), guidance) {
+		t.Fatal("operator recovery and config differ")
+	}
+
+	for _, want := range []string{"Every MCP session", "runtime trust grants are rejected for all", "action-scoped taint.trust_overrides entry without source_match", "pipelock run applies it on reload", "standalone pipelock mcp proxy reads taint config only at startup"} {
+		if !strings.Contains(guidance, want) {
+			t.Errorf("recovery omitted %q", want)
+		}
+	}
+}
+
+func TestMCPTaintDiagnostics_RecorderRemedies(t *testing.T) {
+	cfg := config.Defaults()
+	for _, binding := range []string{"stdio_subprocess", "stdio_http", "stdio_ws", "listener_principal", "listener_legacy", "listener_token", "listener_stateless"} {
+		t.Run(binding, func(t *testing.T) {
+			var out bytes.Buffer
+			reportMCPTaint(&out, MCPProxyOpts{TaintCfg: &cfg.Taint}, nil, binding)
+			text := out.String()
+			if strings.Contains(text, "persistent") {
+				t.Error("recorder scope implies restart persistence")
+			}
+			want := "enable session_profiling.enabled and restart"
+			if strings.HasPrefix(binding, "listener_") {
+				want = "restart the listener with session_profiling.enabled; also check listener state capacity"
+			}
+			if !strings.Contains(text, want) {
+				t.Errorf("missing binding-specific remedy %q: %s", want, text)
 			}
 		})
 	}

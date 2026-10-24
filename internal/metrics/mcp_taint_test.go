@@ -28,3 +28,12 @@ func TestMCPTaintContextMetrics_BoundedActualStatus(t *testing.T) {
 		t.Fatal("unbounded input entered metric labels")
 	}
 }
+
+func TestMCPTaintContextMetrics_ZeroValue(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("zero-value metrics panicked: %v", r)
+		}
+	}()
+	(&Metrics{}).RecordMCPTaintContext("listener_principal", "inactive")
+}

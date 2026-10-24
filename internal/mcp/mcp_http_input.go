@@ -617,12 +617,16 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		denialAudit = mcpTaintDenialAudit()
 		logTaintDecision()
 		receiptVerdict = config.ActionBlock
+		taintLogW := logW
+		if opts.taintRecoveryLogSuppressed {
+			taintLogW = nil
+		}
 		result.Blocked = &BlockedRequest{
 			ID:             verdict.ID,
 			IsNotification: isRPCNotification(verdict.ID),
 			LogMessage:     "blocked by taint policy",
 			ErrorCode:      -32002,
-			ErrorMessage:   mcpTaintRefusalMessage(eval.TaintDecision),
+			ErrorMessage:   mcpTaintBlockMessage(eval.TaintDecision, taintLogW),
 		}
 		return result
 	}

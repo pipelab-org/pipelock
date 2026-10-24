@@ -709,7 +709,7 @@ func RunHTTPListenerProxy(
 		switch {
 		case listenerPrincipal.key != "":
 			taintBinding = "listener_principal"
-		case stateBound && listenerSessionToken != "":
+		case stateBound && requireStateToken:
 			taintBinding = "listener_token"
 		case stateBound && r.Header.Get("Mcp-Session-Id") != "":
 			taintBinding = "listener_legacy"
@@ -720,7 +720,13 @@ func RunHTTPListenerProxy(
 			// operator's live setting separately from recorder availability.
 			diagnosticOpts.TaintCfg = opts.taintCfg()
 			diagnosticOpts.TaintCfgFn = nil
-			reportMCPTaint(safeLogW, diagnosticOpts, clientState.recorder, taintBinding)
+			// Request-local evidence is discarded after an unbound request. It
+			// cannot justify an active cross-request recording observation.
+			taintRec := clientState.recorder
+			if !stateBound {
+				taintRec = nil
+			}
+			requestBaseOpts.taintRecoveryLogSuppressed = !listenerClients.reportTaint(safeLogW, diagnosticOpts, taintRec, taintBinding)
 		}
 		listenerStateAuditKey := func() string {
 			if requireStateToken || principalBound {

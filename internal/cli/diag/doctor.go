@@ -179,8 +179,12 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 	}
 	report.Checks = append(report.Checks, checkDoctorConfigSemantics(cfg)...)
 	for _, diagnostic := range cfg.MCPTaintDiagnostics() {
+		status := doctorStatusInfo
+		if diagnostic.Field == "taint.mcp_recorder" && cfg.Taint.Enabled && !cfg.SessionProfiling.Enabled {
+			status = doctorStatusWarn
+		}
 		report.Checks = append(report.Checks, doctorReportCheck{
-			Name: diagnostic.Field, Surface: doctorSurfaceMCP, Status: doctorStatusWarn,
+			Name: diagnostic.Field, Surface: doctorSurfaceMCP, Status: status,
 			Configured: cfg.Taint.Enabled, Detail: diagnostic.Message,
 		})
 	}

@@ -16,7 +16,7 @@ func (m *Metrics) registerMCPTaintMetrics(reg *prometheus.Registry) {
 // RecordMCPTaintContext records bounded state-registry outcomes without caller
 // names, session keys, URLs, or other request-controlled metric labels.
 func (m *Metrics) RecordMCPTaintContext(binding, status string) {
-	if m == nil {
+	if m == nil || m.mcpTaintContexts == nil {
 		return
 	}
 	switch binding {

@@ -6,6 +6,7 @@ package mcp
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -34,9 +35,14 @@ func reportMCPTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, bindin
 	}
 	_, _ = fmt.Fprintf(w, "pipelock: MCP taint binding=%s recorder_risk_state=%t cross_request_recording=%s taint_policy=%s (in-memory scope; not restart persistence or proof of enforcement)\n", binding, recordsRisk, status, policy)
 	if binding == "listener_stateless" {
-		_, _ = fmt.Fprintln(w, "pipelock: anonymous stateless MCP caller: request-local only; cross-request taint protection is NOT active; use verified caller identity and an admitted persistent taint recorder")
-	} else if !recordsRisk && cfg != nil && cfg.Enabled {
-		_, _ = fmt.Fprintln(w, "pipelock: no taint recorder is active; standalone MCP needs session_profiling.enabled and successful recorder admission")
+		_, _ = fmt.Fprintln(w, "pipelock: anonymous stateless MCP caller: request-local only; cross-request taint protection is NOT active; use verified caller identity and an admitted cross-request taint recorder")
+	}
+	if !recordsRisk && cfg != nil && cfg.Enabled {
+		if strings.HasPrefix(binding, "listener_") {
+			_, _ = fmt.Fprintln(w, "pipelock: no cross-request taint recorder is active; restart the listener with session_profiling.enabled; also check listener state capacity and recorder admission")
+		} else {
+			_, _ = fmt.Fprintln(w, "pipelock: no session taint recorder is active; enable session_profiling.enabled and restart; verify recorder admission")
+		}
 	}
 	origin := "undeclared (clean responses default to internal_generated; not verified provenance)"
 	if opts.TaintExternalSource {
@@ -62,6 +68,24 @@ func reportMCPTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, bindin
 	_, _ = fmt.Fprintf(w, "pipelock: MCP taint origin=%s response_action=%s effective_response_action=%s terminal_approval=%t (finding-specific core/DLP rules still apply)\n", origin, action, effective, approval)
 }
 
-func mcpTaintRefusalMessage(decision taintDecision) string {
-	return "pipelock: " + decision.Result.Reason + "; taint recovery: an operator may accept risk with scoped taint.trust_overrides (action/source, optional expiry); source_match requires a recorded origin URL and cannot match URL-less MCP sources. Runtime task boundaries/grants apply only to mutable identity sessions; admin invocation grants are rejected. Source trust changes only future clean observations; it does not clear hostile history. Inline approval cannot override a hostile block; ask fails closed without a terminal."
+// mcpTaintBlockMessage follows adaptive diagnostics: detail to the operator,
+// the original stable reason to the JSON-RPC client.
+func mcpTaintBlockMessage(decision taintDecision, logW io.Writer) string {
+	if logW != nil {
+		_, _ = fmt.Fprintf(logW, "pipelock: taint refusal (%s); recovery: %s\n", decision.Result.Reason, config.MCPTaintRecoveryGuidance)
+	}
+	return "pipelock: " + decision.Result.Reason
+}
+
+// reportTaint reuses the listener's bounded aggregation contract. Metrics still
+// count each context even when this listener-wide log interval is suppressed.
+func (s *mcpListenerClientStates) reportTaint(w io.Writer, opts MCPProxyOpts, rec session.Recorder, binding string) bool {
+	count, emit := s.taintReporter.observe()
+	if !emit {
+		w = nil
+	} else if count > 1 && w != nil {
+		_, _ = fmt.Fprintf(w, "pipelock: MCP taint listener contexts since last report=%d (see pipelock_mcp_taint_contexts_total)\n", count)
+	}
+	reportMCPTaint(w, opts, rec, binding)
+	return emit
 }

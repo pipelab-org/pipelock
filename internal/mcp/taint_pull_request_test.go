@@ -6,7 +6,6 @@ package mcp
 import (
 	"bytes"
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -51,7 +50,7 @@ func TestPullRequestReadTaintConsumers(t *testing.T) {
 					if (blocked != nil) != (tc.policy != session.PolicyAllow) {
 						t.Fatalf("block=%+v, policy=%v", blocked, tc.policy)
 					}
-					if blocked != nil && !strings.HasPrefix(blocked.ErrorMessage, "pipelock: external_publish_after_untrusted_external_exposure;") {
+					if blocked != nil && blocked.ErrorMessage != "pipelock: external_publish_after_untrusted_external_exposure" {
 						t.Fatalf("unexpected denial: %+v", blocked)
 					}
 				}

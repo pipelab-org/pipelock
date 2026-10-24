@@ -85,6 +85,7 @@ type mcpListenerClientStates struct {
 	resetAuthorityToolCfgFn func() *tools.ToolScanConfig
 	degradationReporter     mcpListenerDegradationReporter
 	resetDecisionReporter   mcpListenerDegradationReporter
+	taintReporter           mcpListenerDegradationReporter
 	principalSecret         [32]byte
 	principalSecretErr      error
 	activeBearer            [32]byte
@@ -147,6 +148,7 @@ func newMCPListenerClientStates(store session.Store) *mcpListenerClientStates {
 		upstreamToolBaseline:  tools.NewToolBaseline(),
 		degradationReporter:   newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 		resetDecisionReporter: newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
+		taintReporter:         newMCPListenerDegradationReporter(listenerDegradationReportInterval, nil),
 		now:                   time.Now,
 	}
 	_, states.principalSecretErr = rand.Read(states.principalSecret[:])
