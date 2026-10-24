@@ -4073,9 +4073,16 @@ taint without any taint-policy enforcement while tuning a deployment, set
 `taint.policy: permissive`; other scanners such as DLP and response scanning
 keep their configured enforcement behavior.
 
+When taint policy returns `decision: "ask"`, Pipelock can only prompt an
+operator if it was started with an interactive terminal. The prompt appears in
+the terminal running Pipelock and accepts allow/block input. In headless
+deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask`
+fails closed and blocks; configure an allowlist, a narrow trust override, or
+`taint.policy: permissive` during tuning, then retry the request.
+
 MCP stdio uses stdin for JSON-RPC: inline terminal approval is unavailable and ask fails closed. Every MCP session (stdio, HTTP/WS bridges, and listener principal, token and legacy partitions) is invocation-scoped, so admin task boundaries and runtime trust grants are rejected for all of them. The only configured override for existing hostile history is an action-scoped taint.trust_overrides entry without source_match (MCP sources record no origin URL), optionally expiring. pipelock run applies it on reload; standalone pipelock mcp proxy reads taint config only at startup, and the restart that applies an override also discards that invocation's in-memory history. Source trust affects only future clean observations; it does not clear hostile history. Inline approval cannot override a hostile block.
 
-Configured overrides accept risk only within their matching action scope and expiry; they don't remove taint or override another scanner or identity gate. Deferred tool approvals aren't recovery for a taint refusal.
+Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match); they don't remove taint or override another scanner or identity gate. Deferred tool approvals aren't recovery for a taint refusal.
 
 ### Trust overrides
 

@@ -292,3 +292,33 @@ func TestMCPTaintDiagnostics_RecorderRemedies(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPTaintDiagnostics_DocsPreserveHeadlessAndHTTPOverrideScope(t *testing.T) {
+	docs, err := os.ReadFile("../../docs/configuration.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(strings.Fields(string(docs)), " ")
+	start := strings.Index(text, "### Common taint decisions")
+	end := strings.Index(text, "### Trust overrides")
+	if start < 0 || end <= start {
+		t.Fatal("common taint documentation missing")
+	}
+	section := text[start:end]
+	for _, want := range []string{
+		"the agent sends chat requests through the forward proxy",
+		"When taint policy returns `decision: \"ask\"`, Pipelock can only prompt an operator if it was started with an interactive terminal.",
+		"The prompt appears in the terminal running Pipelock and accepts allow/block input.",
+		"In headless deployments such as Docker or Kubernetes, there is no terminal to ask, so `ask` fails closed and blocks; configure an allowlist, a narrow trust override, or `taint.policy: permissive` during tuning, then retry the request.",
+		"Configured overrides accept risk only within their matching scope and expiry (for MCP, only the action scope can match)",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("common taint guidance omitted %q", want)
+		}
+	}
+	headless := strings.Index(section, "When taint policy returns")
+	mcp := strings.Index(section, config.MCPTaintRecoveryGuidance)
+	if headless < 0 || mcp <= headless {
+		t.Error("generic headless guidance must precede the unchanged MCP-specific paragraph")
+	}
+}

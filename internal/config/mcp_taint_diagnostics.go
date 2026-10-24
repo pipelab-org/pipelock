@@ -15,7 +15,7 @@ func (c *Config) MCPTaintDiagnostics() []Warning {
 	}
 	recorder := "taint is disabled; cross-request taint protection is inactive"
 	if c.Taint.Enabled {
-		recorder = "standalone MCP stdio subprocess and stdio-to-HTTP/WS upstream: no session taint recorder when session_profiling.enabled=false"
+		recorder = "taint is enabled but session_profiling.enabled=false: no session taint recorder exists for MCP stdio/HTTP/WS bridges, the MCP listener, or the HTTP proxy; enable session_profiling and restart"
 		if c.SessionProfiling.Enabled {
 			recorder = "standalone MCP stdio subprocess and stdio-to-HTTP/WS upstream: session_profiling.enabled=true provisions an invocation-scoped recorder; live allocation and RiskState support must be verified"
 		}
