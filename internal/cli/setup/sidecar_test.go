@@ -916,6 +916,21 @@ func TestRunSidecar_EmittedProxyState(t *testing.T) {
 				}
 				// #nosec G204 -- fixed chart and generated values in a private t.TempDir.
 				data, err = exec.CommandContext(t.Context(), "helm", "template", "pipelock", "../../../charts/pipelock", "-f", filepath.Join(output, "values.yaml")).CombinedOutput()
+				if err != nil {
+					t.Fatalf("helm render: %v: %s", err, data)
+				}
+				// The chart supplies its default state home through a ConfigMap
+				// so later operator envFrom sources retain their precedence.
+				rendered := filepath.Join(output, "rendered.yaml")
+				if err := os.WriteFile(rendered, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				// #nosec G204 -- fixed validation chart and private generated input.
+				checked, err := exec.CommandContext(t.Context(), "helm", "template", "state-check", "../../../scripts/helmstate", "--set-file", "manifests.emitted="+rendered).CombinedOutput()
+				if err != nil || !bytes.Contains(checked, []byte("decoded Helm proxy state checks passed")) {
+					t.Fatalf("decoded Helm state checks: %v: %s", err, checked)
+				}
+				return
 			}
 			if err != nil {
 				t.Fatalf("read/render: %v: %s", err, data)
@@ -961,6 +976,104 @@ func TestRunSidecar_EmittedProxyState(t *testing.T) {
 			}
 			if proxies != 1 {
 				t.Fatalf("got %d proxy Deployments, want 1", proxies)
+			}
+		})
+	}
+}
+
+func TestRunSidecar_RegeneratePatchedOutput(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{emitPatch, emitKustomize, emitHelmValues} {
+		t.Run(format, func(t *testing.T) {
+			dir := t.TempDir()
+			output := filepath.Join(dir, "output")
+			run := func(input string, flags ...string) (sidecarResult, string, error) {
+				t.Helper()
+				var buf bytes.Buffer
+				cmd := SidecarCmd()
+				cmd.SetOut(&buf)
+				cmd.SetErr(&buf)
+				args := []string{"--inject-spec", input, "--emit", format, "--output", output, "--skip-canary", "--json"}
+				cmd.SetArgs(append(args, flags...))
+				err := cmd.Execute()
+				var result sidecarResult
+				if err == nil {
+					if decodeErr := json.Unmarshal(buf.Bytes(), &result); decodeErr != nil {
+						t.Fatalf("decode result: %v: %s", decodeErr, buf.String())
+					}
+				}
+				return result, buf.String(), err
+			}
+			original := testdataPath(t, "deployment.yaml")
+			first, detail, err := run(original)
+			if err != nil || !first.Patch.Written || !first.Verify.Healthy {
+				t.Fatalf("first run: %v: %s", err, detail)
+			}
+			companion := output
+			agent := output
+			if format != emitPatch {
+				agent = filepath.Join(output, "agent-workload.yaml")
+				companion = filepath.Join(output, "pipelock-deployment.yaml")
+				if format == emitHelmValues {
+					companion = filepath.Join(output, "values.yaml")
+				}
+			}
+			generated, err := os.ReadFile(filepath.Clean(companion))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Keep patched input separate even for the single-file bundle.
+			patched, err := os.ReadFile(filepath.Clean(agent))
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := filepath.Join(dir, "patched-input.yaml")
+			if err := os.WriteFile(input, patched, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manual := []byte("# operator-edited companion; do not overwrite without --force\n")
+			if err := os.WriteFile(filepath.Clean(companion), manual, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			assertPreserved := func() {
+				t.Helper()
+				got, err := os.ReadFile(filepath.Clean(companion))
+				if err != nil || !bytes.Equal(got, manual) {
+					t.Fatalf("manual output changed without forced emission: %v: %s", err, got)
+				}
+			}
+			if _, _, err := run(original); err == nil {
+				t.Fatal("existing output from original input must require --force")
+			}
+			assertPreserved()
+			skipped, detail, err := run(input)
+			if err != nil || skipped.Patch.Written || !skipped.Verify.Skipped || skipped.Verify.Healthy || !strings.Contains(skipped.Verify.Detail, "existing files were not verified") {
+				t.Fatalf("unforced patched run must not claim verification: %v: %s", err, detail)
+			}
+			assertPreserved()
+			dry, detail, err := run(input, "--force", "--dry-run")
+			if err != nil || dry.Patch.Written || !dry.Verify.Skipped || dry.Verify.Healthy {
+				t.Fatalf("dry run: %v: %s", err, detail)
+			}
+			assertPreserved()
+			for range 2 {
+				forced, detail, err := run(input, "--force")
+				if err != nil || !forced.Patch.Written || !forced.Verify.Healthy || forced.Verify.Skipped || !forced.Detect.AlreadyPatched {
+					t.Fatalf("forced patched run: %v: %s", err, detail)
+				}
+				got, err := os.ReadFile(filepath.Clean(companion))
+				if err != nil || !bytes.Equal(got, generated) {
+					t.Fatalf("forced output differs from first run: %v: %s", err, got)
+				}
+			}
+			// A patched input alone is no evidence that the requested output exists.
+			output = filepath.Join(dir, "never-emitted")
+			missing, detail, err := run(input)
+			if err != nil || missing.Patch.Written || !missing.Verify.Skipped || missing.Verify.Healthy {
+				t.Fatalf("unwritten output must not be verified: %v: %s", err, detail)
+			}
+			if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("skipped run created output: %v", err)
 			}
 		})
 	}

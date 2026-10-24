@@ -66,6 +66,17 @@ Return the chart deployment mode.
 {{- default "proxy" .Values.mode -}}
 {{- end }}
 
+{{/* An explicit state home keeps the operator's existing storage wiring. */}}
+{{- define "pipelock.defaultStateHome" -}}
+{{- $enabled := true -}}
+{{- range .Values.extraEnv -}}
+{{- if eq .name "XDG_STATE_HOME" -}}
+{{- $enabled = false -}}
+{{- end -}}
+{{- end -}}
+{{- $enabled -}}
+{{- end }}
+
 {{/*
 Build the container image reference. A digest pins by manifest hash
 (repository@sha256:...); otherwise the image is referenced by tag
@@ -96,6 +107,18 @@ Validate mode and security-critical enterprise chart requirements.
 */}}
 {{- define "pipelock.validate" -}}
 {{- $mode := include "pipelock.mode" . -}}
+{{- if and (eq $mode "proxy") (eq (include "pipelock.defaultStateHome" .) "true") -}}
+{{- range .Values.extraVolumes -}}
+{{- if eq .name "pipelock-state" -}}
+{{- fail "extraVolumes name pipelock-state conflicts with the default proxy state volume; set XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
+{{- end -}}
+{{- end -}}
+{{- range .Values.extraVolumeMounts -}}
+{{- if or (eq .name "pipelock-state") (eq .mountPath "/var/lib/pipelock/state") -}}
+{{- fail "extraVolumeMounts conflicts with the default proxy state mount; set XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- $ingress := default list .Values.networkPolicy.ingress -}}
 {{- $egress := default list .Values.networkPolicy.egress -}}
 {{- if not (has $mode (list "proxy" "conductor" "fleetSink")) -}}

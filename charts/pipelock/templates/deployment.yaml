@@ -1,12 +1,6 @@
 {{- include "pipelock.validate" . }}
 {{- if eq (include "pipelock.mode" .) "proxy" }}
-{{- /* An explicit state home keeps the operator's existing volume wiring. */}}
-{{- $defaultStateHome := true }}
-{{- range .Values.extraEnv }}
-{{- if eq .name "XDG_STATE_HOME" }}
-{{- $defaultStateHome = false }}
-{{- end }}
-{{- end }}
+{{- $defaultStateHome := eq (include "pipelock.defaultStateHome" .) "true" }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -105,12 +99,8 @@ spec:
           {{- end }}
           {{- $hasAdminEnv := and .Values.adminApi.enabled $adminTokenSecret }}
           {{- $hasExtraEnv := gt (len .Values.extraEnv) 0 }}
-          {{- if or $defaultStateHome $hasLicenseEnv $hasSentryEnv $hasAdminEnv $hasExtraEnv }}
+          {{- if or $hasLicenseEnv $hasSentryEnv $hasAdminEnv $hasExtraEnv }}
           env:
-            {{- if $defaultStateHome }}
-            - name: XDG_STATE_HOME
-              value: /var/lib/pipelock/state
-            {{- end }}
             {{- if $hasLicenseEnv }}
             - name: PIPELOCK_LICENSE_KEY
               valueFrom:
@@ -136,9 +126,15 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
           {{- end }}
-          {{- with .Values.extraEnvFrom }}
+          {{- if or $defaultStateHome .Values.extraEnvFrom }}
           envFrom:
+            {{- if $defaultStateHome }}
+            - configMapRef:
+                name: {{ include "pipelock.fullname" . }}-state-env
+            {{- end }}
+            {{- with .Values.extraEnvFrom }}
             {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

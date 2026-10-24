@@ -1,0 +1,10 @@
+{{- if and (eq (include "pipelock.mode" .) "proxy") (eq (include "pipelock.defaultStateHome" .) "true") }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pipelock.fullname" . }}-state-env
+  labels:
+    {{- include "pipelock.labels" . | nindent 4 }}
+data:
+  XDG_STATE_HOME: /var/lib/pipelock/state
+{{- end }}

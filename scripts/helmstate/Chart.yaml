@@ -1,0 +1,7 @@
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v2
+name: helmstate
+description: Decode and check rendered proxy state with Helm's built-in YAML functions.
+type: application
+version: 0.1.0

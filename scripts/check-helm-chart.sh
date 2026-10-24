@@ -32,24 +32,35 @@ extraVolumes:
 extraVolumeMounts:
   - name: pipelock-state
     mountPath: /custom/state
+extraEnvFrom:
+  - configMapRef:
+      name: state-from-envfrom
+  - secretRef:
+      name: state-from-secret
 EOF
 helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" >"$render_dir/custom-state.yaml"
 helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
   --set-json 'extraEnv=[{"name":"XDG_STATE_HOME","valueFrom":{"configMapKeyRef":{"name":"state-home","key":"path"}}}]' \
   >"$render_dir/custom-state-valuefrom.yaml"
-# envFrom can't suppress the default: its sources aren't visible at render time
-# and an env entry wins over envFrom, so the default state wiring stays intact
-# and the operator's envFrom is passed through untouched.
+# A default envFrom source must precede operator ConfigMaps and Secrets.
+# Keep existing operator storage even though the harmless default remains.
 helm template pipelock "$chart" \
-  --set-json 'extraEnvFrom=[{"configMapRef":{"name":"state-from-envfrom"}}]' \
+  --set-json 'extraEnvFrom=[{"configMapRef":{"name":"state-from-envfrom"}},{"secretRef":{"name":"state-from-secret"}}]' \
+  --set-json 'extraVolumes=[{"name":"operator-state","persistentVolumeClaim":{"claimName":"operator-state"}}]' \
+  --set-json 'extraVolumeMounts=[{"name":"operator-state","mountPath":"/operator/state"}]' \
   >"$render_dir/envfrom-state.yaml"
-grep -q 'name: state-from-envfrom' "$render_dir/envfrom-state.yaml"
-# Native YAML decoding checks the links and security settings on the actual
-# Deployment, including all proxy/follower and separate server examples.
-go run ./scripts/helmstate \
-  "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
+helm template pipelock "$chart" \
+  --set-json 'extraEnvFrom=[{"configMapRef":{"name":"unrelated-env"}}]' \
+  >"$render_dir/unrelated-envfrom.yaml"
+# Helm's own YAML decoder checks actual producer output. The Helm-only CI job
+# needs neither a Go toolchain nor an additional YAML package.
+state_args=()
+for manifest in "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
   "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml" \
-  "$render_dir/envfrom-state.yaml"
+  "$render_dir/envfrom-state.yaml" "$render_dir/unrelated-envfrom.yaml"; do
+  state_args+=(--set-file "manifests.$(basename "$manifest" .yaml)=$manifest")
+done
+helm template state-check scripts/helmstate "${state_args[@]}"
 
 expect_template_error() {
   local want="$1"
@@ -65,6 +76,13 @@ expect_template_error() {
     exit 1
   fi
 }
+
+expect_template_error "extraVolumes name pipelock-state conflicts" \
+  --set-json 'extraVolumes=[{"name":"pipelock-state","emptyDir":{}}]'
+expect_template_error "extraVolumeMounts conflicts" \
+  --set-json 'extraVolumeMounts=[{"name":"pipelock-state","mountPath":"/other"}]'
+expect_template_error "extraVolumeMounts conflicts" \
+  --set-json 'extraVolumeMounts=[{"name":"other","mountPath":"/var/lib/pipelock/state"}]'
 
 expect_template_error "/image/tag" \
   --set image.tag="@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"
