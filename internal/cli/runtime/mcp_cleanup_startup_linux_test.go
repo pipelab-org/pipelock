@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//go:build linux
+//go:build linux && !mcp_hardening_test
 
 package runtime
 
