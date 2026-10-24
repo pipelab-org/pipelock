@@ -34,7 +34,7 @@ type workflowStep struct {
 	ContinueOnError any `yaml:"continue-on-error"`
 }
 
-// TestTrustedScanSelectsDiffEndpointsForEveryTrigger pins both event shapes
+// TestTrustedScanSelectsDiffEndpointsForEveryTrigger pins all three event shapes
 // accepted by the workflow. Pull-request-only fields are empty on a push, so
 // using them unconditionally makes the main-branch gate fail before scanning.
 // The explicit endpoint guards also keep an absent, zero, or unavailable ref
@@ -56,10 +56,10 @@ func TestTrustedScanSelectsDiffEndpointsForEveryTrigger(t *testing.T) {
 	if strings.TrimSpace(step.If) != "" {
 		t.Fatalf("scan step is conditional (if: %q); the endpoint gate must run for every job invocation", step.If)
 	}
-	if got, want := step.Env["BASE_SHA"], "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"; got != want {
+	if got, want := step.Env["BASE_SHA"], "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}"; got != want {
 		t.Fatalf("BASE_SHA expression = %q, want %q", got, want)
 	}
-	if got, want := step.Env["HEAD_SHA"], "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}"; got != want {
+	if got, want := step.Env["HEAD_SHA"], "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}"; got != want {
 		t.Fatalf("HEAD_SHA expression = %q, want %q", got, want)
 	}
 	for _, exactGuard := range []string{

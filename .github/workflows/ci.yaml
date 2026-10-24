@@ -6,6 +6,9 @@ on:
     tags-ignore: ['v*']
   pull_request:
     branches: [main]
+  merge_group:
+    types: [checks_requested]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -28,7 +31,7 @@ jobs:
   # "Secrets detected in PR diff" with no secret present.
   #
   # Building from origin/main rather than from the pull request head also means
-  # a pull request cannot supply the scanner that inspects it.
+  # a pull request or merge group cannot supply its own scanner.
   security-scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -63,8 +66,8 @@ jobs:
 
       - name: Scan the diff
         env:
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
         run: |
           set -euo pipefail
           zero_sha=0000000000000000000000000000000000000000
@@ -110,6 +113,10 @@ jobs:
             --exclude sdk/conformance/testdata/aarp-corpus/ \
             < "${diff_file}"
 
+  # Merge groups use the same test selection as pull requests on the combined
+  # commit. The classifier compares the queue base/head, including CI policy.
+  # Go 1.26 race tests remain main-push-only; cache writes stay main-push-only.
+  #
   # The Go 1.27 race lane is skipped by default (see the producer jobs
   # below), but a PR that changes CI policy, Go pins, or the guard that checks
   # them must still prove both versions before merge -- the whole reason the
@@ -121,7 +128,7 @@ jobs:
   # instead of green.
   changed-files:
     needs: [security-scan]
-    if: ${{ github.event_name == 'pull_request' }}
+    if: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -136,8 +143,8 @@ jobs:
       - name: Detect CI-policy file changes
         id: check
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
@@ -163,8 +170,8 @@ jobs:
       - name: Detect documentation-only changes
         id: docs
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
           # Every git read lands in a file first, so a failed command fails
@@ -240,7 +247,7 @@ jobs:
   # requests, which are waiting on their results; main is not.
   test-oss-go126:
     needs: [security-scan]
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-oss (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -519,12 +526,12 @@ jobs:
 
   test-oss-go127:
     needs: [security-scan, changed-files]
-    # Runs only on pull requests that touch CI policy / Go pins (see the
+    # Runs only on pull requests or merge groups that touch CI policy / Go pins (see the
     # changed-files job). release.yaml proves every shard on the pinned Go 1.27
     # before a tag. Running it on every PR and main push only ever caught timing
     # flakes, never a version-specific failure, while its race jobs were the
     # largest share of runner queue time for every overlapping run.
-    if: ${{ !cancelled() && needs.security-scan.result == 'success' && github.event_name == 'pull_request' && needs.changed-files.outputs.ci_policy == 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
     name: race-oss (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -606,7 +613,7 @@ jobs:
 
   test-enterprise-go126:
     needs: [security-scan]
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.26, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -691,12 +698,12 @@ jobs:
 
   test-enterprise-go127:
     needs: [security-scan, changed-files]
-    # Runs only on pull requests that touch CI policy / Go pins (see the
+    # Runs only on pull requests or merge groups that touch CI policy / Go pins (see the
     # changed-files job). release.yaml proves every shard on the pinned Go 1.27
     # before a tag. Running it on every PR and main push only ever caught timing
     # flakes, never a version-specific failure, while its race jobs were the
     # largest share of runner queue time for every overlapping run.
-    if: ${{ !cancelled() && needs.security-scan.result == 'success' && github.event_name == 'pull_request' && needs.changed-files.outputs.ci_policy == 'true' }}
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'pull_request' || github.event_name == 'merge_group') && needs.changed-files.outputs.ci_policy == 'true' }}
     runs-on: ubuntu-latest
     name: race-enterprise (1.27, ${{ matrix.shard }})
     # Two 21-minute whole-command attempts, kill grace, plus setup and upload.
@@ -890,30 +897,30 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           set -u
-          # On a pull request, a skipped Go producer is evidence only when the
+          # On a pull request or merge group, a skipped producer counts only when the
           # classifier succeeded and said the change is documentation-only.
           # Every other non-success result reds this required check.
           test "${{ needs.security-scan.result }}" = "success"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" != "push" ]; then
             test "${{ needs.changed-files.result }}" = "success"
           fi
           echo "test-unit-go126 result: ${{ needs.test-unit-go126.result }}"
           if ! test "${{ needs.test-unit-go126.result }}" = "success"; then
-            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-unit-go126.result }}" != "skipped" ]; then
+            if [ "$EVENT_NAME" = "push" ] || [ "${{ needs.test-unit-go126.result }}" != "skipped" ]; then
               exit 1
             fi
             test "${{ needs.changed-files.outputs.docs_only }}" = "true"
           fi
           echo "test-subprocess-coverage result: ${{ needs.test-subprocess-coverage.result }}"
           if ! test "${{ needs.test-subprocess-coverage.result }}" = "success"; then
-            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.test-subprocess-coverage.result }}" != "skipped" ]; then
+            if [ "$EVENT_NAME" = "push" ] || [ "${{ needs.test-subprocess-coverage.result }}" != "skipped" ]; then
               exit 1
             fi
             test "${{ needs.changed-files.outputs.docs_only }}" = "true"
           fi
           echo "guard-conformance result: ${{ needs.guard-conformance.result }}"
           if ! test "${{ needs.guard-conformance.result }}" = "success"; then
-            if [ "$EVENT_NAME" != "pull_request" ] || [ "${{ needs.guard-conformance.result }}" != "skipped" ]; then
+            if [ "$EVENT_NAME" = "push" ] || [ "${{ needs.guard-conformance.result }}" != "skipped" ]; then
               exit 1
             fi
             test "${{ needs.changed-files.outputs.docs_only }}" = "true"
@@ -926,7 +933,7 @@ jobs:
   # means "not this lane's event", never "proven".
   race-go126:
     needs: [security-scan, test-oss-go126, test-enterprise-go126]
-    if: ${{ always() && github.event_name != 'pull_request' }}
+    if: ${{ always() && github.event_name == 'push' }}
     runs-on: ubuntu-latest
     name: race (1.26)
     timeout-minutes: 5
@@ -946,10 +953,10 @@ jobs:
     runs-on: ubuntu-latest
     # "test (1.27)" is a required check name on every PR (see the branch
     # ruleset), so it must exist even when the Go 1.27 race producers skip.
-    # On a pull request, require successful policy detection and a boolean
+    # On a pull request or merge group, require policy detection and a boolean
     # output. Only an explicit false justifies skipped race producers. On a
     # push, the policy detector and race producers intentionally skip.
-    # Security scan and replay evidence must succeed on both events.
+    # Security scan and replay evidence must succeed on every event.
     name: test (1.27)
     timeout-minutes: 5
     steps:
@@ -969,7 +976,7 @@ jobs:
           # producer result. Every non-success path below exits explicitly
           # instead of relying on the compound's own exit status.
           test "${{ needs.security-scan.result }}" = "success"
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+          if [ "$EVENT_NAME" != "push" ]; then
             test "${{ needs.changed-files.result }}" = "success"
             if [ "${{ needs.changed-files.outputs.ci_policy }}" != "false" ]; then
               test "${{ needs.changed-files.outputs.ci_policy }}" = "true"
@@ -981,7 +988,7 @@ jobs:
             if [ "${{ needs.test-oss-go127.result }}" != "skipped" ]; then
               exit 1
             fi
-            if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$EVENT_NAME" != "push" ]; then
               test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
             fi
           fi
@@ -991,7 +998,7 @@ jobs:
             if [ "${{ needs.test-enterprise-go127.result }}" != "skipped" ]; then
               exit 1
             fi
-            if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$EVENT_NAME" != "push" ]; then
               test "${{ needs.changed-files.outputs.ci_policy }}" = "false"
             fi
           fi
@@ -1688,9 +1695,9 @@ jobs:
       # weaker, so a pin the base branch already carries must be an ancestor of
       # the new one. A base without a pin (first adoption) has nothing to compare.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        if: github.event_name == 'pull_request'
+        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: base
           persist-credentials: false
           sparse-checkout: |
@@ -1699,7 +1706,7 @@ jobs:
 
       - name: Read the base branch engine revision
         id: base_pin
-        if: github.event_name == 'pull_request'
+        if: (github.event_name == 'pull_request' || github.event_name == 'merge_group')
         run: |
           set -euo pipefail
           caller=base/.github/workflows/agent-review.yaml
@@ -1781,14 +1788,14 @@ jobs:
           # because changed-files decided no CI-policy file changed. A failed or
           # cancelled classifier skips them too, so a pull request needs a
           # successful classifier here before that skip counts as intentional.
-          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" != success ]; then
+          if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" != success ]; then
             echo "changed-files did not succeed, so skipped upper-lane tests are not evidence" >&2
             exit 1
           fi
           # A documentation-only pull request skips these producers on purpose.
           # The skip is evidence only with a successful classifier that said so.
           docs_skip_ok=false
-          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
+          if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
             docs_skip_ok=true
           fi
           for result in \
@@ -1848,7 +1855,7 @@ jobs:
           printf '%s\n' '| --- | --- |' >> "$summary"
 
           docs_skip_ok=false
-          if [ "$EVENT_NAME" = pull_request ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
+          if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
             docs_skip_ok=true
           fi
 
