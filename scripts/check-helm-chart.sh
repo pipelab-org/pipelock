@@ -37,11 +37,19 @@ helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" >"$ren
 helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
   --set-json 'extraEnv=[{"name":"XDG_STATE_HOME","valueFrom":{"configMapKeyRef":{"name":"state-home","key":"path"}}}]' \
   >"$render_dir/custom-state-valuefrom.yaml"
+# envFrom can't suppress the default: its sources aren't visible at render time
+# and an env entry wins over envFrom, so the default state wiring stays intact
+# and the operator's envFrom is passed through untouched.
+helm template pipelock "$chart" \
+  --set-json 'extraEnvFrom=[{"configMapRef":{"name":"state-from-envfrom"}}]' \
+  >"$render_dir/envfrom-state.yaml"
+grep -q 'name: state-from-envfrom' "$render_dir/envfrom-state.yaml"
 # Native YAML decoding checks the links and security settings on the actual
 # Deployment, including all proxy/follower and separate server examples.
 go run ./scripts/helmstate \
   "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
-  "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml"
+  "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml" \
+  "$render_dir/envfrom-state.yaml"
 
 expect_template_error() {
   local want="$1"
