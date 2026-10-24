@@ -42,6 +42,27 @@ helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" >"$ren
 helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
   --set-json 'extraEnv=[{"name":"XDG_STATE_HOME","valueFrom":{"configMapKeyRef":{"name":"state-home","key":"path"}}}]' \
   >"$render_dir/custom-state-valuefrom.yaml"
+# HOME is the lower-priority selector; explicit HOME also owns its storage.
+helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
+  --set-json 'extraEnv=[{"name":"HOME","value":"/custom/home"}]' \
+  --set-json 'extraVolumeMounts=[{"name":"pipelock-state","mountPath":"/custom/home/.local/state"}]' \
+  >"$render_dir/custom-state-home.yaml"
+helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
+  --set-json 'extraEnv=[{"name":"HOME","valueFrom":{"configMapKeyRef":{"name":"state-home","key":"path"}}}]' \
+  --set-json 'extraVolumeMounts=[{"name":"pipelock-state","mountPath":"/custom/home/.local/state"}]' \
+  >"$render_dir/custom-state-home-valuefrom.yaml"
+for selector in XDG_STATE_HOME HOME; do
+  name=custom-state-secret-valuefrom
+  state_path=/custom/state
+  if [[ "$selector" == HOME ]]; then
+    name=custom-state-home-secret-valuefrom
+    state_path=/custom/home/.local/state
+  fi
+  helm template pipelock "$chart" -f "$render_dir/custom-state-values.yaml" \
+    --set-json "extraEnv=[{\"name\":\"$selector\",\"valueFrom\":{\"secretKeyRef\":{\"name\":\"state-home\",\"key\":\"path\"}}}]" \
+    --set-json "extraVolumeMounts=[{\"name\":\"pipelock-state\",\"mountPath\":\"$state_path\"}]" \
+    >"$render_dir/$name.yaml"
+done
 # A default envFrom source must precede operator ConfigMaps and Secrets.
 # Keep existing operator storage even though the harmless default remains.
 helm template pipelock "$chart" \
@@ -57,6 +78,8 @@ helm template pipelock "$chart" \
 state_args=()
 for manifest in "$render_dir/default.yaml" "$render_dir"/values-*.yaml \
   "$render_dir/custom-state.yaml" "$render_dir/custom-state-valuefrom.yaml" \
+  "$render_dir/custom-state-home.yaml" "$render_dir/custom-state-home-valuefrom.yaml" \
+  "$render_dir/custom-state-secret-valuefrom.yaml" "$render_dir/custom-state-home-secret-valuefrom.yaml" \
   "$render_dir/envfrom-state.yaml" "$render_dir/unrelated-envfrom.yaml"; do
   state_args+=(--set-file "manifests.$(basename "$manifest" .yaml)=$manifest")
 done
@@ -84,7 +107,7 @@ expect_template_error "extraVolumes name pipelock-state conflicts" \
 expect_template_error "extraVolumeMounts conflicts" \
   --set-json 'extraVolumeMounts=[{"name":"pipelock-state","mountPath":"/other"}]'
 expect_template_error "extraVolumeMounts conflicts" \
-  --set-json 'extraVolumeMounts=[{"name":"other","mountPath":"/var/lib/pipelock/state"}]'
+  --set-json 'extraVolumeMounts=[{"name":"other","mountPath":"/var/lib/pipelock"}]'
 
 expect_template_error "/image/tag" \
   --set image.tag="@sha256:e8e249d2dd1b579f995f0f5a75cfab13fb8505a8ffc33c2cec7a6418290d9098"

@@ -268,7 +268,26 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 	if result.MCPConfigMapYAML != "" {
 		mcpApply = fmt.Sprintf("kubectl apply -f %s\n", filepath.Join(cleanDir, "pipelock-mcp-configmap.yaml"))
 	}
-	readme := fmt.Sprintf("helm upgrade --install %s pipelock/pipelock -f %s\nkubectl rollout status deployment/%s\nkubectl apply -f %s -f %s\n%skubectl apply -f %s\nkubectl apply -f %s\n",
+	readme := fmt.Sprintf(`# Helm chart topology was not rendered or deployed by init sidecar.
+# List chart versions, then select and inspect an exact version before installing.
+helm search repo pipelock/pipelock --versions
+read -r -p 'Chart version to render and inspect: ' chart_version
+helm show chart pipelock/pipelock --version "$chart_version"
+helm template %s pipelock/pipelock --version "$chart_version" -f %s > %s
+# Inspect rendered.yaml for proxy-only writable state, selectors, listeners and security settings.
+# The default HOME=/var/lib/pipelock must have a private writable mount.
+# Cookie state uses $HOME/.local/state; license warning state uses $HOME/.pipelock/state.
+# Existing HOME or XDG_STATE_HOME overrides need their own corresponding storage.
+# Continue only after the rendered chart matches the intended topology.
+helm upgrade --install %s pipelock/pipelock --version "$chart_version" -f %s
+kubectl rollout status deployment/%s
+kubectl apply -f %s -f %s
+%skubectl apply -f %s
+kubectl apply -f %s
+`,
+		result.ProxyName,
+		filepath.Join(cleanDir, "values.yaml"),
+		filepath.Join(cleanDir, "rendered.yaml"),
 		result.ProxyName,
 		filepath.Join(cleanDir, "values.yaml"),
 		result.ProxyName,

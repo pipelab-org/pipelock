@@ -34,32 +34,35 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	if result.ProxyName == "" || result.ProxyURL == "" {
 		failed = append(failed, "proxy identity metadata is incomplete")
 	}
-	if result.DeploymentYAML == "" {
-		failed = append(failed, "proxy Deployment YAML is empty")
-	}
-	if !deploymentHasProxyState(result.DeploymentYAML) {
-		failed = append(failed, "proxy Deployment is missing writable proxy-only state")
-	}
-	if result.ServiceYAML == "" {
-		failed = append(failed, "proxy Service YAML is empty")
+	// Helm values do not emit a Deployment or Service; the selected chart owns them.
+	if opts.emit != emitHelmValues {
+		if result.DeploymentYAML == "" {
+			failed = append(failed, "proxy Deployment YAML is empty")
+		}
+		if !deploymentHasProxyState(result.DeploymentYAML) {
+			failed = append(failed, "proxy Deployment is missing writable proxy-only state")
+		}
+		if result.ServiceYAML == "" {
+			failed = append(failed, "proxy Service YAML is empty")
+		}
+		if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("replicas: %d", proxyReplicaCount)) {
+			failed = append(failed, fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount))
+		}
+		if got, ok := deploymentTerminationGrace(result.DeploymentYAML); !ok || got != proxyTerminationGracePeriodSeconds {
+			failed = append(failed, fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds))
+		}
+		if strings.Contains(result.DeploymentYAML, "subPath:") {
+			failed = append(failed, "proxy Deployment still uses subPath ConfigMap mount")
+		}
+		if !strings.Contains(result.DeploymentYAML, "mountPath: /etc/pipelock") {
+			failed = append(failed, "proxy Deployment does not mount the config directory")
+		}
+		if !strings.Contains(result.DeploymentYAML, "imagePullPolicy: IfNotPresent") {
+			failed = append(failed, "proxy Deployment does not set imagePullPolicy=IfNotPresent")
+		}
 	}
 	if result.PodDisruptionBudgetYAML == "" {
 		failed = append(failed, "proxy PodDisruptionBudget YAML is empty")
-	}
-	if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("replicas: %d", proxyReplicaCount)) {
-		failed = append(failed, fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount))
-	}
-	if got, ok := deploymentTerminationGrace(result.DeploymentYAML); !ok || got != proxyTerminationGracePeriodSeconds {
-		failed = append(failed, fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds))
-	}
-	if strings.Contains(result.DeploymentYAML, "subPath:") {
-		failed = append(failed, "proxy Deployment still uses subPath ConfigMap mount")
-	}
-	if !strings.Contains(result.DeploymentYAML, "mountPath: /etc/pipelock") {
-		failed = append(failed, "proxy Deployment does not mount the config directory")
-	}
-	if !strings.Contains(result.DeploymentYAML, "imagePullPolicy: IfNotPresent") {
-		failed = append(failed, "proxy Deployment does not set imagePullPolicy=IfNotPresent")
 	}
 	if !result.Config.ForwardProxy.Enabled {
 		failed = append(failed, "forward_proxy.enabled is false")
@@ -102,6 +105,13 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	}
 
 	if len(failed) == 0 {
+		if opts.emit == emitHelmValues {
+			detail := "skipped (Helm chart topology was not rendered or deployed); generated config and emitted policy checks passed; render and inspect the selected chart version before applying"
+			if !jsonOutput {
+				_, _ = fmt.Fprintln(w, "  "+detail)
+			}
+			return &sidecarVerifyResult{Skipped: true, Detail: detail}
+		}
 		if !jsonOutput {
 			_, _ = fmt.Fprintln(w, "  Static topology checks passed.")
 			_, _ = fmt.Fprintf(w, "  Agent egress is limited to DNS + %s.\n", result.ProxyName)

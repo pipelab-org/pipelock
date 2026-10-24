@@ -70,7 +70,7 @@ Return the chart deployment mode.
 {{- define "pipelock.defaultStateHome" -}}
 {{- $enabled := true -}}
 {{- range .Values.extraEnv -}}
-{{- if eq .name "XDG_STATE_HOME" -}}
+{{- if or (eq .name "XDG_STATE_HOME") (eq .name "HOME") -}}
 {{- $enabled = false -}}
 {{- end -}}
 {{- end -}}
@@ -110,12 +110,12 @@ Validate mode and security-critical enterprise chart requirements.
 {{- if and (eq $mode "proxy") (eq (include "pipelock.defaultStateHome" .) "true") -}}
 {{- range .Values.extraVolumes -}}
 {{- if eq .name "pipelock-state" -}}
-{{- fail "extraVolumes name pipelock-state conflicts with the default proxy state volume; set XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
+{{- fail "extraVolumes name pipelock-state conflicts with the default proxy state volume; set HOME or XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
 {{- end -}}
 {{- end -}}
 {{- range .Values.extraVolumeMounts -}}
-{{- if or (eq .name "pipelock-state") (eq .mountPath "/var/lib/pipelock/state") -}}
-{{- fail "extraVolumeMounts conflicts with the default proxy state mount; set XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
+{{- if or (eq .name "pipelock-state") (eq .mountPath "/var/lib/pipelock") -}}
+{{- fail "extraVolumeMounts conflicts with the default proxy state mount; set HOME or XDG_STATE_HOME in extraEnv and supply the state volume and mount to replace the default" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

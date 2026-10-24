@@ -478,3 +478,49 @@ func TestProxyStateContract(t *testing.T) {
 		t.Fatal("invalid deployment passed state check")
 	}
 }
+
+func TestRunSidecarVerify_HelmValuesBoundary(t *testing.T) {
+	t.Parallel()
+	for _, jsonOutput := range []bool{false, true} {
+		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
+			t.Parallel()
+			result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: "http://tools.vendor.example:3000/mcp"})
+			// These resources are chart-owned and are not emitted by helm-values.
+			result.DeploymentYAML = ""
+			result.ServiceYAML = ""
+			var output bytes.Buffer
+			verify := runSidecarVerify(&output, result, sidecarOptions{emit: emitHelmValues}, jsonOutput)
+			if !verify.Skipped || verify.Healthy || verify.Reachable || !strings.Contains(verify.Detail, "not rendered or deployed") || !strings.Contains(verify.Detail, "emitted policy checks passed") {
+				t.Fatalf("unrendered chart must remain unknown: %+v", verify)
+			}
+			if jsonOutput && output.Len() != 0 {
+				t.Fatalf("JSON mode leaked text: %s", &output)
+			}
+			if !jsonOutput && (!strings.Contains(output.String(), "not rendered or deployed") || strings.Contains(output.String(), "Static topology checks passed")) {
+				t.Fatalf("text must explain the chart boundary: %s", &output)
+			}
+		})
+	}
+	for _, failure := range []string{"config", "agent policy", "proxy policy", "pdb", "mcp"} {
+		t.Run(failure, func(t *testing.T) {
+			t.Parallel()
+			result := mustPatchResult(t, sidecarOptions{preset: config.ModeBalanced, mcpUpstream: "http://tools.vendor.example:3000/mcp"})
+			switch failure {
+			case "config":
+				result.Config.ForwardProxy.Enabled = false
+			case "agent policy":
+				result.AgentNetworkPolicyYAML = ""
+			case "proxy policy":
+				result.ProxyNetworkPolicyYAML = ""
+			case "pdb":
+				result.PodDisruptionBudgetYAML = ""
+			case "mcp":
+				result.MCPConfigMapYAML = ""
+			}
+			verify := runSidecarVerify(&bytes.Buffer{}, result, sidecarOptions{emit: emitHelmValues}, true)
+			if verify.Skipped || verify.Healthy || verify.Reachable || !strings.Contains(verify.Detail, "verification failed") {
+				t.Fatalf("invalid emitted artifact must fail: %+v", verify)
+			}
+		})
+	}
+}

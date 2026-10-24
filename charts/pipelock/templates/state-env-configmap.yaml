@@ -6,5 +6,5 @@ metadata:
   labels:
     {{- include "pipelock.labels" . | nindent 4 }}
 data:
-  XDG_STATE_HOME: /var/lib/pipelock/state
+  HOME: /var/lib/pipelock
 {{- end }}

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -1006,7 +1007,7 @@ func TestRunSidecar_RegeneratePatchedOutput(t *testing.T) {
 			}
 			original := testdataPath(t, "deployment.yaml")
 			first, detail, err := run(original)
-			if err != nil || !first.Patch.Written || !first.Verify.Healthy {
+			if err != nil || !first.Patch.Written || first.Verify.Healthy != (format != emitHelmValues) || first.Verify.Skipped != (format == emitHelmValues) {
 				t.Fatalf("first run: %v: %s", err, detail)
 			}
 			companion := output
@@ -1058,7 +1059,7 @@ func TestRunSidecar_RegeneratePatchedOutput(t *testing.T) {
 			assertPreserved()
 			for range 2 {
 				forced, detail, err := run(input, "--force")
-				if err != nil || !forced.Patch.Written || !forced.Verify.Healthy || forced.Verify.Skipped || !forced.Detect.AlreadyPatched {
+				if err != nil || !forced.Patch.Written || forced.Verify.Healthy != (format != emitHelmValues) || forced.Verify.Skipped != (format == emitHelmValues) || !forced.Detect.AlreadyPatched {
 					t.Fatalf("forced patched run: %v: %s", err, detail)
 				}
 				got, err := os.ReadFile(filepath.Clean(companion))
@@ -1076,5 +1077,64 @@ func TestRunSidecar_RegeneratePatchedOutput(t *testing.T) {
 				t.Fatalf("skipped run created output: %v", err)
 			}
 		})
+	}
+}
+
+func TestRunSidecar_VerificationOutputFormats(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{emitPatch, emitKustomize, emitHelmValues} {
+		for _, jsonOutput := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/json=%t", format, jsonOutput), func(t *testing.T) {
+				t.Parallel()
+				output := filepath.Join(t.TempDir(), "bundle")
+				var buf bytes.Buffer
+				cmd := SidecarCmd()
+				cmd.SetOut(&buf)
+				cmd.SetErr(&buf)
+				args := []string{"--inject-spec", testdataPath(t, "deployment.yaml"), "--emit", format, "--output", output}
+				if jsonOutput {
+					args = append(args, "--json")
+				}
+				cmd.SetArgs(args)
+				if err := cmd.Execute(); err != nil {
+					t.Fatalf("execute: %v: %s", err, &buf)
+				}
+				helm := format == emitHelmValues
+				if jsonOutput {
+					var result sidecarResult
+					if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+						t.Fatal(err)
+					}
+					if result.Verify == nil || result.Verify.Skipped != helm || result.Verify.Healthy == helm || result.Verify.Reachable == helm {
+						t.Fatalf("verify: %+v", result.Verify)
+					}
+					if result.Canary == nil || result.Canary.Skipped || !result.Canary.Detected {
+						t.Fatalf("canary must still run: %+v", result.Canary)
+					}
+				} else {
+					want := "Verify:          healthy"
+					if helm {
+						want = "Verify:          skipped"
+						if !strings.Contains(buf.String(), "not rendered or deployed") || strings.Contains(buf.String(), "Static topology checks passed") {
+							t.Fatalf("chart boundary missing: %s", &buf)
+						}
+					}
+					if !strings.Contains(buf.String(), want) || !strings.Contains(buf.String(), "Canary:          detected") {
+						t.Fatalf("summary: %s", &buf)
+					}
+				}
+				if helm {
+					readme, err := os.ReadFile(filepath.Clean(filepath.Join(output, "README.txt")))
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, want := range []string{"not rendered or deployed", "helm show chart", "helm template", "--version \"$chart_version\"", "Inspect rendered.yaml"} {
+						if !bytes.Contains(readme, []byte(want)) {
+							t.Fatalf("README missing %q: %s", want, readme)
+						}
+					}
+				}
+			})
+		}
 	}
 }

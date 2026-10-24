@@ -48,7 +48,7 @@ The command runs 7 phases: detect, generate, preview, emit, verify, canary, and 
 | `--emit` | `patch` | Output format: `patch`, `kustomize`, or `helm-values` |
 | `--output`, `-o` | stdout (patch only) | Output path. **`patch` writes a multi-doc YAML stream to stdout when `-o` is omitted.** **`kustomize` and `helm-values` require `-o <dir>`** (bundle formats emit multi-file trees — overlay, resources, values.yaml, README — and error out when `-o` is missing). Passing a `.yaml` file path to a bundle format creates a directory with that name. |
 | `--dry-run` | false | Show the generated topology without writing files or running canary |
-| `--force` | false | Overwrite existing output files |
+| `--force` | false | Regenerate companion output even from an already-patched input, and overwrite existing output files |
 | `--image` | `ghcr.io/luckypipewrench/pipelock:<version>` | Companion proxy image (tag or digest ref) |
 | `--preset` | `balanced` | Config preset: `strict`, `balanced`, `audit`, `claude-code`, `cursor`, `generic-agent`, `hostile-model` |
 | `--skip-canary` | false | Skip the canary detection test |
@@ -124,7 +124,14 @@ Generated files:
 
 ```bash
 pipelock init sidecar --inject-spec deployment.yaml --emit helm-values --output ./pipelock-bundle
-helm upgrade --install my-agent-pipelock pipelock/pipelock -f ./pipelock-bundle/values.yaml
+helm search repo pipelock/pipelock --versions
+read -r -p 'Chart version to render and inspect: ' chart_version
+helm show chart pipelock/pipelock --version "$chart_version"
+helm template my-agent-pipelock pipelock/pipelock --version "$chart_version" \
+  -f ./pipelock-bundle/values.yaml > ./pipelock-bundle/rendered.yaml
+# Inspect rendered.yaml before continuing (see Verification below).
+helm upgrade --install my-agent-pipelock pipelock/pipelock --version "$chart_version" \
+  -f ./pipelock-bundle/values.yaml
 kubectl rollout status deployment/my-agent-pipelock
 kubectl apply -f ./pipelock-bundle/pipelock-networkpolicy.yaml \
   -f ./pipelock-bundle/pipelock-pdb.yaml
@@ -193,13 +200,18 @@ Companion-mode precedence: context override (unused in this topology) > `default
 
 ## Verification
 
-The verify phase is static. It confirms the generated topology has the expected companion resources and boundary settings:
+The verify phase is static. For emitted `patch` and `kustomize` output, it checks the generated companion resources and boundary settings:
 
+- proxy-only writable state with a read-only root filesystem
 - forward proxy mode enabled
 - cluster-reachable proxy listeners
 - optional MCP listener, mounted MCP client config, and NetworkPolicy ports when `--mcp-upstream` is set
 - agent NetworkPolicy allows DNS plus the pipelock proxy port only
 - proxy NetworkPolicy allows agent ingress and standard web egress
+
+For `helm-values`, the CLI checks the generated config, emitted NetworkPolicies and disruption budget, and optional MCP client wiring. It doesn't render the selected Helm chart, so it reports `Verify: skipped` (`skipped: true`, `healthy: false`, `reachable: false` in JSON). This is an unknown chart result even when those checks pass. A failed config or emitted-policy check still fails the command.
+
+Render an exact chart version with the generated values before installing that same version. Inspect the rendered Deployment, Service and ConfigMaps for the expected selectors, listeners, security settings and proxy-only writable state. The default state wiring uses `HOME=/var/lib/pipelock` from the first `envFrom` ConfigMap and a writable private-home mount at `/var/lib/pipelock`. Cookie state uses `$HOME/.local/state`; other HOME-based metadata can also write within that private home. An operator HOME or XDG override needs its corresponding storage. Earlier chart versions may have no default writable state even with newly generated values. Static checks don't establish cluster reachability or a healthy deployment.
 
 The canary phase runs locally against the generated config to confirm DLP blocks a synthetic secret. It validates generated policy coverage, not the live cluster deployment.
 
@@ -251,6 +263,8 @@ The proxy NetworkPolicy egress rule for the upstream port has no destination sel
 
 ## Idempotency
 
-Running `pipelock init sidecar` against a manifest already managed by this command is safe. The workload annotations preserve the generated proxy identity, the command reports the manifest as already patched, and verification can still be rerun against the derived topology. If the re-run changes the MCP contract, for example enabling or disabling `--mcp-upstream`, the command emits the updated workload instead of treating the manifest as a no-op.
+The workload annotations preserve the generated proxy identity on reruns. Without `--force`, an already-patched input leaves existing output untouched and reports verification skipped because those files weren't checked. A changed MCP contract, such as enabling or disabling `--mcp-upstream`, causes emission instead of a no-op.
+
+Use `--force` with either the patched or original manifest to regenerate companion output, including state wiring added after the earlier generation. This overwrites manual output edits; review them first. `--dry-run` writes nothing and skips verification and canary even with `--force`. A forced `helm-values` rerun still leaves chart verification unknown: the selected chart version supplies the Deployment, so render and inspect that version before upgrading.
 
 Re-running against a manifest previously generated with `--mcp-upstream`, but without the flag this time, scrubs the prior `PIPELOCK_MCP_PROXY_URL` and `PIPELOCK_MCP_CONFIG` env entries, the generated MCP ConfigMap mount, and the MCP contract annotations so the agent does not advertise a contract the regenerated Service no longer fulfills.
