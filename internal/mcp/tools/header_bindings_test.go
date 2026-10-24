@@ -97,8 +97,11 @@ func TestExtractHeaderBindings_DecodeAndShapeErrors(t *testing.T) {
 	for _, tc := range []struct{ name, schema string }{
 		{name: "malformed JSON", schema: `{`},
 		{name: "non-object root", schema: `[]`},
-		{name: "non-object properties", schema: `{"type":"object","properties":[]}`},
+		{name: "annotation in non-object properties", schema: `{"type":"object","properties":[{"type":"string","x-mcp-header":"X"}]}`},
 		{name: "non-object child", schema: `{"type":"object","properties":{"x":[{"x-mcp-header":"X"}]}}`},
+		{name: "annotation in draft-07 tuple items", schema: `{"type":"object","properties":{"pair":{"type":"array","items":[{"type":"string","x-mcp-header":"X"}]}}}`},
+		{name: "annotation in object-valued allOf", schema: `{"type":"object","allOf":{"properties":{"x":{"type":"string","x-mcp-header":"X"}}}}`},
+		{name: "null-only enum", schema: `{"type":"object","properties":{"x":{"enum":[null],"x-mcp-header":"X"}}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := ExtractHeaderBindings(json.RawMessage(tc.schema)); err == nil {
@@ -108,13 +111,39 @@ func TestExtractHeaderBindings_DecodeAndShapeErrors(t *testing.T) {
 	}
 }
 
-func TestExtractHeaderBindings_RejectsExcessiveDepth(t *testing.T) {
-	child := `{"type":"string"}`
-	for i := 0; i < maxToolHeaderSchemaDepth+2; i++ {
-		child = `{"type":"object","properties":{"next":` + child + `}}`
+// MCP excludes a tool for an invalid x-mcp-header annotation. A schema with no
+// annotation is not invalid for this purpose, whatever its JSON Schema dialect.
+func TestExtractHeaderBindings_UnannotatedShapesHaveNoContractError(t *testing.T) {
+	for _, tc := range []struct{ name, schema string }{
+		{name: "draft-07 tuple items", schema: `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"pair":{"type":"array","items":[{"type":"string"},{"type":"integer"}],"additionalItems":false}}}`},
+		{name: "scalar property schema", schema: `{"type":"object","properties":{"a":"string"}}`},
+		{name: "non-object properties", schema: `{"type":"object","properties":[]}`},
+		{name: "null properties", schema: `{"type":"object","properties":null}`},
+		{name: "array-valued defs", schema: `{"type":"object","$defs":[]}`},
+		{name: "object-valued allOf", schema: `{"type":"object","allOf":{"type":"object"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bindings, err := ExtractHeaderBindings(json.RawMessage(tc.schema))
+			if err != nil || len(bindings) != 0 {
+				t.Fatalf("bindings=%v err=%v, want valid without bindings", bindings, err)
+			}
+		})
 	}
-	if _, err := ExtractHeaderBindings(json.RawMessage(child)); err == nil {
-		t.Fatal("over-deep tool schema was accepted")
+}
+
+func TestExtractHeaderBindings_RejectsExcessiveDepth(t *testing.T) {
+	nest := func(leaf string) string {
+		child := leaf
+		for i := 0; i < maxToolHeaderSchemaDepth+2; i++ {
+			child = `{"type":"object","properties":{"next":` + child + `}}`
+		}
+		return child
+	}
+	if _, err := ExtractHeaderBindings(json.RawMessage(nest(`{"type":"string","x-mcp-header":"Deep"}`))); err == nil {
+		t.Fatal("over-deep header annotation was accepted")
+	}
+	if bindings, err := ExtractHeaderBindings(json.RawMessage(nest(`{"type":"string"}`))); err != nil || len(bindings) != 0 {
+		t.Fatalf("over-deep unannotated schema bindings=%v err=%v, want valid without bindings", bindings, err)
 	}
 }
 

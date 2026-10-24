@@ -194,22 +194,30 @@ func walkHeaderSchema(node map[string]any, path []string, seen map[string]struct
 }
 
 func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, seen map[string]struct{}, out *[]HeaderBinding) error {
-	if depth > maxSchemaDepth || (reachable && len(path) > maxToolHeaderSchemaDepth) {
+	if depth > maxSchemaDepth {
 		return fmt.Errorf("input schema exceeds header traversal depth")
 	}
-	// Core §4.3.1 permits object and boolean schemas, never arrays or instances.
-	if _, boolean := value.(bool); boolean {
-		return nil
-	}
+	// MCP tools#x-mcp-header rejects a tool for an invalid annotation, not for
+	// schema shapes outside 2020-12 (core §4.3.1 allows only object and boolean
+	// schemas). Draft-07 tuple "items" arrays and other malformed keyword values
+	// carry no binding, so they are searched as unreachable schemas: a real
+	// annotation inside one still rejects, and scalars cannot hold one.
 	node, ok := value.(map[string]any)
 	if !ok {
-		return fmt.Errorf("invalid schema at %s", strings.Join(path, "."))
+		if items, isArray := value.([]any); isArray {
+			for _, item := range items {
+				if err := walkHeaderSchemaAt(item, path, false, depth+1, seen, out); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	}
 	if raw, exists := node["x-mcp-header"]; exists {
 		// MCP tools#x-mcp-header and RFC 9110 §5.1: token names, nonempty,
 		// case-insensitively unique, on supported primitives at property paths.
 		name, ok := raw.(string)
-		if !reachable || len(path) == 0 || !ok || !validHTTPFieldToken(name) {
+		if !reachable || len(path) == 0 || len(path) > maxToolHeaderSchemaDepth || !ok || !validHTTPFieldToken(name) {
 			return fmt.Errorf("invalid x-mcp-header annotation at %s", strings.Join(path, "."))
 		}
 		typeName, err := headerPrimitiveType(node)
@@ -233,7 +241,10 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 		case "properties", "$defs", "patternProperties", "dependentSchemas":
 			children, ok := child.(map[string]any)
 			if !ok {
-				return fmt.Errorf("%s at %s must be an object", key, strings.Join(path, "."))
+				if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
+					return err
+				}
+				continue
 			}
 			for name, schema := range children {
 				childPath := append(append([]string(nil), path...), name)
@@ -248,14 +259,8 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 				return err
 			}
 		case "allOf", "anyOf", "oneOf", "prefixItems":
-			children, ok := child.([]any)
-			if !ok {
-				return fmt.Errorf("%s must be an array of schemas", key)
-			}
-			for _, schema := range children {
-				if err := walkHeaderSchemaAt(schema, path, false, depth+1, seen, out); err != nil {
-					return err
-				}
+			if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
+				return err
 			}
 			// Validation §§6.1.2, 6.1.3, 9.2, 9.5: enum, const, default,
 			// examples contain instance data. Core §6.5 treats unknown keywords

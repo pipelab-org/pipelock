@@ -157,6 +157,8 @@ func TestHTTPListener_HeaderContractSchemaLocations(t *testing.T) {
 	}{
 		{"primitive control", headerStateSchema, true},
 		{"unannotated", `{"type":"object"}`, true},
+		{"unannotated draft-07 tuple", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"pair":{"type":"array","items":[{"type":"string"},{"type":"integer"}]}}}`, true},
+		{"draft-07 tuple annotation", `{"type":"object","properties":{"pair":{"type":"array","items":[` + annotation + `]}}}`, false},
 		{"nullable", `{"type":"object","properties":{"region":{"type":["string","null"],"x-mcp-header":"Region"}}}`, true},
 		{"enum without type", `{"type":"object","properties":{"region":{"enum":["body","header"],"x-mcp-header":"Region"}}}`, true},
 		{"default data", strings.TrimSuffix(headerStateSchema, "}") + `,"default":{"x-mcp-header":"data"}}`, true},
@@ -203,7 +205,7 @@ func TestHTTPListener_HeaderContractSchemaLocations(t *testing.T) {
 			if !tc.valid {
 				f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
 				f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "header"}, http.StatusBadRequest)
-			} else if tc.name == "unannotated" {
+			} else if strings.HasPrefix(tc.name, "unannotated") {
 				f.call(t, "echo", `{"region":"body"}`, nil, http.StatusOK)
 			} else {
 				args := `{"region":"body"}`
