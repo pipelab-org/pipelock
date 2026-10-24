@@ -193,9 +193,13 @@ except OSError as e:
 
 func TestLaunchSandboxed_Reparenting(t *testing.T) {
 	requireStrictSandboxPrimitives(t)
-	if abi := Detect().LandlockABI; abi < 2 {
+	abi := Detect().LandlockABI
+	if abi < 2 {
 		t.Skipf("cross-directory operations require Landlock ABI 2 (kernel ABI %d)", abi)
 	}
+	// The launched child applies the real kernel gate, so expectations follow it:
+	// without REFER only same-directory operations succeed.
+	refer := referAllowed(abi, landlockErrata)
 	python, err := exec.LookPath("python3")
 	if err != nil {
 		t.Skip("python3 unavailable for sandbox file operation probe")
@@ -218,7 +222,8 @@ func TestLaunchSandboxed_Reparenting(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sandbox: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 			}
-			assertReparenting(t, root, tc, tc.allow, stdout.String())
+			allow := tc.allow && (refer || filepath.Dir(tc.source) == filepath.Dir(tc.target))
+			assertReparenting(t, root, tc, allow, stdout.String())
 		})
 	}
 }
