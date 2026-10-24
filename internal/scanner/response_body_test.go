@@ -338,11 +338,15 @@ func TestRequireFragmentBoundaryMatchFiltersNonBlockingEvidence(t *testing.T) {
 	result := requireFragmentBoundaryMatch(content, ResponseScanResult{
 		Clean:             true,
 		SuppressedMatches: []ResponseMatch{isolated, crossing},
+		WarnedMatches:     []ResponseMatch{isolated, crossing},
 		ObservedCoreMatches: []ObservedCoreMatch{
 			{Match: isolated},
 			{Match: crossing},
 		},
 	})
+	if len(result.WarnedMatches) != 1 || result.WarnedMatches[0].PatternName != "crossing" {
+		t.Fatalf("warned evidence did not preserve only boundary-spanning match: %+v", result.WarnedMatches)
+	}
 	if len(result.SuppressedMatches) != 1 || result.SuppressedMatches[0].PatternName != "crossing" {
 		t.Fatalf("suppressed evidence did not preserve only boundary-spanning match: %+v", result.SuppressedMatches)
 	}
