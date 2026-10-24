@@ -212,6 +212,13 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassExec, Sensitivity: SensitivityProtected, ActionRef: targetPath, OverrideRefs: targets.refs, Confident: true}
 	}
 
+	// Unparsed arguments carry no trustworthy intent, so a write-named tool
+	// keeps its protected, low-confidence write classification instead of
+	// being reclassified from raw-text matches below.
+	if !parsed && argsJSON != "" && (looksLikeWriteTool(name) || category == "write") {
+		return ActionClassification{Class: ActionClassWrite, Sensitivity: pathClass.Sensitivity, ActionRef: pathClass.ActionRef, OverrideRefs: pathClass.OverrideRefs, Confident: false}
+	}
+
 	// Explicit network mutation intent must retain publication protection even
 	// when the tool name or other arguments also describe a generic write.
 	if hasMutatingNetworkMethod(argsJSON) {

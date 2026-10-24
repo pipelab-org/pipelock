@@ -64,7 +64,14 @@ func TestEvaluateMCPTaintArgumentlessWriteParity(t *testing.T) {
 				URL: "https://api.vendor.example/document", Level: session.TaintExternalUntrusted,
 			}})
 			frame := ParseMCPFrame([]byte(raw))
-			got := evaluateMCPTaint(MCPProxyOpts{TaintCfg: &cfg.Taint, Rec: rec}, "save_memory", mcpFrameCallableArgs(frame))
+			if frame.ParseErr != nil || !frame.IsToolsCall() {
+				t.Fatalf("frame parse = %v, tools/call = %v; want a valid tools/call", frame.ParseErr, frame.IsToolsCall())
+			}
+			args := mcpFrameCallableArgs(frame)
+			if wantArgs := map[string]string{"absent": "", "null": "", "empty_object": "{}"}[name]; args != wantArgs {
+				t.Fatalf("callable args = %q, want %q", args, wantArgs)
+			}
+			got := evaluateMCPTaint(MCPProxyOpts{TaintCfg: &cfg.Taint, Rec: rec}, "save_memory", args)
 			if got.ActionClass != session.ActionClassWrite || got.Sensitivity != session.SensitivityNormal {
 				t.Fatalf("classification = %s/%s, want write/normal", got.ActionClass, got.Sensitivity)
 			}

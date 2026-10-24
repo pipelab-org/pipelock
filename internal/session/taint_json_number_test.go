@@ -81,6 +81,7 @@ func TestMCPMalformedWriteClassification(t *testing.T) {
 		{"trailing_data", `{"path":"/repo/auth/middleware.go"} false`, `{"path":"/repo/auth/middleware.go"} false`},
 		{"adjacent_documents", `{"path":"/repo/auth/middleware.go"}{}`, `{"path":"/repo/auth/middleware.go"}{}`},
 		{"invalid_number", `{"path":"/repo/auth/middleware.go","n":1e}`, `{"path":"/repo/auth/middleware.go","n":1e}`},
+		{"invalid_with_post_method", `{"path":"/repo/auth/file","method":"POST","n":1e}`, `{"path":"/repo/auth/file","method":"POST","n":1e}`},
 		{"raw_path", "/tmp/legacy.txt", "/tmp/legacy.txt"},
 	}
 	for _, tt := range tests {
