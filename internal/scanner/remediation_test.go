@@ -354,8 +354,11 @@ func TestGuidanceForResultDisambiguatesEntropy(t *testing.T) {
 		if !strings.Contains(g.OperatorKnob, "query_entropy_param_exclusions") {
 			t.Fatalf("query-entropy knob = %q, want query_entropy_param_exclusions first", g.OperatorKnob)
 		}
-		if OperatorHintForResult(ScannerEntropy, `high entropy query key "sig"`) != queryEntropyOperatorKnob {
-			t.Fatal("OperatorHintForResult should return the query knob for a query reason")
+		if OperatorHintForResult(ScannerEntropy, `high entropy query param "sig"`) != queryEntropyOperatorKnob {
+			t.Fatal("OperatorHintForResult should return the query knob for a query value reason")
+		}
+		if OperatorHintForResult(ScannerEntropy, `high entropy query key "sig"`) != queryEntropyKeyOperatorKnob {
+			t.Fatal("OperatorHintForResult should return the key knob for a query key reason")
 		}
 	})
 
@@ -1009,8 +1012,6 @@ func TestQueryEntropyHintChangingPaths(t *testing.T) {
 	for _, reason := range []string{
 		`high entropy query param "_state" (5.58 > 4.50 threshold)`,
 		`nested URL in query parameter "next": high entropy query param "_state"`,
-		`high entropy query key "opaque"`,
-		`nested URL in query parameter "next": high entropy query key "opaque"`,
 	} {
 		t.Run(reason, func(t *testing.T) {
 			hint := OperatorHintForResult(ScannerEntropy, reason)
@@ -1024,6 +1025,28 @@ func TestQueryEntropyHintChangingPaths(t *testing.T) {
 				if !strings.Contains(hint, want) {
 					t.Errorf("hint %q missing %q", hint, want)
 				}
+			}
+		})
+	}
+}
+
+// A parameter exclusion skips only query-value entropy, so a query-key block
+// must point at the host-wide exclusion and never suggest the inert tuple.
+func TestQueryEntropyKeyHint(t *testing.T) {
+	for _, reason := range []string{
+		`high entropy query key "opaque" (4.50 > 4.00 threshold)`,
+		`nested URL in query parameter "next": high entropy query key "opaque"`,
+	} {
+		t.Run(reason, func(t *testing.T) {
+			hint := OperatorHintForResult(ScannerEntropy, reason)
+			if !strings.HasPrefix(hint, queryEntropyKeyOperatorKnob) {
+				t.Fatalf("hint = %q, want key knob", hint)
+			}
+			if !strings.Contains(hint, "`fetch_proxy.monitoring.query_entropy_exclusions`") {
+				t.Errorf("hint %q missing host-wide exclusion", hint)
+			}
+			if strings.Contains(hint, "add the exact scheme+host+path+param tuple") {
+				t.Errorf("hint %q recommends a parameter exclusion that cannot lift a key block", hint)
 			}
 		})
 	}
