@@ -2775,11 +2775,17 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		text := pre.text
 
 		// Capability rules describe executable behavior rather than instructions
-		// to the agent. They retain the tool scanner's action in every mode.
-		for _, findings := range [][]string{pre.poison, pre.spacedPoison} {
-			if slices.Contains(findings, dangerousCapabilityFinding) && !slices.Contains(match.ToolPoison, dangerousCapabilityFinding) {
-				match.ToolPoison = append(match.ToolPoison, dangerousCapabilityFinding)
-				hasFinding = true
+		// to the agent. They retain the tool scanner's action in every mode. Only
+		// a reduced wording policy moves them ahead of the wording cap; the
+		// default keeps the finding order and the receipt pattern it selects.
+		mode := sc.PromptInjectionMode()
+		separateCapability := mode == config.ActionWarn || mode == config.ActionAllow
+		if separateCapability {
+			for _, findings := range [][]string{pre.poison, pre.spacedPoison} {
+				if slices.Contains(findings, dangerousCapabilityFinding) && !slices.Contains(match.ToolPoison, dangerousCapabilityFinding) {
+					match.ToolPoison = append(match.ToolPoison, dangerousCapabilityFinding)
+					hasFinding = true
+				}
 			}
 		}
 		structuralPoisonCount := len(match.ToolPoison)
@@ -2802,9 +2808,13 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 
 			// Tool-specific poisoning patterns on normalized text.
 			// Normalization prevents zero-width char and confusable bypasses.
-			isCapability := func(name string) bool { return name == dangerousCapabilityFinding }
-			poison := slices.DeleteFunc(slices.Clone(pre.poison), isCapability)
-			spacedPoison := slices.DeleteFunc(slices.Clone(pre.spacedPoison), isCapability)
+			poison := slices.Clone(pre.poison)
+			spacedPoison := slices.Clone(pre.spacedPoison)
+			if separateCapability {
+				isCapability := func(name string) bool { return name == dangerousCapabilityFinding }
+				poison = slices.DeleteFunc(poison, isCapability)
+				spacedPoison = slices.DeleteFunc(spacedPoison, isCapability)
+			}
 			hasRequest := pre.hasCredentialRequest()
 			// A configured entry is evaluated whether or not its finding is
 			// still present: a reviewed tool whose wording changed or was
