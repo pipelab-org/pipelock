@@ -1089,6 +1089,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 					return c.MCPSessionBinding.ListenerRequireStateToken
 				},
 				ScannerFn:                mcpScannerFn,
+				ReloadMu:                 s.proxy.ReloadLock(),
 				Approver:                 mcpApprover,
 				InputCfgFn:               mcpInputCfgFn,
 				RequestBodyFn:            mcpRequestBodyFn,

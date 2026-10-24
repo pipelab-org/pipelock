@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -176,8 +177,11 @@ type MCPProxyOpts struct {
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 
 	// Scanning
-	Scanner        *scanner.Scanner
-	ScannerFn      func() *scanner.Scanner
+	Scanner   *scanner.Scanner
+	ScannerFn func() *scanner.Scanner
+	// ReloadMu is the publisher's lock, shared with config/scanner reloads.
+	// Request snapshots hold it only while resolving the scanner and policy hash.
+	ReloadMu       *sync.RWMutex
 	Approver       *hitl.Approver
 	InputCfg       *InputScanConfig
 	InputCfgFn     func() *InputScanConfig
@@ -669,6 +673,24 @@ func (o MCPProxyOpts) warnContext() context.Context {
 	return context.Background()
 }
 
+// snapshotScanPolicy pins the scanner and its receipt policy to the same
+// reload revision. Copies retain the snapshot through input, response and
+// asynchronous receipt emission; other live resolvers keep their own semantics.
+func (o MCPProxyOpts) snapshotScanPolicy() MCPProxyOpts {
+	if o.ReloadMu != nil {
+		o.ReloadMu.RLock()
+		defer o.ReloadMu.RUnlock()
+	}
+	o.Scanner = o.scanner()
+	o.PolicyHash = o.receiptPolicyHash()
+	o.ScannerFn = nil
+	o.PolicyHashFn = nil
+	o.ConfigHash = o.captureConfigHash()
+	o.ConfigHashFn = nil
+	o.ReloadMu = nil
+	return o
+}
+
 func (o MCPProxyOpts) scanner() *scanner.Scanner {
 	if o.ScannerFn != nil {
 		return o.ScannerFn()
@@ -865,6 +887,7 @@ func (o MCPProxyOpts) receiptPolicyHash() string {
 }
 
 func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitOpts {
+	o = o.snapshotScanPolicy()
 	if opts.PolicyHash == "" {
 		opts.PolicyHash = o.receiptPolicyHash()
 	}

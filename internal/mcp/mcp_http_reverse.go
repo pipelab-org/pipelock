@@ -255,6 +255,7 @@ func RunHTTPListenerProxy(
 	baseOpts := MCPProxyOpts{
 		Scanner:                   opts.scanner(),
 		ScannerFn:                 opts.ScannerFn,
+		ReloadMu:                  opts.ReloadMu,
 		Approver:                  opts.Approver,
 		InputCfg:                  opts.inputCfg(),
 		InputCfgFn:                opts.InputCfgFn,
@@ -550,7 +551,8 @@ func RunHTTPListenerProxy(
 		// Resolve adaptive config per-request so hot-reloads take effect
 		// without restarting the long-lived listener.
 		adaptiveCfg := opts.adaptiveCfg()
-		reqScanner := baseOpts.scanner()
+		requestBaseOpts := baseOpts.snapshotScanPolicy()
+		reqScanner := requestBaseOpts.scanner()
 		if reqScanner == nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: scanner unavailable\n")
 			denialAudit = mcpOperationalBlockAudit(scanner.AuditScannerUnavailable, "mcp_input", "MCP scanner unavailable")
@@ -563,9 +565,6 @@ func RunHTTPListenerProxy(
 			_, _ = w.Write(resp)
 			return
 		}
-		requestBaseOpts := baseOpts
-		requestBaseOpts.Scanner = reqScanner
-		requestBaseOpts.ScannerFn = nil
 		if opts.ServerIdentityHeadersFn != nil {
 			// Use the same header merger as the actual upstream request. Bind only
 			// operator/client-selected headers, not transport-generated framing.

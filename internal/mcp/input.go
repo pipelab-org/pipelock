@@ -275,6 +275,7 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
+	opts = opts.snapshotScanPolicy()
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch

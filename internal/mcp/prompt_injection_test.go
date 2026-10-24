@@ -6,11 +6,13 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -236,6 +238,114 @@ func TestPromptInjectionDetectionMCPReceiptAdapter(t *testing.T) {
 				decision, ok := mcpV2DecisionFromReceipt(r)
 				if !ok || strings.Contains(decision.RuleID, "prompt_injection_detection") != (mode != config.ActionBlock) {
 					t.Fatalf("receipt policy: %+v", decision)
+				}
+			}
+		})
+	}
+}
+
+// The hash resolver attempts the same exclusive lock used by reload publication.
+// Without the shared read lock it can publish a new policy between the scanner
+// and hash reads, deterministically producing a mixed receipt.
+func TestMCPReceiptPolicySnapshotLocksReload(t *testing.T) {
+	var mu sync.RWMutex
+	oldScanner := promptWordingScanner(t, config.ActionAllow)
+	newScanner := promptWordingScanner(t, config.ActionBlock)
+	liveScanner := oldScanner
+	oldHash, newHash := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	liveHash := oldHash
+	opts := MCPProxyOpts{
+		ReloadMu:   &mu,
+		ConfigHash: "capture-policy",
+		ScannerFn:  func() *scanner.Scanner { return liveScanner },
+		PolicyHashFn: func() string {
+			hash := liveHash
+			if mu.TryLock() {
+				liveScanner, liveHash = newScanner, newHash
+				mu.Unlock()
+			}
+			return hash
+		},
+	}
+	snapshot := opts.snapshotScanPolicy()
+	if snapshot.captureConfigHash() != opts.ConfigHash {
+		t.Fatal("receipt snapshot changed the capture hash")
+	}
+	bound := opts.withReceiptPolicyHash(receipt.EmitOpts{Target: "lookup", Verdict: config.ActionAllow})
+	decision, ok := mcpV2DecisionFromReceipt(bound)
+	if !ok || decision.PolicyHash != oldHash || !strings.Contains(decision.RuleID, "wording disabled") {
+		t.Fatalf("mixed reload revisions in receipt: %+v", decision)
+	}
+}
+
+type policyReloadMessageReader struct {
+	transport.MessageReader
+	reload func()
+}
+
+func (r *policyReloadMessageReader) ReadMessage() ([]byte, error) {
+	if r.reload != nil {
+		r.reload()
+		r.reload = nil
+	}
+	return r.MessageReader.ReadMessage()
+}
+
+func TestMCPReceiptPolicySnapshotSurvivesReload(t *testing.T) {
+	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
+		t.Run(mode, func(t *testing.T) {
+			h := newMCPDecisionReceiptHarness(t)
+			var mu sync.RWMutex
+			liveScanner := promptWordingScanner(t, mode)
+			oldHash := strings.Repeat("a", 64)
+			liveHash := oldHash
+			opts := MCPProxyOpts{
+				ReloadMu:       &mu,
+				ScannerFn:      func() *scanner.Scanner { return liveScanner },
+				PolicyHashFn:   func() string { return liveHash },
+				ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, Transport: transportMCPStdio,
+			}
+			nextMode := config.ActionBlock
+			if mode == config.ActionBlock {
+				nextMode = config.ActionWarn
+			}
+			nextScanner := promptWordingScanner(t, nextMode)
+			reader := &policyReloadMessageReader{
+				MessageReader: transport.NewStdioReader(strings.NewReader(injectionResponse + "\n")),
+				reload: func() {
+					mu.Lock()
+					liveScanner, liveHash = nextScanner, strings.Repeat("b", 64)
+					mu.Unlock()
+				},
+			}
+			var out, log bytes.Buffer
+			if _, err := ForwardScanned(reader, transport.NewStdioWriter(&out), &log, nil, opts); err != nil {
+				t.Fatal(err)
+			}
+			// Warn/off responses do not emit a finding receipt, so also prove
+			// a prebound intent remains paired through the common emission path.
+			pinned := MCPProxyOpts{Scanner: promptWordingScanner(t, mode), PolicyHash: oldHash, ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2}.snapshotScanPolicy()
+			bound := pinned.withReceiptPolicyHash(receipt.EmitOpts{ActionID: receipt.NewActionID(), Target: "lookup", Verdict: config.ActionAllow, Transport: transportMCPStdio})
+			if _, err := opts.emitReceiptDecision(MCPDecision{Receipt: bound}); err != nil {
+				t.Fatal(err)
+			}
+			records := mcpV2Receipts(t, h)
+			wantCount := 1
+			if mode == config.ActionBlock {
+				wantCount++
+			}
+			if len(records) != wantCount {
+				t.Fatalf("receipts=%d want=%d; log=%s", len(records), wantCount, log.String())
+			}
+			for _, record := range records {
+				var d struct {
+					RuleID string `json:"rule_id"`
+				}
+				if err := json.Unmarshal(record.Payload, &d); err != nil {
+					t.Fatal(err)
+				}
+				if record.PolicyHash != "sha256:"+oldHash || strings.Contains(d.RuleID, "wording disabled") != (mode == config.ActionAllow) || strings.Contains(d.RuleID, "wording warn-only") != (mode == config.ActionWarn) {
+					t.Fatalf("receipt changed after reload: hash=%q reason=%q", record.PolicyHash, d.RuleID)
 				}
 			}
 		})

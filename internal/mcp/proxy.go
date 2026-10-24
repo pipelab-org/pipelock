@@ -163,6 +163,7 @@ func isRequest(msg []byte) bool {
 // mid-stream terminates already-open sessions immediately.
 // Returns true if any response security finding was detected.
 func ForwardScanned(reader transport.MessageReader, writer transport.MessageWriter, logW io.Writer, tracker *RequestTracker, opts MCPProxyOpts) (bool, error) {
+	opts = opts.snapshotScanPolicy()
 	if opts.ServerIdentityFn != nil {
 		writer = &serverIdentityMessageWriter{writer: writer, opts: opts}
 	}

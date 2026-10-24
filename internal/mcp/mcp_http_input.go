@@ -80,6 +80,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	// now matches.
 	msg, authorityRef, authorityCarrierErr := extractInboundMCPAuthority(msg)
 
+	opts = opts.snapshotScanPolicy()
 	sc := opts.scanner()
 	inputCfg := opts.inputCfg()
 	policyCfg := opts.policyCfg()
