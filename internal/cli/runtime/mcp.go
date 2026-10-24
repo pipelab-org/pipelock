@@ -712,6 +712,8 @@ Examples:
 				return fmt.Errorf("create scanner: %w", err)
 			}
 			defer sc.Close()
+			announcePromptInjectionPolicy(cfg, nil, cmd.ErrOrStderr())
+			wirePromptInjectionStderr(sc, cmd.ErrOrStderr())
 
 			// A nil toolCfg tells ScanStreamResult the operator explicitly
 			// disabled mcp_tool_scanning (RuntimeMCPScan auto-enables it
