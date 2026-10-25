@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // pauseOnceListener pauses the first armed connection write after its bytes
@@ -101,9 +103,8 @@ func TestHTTPListener_LegacyListCommitsBeforeDelivery(t *testing.T) {
 	}
 	<-wrapped.delivered
 
-	// Response writes for one principal are serialized, so the call's own
-	// response waits for the paused list write. Session binding must already
-	// admit it: the upstream sees the call before the list write returns.
+	// Session binding must already admit the call while the list write is
+	// still in progress; the upstream sees it before that write returns.
 	type callResult struct {
 		status int
 		body   string
@@ -113,20 +114,23 @@ func TestHTTPListener_LegacyListCommitsBeforeDelivery(t *testing.T) {
 		status, _, body := postWireContractRequest(t, f.url, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{}}}`, h)
 		result <- callResult{status: status, body: body}
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for f.calls.Load() == 0 {
+	var early *callResult
+	testwait.For(t, 10*time.Second, func() bool {
 		select {
 		case r := <-result:
-			t.Fatalf("call refused while the list write was in progress: status=%d body=%s", r.status, r.body)
+			early = &r
+			return true
 		default:
+			return f.calls.Load() > 0
 		}
-		if time.Now().After(deadline) {
-			t.Fatal("call did not reach the upstream while the list write was in progress")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	}, "call reaching the upstream while the list write was in progress")
 	unblock()
-	r := <-result
+	var r callResult
+	if early != nil {
+		r = *early
+	} else {
+		r = <-result
+	}
 	if r.status != http.StatusOK || strings.Contains(r.body, `"error"`) || f.calls.Load() != 1 {
 		t.Fatalf("call after reading the list: status=%d upstream=%d body=%s", r.status, f.calls.Load(), r.body)
 	}
