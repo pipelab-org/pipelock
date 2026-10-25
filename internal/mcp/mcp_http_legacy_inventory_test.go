@@ -88,6 +88,8 @@ func TestHTTPListener_LegacyListCommitsBeforeDelivery(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header = h
+	// The call below must not queue behind this paused connection.
+	req.Close = true
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

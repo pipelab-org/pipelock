@@ -2061,19 +2061,13 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			if reqOpts.validateToolHeaders {
-				// Only current-protocol calls wait on the contract lock, so only
-				// their lists defer the inventory commit to delivery. Legacy lists
-				// commit before writing, as they always have; deferring them would
-				// refuse a call that arrives right after the client reads its list.
-				reqOpts.toolInventoryDelivery = func(commit, release func()) {
-					if !clientState.commitIfActive(commit) {
-						release()
-					}
-					// A completed tools/list must not hold up calls while an SSE stream
-					// remains open for subsequent notifications.
-					releaseContract()
+			reqOpts.toolInventoryDelivery = func(commit, release func()) {
+				if !clientState.commitIfActive(commit) {
+					release()
 				}
+				// A completed tools/list must not hold up calls while an SSE stream
+				// remains open for subsequent notifications.
+				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
@@ -2124,13 +2118,16 @@ func RunHTTPListenerProxy(
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
 		var inventoryReleases []func()
-		if reqOpts.validateToolHeaders {
-			// See the SSE branch: legacy lists keep committing before the write.
-			reqOpts.toolInventoryDelivery = func(commit, release func()) {
-				inventoryCommits = append(inventoryCommits, commit)
-				inventoryReleases = append(inventoryReleases, release)
-			}
+		reqOpts.toolInventoryDelivery = func(commit, release func()) {
+			inventoryCommits = append(inventoryCommits, commit)
+			inventoryReleases = append(inventoryReleases, release)
 		}
+		// Current-protocol calls wait on the contract lock, so their lists can
+		// commit after delivery and a failed write never seeds client-seen state.
+		// Legacy calls take no lock: their lists commit once the response is
+		// admitted, just before the write, or a call sent as soon as the client
+		// reads the list would be refused for a missing baseline.
+		commitBeforeWrite := !reqOpts.validateToolHeaders
 		defer func() {
 			for _, release := range inventoryReleases {
 				release()
@@ -2143,8 +2140,13 @@ func RunHTTPListenerProxy(
 					w.WriteHeader(http.StatusAccepted)
 					return
 				}
+				if commitBeforeWrite {
+					for _, commit := range inventoryCommits {
+						commit()
+					}
+				}
 				n, err := w.Write(output)
-				if err == nil && n == len(output) {
+				if err == nil && n == len(output) && !commitBeforeWrite {
 					// net/http buffers small writes. Flush before treating delivery as
 					// successful, so a failed socket write cannot seed client-seen state.
 					if flushErr := http.NewResponseController(w.ResponseWriter).Flush(); flushErr == nil {
