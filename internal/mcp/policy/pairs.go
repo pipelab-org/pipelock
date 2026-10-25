@@ -327,7 +327,120 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
 		return false, true
 	}
+	if commandAfterParts(pat, v.segments) {
+		return false, true
+	}
 	return false, incomplete
+}
+
+// commandAfterParts reports whether a command word of pat (see
+// leadingWords) comes after words that, given to it, make pat match with at
+// least two of them, as when one command hands its output to xargs. A match
+// that needs only one such word is left to the pair check. It checks each
+// command of segs, where pipelines and file hand-offs are already joined,
+// once, at the last command word in it.
+func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
+	words := leadingWords(pat)
+	if len(words) == 0 {
+		return false
+	}
+	for _, seg := range segs {
+		var before, upTo []string
+		last := ""
+		for _, t := range seg {
+			if len(before) > 0 && isCommandWord(t, words) {
+				last, upTo = t, before
+			}
+			if w := handOffWord(t); w != "" {
+				before = append(before, w)
+			}
+		}
+		if last != "" && pat.MatchString(last+" "+strings.Join(upTo, " ")) && !oneWordMatch(pat, last, upTo) {
+			return true
+		}
+	}
+	return false
+}
+
+// isCommandWord reports whether t, or its base name, is one of words
+// (case-folded, see foldString).
+func isCommandWord(t string, words []string) bool {
+	whole, base := foldString(t), foldString(path.Base(t))
+	return slices.Contains(words, whole) || slices.Contains(words, base)
+}
+
+// leadingWordsCache holds leadingWords results by compiled pattern.
+var leadingWordsCache sync.Map // *regexp.Regexp -> []string
+
+// maxLeadingWords bounds the words leadingWords returns for one pattern.
+const maxLeadingWords = 16
+
+// leadingWords returns the literal text, case-folded, that every match of
+// pat starts with, one entry per alternative (chmod and chown for
+// ch(?:mod|own)...), or nil when a match can start some other way.
+func leadingWords(pat *regexp.Regexp) []string {
+	if cached, hit := leadingWordsCache.Load(pat); hit {
+		return cached.([]string)
+	}
+	var words []string
+	if re, err := syntax.Parse(pat.String(), syntax.Perl); err == nil {
+		words = leadWords([]*syntax.Regexp{re.Simplify()}, "")
+		if len(words) > maxLeadingWords || slices.Contains(words, "") {
+			words = nil
+		}
+	}
+	leadingWordsCache.Store(pat, words)
+	return words
+}
+
+// leadWords is leadingWords for the sequence seq after prefix.
+func leadWords(seq []*syntax.Regexp, prefix string) []string {
+	if len(seq) == 0 {
+		return []string{prefix}
+	}
+	x, rest := seq[0], seq[1:]
+	switch x.Op {
+	case syntax.OpBeginText, syntax.OpBeginLine, syntax.OpWordBoundary:
+		if prefix == "" {
+			return leadWords(rest, prefix)
+		}
+	case syntax.OpLiteral:
+		return leadWords(rest, prefix+foldString(string(x.Rune)))
+	case syntax.OpCapture:
+		return leadWords(slices.Concat(x.Sub[:1], rest), prefix)
+	case syntax.OpConcat:
+		return leadWords(slices.Concat(x.Sub, rest), prefix)
+	case syntax.OpAlternate:
+		var out []string
+		for _, sub := range x.Sub {
+			out = append(out, leadWords(slices.Concat([]*syntax.Regexp{sub}, rest), prefix)...)
+			if len(out) > maxLeadingWords {
+				return out
+			}
+		}
+		return out
+	}
+	return []string{prefix}
+}
+
+// oneWordMatch reports whether pat matches command followed by any one of
+// words.
+func oneWordMatch(pat *regexp.Regexp, command string, words []string) bool {
+	for _, w := range words {
+		if pat.MatchString(command + " " + w) {
+			return true
+		}
+	}
+	return false
+}
+
+// handOffWord returns t as a word another command could read, or "" for a
+// redirection or a bare ; | & operator. Operator marks at its ends are cut.
+func handOffWord(t string) string {
+	if redirectTokenRe.MatchString(t) {
+		return ""
+	}
+	return strings.Trim(t, ";|&")
 }
 
 // matchCommand checks pat against the tokens of one command: joined, joined
