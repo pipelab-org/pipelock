@@ -116,25 +116,6 @@ func (tb *ToolBaseline) SetToolHeaderBindings(defs []ToolDef) error {
 	return nil
 }
 
-// ClearToolHeaderBindings explicitly invalidates observations, independently of
-// drift trust. Ordinary scan warnings must not call this method.
-func (tb *ToolBaseline) ClearToolHeaderBindings(defs []ToolDef) {
-	tb.mu.Lock()
-	defer tb.mu.Unlock()
-	tb.inventorySequence++
-	if tb.headerContractVersions == nil {
-		tb.headerContractVersions = make(map[string]uint64)
-	}
-	for _, def := range defs {
-		if _, exists := tb.headerBindings[def.Name]; exists {
-			// Retain a bounded unknown tombstone so old in-flight reservations
-			// cannot restore a cleared observation, or grow a separate version map.
-			tb.headerBindings[def.Name] = HeaderContract{State: HeaderContractUnknown}
-			tb.headerContractVersions[def.Name] = tb.inventorySequence
-		}
-	}
-}
-
 // HeaderContract returns an isolated snapshot of a tool's structural contract.
 func (tb *ToolBaseline) HeaderContract(toolName string) HeaderContract {
 	if tb == nil {
@@ -306,15 +287,24 @@ func headerPrimitiveType(node map[string]any) (string, error) {
 		return "", fmt.Errorf("unsupported primitive type")
 	}
 	// Validation §6.1.2: enum restricts the value to its listed instances
-	// without requiring type. Every value must prove the SAME MCP primitive
+	// without requiring type, and §6.1.3 makes const equivalent to a
+	// one-value enum. Every non-null value must prove the SAME MCP primitive
 	// domain; mixed, null-only, object, array and number domains are refused.
+	// A null member is allowed for the reason a nullable type array is: MCP
+	// omits the header for a null argument.
 	// https://json-schema.org/draft/2020-12/json-schema-validation#section-6.1.2
 	values, ok := node["enum"].([]any)
+	if constValue, hasConst := node["const"]; !ok && hasConst {
+		values, ok = []any{constValue}, true
+	}
 	if !ok || len(values) == 0 {
 		return "", fmt.Errorf("no supported primitive domain")
 	}
 	kind := ""
 	for _, value := range values {
+		if value == nil {
+			continue
+		}
 		current := ""
 		switch v := value.(type) {
 		case string:
@@ -332,6 +322,9 @@ func headerPrimitiveType(node map[string]any) (string, error) {
 			return "", fmt.Errorf("enum has no single supported primitive kind")
 		}
 		kind = current
+	}
+	if kind == "" {
+		return "", fmt.Errorf("enum has no single supported primitive kind")
 	}
 	return kind, nil
 }

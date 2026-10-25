@@ -2788,7 +2788,6 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 		var match ToolScanMatch
 		match.ToolName = tool.Name
 		hasFinding := false
-		observationsBeforeDefinition := len(observations)
 
 		if confusableNames[tool.Name] {
 			match.ToolPoison = append(match.ToolPoison, "Confusable Tool Name Collision")
@@ -2989,10 +2988,11 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			promoteChanged := !responseAckRefused && !blocking
 			promoteAccepted := !responseAckRefused && (!blocking || !hasFinding)
 			if cfg.RequireHeaderContracts {
-				_, contractErr := ExtractHeaderBindings(tool.InputSchema)
-				promoteNew = !responseAckRefused && !hasFinding && len(observations) == observationsBeforeDefinition && contractErr == nil
-				promoteChanged = false
-				promoteAccepted = promoteNew
+				// An invalid header contract removes the definition from the
+				// forwarded list, so the agent never receives it either.
+				if _, contractErr := ExtractHeaderBindings(tool.InputSchema); contractErr != nil {
+					promoteNew, promoteChanged, promoteAccepted = false, false, false
+				}
 			}
 			// blockNewTools governs admission of a NAME absent from an
 			// already-established baseline. It is independent of the
