@@ -149,8 +149,25 @@ func TestContractDiscoveryDoesNotRecoverAdaptiveState(t *testing.T) {
 }
 
 func TestHTTPListener_ContractDiscoveryPagination(t *testing.T) {
-	for _, mode := range []string{"second page", "page bound", "cursor cycle"} {
-		t.Run(mode, func(t *testing.T) {
+	filler := func(n int) string {
+		return fmt.Sprintf(`[{"name":"filler-%d","description":"Filler","inputSchema":{"type":"object"}}]`, n)
+	}
+	// Longer than any fixed page count a reviewer might reach for: discovery is
+	// bounded by progress and registry capacity, not by pages.
+	const longInventory = 150
+	tests := []struct {
+		mode  string
+		pages int32
+		want  int
+	}{
+		{"second page", 2, 200},
+		{"long inventory", longInventory, 200},
+		{"empty page", 1, 503},
+		{"repeat only page", 2, 503},
+		{"cursor cycle", 2, 503},
+	}
+	for _, tt := range tests {
+		t.Run(tt.mode, func(t *testing.T) {
 			f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, r *http.Request, frame MCPFrame, n int) {
 				var request struct {
 					Params struct {
@@ -159,31 +176,27 @@ func TestHTTPListener_ContractDiscoveryPagination(t *testing.T) {
 				}
 				// frame.Raw retains the request already consumed by the fixture.
 				_ = json.Unmarshal(frame.Raw, &request)
-				if n > 1 && request.Params.Cursor != strconv.Itoa(n-1) {
+				if n > 1 && tt.mode != "cursor cycle" && request.Params.Cursor != strconv.Itoa(n-1) {
 					t.Errorf("page %d cursor=%q", n, request.Params.Cursor)
 				}
 				switch {
-				case mode == "second page" && n == 2:
+				case tt.mode == "second page" && n == 2, tt.mode == "long inventory" && n == longInventory:
 					discoveryList(w, frame, headerStateDefs(headerStateSchema, "Echo input"), "")
-				case mode == "cursor cycle":
+				case tt.mode == "empty page":
 					discoveryList(w, frame, `[]`, "1")
+				case tt.mode == "repeat only page":
+					discoveryList(w, frame, filler(1), strconv.Itoa(n))
+				case tt.mode == "cursor cycle":
+					discoveryList(w, frame, filler(n), "1")
 				default:
-					discoveryList(w, frame, `[]`, strconv.Itoa(n))
+					discoveryList(w, frame, filler(n), strconv.Itoa(n))
 				}
 			})
 			status, body := f.call(t, "body", "first")
-			pages := int32(2)
-			if mode == "page bound" {
-				pages = maxMCPContractDiscoveryPages
-			}
-			want := 503
-			if mode == "second page" {
-				want = 200
-			}
-			if status != want || f.lists.Load() != pages {
+			if status != tt.want || f.lists.Load() != tt.pages {
 				t.Fatalf("status=%d lists=%d body=%s", status, f.lists.Load(), body)
 			}
-			if want != 200 && (f.calls.Load() != 0 || !strings.Contains(body, "contract")) {
+			if tt.want != 200 && (f.calls.Load() != 0 || !strings.Contains(body, "contract")) {
 				t.Fatalf("incomplete discovery forwarded call: %s", body)
 			}
 		})
