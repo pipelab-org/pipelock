@@ -108,6 +108,10 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 These examples target the published v3.7.0 release. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
 
+**Prebuilt releases:** Download the archive for your OS and architecture from [GitHub Releases](https://github.com/pipelab-org/pipelock/releases) and [verify release integrity](#verify-release-integrity) before installing. Release binaries include the public keyring needed by [`pipelock update`](docs/cli/update.md) to verify signed release manifests.
+
+**Source builds:** The commands below build the Community edition. By default, `make build` and `make install` don't embed the release-verification keyring, so `pipelock update` can't install updates from these builds. To upgrade, rebuild from source or install a verified prebuilt release.
+
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
 git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
@@ -137,8 +141,7 @@ brew install luckyPipewrench/tap/pipelock
 
 </details>
 
-<details>
-<summary>Verify release integrity</summary>
+### Verify release integrity
 
 Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
@@ -150,8 +153,6 @@ gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.7.0 --repo
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images, and (from 3.6.0) an attested Helm chart. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
-
-</details>
 
 ---
 
