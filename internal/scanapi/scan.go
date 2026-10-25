@@ -362,11 +362,15 @@ func (h *Handler) scanToolCall(
 	// Stage 1: Key+value extraction from arguments.
 	// Uses extract.AllStringsFromJSON (keys AND values) because secrets
 	// can be encoded as JSON object keys. See spec: tool_call wiring detail.
-	var argStrings []string
+	// Tool policy also matches the string values on their own, as the MCP
+	// proxy does (see policy.CheckToolCallJSON).
+	var argStrings, policyArgs []string
 	var cardAtoms []extract.DLPAtom
 	if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(req.Input.Arguments))
-		if extracted.Truncated {
+		var valuesTruncated bool
+		policyArgs, valuesTruncated = policy.ArgValues(json.RawMessage(req.Input.Arguments))
+		if extracted.Truncated || valuesTruncated {
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, Finding{
 				Scanner:  "tool_call",
@@ -459,7 +463,7 @@ func (h *Handler) scanToolCall(
 		if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
 			rawArgs = json.RawMessage(req.Input.Arguments)
 		}
-		verdict := policyCfg.CheckToolCallWithArgs(req.Input.ToolName, argStrings, rawArgs)
+		verdict := policyCfg.CheckToolCallJSON(req.Input.ToolName, policyArgs, argStrings, rawArgs)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

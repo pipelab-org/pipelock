@@ -1191,14 +1191,11 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 	var argStrings []string
 	hasArgs := len(tc.Arguments) > 0 && string(tc.Arguments) != jsonrpc.Null
 	if hasArgs {
-		// Use values-only extraction (not extractAllStringsFromJSON which
-		// includes map keys). Keys like "cmd","flags","target" would pollute
-		// the joined string and break regex adjacency for policy matching.
-		extracted := jsonrpc.ExtractStringsFromJSONResult(tc.Arguments)
-		if extracted.Truncated {
+		var truncated bool
+		argStrings, truncated = ArgValues(tc.Arguments)
+		if truncated {
 			return uninspectableJSONDepthVerdict()
 		}
-		argStrings = extracted.Strings
 	}
 
 	// If any rule uses ArgKey or structural validators, pass raw arguments so
@@ -1214,6 +1211,51 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 	}
 
 	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
+}
+
+// ArgValues returns the string values of JSON arguments, in sorted-key
+// order, without object keys. This is the list the MCP proxy matches. Keys
+// like "cmd", "flags", or "target" would pollute the joined string, break
+// regex adjacency, and add tokens toward maxPairwiseTokens.
+// truncated reports content past the nesting cap; callers fail closed.
+func ArgValues(raw json.RawMessage) (values []string, truncated bool) {
+	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	return extracted.Strings, extracted.Truncated
+}
+
+// CheckToolCallJSON checks tool policy for JSON arguments on the hook and
+// scan API paths. It matches the string values on their own, as the MCP
+// proxy does, so object keys cannot change how a command is matched, and it
+// matches the keys with the values, so text sent as an object key is still
+// checked. withKeys is the key and value list those paths extract for DLP.
+func (pc *Config) CheckToolCallJSON(toolName string, values, withKeys []string, rawArgs json.RawMessage) Verdict {
+	v := pc.CheckToolCallWithArgs(toolName, values, rawArgs)
+	if slices.Equal(values, withKeys) {
+		return v
+	}
+	return mergeVerdicts(v, pc.CheckToolCallWithArgs(toolName, withKeys, rawArgs))
+}
+
+// mergeVerdicts combines two verdicts for one call. The stricter action wins
+// and keeps its redirect profile and resolution policy; rules and notes from
+// both are kept once each, in order.
+func mergeVerdicts(a, b Verdict) Verdict {
+	if !b.Matched {
+		return a
+	}
+	if !a.Matched {
+		return b
+	}
+	out := a
+	if StricterAction(a.Action, b.Action) != a.Action {
+		out = b
+	}
+	out.Rules = nil
+	for _, r := range append(slices.Clone(a.Rules), b.Rules...) {
+		out.Rules = appendUniqueRule(out.Rules, r)
+	}
+	out.Notes = appendUniqueNotes(slices.Clone(a.Notes), b.Notes)
+	return out
 }
 
 // uninspectableJSONDepthVerdict is the synthetic block returned when policy
