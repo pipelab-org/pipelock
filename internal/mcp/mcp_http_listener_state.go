@@ -48,8 +48,8 @@ type mcpListenerClientState struct {
 	inFlight     atomic.Int64
 	commitMu     sync.Mutex
 	// Serialize modern inventories across upstream fetch, scan and delivery;
-	// calls share the read lock through validation and upstream execution.
-	// This orders schema observations without promoting drift/approval trust.
+	// calls share the read lock only while selecting and checking a contract,
+	// so a long call cannot stall a queued list.
 	contractMu sync.RWMutex
 	revoked    atomic.Bool
 	done       context.Context

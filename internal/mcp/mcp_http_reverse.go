@@ -2061,13 +2061,19 @@ func RunHTTPListenerProxy(
 			if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 				streamWriter.flusher = flusher
 			}
-			reqOpts.toolInventoryDelivery = func(commit, release func()) {
-				if !clientState.commitIfActive(commit) {
-					release()
+			if reqOpts.validateToolHeaders {
+				// Only current-protocol calls wait on the contract lock, so only
+				// their lists defer the inventory commit to delivery. Legacy lists
+				// commit before writing, as they always have; deferring them would
+				// refuse a call that arrives right after the client reads its list.
+				reqOpts.toolInventoryDelivery = func(commit, release func()) {
+					if !clientState.commitIfActive(commit) {
+						release()
+					}
+					// A completed tools/list must not hold up calls while an SSE stream
+					// remains open for subsequent notifications.
+					releaseContract()
 				}
-				// A completed tools/list must not hold up calls while an SSE stream
-				// remains open for subsequent notifications.
-				releaseContract()
 			}
 			revocableWriter := &listenerStateMessageWriter{state: clientState, writer: streamWriter, opts: reqOpts}
 			streamReader := &requestDoneReader{MessageReader: reader, tracker: responseTracker, release: releaseContract}
@@ -2118,9 +2124,12 @@ func RunHTTPListenerProxy(
 		w.opts.denialTerminal = &responseTerminal
 		var inventoryCommits []func()
 		var inventoryReleases []func()
-		reqOpts.toolInventoryDelivery = func(commit, release func()) {
-			inventoryCommits = append(inventoryCommits, commit)
-			inventoryReleases = append(inventoryReleases, release)
+		if reqOpts.validateToolHeaders {
+			// See the SSE branch: legacy lists keep committing before the write.
+			reqOpts.toolInventoryDelivery = func(commit, release func()) {
+				inventoryCommits = append(inventoryCommits, commit)
+				inventoryReleases = append(inventoryReleases, release)
+			}
 		}
 		defer func() {
 			for _, release := range inventoryReleases {

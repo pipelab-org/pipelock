@@ -296,8 +296,11 @@ func headerPrimitiveType(node map[string]any) (string, error) {
 	// A null member is allowed for the reason a nullable type array is: MCP
 	// omits the header for a null argument.
 	// https://json-schema.org/draft/2020-12/json-schema-validation#section-6.1.2
+	// Assertions apply together (core §7.6 yields one result over all of
+	// them), so a const narrows any enum beside it to that one value; a const
+	// outside the enum leaves no valid value at all.
 	values, ok := node["enum"].([]any)
-	if constValue, hasConst := node["const"]; !ok && hasConst {
+	if constValue, hasConst := node["const"]; hasConst {
 		values, ok = []any{constValue}, true
 	}
 	if !ok || len(values) == 0 {

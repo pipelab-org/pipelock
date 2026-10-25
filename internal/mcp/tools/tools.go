@@ -156,8 +156,9 @@ type ExtraPoisonPattern struct {
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
 // tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
-	// RequireHeaderContracts separates modern HTTP structural validation from
-	// drift trust: warned or rejected definitions never become trusted drift.
+	// RequireHeaderContracts enables modern HTTP structural validation. A
+	// definition excluded for an invalid contract never becomes drift trust;
+	// warned definitions follow the ordinary warn-policy adoption.
 	RequireHeaderContracts bool
 	// Baseline holds the caller-scoped baseline for session binding. It is also
 	// the drift baseline unless DriftBaseline is set.

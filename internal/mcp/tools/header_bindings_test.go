@@ -216,6 +216,7 @@ func TestExtractHeaderBindings_PrimitiveDomains(t *testing.T) {
 		{"integer const", `"const":7`, "integer"},
 		{"null const", `"const":null`, ""},
 		{"object const", `"const":{}`, ""},
+		{"const narrows mixed enum", `"enum":["body",1],"const":"body"`, "string"},
 		{"object enum", `"enum":[{}]`, ""},
 		{"array enum", `"enum":[[]]`, ""},
 		{"empty enum", `"enum":[]`, ""},
