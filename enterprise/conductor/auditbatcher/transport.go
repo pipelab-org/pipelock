@@ -163,6 +163,30 @@ func (t *Transport) Run(ctx context.Context) error {
 	}
 }
 
+// Drain delivers pending batches until the queue is empty or a delivery fails.
+// Call only after Run has joined and the producer has closed. The caller owns
+// the shutdown deadline; failure keeps the normal retry/dead-letter semantics.
+func (t *Transport) Drain(ctx context.Context) error {
+	if t == nil {
+		return errors.New("auditbatcher: nil transport")
+	}
+	if ctx == nil {
+		return errors.New("auditbatcher: nil context")
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := t.DeliverOnce(ctx)
+		if errors.Is(err, ErrQueueEmpty) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
 func (t *Transport) DeliverOnce(ctx context.Context) error {
 	if t == nil {
 		return errors.New("auditbatcher: nil transport")

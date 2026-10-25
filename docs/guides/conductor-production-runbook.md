@@ -375,6 +375,8 @@ example; do not copy its paths into Helm-generated configuration. On Kubernetes,
 use
 [`values-enterprise-follower.yaml`](../../charts/pipelock/examples/values-enterprise-follower.yaml):
 
+On ordinary server shutdown, the follower closes its recorder and audit producer, then gives pending batches up to five seconds for a final delivery attempt before closing the queue. The drain stops at the first delivery error and reports incomplete delivery; retryable batches remain pending and terminal refusals remain in dead letters. Fleet entitlement revocation cancels delivery immediately. This shutdown drain doesn't guarantee admission after an outage: the Conductor still rejects audit envelopes outside its 60-second freshness window. Preserve failed records for inspection.
+
 Existing followers can upgrade with no queue-keyring change: when
 `durable_audit_queue_keyring` is unset, the follower keeps using the
 plaintext-compatible durable audit queue and emits a warning that queued records

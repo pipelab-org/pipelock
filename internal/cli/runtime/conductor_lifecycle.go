@@ -154,6 +154,51 @@ func closeConductorAuditQueue(auditQueue any) {
 	}
 }
 
+// finishConductorAudit runs after listeners and Conductor runners have joined
+// and recorder.Close has emitted the final checkpoint. Finalize the producer
+// before giving those last batches one bounded delivery opportunity. Constructor
+// cleanup and entitlement teardown must never initiate a drain.
+func (s *Server) finishConductorAudit() {
+	s.conductorLifeMu.Lock()
+	producer := s.conductorProducer
+	queue := s.conductorAuditQueue
+	s.conductorProducer = nil
+	s.conductorAuditQueue = nil
+	drainer, canDrain := s.conductorAudit.(interface{ Drain(context.Context) error })
+	canDrain = canDrain && queue != nil && s.conductorWait != nil && !s.conductorDown.Load()
+	var ctx context.Context
+	var cancel context.CancelFunc
+	var done chan struct{}
+	if canDrain {
+		ctx, cancel = context.WithTimeout(context.Background(), serverShutdownTimeout)
+		done = make(chan struct{})
+		// Ordinary shutdown has cancelled the Run context. Publish a distinct,
+		// bounded final-drain context under the same revocation gate. Teardown
+		// cancels it immediately and joins it before returning; this function
+		// owns the queue lock until the drain has stopped.
+		s.conductorCancel = cancel
+		s.conductorWait = func() { <-done }
+	}
+	s.conductorLifeMu.Unlock()
+	defer func() {
+		if cancel != nil {
+			cancel()
+		}
+		closeConductorAuditQueue(queue)
+		if done != nil {
+			close(done)
+		}
+	}()
+	if producer != nil {
+		_ = producer.Close()
+	}
+	if canDrain {
+		if err := drainer.Drain(ctx); err != nil && s.opts.Stderr != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: final conductor audit delivery incomplete; inspect the durable queue: %v\n", err)
+		}
+	}
+}
+
 func (s *Server) hasConductorRuntime() bool {
 	return s.conductorApply != nil ||
 		s.conductorAuditQueue != nil ||
