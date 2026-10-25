@@ -114,6 +114,19 @@ func (s *HeadTrustedVerifier) Close() error {
 	return s.v.runStore.close()
 }
 
+// FinishAtHead additionally requires the fully verified chain to end at the
+// writer-observed receipt, rejecting a valid but truncated chain prefix.
+func (s *HeadTrustedVerifier) FinishAtHead(seq uint64, hash string) (ChainResult, ChainResult, error) {
+	full, prefix, err := s.Finish()
+	if err != nil {
+		return ChainResult{}, ChainResult{}, err
+	}
+	if full.FinalSeq != seq || full.RootHash != hash {
+		return ChainResult{}, ChainResult{}, errors.New("refuse auto-anchor: verified receipt head does not match writer-observed head")
+	}
+	return full, prefix, nil
+}
+
 // Lifecycle replay detection needs every past run identity, even after close.
 // Cache a small number and spill rather than weakening duplicate-open detection.
 const runCacheLimit = 64

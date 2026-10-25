@@ -39,7 +39,7 @@ type autoAnchorMonitor struct {
 	logW      io.Writer
 	nowFn     func() time.Time
 	backendFn func(config.FlightRecorderAnchor) (anchorpkg.Backend, error)
-	walkFn    func(string, string, func(receipt.Receipt) error) error
+	walkFn    func(string, string, recorder.SessionHistoryPrefix, func(receipt.Receipt) error) error
 	sessionID string
 
 	mu                   sync.Mutex
@@ -84,7 +84,7 @@ func newAutoAnchorMonitor(
 		logW:      logW,
 		nowFn:     func() time.Time { return time.Now().UTC() },
 		backendFn: autoAnchorBackend,
-		walkFn:    receipt.WalkReceiptsFromSessionDir,
+		walkFn:    receipt.WalkReceiptsFromSessionDirPrefix,
 		sessionID: recorderSessionOf(rec),
 	}
 }
@@ -145,7 +145,7 @@ func (m *autoAnchorMonitor) runPass() {
 		return
 	}
 	now := m.now()
-	if err := m.seed(now, snapshot, emitter.SignerKeyHex()); err != nil {
+	if err := m.seed(now, snapshot, emitter); err != nil {
 		m.fail(err)
 		return
 	}
@@ -170,7 +170,8 @@ func (m *autoAnchorMonitor) runPass() {
 	}
 }
 
-func (m *autoAnchorMonitor) seed(now time.Time, snapshot receipt.HealthSnapshot, currentSignerKey string) error {
+func (m *autoAnchorMonitor) seed(now time.Time, snapshot receipt.HealthSnapshot, emitter *receipt.Emitter) error {
+	currentSignerKey := emitter.SignerKeyHex()
 	m.mu.Lock()
 	if m.seeded {
 		m.mu.Unlock()
@@ -201,7 +202,7 @@ func (m *autoAnchorMonitor) seed(now time.Time, snapshot receipt.HealthSnapshot,
 		}
 		state.ReceiptCount = checkpoint.ReceiptCount
 		state.SignerKey = checkpoint.SignerKeys[len(checkpoint.SignerKeys)-1]
-		_, prefix, extractErr := m.buildCheckpoint(currentSignerKey, state.ReceiptCount)
+		_, prefix, extractErr := m.buildCheckpoint(emitter, state.ReceiptCount)
 		if extractErr != nil {
 			return fmt.Errorf("seed auto-anchor state: extract receipt chain: %w", extractErr)
 		}
@@ -306,7 +307,7 @@ func (m *autoAnchorMonitor) triggered(fr config.FlightRecorder, receiptCount uin
 }
 
 func (m *autoAnchorMonitor) anchor(anchorCfg config.FlightRecorderAnchor, emitter *receipt.Emitter) error {
-	checkpoint, _, err := m.buildCheckpoint(emitter.SignerKeyHex(), 0)
+	checkpoint, _, err := m.buildCheckpoint(emitter, 0)
 	if err != nil {
 		return fmt.Errorf("build live receipt checkpoint: %w", err)
 	}
@@ -478,10 +479,23 @@ func validateAutoAnchorSeedState(state anchorState, checkpoint anchorpkg.Checkpo
 	return nil
 }
 
-// buildCheckpoint scans the full live chain, even when rebuilding a persisted
-// prefix. A saved marker is never a license to skip verification of disk bytes.
-func (m *autoAnchorMonitor) buildCheckpoint(currentSignerKey string, prefixCount uint64) (checkpoint, prefix anchorpkg.Checkpoint, err error) {
-	verifier, err := receipt.NewHeadTrustedVerifier(currentSignerKey, prefixCount)
+// buildCheckpoint verifies the complete confirmed prefix, even when rebuilding
+// a persisted marker. A saved marker never skips verification of disk bytes.
+func (m *autoAnchorMonitor) buildCheckpoint(emitter *receipt.Emitter, prefixCount uint64) (checkpoint, prefix anchorpkg.Checkpoint, err error) {
+	observation, err := emitter.ConfirmedTailObservation()
+	if err != nil {
+		return checkpoint, prefix, err
+	}
+	if observation.InitErr || observation.Session != m.sessionID || observation.Unconfirmed {
+		return checkpoint, prefix, errors.New("refuse auto-anchor: emitter head is unconfirmed, gapped or belongs to another session")
+	}
+	if !observation.WriteKnown {
+		return checkpoint, prefix, errAutoAnchorWritePending
+	}
+	if observation.PersistedHash != observation.PrevHash {
+		return checkpoint, prefix, errors.New("refuse auto-anchor: emitter head is unconfirmed, gapped or belongs to another session")
+	}
+	verifier, err := receipt.NewHeadTrustedVerifier(emitter.SignerKeyHex(), prefixCount)
 	if err != nil {
 		return checkpoint, prefix, err
 	}
@@ -496,10 +510,11 @@ func (m *autoAnchorMonitor) buildCheckpoint(currentSignerKey string, prefixCount
 			}
 		}
 	}()
-	if err := m.walkFn(m.recorder.Dir(), m.sessionID, verifier.Add); err != nil {
+	bound := recorder.SessionHistoryPrefix{File: observation.WriteFile, End: observation.WriteEnd}
+	if err := m.walkFn(m.recorder.Dir(), m.sessionID, bound, verifier.Add); err != nil {
 		return checkpoint, prefix, fmt.Errorf("extract live receipt chain: %w", err)
 	}
-	fullResult, prefixResult, err := verifier.Finish()
+	fullResult, prefixResult, err := verifier.FinishAtHead(observation.PersistedSeq, observation.PersistedHash)
 	if err != nil {
 		return checkpoint, prefix, err
 	}
@@ -529,7 +544,7 @@ func (m *autoAnchorMonitor) now() time.Time {
 }
 
 func (m *autoAnchorMonitor) fail(err error) {
-	if err == nil {
+	if err == nil || errors.Is(err, errAutoAnchorWritePending) {
 		return
 	}
 	if m != nil && m.metrics != nil {
@@ -539,6 +554,8 @@ func (m *autoAnchorMonitor) fail(err error) {
 		_, _ = fmt.Fprintf(m.logW, "CRITICAL: evidence auto-anchor failed: %v\n", err)
 	}
 }
+
+var errAutoAnchorWritePending = errors.New("auto-anchor is waiting for an observed write position")
 
 func autoAnchorBackend(anchorCfg config.FlightRecorderAnchor) (anchorpkg.Backend, error) {
 	rekorURL := strings.TrimSpace(anchorCfg.RekorURL)

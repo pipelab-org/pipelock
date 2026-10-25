@@ -33,6 +33,22 @@ type historyWindowsBasicInfo struct {
 	FileAttributes uint32
 }
 
+func historyStableFileIdentity(location EvidenceLocation, name string, info os.FileInfo) (string, error) {
+	file, opened, err := openEvidenceLocationFile(location, name)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = file.Close() }()
+	if !os.SameFile(info, opened) {
+		return "", fmt.Errorf("%w: observed shard changed while listing", ErrEvidenceRefused)
+	}
+	var id windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &id); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%d:%d:%d", id.VolumeSerialNumber, id.FileIndexHigh, id.FileIndexLow), nil
+}
+
 func historyHandleIdentity(file *os.File, _ os.FileInfo) (string, error) {
 	var id windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &id); err != nil {

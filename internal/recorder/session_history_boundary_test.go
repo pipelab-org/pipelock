@@ -60,6 +60,8 @@ var authoritativeRoots = []string{
 	"WalkHistorySessions",
 	"WalkSessionHistory",
 	"WalkSessionHistoryResolved",
+	"WalkSessionHistoryPrefix",
+	"WalkSessionHistoryPrefixResolved",
 	"WalkSessionHistoryFiles",
 	"WalkHistoryEntriesFromReader",
 	"ReadHistoryEntries",
