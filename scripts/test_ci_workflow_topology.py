@@ -621,6 +621,16 @@ class CIWorkflowTopologyTest(unittest.TestCase):
     def test_topology_is_truthful_and_complete(self):
         self.assertEqual(topology_errors(self.jobs), [])
 
+    def test_local_sharded_targets_run_every_ci_shard(self):
+        # `make test` and `make test-sharded-enterprise` loop over TEST_SHARDS; a
+        # shard missing there silently drops that slice of the suite locally.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        declaration = re.search(r"^TEST_SHARDS := (.+)$", makefile, re.MULTILINE)
+        self.assertIsNotNone(declaration)
+        listed = declaration.group(1).split()
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(set(listed), SHARDS)
+
     def test_failed_policy_detection_cannot_green_skipped_race_producers(self):
         gate = self.jobs["test-go127"]["steps"][0]["run"]
         results = dict.fromkeys(self.jobs["test-go127"]["needs"], "success")
