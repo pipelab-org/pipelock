@@ -41,9 +41,12 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 		{"dot dot", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp/../tmp/a", true},
 		{"push flag through a copy", "echo --force > /tmp/f; cp /tmp/f /tmp/g; xargs git push origin main < /tmp/g", true},
 		{"reset flag through a copy", "echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", true},
+		{"zero-width, copied file to xargs <", zeroWidth("echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), true},
+		{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), true},
 		// Controls.
 		{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", false},
 		{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", false},
+		{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), false},
 	}
 	for _, h := range hooks {
 		for _, tt := range tests {
@@ -67,3 +70,6 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 		}
 	}
 }
+
+// zeroWidth puts U+200B in place of every space.
+func zeroWidth(s string) string { return strings.ReplaceAll(s, " ", "\u200b") }

@@ -36,13 +36,22 @@ var priorRuleTests = []struct {
 	{"reset flag through a move", "echo --hard > /tmp/a; mv /tmp/a /tmp/b && xargs -a /tmp/b git reset", ruleGit},
 	{"delete then extract", "rm old.tar && tar -xf new.tar", ruleFileDelete},
 	{"push then follow a log", "git push origin main && tail -f build.log", ruleGit},
+	// Zero-width spaces in place of spaces: only the view that turns them
+	// into spaces splits these into tokens.
+	{"zero-width, copied file to xargs <", zeroWidth("echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), ruleFileDelete},
+	{"zero-width, reset flag through a copy", zeroWidth("echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b"), ruleGit},
+	{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), ruleEncoded},
 	// Controls: the same shapes with nothing the rules name.
 	{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", ""},
 	{"copied file to ls", "echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs ls < /tmp/b", ""},
 	{"moved file, no flag", "echo main > /tmp/a; mv /tmp/a /tmp/b; xargs git push origin < /tmp/b", ""},
 	{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", ""},
 	{"delete then list", "rm old.tar && ls -la", ""},
+	{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), ""},
 }
+
+// zeroWidth puts U+200B in place of every space.
+func zeroWidth(s string) string { return strings.ReplaceAll(s, " ", "\u200b") }
 
 func TestDefaultRules_PriorMatchesStillMatch(t *testing.T) {
 	for _, mode := range []string{config.ActionWarn, config.ActionBlock} {
