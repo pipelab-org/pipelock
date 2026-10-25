@@ -271,6 +271,12 @@ func fileRefs(words []string) []string {
 
 // matchArgViews reports whether pat matches any view. When none matches,
 // incomplete reports whether a view's check could not rule a match out.
+//
+// A view also matches when pat, or a pattern pat replaced (see
+// priorPatterns), matches it as the argument check read it before commands
+// in one string were told apart (see priorMatch). Splitting a string into
+// commands, or a revised pattern, can then turn a match into an incomplete
+// check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
 	for _, v := range views {
 		m, inc := matchArgView(pat, v)
@@ -279,13 +285,26 @@ func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bo
 		}
 		incomplete = incomplete || inc
 	}
+	prior := priorPatterns(pat)
+	if incomplete {
+		// Every view's check covers what priorMatch reads with pat itself,
+		// so pat can only match that way when a view came back incomplete.
+		prior = append([]*regexp.Regexp{pat}, prior...)
+	}
+	for _, p := range prior {
+		for _, v := range views {
+			if priorMatch(p, v.tokens, v.joined) {
+				return true, false
+			}
+		}
+	}
 	return false, incomplete
 }
 
-// matchArgPattern checks if a regex pattern matches against any view of the
-// argument tokens, treating them as one command (see matchArgView).
+// matchArgPattern checks if a regex pattern matches one view of the argument
+// tokens (see matchArgViews).
 func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
-	matched, _ := matchArgView(pat, argView{tokens: tokens, joined: joined})
+	matched, _ := matchArgViews(pat, argView{tokens: tokens, joined: joined})
 	return matched
 }
 

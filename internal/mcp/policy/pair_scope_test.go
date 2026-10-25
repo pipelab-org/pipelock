@@ -59,18 +59,20 @@ func TestDefaultRules_LongCommandShapes(t *testing.T) {
 		// A long option after a full set of paths.
 		{"long flag after paths", w(cmd(w("rm", "2>&1"), pathOperands(2100), w(longFlag, "/srv"))), ruleFileDelete},
 		// Separate commands are paired within each command first. A match
-		// only across commands is reported as incomplete, not as clean.
+		// only across commands is reported as incomplete, not as clean,
+		// unless the check before commands were split matched it: up to 64
+		// tokens, any pair of tokens still matches.
 		{"delete then extract", w(cmd(w("rm"), pathOperands(70), w("&&", "tar", "-xf", "new.tar"))), incompletePairCheckRule},
 		{"delete then group write", w(cmd(w("rm"), pathOperands(70), w("&&", "chmod", "-R", "g+w", "./out"))), incompletePairCheckRule},
 		{"push then follow logs", w(cmd(w("git", "push", "origin", "main", "&&", "tail", "-f"), pathOperands(70))), incompletePairCheckRule},
-		{"short delete then extract", w("rm old.tar && tar -xf new.tar"), incompletePairCheckRule},
-		{"delete; extract", w("rm old.tar; tar -xf new.tar"), incompletePairCheckRule},
+		{"short delete then extract", w("rm old.tar && tar -xf new.tar"), ruleFileDelete},
+		{"delete; extract", w("rm old.tar; tar -xf new.tar"), ruleFileDelete},
 		// A newline is whitespace to the pattern, so the whole string
 		// matches as written, as it did before commands were split.
 		{"delete, newline, extract", w("rm old.tar\ntar -xf new.tar"), ruleFileDelete},
-		{"delete || extract", w("rm old.tar || tar -xf new.tar"), incompletePairCheckRule},
-		{"push then follow a log", w("git push origin main && tail -f build.log"), incompletePairCheckRule},
-		{"file not read back", w("echo -rf /srv/data > /tmp/a; xargs rm < /tmp/b"), incompletePairCheckRule},
+		{"delete || extract", w("rm old.tar || tar -xf new.tar"), ruleFileDelete},
+		{"push then follow a log", w("git push origin main && tail -f build.log"), ruleGit},
+		{"file not read back", w("echo -rf /srv/data > /tmp/a; xargs rm < /tmp/b"), ruleFileDelete},
 		{"delete then list", w("rm old.tar && ls -la"), ""},
 		{"delete then extract, no dash", w("rm old.tar && tar xf new.tar"), ""},
 		{"build then test", w("make -j4 && go test ./..."), ""},
