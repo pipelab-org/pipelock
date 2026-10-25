@@ -377,7 +377,7 @@ outcome logs `final conductor audit delivery incomplete`. Fleet entitlement revo
 delivery immediately. The drain does not make a batch admissible after an
 outage: the Conductor still refuses an audit envelope outside its 60-second
 freshness window, so a batch queued before a long outage can land in dead
-letters. Inspect the `pending/` and `dead/` directories under
+letters. Inspect the `pending/`, `inflight/`, and `dead/` directories under
 `durable_audit_queue_dir` before deleting any record.
 
 A follower **must produce signed evidence** to participate: config validation
