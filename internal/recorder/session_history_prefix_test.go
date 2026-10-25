@@ -66,6 +66,31 @@ func appendHistoryPrefixTest(t *testing.T, path string, data []byte) {
 	}
 }
 
+func TestHistoryPrefixInvalidLocationAndSession(t *testing.T) {
+	dir := t.TempDir()
+	name := writeHistoryShard(t, dir, "live", 0, 1)
+	info, err := os.Stat(filepath.Join(dir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := SessionHistoryPrefix{File: name, End: info.Size()}
+	for _, tc := range []struct{ location, session string }{
+		{filepath.Join(dir, name), "live"},
+		{dir, "../live"},
+	} {
+		t.Run(tc.session+"/"+filepath.Base(tc.location), func(t *testing.T) {
+			called := false
+			err := WalkSessionHistoryPrefix(tc.location, tc.session, prefix, func(Entry) error {
+				called = true
+				return nil
+			})
+			if err == nil || called {
+				t.Fatalf("invalid input: called=%v err=%v", called, err)
+			}
+		})
+	}
+}
+
 func TestHistoryPrefixRefusesChanges(t *testing.T) {
 	for _, scenario := range []string{"shrink_before", "shrink_during", "closed_append", "replace", "delete", "insert", "duplicate", "duplicate_after", "torn", "oversize", "bad_session", "path", "negative", "nil_consumer"} {
 		t.Run(scenario, func(t *testing.T) {

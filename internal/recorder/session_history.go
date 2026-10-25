@@ -229,8 +229,9 @@ func walkHistoryPrefixShard(location EvidenceLocation, sessionID string, prefix 
 	if statErr != nil {
 		return statErr
 	}
-	if !os.SameFile(before, after) || after.Size() < prefix.End {
-		return fmt.Errorf("%w: observed evidence file shrank or changed identity", ErrEvidenceRefused)
+	// Both stats refer to the open handle; the cursor inventory checks identity.
+	if after.Size() < prefix.End {
+		return fmt.Errorf("%w: observed evidence file shrank", ErrEvidenceRefused)
 	}
 	return err
 }

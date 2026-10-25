@@ -1702,6 +1702,22 @@ func TestAutoAnchorAttemptFailurePaths(t *testing.T) {
 	}
 }
 
+func TestAutoAnchorRejectsUnadvancedCheckpoint(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/unadvanced")
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	trig.monitor.seeded = true
+	trig.monitor.hasLastAnchor = true
+	trig.monitor.lastReceiptCount = uint64(len(receipts))
+	err = trig.monitor.anchor(trig.cfg.FlightRecorder.Anchor, trig.emitter)
+	if err == nil || !strings.Contains(err.Error(), "did not advance beyond") {
+		t.Fatalf("anchor error = %v, want unadvanced-checkpoint refusal", err)
+	}
+}
+
 func newAutoAnchorTestRig(t *testing.T) *autoAnchorTestRig {
 	t.Helper()
 	dir := t.TempDir()
