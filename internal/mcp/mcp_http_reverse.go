@@ -1525,13 +1525,18 @@ func RunHTTPListenerProxy(
 			return
 		}
 		releaseContract := func() {}
+		// Every list on this principal records header contracts into the same
+		// registry, ordered by reservation. A legacy list reserving inside a
+		// modern list's window would commit first, then discard the modern
+		// contract that is delivered last, so lists of every version serialize.
+		if frame.Method == "tools/list" {
+			clientState.contractMu.Lock()
+			releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
+			defer releaseContract()
+		}
 		if frame.ProtocolVersionPresent && frame.ProtocolVersion >= currentMCPVersion {
 			requestBaseOpts.validateToolHeaders = true
 			switch frame.Method {
-			case "tools/list":
-				clientState.contractMu.Lock()
-				releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
-				defer releaseContract()
 			case methodToolsCall:
 				// Hold the read lock only while choosing the contract. Holding it
 				// through upstream execution would let one long call plus a queued

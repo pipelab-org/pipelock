@@ -47,9 +47,9 @@ type mcpListenerClientState struct {
 	lastActive   time.Time
 	inFlight     atomic.Int64
 	commitMu     sync.Mutex
-	// Serialize modern inventories across upstream fetch, scan and delivery;
-	// calls share the read lock only while selecting and checking a contract,
-	// so a long call cannot stall a queued list.
+	// Serialize inventories of every protocol version across upstream fetch,
+	// scan and delivery; modern calls share the read lock only while selecting
+	// and checking a contract, so a long call cannot stall a queued list.
 	contractMu sync.RWMutex
 	revoked    atomic.Bool
 	done       context.Context

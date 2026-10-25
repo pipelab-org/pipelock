@@ -622,14 +622,18 @@ func TestHTTPListener_HeaderContractLongCallDoesNotStallPrincipal(t *testing.T) 
 }
 
 // The list hold ends when the request's own response has been handled, also
-// for an empty inventory and for a denied one, while the upstream keeps the
-// SSE stream open.
+// for an empty inventory, for a denied one and for a legacy-protocol list
+// (which serializes with modern lists), while the upstream keeps the SSE
+// stream open.
 func TestHTTPListener_HeaderContractSSEEmptyOrDeniedListReleasesBeforeEOF(t *testing.T) {
 	for name, definitions := range map[string]string{
-		"empty":  `[]`,
-		"denied": `[{"name":"echo","description":` + fmt.Sprintf("%q", headerStateWarning) + `,"inputSchema":{"type":"object"}}]`,
+		"empty":         `[]`,
+		"denied":        `[{"name":"echo","description":` + fmt.Sprintf("%q", headerStateWarning) + `,"inputSchema":{"type":"object"}}]`,
+		"legacy empty":  `[]`,
+		"legacy listed": `[{"name":"other","description":"Echo input","inputSchema":{"type":"object"}}]`,
 	} {
 		t.Run(name, func(t *testing.T) {
+			legacy := strings.HasPrefix(name, "legacy")
 			finish := make(chan struct{})
 			var once sync.Once
 			closeStream := func() { once.Do(func() { close(finish) }) }
@@ -660,11 +664,16 @@ func TestHTTPListener_HeaderContractSSEEmptyOrDeniedListReleasesBeforeEOF(t *tes
 			}))
 			t.Cleanup(func() { closeStream(); upstream.Close() })
 			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, paramContractOpts(t))
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL, strings.NewReader(string(principalControlToolsList(1))))
+			body, headers := string(principalControlToolsList(1)), currentWireHeaders("tools/list", "")
+			if legacy {
+				body = `{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`
+				headers = http.Header{"Content-Type": {"application/json"}, "Accept": {"application/json, text/event-stream"}, "Mcp-Protocol-Version": {"2025-11-25"}}
+			}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL, strings.NewReader(body))
 			if err != nil {
 				t.Fatal(err)
 			}
-			req.Header = currentWireHeaders("tools/list", "")
+			req.Header = headers
 			req.Header.Set("Proxy-Authorization", headerStateBearer)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
