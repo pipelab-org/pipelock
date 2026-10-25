@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
@@ -110,6 +112,11 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 	cursor := ""
 	cursors := make(map[string]bool)
 	var definitions []tools.ToolDef
+	// Each page is its own response, as for a client following the cursor. A
+	// later page may repeat an unchanged definition when the inventory moves
+	// during pagination; that is one contract. A conflicting repeat, or any
+	// repeat within one page, stays a duplicate (MCP tools#tool-names).
+	earlier := make(map[string]json.RawMessage)
 	remaining := transport.MaxLineSize
 	for range maxMCPContractDiscoveryPages {
 		line, err := d.page(ctx, cursor, &remaining)
@@ -125,7 +132,24 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 		if err := json.Unmarshal(line, &response); err != nil {
 			return fmt.Errorf("invalid discovery inventory: %w", err)
 		}
-		definitions = append(definitions, response.Result.Tools...)
+		onPage := make(map[string]json.RawMessage)
+		for _, def := range response.Result.Tools {
+			if schema, repeated := earlier[def.Name]; repeated {
+				if _, again := onPage[def.Name]; !again && sameToolSchema(schema, def.InputSchema) {
+					onPage[def.Name] = schema
+					continue
+				}
+			}
+			if _, again := onPage[def.Name]; !again {
+				onPage[def.Name] = def.InputSchema
+			}
+			definitions = append(definitions, def)
+		}
+		for name, schema := range onPage {
+			if _, repeated := earlier[name]; !repeated {
+				earlier[name] = schema
+			}
+		}
 		if !d.state.baseline.CanAdmitHeaderBindings(definitions) {
 			return tools.ErrBaselineCapacity
 		}
@@ -160,6 +184,16 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 		cursors[cursor] = true
 	}
 	return errors.New("discovery inventory page limit reached before establishing the tool contract")
+}
+
+// sameToolSchema compares decoded schemas, so key order and spacing do not
+// make one repeated definition read as two conflicting ones.
+func sameToolSchema(a, b json.RawMessage) bool {
+	var left, right any
+	if extract.DecodeJSON(a, &left) != nil || extract.DecodeJSON(b, &right) != nil {
+		return bytes.Equal(bytes.TrimSpace(a), bytes.TrimSpace(b))
+	}
+	return reflect.DeepEqual(left, right)
 }
 
 func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor string, remaining *int) ([]byte, error) {

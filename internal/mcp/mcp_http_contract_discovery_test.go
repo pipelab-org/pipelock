@@ -450,6 +450,50 @@ func TestHTTPListener_ContractDiscoveryIgnoresLegacyInventory(t *testing.T) {
 	}
 }
 
+// Pagination can repeat an unchanged definition on a later page. That is one
+// contract, as for a client reading each page; a conflicting or same-page
+// repeat cannot name one contract and is refused locally.
+func TestHTTPListener_ContractDiscoveryRepeatedDefinitionAcrossPages(t *testing.T) {
+	echo := `{"name":"echo","description":"Echo input","inputSchema":` + headerStateSchema + `}`
+	sibling := func(schema string) string {
+		return `{"name":"sibling","description":"Echo input","inputSchema":` + schema + `}`
+	}
+	for _, tc := range []struct {
+		name, first, second string
+		want                int
+	}{
+		{"identical", "[" + sibling(`{"type":"object"}`) + "]", "[" + sibling(`{"type":"object"}`) + "," + echo + "]", http.StatusOK},
+		{"reordered keys", "[" + sibling(`{"type":"object","properties":{}}`) + "]", "[" + sibling(`{ "properties":{}, "type":"object" }`) + "," + echo + "]", http.StatusOK},
+		{"conflicting", "[" + sibling(`{"type":"object"}`) + "]", "[" + sibling(headerStateSchema) + "," + echo + "]", http.StatusBadRequest},
+		{"same page", "[" + sibling(`{"type":"object"}`) + "]", "[" + sibling(`{"type":"object"}`) + "," + sibling(`{"type":"object"}`) + "," + echo + "]", http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, n int) {
+				if n == 1 {
+					discoveryList(w, frame, tc.first, "page-2")
+					return
+				}
+				discoveryList(w, frame, tc.second, "")
+			})
+			if status, body := f.call(t, "body", "first"); status != http.StatusOK || f.calls.Load() != 1 {
+				t.Fatalf("echo status=%d upstream=%d body=%s", status, f.calls.Load(), body)
+			}
+			h := currentWireHeaders(methodToolsCall, "sibling")
+			h.Set("Proxy-Authorization", headerStateBearer)
+			status, _, body := postWireContractRequest(t, f.url, currentWireBody(3, methodToolsCall, `"name":"sibling","arguments":{}`), h)
+			wantCalls := int32(1)
+			if tc.want == http.StatusOK {
+				wantCalls = 2
+			} else {
+				requireWireHeaderMismatch(t, status, body)
+			}
+			if status != tc.want || f.calls.Load() != wantCalls || f.lists.Load() != 2 {
+				t.Fatalf("sibling status=%d upstream=%d lists=%d body=%s", status, f.calls.Load(), f.lists.Load(), body)
+			}
+		})
+	}
+}
+
 func TestHTTPListener_ContractDiscoveryCancellation(t *testing.T) {
 	entered := make(chan struct{})
 	canceled := make(chan struct{})
