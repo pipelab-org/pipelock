@@ -20,12 +20,14 @@ func lockResult(fn func() error) <-chan error {
 	return done
 }
 
+// requireBlocked gives the waiter time to reach the lock before concluding
+// it waits; checking at once could pass before the goroutine even ran.
 func requireBlocked(t *testing.T, done <-chan error, what string) {
 	t.Helper()
 	select {
 	case err := <-done:
 		t.Fatalf("%s did not wait: %v", what, err)
-	default:
+	case <-time.After(testwait.Deadline(50 * time.Millisecond)):
 	}
 }
 
