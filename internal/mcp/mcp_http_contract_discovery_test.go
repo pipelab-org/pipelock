@@ -798,6 +798,63 @@ func TestContractDiscoveryCoalescesFailureAndFollowerCancellation(t *testing.T) 
 	}
 }
 
+// A follower must not inherit a failure that says nothing about its own tool:
+// another tool's absence, or the initiating request ending. It retries and
+// establishes its own contract instead of being refused.
+func TestContractDiscoveryFollowerRetriesUnrelatedFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		leaderTool   string
+		cancelLeader bool
+	}{
+		{"different-tool-absent", "missing", false},
+		{"same-tool-leader-canceled", "echo", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := newMCPListenerClientState("", "one")
+			entered, release := make(chan struct{}), make(chan struct{})
+			leaderCtx, cancelLeader := context.WithCancel(t.Context())
+			defer cancelLeader()
+			leaderDiscover := func() error {
+				close(entered)
+				select {
+				case <-release:
+				case <-leaderCtx.Done():
+					return leaderCtx.Err()
+				}
+				return errors.New("tool absent from complete discovery inventory")
+			}
+			leader := make(chan error, 1)
+			go func() { _, err := state.acquireToolContract(leaderCtx, tc.leaderTool, leaderDiscover); leader <- err }()
+			<-entered
+			observed := &discoveryWaitContext{Context: t.Context(), entered: make(chan struct{})}
+			followerDiscovered := false
+			follower := make(chan error, 1)
+			go func() {
+				release, err := state.acquireToolContract(observed, "echo", func() error {
+					followerDiscovered = true
+					return state.baseline.SetToolHeaderBindings([]tools.ToolDef{{Name: "echo"}})
+				})
+				if release != nil {
+					release()
+				}
+				follower <- err
+			}()
+			<-observed.entered
+			if tc.cancelLeader {
+				cancelLeader()
+			} else {
+				close(release)
+			}
+			<-leader
+			err := <-follower
+			if err != nil || !followerDiscovered {
+				t.Fatalf("follower inherited an unrelated failure: err=%v discovered=%v", err, followerDiscovered)
+			}
+		})
+	}
+}
+
 func TestContractDiscoveryOrdersQueuedClientInventory(t *testing.T) {
 	state := newMCPListenerClientState("", "one")
 	entered := make(chan struct{})

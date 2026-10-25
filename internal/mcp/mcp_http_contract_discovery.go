@@ -25,14 +25,19 @@ const maxMCPContractDiscoveryPages = 100
 
 type mcpContractDiscoveryFlight struct {
 	done chan struct{}
+	tool string
 	err  error
+	// leaderEnded marks a failure caused by the initiating request ending. It
+	// says nothing about the upstream contract, so followers retry it.
+	leaderEnded bool
 }
 
 // acquireToolContract returns a read hold covering contract comparison. Private
 // discovery and client-visible lists use the SAME exclusive lock across fetch,
 // inspection and commit. A newer list therefore cannot be overwritten by an
-// older discovery, including one that had to wait for that list. Flights share
-// failures as well as successes; a subsequent request may retry a failed flight.
+// older discovery, including one that had to wait for that list. A follower
+// shares a failure only for the tool it asked about, and never the leader's own
+// cancellation; otherwise it retries, so one caller cannot refuse another's call.
 func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, name string, discover func() error) (func(), error) {
 	for {
 		state.discoveryMu.Lock()
@@ -51,7 +56,7 @@ func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, na
 		leader := flight == nil
 
 		if leader {
-			flight = &mcpContractDiscoveryFlight{done: make(chan struct{})}
+			flight = &mcpContractDiscoveryFlight{done: make(chan struct{}), tool: name}
 			state.discovery = flight
 		}
 		state.discoveryMu.Unlock()
@@ -64,19 +69,23 @@ func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, na
 				}
 				state.contractMu.Unlock()
 			}
+			flight.leaderEnded = ctx.Err() != nil
 			state.discoveryMu.Lock()
 			state.discovery = nil
 			close(flight.done)
 			state.discoveryMu.Unlock()
+			if flight.err != nil {
+				return nil, flight.err
+			}
 		} else {
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			case <-flight.done:
 			}
-		}
-		if flight.err != nil {
-			return nil, flight.err
+			if flight.err != nil && flight.tool == name && !flight.leaderEnded {
+				return nil, flight.err
+			}
 		}
 		// Reacquire through writer preference: a queued client list must get
 		// to publish its newer contract before this call compares mirrors.
