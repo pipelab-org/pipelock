@@ -702,3 +702,28 @@ func TestHTTPListener_HeaderContractSSEEmptyOrDeniedListReleasesBeforeEOF(t *tes
 		})
 	}
 }
+
+func TestHTTPListener_HeaderContractLegacySchemaLocations(t *testing.T) {
+	for _, sse := range []bool{false, true} {
+		t.Run(fmt.Sprint("sse=", sse), func(t *testing.T) {
+			for _, tc := range []struct{ name, schema string }{
+				{"definitions", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"region":{"$ref":"#/definitions/R"}},"definitions":{"R":{"type":"string","x-mcp-header":"Region"}}}`},
+				{"dependencies", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","dependencies":{"region":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}}`},
+				{"additional items", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"rows":{"type":"array","items":[],"additionalItems":{"type":"string","x-mcp-header":"Region"}}}}`},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					f := newHeaderStateFixture(t, headerStateDefs(tc.schema, "Echo input"), paramContractOpts(t))
+					f.sse = sse
+					requireHeaderStateList(t, f.list(t), false)
+					f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
+					f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "header"}, http.StatusBadRequest)
+					f.call(t, "sibling", `{}`, nil, http.StatusOK)
+					f.definitions.Store(headerStateDefs(headerStateSchema, "Echo input"))
+					requireHeaderStateList(t, f.list(t), true)
+					f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
+					f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "body"}, http.StatusOK)
+				})
+			}
+		})
+	}
+}

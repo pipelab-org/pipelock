@@ -218,8 +218,10 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 	for key, child := range node {
 		switch key {
 		// Core §8.2.4 ($defs), §10.3.2 (object applicators): these are maps
-		// of schemas. Entry names, including "x-mcp-header", are not keywords.
-		case "properties", "$defs", "patternProperties", "dependentSchemas":
+		// of schemas. Draft-07 validation §§6.5.7 and 9 add dependencies
+		// and definitions. Entry names are not annotation keywords.
+		// https://json-schema.org/draft-07/draft-handrews-json-schema-validation-01
+		case "properties", "$defs", "patternProperties", "dependentSchemas", "definitions", "dependencies":
 			children, ok := child.(map[string]any)
 			if !ok {
 				if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
@@ -234,8 +236,9 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 				}
 			}
 		// Core §§10.2, 10.3, 11 and validation §8.5 define single subschemas.
-		// Only properties is a static MCP path; even unused $defs are checked.
-		case "items", "contains", "additionalProperties", "unevaluatedProperties", "propertyNames", "unevaluatedItems", "not", "if", "then", "else", "contentSchema":
+		// Draft-07 validation §6.4.2 also defines additionalItems as a schema.
+		// Only properties is a static MCP path; even unused definitions are checked.
+		case "items", "additionalItems", "contains", "additionalProperties", "unevaluatedProperties", "propertyNames", "unevaluatedItems", "not", "if", "then", "else", "contentSchema":
 			if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
 				return err
 			}

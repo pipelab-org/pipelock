@@ -335,3 +335,31 @@ func TestToolBaseline_HeaderContractReservationsCountUniqueNames(t *testing.T) {
 	}
 	defer second.Release()
 }
+
+// Draft-07 schemas remain supported by MCP. Its schema-bearing keywords must
+// not hide an annotation that is invalid outside a properties-only path.
+func TestExtractHeaderBindings_LegacySchemaLocations(t *testing.T) {
+	for _, tc := range []struct {
+		name, fragment string
+		invalid        bool
+	}{
+		{"definitions", `"definitions":{"R":{"type":"string","x-mcp-header":"Region"}}`, true},
+		{"dependencies", `"dependencies":{"region":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`, true},
+		{"additional items", `"properties":{"rows":{"type":"array","items":[],"additionalItems":{"type":"string","x-mcp-header":"Region"}}}`, true},
+		{"definition entry name", `"definitions":{"x-mcp-header":{"type":"string"}}`, false},
+		{"property dependencies", `"dependencies":{"region":["x-mcp-header"]}`, false},
+		{"unannotated additional items", `"properties":{"rows":{"type":"array","items":[],"additionalItems":{"type":"string"}}}`, false},
+		{"literal instance data", `"default":{"definitions":{"R":{"type":"string","x-mcp-header":"Region"}},"dependencies":{"region":{"x-mcp-header":"Region"}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			schema := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object",` + tc.fragment + `}`)
+			bindings, err := ExtractHeaderBindings(schema)
+			if (err != nil) != tc.invalid {
+				t.Fatalf("bindings=%v err=%v want invalid=%v", bindings, err, tc.invalid)
+			}
+			if !tc.invalid && len(bindings) != 0 {
+				t.Fatalf("unannotated schema acquired bindings: %v", bindings)
+			}
+		})
+	}
+}
