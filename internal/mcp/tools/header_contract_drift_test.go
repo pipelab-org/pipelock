@@ -70,3 +70,58 @@ func TestScanTools_ExcludedHeaderContractNotAdopted(t *testing.T) {
 		}
 	}
 }
+
+// Contract validity belongs to the whole inventory: individually valid
+// definitions with one name are excluded together and cannot become trust.
+func TestScanTools_ExcludedDuplicateHeaderContractsNotAdopted(t *testing.T) {
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		for _, existing := range []bool{false, true} {
+			for _, identical := range []bool{false, true} {
+				t.Run(fmt.Sprintf("action=%s/existing=%v/identical=%v", action, existing, identical), func(t *testing.T) {
+					sc := headerDriftScanner(t)
+					drift := NewToolBaseline()
+					cfg := &ToolScanConfig{Action: action, DetectDrift: true, Baseline: NewToolBaseline(), DriftBaseline: drift, RequireHeaderContracts: true}
+					initial := `{"type":"object"}`
+					if existing {
+						_ = ScanTools(headerDriftList(1, initial), sc, cfg)
+					}
+					before := drift.hashes["echo"]
+					first := `{"type":"object","properties":{"a":{"type":"string"}}}`
+					second := `{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"string"}}}`
+					description := "Echo input"
+					if action == config.ActionBlock && existing {
+						// A descriptive refinement normally takes PromoteAccepted, including
+						// in block mode, rather than PromoteChanged.
+						first, second = initial, initial
+						description = "Echo input with an optional label for display"
+					}
+					if identical {
+						second = first
+					}
+					line := []byte(fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":%q,"inputSchema":%s},{"name":"echo","description":%q,"inputSchema":%s},{"name":"sibling","description":"Echo input","inputSchema":{"type":"object"}}]}}`, description, first, description, second))
+					result := ScanTools(line, sc, cfg)
+					_, names, rejected, err := FilterInvalidHeaderTools(line, result.ToolDefs)
+					if err != nil || len(names) != 1 || names[0] != "sibling" || len(rejected) != 1 {
+						t.Fatalf("filter names=%v rejected=%v err=%v", names, rejected, err)
+					}
+					if got := drift.hashes["echo"]; got != before {
+						t.Fatalf("excluded duplicate changed drift hash from %q to %q", before, got)
+					}
+					if drift.hashes["sibling"] == "" {
+						t.Fatal("valid sibling was not admitted into drift trust")
+					}
+					if existing && action == config.ActionWarn {
+						corrected := ScanTools(headerDriftList(3, second), sc, cfg)
+						drifted := false
+						for _, m := range corrected.Matches {
+							drifted = drifted || len(m.DriftCues) > 0
+						}
+						if !drifted {
+							t.Fatal("corrected changed definition did not report drift from last delivered definition")
+						}
+					}
+				})
+			}
+		}
+	}
+}

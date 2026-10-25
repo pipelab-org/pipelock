@@ -2738,6 +2738,12 @@ func toolScanCapacityLimit(defs []ToolDef, names []string, cfg *ToolScanConfig) 
 
 func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
 	confusableNames := confusableToolNameCollisions(tools)
+	var headerContracts map[string]HeaderContract
+	if cfg.RequireHeaderContracts && cfg.DetectDrift {
+		// Filtering rejects duplicate names as well as invalid schemas. Drift
+		// admission must use that same inventory-wide structural decision.
+		headerContracts = headerBindingsForDefs(tools)
+	}
 
 	// Captured ONCE, before this response's tools are evaluated, so an
 	// earlier sibling promoted earlier in THIS SAME loop (e.g. the very
@@ -2990,7 +2996,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			if cfg.RequireHeaderContracts {
 				// An invalid header contract removes the definition from the
 				// forwarded list, so the agent never receives it either.
-				if _, contractErr := ExtractHeaderBindings(tool.InputSchema); contractErr != nil {
+				if headerContracts[tool.Name].State == HeaderContractInvalid {
 					promoteNew, promoteChanged, promoteAccepted = false, false, false
 				}
 			}
