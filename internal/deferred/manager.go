@@ -782,9 +782,11 @@ func resolvedState(finalDecision string) string {
 }
 
 type journalEntry struct {
-	DeferID  string `json:"defer_id"`
-	ActionID string `json:"action_id"`
-	State    string `json:"state"`
+	DeferID       string `json:"defer_id"`
+	ActionID      string `json:"action_id"`
+	ShardIndex    int    `json:"shard_index,omitempty"`
+	ShardSelected bool   `json:"shard_selected,omitempty"`
+	State         string `json:"state"`
 	// ReleasePending marks a deferred_held entry written when an allow began
 	// releasing the hold. It is a flag on the held state rather than a state
 	// of its own so that a binary that predates it, whose journal reader
@@ -811,6 +813,8 @@ func journalEntryFromHeld(held HeldAction, state, source string) journalEntry {
 	return journalEntry{
 		DeferID:       held.DeferID,
 		ActionID:      held.ActionID,
+		ShardIndex:    held.ShardIndex,
+		ShardSelected: held.ShardSelected,
 		State:         state,
 		Source:        source,
 		Target:        held.Target,
@@ -957,6 +961,8 @@ func PendingJournal(path string) ([]HeldAction, error) {
 		out = append(out, HeldAction{
 			DeferID:       entry.DeferID,
 			ActionID:      entry.ActionID,
+			ShardIndex:    entry.ShardIndex,
+			ShardSelected: entry.ShardSelected,
 			Target:        entry.Target,
 			Reason:        entry.Reason,
 			Surface:       entry.Surface,

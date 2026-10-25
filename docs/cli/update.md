@@ -122,6 +122,10 @@ The `--insecure-skip-signature` flag is a **deprecated no-op** retained only for
 backward compatibility; it does not relax native verification or any other
 check.
 
+`pipelock version` reports whether the embedded release keyring is usable. `available (embedded keyring)` means every key parses; it doesn't prove the binary is official or that a particular release will verify. An absent or malformed keyring is reported as unavailable. `pipelock --version` prints the short version line.
+
+Source builds without embedded release verification keys cannot authenticate an update and are refused. Install an official release, or update manually after verifying the release archive using the [download and attestation verification instructions in the README](../../README.md#quick-start). Custom builds that embed a valid keyring can verify releases signed by those keys. A malformed keyring is always rejected; neither an optional cosign check nor a checksum replaces native release-manifest verification in `pipelock update`.
+
 > **Upgrading from a pre-3.0.0 binary:** releases before 3.0.0 used a
 > cosign-only verification path and had no embedded release keyring, so a stock
 > pre-3.0.0 binary running `pipelock update` follows that older path. The

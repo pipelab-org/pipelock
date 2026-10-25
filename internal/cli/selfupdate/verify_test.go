@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,78 @@ import (
 
 	releasetrust "github.com/luckyPipewrench/pipelock/internal/release"
 )
+
+func TestRunCommand_ReleaseKeyringRefusal(t *testing.T) {
+	originalKeyring := releasetrust.PublicKeyringHex
+	releasetrust.PublicKeyringHex = ""
+	t.Cleanup(func() { releasetrust.PublicKeyringHex = originalKeyring })
+	for _, tc := range []struct {
+		name, keyring string
+		wantErr       error
+		missing       bool
+		json          bool
+	}{
+		{"missing human", "", releasetrust.ErrNoReleaseKey, true, false},
+		{"missing JSON", "", releasetrust.ErrNoReleaseKey, true, true},
+		{"whitespace", " \t\n", releasetrust.ErrNoReleaseKey, true, true},
+		{"malformed", "not-hex", releasetrust.ErrReleaseTrustInput, false, true},
+		{"malformed after valid", testReleasePubHex + ",not-hex", releasetrust.ErrReleaseTrustInput, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assets, _ := standardAssets(t, testLatest, testGOOS)
+			rs := newReleaseServer(t, testLatest, assets)
+			target := writeTargetBinary(t, "ORIGINAL")
+			const backup = "PREVIOUS"
+			if err := os.WriteFile(target+backupSuffix, []byte(backup), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			opts := baseOptions(rs, target)
+			opts.ReleaseKeyringHex = tc.keyring
+			opts.AssumeYes = true
+			opts.JSON = tc.json
+			opts.AllowUnsignedChecksums = true
+			opts.CosignAvailable = func() bool {
+				t.Fatal("cosign must not run after native verification fails")
+				return false
+			}
+			cmd := Cmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			err := runCommand(context.Background(), cmd, opts, false)
+			if !errors.Is(err, ErrSignatureVerify) || !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected signature and keyring sentinels, got %v", err)
+			}
+			var result struct {
+				Status
+				Error string `json:"error"`
+			}
+			if tc.json {
+				if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+					t.Fatal(decodeErr)
+				}
+				if result.Error != err.Error() || result.Applied || result.SignatureVerified || result.SignatureSkipped {
+					t.Fatalf("incorrect JSON refusal: %s", &out)
+				}
+			} else if out.Len() != 0 {
+				t.Fatalf("human refusal wrote success output: %s", &out)
+			}
+			diagnostic := err.Error()
+			const cause = "this binary has no embedded release verification keys"
+			if tc.missing {
+				for _, text := range []string{cause, "install an official release", "update manually after verifying the release archive", "https://github.com/pipelab-org/pipelock#quick-start"} {
+					if !strings.Contains(diagnostic, text) {
+						t.Errorf("missing diagnostic %q in %q", text, diagnostic)
+					}
+				}
+			} else if strings.Contains(diagnostic, cause) {
+				t.Fatalf("malformed keyring reported as missing: %s", diagnostic)
+			}
+			if string(readT(target)) != "ORIGINAL" || string(readT(target+backupSuffix)) != backup {
+				t.Fatal("refusal changed the installed binary or backup")
+			}
+		})
+	}
+}
 
 func TestRun_CosignAbsentStillVerifiesNativeManifest(t *testing.T) {
 	assets, _ := standardAssets(t, testLatest, testGOOS)

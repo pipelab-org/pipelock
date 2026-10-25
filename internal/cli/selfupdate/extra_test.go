@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,13 +47,26 @@ func TestParseSemver(t *testing.T) {
 }
 
 func TestCheck_FetchError(t *testing.T) {
+	srv := newReleaseFetchErrorServer(t)
 	opts := &Options{
-		APIBase:        "http://127.0.0.1:0", // unroutable
+		APIBase:        srv.URL,
+		HTTPClient:     srv.Client(),
 		TargetPath:     writeTargetBinary(t, "x"),
 		CurrentVersion: testCurrent,
 	}
-	if _, err := opts.Check(context.Background()); err == nil {
-		t.Fatal("expected fetch error")
+	st, err := opts.Check(context.Background())
+	wantErr := fmt.Sprintf("fetching release metadata: HTTP GET %s/repos/%s/%s/releases/latest: status 503", srv.URL, repoOwner, repoName)
+	if err == nil || err.Error() != wantErr {
+		t.Fatalf("expected wrapped fetch error %q, got %v", wantErr, err)
+	}
+	if st != nil {
+		t.Fatalf("expected no status on fetch failure, got %+v", st)
+	}
+	if got := string(readT(opts.TargetPath)); got != "x" {
+		t.Fatalf("target mutated: %q", got)
+	}
+	if _, err := os.Stat(opts.TargetPath + backupSuffix); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected backup after fetch failure: %v", err)
 	}
 }
 
