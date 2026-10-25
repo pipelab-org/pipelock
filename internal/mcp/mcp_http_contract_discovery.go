@@ -255,9 +255,13 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 			return nil, errors.New("discovery response encoding cannot be inspected")
 		}
 	}
-	var reader transport.MessageReader = &transport.SingleMessageReader{Body: resp.Body}
+	// Charge decoded response bytes before framing removes SSE comments,
+	// metadata and separators. One extra byte distinguishes exhaustion from
+	// a response that ends exactly at the remaining acquisition budget.
+	budget := &io.LimitedReader{R: resp.Body, N: int64(*remaining) + 1}
+	var reader transport.MessageReader = &transport.SingleMessageReader{Body: io.NopCloser(budget)}
 	if isSSE {
-		reader = transport.NewSSEReader(resp.Body)
+		reader = transport.NewSSEReader(budget)
 	}
 	tracker := NewStrictRequestTracker()
 	tracker.TrackRequest(json.RawMessage("1"), "tools/list")
@@ -271,13 +275,14 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		opts.ToolCfgFn = nil
 	}
 	for {
+		before := budget.N
 		line, err := reader.ReadMessage()
-		if err != nil {
-			return nil, fmt.Errorf("read discovery response: %w", err)
-		}
-		*remaining -= len(line)
+		*remaining -= int(before - budget.N)
 		if *remaining < 0 {
 			return nil, errors.New("discovery inventory exceeds response byte budget")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read discovery response: %w", err)
 		}
 		var buf bytes.Buffer
 		_, err = ForwardScanned(&transport.SingleMessageReader{Body: io.NopCloser(bytes.NewReader(line))}, transport.NewStdioWriter(&buf), d.log, tracker, opts)
