@@ -1883,6 +1883,14 @@ func RunHTTPListenerProxy(
 			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
 				headerBaseline = clientState.baseline
 			}
+			// The input scan already wrote this call's allowed intent. A refusal
+			// here must close it as blocked, or the chain shows a bare allow.
+			closeContractIntent := func(reason string) {
+				if intent := decision.Outcome.Receipt; intent.ActionID != "" {
+					intent.Layer = mcpReceiptLayerHeaderContract
+					emitMCPBlockedOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, -1, reason, requestBaseOpts.requireReceipts())
+				}
+			}
 			if headerBaseline != nil && frame.RoutingNameErr == nil && frame.RoutingName != "" {
 				var contractErr error
 				// Scan snapshots intentionally omit transport configuration. Discovery
@@ -1897,9 +1905,11 @@ func RunHTTPListenerProxy(
 				})
 				if contractErr != nil {
 					if r.Context().Err() != nil {
+						closeContractIntent("tool_header_contract_wait_ended")
 						refuseContractWait(contractErr)
 						return
 					}
+					closeContractIntent("tool_header_contract_unavailable")
 					denialAudit = mcpListenerInspectionDenialAudit()
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusServiceUnavailable)
@@ -1910,6 +1920,11 @@ func RunHTTPListenerProxy(
 				defer releaseContract()
 			}
 			if !validateMCPParamHeaders(r.Header, frame, headerBaseline) {
+				if mcpToolContractRejected(frame, headerBaseline) {
+					closeContractIntent("tool_header_contract_invalid")
+				} else {
+					closeContractIntent("mcp_param_header_mismatch")
+				}
 				refuseParamMismatch(headerBaseline)
 				return
 			}

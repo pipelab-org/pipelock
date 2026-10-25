@@ -25,6 +25,10 @@ import (
 // ceiling, not an MCP page limit. A remaining cursor at the ceiling is failure.
 const maxMCPContractDiscoveryPages = 100
 
+// mcpReceiptLayerHeaderContract names the x-mcp-header contract check in a
+// blocked outcome receipt.
+const mcpReceiptLayerHeaderContract = "mcp_header_contract"
+
 type mcpContractDiscoveryFlight struct {
 	done chan struct{}
 	tool string

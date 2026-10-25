@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
@@ -489,6 +490,55 @@ func TestHTTPListener_ContractDiscoveryRepeatedDefinitionAcrossPages(t *testing.
 			}
 			if status != tc.want || f.calls.Load() != wantCalls || f.lists.Load() != 2 {
 				t.Fatalf("sibling status=%d upstream=%d lists=%d body=%s", status, f.calls.Load(), f.lists.Load(), body)
+			}
+		})
+	}
+}
+
+// Discovery refuses after the input scan has written the call's allowed
+// intent, so each refusal must close that intent as blocked.
+func TestHTTPListener_ContractDiscoveryRefusalClosesIntent(t *testing.T) {
+	for _, tc := range []struct {
+		name, defs, mirror, reason string
+		want                       int
+	}{
+		{"absent", `[]`, "", "tool_header_contract_unavailable", http.StatusServiceUnavailable},
+		{"mismatch", headerStateDefs(headerStateSchema, "Echo input"), "different", "mcp_param_header_mismatch", http.StatusBadRequest},
+		{"invalid", headerStateDefs(headerStateInvalid, "Echo input"), "", "tool_header_contract_invalid", http.StatusBadRequest},
+		{"matching", headerStateDefs(headerStateSchema, "Echo input"), "body", "reason=complete", http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newMCPDecisionReceiptHarness(t)
+			opts := paramContractOpts(t)
+			opts.InputCfg = newHTTPInputCfg(config.ActionBlock)
+			opts.ReceiptEmitter, opts.V2ReceiptEmitter, opts.PolicyHash, opts.RequireReceipts = h.v1, h.v2, mcpTestPolicyHash, true
+			f := newDiscoveryFixture(t, opts, func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, _ int) {
+				discoveryList(w, frame, tc.defs, "")
+			})
+			if status, body := f.call(t, tc.mirror, "first"); status != tc.want {
+				t.Fatalf("status=%d body=%s", status, body)
+			}
+			if err := h.rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			var intent, outcome *receipt.ActionRecord
+			for _, r := range readActionReceipts(t, h.dir) {
+				record := r.ActionRecord
+				switch record.DecisionPhase {
+				case receipt.DecisionPhaseIntent:
+					intent = &record
+				case receipt.DecisionPhaseOutcome:
+					if outcome != nil {
+						t.Fatal("more than one outcome")
+					}
+					outcome = &record
+				}
+			}
+			if intent == nil || outcome == nil || outcome.ActionID != intent.ActionID || !strings.Contains(outcome.Pattern, tc.reason) {
+				t.Fatalf("intent=%+v outcome=%+v", intent, outcome)
+			}
+			if tc.want != http.StatusOK && (outcome.Verdict != config.ActionBlock || outcome.Layer != mcpReceiptLayerHeaderContract || f.calls.Load() != 0) {
+				t.Fatalf("refusal not recorded as blocked: %+v upstream=%d", outcome, f.calls.Load())
 			}
 		})
 	}
