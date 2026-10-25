@@ -10,11 +10,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,13 +40,14 @@ type convergenceCommandServer struct {
 	followers []controlplane.FollowerFleetStatus
 	batches   map[string][]controlplane.AuditBatchSummary
 
-	followersStatus int
-	followersBody   string
-	auditStatus     map[string]int
-	auditBody       map[string]string
-	auditBarrierAt  int
-	auditBarrierHit chan struct{}
-	auditRelease    chan struct{}
+	followersStatus  int
+	followersBody    string
+	auditStatus      map[string]int
+	auditBody        map[string]string
+	auditBarrierAt   int
+	auditBarrierHit  chan struct{}
+	auditBarrierOnce sync.Once
+	auditRelease     chan struct{}
 
 	mu             sync.Mutex
 	requests       int
@@ -97,7 +100,7 @@ func (s *convergenceCommandServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		barrierHit := s.auditBarrierHit
 		release := s.auditRelease
 		if barrierAt > 0 && barrierHit != nil && s.activeAudit == barrierAt {
-			close(barrierHit)
+			s.auditBarrierOnce.Do(func() { close(barrierHit) })
 		}
 		s.mu.Unlock()
 		defer func() {
@@ -124,6 +127,32 @@ func (s *convergenceCommandServer) ServeHTTP(w http.ResponseWriter, r *http.Requ
 		_ = json.NewEncoder(w).Encode(auditBatchListResponse{Batches: batches, Count: len(batches)})
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func TestConvergenceCommandServerAuditBarrierRepeatedRequests(t *testing.T) {
+	release := make(chan struct{})
+	close(release)
+	server := &convergenceCommandServer{
+		auditBarrierAt: 1, auditBarrierHit: make(chan struct{}), auditRelease: release,
+	}
+	for range 2 {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, controlplane.AuditBatchesPath+"?org_id="+convergenceTestOrg+"&fleet_id="+convergenceTestFleet+"&instance_id=example", nil)
+		req.TLS = &tls.ConnectionState{Version: tls.VersionTLS13, PeerCertificates: []*x509.Certificate{{}}}
+		req.Header.Set("Authorization", "Bearer "+convergenceTestToken)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, req)
+		if response.Code != http.StatusOK {
+			t.Fatalf("audit response = %d: %s", response.Code, response.Body.String())
+		}
+	}
+	select {
+	case <-server.auditBarrierHit:
+	default:
+		t.Fatal("audit barrier was not signaled")
+	}
+	if got := server.requestedAuditBatches("example"); got != 2 {
+		t.Fatalf("audit requests = %d, want 2", got)
 	}
 }
 
