@@ -293,6 +293,16 @@ func headerPrimitiveType(node map[string]any) (string, error) {
 		}
 		return "", fmt.Errorf("unsupported primitive type")
 	}
+	_, hasEnum := node["enum"]
+	_, hasConst := node["const"]
+	if !hasEnum && !hasConst {
+		if branches, ok := node["anyOf"].([]any); ok {
+			return headerNullableUnionType(branches)
+		}
+		if branches, ok := node["oneOf"].([]any); ok {
+			return headerNullableUnionType(branches)
+		}
+	}
 	// Validation §6.1.2: enum restricts the value to its listed instances
 	// without requiring type, and §6.1.3 makes const equivalent to a
 	// one-value enum. Every non-null value must prove the SAME MCP primitive
@@ -342,6 +352,48 @@ func headerPrimitiveType(node map[string]any) (string, error) {
 // Bound the numeric domain before exact rational parsing: huge exponents in
 // otherwise small JSON must not allocate an exponent-sized integer. The bound
 // is MCP's published safe-integer range, not a schema-size heuristic.
+// headerNullableUnionType reads an anyOf or oneOf (core 2020-12 §§10.2.1.2,
+// 10.2.1.3) whose branches each state their own type, with the same
+// interpretation as a nullable type array: one supported primitive plus
+// optional null. Generated schemas spell an optional field this way, for
+// example [{"type":"string"},{"type":"null"}]. A branch that refers elsewhere
+// or nests another union is refused, because its type cannot be read here
+// without resolving references.
+func headerNullableUnionType(branches []any) (string, error) {
+	primitive := ""
+	nullSeen := false
+	for _, raw := range branches {
+		branch, ok := raw.(map[string]any)
+		if !ok {
+			return "", fmt.Errorf("union branch is not a schema object")
+		}
+		for _, keyword := range []string{"$ref", "$dynamicRef", "$recursiveRef", "anyOf", "oneOf", "allOf", "not", "if"} {
+			if _, present := branch[keyword]; present {
+				return "", fmt.Errorf("union branch type is not stated directly")
+			}
+		}
+		if t, ok := branch["type"].(string); ok && t == "null" {
+			if nullSeen {
+				return "", fmt.Errorf("union has no single supported primitive")
+			}
+			nullSeen = true
+			continue
+		}
+		t, err := headerPrimitiveType(branch)
+		if err != nil {
+			return "", err
+		}
+		if primitive != "" && t != primitive {
+			return "", fmt.Errorf("union has no single supported primitive")
+		}
+		primitive = t
+	}
+	if primitive == "" {
+		return "", fmt.Errorf("union has no single supported primitive")
+	}
+	return primitive, nil
+}
+
 func safeHeaderEnumInteger(value json.Number) bool {
 	text := string(value)
 	f, err := strconv.ParseFloat(text, 64)
