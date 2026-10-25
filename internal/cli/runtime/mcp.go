@@ -495,13 +495,13 @@ func recoverDeferredActions(
 	if receiptGroup != nil && receiptGroup.Shards != nil {
 		for _, held := range pending {
 			if !held.ShardSelected {
-				return fmt.Errorf("deferred restart recovery %q has no recorded receipt shard; preserve journal %q and its receipt evidence for recovery: %w", held.DeferID, journalPath, mcp.ErrReceiptRequired)
+				return fmt.Errorf("deferred restart recovery %q has no recorded receipt shard; start once with flight_recorder.receipt_chains set to 1 to close it, and preserve journal %q and its receipt evidence: %w", held.DeferID, journalPath, mcp.ErrReceiptRequired)
 			}
 			if held.ShardIndex < 0 {
 				return fmt.Errorf("deferred restart recovery %q has invalid saved receipt shard %d; preserve journal %q and its receipt evidence for recovery: %w", held.DeferID, held.ShardIndex, journalPath, mcp.ErrReceiptRequired)
 			}
 			if held.ShardIndex >= receiptGroup.Shards.ShardCount() {
-				return fmt.Errorf("deferred restart recovery %q needs saved receipt shard %d, unavailable in the configured group of %d; restore the original receipt shard configuration and preserve journal %q: %w", held.DeferID, held.ShardIndex, receiptGroup.Shards.ShardCount(), journalPath, mcp.ErrReceiptRequired)
+				return fmt.Errorf("deferred restart recovery %q needs saved receipt shard %d, unavailable in the configured group of %d; set flight_recorder.receipt_chains to at least %d and preserve journal %q: %w", held.DeferID, held.ShardIndex, receiptGroup.Shards.ShardCount(), held.ShardIndex+1, journalPath, mcp.ErrReceiptRequired)
 			}
 		}
 	}

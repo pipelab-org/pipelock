@@ -28,13 +28,17 @@ func TestRecoverDeferredActionsPreservesShardAcrossRestart(t *testing.T) {
 		invalid       bool
 		syncFailure   int
 		wantError     string
+		// restore, when set, restarts again with this shard count after the
+		// refused start and expects recovery to complete.
+		restore int
 	}{
 		{name: "process shard", before: 2, after: 2, selected: 0},
 		{name: "same layout", before: 2, after: 2, selected: 1},
 		{name: "larger layout", before: 2, after: 3, selected: 1},
 		{name: "smaller layout retained shard", before: 3, after: 2, selected: 1},
-		{name: "smaller layout missing shard", before: 3, after: 2, selected: 2, wantError: "restore the original receipt shard configuration"},
-		{name: "legacy missing selection", before: 2, after: 2, selected: 1, legacy: true, wantError: "no recorded receipt shard"},
+		{name: "smaller layout missing shard", before: 3, after: 2, selected: 2, wantError: "set flight_recorder.receipt_chains to at least 3"},
+		{name: "restored count after refused smaller start", before: 3, after: 2, selected: 2, wantError: "set flight_recorder.receipt_chains to at least 3", restore: 3},
+		{name: "legacy missing selection", before: 2, after: 2, selected: 1, legacy: true, wantError: "start once with flight_recorder.receipt_chains set to 1"},
 		{name: "invalid saved index", before: 2, after: 2, selected: 1, invalid: true, wantError: "invalid saved receipt shard"},
 		{name: "v1 sync failure", before: 2, after: 2, selected: 1, syncFailure: 1, wantError: "emitting deferred restart recovery receipt"},
 		{name: "v2 sync failure", before: 2, after: 2, selected: 1, syncFailure: 2, wantError: "emitting deferred restart recovery receipt"},
@@ -170,7 +174,21 @@ func TestRecoverDeferredActionsPreservesShardAcrossRestart(t *testing.T) {
 				if tc.syncFailure != 0 && syncs < tc.syncFailure {
 					t.Fatal("injected receipt sync failure was not reached")
 				}
-				return
+				if tc.restore == 0 {
+					return
+				}
+				// The refused start leaves its successor group open and
+				// unclosed, as a failed process does. Restart at the count
+				// the error names.
+				if closeErr := restarted.Close(); closeErr != nil {
+					t.Fatal(closeErr)
+				}
+				restarted, successor = openGroup(tc.restore)
+				opening, _ = successor.Shards.Opening()
+				err = recoverDeferredActions(nil, manager.JournalPath(), nil, nil, successor, runtimeTestPolicyHash, &log)
+				if pending, journalErr = deferred.PendingJournal(manager.JournalPath()); journalErr != nil {
+					t.Fatal(journalErr)
+				}
 			}
 			if err != nil || len(pending) != 0 {
 				t.Fatalf("recovery err=%v pending=%d log=%s", err, len(pending), log.String())
@@ -200,6 +218,9 @@ func TestRecoverDeferredActionsPreservesShardAcrossRestart(t *testing.T) {
 				if i == tc.selected {
 					want = 1
 				}
+				if i == 0 && tc.restore != 0 {
+					want++ // the extra hold saved shard 0
+				}
 				if paired != want {
 					t.Fatalf("shard %d paired receipts = %d, want %d", i, paired, want)
 				}
@@ -208,18 +229,119 @@ func TestRecoverDeferredActionsPreservesShardAcrossRestart(t *testing.T) {
 			for _, record := range readRuntimeActionRecords(t, dir) {
 				if record.DecisionPhase == receipt.DecisionPhaseResolution {
 					resolutions++
-					if record.ParentActionID != intent.ActionID || record.DeferID != intent.DeferID || record.Verdict != config.ActionBlock || record.ResolutionSource != deferred.SourceRestartRecovery {
+					parent, deferID := intent.ActionID, intent.DeferID
+					if tc.restore != 0 && record.DeferID == "a-valid" {
+						parent, deferID = "valid-action", "a-valid"
+					}
+					if record.ParentActionID != parent || record.DeferID != deferID || record.Verdict != config.ActionBlock || record.ResolutionSource != deferred.SourceRestartRecovery {
 						t.Fatalf("unexpected recovery receipt: %+v", record)
 					}
 				}
 			}
-			if resolutions != 1 {
-				t.Fatalf("resolution count = %d, want 1", resolutions)
+			wantResolutions := 1
+			if tc.restore != 0 {
+				wantResolutions = 2
+			}
+			if resolutions != wantResolutions {
+				t.Fatalf("resolution count = %d, want %d", resolutions, wantResolutions)
 			}
 			if result := receipt.VerifyReceiptGroup(dir, opening.GroupID, []string{opening.SignerKey}); result.Verdict != receipt.GroupValid {
 				t.Fatalf("successor group verification: %+v", result)
 			}
 		})
+	}
+}
+
+// A journal entry with no saved shard cannot enter a receipt group, so the
+// group start refuses it. The way out the error names is a single-chain start,
+// which still recovers it, and a later grouped start must then succeed beside
+// the recovery receipt.
+func TestRecoverDeferredActionsLegacyEntryRecoversSingleChainThenGroup(t *testing.T) {
+	dir := t.TempDir()
+	_, key, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := func(rec *recorder.Recorder) receipt.EmitterConfig {
+		return receipt.EmitterConfig{Recorder: rec, PrivKey: key, ConfigHash: runtimeTestPolicyHash, Principal: "local", Actor: "pipelock"}
+	}
+	openRecorder := func() *recorder.Recorder {
+		t.Helper()
+		rec, openErr := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		t.Cleanup(func() { _ = rec.Close() })
+		return rec
+	}
+	rec := openRecorder()
+	group, err := buildMCPReceiptGroup(template(rec), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, emitter := range group.Shards.Emitters() {
+		if closeErr := emitSessionCloseAndTranscriptRoot(emitter, emitter.Session()); closeErr != nil {
+			t.Fatal(closeErr)
+		}
+	}
+	if _, err := group.Shards.PublishClose(); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.Defaults()
+	cfg.Defer.Enabled = true
+	cfg.Defer.TimeoutSeconds = 3600
+	cfg.FlightRecorder.Dir = filepath.Join(dir, "journal")
+	if err := os.MkdirAll(cfg.FlightRecorder.Dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	manager := buildDeferManager(cfg, nil)
+	t.Cleanup(func() { manager.ResolveAll(config.ActionBlock, deferred.SourceCancel) })
+	if err := manager.Hold(deferred.HeldAction{
+		DeferID: "legacy", ActionID: "legacy-action", Target: "held_tool", Method: "tools/call",
+		Surface: deferred.SurfaceMCPStdio, SizeBytes: 1, Authority: deferred.AuthoritySnapshot{SessionID: "session"},
+		Resolve: func(deferred.Resolution) {},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = openRecorder()
+	successor, err := buildMCPReceiptGroup(template(rec), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = recoverDeferredActions(nil, manager.JournalPath(), nil, nil, successor, runtimeTestPolicyHash, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "flight_recorder.receipt_chains") {
+		t.Fatalf("grouped recovery error = %v, want it to name flight_recorder.receipt_chains", err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = openRecorder()
+	single := receipt.NewEmitter(template(rec))
+	if err := emitStartupSessionOpen(single); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverDeferredActions(nil, manager.JournalPath(), single, nil, nil, runtimeTestPolicyHash, &bytes.Buffer{}); err != nil {
+		t.Fatalf("single-chain recovery: %v", err)
+	}
+	if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after single-chain recovery = %d err=%v", len(pending), err)
+	}
+	if err := emitSessionCloseAndTranscriptRoot(single, single.Session()); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = openRecorder()
+	if _, err := buildMCPReceiptGroup(template(rec), 2); err != nil {
+		t.Fatalf("grouped start after single-chain recovery: %v", err)
 	}
 }
 
