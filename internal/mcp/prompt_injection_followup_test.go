@@ -49,6 +49,40 @@ func TestPromptInjectionToolReceiptsEveryTransport(t *testing.T) {
 	}
 }
 
+// Outcome receipts are written only under required recording and are emitted
+// from the intent's tracked options, outside the binding funnel. Each surface
+// must bind those options when it builds them.
+func TestPromptInjectionToolOutcomeReceiptsEveryTransport(t *testing.T) {
+	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
+		for _, surface := range []string{"stdio", "http bridge JSON", "http bridge SSE", "http listener JSON", "http listener SSE", "websocket"} {
+			t.Run(mode+"/"+surface, func(t *testing.T) {
+				h := newMCPDecisionReceiptHarness(t)
+				opts := MCPProxyOpts{Scanner: promptWordingScanner(t, mode), ReceiptEmitter: h.v1, V2ReceiptEmitter: h.v2, PolicyHash: mcpTestPolicyHash, RequireReceipts: true}
+				got := runCardRequestTransport(t, surface, jsonToolsCallEcho, jsonToolsCallEcho, opts)
+				if strings.Contains(got, `"error"`) {
+					t.Fatalf("clean tool call refused: %s", got)
+				}
+				if err := h.rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				var outcomes int
+				for _, r := range readActionReceipts(t, h.dir) {
+					if r.ActionRecord.DecisionPhase != receipt.DecisionPhaseOutcome {
+						continue
+					}
+					outcomes++
+					if pattern := r.ActionRecord.Pattern; strings.Contains(pattern, "prompt_injection_detection") != (mode != config.ActionBlock) {
+						t.Fatalf("outcome policy marker missing or unexpected: %q", pattern)
+					}
+				}
+				if outcomes == 0 {
+					t.Fatal("no outcome receipt recorded")
+				}
+			})
+		}
+	}
+}
+
 func TestPromptInjectionToolReceiptSnapshot(t *testing.T) {
 	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
 		t.Run(mode, func(t *testing.T) {
