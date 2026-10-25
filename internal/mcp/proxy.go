@@ -528,8 +528,18 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if opts.toolContractDiscovery || !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 && len(toolResult.ToolDefs) == 0 {
 				return nil
 			}
+			// x-mcp-header contracts belong to the 2026-07-28 tools/list. A
+			// server answering an older revision follows that revision (MCP
+			// 2026-07-28 Streamable HTTP, "Earlier Streamable HTTP Revisions"),
+			// so its inventory records delivery but never the current contract.
+			// Otherwise an unannotated legacy definition would read as a known
+			// contract and let modern calls skip discovery and mirror checks.
+			defs := toolResult.ToolDefs
+			if !opts.validateToolHeaders {
+				defs = nil
+			}
 			var err error
-			toolInventoryReservation, err = toolCfg.Baseline.ReserveToolInventory(toolResult.ToolNames, toolResult.ToolDefs)
+			toolInventoryReservation, err = toolCfg.Baseline.ReserveToolInventory(toolResult.ToolNames, defs)
 			return err
 		}
 		applyToolInventory := func() {

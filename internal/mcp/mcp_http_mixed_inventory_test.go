@@ -16,19 +16,16 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
-// One principal's lists record header contracts into one registry. A legacy
-// list must not reserve and commit inside a modern list's reservation window,
-// or the modern list is delivered last while its contract is discarded as stale
-// and contradicting mirrors are forwarded under the legacy definition.
+// One principal's lists of every version share the inventory lock. Only the
+// current-protocol list states x-mcp-header contracts: a legacy inventory is
+// delivered but never governs a modern call's mirrors, in either order, even
+// when its server omits the annotation for older clients.
 func TestHTTPListener_HeaderContractsMixedVersionOrdering(t *testing.T) {
 	for _, tc := range []struct {
 		name, legacy string
-		// A batched list response is delivered but records no header contract,
-		// so it never governs even when delivered last.
-		recordsContracts bool
 	}{
-		{"list", `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, true},
-		{"batch", `[{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}]`, false},
+		{"list", `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`},
+		{"batch", `[{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}]`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			paused, resume, legacyArrived := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -147,16 +144,9 @@ func TestHTTPListener_HeaderContractsMixedVersionOrdering(t *testing.T) {
 			headers.Set("Proxy-Authorization", headerStateBearer)
 			headers.Set("Mcp-Param-Region", "us")
 			status, _, body := postWireContractRequest(t, baseURL, currentWireBody(4, methodToolsCall, `"name":"echo","arguments":{"region":"eu"}`), headers)
-			if !legacyFirst && tc.recordsContracts {
-				// The legacy list was delivered last; its definition governs.
-				if status != http.StatusOK || calls.Load() != 1 {
-					t.Fatalf("latest delivered legacy contract lost: status=%d upstream=%d body=%s", status, calls.Load(), body)
-				}
-				return
-			}
-			// The modern list was delivered last, so its binding governs.
+			// The modern binding governs whichever list was delivered last.
 			if status != http.StatusBadRequest || calls.Load() != 0 {
-				t.Fatalf("modern binding delivered last was lost (legacy first=%v): status=%d upstream=%d body=%s", legacyFirst, status, calls.Load(), body)
+				t.Fatalf("legacy inventory displaced the modern binding (legacy first=%v): status=%d upstream=%d body=%s", legacyFirst, status, calls.Load(), body)
 			}
 			requireWireHeaderMismatch(t, status, body)
 		})

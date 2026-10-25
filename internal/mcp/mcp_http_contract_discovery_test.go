@@ -405,6 +405,51 @@ func TestHTTPListener_ContractDiscoveryLegacyUnchanged(t *testing.T) {
 	}
 }
 
+// A server may omit x-mcp-header for older clients. That legacy inventory
+// is delivered, but it must not stand in for the current contract: a modern
+// call still discovers or keeps the annotated contract and refuses mirrors
+// that disagree with the body.
+func TestHTTPListener_ContractDiscoveryIgnoresLegacyInventory(t *testing.T) {
+	for _, modernFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("modern_first=%v", modernFirst), func(t *testing.T) {
+			f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, r *http.Request, frame MCPFrame, _ int) {
+				schema := headerStateSchema
+				if r.Header.Get(listenerProtocolVersion) != currentMCPVersion {
+					schema = `{"type":"object"}`
+				}
+				discoveryList(w, frame, headerStateDefs(schema, "Echo input"), "")
+			})
+			if modernFirst {
+				h := currentWireHeaders("tools/list", "")
+				h.Set("Proxy-Authorization", headerStateBearer)
+				if status, _, body := postWireContractRequest(t, f.url, currentWireBody(1, "tools/list", ""), h); status != http.StatusOK {
+					t.Fatalf("modern list status=%d body=%s", status, body)
+				}
+			}
+			legacy := http.Header{"Proxy-Authorization": {headerStateBearer}, "Mcp-Protocol-Version": {"2025-11-25"}}
+			if status, _, body := postWireContractRequest(t, f.url, `{"jsonrpc":"2.0","id":3,"method":"tools/list","params":{}}`, legacy); status != http.StatusOK {
+				t.Fatalf("legacy list status=%d body=%s", status, body)
+			}
+			listed := f.lists.Load()
+			for _, mirror := range []string{"different", ""} {
+				if status, body := f.call(t, mirror, "first"); status != http.StatusBadRequest || f.calls.Load() != 0 {
+					t.Fatalf("mirror %q: status=%d upstream=%d body=%s", mirror, status, f.calls.Load(), body)
+				}
+			}
+			wantLists := listed
+			if !modernFirst {
+				wantLists++ // the legacy inventory left the contract unknown
+			}
+			if f.lists.Load() != wantLists {
+				t.Fatalf("lists=%d want %d", f.lists.Load(), wantLists)
+			}
+			if status, body := f.call(t, "body", "first"); status != http.StatusOK || f.calls.Load() != 1 {
+				t.Fatalf("matching call: status=%d upstream=%d body=%s", status, f.calls.Load(), body)
+			}
+		})
+	}
+}
+
 func TestHTTPListener_ContractDiscoveryCancellation(t *testing.T) {
 	entered := make(chan struct{})
 	canceled := make(chan struct{})
