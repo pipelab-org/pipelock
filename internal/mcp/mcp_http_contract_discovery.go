@@ -108,7 +108,7 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 	// listener's existing idle-read allowance as the total acquisition budget.
 	ctx, cancel := context.WithTimeout(d.request.Context(), upstreamIdleReadTimeout)
 	defer cancel()
-	cursor := ""
+	var cursor *string
 	cursors := make(map[string]bool)
 	var definitions []tools.ToolDef
 	// Each page is its own response, as for a client following the cursor. A
@@ -131,7 +131,7 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 		var response struct {
 			Result struct {
 				Tools      []tools.ToolDef `json:"tools"`
-				NextCursor string          `json:"nextCursor"`
+				NextCursor *string         `json:"nextCursor"`
 			} `json:"result"`
 		}
 		if err := json.Unmarshal(line, &response); err != nil {
@@ -182,16 +182,16 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			return commitErr
 		}
 		cursor = response.Result.NextCursor
-		if cursor == "" {
+		if cursor == nil {
 			return errors.New("tool absent from complete discovery inventory")
 		}
-		if cursors[cursor] {
+		if cursors[*cursor] {
 			return errors.New("discovery inventory repeated a pagination cursor")
 		}
 		if !progressed {
 			return errors.New("discovery inventory page named no new tool before its cursor")
 		}
-		cursors[cursor] = true
+		cursors[*cursor] = true
 	}
 }
 
@@ -205,15 +205,15 @@ func sameToolSchema(a, b json.RawMessage) bool {
 	return reflect.DeepEqual(left, right)
 }
 
-func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor string, remaining *int) ([]byte, error) {
+func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, remaining *int) ([]byte, error) {
 	params := map[string]any{
 		"_meta": map[string]any{
 			"io.modelcontextprotocol/protocolVersion":    d.request.Header.Get(listenerProtocolVersion),
 			"io.modelcontextprotocol/clientCapabilities": map[string]any{},
 		},
 	}
-	if cursor != "" {
-		params["cursor"] = cursor
+	if cursor != nil {
+		params["cursor"] = *cursor
 	}
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": params})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.upstream, bytes.NewReader(body))

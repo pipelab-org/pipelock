@@ -55,6 +55,10 @@ func newDiscoveryFixture(t *testing.T, opts MCPProxyOpts, list func(http.Respons
 }
 
 func discoveryList(w http.ResponseWriter, frame MCPFrame, defs, cursor string) {
+	if cursor == "" {
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":%s}}`, frame.ID, defs)
+		return
+	}
 	_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":%s,"nextCursor":%q}}`, frame.ID, defs, cursor)
 }
 
@@ -1142,7 +1146,7 @@ func TestContractDiscoveryPageInspectionFailures(t *testing.T) {
 				}
 				return
 			}
-			_, err := d.page(t.Context(), "", &remaining)
+			_, err := d.page(t.Context(), nil, &remaining)
 			if mode == "notification then response" {
 				if err != nil {
 					t.Fatal(err)
@@ -1178,5 +1182,40 @@ func TestContractDiscoveryCanceledAtStructuralCommit(t *testing.T) {
 	err := discoverMCPToolContract(mcpContractDiscoveryRequest{request: req, client: up.Client(), upstream: up.URL, opts: opts, state: state, log: io.Discard, tool: "echo"})
 	if checks != 2 || !errors.Is(err, context.Canceled) || state.baseline.HeaderContract("echo").State != tools.HeaderContractUnknown {
 		t.Fatalf("canceled completion: checks=%d error=%v contract=%v", checks, err, state.baseline.HeaderContract("echo").State)
+	}
+}
+
+// MCP pagination requires treating even an empty cursor as an opaque token.
+func TestHTTPListener_ContractDiscoveryEmptyCursor(t *testing.T) {
+	for _, mismatch := range []bool{false, true} {
+		t.Run(strconv.FormatBool(mismatch), func(t *testing.T) {
+			f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, n int) {
+				if n == 1 {
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"filler","inputSchema":{"type":"object"}}],"nextCursor":""}}`, frame.ID)
+					return
+				}
+				var request struct {
+					Params map[string]json.RawMessage `json:"params"`
+				}
+				if err := json.Unmarshal(frame.Raw, &request); err != nil {
+					t.Error(err)
+				}
+				if string(request.Params["cursor"]) != `""` {
+					t.Errorf("empty cursor lost: %s", frame.Raw)
+				}
+				discoveryList(w, frame, headerStateDefs(headerStateSchema, "Echo input"), "")
+			})
+			mirror, want := "body", http.StatusOK
+			if mismatch {
+				mirror, want = "different", http.StatusBadRequest
+			}
+			status, body := f.call(t, mirror, "first")
+			if status != want || f.lists.Load() != 2 {
+				t.Fatalf("status=%d lists=%d body=%s", status, f.lists.Load(), body)
+			}
+			if mismatch && f.calls.Load() != 0 {
+				t.Fatal("mismatching call forwarded")
+			}
+		})
 	}
 }
