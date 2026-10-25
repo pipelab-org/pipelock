@@ -170,9 +170,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 	sc := opts.scanner()
 	approver := opts.Approver
 	toolCfg := opts.toolCfg()
-	if toolCfg != nil && opts.validateToolHeaders {
+	if toolCfg != nil && (opts.validateToolHeaders || opts.toolContractDiscovery) {
 		copyCfg := *toolCfg
 		copyCfg.RequireHeaderContracts = true
+		copyCfg.ContractDiscovery = opts.toolContractDiscovery
 		toolCfg = &copyCfg
 	}
 	ks := opts.KillSwitch
@@ -281,13 +282,16 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		// On-entry de-escalation for long-lived response streams.
-		tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
-			sessionKey: opts.adaptiveSessionKey(),
-			reason:     adaptiveRecoveryTimer,
-			logger:     opts.AuditLogger,
-			metrics:    m,
-		}, opts.warnContext()))
+		// Private inventory inspection cannot lower the caller's security state.
+		// Ordinary response streams retain their on-entry recovery policy.
+		if !opts.toolContractDiscovery {
+			tryRecoverSession(rec, adaptiveCfg, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+				sessionKey: opts.adaptiveSessionKey(),
+				reason:     adaptiveRecoveryTimer,
+				logger:     opts.AuditLogger,
+				metrics:    m,
+			}, opts.warnContext()))
+		}
 
 		// A signed operator delegation is the only path that clears a stdio
 		// airlock. A malformed, expired, replayed, or absent authority leaves
@@ -521,7 +525,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// response scanner.
 		var toolInventoryReservation *tools.ToolInventoryReservation
 		reserveToolInventory := func() error {
-			if !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 && len(toolResult.ToolDefs) == 0 {
+			if opts.toolContractDiscovery || !isToolsList || toolCfg == nil || toolCfg.Baseline == nil || len(toolResult.ToolNames) == 0 && len(toolResult.ToolDefs) == 0 {
 				return nil
 			}
 			var err error
@@ -776,7 +780,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 		}
 
-		if isToolsList && opts.validateToolHeaders {
+		if isToolsList && opts.validateToolHeaders && !opts.toolContractDiscovery {
 			filtered, names, rejected, err := tools.FilterInvalidHeaderTools(line, toolResult.ToolDefs)
 			if err != nil {
 				if writeErr := blockScanError("invalid tool header contract response"); writeErr != nil {
@@ -871,7 +875,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// Clean message: decay threat score. Skip decay when tool-poisoning
 			// was detected for this message - a near-miss signal and a clean
 			// decay on the same message would incorrectly counteract each other.
-			if !toolPoisonDetected && !toolAcknowledged {
+			if !opts.toolContractDiscovery && !toolPoisonDetected && !toolAcknowledged {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
 					sessionKey: opts.adaptiveSessionKey(),
 					reason:     adaptiveRecoveryClean,

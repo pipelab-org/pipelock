@@ -297,8 +297,8 @@ func TestHTTPListener_HeaderContractsSeparatePrincipals(t *testing.T) {
 	requireHeaderStateList(t, f.list(t), false)
 	f.call(t, "echo", `{}`, nil, http.StatusBadRequest)
 	subject.Store("second")
-	// Slice 2 owns unknown-tool discovery: another principal stays unknown.
-	f.call(t, "echo", `{"region":"body"}`, nil, http.StatusOK)
+	// Another principal discovers its own contract rather than inheriting state.
+	f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
 	f.definitions.Store(headerStateDefs(headerStateSchema, "Echo input"))
 	requireHeaderStateList(t, f.list(t), true)
 	f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
@@ -541,14 +541,13 @@ func TestForwardScanned_HeaderContractStdioAllowance(t *testing.T) {
 	}
 }
 
-func TestHTTPListener_HeaderContractUnknownRemainsForwarded(t *testing.T) {
+func TestHTTPListener_HeaderContractUnknownIsDiscovered(t *testing.T) {
 	f := newHeaderStateFixture(t, headerStateDefs(headerStateSchema, "Echo input"), paramContractOpts(t))
-	// Internal tools/list acquisition and stricter unknown-state behavior are
-	// separate from validation of schemas this proxy has already observed.
-	f.call(t, "echo", `{"region":"body"}`, nil, http.StatusOK)
-	f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "header"}, http.StatusOK)
-	if f.lists.Load() != 0 {
-		t.Fatal("unknown-tool call performed unrequested discovery")
+	f.call(t, "echo", `{"region":"body"}`, nil, http.StatusBadRequest)
+	f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "header"}, http.StatusBadRequest)
+	f.call(t, "echo", `{"region":"body"}`, map[string]string{"Region": "body"}, http.StatusOK)
+	if f.lists.Load() != 1 {
+		t.Fatalf("discoveries=%d", f.lists.Load())
 	}
 }
 
@@ -701,8 +700,12 @@ func TestHTTPListener_HeaderContractSSEEmptyOrDeniedListReleasesBeforeEOF(t *tes
 			}()
 			select {
 			case status := <-done:
-				if status != http.StatusOK {
-					t.Fatalf("call status=%d", status)
+				want := http.StatusServiceUnavailable
+				if name == "legacy listed" {
+					want = http.StatusOK
+				}
+				if status != want {
+					t.Fatalf("call status=%d want=%d", status, want)
 				}
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				closeStream()

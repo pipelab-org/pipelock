@@ -136,6 +136,8 @@ type MCPProxyOpts struct {
 	denialTerminal *mcpDeferredTerminal
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
+	// Internal discovery inspects definitions without claiming client delivery.
+	toolContractDiscovery bool
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
 	// the real downstream write succeeds; streaming transports commit directly.
 	toolInventoryDelivery func(commit, release func())
@@ -900,6 +902,9 @@ func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitO
 }
 
 func (o MCPProxyOpts) deferManager() *deferred.Manager {
+	if o.toolContractDiscovery {
+		return nil
+	}
 	if o.DeferManagerFn != nil {
 		return o.DeferManagerFn()
 	}

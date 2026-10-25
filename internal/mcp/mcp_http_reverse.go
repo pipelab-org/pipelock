@@ -1546,48 +1546,47 @@ func RunHTTPListenerProxy(
 			releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
 			defer releaseContract()
 		}
+		refuseParamMismatch := func(headerBaseline *tools.ToolBaseline) {
+			message := "pipelock: MCP parameter header does not match the request body"
+			if mcpToolContractRejected(frame, headerBaseline) {
+				message = "pipelock: tool definition was excluded because its x-mcp-header schema is invalid"
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: call refused for tool %q excluded for an invalid x-mcp-header contract\n", frame.RoutingName)
+			} else {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header disagrees with accepted tool schema and request body\n")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			denialAudit = mcpListenerProtocolDenialAudit()
+			w.WriteHeader(http.StatusBadRequest)
+			mismatch, _ := json.Marshal(rpcError{
+				JSONRPC: jsonrpc.Version,
+				ID:      frame.ID,
+				Error: rpcErrorDetail{
+					Code:    mcpHeaderMismatchCode,
+					Message: message,
+				},
+			})
+			_, _ = w.Write(mismatch)
+		}
 		if frame.ProtocolVersionPresent && frame.ProtocolVersion >= currentMCPVersion {
 			requestBaseOpts.validateToolHeaders = true
-			switch frame.Method {
-			case methodToolsCall:
-				// Hold the read lock only while choosing the contract. Holding it
-				// through upstream execution would let one long call plus a queued
-				// list (writer preference) stall every call for this principal.
+			// Preserve the established HeaderMismatch response before general
+			// header/input scanning can choose another error for the same bytes.
+			// A later comparison under the contract lock covers intervening lists.
+			if frame.Method == methodToolsCall && clientState.baseline.HeaderContract(frame.RoutingName).State != tools.HeaderContractUnknown {
 				if err := clientState.contractMu.RLock(r.Context()); err != nil {
 					refuseContractWait(err)
 					return
 				}
-				releaseContract = sync.OnceFunc(clientState.contractMu.RUnlock)
-				defer releaseContract()
-			}
-			var headerBaseline *tools.ToolBaseline
-			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
-				headerBaseline = toolCfg.Baseline
-			}
-			if !validateMCPParamHeaders(r.Header, frame, headerBaseline) {
-				message := "pipelock: MCP parameter header does not match the request body"
-				if mcpToolContractRejected(frame, headerBaseline) {
-					message = "pipelock: tool definition was excluded because its x-mcp-header schema is invalid"
-					_, _ = fmt.Fprintf(safeLogW, "pipelock: call refused for tool %q excluded for an invalid x-mcp-header contract\n", frame.RoutingName)
-				} else {
-					_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header disagrees with accepted tool schema and request body\n")
+				var knownBaseline *tools.ToolBaseline
+				if requestBaseOpts.toolCfg() != nil {
+					knownBaseline = clientState.baseline
 				}
-				w.Header().Set("Content-Type", "application/json")
-				denialAudit = mcpListenerProtocolDenialAudit()
-				w.WriteHeader(http.StatusBadRequest)
-				mismatch, _ := json.Marshal(rpcError{
-					JSONRPC: jsonrpc.Version,
-					ID:      frame.ID,
-					Error: rpcErrorDetail{
-						Code:    mcpHeaderMismatchCode,
-						Message: message,
-					},
-				})
-				_, _ = w.Write(mismatch)
-				return
-			}
-			if frame.Method == methodToolsCall {
-				releaseContract()
+				matches := validateMCPParamHeaders(r.Header, frame, knownBaseline)
+				clientState.contractMu.RUnlock()
+				if !matches {
+					refuseParamMismatch(knownBaseline)
+					return
+				}
 			}
 		} else if hasMCPParamHeaders(r.Header) {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP parameter header requires the current protocol version\n")
@@ -1878,6 +1877,43 @@ func RunHTTPListenerProxy(
 
 		if blockedByUpstreamContract(frame.ID, scanOpts, decision.Outcome.Receipt) {
 			return
+		}
+		if requestBaseOpts.validateToolHeaders && frame.Method == methodToolsCall {
+			var headerBaseline *tools.ToolBaseline
+			if toolCfg := requestBaseOpts.toolCfg(); toolCfg != nil {
+				headerBaseline = clientState.baseline
+			}
+			if headerBaseline != nil && frame.RoutingNameErr == nil && frame.RoutingName != "" {
+				var contractErr error
+				// Scan snapshots intentionally omit transport configuration. Discovery
+				// must use the same operator-pinned credentials as the real call.
+				discoveryOpts := scanOpts
+				discoveryOpts.UpstreamHeaders = opts.UpstreamHeaders
+				releaseContract, contractErr = clientState.acquireToolContract(r.Context(), frame.RoutingName, func() error {
+					return discoverMCPToolContract(mcpContractDiscoveryRequest{
+						request: r, client: upstreamClient, upstream: upstreamURL,
+						opts: discoveryOpts, state: clientState, log: safeLogW, tool: frame.RoutingName,
+					})
+				})
+				if contractErr != nil {
+					if r.Context().Err() != nil {
+						refuseContractWait(contractErr)
+						return
+					}
+					denialAudit = mcpListenerInspectionDenialAudit()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock: cannot establish tool header contract: %w", contractErr)))
+					return
+				}
+				releaseContract = sync.OnceFunc(releaseContract)
+				defer releaseContract()
+			}
+			if !validateMCPParamHeaders(r.Header, frame, headerBaseline) {
+				refuseParamMismatch(headerBaseline)
+				return
+			}
+			releaseContract()
 		}
 		// Build upstream request with passthrough headers.
 		upReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(decision.ForwardMessage))

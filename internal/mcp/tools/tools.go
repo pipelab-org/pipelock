@@ -160,6 +160,9 @@ type ToolScanConfig struct {
 	// definition excluded for an invalid contract never becomes drift trust;
 	// warned definitions follow the ordinary warn-policy adoption.
 	RequireHeaderContracts bool
+	// ContractDiscovery inspects internal inventories without establishing or
+	// promoting a drift baseline. Delivery and approval remain separate.
+	ContractDiscovery bool
 	// Baseline holds the caller-scoped baseline for session binding. It is also
 	// the drift baseline unless DriftBaseline is set.
 	Baseline *ToolBaseline
@@ -618,9 +621,11 @@ func (e DriftEvaluation) Accepted() bool { return e.Drifted && len(e.Cues) == 0 
 // DefinitionEvaluation carries one tool definition and the promotion policy to
 // apply to it.
 type DefinitionEvaluation struct {
-	Name string
-	Hash string
-	Desc string
+	// ReadOnly compares against drift trust without changing it.
+	ReadOnly bool
+	Name     string
+	Hash     string
+	Desc     string
 	// Params are the tool's parameter names, already sorted.
 	Params []string
 	// Structural is the digest of everything except the description.
@@ -684,6 +689,9 @@ func (tb *ToolBaseline) EvaluateDefinition(in DefinitionEvaluation) DriftEvaluat
 
 	promoted := false
 	promote := func() {
+		if in.ReadOnly {
+			return
+		}
 		promoted = true
 		tb.hashes[name] = hash
 		tb.descs[name] = desc
@@ -2445,7 +2453,7 @@ func scanToolsSingle(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, meth
 		// it establishes the drift baseline: otherwise an upstream could
 		// bootstrap with an empty list and introduce a new name afterwards that
 		// read as another initial inventory, bypassing new_tool_admission: withhold.
-		if cfg != nil && cfg.DetectDrift {
+		if cfg != nil && cfg.DetectDrift && !cfg.ContractDiscovery {
 			driftBaseline := cfg.DriftBaseline
 			if driftBaseline == nil {
 				driftBaseline = cfg.Baseline
@@ -2761,7 +2769,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 	// after the baseline. The expected epoch is compared in the same lock, so
 	// a reset landing after the caller's epoch check is not consumed here.
 	var establishedBeforeResponse bool
-	if cfg.DetectDrift {
+	if cfg.ContractDiscovery {
+		establishedBeforeResponse = driftBaselineForResponse.HasDriftBaseline()
+	} else if cfg.DetectDrift {
 		resp, established, epochChanged := driftBaselineForResponse.BeginInventoryResponseAtEpoch(cfg.ExpectedDriftEpoch)
 		if epochChanged {
 			return nil, nil, false, true
@@ -3019,6 +3029,7 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 			// change that only adds descriptive text so a legitimate vendor
 			// update does not re-report forever.
 			eval := driftBaseline.EvaluateDefinition(DefinitionEvaluation{
+				ReadOnly:                  cfg.ContractDiscovery,
 				Name:                      tool.Name,
 				Hash:                      hash,
 				Desc:                      tool.Description,
