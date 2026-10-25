@@ -156,8 +156,8 @@ func TestHTTPListener_ContractDiscoveryPagination(t *testing.T) {
 	filler := func(n int) string {
 		return fmt.Sprintf(`[{"name":"filler-%d","description":"Filler","inputSchema":{"type":"object"}}]`, n)
 	}
-	// Longer than any fixed page count a reviewer might reach for: discovery is
-	// bounded by progress and registry capacity, not by pages.
+	// Page size belongs to the server: a long list of small pages, an empty
+	// page, or a page repeating an earlier definition all lead on to the tool.
 	const longInventory = 150
 	tests := []struct {
 		mode  string
@@ -166,8 +166,8 @@ func TestHTTPListener_ContractDiscoveryPagination(t *testing.T) {
 	}{
 		{"second page", 2, 200},
 		{"long inventory", longInventory, 200},
-		{"empty page", 1, 503},
-		{"repeat only page", 2, 503},
+		{"empty page", 3, 200},
+		{"repeat only page", 3, 200},
 		{"cursor cycle", 2, 503},
 	}
 	for _, tt := range tests {
@@ -184,10 +184,11 @@ func TestHTTPListener_ContractDiscoveryPagination(t *testing.T) {
 					t.Errorf("page %d cursor=%q", n, request.Params.Cursor)
 				}
 				switch {
-				case tt.mode == "second page" && n == 2, tt.mode == "long inventory" && n == longInventory:
+				case tt.mode == "second page" && n == 2, tt.mode == "long inventory" && n == longInventory,
+					(tt.mode == "empty page" || tt.mode == "repeat only page") && n == 3:
 					discoveryList(w, frame, headerStateDefs(headerStateSchema, "Echo input"), "")
-				case tt.mode == "empty page":
-					discoveryList(w, frame, `[]`, "1")
+				case tt.mode == "empty page" && n == 2:
+					discoveryList(w, frame, `[]`, strconv.Itoa(n))
 				case tt.mode == "repeat only page":
 					discoveryList(w, frame, filler(1), strconv.Itoa(n))
 				case tt.mode == "cursor cycle":

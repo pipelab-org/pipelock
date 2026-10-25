@@ -116,11 +116,10 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 	// during pagination; that is one contract. A conflicting repeat, or any
 	// repeat within one page, stays a duplicate (MCP tools#tool-names).
 	//
-	// Pages are bounded by progress, not by a count: every page before the last
-	// must name a tool no earlier page did. The baseline registry already caps
-	// distinct names (maxBaselineTools), so a server cannot hold discovery open
-	// past that capacity. MCP permits a non-final page without new tools; this
-	// policy refuses that inventory rather than follow an unbounded cursor.
+	// Page size belongs to the server, and a page may carry no new tools
+	// (MCP utilities/pagination), so no page count or per-page progress is
+	// required. The response byte budget and the deadline above bound the whole
+	// walk, and a repeated cursor ends it.
 	earlier := make(map[string]json.RawMessage)
 	remaining := transport.MaxLineSize
 	for {
@@ -138,7 +137,6 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			return fmt.Errorf("invalid discovery inventory: %w", err)
 		}
 		onPage := make(map[string]json.RawMessage)
-		progressed := false
 		for _, def := range response.Result.Tools {
 			if schema, repeated := earlier[def.Name]; repeated {
 				if _, again := onPage[def.Name]; !again && sameToolSchema(schema, def.InputSchema) {
@@ -154,7 +152,6 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 		for name, schema := range onPage {
 			if _, repeated := earlier[name]; !repeated {
 				earlier[name] = schema
-				progressed = true
 			}
 		}
 		if !d.state.baseline.CanAdmitHeaderBindings(definitions) {
@@ -187,9 +184,6 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 		}
 		if cursors[*cursor] {
 			return errors.New("discovery inventory repeated a pagination cursor")
-		}
-		if !progressed {
-			return errors.New("discovery inventory page named no new tool before its cursor")
 		}
 		cursors[*cursor] = true
 	}
