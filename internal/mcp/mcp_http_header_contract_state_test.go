@@ -710,6 +710,10 @@ func TestHTTPListener_HeaderContractLegacySchemaLocations(t *testing.T) {
 				{"definitions", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"region":{"$ref":"#/definitions/R"}},"definitions":{"R":{"type":"string","x-mcp-header":"Region"}}}`},
 				{"dependencies", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","dependencies":{"region":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}}`},
 				{"additional items", `{"$schema":"http://json-schema.org/draft-07/schema#","type":"object","properties":{"rows":{"type":"array","items":[],"additionalItems":{"type":"string","x-mcp-header":"Region"}}}}`},
+				{"pointer ref into vendor keyword", `{"type":"object","properties":{"region":{"$ref":"#/x-shared/region"}},"x-shared":{"region":{"type":"string","x-mcp-header":"Region"}}}`},
+				{"anchor ref into vendor keyword", `{"type":"object","properties":{"region":{"$ref":"#R"}},"x-lib":{"r":{"$anchor":"R","type":"string","x-mcp-header":"Region"}}}`},
+				{"draft-03 extends", `{"$schema":"http://json-schema.org/draft-03/schema#","type":"object","extends":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`},
+				{"draft-03 schema-valued type", `{"$schema":"http://json-schema.org/draft-03/schema#","type":"object","properties":{"region":{"type":[{"type":"string","x-mcp-header":"Region"}]}}}`},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
 					f := newHeaderStateFixture(t, headerStateDefs(tc.schema, "Echo input"), paramContractOpts(t))

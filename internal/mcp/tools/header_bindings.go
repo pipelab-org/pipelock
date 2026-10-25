@@ -219,9 +219,10 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 		switch key {
 		// Core §8.2.4 ($defs), §10.3.2 (object applicators): these are maps
 		// of schemas. Draft-07 validation §§6.5.7 and 9 add dependencies
-		// and definitions. Entry names are not annotation keywords.
+		// and definitions; validation 2020-12 §6.5.4 dependentRequired maps
+		// names to string arrays. Entry names are not annotation keywords.
 		// https://json-schema.org/draft-07/draft-handrews-json-schema-validation-01
-		case "properties", "$defs", "patternProperties", "dependentSchemas", "definitions", "dependencies":
+		case "properties", "$defs", "patternProperties", "dependentSchemas", "definitions", "dependencies", "dependentRequired":
 			children, ok := child.(map[string]any)
 			if !ok {
 				if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
@@ -235,20 +236,20 @@ func walkHeaderSchemaAt(value any, path []string, reachable bool, depth int, see
 					return err
 				}
 			}
-		// Core §§10.2, 10.3, 11 and validation §8.5 define single subschemas.
-		// Draft-07 validation §6.4.2 also defines additionalItems as a schema.
-		// Only properties is a static MCP path; even unused definitions are checked.
-		case "items", "additionalItems", "contains", "additionalProperties", "unevaluatedProperties", "propertyNames", "unevaluatedItems", "not", "if", "then", "else", "contentSchema":
+		// Validation §§6.1.2, 6.1.3, 9.2, 9.5: enum, const, default and
+		// examples contain instance data, never schemas.
+		case "enum", "const", "default", "examples", "x-mcp-header":
+		default:
+			// MCP Streamable HTTP "Schema Extension": an annotation anywhere
+			// other than a properties-only chain invalidates the tool. Every
+			// other keyword value is searched as an unreachable schema: core
+			// §§10, 11 and validation §8.5 applicators, draft-07 additionalItems,
+			// older or vendor vocabularies, and unknown-keyword locations that
+			// core §9.4.2 leaves to implementations as $ref targets. Only
+			// properties is a static MCP path; even unused definitions are checked.
 			if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
 				return err
 			}
-		case "allOf", "anyOf", "oneOf", "prefixItems":
-			if err := walkHeaderSchemaAt(child, path, false, depth+1, seen, out); err != nil {
-				return err
-			}
-			// Validation §§6.1.2, 6.1.3, 9.2, 9.5: enum, const, default,
-			// examples contain instance data. Core §6.5 treats unknown keywords
-			// as annotations. Neither supplies additional subschema positions.
 		}
 	}
 	return nil

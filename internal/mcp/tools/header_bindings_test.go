@@ -337,6 +337,29 @@ func TestToolBaseline_HeaderContractReservationsCountUniqueNames(t *testing.T) {
 	defer second.Release()
 }
 
+// Searching unknown keywords must not refuse any unannotated value the
+// inspectability gate admits.
+func TestExtractHeaderBindings_DeepestAdmittedVendorValue(t *testing.T) {
+	deepest := ""
+	for levels := 1; ; levels++ {
+		value := `"leaf"`
+		for range levels {
+			value = `{"next":` + value + `}`
+		}
+		schema := json.RawMessage(`{"type":"object","x-vendor":` + value + `}`)
+		if uninspectableToolDefinition([]ToolDef{{Name: "echo", InputSchema: schema}}) != "" {
+			break
+		}
+		deepest = string(schema)
+	}
+	if deepest == "" {
+		t.Fatal("gate admitted no vendor value")
+	}
+	if bindings, err := ExtractHeaderBindings(json.RawMessage(deepest)); err != nil || len(bindings) != 0 {
+		t.Fatalf("deepest admitted unannotated vendor value: bindings=%v err=%v", bindings, err)
+	}
+}
+
 // Draft-07 schemas remain supported by MCP. Its schema-bearing keywords must
 // not hide an annotation that is invalid outside a properties-only path.
 func TestExtractHeaderBindings_LegacySchemaLocations(t *testing.T) {
@@ -351,6 +374,17 @@ func TestExtractHeaderBindings_LegacySchemaLocations(t *testing.T) {
 		{"property dependencies", `"dependencies":{"region":["x-mcp-header"]}`, false},
 		{"unannotated additional items", `"properties":{"rows":{"type":"array","items":[],"additionalItems":{"type":"string"}}}`, false},
 		{"literal instance data", `"default":{"definitions":{"R":{"type":"string","x-mcp-header":"Region"}},"dependencies":{"region":{"x-mcp-header":"Region"}}}`, false},
+		// MCP's "anywhere else" rule is not limited to known applicators. A
+		// resolver follows $ref into an unknown keyword (core §9.4.2 leaves it
+		// implementation-defined), and older or vendor vocabularies add their
+		// own schema keywords.
+		{"pointer ref into vendor keyword", `"properties":{"region":{"$ref":"#/x-shared/region"}},"x-shared":{"region":{"type":"string","x-mcp-header":"Region"}}`, true},
+		{"anchor ref into vendor keyword", `"properties":{"region":{"$ref":"#R"}},"x-lib":{"r":{"$anchor":"R","type":"string","x-mcp-header":"Region"}}`, true},
+		{"draft-03 extends", `"extends":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}`, true},
+		{"draft-03 schema-valued type", `"properties":{"region":{"type":[{"type":"string","x-mcp-header":"Region"}]}}`, true},
+		{"unannotated vendor schema", `"x-shared":{"region":{"type":"string"}},"$vocabulary":{"https://json-schema.org/draft/2020-12/vocab/core":true}`, false},
+		{"dependent required names", `"properties":{"x-mcp-header":{"type":"string"}},"dependentRequired":{"x-mcp-header":["region"]}`, false},
+		{"enum and examples instance data", `"examples":[{"x-mcp-header":"Region"}],"properties":{"r":{"enum":[{"x-mcp-header":"Region"}]}}`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema := json.RawMessage(`{"$schema":"http://json-schema.org/draft-07/schema#","type":"object",` + tc.fragment + `}`)
