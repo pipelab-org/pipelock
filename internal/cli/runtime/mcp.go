@@ -490,6 +490,21 @@ func recoverDeferredActions(
 	if err != nil {
 		return fmt.Errorf("reading deferred action journal: %w", err)
 	}
+	// Validate every saved selection before closing any hold. A restart must
+	// not assign an unresolved action to a different receipt shard.
+	if receiptGroup != nil && receiptGroup.Shards != nil {
+		for _, held := range pending {
+			if !held.ShardSelected {
+				return fmt.Errorf("deferred restart recovery %q has no recorded receipt shard; preserve journal %q and its receipt evidence for recovery: %w", held.DeferID, journalPath, mcp.ErrReceiptRequired)
+			}
+			if held.ShardIndex < 0 {
+				return fmt.Errorf("deferred restart recovery %q has invalid saved receipt shard %d; preserve journal %q and its receipt evidence for recovery: %w", held.DeferID, held.ShardIndex, journalPath, mcp.ErrReceiptRequired)
+			}
+			if held.ShardIndex >= receiptGroup.Shards.ShardCount() {
+				return fmt.Errorf("deferred restart recovery %q needs saved receipt shard %d, unavailable in the configured group of %d; restore the original receipt shard configuration and preserve journal %q: %w", held.DeferID, held.ShardIndex, receiptGroup.Shards.ShardCount(), journalPath, mcp.ErrReceiptRequired)
+			}
+		}
+	}
 	sort.Slice(pending, func(i, j int) bool {
 		if pending[i].CascadeDepth != pending[j].CascadeDepth {
 			return pending[i].CascadeDepth < pending[j].CascadeDepth
@@ -508,6 +523,8 @@ func recoverDeferredActions(
 		if err := mcp.EmitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 			DeferID:          held.DeferID,
 			ParentActionID:   held.ActionID,
+			ShardIndex:       held.ShardIndex,
+			ShardSelected:    held.ShardSelected,
 			FinalDecision:    config.ActionBlock,
 			ResolutionSource: deferred.SourceRestartRecovery,
 			Authority:        held.Authority,

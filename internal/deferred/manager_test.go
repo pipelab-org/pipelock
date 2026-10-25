@@ -1409,6 +1409,38 @@ func TestRecordRestartRecoveryClearsPendingJournal(t *testing.T) {
 }
 
 func TestPendingJournalRoundTripsCascadeFieldsAndPreUpgradeEntries(t *testing.T) {
+	t.Run("receipt shard survives held and release pending rows", func(t *testing.T) {
+		for _, index := range []int{0, 1} {
+			t.Run(fmt.Sprintf("shard %d", index), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
+				m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, JournalPath: path})
+				held := HeldAction{
+					DeferID: "held", ActionID: "action", Surface: SurfaceMCPStdio, SizeBytes: 1,
+					ShardIndex: index, ShardSelected: true,
+					Authority: AuthoritySnapshot{SessionID: "session"}, Resolve: func(Resolution) {},
+				}
+				if err := m.Hold(held); err != nil {
+					t.Fatal(err)
+				}
+				check := func() {
+					t.Helper()
+					pending, err := PendingJournal(path)
+					if err != nil || len(pending) != 1 {
+						t.Fatalf("pending = %+v, err = %v", pending, err)
+					}
+					if pending[0].ShardIndex != index || !pending[0].ShardSelected {
+						t.Fatalf("recovered shard = %d selected=%t", pending[0].ShardIndex, pending[0].ShardSelected)
+					}
+				}
+				check()
+				if err := m.appendJournal(releasePendingEntry(held, SourceOperator)); err != nil {
+					t.Fatal(err)
+				}
+				check()
+			})
+		}
+	})
+
 	t.Run("roundtrip cascade fields", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "deferred-actions.jsonl")
 		m := NewManager(Config{Enabled: true, Timeout: time.Hour, MaxPending: 4, MaxPendingPerSession: 4, MaxCascadeDepth: 4, JournalPath: path})
