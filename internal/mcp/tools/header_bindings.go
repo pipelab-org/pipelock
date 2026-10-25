@@ -163,6 +163,9 @@ func ExtractHeaderBindings(schema json.RawMessage) ([]HeaderBinding, error) {
 	if err := walkHeaderSchema(obj, nil, seen, &bindings); err != nil {
 		return nil, err
 	}
+	if err := checkHeaderSchemaReferences(obj); err != nil {
+		return nil, err
+	}
 	return bindings, nil
 }
 

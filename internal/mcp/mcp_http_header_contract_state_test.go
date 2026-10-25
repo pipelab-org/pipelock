@@ -713,6 +713,10 @@ func TestHTTPListener_HeaderContractLegacySchemaLocations(t *testing.T) {
 				{"pointer ref into vendor keyword", `{"type":"object","properties":{"region":{"$ref":"#/x-shared/region"}},"x-shared":{"region":{"type":"string","x-mcp-header":"Region"}}}`},
 				{"anchor ref into vendor keyword", `{"type":"object","properties":{"region":{"$ref":"#R"}},"x-lib":{"r":{"$anchor":"R","type":"string","x-mcp-header":"Region"}}}`},
 				{"draft-03 extends", `{"$schema":"http://json-schema.org/draft-03/schema#","type":"object","extends":{"properties":{"region":{"type":"string","x-mcp-header":"Region"}}}}`},
+				{"referenced default data", `{"type":"object","properties":{"region":{"$ref":"#/default"}},"default":{"type":"string","x-mcp-header":"Region"}}`},
+				{"referenced const data", `{"type":"object","properties":{"region":{"$ref":"#/const"}},"const":{"type":"string","x-mcp-header":"Region"}}`},
+				{"referenced enum data", `{"type":"object","properties":{"region":{"$ref":"#/enum/0"}},"enum":[{"type":"string","x-mcp-header":"Region"}]}`},
+				{"referenced examples data", `{"type":"object","properties":{"region":{"$ref":"#/examples/0"}},"examples":[{"type":"string","x-mcp-header":"Region"}]}`},
 				{"draft-03 schema-valued type", `{"$schema":"http://json-schema.org/draft-03/schema#","type":"object","properties":{"region":{"type":[{"type":"string","x-mcp-header":"Region"}]}}}`},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
