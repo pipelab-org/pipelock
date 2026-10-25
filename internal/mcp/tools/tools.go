@@ -2387,7 +2387,15 @@ func ScanToolsForMethod(line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, m
 }
 
 // ScanToolsForMethodContext preserves scan attribution for wording observations.
+//
+// The context carries attribution only. Cancellation is detached so a canceled
+// request cannot turn an unfinished description scan into a tool finding; the
+// verdict matches a scan made with context.Background.
 func ScanToolsForMethodContext(ctx context.Context, line []byte, sc *scanner.Scanner, cfg *ToolScanConfig, method string) ToolScanResult {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = context.WithoutCancel(ctx)
 	if cfg == nil {
 		return ToolScanResult{IsToolsList: false, Clean: true}
 	}
