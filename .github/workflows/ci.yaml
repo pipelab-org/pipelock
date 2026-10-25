@@ -256,7 +256,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -547,7 +547,7 @@ jobs:
       # the plan limit, job counts, or ordinary PR workload (~52 jobs) changes.
       max-parallel: 10
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -622,7 +622,7 @@ jobs:
       fail-fast: false
       max-parallel: 6
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -719,7 +719,7 @@ jobs:
       # the plan limit, job counts, or ordinary PR workload (~52 jobs) changes.
       max-parallel: 10
       matrix:
-        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
+        shard: ['proxy-0', 'proxy-1', 'proxy-2', 'proxy-3', 'proxy-4', 'proxy-5', 'scanner-0', 'scanner-1', 'scanner-2', 'scanner-3', 'mcp-0', 'mcp-1', 'mcp-2', 'mcp-3', 'mcp-4', 'mcp-5', 'runtime-0', 'runtime-1', 'rest-0', 'rest-1', 'rest-2', 'rest-3']
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

@@ -60,7 +60,7 @@ HEAVY_TREES = {
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 5,
+    "proxy": 6,
     "scanner": 4,
     "mcp": 6,
     "runtime": 2,
