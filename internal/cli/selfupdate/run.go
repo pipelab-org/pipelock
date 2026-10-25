@@ -5,6 +5,7 @@ package selfupdate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -178,6 +179,11 @@ func (o *Options) Run(ctx context.Context) (*Status, error) {
 	}
 	verification, err := releasetrust.VerifyManifest(manifestData, manifestSig, o.ReleaseKeyringHex)
 	if err != nil {
+		if errors.Is(err, releasetrust.ErrNoReleaseKey) {
+			err = fmt.Errorf("%w: this binary has no embedded release verification keys; "+
+				"install an official release, or update manually after verifying the release archive "+
+				"(https://github.com/pipelab-org/pipelock#quick-start)", err)
+		}
 		return st, fmt.Errorf("%w: native release manifest: %w", ErrSignatureVerify, err)
 	}
 	if verification.Manifest.Tag != rel.TagName {
