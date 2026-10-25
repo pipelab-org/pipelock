@@ -6,12 +6,15 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -85,6 +88,83 @@ func TestPromptInjectionDLPObservationReceiptPolicy(t *testing.T) {
 				t.Fatalf("DLP observation policy = %q", got)
 			}
 		})
+	}
+}
+
+// HTTP surfaces attach destination metadata without the wording policy. The
+// DLP warning receipt must still name the policy of the scanner that matched,
+// while a snapshot already bound by the request keeps its own policy.
+func TestPromptInjectionDLPWarnReceiptScannerPolicy(t *testing.T) {
+	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
+		for _, bound := range []string{"", config.ActionWarn} {
+			t.Run(mode+"/bound="+bound, func(t *testing.T) {
+				cfg := config.Defaults()
+				cfg.Internal = nil
+				cfg.DLP.ScanEnv = false
+				cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+					Name: "warn-url", Regex: `warnurl-[A-Za-z0-9]{10,}`, Severity: config.SeverityMedium, Action: config.ActionWarn,
+				})
+				enabled := mode != config.ActionAllow
+				cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Enabled: &enabled}
+				if mode == config.ActionWarn {
+					cfg.PromptInjectionDetection.Action = config.ActionWarn
+				}
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+
+				_, priv, err := ed25519.GenerateKey(nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				dir := t.TempDir()
+				rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000}, nil, priv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: "cfg-hash", Actor: "agent-1"})
+				sc.SetDLPWarnHook(func(ctx context.Context, patternName, severity string) {
+					emitDLPWarn(audit.NewNop(), nil, emitter, ctx, patternName, severity)
+				})
+
+				target := "https://api.vendor.example/?a=warnurl-AAAAAAAAAA"
+				ctx := scanner.WithDLPWarnContext(context.Background(), scanner.DLPWarnContext{
+					Method: "GET", URL: target, RequestID: "req-1", Transport: "fetch",
+					PolicyHash: runtimeTestPolicyHash, PromptInjectionMode: bound,
+				})
+				if result := sc.Scan(ctx, target); len(result.WarnMatches) == 0 {
+					t.Fatalf("DLP warning did not fire: %+v", result)
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				entries, err := recorder.QuerySession(dir, "proxy", &recorder.QueryFilter{Type: "action_receipt"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries.Entries) != 1 {
+					t.Fatalf("receipt count = %d", len(entries.Entries))
+				}
+				raw, err := json.Marshal(entries.Entries[0].Detail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				rcpt, err := receipt.Unmarshal(raw)
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := mode
+				if bound != "" {
+					want = bound
+				}
+				pattern := rcpt.ActionRecord.Pattern
+				if want == config.ActionBlock && pattern != "warn-url" {
+					t.Fatalf("default policy changed receipt pattern: %q", pattern)
+				}
+				if strings.Contains(pattern, "prompt_injection_detection") != (want != config.ActionBlock) {
+					t.Fatalf("DLP warning receipt policy = %q, want mode %s", pattern, want)
+				}
+			})
+		}
 	}
 }
 
