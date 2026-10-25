@@ -31,10 +31,13 @@ func TestHooks_LogIncompletePairCheck(t *testing.T) {
 	tests := []struct {
 		name    string
 		command string
-		logged  bool
+		rules   string // rules named in the stderr line; "" means no line
+		deny    bool
 	}{
-		{"delete then extract", "rm old.tar && tar -xf new.tar", true},
-		{"list files", "ls -la", false},
+		{"words piped to chmod", "echo -R 777 /srv | xargs chmod", "Recursive Permission Change", false},
+		// Matched before commands were split, so it is denied in full.
+		{"delete then extract", "rm old.tar && tar -xf new.tar", "", true},
+		{"list files", "ls -la", "", false},
 	}
 	for _, h := range hooks {
 		for _, tt := range tests {
@@ -48,12 +51,13 @@ func TestHooks_LogIncompletePairCheck(t *testing.T) {
 				if err := cmd.Execute(); err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				line := "pipelock: incomplete_pair_check (action=warn; rules=Destructive File Delete)"
-				if got := strings.Contains(errOut.String(), line); got != tt.logged {
-					t.Fatalf("stderr %q: logged=%v, want %v", errOut.String(), got, tt.logged)
+				logged := strings.Contains(errOut.String(), "incomplete_pair_check")
+				line := "pipelock: incomplete_pair_check (action=warn; rules=" + tt.rules + ")"
+				if logged != (tt.rules != "") || (logged && !strings.Contains(errOut.String(), line)) {
+					t.Fatalf("stderr %q, want line for rules %q", errOut.String(), tt.rules)
 				}
-				if strings.Contains(out.String(), `"deny"`) {
-					t.Fatalf("warn verdict denied: %s", out.String())
+				if got := strings.Contains(out.String(), `"deny"`); got != tt.deny {
+					t.Fatalf("output %s: deny=%v, want %v", out.String(), got, tt.deny)
 				}
 			})
 		}
