@@ -51,6 +51,7 @@ func TestWithScanRouteAttributesResponseScan(t *testing.T) {
 				"transport":  transport,
 				"mcp_server": server,
 				"agent":      tt.wantAgent,
+				"url":        "https://api.vendor.example/[redacted]",
 			} {
 				if got, _ := entry[key].(string); got != want {
 					t.Errorf("%s = %q, want %q", key, got, want)
