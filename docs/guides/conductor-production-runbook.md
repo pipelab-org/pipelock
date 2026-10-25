@@ -368,14 +368,24 @@ flight_recorder:
   signing_key_path: /etc/pipelock/recorder.key
 ```
 
+On ordinary server shutdown, the follower closes its recorder and audit
+producer, then gives the pending batches up to five seconds for a final delivery
+attempt before it closes the durable audit queue. A batch the Conductor refuses
+moves to the queue's dead-letter directory and the drain continues with the next
+batch. A retryable failure stops the drain and leaves that batch pending. Either
+outcome logs `final conductor audit delivery incomplete`. Fleet entitlement revocation cancels
+delivery immediately. The drain does not make a batch admissible after an
+outage: the Conductor still refuses an audit envelope outside its 60-second
+freshness window, so a batch queued before a long outage can land in dead
+letters. Inspect the `pending/` and `dead/` directories under
+`durable_audit_queue_dir` before deleting any record.
+
 A follower **must produce signed evidence** to participate: config validation
 rejects `conductor.enabled: true` unless the flight recorder is enabled with
 signing checkpoints and a `signing_key_path`. The YAML above is a manual-mount
 example; do not copy its paths into Helm-generated configuration. On Kubernetes,
 use
 [`values-enterprise-follower.yaml`](../../charts/pipelock/examples/values-enterprise-follower.yaml):
-
-On ordinary server shutdown, the follower closes its recorder and audit producer, then gives pending batches up to five seconds for a final delivery attempt before closing the queue. The drain stops at the first delivery error and reports incomplete delivery; retryable batches remain pending and terminal refusals remain in dead letters. Fleet entitlement revocation cancels delivery immediately. This shutdown drain doesn't guarantee admission after an outage: the Conductor still rejects audit envelopes outside its 60-second freshness window. Preserve failed records for inspection.
 
 Existing followers can upgrade with no queue-keyring change: when
 `durable_audit_queue_keyring` is unset, the follower keeps using the

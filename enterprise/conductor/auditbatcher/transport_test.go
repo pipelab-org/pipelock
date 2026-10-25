@@ -25,13 +25,17 @@ import (
 
 func TestTransportDrain(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-		want   Stats
+		name     string
+		statuses []int // one per request, in order
+		wantErr  bool
+		want     Stats
 	}{
-		{name: "accepted", status: http.StatusAccepted},
-		{name: "retry", status: http.StatusServiceUnavailable, want: Stats{Pending: 2}},
-		{name: "refused", status: http.StatusUnprocessableEntity, want: Stats{Pending: 1, Dead: 1}},
+		{name: "accepted", statuses: []int{http.StatusAccepted, http.StatusAccepted}},
+		{name: "retry", statuses: []int{http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 2}},
+		{name: "all refused", statuses: []int{http.StatusUnprocessableEntity, http.StatusUnprocessableEntity}, wantErr: true, want: Stats{Dead: 2}},
+		{name: "refused head then accepted", statuses: []int{http.StatusUnprocessableEntity, http.StatusAccepted}, wantErr: true, want: Stats{Dead: 1}},
+		{name: "refused head then retry", statuses: []int{http.StatusUnprocessableEntity, http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 1, Dead: 1}},
+		{name: "accepted then retry", statuses: []int{http.StatusAccepted, http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, priv, err := ed25519.GenerateKey(nil)
@@ -46,25 +50,19 @@ func TestTransportDrain(t *testing.T) {
 			}
 			var requests atomic.Int32
 			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				requests.Add(1)
-				w.WriteHeader(tc.status)
+				w.WriteHeader(tc.statuses[requests.Add(1)-1])
 			}))
 			defer srv.Close()
 			tr, err := NewTransport(TransportConfig{Queue: q, BaseURL: srv.URL, Client: srv.Client()})
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = tr.Drain(t.Context())
-			if (err == nil) != (tc.status == http.StatusAccepted) {
-				t.Errorf("Drain error=%v, HTTP status=%d", err, tc.status)
+			if err := tr.Drain(t.Context()); (err != nil) != tc.wantErr {
+				t.Errorf("Drain error=%v, want error=%v", err, tc.wantErr)
 			}
 			assertStats(t, q, tc.want)
-			wantRequests := int32(1)
-			if tc.status == http.StatusAccepted {
-				wantRequests = 2
-			}
-			if requests.Load() != wantRequests {
-				t.Errorf("drain attempts=%d, want %d", requests.Load(), wantRequests)
+			if got := int(requests.Load()); got != len(tc.statuses) {
+				t.Errorf("drain attempts=%d, want %d", got, len(tc.statuses))
 			}
 		})
 	}

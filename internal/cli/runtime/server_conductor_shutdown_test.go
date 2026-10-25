@@ -9,6 +9,7 @@ package runtime
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -61,9 +63,23 @@ func TestServerShutdownDrainsFinalAuditBatch(t *testing.T) {
 	if err := r.Record(recorder.Entry{SessionID: "test-session", Type: "test", Summary: "final span"}); err != nil {
 		t.Fatal(err)
 	}
-	var uploads atomic.Int32
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// Apply the Conductor's envelope admission (structure, payload hash and the
+	// 60-second freshness window) so an acceptance means the shutdown upload would
+	// be admitted in production, not only that it reached the endpoint. Signature
+	// verification needs the fleet roster and is out of scope here.
+	var uploads, admitted atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		uploads.Add(1)
+		var upload struct {
+			Envelope conductor.AuditBatchEnvelope `json:"envelope"`
+			Payload  []byte                       `json:"payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&upload); err != nil ||
+			upload.Envelope.ValidateForConductorWithPayload(time.Now(), conductor.DefaultAuditMaxSkew, upload.Payload) != nil {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		admitted.Add(1)
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer upstream.Close()
@@ -94,8 +110,8 @@ func TestServerShutdownDrainsFinalAuditBatch(t *testing.T) {
 	case <-time.After(2 * serverShutdownTimeout):
 		t.Fatal("Start did not finish shutdown")
 	}
-	if got := uploads.Load(); got != 1 {
-		t.Errorf("final audit uploads = %d, want 1", got)
+	if got, ok := uploads.Load(), admitted.Load(); got != 1 || ok != 1 {
+		t.Errorf("final audit uploads = %d, admitted = %d, want 1 and 1", got, ok)
 	}
 	reopened, err := auditbatcher.Open(queueConfig)
 	if err != nil {
