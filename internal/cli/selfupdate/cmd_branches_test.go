@@ -57,17 +57,27 @@ func TestRunCommand_DefaultAlreadyCurrent(t *testing.T) {
 	}
 }
 
-func TestRunCommand_CheckError(t *testing.T) {
-	for _, jsonOutput := range []bool{false, true} {
-		t.Run(fmt.Sprintf("json=%t", jsonOutput), func(t *testing.T) {
+func TestRunCommand_FetchError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		checkOnly bool
+		json      bool
+	}{
+		{name: "check_text", checkOnly: true},
+		{name: "check_json", checkOnly: true, json: true},
+		{name: "update_text"},
+		{name: "update_json", json: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			srv := newReleaseFetchErrorServer(t)
 			opts := &Options{
 				APIBase:        srv.URL,
 				HTTPClient:     srv.Client(),
 				TargetPath:     writeTargetBinary(t, "x"),
 				CurrentVersion: testCurrent,
-				CheckOnly:      true,
-				JSON:           jsonOutput,
+				CheckOnly:      tc.checkOnly,
+				AssumeYes:      true,
+				JSON:           tc.json,
 			}
 			out := &bytes.Buffer{}
 			cmd := Cmd()
@@ -76,7 +86,7 @@ func TestRunCommand_CheckError(t *testing.T) {
 			err := runCommand(context.Background(), cmd, opts, false)
 			wantErr := fmt.Sprintf("fetching release metadata: HTTP GET %s/repos/%s/%s/releases/latest: status 503", srv.URL, repoOwner, repoName)
 			if err == nil || err.Error() != wantErr {
-				t.Fatalf("expected wrapped check error %q, got %v", wantErr, err)
+				t.Fatalf("expected wrapped fetch error %q, got %v", wantErr, err)
 			}
 			if out.Len() != 0 {
 				t.Fatalf("unexpected output on fetch failure: %q", out.String())
