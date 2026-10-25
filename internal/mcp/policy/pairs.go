@@ -1,0 +1,810 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package policy
+
+import (
+	"path"
+	"regexp"
+	"regexp/syntax"
+	"slices"
+	"strings"
+	"sync"
+	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
+)
+
+// maxPairwiseTokens caps token count for exhaustive O(n²) pairwise matching.
+// Kept at 64 to bound worst-case regex work (~4K pairs × rules).
+// Higher values create DoS risk (256 tokens = ~2M regex matches).
+// It matches maxPairwiseSplitFields in the MCP input scanner.
+const maxPairwiseTokens = 64
+
+// maxPairAnchorLen is the longest token, other than an option, that anchors
+// pairs for a pattern with no required literal text. Command words and
+// values such as 777 are short; the operands that make a command long are
+// mostly paths and longer values.
+const maxPairAnchorLen = 24
+
+// maxPairChecks bounds the pairs one pattern checks in an argument list longer
+// than maxPairwiseTokens. It equals the exhaustive pair count at
+// maxPairwiseTokens, so a long list never costs more pair checks than the
+// longest list checked exhaustively.
+const maxPairChecks = maxPairwiseTokens * (maxPairwiseTokens - 1)
+
+// argView is one view of the argument tokens. When the arguments are one
+// shell command string that splits cleanly (see commandSegments), segments
+// holds the tokens of each command in it, and pairs are formed only within a
+// command. Otherwise segments is nil and the whole list is one command.
+type argView struct {
+	tokens   []string
+	joined   string
+	segments [][]string
+}
+
+// literalArgTokens returns the submitted strings unmodified, each as one
+// token, and their space-joined form.
+func literalArgTokens(args []string) ([]string, string) {
+	return args, strings.Join(args, " ")
+}
+
+// buildArgViews returns the primary, alt, baseline, and literal views of args
+// (see CheckToolCallWithArgs).
+func buildArgViews(args []string) [4]argView {
+	segs := commandSegments(args)
+	norms := []struct {
+		fn  func(string) string
+		pre *strings.Replacer
+	}{
+		{normalize.ForMatching, policyPreNormalize},
+		{normalize.ForPolicy, policyPreNormalize},
+		{normalize.ForMatching, nil},
+	}
+	var views [4]argView
+	for i, n := range norms {
+		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
+		views[i] = argView{tokens: tokens, joined: joined}
+		switch {
+		case len(segs) == 1:
+			views[i].segments = [][]string{tokens}
+		case len(segs) > 1:
+			views[i].segments = make([][]string, 0, len(segs))
+			for _, seg := range segs {
+				t, _ := normalizeArgTokens([]string{seg}, n.fn, n.pre)
+				views[i].segments = append(views[i].segments, t)
+			}
+		}
+	}
+	tokens, joined := literalArgTokens(args)
+	views[3] = argView{tokens: tokens, joined: joined}
+	return views
+}
+
+// commandSegments splits a single shell command string into the parts that
+// pairs are formed within. It cuts at &&, ||, ;, | and newlines outside
+// quotes, then joins back what one command can hand to another:
+//   - a whole pipeline (a | b | c) stays one part, as any stage can pass
+//     its input on to a command that runs it;
+//   - a part that writes a file (> f, >> f, tee f) is joined with each later
+//     part that names that file (< f, xargs -a f, cat f, --opt=f).
+//
+// Joined parts keep their order. A match that still spans parts is not
+// dropped: matchArgView reports it as an incomplete check.
+//
+// It returns nil, meaning the arguments are matched as one list, when there
+// is not exactly one string, when the string uses expansion or escapes
+// ($, backticks, backslashes, parentheses, braces) that normalization may
+// rewrite, or when a quote is left open. Separate argument values are not
+// split, because a tool may run them without a shell.
+func commandSegments(args []string) []string {
+	if len(args) != 1 || strings.ContainsAny(args[0], "$`\\(){}") {
+		return nil
+	}
+	s := args[0]
+	type piece struct {
+		start, end int
+		afterPipe  bool
+	}
+	var pieces []piece
+	start, afterPipe := 0, false
+	cut := func(end, width int, pipe bool) {
+		pieces = append(pieces, piece{start, end, afterPipe})
+		start, afterPipe = end+width, pipe
+	}
+	var quote byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if quote != 0 {
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		next := byte(0)
+		if i+1 < len(s) {
+			next = s[i+1]
+		}
+		switch {
+		case c == '\'' || c == '"':
+			quote = c
+		case c == ';' || c == '\n':
+			cut(i, 1, false)
+		case c == '&' && next == '&':
+			cut(i, 2, false)
+			i++
+		case c == '|' && next == '|':
+			cut(i, 2, false)
+			i++
+		case c == '|' && next == '&':
+			cut(i, 2, true)
+			i++
+		case c == '|':
+			cut(i, 1, true)
+		}
+	}
+	if quote != 0 {
+		return nil
+	}
+	pieces = append(pieces, piece{start, len(s), afterPipe})
+
+	// Whole pipelines.
+	type span struct{ start, end int }
+	var cmds []span
+	for _, p := range pieces {
+		if p.afterPipe && len(cmds) > 0 {
+			cmds[len(cmds)-1].end = p.end
+			continue
+		}
+		if strings.TrimSpace(s[p.start:p.end]) == "" {
+			continue
+		}
+		cmds = append(cmds, span{p.start, p.end})
+	}
+
+	// File hand-offs.
+	group := make([]int, len(cmds))
+	find := func(i int) int {
+		for group[i] != i {
+			group[i] = group[group[i]]
+			i = group[i]
+		}
+		return i
+	}
+	union := func(a, b int) {
+		ra, rb := find(a), find(b)
+		if ra > rb {
+			ra, rb = rb, ra
+		}
+		group[rb] = ra
+	}
+	writer := make(map[string]int)
+	for i, c := range cmds {
+		group[i] = i
+		words := shellWords(s[c.start:c.end])
+		for _, ref := range fileRefs(words) {
+			if w, ok := writer[ref]; ok {
+				union(w, i)
+			}
+		}
+		for _, f := range writtenFiles(words) {
+			if w, ok := writer[f]; ok {
+				union(w, i)
+			} else {
+				writer[f] = i
+			}
+		}
+	}
+	var segs []string
+	at := make(map[int]int)
+	for i, c := range cmds {
+		r := find(i)
+		if k, ok := at[r]; ok {
+			segs[k] += " ; " + s[c.start:c.end]
+			continue
+		}
+		at[r] = len(segs)
+		segs = append(segs, s[c.start:c.end])
+	}
+	return segs
+}
+
+// shellWords splits a command into words with quote marks removed, so
+// 2>>'/tmp/a' and /tmp/a name the same file. It is only used to find file
+// names shared between commands.
+func shellWords(command string) []string {
+	words := strings.Fields(command)
+	for i, w := range words {
+		words[i] = quoteMarks.Replace(w)
+	}
+	return words
+}
+
+var quoteMarks = strings.NewReplacer(`'`, "", `"`, "")
+
+// outRedirectRe matches an output redirection, with the file name attached
+// in group 1 when there is one: >f, >>f, 2>f, &>f, >|f.
+var outRedirectRe = regexp.MustCompile(`^(?:[0-9]+|&)?(?:>>?|>\|)&?(.*)$`)
+
+// writtenFiles returns the files a command writes with an output redirection
+// or with tee.
+func writtenFiles(words []string) []string {
+	var out []string
+	tee := false
+	for i, w := range words {
+		if m := outRedirectRe.FindStringSubmatch(w); m != nil {
+			switch {
+			case m[1] != "":
+				out = append(out, m[1])
+			case i+1 < len(words):
+				out = append(out, words[i+1])
+			}
+			continue
+		}
+		switch {
+		case w == "|" || w == "|&":
+			tee = false
+		case path.Base(w) == "tee":
+			tee = true
+		case tee && !strings.HasPrefix(w, "-"):
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// fileRefs returns the names a command may read a file by: each word, a word
+// after an input redirection (<f), and the value of an --option=f.
+func fileRefs(words []string) []string {
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		out = append(out, w)
+		if r := strings.TrimLeft(w, "0123456789"); strings.HasPrefix(r, "<") {
+			out = append(out, strings.TrimLeft(r, "<"))
+		}
+		if _, v, ok := strings.Cut(w, "="); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// matchArgViews reports whether pat matches any view. When none matches,
+// incomplete reports whether a view's check could not rule a match out.
+func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
+	for _, v := range views {
+		m, inc := matchArgView(pat, v)
+		if m {
+			return true, false
+		}
+		incomplete = incomplete || inc
+	}
+	return false, incomplete
+}
+
+// matchArgPattern checks if a regex pattern matches against any view of the
+// argument tokens, treating them as one command (see matchArgView).
+func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
+	matched, _ := matchArgView(pat, argView{tokens: tokens, joined: joined})
+	return matched
+}
+
+// matchArgView checks pat against one view. It uses these strategies:
+//  1. Individual tokens (catches self-contained patterns like file paths)
+//  2. Each command's tokens joined (fast path for ordered arrays)
+//  3. Each command joined without redirections such as 2>&1, and with
+//     quoted separators blanked, so they do not break an ordered pattern
+//  4. Pairwise token combinations within a command (catches map ordering,
+//     where command and flags end up in separate tokens with
+//     non-deterministic iteration order)
+//
+// Up to maxPairwiseTokens tokens, strategy 4 checks every ordered pair. Above
+// it, a bounded scan runs (see matchBoundedPairs).
+//
+// When the view is split into commands and none matches, the whole list is
+// checked once more as one command. A match there spans commands: it is not
+// reported as a match, but as incomplete, so splitting never turns a match
+// into a clean result. incomplete also reports a bounded scan that stopped
+// before it covered every pair it needed.
+func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
+	for _, t := range v.tokens {
+		if pat.MatchString(t) {
+			return true, false
+		}
+	}
+	exhaustive := len(v.tokens) <= maxPairwiseTokens
+	if v.segments == nil {
+		return matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat})
+	}
+	b := &pairBudget{pat: pat}
+	for _, seg := range v.segments {
+		m, inc := matchCommand(pat, seg, strings.Join(seg, " "), true, exhaustive, b)
+		if m {
+			return true, false
+		}
+		incomplete = incomplete || inc
+	}
+	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
+		return false, true
+	}
+	return false, incomplete
+}
+
+// matchCommand checks pat against the tokens of one command: joined, joined
+// without redirections, then in pairs, every pair when exhaustive is set and
+// otherwise within b (see matchBoundedPairs).
+func matchCommand(pat *regexp.Regexp, tokens []string, joined string, blank, exhaustive bool, b *pairBudget) (matched, incomplete bool) {
+	if pat.MatchString(joined) {
+		return true, false
+	}
+	if cleaned, changed := cleanCommandTokens(tokens, blank); changed && pat.MatchString(strings.Join(cleaned, " ")) {
+		return true, false
+	}
+	if exhaustive {
+		for i, a := range tokens {
+			for j, c := range tokens {
+				if i != j && pat.MatchString(a+" "+c) {
+					return true, false
+				}
+			}
+		}
+		return false, false
+	}
+	found, complete := boundedPairs(b, tokens)
+	return found, !found && !complete
+}
+
+// redirectTokenRe matches a shell redirection token: 2>&1, &>/dev/null,
+// >>out.log, <in, or a bare > or 2>.
+var redirectTokenRe = regexp.MustCompile(`^(?:[0-9]+|&)?(?:>>?|<|>\|)`)
+
+// cleanCommandTokens drops redirection tokens from one command. When blank is
+// set, the command came from commandSegments, so any ; | or & left in a token
+// was quoted, and it is replaced with _ so an ordered pattern can read past
+// it. changed reports whether anything was dropped or replaced.
+func cleanCommandTokens(tokens []string, blank bool) (cleaned []string, changed bool) {
+	cleaned = make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if redirectTokenRe.MatchString(t) {
+			changed = true
+			continue
+		}
+		if blank && strings.ContainsAny(t, ";|&") {
+			t = strings.Map(func(r rune) rune {
+				if r == ';' || r == '|' || r == '&' {
+					return '_'
+				}
+				return r
+			}, t)
+			changed = true
+		}
+		cleaned = append(cleaned, t)
+	}
+	return cleaned, changed
+}
+
+// pairBudget counts pattern checks against maxPairChecks.
+type pairBudget struct {
+	pat    *regexp.Regexp
+	checks int
+}
+
+// try checks s unless the budget is spent; more is false once it is.
+func (b *pairBudget) try(s string) (found, more bool) {
+	if b.checks >= maxPairChecks {
+		return false, false
+	}
+	b.checks++
+	return b.pat.MatchString(s), true
+}
+
+// matchBoundedPairs is the pairwise view of an argument list longer than
+// maxPairwiseTokens, run within each command in segs and within
+// maxPairChecks pattern checks in total.
+//
+// When every match of pat must contain one of a set of literal strings (see
+// pairLiterals), a pair can only match if one of its tokens holds one (see literalIn),
+// so only pairs with such a token are checked, and the scan is complete when it
+// checks all of them. Otherwise each distinct anchor (an option, or a short
+// token with no path separator) is paired with each other distinct token, and
+// the scan is complete only when no token was left out.
+//
+// complete is false when the scan stopped at the check limit or left a token
+// out, so a caller can tell a no-match that covered every pair it needed from
+// one that did not.
+func matchBoundedPairs(pat *regexp.Regexp, segs [][]string) (matched bool, checks int, complete bool) {
+	b := &pairBudget{pat: pat}
+	for _, seg := range segs {
+		found, segComplete := boundedPairs(b, seg)
+		if found {
+			return true, b.checks, true
+		}
+		if !segComplete {
+			return false, b.checks, false
+		}
+	}
+	return false, b.checks, true
+}
+
+// boundedPairs is matchBoundedPairs for one command, within b.
+func boundedPairs(b *pairBudget, tokens []string) (found, complete bool) {
+	if lits, ok := pairLiterals(b.pat); ok {
+		return literalPairs(b, distinctByPriority(tokens), lits)
+	}
+	return anchoredPairs(b, tokens)
+}
+
+// literalPairs checks, in both orders, every pair in tokens that includes a
+// token holding one of lits (see literalIn). Tokens that are a literal, or
+// whose base name is (rm, /bin/rm), are paired first, so other tokens that
+// merely hold the text cannot use up the check limit before them.
+func literalPairs(b *pairBudget, tokens []string, lits []pairLiteral) (found, complete bool) {
+	has := make([]bool, len(tokens))
+	var exact, rest []int
+	for i, t := range tokens {
+		h, e := literalIn(t, lits)
+		has[i] = h
+		switch {
+		case e:
+			exact = append(exact, i)
+		case h:
+			rest = append(rest, i)
+		}
+	}
+	done := make([]bool, len(tokens))
+	for _, i := range slices.Concat(exact, rest) {
+		a := tokens[i]
+		for j, c := range tokens {
+			if i == j || (has[j] && done[j]) {
+				continue
+			}
+			f, more := b.try(a + " " + c)
+			if f || !more {
+				return f, more
+			}
+			if f, more = b.try(c + " " + a); f || !more {
+				return f, more
+			}
+		}
+		done[i] = true
+	}
+	return false, true
+}
+
+// anchoredPairs pairs each distinct anchor with each other distinct token, in
+// both orders: anchors with each other first, then anchors with the rest.
+func anchoredPairs(b *pairBudget, tokens []string) (found, complete bool) {
+	anchors, others, dropped := splitPairTokens(tokens)
+	for i, a := range anchors {
+		for j, c := range anchors {
+			if i == j {
+				continue
+			}
+			f, more := b.try(a + " " + c)
+			if f || !more {
+				return f, more && !dropped
+			}
+		}
+	}
+	for _, a := range anchors {
+		for _, c := range others {
+			f, more := b.try(a + " " + c)
+			if f || !more {
+				return f, more && !dropped
+			}
+			if f, more = b.try(c + " " + a); f || !more {
+				return f, more && !dropped
+			}
+		}
+	}
+	return false, !dropped
+}
+
+// pairTier orders tokens for pairing: options first, then other short tokens
+// without a path separator, then the rest.
+func pairTier(t string) int {
+	switch {
+	case strings.HasPrefix(t, "-"):
+		return 0
+	case len(t) <= maxPairAnchorLen && !strings.ContainsAny(t, `/\`):
+		return 1
+	default:
+		return 2
+	}
+}
+
+// distinctByPriority returns the distinct tokens, options first, then short
+// tokens, then the rest, each group in first-seen order.
+func distinctByPriority(tokens []string) []string {
+	seen := make(map[string]struct{}, len(tokens))
+	var tiers [3][]string
+	for _, t := range tokens {
+		if _, dup := seen[t]; dup {
+			continue
+		}
+		seen[t] = struct{}{}
+		tier := pairTier(t)
+		tiers[tier] = append(tiers[tier], t)
+	}
+	return slices.Concat(tiers[0], tiers[1], tiers[2])
+}
+
+// splitPairTokens returns the distinct tokens split into anchors (options,
+// then short tokens with no path separator) and the rest. It keeps at most
+// maxPairwiseTokens anchors and maxPairChecks/2 others, so the scan stays
+// bounded however long the list is; an anchor past its limit is kept as one
+// of the rest when there is room. dropped reports that a distinct token was
+// left out.
+func splitPairTokens(tokens []string) (anchors, others []string, dropped bool) {
+	const maxAnchors = maxPairwiseTokens
+	const maxOthers = maxPairChecks / 2
+	for _, t := range distinctByPriority(tokens) {
+		switch {
+		case pairTier(t) < 2 && len(anchors) < maxAnchors:
+			anchors = append(anchors, t)
+		case len(others) < maxOthers:
+			others = append(others, t)
+		default:
+			return anchors, others, true
+		}
+	}
+	return anchors, others, false
+}
+
+// pairLiteralCache holds pairLiterals results by compiled pattern.
+var pairLiteralCache sync.Map // *regexp.Regexp -> pairLiteralSet
+
+type pairLiteralSet struct {
+	lits []pairLiteral
+	ok   bool
+}
+
+// pairLiteral is text, case-folded (see foldString), that a match must
+// contain. wordStart is set when the pattern puts a word boundary or the
+// start of a line right before the text, and wordEnd when only a non-word
+// character or the end of the text can follow it. A token can then supply
+// the text only where it is not preceded (wordStart) or followed (wordEnd)
+// by a word character.
+type pairLiteral struct {
+	text               string
+	wordStart, wordEnd bool
+}
+
+// pairLiterals returns literals such that every match of pat contains at
+// least one of them. ok is false when there is no such set, or when a
+// literal holds white space and so could span the space between the two
+// tokens of a pair.
+func pairLiterals(pat *regexp.Regexp) (lits []pairLiteral, ok bool) {
+	if cached, hit := pairLiteralCache.Load(pat); hit {
+		set := cached.(pairLiteralSet)
+		return set.lits, set.ok
+	}
+	var set pairLiteralSet
+	if re, err := syntax.Parse(pat.String(), syntax.Perl); err == nil {
+		set.lits, set.ok = requiredLiterals(re.Simplify(), nil, nil)
+		if set.ok && slices.ContainsFunc(set.lits, func(l pairLiteral) bool {
+			return l.text == "" || strings.IndexFunc(l.text, unicode.IsSpace) >= 0
+		}) {
+			set = pairLiteralSet{}
+		}
+	}
+	pairLiteralCache.Store(pat, set)
+	return set.lits, set.ok
+}
+
+// requiredLiterals returns literals such that every match of re contains at
+// least one of them, or ok false when it finds none. before holds what the
+// pattern matches right before re, nearest first, and after what it matches
+// right after re, in order; nil means nothing known.
+func requiredLiterals(re *syntax.Regexp, before, after []*syntax.Regexp) (lits []pairLiteral, ok bool) {
+	switch re.Op {
+	case syntax.OpLiteral:
+		fold := re.Flags&syntax.FoldCase != 0
+		first, last := re.Rune[0], re.Rune[len(re.Rune)-1]
+		return []pairLiteral{{
+			text:      foldString(string(re.Rune)),
+			wordStart: edgeNonWord(before, false, wordRune(first, fold)),
+			wordEnd:   edgeNonWord(after, true, wordRune(last, fold)),
+		}}, true
+	case syntax.OpCapture:
+		return requiredLiterals(re.Sub[0], before, after)
+	case syntax.OpPlus:
+		return requiredLiterals(re.Sub[0], nil, nil)
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return requiredLiterals(re.Sub[0], nil, nil)
+		}
+	case syntax.OpConcat:
+		// Any one part's set will do; prefer the one whose shortest literal
+		// is longest, as it is the most selective.
+		best := -1
+		for i, sub := range re.Sub {
+			prev := slices.Clone(re.Sub[:i])
+			slices.Reverse(prev)
+			l, subOK := requiredLiterals(sub, slices.Concat(prev, before), slices.Concat(re.Sub[i+1:], after))
+			if !subOK {
+				continue
+			}
+			if shortest := shortestLen(l); shortest > best {
+				lits, ok, best = l, true, shortest
+			}
+		}
+		return lits, ok
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			l, subOK := requiredLiterals(sub, before, after)
+			if !subOK {
+				return nil, false
+			}
+			lits = append(lits, l...)
+		}
+		return lits, true
+	}
+	return nil, false
+}
+
+// edgeNonWord reports whether seq, read forward (or backward, with seq
+// nearest first), must start with a non-word character, or with the start
+// (backward) or end (forward) of the text or a line. edgeWord is whether the
+// character on the other side is always a word character, which makes a
+// word boundary next to it count.
+func edgeNonWord(seq []*syntax.Regexp, forward, edgeWord bool) bool {
+	steps := 0
+	return edgeNonWordSteps(seq, forward, edgeWord, &steps)
+}
+
+// maxEdgeSteps bounds the work edgeNonWord does on one pattern; past it the
+// answer is false, which only means a token is not narrowed by the edge.
+const maxEdgeSteps = 10000
+
+func edgeNonWordSteps(seq []*syntax.Regexp, forward, edgeWord bool, steps *int) bool {
+	*steps++
+	if len(seq) == 0 || *steps > maxEdgeSteps {
+		return false
+	}
+	re, rest := seq[0], seq[1:]
+	switch re.Op {
+	case syntax.OpEmptyMatch:
+		return edgeNonWordSteps(rest, forward, edgeWord, steps)
+	case syntax.OpWordBoundary:
+		return edgeWord
+	case syntax.OpBeginLine, syntax.OpBeginText:
+		return !forward
+	case syntax.OpEndLine, syntax.OpEndText:
+		return forward
+	case syntax.OpCharClass:
+		return classNonWord(re.Rune)
+	case syntax.OpLiteral:
+		r := re.Rune[0]
+		if !forward {
+			r = re.Rune[len(re.Rune)-1]
+		}
+		return nonWordRune(r, re.Flags&syntax.FoldCase != 0)
+	case syntax.OpCapture:
+		return edgeNonWordSteps(slices.Concat(re.Sub[:1], rest), forward, edgeWord, steps)
+	case syntax.OpConcat:
+		subs := slices.Clone(re.Sub)
+		if !forward {
+			slices.Reverse(subs)
+		}
+		return edgeNonWordSteps(slices.Concat(subs, rest), forward, edgeWord, steps)
+	case syntax.OpAlternate:
+		for _, sub := range re.Sub {
+			if !edgeNonWordSteps(slices.Concat([]*syntax.Regexp{sub}, rest), forward, edgeWord, steps) {
+				return false
+			}
+		}
+		return true
+	case syntax.OpPlus:
+		return edgeNonWordSteps(slices.Concat(re.Sub[:1], rest), forward, edgeWord, steps)
+	case syntax.OpRepeat:
+		if re.Min >= 1 {
+			return edgeNonWordSteps(slices.Concat(re.Sub[:1], rest), forward, edgeWord, steps)
+		}
+		return edgeNonWordSteps(slices.Concat(re.Sub[:1], rest), forward, edgeWord, steps) && edgeNonWordSteps(rest, forward, edgeWord, steps)
+	case syntax.OpStar, syntax.OpQuest:
+		return edgeNonWordSteps(slices.Concat(re.Sub[:1], rest), forward, edgeWord, steps) && edgeNonWordSteps(rest, forward, edgeWord, steps)
+	}
+	return false
+}
+
+// isWordByte reports whether r is a word character for \b: [0-9A-Za-z_].
+func isWordByte(r rune) bool {
+	return r == '_' || ('0' <= r && r <= '9') || ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
+}
+
+// wordRune reports whether r, and with fold every rune it matches under
+// case folding, is a word character.
+func wordRune(r rune, fold bool) bool {
+	return allFolds(r, fold, isWordByte)
+}
+
+// nonWordRune reports whether r, and with fold every rune it matches under
+// case folding, is not a word character.
+func nonWordRune(r rune, fold bool) bool {
+	return allFolds(r, fold, func(c rune) bool { return !isWordByte(c) })
+}
+
+func allFolds(r rune, fold bool, f func(rune) bool) bool {
+	if !f(r) {
+		return false
+	}
+	if fold {
+		for c := unicode.SimpleFold(r); c != r; c = unicode.SimpleFold(c) {
+			if !f(c) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// classNonWord reports whether a character class (as lo, hi range pairs)
+// holds no word character.
+func classNonWord(ranges []rune) bool {
+	for i := 0; i+1 < len(ranges); i += 2 {
+		lo, hi := ranges[i], ranges[i+1]
+		for _, w := range [][2]rune{{'0', '9'}, {'A', 'Z'}, {'_', '_'}, {'a', 'z'}} {
+			if lo <= w[1] && hi >= w[0] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// literalIn reports whether token t holds one of lits at a place a match
+// could use (see pairLiteral), and whether t, or its base name, is a
+// literal.
+func literalIn(t string, lits []pairLiteral) (has, exact bool) {
+	orig := []rune(t)
+	folded := []rune(foldString(t))
+	base := foldString(path.Base(t))
+	whole := string(folded)
+	for _, l := range lits {
+		if l.text == whole || l.text == base {
+			return true, true
+		}
+		lr := []rune(l.text)
+		for i := 0; i+len(lr) <= len(folded); i++ {
+			if !slices.Equal(folded[i:i+len(lr)], lr) {
+				continue
+			}
+			end := i + len(lr)
+			if l.wordStart && i > 0 && isWordByte(orig[i-1]) {
+				continue
+			}
+			if l.wordEnd && end < len(orig) && isWordByte(orig[end]) {
+				continue
+			}
+			has = true
+			break
+		}
+	}
+	return has, false
+}
+
+func shortestLen(lits []pairLiteral) int {
+	n := -1
+	for _, l := range lits {
+		if n < 0 || len(l.text) < n {
+			n = len(l.text)
+		}
+	}
+	return n
+}
+
+// foldString maps each rune to the smallest rune that matches it under
+// case-insensitive matching, so a folded string contains a folded literal
+// whenever a (?i) pattern could match that literal in the original.
+func foldString(s string) string {
+	return strings.Map(func(r rune) rune {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < least {
+				least = f
+			}
+		}
+		return least
+	}, s)
+}

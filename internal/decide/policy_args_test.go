@@ -4,6 +4,8 @@
 package decide
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -100,6 +102,72 @@ func TestDecide_ToolPolicyMatchesArgumentKeys(t *testing.T) {
 				}
 				if tt.want == Deny && !evidenceContainsPattern(d.Evidence, "Destructive File Delete") {
 					t.Fatalf("evidence %+v lacks Destructive File Delete", d.Evidence)
+				}
+			})
+		}
+	}
+}
+
+func TestDecide_ToolPolicyLongArgumentLists(t *testing.T) {
+	files := make([]string, 70)
+	crowd := make([]string, 70)
+	for i := range files {
+		files[i] = fmt.Sprintf("./build/obj_%d.o", i)
+		crowd[i] = fmt.Sprintf("rm-%d", i)
+	}
+	jsonList := func(words []string) string {
+		b, err := json.Marshal(words)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	tests := []struct {
+		name     string
+		input    string
+		block    bool // on_incomplete_check: block
+		want     Outcome
+		evidence string
+	}{
+		{"args array past 64", `{"command":"rm","args":` + jsonList(append(files, "-rf", "/srv/data")) + `}`, false, Deny, "Destructive File Delete"},
+		{"args array, flag first", `{"args":` + jsonList(append(append([]string{"-rf"}, crowd[:1]...), files...)) + `,"command":"rm"}`, false, Deny, "Destructive File Delete"},
+		{"incomplete, default", `{"command":` + strconv.Quote(strings.Join(crowd, " ")) + `}`, false, Allow, "incomplete_pair_check"},
+		{"incomplete, block", `{"command":` + strconv.Quote(strings.Join(crowd, " ")) + `}`, true, Deny, "incomplete_pair_check"},
+		{"long listing", `{"command":` + strconv.Quote("ls "+strings.Join(files, " ")) + `}`, true, Allow, ""},
+	}
+	for _, tt := range tests {
+		cfg, sc, _ := testSetup(t)
+		if tt.block {
+			cfg.MCPToolPolicy.OnIncompleteCheck = config.ActionBlock
+		}
+		pc := policy.New(cfg.MCPToolPolicy)
+		paths := map[string]Decision{
+			"mcp":      decideMCP(cfg, sc, pc, &MCPPayload{ToolName: "bash", ToolInput: tt.input}),
+			"tool use": decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: "bash", ToolInput: tt.input}),
+		}
+		for path, d := range paths {
+			t.Run(tt.name+"/"+path, func(t *testing.T) {
+				if d.Outcome != tt.want {
+					t.Fatalf("outcome %s, want %s (evidence %+v)", d.Outcome, tt.want, d.Evidence)
+				}
+				if tt.evidence == "" {
+					if len(d.Evidence) != 0 {
+						t.Fatalf("unexpected evidence %+v", d.Evidence)
+					}
+					return
+				}
+				if !evidenceContainsPattern(d.Evidence, tt.evidence) {
+					t.Fatalf("evidence %+v lacks %s", d.Evidence, tt.evidence)
+				}
+				line := IncompleteCheckLine(d)
+				if tt.evidence != policy.IncompletePairCheckRule {
+					if line != "" {
+						t.Fatalf("unexpected incomplete line %q", line)
+					}
+					return
+				}
+				if !strings.HasPrefix(line, "pipelock: incomplete_pair_check (") || !strings.Contains(line, "rules=Destructive File Delete") {
+					t.Fatalf("incomplete line %q lacks the rule names", line)
 				}
 			})
 		}

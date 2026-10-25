@@ -863,9 +863,8 @@ func TestCheckToolCall_PairwiseTokenCapStillMatchesJoined(t *testing.T) {
 	}
 }
 
-func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
-	// Verify pairwise loop is actually skipped for large token counts.
-	// Use a pattern that can ONLY match via pairwise (tokens non-adjacent in joined).
+func TestCheckToolCall_PairwiseAboveCapPairsShortTokens(t *testing.T) {
+	// A pattern that can ONLY match via pairwise (tokens non-adjacent in joined).
 	rule := &CompiledRule{
 		Name:        "test",
 		ToolPattern: regexp.MustCompile(`^bash$`),
@@ -881,17 +880,23 @@ func TestCheckToolCall_PairwiseCapSkipsLoop(t *testing.T) {
 		t.Fatal("expected pairwise match with small token count")
 	}
 
-	// With 65+ tokens - pairwise skipped, "rm" and "-rf" non-adjacent in joined.
+	// With 66 tokens the joined string is "rm x x ... x -rf", which does not
+	// match `^rm -rf$`. "rm" and "-rf" are short tokens, so the pairwise view
+	// above the cap still pairs them.
 	bigArgs := []string{"rm"}
 	for range 64 {
 		bigArgs = append(bigArgs, "x")
 	}
 	bigArgs = append(bigArgs, "-rf")
 	v = pc.CheckToolCall("bash", bigArgs)
-	// Joined string is "rm x x x ... x -rf" which matches `rm.*-rf` but NOT `^rm -rf$`.
-	// Pairwise would catch it, but is capped. Should NOT match.
+	if !v.Matched {
+		t.Fatal("expected pairwise match above the token cap")
+	}
+
+	// Control: the same list without "-rf" does not match.
+	v = pc.CheckToolCall("bash", bigArgs[:len(bigArgs)-1])
 	if v.Matched {
-		t.Fatal("pairwise should be skipped when tokens exceed cap")
+		t.Fatal("expected no match without the paired flag")
 	}
 }
 

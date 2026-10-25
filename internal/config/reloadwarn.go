@@ -1106,6 +1106,7 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	}
 	if old.MCPToolPolicy.Enabled && updated.MCPToolPolicy.Enabled {
 		appendActionDowngradeWarning(warnings, "mcp_tool_policy.action", old.MCPToolPolicy.Action, updated.MCPToolPolicy.Action)
+		appendActionDowngradeWarning(warnings, "mcp_tool_policy.on_incomplete_check", incompleteCheckAction(old.MCPToolPolicy), incompleteCheckAction(updated.MCPToolPolicy))
 		appendToolPolicyRuleActionDowngrades(warnings, old.MCPToolPolicy, updated.MCPToolPolicy)
 	}
 	if old.MCPBinaryIntegrity.Enabled && updated.MCPBinaryIntegrity.Enabled {
@@ -1135,6 +1136,14 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 		appendActionDowngradeWarning(warnings, "tool_chain_detection.action", old.ToolChainDetection.Action, updated.ToolChainDetection.Action)
 		appendToolChainActionDowngrades(warnings, old.ToolChainDetection, updated.ToolChainDetection)
 	}
+}
+
+// incompleteCheckAction resolves an omitted on_incomplete_check to warn.
+func incompleteCheckAction(p MCPToolPolicy) string {
+	if p.OnIncompleteCheck == "" {
+		return ActionWarn
+	}
+	return p.OnIncompleteCheck
 }
 
 func appendActionDowngradeWarning(warnings *[]ReloadWarning, field, oldAction, newAction string) {

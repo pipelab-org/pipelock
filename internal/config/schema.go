@@ -816,6 +816,11 @@ type MCPToolPolicy struct {
 	RedirectProfiles      map[string]RedirectProfile      `yaml:"redirect_profiles,omitempty"`
 	DeferResolverProfiles map[string]DeferResolverProfile `yaml:"defer_resolver_profiles,omitempty" json:"defer_resolver_profiles,omitempty"`
 	QuarantineDir         string                          `yaml:"quarantine_dir,omitempty"`
+	// OnIncompleteCheck is the action when a rule's check cannot rule out a
+	// match (a long argument list, or a match only across separate commands):
+	// warn (default) or block. Either way the verdict names
+	// incomplete_pair_check.
+	OnIncompleteCheck string `yaml:"on_incomplete_check,omitempty" json:"on_incomplete_check,omitempty"`
 }
 
 // DeferConfig configures per-action held authorization for supported MCP

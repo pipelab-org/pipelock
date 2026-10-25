@@ -238,11 +238,13 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, *action)
+	logIncompleteCheck(cmd, decision)
 	// Path-routed built-in tools add file-path policy on top of the content
 	// scan every tool_input string gets on the generic path; they must not
 	// lose it. Deny from either wins.
 	if decision.Outcome != decide.Deny && claudePathRoutedTools[payload.ToolName] {
 		decision = decide.Decide(cmd.Context(), cfg, sc, pc, claudeGenericAction(payload))
+		logIncompleteCheck(cmd, decision)
 	}
 
 	// Map outcome.
@@ -253,6 +255,14 @@ func runClaudeHook(cmd *cobra.Command, configFile string, exitCodeMode bool) (re
 	}
 
 	return claudeResult(cmd, exitCodeMode, payload.HookEventName, perm, reason)
+}
+
+// logIncompleteCheck writes the incomplete tool policy check line, if any,
+// to stderr (see decide.IncompleteCheckLine).
+func logIncompleteCheck(cmd *cobra.Command, d decide.Decision) {
+	if line := decide.IncompleteCheckLine(d); line != "" {
+		_, _ = fmt.Fprintln(cmd.ErrOrStderr(), line)
+	}
 }
 
 // claudeResult writes the response (JSON or exit code) based on mode.

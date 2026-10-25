@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"regexp/syntax"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/configs"
@@ -217,5 +218,40 @@ func TestPresetRuntimeDoesNotReduceProtection(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestPresetsIncompleteCheckAction checks that each preset states its
+// on_incomplete_check action and that strict and hostile-model block.
+func TestPresetsIncompleteCheckAction(t *testing.T) {
+	want := map[string]string{
+		config.ModeStrict:  config.ActionBlock,
+		PresetHostileModel: config.ActionBlock,
+	}
+	for _, name := range All {
+		t.Run(name, func(t *testing.T) {
+			data, err := YAML(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Config(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			action := want[name]
+			if action == "" {
+				action = config.ActionWarn
+			}
+			if got := cfg.MCPToolPolicy.OnIncompleteCheck; got != action {
+				t.Fatalf("on_incomplete_check = %q, want %q", got, action)
+			}
+			if !strings.Contains(string(data), "on_incomplete_check: "+action) {
+				t.Fatalf("preset YAML does not state on_incomplete_check: %s", action)
+			}
+		})
+	}
+	// Built-in defaults leave it unset, which means warn.
+	if got := config.Defaults().MCPToolPolicy.OnIncompleteCheck; got != "" && got != config.ActionWarn {
+		t.Fatalf("default on_incomplete_check = %q, want warn", got)
 	}
 }

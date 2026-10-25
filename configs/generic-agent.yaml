@@ -398,6 +398,8 @@ mcp_data_class_labels:
 mcp_tool_policy:
   enabled: true
   action: warn
+  # Argument lists too long to check every token pair: allow and log incomplete_pair_check.
+  on_incomplete_check: warn
   rules:
     - name: "Destructive File Delete"
       tool_pattern: '(?i)^(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:])?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
