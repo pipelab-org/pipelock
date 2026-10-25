@@ -183,8 +183,10 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 
 	var evidence []Evidence
 
-	// Extract all strings from tool_input for scanning.
-	var argStrings []string
+	// Extract all strings from tool_input for scanning. Keys and values feed
+	// DLP and injection scanning; policy also matches the values on their
+	// own, as the MCP proxy does (see policy.CheckToolCallJSON).
+	var argStrings, policyArgs []string
 	var scanText string
 	if p.ToolInput != "" {
 		if !json.Valid([]byte(p.ToolInput)) {
@@ -200,7 +202,9 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 			scanText = p.ToolInput
 		} else {
 			extracted := ExtractAllStringsFromJSONResult(json.RawMessage(p.ToolInput))
-			if extracted.Truncated {
+			var valuesTruncated bool
+			policyArgs, valuesTruncated = policy.ArgValues(json.RawMessage(p.ToolInput))
+			if extracted.Truncated || valuesTruncated {
 				evidence = append(evidence, uninspectableJSONEvidence())
 			}
 			argStrings = extracted.Strings
@@ -223,7 +227,7 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 		if p.ToolInput != "" && json.Valid([]byte(p.ToolInput)) {
 			rawArgs = json.RawMessage(p.ToolInput)
 		}
-		policyVerdict := policyCfg.CheckToolCallWithArgs(p.ToolName, argStrings, rawArgs)
+		policyVerdict := policyCfg.CheckToolCallJSON(p.ToolName, policyArgs, argStrings, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
@@ -298,7 +302,7 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 	}
 
 	var evidence []Evidence
-	var argStrings []string
+	var argStrings, policyArgs []string
 	var rawArgs json.RawMessage
 	var scanText string
 
@@ -315,7 +319,9 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 		} else {
 			rawArgs = json.RawMessage(p.ToolInput)
 			extracted := ExtractAllStringsFromJSONResult(rawArgs)
-			if extracted.Truncated {
+			var valuesTruncated bool
+			policyArgs, valuesTruncated = policy.ArgValues(rawArgs)
+			if extracted.Truncated || valuesTruncated {
 				evidence = append(evidence, uninspectableJSONEvidence())
 			}
 			argStrings = extracted.Strings
@@ -333,7 +339,7 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 	}
 
 	if policyCfg != nil {
-		policyVerdict := policyCfg.CheckToolCallWithArgs(p.ToolName, argStrings, rawArgs)
+		policyVerdict := policyCfg.CheckToolCallJSON(p.ToolName, policyArgs, argStrings, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
