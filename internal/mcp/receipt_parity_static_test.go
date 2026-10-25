@@ -53,7 +53,7 @@ func TestMCPV1ReceiptEmissionStaysFunnelled(t *testing.T) {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != "Emit" {
+			if !ok || (sel.Sel.Name != "Emit" && sel.Sel.Name != "EmitDurable") {
 				return true
 			}
 			if file.name != "pipeline_decision.go" {
@@ -188,10 +188,12 @@ func exprIsNil(expr ast.Expr) bool {
 func TestMCPReceiptPolicyBindingStaysFunnelled(t *testing.T) {
 	fset, files := parseMCPProductionFiles(t, mcpPackageDir(t))
 	allowed := map[string]bool{
-		"emitMCPReceiptDecision":         true,
-		"emitMCPOutcome":                 true,
-		"emitMCPStandaloneStreamReceipt": true,
-		"emitMCPEnvelopeDecision":        true,
+		"opts.go:emitMCPReceiptDecision":                      true,
+		"pipeline_decision.go:emitMCPOutcome":                 true,
+		"pipeline_decision.go:emitMCPStandaloneStreamReceipt": true,
+		"pipeline_decision.go:emitMCPEnvelopeDecision":        true,
+		"pipeline_decision.go:EmitMCPDecision":                true,
+		"pipeline_decision.go:EmitMCPGroupDecision":           true,
 	}
 	var checked int
 	for _, file := range files {
@@ -206,11 +208,11 @@ func TestMCPReceiptPolicyBindingStaysFunnelled(t *testing.T) {
 					return true
 				}
 				name := callName(call.Fun)
-				if name != "EmitMCPDecision" && name != "EmitMCPGroupDecision" {
+				if name != "EmitMCPDecision" && name != "EmitMCPGroupDecision" && name != "emitMCPDecision" {
 					return true
 				}
 				checked++
-				if !allowed[fn.Name.Name] {
+				if !allowed[file.name+":"+fn.Name.Name] {
 					t.Errorf("%s: direct %s bypasses receipt policy binding", fset.Position(call.Pos()), name)
 				}
 				return true

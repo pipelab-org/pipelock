@@ -27,6 +27,8 @@ func TestPromptInjectionDetectionHTTPTransports(t *testing.T) {
 				cfg := testScannerConfig()
 				cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
 				cfg.DLP.ScanEnv = false
+				cfg.DefaultAgentIdentity = "research"
+				cfg.BindDefaultAgentIdentity = true
 				cfg.ResponseScanning.Action = config.ActionBlock
 				enabled := mode != config.ActionAllow
 				cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Enabled: &enabled}
@@ -44,8 +46,8 @@ func TestPromptInjectionDetectionHTTPTransports(t *testing.T) {
 						if transport == "connect" {
 							wantTransport = "intercept"
 						}
-						if !strings.Contains(wc.URL, "api.vendor.example") || wc.Transport != wantTransport {
-							t.Errorf("missing warning destination/transport: %+v", wc)
+						if !strings.Contains(wc.URL, "api.vendor.example") || wc.Transport != wantTransport || wc.Agent != "research" {
+							t.Errorf("missing warning destination/transport/agent: %+v", wc)
 						}
 					}
 				})
@@ -81,7 +83,7 @@ func TestPromptInjectionDetectionHTTPTransports(t *testing.T) {
 					case "forward":
 						p.handleForwardHTTP(w, r)
 					case "connect":
-						h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: logger, Metrics: m, ClientIP: "192.0.2.1", RequestID: "wording", Proxy: p}, rt)
+						h := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: logger, Metrics: m, ClientIP: "192.0.2.1", RequestID: "wording", Agent: "research", Proxy: p}, rt)
 						h.ServeHTTP(w, r)
 					}
 					if (w.Code == http.StatusForbidden) != (mode == config.ActionBlock) {
