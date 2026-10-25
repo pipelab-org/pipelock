@@ -5,7 +5,8 @@ package scanner
 
 import "context"
 
-// DLPWarnContext carries per-request metadata for DLP warn emission.
+// DLPWarnContext carries per-request metadata for scanner observations.
+// DLP and prompt-injection warnings share transport attribution, never content.
 type DLPWarnContext struct {
 	Method     string
 	URL        string
@@ -14,8 +15,11 @@ type DLPWarnContext struct {
 	ClientIP   string
 	RequestID  string
 	Agent      string
+	ServerName string
 	Transport  string // "fetch", "forward", "connect", "intercept", "reverse", "websocket", "mcp_stdio", "mcp_http"
 	PolicyHash string
+	// PromptInjectionMode belongs to the same scanner snapshot as PolicyHash.
+	PromptInjectionMode string
 }
 
 type dlpWarnCtxKey struct{}

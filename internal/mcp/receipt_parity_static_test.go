@@ -110,28 +110,39 @@ func assertEmitMCPDecisionV2Paired(t *testing.T, fset *token.FileSet, call *ast.
 
 func assertToolReceiptOptsV2Paired(t *testing.T, fset *token.FileSet, lit *ast.CompositeLit) {
 	t.Helper()
-
-	hasV1Emitter := false
-	hasV2Emitter := false
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
 			continue
 		}
 		key, ok := kv.Key.(*ast.Ident)
-		if !ok {
+		if !ok || key.Name != "ProxyOpts" {
 			continue
 		}
-		switch key.Name {
-		case "Emitter":
-			hasV1Emitter = !exprIsNil(kv.Value)
-		case "V2Emitter":
-			hasV2Emitter = !exprIsNil(kv.Value)
+		// The snapshot-aware funnel obtains both emitters from these options.
+		// Explicit literals must retain the pairing; normal callers carry the
+		// admission snapshot rather than reconstructing a subset of its fields.
+		if proxy, ok := kv.Value.(*ast.CompositeLit); ok {
+			var hasV1, hasV2 bool
+			for _, e := range proxy.Elts {
+				field, ok := e.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				switch callName(field.Key) {
+				case "ReceiptEmitter":
+					hasV1 = !exprIsNil(field.Value)
+				case "V2ReceiptEmitter":
+					hasV2 = !exprIsNil(field.Value)
+				}
+			}
+			if hasV1 && !hasV2 {
+				t.Errorf("%s: MCP snapshot sets v1 without paired v2 emitter", fset.Position(proxy.Pos()))
+			}
 		}
+		return
 	}
-	if hasV1Emitter && !hasV2Emitter {
-		t.Fatalf("%s: mcpToolReceiptOpts sets Emitter without paired V2Emitter", fset.Position(lit.Pos()))
-	}
+	t.Errorf("%s: tool receipt omits scanner policy snapshot", fset.Position(lit.Pos()))
 }
 
 func mcpPackageDir(t *testing.T) string {
@@ -170,4 +181,43 @@ func typeName(expr ast.Expr) string {
 func exprIsNil(expr ast.Expr) bool {
 	ident, ok := expr.(*ast.Ident)
 	return ok && ident.Name == "nil"
+}
+
+// Outcomes inherit their intent's bound options. Envelope-only emission has no
+// signed emitters. Other callers must use the snapshot-aware opts funnel.
+func TestMCPReceiptPolicyBindingStaysFunnelled(t *testing.T) {
+	fset, files := parseMCPProductionFiles(t, mcpPackageDir(t))
+	allowed := map[string]bool{
+		"emitMCPReceiptDecision":         true,
+		"emitMCPOutcome":                 true,
+		"emitMCPStandaloneStreamReceipt": true,
+		"emitMCPEnvelopeDecision":        true,
+	}
+	var checked int
+	for _, file := range files {
+		for _, decl := range file.file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok {
+				continue
+			}
+			ast.Inspect(fn, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				name := callName(call.Fun)
+				if name != "EmitMCPDecision" && name != "EmitMCPGroupDecision" {
+					return true
+				}
+				checked++
+				if !allowed[fn.Name.Name] {
+					t.Errorf("%s: direct %s bypasses receipt policy binding", fset.Position(call.Pos()), name)
+				}
+				return true
+			})
+		}
+	}
+	if checked == 0 {
+		t.Fatal("guard did not find the known emission funnel")
+	}
 }

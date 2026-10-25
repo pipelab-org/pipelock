@@ -53,7 +53,7 @@ func dlpWarnLogContext(wc scanner.DLPWarnContext) (audit.LogContext, error) {
 	switch wc.Transport {
 	case "connect":
 		return audit.NewConnectLogContext(wc.Target, wc.ClientIP, wc.RequestID, wc.Agent)
-	case "mcp_stdio", "mcp_http", "mcp_input", "mcp_http_listener", "mcp_ws":
+	case "mcp_stdio", "mcp_http", "mcp_http_upstream", "mcp_input", "mcp_http_listener", "mcp_ws":
 		method := wc.Method
 		if method == "" {
 			method = mcpAuditMethod

@@ -40,6 +40,8 @@ import (
 // weakening scanning for any other server. The zero value preserves prior
 // (no-suppression) behavior, so existing callers are unaffected.
 type ResponseScanOptions struct {
+	// Context carries cancellation and scanner observation attribution.
+	Context context.Context
 	// Target identifies the MCP server's response surface for suppress-rule
 	// matching, e.g. "mcp://code-assistant/response". Empty disables target-scoped
 	// suppression (an empty target matches no path-scoped suppress entry).
@@ -66,6 +68,13 @@ type ResponseScanOptions struct {
 	// OnSuppressedResponse because ordinary suppression cannot reach the
 	// immutable floor, so the two must stay distinguishable in evidence.
 	OnObservedCoreResponse func(scanner.ObservedCoreMatch)
+}
+
+func (o ResponseScanOptions) scanContext() context.Context {
+	if o.Context != nil {
+		return o.Context
+	}
+	return context.Background()
 }
 
 // ScanResponse parses a single JSON-RPC 2.0 response and scans its text
@@ -289,7 +298,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			dlpViews = append(dlpViews, responseDLPView{key, key})
 		}
 	}
-	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(context.Background(), sc, opts, views, dlpViews)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(opts.scanContext(), sc, opts, views, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
@@ -588,7 +597,7 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 		return verdict
 	}
 
-	result := tools.ScanTools(line, sc, toolCfg)
+	result := tools.ScanToolsForMethodContext(opts.scanContext(), line, sc, toolCfg, "")
 	if result.ResourceLimit != "" {
 		// A tool-definition scan that cannot complete (uninspectable text,
 		// baseline capacity, epoch reset) is a failure to inspect, not a
@@ -684,7 +693,7 @@ func toolsListShape(line []byte) (toolsListKind, json.RawMessage) {
 // A malicious server can also inject into sibling fields like result.note or
 // result.cursor, so those remain in both scan inputs.
 func scanToolsListNonToolFields(line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
-	return scanToolsListNonToolFieldsContext(context.Background(), line, sc, opts)
+	return scanToolsListNonToolFieldsContext(opts.scanContext(), line, sc, opts)
 }
 
 func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *scanner.Scanner, opts ResponseScanOptions) jsonrpc.ScanVerdict {
@@ -1264,9 +1273,9 @@ type A2AResponseOpts struct {
 // ScanTimeout when it is positive.
 func (o *A2AResponseOpts) scanContext() (context.Context, context.CancelFunc) {
 	if o.ScanTimeout > 0 {
-		return context.WithTimeout(context.Background(), o.ScanTimeout)
+		return context.WithTimeout(o.ScanOpts.scanContext(), o.ScanTimeout)
 	}
-	return context.Background(), func() {}
+	return o.ScanOpts.scanContext(), func() {}
 }
 
 // ScanResponseA2A scans a JSON-RPC 2.0 response with optional A2A-aware

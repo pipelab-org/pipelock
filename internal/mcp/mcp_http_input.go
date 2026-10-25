@@ -92,8 +92,6 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	m := opts.Metrics
 	obs := opts.captureObserver()
 	redactionCfg := opts.redactionConfig()
-	receiptEmitter := opts.receiptEmitter()
-	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
 	result = httpInputDecision{ForwardMessage: msg}
@@ -200,11 +198,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 		}
 		receiptOpts := mcpToolReceiptOpts{
-			Emitter:           receiptEmitter,
-			V2Emitter:         v2ReceiptEmitter,
-			Group:             opts.ReceiptGroup,
+			ProxyOpts:         opts,
 			Shard:             receiptShard,
-			PolicyHash:        opts.receiptPolicyHash(),
 			Log:               logW,
 			Transport:         opts.Transport,
 			RedactionProfile:  redactionCfg.Profile,
@@ -1087,8 +1082,8 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 			}
 			if err := emitMCPToolReceipt(mcpToolReceiptOpts{
-				Emitter: receiptEmitter, V2Emitter: v2ReceiptEmitter, Group: opts.ReceiptGroup,
-				Shard: receiptShard, PolicyHash: opts.receiptPolicyHash(), Log: logW,
+				ProxyOpts: opts,
+				Shard:     receiptShard, Log: logW,
 				Transport: opts.Transport, ActionID: actionID, MCPMethod: mcpMethod,
 				ToolName: toolName, Verdict: config.ActionRedirect,
 				Layer: receiptLayer, Pattern: receiptPattern, Severity: receiptSeverity,
@@ -1116,7 +1111,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			// Scan redirect handler output for prompt injection AND DLP before
 			// sending to client. Handler output is untrusted - it could contain
 			// secrets or injection payloads.
-			scanVerdict := ScanResponseInjection(redirectResult.Response, sc)
+			scanVerdict := scanResponseOpts(redirectResult.Response, sc, ResponseScanOptions{Context: inputScanCtx}, false)
 			wc := scanner.DLPWarnContextFromCtx(inputScanCtx)
 			if wc.Transport == "" {
 				wc.Transport = transportMCPHTTP

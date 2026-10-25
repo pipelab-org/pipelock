@@ -244,7 +244,7 @@ func TestRedactionBlockAttribution(t *testing.T) {
 func TestEmitMCPToolReceiptIncludesAttribution(t *testing.T) {
 	emitter, _, dir, _ := newReceiptTestHarness(t)
 	_ = emitMCPToolReceipt(mcpToolReceiptOpts{
-		Emitter:   emitter,
+		ProxyOpts: MCPProxyOpts{ReceiptEmitter: emitter},
 		Transport: transportMCPStdio,
 		ActionID:  "mcp-tool-attribution-1",
 		MCPMethod: methodToolsCall,
@@ -294,18 +294,16 @@ func TestEmitMCPToolReceiptLogsV2EmitError(t *testing.T) {
 
 	var log bytes.Buffer
 	_ = emitMCPToolReceipt(mcpToolReceiptOpts{
-		Emitter:    emitter,
-		V2Emitter:  v2,
-		Log:        &log,
-		Transport:  transportMCPStdio,
-		ActionID:   "mcp-tool-v2-error",
-		MCPMethod:  methodToolsCall,
-		ToolName:   "shell",
-		Verdict:    config.ActionBlock,
-		Layer:      mcpReceiptLayerPolicy,
-		Pattern:    "dangerous-shell",
-		Severity:   config.SeverityHigh,
-		PolicyHash: mcpTestPolicyHash,
+		ProxyOpts: MCPProxyOpts{ReceiptEmitter: emitter, V2ReceiptEmitter: v2, PolicyHash: mcpTestPolicyHash},
+		Log:       &log,
+		Transport: transportMCPStdio,
+		ActionID:  "mcp-tool-v2-error",
+		MCPMethod: methodToolsCall,
+		ToolName:  "shell",
+		Verdict:   config.ActionBlock,
+		Layer:     mcpReceiptLayerPolicy,
+		Pattern:   "dangerous-shell",
+		Severity:  config.SeverityHigh,
 	})
 	if !strings.Contains(log.String(), "receipt emission failed") ||
 		!strings.Contains(log.String(), "v2 record failed") {
@@ -360,7 +358,7 @@ func TestEmitMCPToolReceipt_AuditGapGateNegativePaths(t *testing.T) {
 			}
 			var log bytes.Buffer
 			err := emitMCPToolReceipt(mcpToolReceiptOpts{
-				Emitter:         emitter,
+				ProxyOpts:       MCPProxyOpts{ReceiptEmitter: emitter},
 				Log:             &log,
 				ActionID:        "mcp-tool-receipt-fails",
 				MCPMethod:       methodToolsCall,

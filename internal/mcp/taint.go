@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -316,11 +315,9 @@ func taintApprovalReason(decision taintDecision) string {
 }
 
 type mcpToolReceiptOpts struct {
-	Emitter          *receipt.Emitter
-	V2Emitter        *proxydecision.Emitter
-	Group            *MCPReceiptGroup
+	// ProxyOpts carries the scanner and policy snapshot that made this decision.
+	ProxyOpts        MCPProxyOpts
 	Shard            receipt.EmitOpts
-	PolicyHash       string
 	Log              io.Writer
 	Transport        string
 	RedactionProfile string
@@ -388,28 +385,22 @@ func emitMCPToolReceipt(opts mcpToolReceiptOpts) error {
 		TaintDecision:       opts.Decision.Result.Decision.String(),
 		TaintDecisionReason: opts.Decision.Result.Reason,
 		TaskOverrideApplied: opts.Decision.TaskOverrideApplied,
-		PolicyHash:          opts.PolicyHash,
-		DecisionPhase:       opts.DecisionPhase,
-		DeferID:             opts.DeferID,
-		ResolutionPolicy:    opts.ResolutionPolicy,
-		ResolutionSource:    opts.ResolutionSource,
-		SessionID:           opts.SessionID,
-		SessionIDOriginal:   opts.SessionIDOriginal,
+
+		DecisionPhase:     opts.DecisionPhase,
+		DeferID:           opts.DeferID,
+		ResolutionPolicy:  opts.ResolutionPolicy,
+		ResolutionSource:  opts.ResolutionSource,
+		SessionID:         opts.SessionID,
+		SessionIDOriginal: opts.SessionIDOriginal,
 	}
 	emitOpts.ShardIndex = opts.Shard.ShardIndex
 	emitOpts.ShardSelected = opts.Shard.ShardSelected
 	if opts.ContractGate != nil {
 		emitOpts = mcpWithContractReceipt(emitOpts, *opts.ContractGate)
 	}
-	emit := func(d MCPDecision) ([]byte, error) {
-		if opts.Group != nil {
-			return EmitMCPGroupDecision(*opts.Group, nil, d)
-		}
-		return EmitMCPDecision(opts.Emitter, opts.V2Emitter, nil, d)
-	}
-	if _, err := emit(MCPDecision{
+	if _, err := opts.ProxyOpts.emitAdmittedReceiptDecision(MCPDecision{
 		Receipt:        emitOpts,
-		RequireReceipt: opts.RequireReceipt || (opts.Group != nil && opts.RequireReceipts),
+		RequireReceipt: opts.RequireReceipt || (opts.ProxyOpts.ReceiptGroup != nil && opts.RequireReceipts),
 		RequiredMode:   opts.RequireReceipts,
 		Durable:        opts.Durable,
 	}); err != nil {
@@ -585,7 +576,7 @@ func decorateMCPToolMessage(msg []byte, emitter *envelope.Emitter, actionID, mcp
 		AuthorityKind:  decision.Authority.String(),
 		RequiresReauth: decision.RequiresReauth,
 	}
-	out, err := EmitMCPDecision(nil, nil, emitter, MCPDecision{
+	out, err := emitMCPEnvelopeDecision(emitter, MCPDecision{
 		Envelope:   &buildOpts,
 		InboundMsg: msg,
 	})

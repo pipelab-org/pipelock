@@ -76,5 +76,5 @@ func dlpWarnReceiptOpts(
 		opts.Method = wc.Method
 	}
 
-	return opts
+	return receipt.WithPromptInjectionMode(opts, wc.PromptInjectionMode)
 }

@@ -67,7 +67,8 @@ func TestPullRequestReadTaintConsumers(t *testing.T) {
 					verdict = config.ActionBlock
 				}
 				if err := emitMCPToolReceipt(mcpToolReceiptOpts{
-					Emitter: emitter, ActionID: "pull-request-decision", MCPMethod: methodToolsCall, ToolName: tc.tool,
+					ProxyOpts: MCPProxyOpts{ReceiptEmitter: emitter},
+					ActionID:  "pull-request-decision", MCPMethod: methodToolsCall, ToolName: tc.tool,
 					Transport: transport, Verdict: verdict, Decision: decision,
 				}); err != nil {
 					t.Fatal(err)
