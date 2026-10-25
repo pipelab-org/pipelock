@@ -40,7 +40,8 @@ import (
 // weakening scanning for any other server. The zero value preserves prior
 // (no-suppression) behavior, so existing callers are unaffected.
 type ResponseScanOptions struct {
-	// Context carries cancellation and scanner observation attribution.
+	// Context carries scanner observation attribution. Its cancellation is
+	// detached so it cannot change a verdict.
 	Context context.Context
 	// Target identifies the MCP server's response surface for suppress-rule
 	// matching, e.g. "mcp://code-assistant/response". Empty disables target-scoped
@@ -70,9 +71,12 @@ type ResponseScanOptions struct {
 	OnObservedCoreResponse func(scanner.ObservedCoreMatch)
 }
 
+// scanContext returns the attribution context with cancellation detached. A
+// canceled caller must not turn an unfinished scan into a "response scan
+// failed" block or a tool finding; verdicts match a context.Background scan.
 func (o ResponseScanOptions) scanContext() context.Context {
 	if o.Context != nil {
-		return o.Context
+		return context.WithoutCancel(o.Context)
 	}
 	return context.Background()
 }
