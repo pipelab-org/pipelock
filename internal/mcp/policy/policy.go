@@ -1615,13 +1615,13 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Destructive File Delete",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)`,
+			ArgPattern:  `(?i)\brm(?:\s+[^\s;|&]+)*?\s+(-[a-z]*[rf][a-z]*\b|--(?:recursive|force)\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Recursive Permission Change",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(chmod\s+(-R|--recursive)\s+(777|666)|chmod\s+(777|666)\s+(-R|--recursive)|chown\s+(-R|--recursive))\b`,
+			ArgPattern:  `(?i)\b(chmod(?:\s+[^\s;|&]+)*?\s+(-[a-z]*r[a-z]*|--recursive)(?:\s+[^\s;|&]+)*?\s+(0?(?:777|666)|(?:[ugoa]*[+=-][rwxXst]*,)*[ugo]*[ao][ugoa]*[+=][rwxXst]*w[rwxXst]*(?:,[ugoa]*[+=-][rwxXst]*)*)|chmod(?:\s+[^\s;|&]+)*?\s+(0?(?:777|666)|(?:[ugoa]*[+=-][rwxXst]*,)*[ugo]*[ao][ugoa]*[+=][rwxXst]*w[rwxXst]*(?:,[ugoa]*[+=-][rwxXst]*)*)(?:\s+[^\s;|&]+)*?\s+(-[a-z]*r[a-z]*|--recursive)|chown(?:\s+[^\s;|&]+)*?\s+(-[a-z]*r[a-z]*|--recursive))\b`,
 		},
 		{
 			// Move and copy are matched unscoped, so the credential matches on the
@@ -1668,7 +1668,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Reverse Shell",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e)`,
+			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1695,24 +1695,24 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Disk Wipe Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(dd\s+if=.*of=/dev/|mkfs\.|fdisk)\b`,
+			ArgPattern:  `(?i)\b(dd\b.*of=/dev/|mkfs\.|fdisk)\b`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Package Install",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(pip|npm|gem|cargo|go)\s+install\b`,
+			ArgPattern:  `(?i)\b(pip3?|npm|gem|cargo|go)(?:\s+-[^\s;|&]*(?:\s+[^-\s;|&][^\s;|&]*)?)*\s+install\b`,
 		},
 		{
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
-			ArgPattern:  `(?i)(\bgit\s+)?(push\s+(--force(\s|$)|-f\b)|reset\s+--hard\b|clean\s+-fd\b)`,
+			ArgPattern:  `(?i)(\bgit\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(\s|$)|-[a-z]*f[a-z]*\b)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Encoded Command Execution",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64\s+(-d|--decode)\b.*\|\s*(ba)?sh\b)`,
+			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64(?:\s+[^\s;|&]+)*?\s+(-[a-z]*d[a-z]*|--decode)\b.*\|\s*(ba)?sh\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1797,7 +1797,7 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Detached Process Spawning",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux\s+(new-session|new)\s+-d)`,
+			ArgPattern:  `(?i)(\bnohup\s+|\bdisown\b|\bsetsid\s+|\bscreen\s+(-\S+\s+)*-[dDm]|\btmux(?:\s+[^\s;|&]+)*?\s+(new-session|new)(?:\s+[^\s;|&]+)*?\s+-[a-z]*d)`,
 		},
 		{
 			// Move tools are deliberately unscoped and therefore protect both source

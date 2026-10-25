@@ -20,6 +20,6 @@ mcp_tool_policy:
   action: block
   rules:
     - name: "Destructive File Delete"
-      tool_pattern: '(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)\brm\s+(--\s+)?(-[a-z]*[rf]\b|--(?:recursive|force)\b)'
+      tool_pattern: '(?i)^(?:(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:]))?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
+      arg_pattern: '(?i)\brm(?:\s+[^\s;|&]+)*?\s+(-[a-z]*[rf][a-z]*\b|--(?:recursive|force)\b)'
       action: block

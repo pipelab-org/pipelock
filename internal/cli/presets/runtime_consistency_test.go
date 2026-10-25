@@ -5,8 +5,11 @@ package presets
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"regexp/syntax"
+	"slices"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/configs"
@@ -51,6 +54,92 @@ func TestModePresetsKeepRuntimeToolRules(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// presetToolRuleOverrides lists built-in tool rules a named preset replaces on
+// purpose with a stricter rule of the same name. hostile-model also covers
+// Kubernetes and Docker credentials and flags any curl, wget, nc, ncat, or
+// socat use.
+var presetToolRuleOverrides = map[string][]string{
+	"hostile-model": {"Credential File Access", "Network Exfiltration"},
+}
+
+func TestPresetsCarryBuiltInToolRulePatterns(t *testing.T) {
+	for _, name := range All {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Config(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signatures := make([]config.ToolPolicyRule, len(cfg.MCPToolPolicy.Rules))
+			names := make(map[string]bool, len(cfg.MCPToolPolicy.Rules))
+			for i, candidate := range cfg.MCPToolPolicy.Rules {
+				signatures[i] = toolRuleSignature(t, candidate)
+				names[candidate.Name] = true
+			}
+			for _, original := range policy.DefaultToolPolicyRules() {
+				want := toolRuleSignature(t, original)
+				found := slices.ContainsFunc(signatures, func(got config.ToolPolicyRule) bool {
+					return reflect.DeepEqual(got, want)
+				})
+				overridden := slices.Contains(presetToolRuleOverrides[name], original.Name)
+				switch {
+				case overridden && found:
+					t.Errorf("rule %q matches the built-in rule; drop it from presetToolRuleOverrides", original.Name)
+				case overridden && !names[original.Name]:
+					t.Errorf("overridden rule %q is missing", original.Name)
+				case !overridden && !found:
+					t.Errorf("rule %q differs from the built-in rule (tool, argument, or key pattern)", original.Name)
+				}
+			}
+		})
+	}
+}
+
+// TestExampleConfigsCarryBuiltInToolRules checks the example configs: a rule
+// that carries a built-in rule's name must keep its tool, argument, and key
+// patterns and its action.
+func TestExampleConfigsCarryBuiltInToolRules(t *testing.T) {
+	files, err := filepath.Glob(filepath.Join("..", "..", "..", "examples", "*", "pipelock.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) == 0 {
+		t.Fatal("no example configs found")
+	}
+	builtIn := make(map[string][]config.ToolPolicyRule)
+	for _, rule := range policy.DefaultToolPolicyRules() {
+		builtIn[rule.Name] = append(builtIn[rule.Name], rule)
+	}
+	checked := 0
+	for _, file := range files {
+		t.Run(filepath.Base(filepath.Dir(file)), func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Clean(file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadBytes(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, rule := range cfg.MCPToolPolicy.Rules {
+				originals, ok := builtIn[rule.Name]
+				if !ok {
+					continue
+				}
+				checked++
+				got := toolRuleSignature(t, rule)
+				if !slices.ContainsFunc(originals, func(original config.ToolPolicyRule) bool {
+					return reflect.DeepEqual(got, toolRuleSignature(t, original)) && rule.Action == original.Action
+				}) {
+					t.Errorf("rule %q differs from the built-in rule (patterns or action)", rule.Name)
+				}
+			}
+		})
+	}
+	if checked == 0 {
+		t.Fatal("no example rule shares a built-in rule name")
 	}
 }
 
