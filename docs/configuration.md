@@ -3729,8 +3729,10 @@ dashboard_snapshot:
 
 Configuring an anchor point is the complete opt-in. Without `anchor.rekor_url`
 or `anchor.local_log`, the section is inert. Auto-anchor failures degrade
-evidence health and retry later; they never block or delay proxy traffic or
-receipt emission. Rekor uses v1 `hashedrekord`, and only the checkpoint's
+evidence health and retry later. Capturing a confirmed receipt head waits for
+outstanding durable writes and can briefly queue new receipt emissions behind
+those writes. History verification and anchor publication hold no writer lock.
+Rekor uses v1 `hashedrekord`, and only the checkpoint's
 SHA-512 digest and signature leave the box, never receipt content. A self-hosted
 log provides durability and tamper evidence but not operator independence; a
 public log can provide an independent witness but publishes checkpoint metadata

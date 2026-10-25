@@ -149,3 +149,78 @@ func TestAutoAnchorLivePrefixUnconfirmedHead(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestAutoAnchorLivePrefixSessionMismatch(t *testing.T) {
+	rig := newAutoAnchorTestRig(t)
+	rig.monitor.sessionID = "another-session"
+	walked := false
+	rig.monitor.walkFn = func(string, string, recorder.SessionHistoryPrefix, func(receipt.Receipt) error) error {
+		walked = true
+		return errors.New("unexpected history walk")
+	}
+	_, _, err := rig.monitor.buildCheckpoint(rig.emitter, 0)
+	if err == nil || !strings.Contains(err.Error(), "belongs to another session") || walked {
+		t.Fatalf("session mismatch: walked=%v err=%v", walked, err)
+	}
+}
+
+func TestAutoAnchorLivePrefixInitFailure(t *testing.T) {
+	rig := newAutoAnchorTestRig(t)
+	// A malformed retained shard makes the real emitter refuse initialization.
+	path := filepath.Join(rig.recorder.Dir(), "evidence-broken-0.jsonl")
+	if err := os.WriteFile(path, []byte("{malformed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rig.recorder, PrivKey: rig.priv, ConfigHash: "initialization", Principal: "tester", Actor: "runtime-test", Session: "broken"})
+	if emitter == nil || emitter.InitError() == nil {
+		t.Fatal("initialization failure was not reproduced")
+	}
+	rig.monitor.sessionID = emitter.Session()
+	_, _, err := rig.monitor.buildCheckpoint(emitter, 0)
+	if err == nil || !strings.Contains(err.Error(), "refuse auto-anchor: emitter head") || errors.Is(err, errAutoAnchorWritePending) {
+		t.Fatalf("initialization refusal: %v", err)
+	}
+}
+
+func TestAutoAnchorLivePrefixGappedHead(t *testing.T) {
+	rig := newAutoAnchorTestRig(t)
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), MaxEntriesPerFile: 1, FileMode: 0o600}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	emitter := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: rig.priv, ConfigHash: "gap", Principal: "tester", Actor: "runtime-test"})
+	if emitter == nil || emitter.InitError() != nil {
+		t.Fatalf("emitter: %v", emitter.InitError())
+	}
+	if err := emitter.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := emitter.ConfirmedTailObservation()
+	if err != nil || !before.WriteKnown || before.PersistedHash != before.PrevHash {
+		t.Fatalf("healthy head: %+v err=%v", before, err)
+	}
+	// The first shard rotated. Block creation of the next file so the emitter
+	// consumes its next chain position but no new receipt reaches disk.
+	blocked := filepath.Join(rec.Dir(), "evidence-proxy-1.jsonl")
+	if err := os.Mkdir(blocked, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	err = emitter.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionAllow, Transport: "fetch", Method: "GET", Target: "https://api.vendor.example/gap"})
+	if !errors.Is(err, receipt.ErrReceiptPostAdvance) {
+		t.Fatalf("post-advance failure not reproduced: %v", err)
+	}
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	obs, err := emitter.ConfirmedTailObservation()
+	if err != nil || !obs.WriteKnown || obs.Unconfirmed || obs.InitErr || obs.PersistedHash == obs.PrevHash || obs.PersistedHash != before.PersistedHash {
+		t.Fatalf("expected isolated gap over unchanged persisted head: %+v err=%v", obs, err)
+	}
+	rig.monitor.recorder = rec
+	rig.monitor.sessionID = emitter.Session()
+	_, _, err = rig.monitor.buildCheckpoint(emitter, 0)
+	if err == nil || !strings.Contains(err.Error(), "gapped") {
+		t.Fatalf("gapped head accepted: %v", err)
+	}
+}

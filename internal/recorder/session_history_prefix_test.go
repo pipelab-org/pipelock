@@ -194,3 +194,26 @@ func TestHistoryPrefixMultipleWindows(t *testing.T) {
 		t.Fatalf("count=%d err=%v", count, err)
 	}
 }
+
+// The observed shard is already gone before the walk starts (no inventory to
+// compare against yet). Only the foundPrefix guard can refuse this.
+func TestHistoryPrefixMissingBeforeWalk(t *testing.T) {
+	dir := t.TempDir()
+	writeHistoryShard(t, dir, "live", 0, 1)
+	name := writeHistoryShard(t, dir, "live", 2, 2)
+	path := filepath.Join(dir, name)
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound := SessionHistoryPrefix{File: name, End: info.Size()}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	err = WalkSessionHistoryPrefix(dir, "live", bound, func(Entry) error { count++; return nil })
+	if !errors.Is(err, ErrEvidenceRefused) || !strings.Contains(err.Error(), "observed evidence file is missing") {
+		t.Fatalf("missing observed shard: count=%d err=%v", count, err)
+	}
+	t.Logf("refused: %v", err)
+}
