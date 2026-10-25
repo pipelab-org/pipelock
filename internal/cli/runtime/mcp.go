@@ -474,10 +474,7 @@ func resolvedMCPDoWAgentName(requested, resolved string, found bool) string {
 func recoverDeferredActions(
 	manager *deferred.Manager,
 	journalPath string,
-	receiptEmitter *receipt.Emitter,
-	v2ReceiptEmitter *proxydecision.Emitter,
-	receiptGroup *mcp.MCPReceiptGroup,
-	policyHash string,
+	opts mcp.MCPProxyOpts,
 	logW io.Writer,
 ) error {
 	if journalPath == "" && manager != nil {
@@ -497,14 +494,8 @@ func recoverDeferredActions(
 		return pending[i].DeferID < pending[j].DeferID
 	})
 	for _, held := range pending {
-		opts := mcp.MCPProxyOpts{
-			ReceiptEmitter:   receiptEmitter,
-			V2ReceiptEmitter: v2ReceiptEmitter,
-			ReceiptGroup:     receiptGroup,
-			PolicyHash:       policyHash,
-			RequireReceipts:  true,
-			Transport:        held.Surface,
-		}
+		opts.RequireReceipts = true
+		opts.Transport = held.Surface
 		if err := mcp.EmitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 			DeferID:          held.DeferID,
 			ParentActionID:   held.ActionID,
@@ -1545,7 +1536,10 @@ Key-free evidence capture:
 			}
 			a2aCardBaseline := mcp.NewCardBaseline(1000)
 			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
-			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), receiptEmitter, v2ReceiptEmitter, receiptGroup, captureConfigHash, cmd.ErrOrStderr()); err != nil {
+			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
+				Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
+				ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
+			}, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			if hasUpstream {

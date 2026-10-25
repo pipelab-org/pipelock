@@ -8,12 +8,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/deferred"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -71,31 +74,49 @@ func recoveryEmitter(t *testing.T, dir string, sync func(*os.File) error) *recei
 // crash between journaling a release and writing its allow receipt: recovery
 // writes a block resolution receipt linked to the held call and closes the hold.
 func TestRecoverDeferredActionsClosesInterruptedRelease(t *testing.T) {
-	dir := t.TempDir()
-	manager := crashDuringRelease(t, dir)
-	if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 1 {
-		t.Fatalf("pending before recovery = %d err=%v, want 1", len(pending), err)
-	}
+	for _, mode := range []string{config.ActionBlock, config.ActionWarn, config.ActionAllow} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			enabled := mode != config.ActionAllow
+			cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Enabled: &enabled, Action: config.ActionBlock}
+			if mode == config.ActionWarn {
+				cfg.PromptInjectionDetection.Action = mode
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			dir := t.TempDir()
+			manager := crashDuringRelease(t, dir)
+			if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 1 {
+				t.Fatalf("pending before recovery = %d err=%v, want 1", len(pending), err)
+			}
 
-	receiptsDir := filepath.Join(dir, "receipts")
-	var log bytes.Buffer
-	if err := recoverDeferredActions(manager, manager.JournalPath(), recoveryEmitter(t, receiptsDir, nil), nil, nil, runtimeTestPolicyHash, &log); err != nil {
-		t.Fatalf("recoverDeferredActions: %v", err)
-	}
-	if log.Len() != 0 {
-		t.Fatalf("recovery log = %q, want empty", log.String())
-	}
-	if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 0 {
-		t.Fatalf("pending after recovery = %d err=%v, want 0", len(pending), err)
-	}
-	records := readRuntimeActionRecords(t, receiptsDir)
-	if len(records) != 1 {
-		t.Fatalf("recovery receipts = %d, want 1", len(records))
-	}
-	r := records[0]
-	if r.Verdict != config.ActionBlock || r.DecisionPhase != receipt.DecisionPhaseResolution ||
-		r.ResolutionSource != deferred.SourceRestartRecovery || r.ParentActionID != "a1" || r.PolicyHash != runtimeTestPolicyHash {
-		t.Fatalf("recovery receipt = %+v, want block restart_recovery resolution of a1", r)
+			receiptsDir := filepath.Join(dir, "receipts")
+			var log bytes.Buffer
+			if err := recoverDeferredActions(manager, manager.JournalPath(), mcp.MCPProxyOpts{Scanner: sc, ReceiptEmitter: recoveryEmitter(t, receiptsDir, nil), PolicyHash: runtimeTestPolicyHash}, &log); err != nil {
+				t.Fatalf("recoverDeferredActions: %v", err)
+			}
+			if log.Len() != 0 {
+				t.Fatalf("recovery log = %q, want empty", log.String())
+			}
+			if pending, err := deferred.PendingJournal(manager.JournalPath()); err != nil || len(pending) != 0 {
+				t.Fatalf("pending after recovery = %d err=%v, want 0", len(pending), err)
+			}
+			records := readRuntimeActionRecords(t, receiptsDir)
+			if len(records) != 1 {
+				t.Fatalf("recovery receipts = %d, want 1", len(records))
+			}
+			r := records[0]
+			if r.Verdict != config.ActionBlock || r.DecisionPhase != receipt.DecisionPhaseResolution ||
+				r.ResolutionSource != deferred.SourceRestartRecovery || r.ParentActionID != "a1" || r.PolicyHash != runtimeTestPolicyHash {
+				t.Fatalf("recovery receipt = %+v, want block restart_recovery resolution of a1", r)
+			}
+
+			if strings.Contains(r.Pattern, "prompt_injection_detection") != (mode != config.ActionBlock) {
+				t.Fatalf("recovery wording policy = %q", r.Pattern)
+			}
+		})
 	}
 }
 
@@ -110,7 +131,7 @@ func TestRecoverDeferredActionsKeepsHoldWhenReceiptNotDurable(t *testing.T) {
 		return errors.New("injected sync failure")
 	})
 	var log bytes.Buffer
-	err := recoverDeferredActions(manager, manager.JournalPath(), emitter, nil, nil, runtimeTestPolicyHash, &log)
+	err := recoverDeferredActions(manager, manager.JournalPath(), mcp.MCPProxyOpts{ReceiptEmitter: emitter, PolicyHash: runtimeTestPolicyHash}, &log)
 	if err == nil {
 		t.Fatal("recoverDeferredActions succeeded with an unsynced recovery receipt")
 	}
