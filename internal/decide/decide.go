@@ -517,13 +517,29 @@ func evidenceFromPolicy(verdict policy.Verdict) []Evidence {
 		if action == config.ActionWarn {
 			sev = "medium"
 		}
+		detail := "action=" + action
+		if rule == policy.IncompletePairCheckRule && len(verdict.IncompleteRules) > 0 {
+			detail += "; rules=" + strings.Join(verdict.IncompleteRules, ", ")
+		}
 		ev = append(ev, Evidence{
 			Scanner:  scanner.DecidePolicyLabel,
 			Pattern:  rule,
 			Severity: sev,
-			Detail:   "action=" + action,
+			Detail:   detail,
 			Action:   action,
 		})
 	}
 	return ev
+}
+
+// IncompleteCheckLine returns a log line naming the tool policy rules whose
+// check could not rule out a match, or "" when there are none. Hooks write
+// it to stderr so a warn verdict still leaves a record.
+func IncompleteCheckLine(d Decision) string {
+	for _, e := range d.Evidence {
+		if e.Scanner == scanner.DecidePolicyLabel && e.Pattern == policy.IncompletePairCheckRule {
+			return "pipelock: " + policy.IncompletePairCheckRule + " (" + e.Detail + ")"
+		}
+	}
+	return ""
 }

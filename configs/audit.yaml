@@ -365,6 +365,8 @@ mcp_data_class_labels:
 mcp_tool_policy:
   enabled: true
   action: warn
+  # Argument lists too long to check every token pair: allow and log incomplete_pair_check.
+  on_incomplete_check: warn
   rules:
     - name: "Destructive File Delete"
       action: block

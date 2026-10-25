@@ -30,7 +30,16 @@ const (
 	duplicateJSONKeyRule          = "duplicate_json_object_key"
 	invalidJSONKeyInputRule       = "invalid_json_key_input"
 	malformedA2AParamsRule        = "malformed_a2a_params"
+	// incompletePairCheckRule names the signal for a rule whose check could
+	// not rule out a match: its pairwise view could not cover an over-long
+	// argument list, or it matches only across separate commands. Its action
+	// comes from mcp_tool_policy.on_incomplete_check.
+	incompletePairCheckRule = IncompletePairCheckRule
 )
+
+// IncompletePairCheckRule is the rule name a verdict carries when a rule's
+// check could not rule out a match; Verdict.IncompleteRules names those rules.
+const IncompletePairCheckRule = "incomplete_pair_check"
 
 // shellExpansionRe matches shell variable expansions used as whitespace substitutes.
 // Attackers use ${IFS} or $IFS to replace spaces: "rm${IFS}-rf" expands to "rm -rf"
@@ -145,6 +154,10 @@ type Config struct {
 	RedirectProfiles      map[string]config.RedirectProfile      // keyed by profile name
 	DeferResolverProfiles map[string]config.DeferResolverProfile // keyed by profile name
 
+	// IncompleteAction applies when a rule's pairwise view stops before it
+	// covers every distinct token: warn (default when empty) or block.
+	IncompleteAction string
+
 	// localPaths, when set, also matches what submitted paths resolve to on
 	// this host. See EnableLocalPathIdentity.
 	localPaths *localPathIdentity
@@ -179,6 +192,8 @@ type Verdict struct {
 	// directory that could not be listed to rule out a hard link. They never
 	// change the action or the rule names.
 	Notes []string
+	// IncompleteRules names the rules behind IncompletePairCheckRule.
+	IncompleteRules []string
 }
 
 // New compiles policy rules from config. Returns nil if disabled or no rules
@@ -190,6 +205,7 @@ func New(cfg config.MCPToolPolicy) *Config {
 	}
 	pc := &Config{
 		Action:                cfg.Action,
+		IncompleteAction:      cfg.OnIncompleteCheck,
 		RedirectProfiles:      cfg.RedirectProfiles,
 		DeferResolverProfiles: cfg.DeferResolverProfiles,
 	}
@@ -284,18 +300,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	// With local path identity enabled, the resolved location of each submitted
 	// path joins the match set, so a link to a protected file matches the rule
 	// that protects it.
-	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
-	tokens, joined := normalizeArgTokens(matchArgs, normalize.ForMatching, policyPreNormalize)
-	altTokens, altJoined := normalizeArgTokens(matchArgs, normalize.ForPolicy, policyPreNormalize)
-	baseTokens, baseJoined := normalizeArgTokens(matchArgs, normalize.ForMatching, nil)
+	//
 	// Literal view: each submitted string exactly as sent. Normalization strips
 	// shell quotes, which is right for command text but lets a file tool path
 	// such as `id_rsa.p'ub` read as `id_rsa.pub` while the tool opens the file
 	// with the quote in its name. Matching the literal string as well keeps a
 	// normalized spelling from narrowing what a pattern sees.
-	rawTokens, rawJoined := literalArgTokens(matchArgs)
+	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
+	views := buildArgViews(matchArgs)
 
-	var matchedRules []string
+	var matchedRules, incompleteRules []string
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
@@ -311,10 +325,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		// arguments are unavailable, skip best-effort pattern-only rules rather
 		// than falling back to unscoped matching; structural validators need raw
 		// JSON, so they fail closed instead.
-		ruleTokens, ruleJoined := tokens, joined
-		ruleAltTokens, ruleAltJoined := altTokens, altJoined
-		ruleBaseTokens, ruleBaseJoined := baseTokens, baseJoined
-		ruleRawTokens, ruleRawJoined := rawTokens, rawJoined
+		ruleViews := views
 		patchInspection := patchTargetsOrdinary
 		patchFallbackArgs := argStrings
 		credentialDestinations := argStrings
@@ -333,10 +344,7 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleTokens, ruleJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, policyPreNormalize)
-			ruleAltTokens, ruleAltJoined = normalizeArgTokens(scopedStrings, normalize.ForPolicy, policyPreNormalize)
-			ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(scopedStrings, normalize.ForMatching, nil)
-			ruleRawTokens, ruleRawJoined = literalArgTokens(scopedStrings)
+			ruleViews = buildArgViews(scopedStrings)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -346,31 +354,39 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleTokens, ruleJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, policyPreNormalize)
-				ruleAltTokens, ruleAltJoined = normalizeArgTokens(matchStrings, normalize.ForPolicy, policyPreNormalize)
-				ruleBaseTokens, ruleBaseJoined = normalizeArgTokens(matchStrings, normalize.ForMatching, nil)
-				ruleRawTokens, ruleRawJoined = literalArgTokens(matchStrings)
+				ruleViews = buildArgViews(matchStrings)
 			}
 		}
 
-		argPatternMatched := patchInspection == patchTargetsUninspectable || rule.ArgPattern == nil ||
-			matchArgPattern(rule.ArgPattern, ruleTokens, ruleJoined) ||
-			matchArgPattern(rule.ArgPattern, ruleAltTokens, ruleAltJoined) ||
-			matchArgPattern(rule.ArgPattern, ruleBaseTokens, ruleBaseJoined) ||
-			matchArgPattern(rule.ArgPattern, ruleRawTokens, ruleRawJoined)
+		argPatternMatched := patchInspection == patchTargetsUninspectable || rule.ArgPattern == nil
+		pairIncomplete := false
+		if !argPatternMatched {
+			argPatternMatched, pairIncomplete = matchArgViews(rule.ArgPattern, ruleViews[:]...)
+		}
 		// The shipped credential exception describes one submitted value. JSON
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
 		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
-			argPatternMatched = matched
+			argPatternMatched, pairIncomplete = matched, false
 		}
 		if patchInspection != patchTargetsUninspectable {
 			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations); handled {
-				argPatternMatched = matched
+				argPatternMatched, pairIncomplete = matched, false
 			}
 		}
 		if !argPatternMatched {
+			if pairIncomplete {
+				// The rule could still match on a pair the bounded scan did
+				// not reach. Report that only if the rest of the rule holds.
+				structuralMatched, uninspectable := rule.matchStructuralValidators(rawArgs)
+				if uninspectable {
+					return uninspectableJSONDepthVerdict()
+				}
+				if structuralMatched {
+					incompleteRules = append(incompleteRules, rule.Name)
+				}
+			}
 			continue
 		}
 
@@ -403,6 +419,12 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		}
 	}
 
+	if len(incompleteRules) > 0 {
+		matchedRules = append(matchedRules, incompletePairCheckRule)
+		strictest = StricterAction(strictest, pc.incompleteAction())
+		linkNotes = append(linkNotes, "could not rule out a match across every token pair for: "+strings.Join(incompleteRules, ", "))
+	}
+
 	if len(matchedRules) == 0 {
 		return Verdict{}
 	}
@@ -422,7 +444,16 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
 		Notes:            linkNotes,
+		IncompleteRules:  incompleteRules,
 	}
+}
+
+// incompleteAction is the action for an incomplete pairwise check.
+func (pc *Config) incompleteAction() string {
+	if pc.IncompleteAction == config.ActionBlock {
+		return config.ActionBlock
+	}
+	return config.ActionWarn
 }
 
 func appendUniqueNotes(notes, more []string) []string {
@@ -484,48 +515,6 @@ var pathSeparatorRunRe = regexp.MustCompile(`(^|[^:/])/(?:\.?/)+`)
 // segments anywhere in the value, so a traversal spelling still matches.
 func collapsePathSeparators(s string) string {
 	return pathSeparatorRunRe.ReplaceAllString(s, "${1}/")
-}
-
-// maxPairwiseTokens caps token count for O(n²) pairwise matching.
-// Kept at 64 to bound worst-case regex work (~4K pairs × rules).
-// Higher values create DoS risk (256 tokens = ~2M regex matches).
-const maxPairwiseTokens = 64
-
-// matchArgPattern checks if a regex pattern matches against any view of the
-// argument tokens. It uses three strategies:
-//  1. Full joined string (fast path for ordered arrays)
-//  2. Individual tokens (catches self-contained patterns like file paths)
-//  3. Pairwise token combinations (catches map-ordering evasion where command
-//     and flags end up in separate tokens with non-deterministic iteration order)
-//
-// literalArgTokens returns the submitted strings unmodified, each as one
-// token, and their space-joined form.
-func literalArgTokens(args []string) ([]string, string) {
-	return args, strings.Join(args, " ")
-}
-
-func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
-	if pat.MatchString(joined) {
-		return true
-	}
-	for _, t := range tokens {
-		if pat.MatchString(t) {
-			return true
-		}
-	}
-	// Pairwise: check "A B" and "B A" for every distinct pair.
-	// Typical arg lists have 3-10 tokens, so this is 6-90 checks - negligible cost.
-	// Capped at maxPairwiseTokens to prevent DoS from adversarial inputs.
-	if len(tokens) <= maxPairwiseTokens {
-		for i, a := range tokens {
-			for j, b := range tokens {
-				if i != j && pat.MatchString(a+" "+b) {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }
 
 const (
@@ -1255,6 +1244,10 @@ func mergeVerdicts(a, b Verdict) Verdict {
 		out.Rules = appendUniqueRule(out.Rules, r)
 	}
 	out.Notes = appendUniqueNotes(slices.Clone(a.Notes), b.Notes)
+	out.IncompleteRules = nil
+	for _, r := range append(slices.Clone(a.IncompleteRules), b.IncompleteRules...) {
+		out.IncompleteRules = appendUniqueRule(out.IncompleteRules, r)
+	}
 	return out
 }
 

@@ -261,6 +261,11 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	// scanned request; the tool-policy enabled flag, action, and rules stay in
 	// view because those do affect detection.
 	view.MCPToolPolicy.QuarantineDir = ""
+	// on_incomplete_check stays in view because it decides allow or block.
+	// An omitted value means warn, so both spellings hash the same.
+	if view.MCPToolPolicy.OnIncompleteCheck == ActionWarn {
+		view.MCPToolPolicy.OnIncompleteCheck = ""
+	}
 
 	// MCPDataClassLabels is a foundation-only config surface until the
 	// derivation path populates receipt fields. Exclude it from the semantic

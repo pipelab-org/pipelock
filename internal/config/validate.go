@@ -2649,6 +2649,12 @@ func (c *Config) validateMCPToolPolicy() error {
 	if c.MCPToolPolicy.Action == ActionDefer && !c.Defer.Enabled {
 		return fmt.Errorf("invalid mcp_tool_policy action %q: defer.enabled must be true", c.MCPToolPolicy.Action)
 	}
+	switch c.MCPToolPolicy.OnIncompleteCheck {
+	case "", ActionWarn, ActionBlock:
+		// valid; empty means warn
+	default:
+		return fmt.Errorf("invalid mcp_tool_policy on_incomplete_check %q: must be warn or block", c.MCPToolPolicy.OnIncompleteCheck)
+	}
 	// Validate redirect profiles.
 	for name, profile := range c.MCPToolPolicy.RedirectProfiles {
 		if len(profile.Exec) == 0 || profile.Exec[0] == "" {

@@ -253,6 +253,7 @@ func runCursorHook(cmd *cobra.Command, configFile string) error {
 
 	// Decide.
 	decision := decide.Decide(cmd.Context(), cfg, sc, pc, action)
+	logIncompleteCheck(cmd, decision)
 
 	// Map to Cursor response.
 	resp := cursorResponse{
