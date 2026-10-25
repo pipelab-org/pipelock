@@ -263,7 +263,10 @@ func TestToolBaseline_HeaderContractStatesAndStaleCompletion(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalid := ToolDef{Name: "echo", InputSchema: json.RawMessage(`{"type":"object","if":{"type":"string","x-mcp-header":"Hidden"}}`)}
-	corrected, err := b.ReserveToolInventory(nil, []ToolDef{invalid})
+	// Only this structural-only reservation carries this name, so delivery
+	// history for it can come from nowhere else.
+	structuralOnly := ToolDef{Name: "structural-only", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	corrected, err := b.ReserveToolInventory(nil, []ToolDef{invalid, structuralOnly})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +276,7 @@ func TestToolBaseline_HeaderContractStatesAndStaleCompletion(t *testing.T) {
 	if got.State != HeaderContractInvalid || got.Reason == "" {
 		t.Fatalf("stale completion restored old contract: %+v", got)
 	}
-	if b.IsKnownTool("invalid") {
+	if b.IsKnownTool("structural-only") {
 		t.Fatal("structural observation acquired delivery history")
 	}
 	requireHeaderBindings(t, b, []ToolDef{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}})

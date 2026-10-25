@@ -1525,12 +1525,24 @@ func RunHTTPListenerProxy(
 			return
 		}
 		releaseContract := func() {}
+		// A wait for the contract lock ends with the request; the client is
+		// gone or the server is stopping, so refuse instead of waiting on.
+		refuseContractWait := func(err error) {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: request ended while waiting for tool contract state: %v\n", err)
+			denialAudit = mcpListenerCapacityDenialAudit()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock tool contract state busy")))
+		}
 		// Every list on this principal records header contracts into the same
 		// registry, ordered by reservation. A legacy list reserving inside a
 		// modern list's window would commit first, then discard the modern
 		// contract that is delivered last, so lists of every version serialize.
 		if frame.Method == "tools/list" {
-			clientState.contractMu.Lock()
+			if err := clientState.contractMu.Lock(r.Context()); err != nil {
+				refuseContractWait(err)
+				return
+			}
 			releaseContract = sync.OnceFunc(clientState.contractMu.Unlock)
 			defer releaseContract()
 		}
@@ -1540,8 +1552,11 @@ func RunHTTPListenerProxy(
 			case methodToolsCall:
 				// Hold the read lock only while choosing the contract. Holding it
 				// through upstream execution would let one long call plus a queued
-				// list (RWMutex writer preference) stall every call for this principal.
-				clientState.contractMu.RLock()
+				// list (writer preference) stall every call for this principal.
+				if err := clientState.contractMu.RLock(r.Context()); err != nil {
+					refuseContractWait(err)
+					return
+				}
 				releaseContract = sync.OnceFunc(clientState.contractMu.RUnlock)
 				defer releaseContract()
 			}

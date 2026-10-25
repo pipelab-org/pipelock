@@ -50,7 +50,7 @@ type mcpListenerClientState struct {
 	// Serialize inventories of every protocol version across upstream fetch,
 	// scan and delivery; modern calls share the read lock only while selecting
 	// and checking a contract, so a long call cannot stall a queued list.
-	contractMu sync.RWMutex
+	contractMu contractLock
 	revoked    atomic.Bool
 	done       context.Context
 	cancel     context.CancelFunc
