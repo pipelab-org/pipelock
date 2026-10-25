@@ -4700,7 +4700,7 @@ func TestToolBaseline_ReserveToolInventoryCommitsOnlyForwardedState(t *testing.T
 		},
 		{
 			Name:        "invalid",
-			InputSchema: json.RawMessage(`{"type":"object","properties":[]}`),
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"region":{"type":"number","x-mcp-header":"Region"}}}`),
 		},
 	}
 
