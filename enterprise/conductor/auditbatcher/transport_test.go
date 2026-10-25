@@ -74,7 +74,8 @@ func TestTransportDrainInvalidOrCancelled(t *testing.T) {
 		t.Fatal("nil transport accepted")
 	}
 	tr := &Transport{}
-	if tr.Drain(nil) == nil { //nolint:staticcheck // Deliberately exercise rejection of a nil context.
+	var absentContext context.Context
+	if tr.Drain(absentContext) == nil {
 		t.Fatal("nil context accepted")
 	}
 	ctx, cancel := context.WithCancel(t.Context())
