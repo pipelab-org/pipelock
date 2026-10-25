@@ -173,7 +173,14 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if !d.state.commitIfActive(func() { commitErr = d.state.baseline.SetToolHeaderBindings(unknown) }) {
+			if !d.state.commitIfActive(func() {
+				// Another response may have held the commit lock past the
+				// acquisition deadline or the caller's cancellation.
+				commitErr = ctx.Err()
+				if commitErr == nil {
+					commitErr = d.state.baseline.SetToolHeaderBindings(unknown)
+				}
+			}) {
 				return errors.New("discovery principal was revoked")
 			}
 			return commitErr
