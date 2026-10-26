@@ -37,10 +37,13 @@ const maxPairChecks = maxPairwiseTokens * (maxPairwiseTokens - 1)
 // shell command string that splits cleanly (see commandSegments), segments
 // holds the tokens of each command in it, and pairs are formed only within a
 // command. Otherwise segments is nil and the whole list is one command.
+// unsplit is set when the arguments are one string that commandSegments
+// could not split, so commands in it cannot be told apart.
 type argView struct {
 	tokens   []string
 	joined   string
 	segments [][]string
+	unsplit  bool
 }
 
 // literalArgTokens returns the submitted strings unmodified, each as one
@@ -53,6 +56,7 @@ func literalArgTokens(args []string) ([]string, string) {
 // (see CheckToolCallWithArgs).
 func buildArgViews(args []string) [4]argView {
 	segs := commandSegments(args)
+	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
 		fn  func(string) string
 		pre *strings.Replacer
@@ -64,7 +68,7 @@ func buildArgViews(args []string) [4]argView {
 	var views [4]argView
 	for i, n := range norms {
 		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
-		views[i] = argView{tokens: tokens, joined: joined}
+		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit}
 		switch {
 		case len(segs) == 1:
 			views[i].segments = [][]string{tokens}
@@ -182,12 +186,21 @@ func commandSegments(args []string) []string {
 	for i, c := range cmds {
 		group[i] = i
 		words := shellWords(s[c.start:c.end])
-		for _, ref := range fileRefs(words) {
+		refs := fileNames(fileRefs(words))
+		reads := false
+		for _, ref := range refs {
 			if w, ok := writer[ref]; ok {
 				union(w, i)
+				reads = true
 			}
 		}
-		for _, f := range writtenFiles(words) {
+		written := writtenFiles(words)
+		if reads {
+			// A command that names a file written earlier may copy,
+			// move or link it to any other file it names.
+			written = append(written, operandFiles(words)...)
+		}
+		for _, f := range fileNames(written) {
 			if w, ok := writer[f]; ok {
 				union(w, i)
 			} else {
@@ -247,6 +260,41 @@ func writtenFiles(words []string) []string {
 		case path.Base(w) == "tee":
 			tee = true
 		case tee && !strings.HasPrefix(w, "-"):
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// fileNames returns names with each one's cleaned path (./a is a, /tmp//a
+// is /tmp/a) added after it.
+func fileNames(names []string) []string {
+	out := make([]string, 0, 2*len(names))
+	for _, n := range names {
+		out = append(out, n)
+		if c := path.Clean(n); c != n && n != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// operandFiles returns the words of a command, after its name, that may name
+// a file: each word that is not an option or a redirection, and the value of
+// an --option=f or of=f.
+func operandFiles(words []string) []string {
+	var out []string
+	for i, w := range words {
+		if i == 0 || redirectTokenRe.MatchString(w) || w == "|" || w == "|&" {
+			continue
+		}
+		if _, v, ok := strings.Cut(w, "="); ok {
+			if v != "" {
+				out = append(out, v)
+			}
+			continue
+		}
+		if !strings.HasPrefix(w, "-") {
 			out = append(out, w)
 		}
 	}
@@ -333,7 +381,13 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	}
 	exhaustive := len(v.tokens) <= maxPairwiseTokens
 	if v.segments == nil {
-		return matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat})
+		m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat})
+		if !m && v.unsplit && commandAfterParts(pat, [][]string{v.tokens}) {
+			// Commands in the string cannot be told apart, so one may
+			// hand the words before it to the other.
+			return false, true
+		}
+		return m, inc
 	}
 	b := &pairBudget{pat: pat}
 	for _, seg := range v.segments {
@@ -355,27 +409,47 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 // commandAfterParts reports whether a command word of pat (see
 // leadingWords) comes after words that, given to it, make pat match with at
 // least two of them, as when one command hands its output to xargs. A match
-// that needs only one such word is left to the pair check. It checks each
-// command of segs, where pipelines and file hand-offs are already joined,
-// once, at the last command word in it.
+// that needs only one such word is left to the pair check. A command run by
+// xargs gets the words handed to it after its own, so when words follow the
+// command, pat is also checked against the command, the words after it, then
+// the words before it; that match counts when the words after it alone do
+// not make it. It checks each
+// command of segs, where pipelines and file hand-offs are already joined, at
+// each command word in it.
 func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
 	words := leadingWords(pat)
 	if len(words) == 0 {
 		return false
 	}
 	for _, seg := range segs {
-		var before, upTo []string
-		last := ""
+		var handed []string
+		var at []int
 		for _, t := range seg {
-			if len(before) > 0 && isCommandWord(t, words) {
-				last, upTo = t, before
+			w := handOffWord(t)
+			if len(handed) > 0 && (isCommandWord(t, words) || isCommandWord(w, words)) {
+				at = append(at, len(handed))
 			}
-			if w := handOffWord(t); w != "" {
-				before = append(before, w)
+			if w != "" {
+				handed = append(handed, w)
+			} else if len(at) > 0 && at[len(at)-1] == len(handed) {
+				at = at[:len(at)-1]
 			}
 		}
-		if last != "" && pat.MatchString(last+" "+strings.Join(upTo, " ")) && !oneWordMatch(pat, last, upTo) {
-			return true
+		for _, i := range at {
+			command, before := handed[i], handed[:i]
+			if oneWordMatch(pat, command, before) {
+				continue
+			}
+			if pat.MatchString(command + " " + strings.Join(before, " ")) {
+				return true
+			}
+			if i+1 == len(handed) {
+				continue
+			}
+			own := strings.Join(handed[i:], " ")
+			if !pat.MatchString(own) && pat.MatchString(own+" "+strings.Join(before, " ")) {
+				return true
+			}
 		}
 	}
 	return false
@@ -472,6 +546,9 @@ func matchCommand(pat *regexp.Regexp, tokens []string, joined string, blank, exh
 	if cleaned, changed := cleanCommandTokens(tokens, blank); changed && pat.MatchString(strings.Join(cleaned, " ")) {
 		return true, false
 	}
+	if here, ok := hereStringData(tokens); ok && pat.MatchString(strings.Join(here, " ")) {
+		return true, false
+	}
 	if exhaustive {
 		for i, a := range tokens {
 			for j, c := range tokens {
@@ -513,6 +590,25 @@ func cleanCommandTokens(tokens []string, blank bool) (cleaned []string, changed 
 		cleaned = append(cleaned, t)
 	}
 	return cleaned, changed
+}
+
+// hereStringData returns tokens with each here-string (<<<word) replaced by
+// its word, the input the command reads, and other redirections dropped. ok
+// is false when there is no here-string with a word attached.
+func hereStringData(tokens []string) (out []string, ok bool) {
+	out = make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if data, found := strings.CutPrefix(t, "<<<"); found {
+			if data != "" {
+				out, ok = append(out, data), true
+			}
+			continue
+		}
+		if !redirectTokenRe.MatchString(t) {
+			out = append(out, t)
+		}
+	}
+	return out, ok
 }
 
 // pairBudget counts pattern checks against maxPairChecks.
