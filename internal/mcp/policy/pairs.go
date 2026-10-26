@@ -400,10 +400,137 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
 		return false, true
 	}
-	if commandAfterParts(pat, v.segments) {
+	if commandAfterParts(pat, findPathsOnly(v.segments)) {
 		return false, true
 	}
 	return false, incomplete
+}
+
+// findWordsUnsafe are find words that print, write or run something other
+// than the path names found, read starting points from elsewhere, or end
+// the options; a find with any of them keeps every word.
+var findWordsUnsafe = []string{
+	"-exec", "-execdir", "-ok", "-okdir", "-printf", "-fprintf", "-fprint",
+	"-fprint0", "-ls", "-fls", "-files0-from", "-f", "--",
+}
+
+// findPathsOnly returns segs with the options and expression words of each
+// find command dropped, since find prints only the path names it finds, and
+// those start with its starting points, which are kept. segs is returned as
+// it is when a find may print anything else or may not be find: when its
+// output is joined with its errors, when it has a word in findWordsUnsafe,
+// when it is not named find, /bin/find or /usr/bin/find at the start of a
+// command, or when PATH, an alias, hash or enable could change which
+// program runs.
+func findPathsOnly(segs [][]string) [][]string {
+	seen := false
+	for _, seg := range segs {
+		for _, t := range seg {
+			f := foldString(t)
+			switch {
+			case strings.Contains(t, ">&"), strings.Contains(t, "&>"), strings.Contains(t, "|&"),
+				strings.HasPrefix(f, foldString("PATH=")), strings.Contains(f, foldString("find=")),
+				slices.Contains([]string{foldString("alias"), foldString("hash"), foldString("enable")}, f):
+				return segs
+			case isFindCommand(t):
+				seen = true
+			}
+		}
+	}
+	if !seen {
+		return segs
+	}
+	out := make([][]string, len(segs))
+	for i, seg := range segs {
+		out[i] = dropFindWords(seg)
+	}
+	return out
+}
+
+// findLeadingOption matches the options GNU and BSD find take before the
+// starting points; -D takes a value.
+var findLeadingOption = regexp.MustCompile(`^(?:-[HLPEXdsx]+|-O[0-9]*|-D)$`)
+
+// isFindWordUnsafe reports whether w is in findWordsUnsafe, case-folded.
+func isFindWordUnsafe(w string) bool {
+	return slices.ContainsFunc(findWordsUnsafe, func(u string) bool { return foldString(u) == foldString(w) })
+}
+
+// isFindCommand reports whether t names the find program.
+func isFindCommand(t string) bool {
+	return slices.Contains([]string{"find", "/bin/find", "/usr/bin/find"}, t)
+}
+
+// dropFindWords is findPathsOnly for one command list.
+func dropFindWords(seg []string) []string {
+	out := make([]string, 0, len(seg))
+	start := true
+	for i := 0; i < len(seg); i++ {
+		t := seg[i]
+		if !start || !isFindCommand(t) {
+			out = append(out, t)
+			start = endsCommand(t)
+			continue
+		}
+		end := i + 1 // find's words are seg[i+1:end], through the one that ends it
+		for end < len(seg) {
+			end++
+			if endsCommand(seg[end-1]) {
+				break
+			}
+		}
+		out = append(out, t)
+		out = append(out, findKept(seg[i+1:end])...)
+		i = end - 1
+		start = true
+	}
+	return out
+}
+
+// findKept returns the words of find's arguments args that may reach its
+// output: every word when one is unsafe, otherwise the starting points,
+// redirections and the operator that ends the command.
+func findKept(args []string) []string {
+	for _, a := range args {
+		w := strings.TrimRight(a, ";|&")
+		if strings.ContainsAny(w, ";|&") || isFindWordUnsafe(handOffWord(a)) {
+			return args
+		}
+	}
+	var kept []string
+	j := 0
+	for ; j < len(args); j++ { // options before the starting points
+		w := handOffWord(args[j])
+		if !findLeadingOption.MatchString(w) {
+			break
+		}
+		if w == "-D" && j+1 < len(args) {
+			j++ // its value is kept as if it were a starting point
+			kept = append(kept, args[j])
+		}
+	}
+	expr := false
+	for ; j < len(args); j++ {
+		a := args[j]
+		w := handOffWord(a)
+		if !expr && (strings.HasPrefix(w, "-") || w == "!" || w == "(" || w == ",") {
+			expr = true
+		}
+		switch {
+		case w == "":
+			kept = append(kept, a)
+		case !expr:
+			kept = append(kept, a)
+		case a != strings.TrimRight(a, ";|&"):
+			kept = append(kept, a[len(strings.TrimRight(a, ";|&")):])
+		}
+	}
+	return kept
+}
+
+// endsCommand reports whether t ends a command with ; | or &.
+func endsCommand(t string) bool {
+	return t != strings.TrimRight(t, ";|&")
 }
 
 // commandAfterParts reports whether a command word of pat (see
