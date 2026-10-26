@@ -1628,6 +1628,7 @@ type KillSwitch struct {
 	MetricsExempt *bool    `yaml:"metrics_exempt"`
 	APIExempt     *bool    `yaml:"api_exempt"` // exempt kill-switch and session admin routes under /api/v1 (default true)
 	APIToken      string   `yaml:"api_token"`
+	APITokenFile  string   `yaml:"api_token_file" json:",omitempty"`
 	APIListen     string   `yaml:"api_listen"` // separate listen address for kill switch API (e.g. "0.0.0.0:9090")
 	AllowlistIPs  []string `yaml:"allowlist_ips"`
 }

@@ -409,3 +409,59 @@ func TestInstallFreshIdentityExistsBeforeServiceValidation(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallNativeCredentialRefusalPreservesServiceInputs(t *testing.T) {
+	for _, phase := range []string{"early", "prospective"} {
+		t.Run(phase, func(t *testing.T) {
+			env, runner, _ := newPreflightInstallEnv(t)
+			target := seedManagedConfig(t, env)
+			preserved := map[string][]byte{}
+			body, err := os.ReadFile(filepath.Clean(target))
+			if err != nil {
+				t.Fatal(err)
+			}
+			preserved[target] = body
+			credential := filepath.Join(env.configDir, "admin-token.encrypted")
+			dropin := filepath.Join(env.configDir, "credentials.conf")
+			for path, body := range map[string][]byte{
+				credential:         []byte("opaque-encrypted-fixture"),
+				dropin:             []byte("[Service]\nLoadCredentialEncrypted=admin-token:" + credential + "\nExecStartPre=/bin/false\n"),
+				env.systemUnitPath: []byte("[Service]\nUser=pipelock-proxy\nExecStart=/usr/local/bin/pipelock run\n"),
+				env.pipelockTarget: []byte("prior-binary"),
+			} {
+				if err := os.WriteFile(path, body, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				preserved[path] = body
+			}
+			runner.on(argvFor("systemctl", "is-active", "pipelock"), "active\n", 0, nil)
+			runner.on(argvFor("systemctl", "is-enabled", "pipelock"), "enabled\n", 0, nil)
+			env.checkServiceConfig = func(_ context.Context, opts serviceenv.CheckOptions) error {
+				if phase == "early" || !opts.AllowMissing {
+					return errors.New("service configuration validation does not support ExecStartPre; migrate to kill_switch.api_token_file")
+				}
+				return nil
+			}
+			src := writePreflightConfig(t, "candidate.yaml", "mode: balanced\nforward_proxy:\n  enabled: true\nkill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+			if err := runInstall(t.Context(), env, installOpts{configSource: src}); err == nil || !strings.Contains(err.Error(), "api_token_file") {
+				t.Fatalf("credential refusal lost: %v", err)
+			}
+			if phase == "early" {
+				assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+			}
+			for path, want := range preserved {
+				got, err := os.ReadFile(filepath.Clean(path))
+				if err != nil || string(got) != string(want) {
+					t.Fatalf("credential refusal changed %s", path)
+				}
+			}
+			for _, call := range runner.calls {
+				for _, action := range []string{"start", "stop", "restart"} {
+					if argvFor(call.name, call.args...) == argvFor("systemctl", action, "pipelock") {
+						t.Fatal("rejected native credential changed the active service")
+					}
+				}
+			}
+		})
+	}
+}

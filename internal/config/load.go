@@ -256,6 +256,12 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 		}
 	}
 
+	if !opts.skipValidate && !opts.skipRuntimePathResolution && opts.resolveLicense {
+		if err := cfg.resolveKillSwitchTokenFile(configDir); err != nil {
+			return nil, err
+		}
+	}
+
 	if !opts.skipValidate {
 		if opts.resolveLicense || opts.fullValidateWithoutLicense {
 			if err := cfg.Validate(); err != nil {

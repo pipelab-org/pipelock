@@ -132,7 +132,9 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 	clone := c.Clone()
 	var info ResolveRuntimeInfo
 
-	clone.resolveKillSwitchAPIToken()
+	if clone.KillSwitch.APITokenFile == "" || !clone.killSwitchAPITokenWasResolved {
+		clone.resolveKillSwitchAPIToken()
+	}
 
 	if opts.Mode.NeedsResponseScanningFallback() && !clone.ResponseScanning.Enabled {
 		// MCP proxy mode re-enables default response scanning if the

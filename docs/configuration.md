@@ -2368,6 +2368,7 @@ kill_switch:
 | `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
 | `api_exempt` | `true` | No | The kill switch and session admin routes under `/api/v1` on the main port bypass it; other `/api/v1` routes do not. Ignored when `api_listen` is set |
 | `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
+| `api_token_file` | `""` | No | Native token file, mutually exclusive with `api_token`. Supports `$CREDENTIALS_DIRECTORY/ID`; see [service credentials](guides/service-credentials.md) for permissions, precedence, reload, and migration. |
 | `api_listen` | `""` | **Yes** | Separate listen address for API |
 | `allowlist_ips` | `[]` | No | Client IPs or CIDRs exempt on the HTTP front door (not MCP, reverse proxy or relay paths; not during uncertain Conductor apply) |
 

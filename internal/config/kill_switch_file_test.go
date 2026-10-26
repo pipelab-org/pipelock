@@ -1,0 +1,137 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestKillSwitchTokenFileLoadReload(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, "")
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "admin-token")
+	write := func(value string) {
+		t.Helper()
+		if err := os.WriteFile(tokenPath, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("first-token\n")
+	cfgPath := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte("kill_switch:\n  api_token_file: admin-token\n  api_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EffectiveKillSwitchAPIToken() != "first-token" {
+		t.Fatal("file token not resolved")
+	}
+	write("second-token\n")
+	resolved, _ := first.ResolveRuntime(RuntimeResolveOpts{})
+	if resolved.EffectiveKillSwitchAPIToken() != "first-token" {
+		t.Fatal("runtime clone resampled file")
+	}
+	second, _, err := LoadReload(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.EffectiveKillSwitchAPIToken() != "second-token" || first.EffectiveKillSwitchAPIToken() != "first-token" {
+		t.Fatal("reload did not isolate credential snapshots")
+	}
+	write("")
+	if _, _, err := LoadReload(cfgPath); err == nil {
+		t.Fatal("empty credential accepted")
+	}
+	if second.EffectiveKillSwitchAPIToken() != "second-token" {
+		t.Fatal("failed reload mutated accepted token")
+	}
+}
+
+func TestKillSwitchTokenFileInputs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CREDENTIALS_DIRECTORY", dir)
+	for _, tt := range []struct {
+		name, value, path, inline, env string
+		wantErr                        bool
+	}{
+		{name: "crlf", value: "file-token\r\n", path: "$CREDENTIALS_DIRECTORY/admin-token"},
+		{name: "credential", value: "file-token\n", path: "$CREDENTIALS_DIRECTORY/admin-token"},
+		{name: "env precedence", value: "file-token", path: "$CREDENTIALS_DIRECTORY/admin-token", env: "override-token"},
+		{name: "conflicting inline", value: "file-token", path: "$CREDENTIALS_DIRECTORY/admin-token", inline: "inline-token", wantErr: true},
+		{name: "empty", path: "$CREDENTIALS_DIRECTORY/admin-token", wantErr: true},
+		{name: "empty despite env", path: "$CREDENTIALS_DIRECTORY/admin-token", env: "override-token", wantErr: true},
+		{name: "multiline", value: "first\nsecond", path: "$CREDENTIALS_DIRECTORY/admin-token", wantErr: true},
+		{name: "space", value: "token with space", path: "$CREDENTIALS_DIRECTORY/admin-token", wantErr: true},
+		{name: "nonascii", value: "tökén", path: "$CREDENTIALS_DIRECTORY/admin-token", wantErr: true},
+		{name: "nul", value: "first\x00second", path: "$CREDENTIALS_DIRECTORY/admin-token", wantErr: true},
+		{name: "missing", path: "$CREDENTIALS_DIRECTORY/absent", wantErr: true},
+		{name: "traversal", path: "$CREDENTIALS_DIRECTORY/../admin-token", wantErr: true},
+		{name: "directory", path: dir, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(EnvKillSwitchAPIToken, tt.env)
+			if err := os.WriteFile(filepath.Join(dir, "admin-token"), []byte(tt.value), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			data := "kill_switch:\n  api_token_file: '" + tt.path + "'\n  api_token: '" + tt.inline + "'\n"
+			cfg, err := LoadBytes([]byte(data))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if err != nil {
+				if strings.Contains(err.Error(), "first") || strings.Contains(err.Error(), "override-token") {
+					t.Fatal("error exposed token")
+				}
+				return
+			}
+			want := strings.TrimSuffix(strings.TrimSuffix(tt.value, "\r\n"), "\n")
+			if tt.env != "" {
+				want = tt.env
+			}
+			if cfg.EffectiveKillSwitchAPIToken() != want || cfg.KillSwitch.APIToken != "" {
+				t.Fatal("incorrect private credential resolution")
+			}
+		})
+	}
+}
+
+func TestKillSwitchTokenFileInspectionAndErrors(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, "")
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	data := []byte("kill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+	if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("missing credential directory accepted")
+	}
+	if _, err := LoadForInspection(cfgPath); err != nil {
+		t.Fatal("inspection read runtime credential", err)
+	}
+	if _, err := LoadPolicyBundleBytes(data); err != nil {
+		t.Fatal("policy validation read runtime credential", err)
+	}
+	path := filepath.Join(dir, "large")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxKillSwitchTokenFileBytes+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n")); err == nil {
+		t.Fatal("oversized token accepted")
+	}
+	if _, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + dir + "\n")); err == nil {
+		t.Fatal("directory accepted")
+	}
+	for _, name := range []string{"$CREDENTIALS_DIRECTORY", "$CREDENTIALS_DIRECTORY/", "$CREDENTIALS_DIRECTORY/..", "$CREDENTIALS_DIRECTORY/a:b", "$CREDENTIALS_DIRECTORY/" + strings.Repeat("x", 256)} {
+		if _, err := KillSwitchCredentialName(name); err == nil {
+			t.Fatalf("invalid reference accepted: %q", name)
+		}
+	}
+}
