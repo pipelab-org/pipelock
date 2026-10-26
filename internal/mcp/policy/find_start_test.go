@@ -49,6 +49,14 @@ var findStartRows = []verdictRow{
 	{"comma in the expression", "find . -type f , -perm 0777 | xargs chmod 644", "", ""},
 	{"comma before a starting point", "find . , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"comma first", "find , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A comment, a here-document or a line break in quotes keeps every
+	// find word in the check.
+	{"two lines", "find . -name x\nfind . -perm 0777 | xargs chmod 644", "", ""},
+	{"comment after find", "find . -perm 777 | xargs chmod -R # note", incompletePairCheckRule, rulePermissions},
+	{"comment line before find", "# note\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"here-document before find", "cat <<E\nx\nE\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"line break in quotes", "find . -name 'a\nb' -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 }
 
 // TestDefaultRules_FindStartingPoints checks findStartRows with the default
@@ -122,6 +130,40 @@ func TestFindPathsOnly_StartingPoints(t *testing.T) {
 			got := findPathsOnly([][]string{strings.Fields(tt.cmd)})
 			if want := [][]string{strings.Fields(tt.want)}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 				t.Fatalf("findPathsOnly(%q) = %q, want %q", tt.cmd, got, want)
+			}
+		})
+	}
+}
+
+// TestSplitCommands_Plain checks which strings have their quotes read the way
+// the shell reads them.
+func TestSplitCommands_Plain(t *testing.T) {
+	tests := []struct {
+		cmd   string
+		plain bool
+	}{
+		{"find . -perm 1", true},
+		{"find . -name 'a b'; ls", true},
+		{"echo a#b", true},
+		{"echo '#'", true},
+		{"echo \"a # b\"", true},
+		{"ls\nfind .", true},
+		{"ls # note", false},
+		{"#note\nls", false},
+		{"ls;#note", false},
+		{"ls&#note", false},
+		{"cat <<E\nx\nE", false},
+		{"cat <<<x", false},
+		{"echo 'a\nb'", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			segs, plain := splitCommands([]string{tt.cmd})
+			if segs == nil {
+				t.Fatalf("splitCommands(%q) did not split", tt.cmd)
+			}
+			if plain != tt.plain {
+				t.Fatalf("splitCommands(%q) plain = %v, want %v", tt.cmd, plain, tt.plain)
 			}
 		})
 	}

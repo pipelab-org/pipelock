@@ -39,12 +39,16 @@ const maxPairChecks = maxPairwiseTokens * (maxPairwiseTokens - 1)
 // holds the tokens of each command in it, and pairs are formed only within a
 // command. Otherwise segments is nil and the whole list is one command.
 // unsplit is set when the arguments are one string that commandSegments
-// could not split, so commands in it cannot be told apart.
+// could not split, so commands in it cannot be told apart. plain is set when
+// the string split, and its quotes were read the way the shell reads them
+// (see splitCommands); only then are find's own words left out of the check
+// (see findPathsOnly).
 type argView struct {
 	tokens   []string
 	joined   string
 	segments [][]string
 	unsplit  bool
+	plain    bool
 }
 
 // literalArgTokens returns the submitted strings unmodified, each as one
@@ -56,7 +60,7 @@ func literalArgTokens(args []string) ([]string, string) {
 // buildArgViews returns the primary, alt, baseline, and literal views of args
 // (see CheckToolCallWithArgs).
 func buildArgViews(args []string) [4]argView {
-	segs := commandSegments(args)
+	segs, plain := splitCommands(args)
 	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
 		fn  func(string) string
@@ -69,7 +73,7 @@ func buildArgViews(args []string) [4]argView {
 	var views [4]argView
 	for i, n := range norms {
 		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
-		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit}
+		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain}
 		switch {
 		case len(segs) == 1:
 			views[i].segments = [][]string{tokens}
@@ -103,9 +107,21 @@ func buildArgViews(args []string) [4]argView {
 // rewrite, or when a quote is left open. Separate argument values are not
 // split, because a tool may run them without a shell.
 func commandSegments(args []string) []string {
+	segs, _ := splitCommands(args)
+	return segs
+}
+
+// splitCommands is commandSegments. plain reports that each quote it saw was
+// one the shell reads as a quote: the string has no comment (a # that starts
+// a word), no here-document (<<) and no line break inside quotes. A quote
+// character in a comment or a here-document is text to the shell, so the
+// lines after it may be commands that the quote tracking here took as
+// quoted.
+func splitCommands(args []string) (_ []string, plain bool) {
 	if len(args) != 1 || strings.ContainsAny(args[0], "$`\\(){}") {
-		return nil
+		return nil, false
 	}
+	plain = true
 	s := args[0]
 	type piece struct {
 		start, end int
@@ -124,6 +140,9 @@ func commandSegments(args []string) []string {
 			if c == quote {
 				quote = 0
 			}
+			if c == '\n' {
+				plain = false
+			}
 			continue
 		}
 		next := byte(0)
@@ -133,6 +152,10 @@ func commandSegments(args []string) []string {
 		switch {
 		case c == '\'' || c == '"':
 			quote = c
+		case c == '#' && (i == 0 || strings.IndexByte(" \t\n;|&", s[i-1]) >= 0):
+			plain = false
+		case c == '<' && next == '<':
+			plain = false
 		case c == ';' || c == '\n':
 			cut(i, 1, false)
 		case c == '&' && next == '&':
@@ -149,7 +172,7 @@ func commandSegments(args []string) []string {
 		}
 	}
 	if quote != 0 {
-		return nil
+		return nil, false
 	}
 	pieces = append(pieces, piece{start, len(s), afterPipe})
 
@@ -220,7 +243,7 @@ func commandSegments(args []string) []string {
 		at[r] = len(segs)
 		segs = append(segs, s[c.start:c.end])
 	}
-	return segs
+	return segs, plain
 }
 
 // shellWords splits a command into words with quote marks removed, so
@@ -401,7 +424,11 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
 		return false, true
 	}
-	if commandAfterParts(pat, findPathsOnly(v.segments)) {
+	paths := v.segments
+	if v.plain {
+		paths = findPathsOnly(v.segments)
+	}
+	if commandAfterParts(pat, paths) {
 		return false, true
 	}
 	return false, incomplete
