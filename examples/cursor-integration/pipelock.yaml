@@ -30,5 +30,5 @@ mcp_tool_policy:
       action: block
     - name: "Reverse Shell"
       tool_pattern: '(?i)^(?:(?:mcp__[a-z0-9_-]+__|[a-z0-9_-]+[.:]))?(bash|shell|exec|run_command|execute|terminal|bash_exec)$'
-      arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b)'
+      arg_pattern: '(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+((?-i:-[a-z0-9]*c)\b|--(?:sh-|lua-)?exec\b)|\bbash(?:\s+-[a-z]+)*?\s+-[a-z]*i[a-z]*(?:\s+-[a-z]+)*?\s+>&|/dev/udp/)'
       action: block

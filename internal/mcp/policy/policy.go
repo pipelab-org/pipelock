@@ -1656,12 +1656,12 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 			// --form (-F, multipart), --upload-file (-T), explicit POST,
 			// wget's --post-data / --post-file / --body-data / --body-file.
 			// round-4 of the pre-tag gate found `curl --form` bypassed the earlier pattern.
-			ArgPattern: `(?i)\b(curl|wget)\b.*(-d\s|-F\s|-T\s|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|-X\s+POST)`,
+			ArgPattern: `(?i)\b(curl|wget)\b.*(-d\s|-F\s|-T\s|--data(?:-binary|-raw|-urlencode)?\b|--form\b|--upload-file\b|--post-data\b|--post-file\b|--body-data\b|--body-file\b|-X\s+POST|--json\b|--form-string\b)|\bcurl\b.*\s(?-i:-[a-zA-Z0-9]+[dFT])`,
 		},
 		{
 			Name:        "Reverse Shell",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b)`,
+			ArgPattern:  `(?i)(bash\s+-i\s+>&|/dev/tcp/|mkfifo\s+|nc\s+-e|ncat\s+-e|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+-[a-z0-9]*e\b|\b(?:nc|ncat|netcat)(?:\s+[^\s;|&]+)*?\s+((?-i:-[a-z0-9]*c)\b|--(?:sh-|lua-)?exec\b)|\bbash(?:\s+-[a-z]+)*?\s+-[a-z]*i[a-z]*(?:\s+-[a-z]+)*?\s+>&|/dev/udp/)`,
 			Action:      config.ActionBlock,
 		},
 		{
@@ -1688,24 +1688,24 @@ func DefaultToolPolicyRules() []config.ToolPolicyRule {
 		{
 			Name:        "Disk Wipe Command",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(dd\b.*of=/dev/|mkfs\.|fdisk)\b`,
+			ArgPattern:  `(?i)\b(dd\b.*of=/dev/|mkfs\.|fdisk|sfdisk|mke2fs|blkdiscard|mkfs(?:\s+[^\s;|&]+)*?\s+(?:-t|/dev/)|wipefs(?:\s+[^\s;|&]+)*?\s+(?:-[a-z]*[ao][a-z]*|--all|--offset)|sgdisk(?:\s+[^\s;|&]+)*?\s+(?:-[a-z]*z[a-z]*|--zap(?:-all)?))\b`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Package Install",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)\b(pip3?|npm|gem|cargo|go)(?:\s+-[^\s;|&]*(?:\s+[^-\s;|&][^\s;|&]*)?)*\s+install\b`,
+			ArgPattern:  `(?i)\b(pip3?|npm|gem|cargo|go)(?:\s+-[^\s;|&]*(?:\s+[^-\s;|&][^\s;|&]*)?)*\s+install\b|\b(npm|pnpm|yarn|bun)(?:\s+-[^\s;|&]*(?:\s+[^-\s;|&][^\s;|&]*)?)*\s+(i|in|ins|inst|insta|instal|isnt|isnta|isntal|isntall|add)\b|\b(uv|poetry|cargo)(?:\s+-[^\s;|&]*(?:\s+[^-\s;|&][^\s;|&]*)?)*\s+add\b`,
 		},
 		{
 			Name:        "Destructive Git Operation",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec|git)$`,
-			ArgPattern:  `(?i)(\bgit\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(\s|$)|-[a-z]*f[a-z]*\b)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`,
+			ArgPattern:  `(?i)(\bgit\s+)?(push(?:\s+[^\s;|&]+)*?\s+(--force(\s|$)|-[a-z]*f[a-z]*\b|\+[^\s;|&]+)|reset(?:\s+[^\s;|&]+)*?\s+--hard\b|clean(?:\s+[^\s;|&]+)*?\s+(-[a-z]*(f[a-z]*d|d[a-z]*f)[a-z]*\b|-[a-z]*f[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*d[a-z]*\b|-[a-z]*d[a-z]*(?:\s+[^\s;|&]+)*?\s+-[a-z]*f[a-z]*\b))`,
 			Action:      config.ActionBlock,
 		},
 		{
 			Name:        "Encoded Command Execution",
 			ToolPattern: `(?i)^(bash|shell|exec|run_command|execute|terminal|bash_exec)$`,
-			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64(?:\s+[^\s;|&]+)*?\s+(-[a-z]*d[a-z]*|--decode)\b.*\|\s*(ba)?sh\b)`,
+			ArgPattern:  `(?i)(\beval\b.*\bbase64\b|\bbase64(?:\s+[^\s;|&]+)*?\s+(-[a-z]*d[a-z]*|--decode)\b.*\|\s*(?:(?:sudo|env|exec|command)(?:\s+[^\s;|&]+)*?\s+)?(?:[^\s;|&]*/)?((ba)?sh|zsh|dash|ksh|mksh)\b)`,
 			Action:      config.ActionBlock,
 		},
 		{
