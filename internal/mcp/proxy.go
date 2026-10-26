@@ -555,7 +555,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			if len(added) > 0 {
 				decision = config.ActionBlock
-			} else if toolCfg.Baseline.HasBaseline() {
+			} else if toolCfg.Baseline.HasBaseline() && !toolCfg.HeaderContractsOnly {
+				// Structural collection never scanned these definitions, so it
+				// cannot be the affirmative inventory signal that releases a hold.
 				decision = config.ActionAllow
 			}
 			if !toolInventoryResolved {
