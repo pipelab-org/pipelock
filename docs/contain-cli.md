@@ -190,6 +190,8 @@ The managed service writes only inside `/var/lib/pipelock`. When the flight reco
 
 Private service state, including baseline integrity keys, must stay outside the operator-readable `logs` and `recorder` directories. The recorder, its local anchor log, and dashboard snapshot may use `recorder`; the audit log may use `logs`. Install refuses other service writers in either evidence directory, including paths that resolve there through symlinks. It also refuses configured private material the service only reads, such as signing keys, the TLS CA key, the license token, keyrings and learn captures, when it resolves inside either evidence directory; that material may stay outside the data directory.
 
+A real install refuses private-input paths or a data directory whose existing ancestors cannot be resolved; make those ancestors inspectable by the installer or move the private material outside the evidence directories and update its configuration path. Missing files are allowed when their existing ancestors resolve.
+
 An unprivileged `--dry-run` prints `[DEFERRED]` for paths it cannot inspect because of permissions; the privileged install must check them before proceeding.
 
 On success, `install` prints a **Next steps** block with:

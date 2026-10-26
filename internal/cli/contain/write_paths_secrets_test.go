@@ -5,6 +5,7 @@ package contain
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -194,5 +195,95 @@ func TestInstallWritePathsPrivateMaterialRelativeToServiceRoot(t *testing.T) {
 	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
 	if err == nil || !strings.Contains(err.Error(), "flight_recorder.anchor.rekor_key_path") || !strings.Contains(err.Error(), "operator-readable evidence directory") {
 		t.Fatalf("want evidence refusal for service-root relative path, got %v", err)
+	}
+}
+
+// A path outside the evidence tree can reach a key inside it through an
+// ancestor that the installer cannot inspect. A real install must not grant
+// the evidence ACL when it cannot determine where that input lives.
+func TestInstallWritePathsPrivateMaterialUnreadableAlias(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("requires an unprivileged process for the real permission failure")
+	}
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry_run_%v", dryRun), func(t *testing.T) {
+			env, runner, out := newFakeEnv(t)
+			key := filepath.Join(env.recorderDir(), "signing.key")
+			mustWriteFile(t, key, "private key fixture")
+			privateDir := filepath.Join(t.TempDir(), "unreadable")
+			if err := os.Mkdir(privateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			alias := filepath.Join(privateDir, "keys")
+			if err := os.Symlink(env.recorderDir(), alias); err != nil {
+				t.Fatal(err)
+			}
+			input := filepath.Join(alias, "signing.key")
+			resolved, err := filepath.EvalSymlinks(input)
+			if err != nil || resolved != key {
+				t.Fatalf("alias does not reach evidence key: %q, %v", resolved, err)
+			}
+			mustWriteFile(t, managedPipelockConfigPath(env), fmt.Sprintf("forward_proxy: {enabled: true}\nflight_recorder: {enabled: true, dir: %q, signing_key_path: %q}\n", env.recorderDir(), input))
+			if err := os.Chmod(privateDir, 0); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(privateDir, 0o700); err != nil { //nolint:gosec // G302: restore directory traversal for test cleanup.
+					t.Error(err)
+				}
+			})
+			if _, err := os.Lstat(input); !errors.Is(err, os.ErrPermission) {
+				t.Fatalf("expected real permission failure, got %v", err)
+			}
+			if !dryRun {
+				err = requireContainForwardProxy(env, managedPipelockConfigPath(env), managedPipelockConfigPath(env), installOpts{})
+				if !errors.Is(err, os.ErrPermission) {
+					t.Fatalf("private-input preflight accepted an unreadable evidence alias: %v", err)
+				}
+			}
+			err = runInstall(context.Background(), env, installOpts{dryRun: dryRun})
+			if dryRun {
+				if err != nil || !strings.Contains(out.String(), "[DEFERRED] flight_recorder.signing_key_path") {
+					t.Fatalf("expected deferred preview, got %v\n%s", err, out)
+				}
+			} else if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "flight_recorder.signing_key_path") {
+				t.Fatalf("unresolved private input must refuse install, got %v", err)
+			}
+			assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
+		})
+	}
+}
+
+func TestInstallWritePathsPrivateMaterialResolutionErrors(t *testing.T) {
+	for _, rootFailure := range []bool{false, true} {
+		for _, dryRun := range []bool{false, true} {
+			for _, permission := range []bool{false, true} {
+				t.Run(fmt.Sprintf("root_%v_dry_%v_permission_%v", rootFailure, dryRun, permission), func(t *testing.T) {
+					env, _, out := newFakeEnv(t)
+					cfg := &config.Config{}
+					key := filepath.Join(env.configDir, "keys", "signing.key")
+					cfg.FlightRecorder.SigningKeyPath = key
+					failure := errors.New("unresolved symlink")
+					if permission {
+						failure = os.ErrPermission
+					}
+					lstat := env.lstat
+					env.lstat = func(path string) (os.FileInfo, error) {
+						if (rootFailure && path == env.dataDir) || (!rootFailure && path == key) {
+							return nil, &os.PathError{Op: "lstat", Path: path, Err: failure}
+						}
+						return lstat(path)
+					}
+					err := requirePrivateMaterialOutsideEvidence(env, cfg, managedPipelockConfigPath(env), dryRun)
+					if dryRun && permission {
+						if err != nil || !strings.Contains(out.String(), "[DEFERRED]") {
+							t.Fatalf("want deferred preview, got %v\n%s", err, out)
+						}
+					} else if !errors.Is(err, failure) {
+						t.Fatalf("want resolution refusal, got %v", err)
+					}
+				})
+			}
+		}
 	}
 }

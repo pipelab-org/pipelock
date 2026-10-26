@@ -157,6 +157,10 @@ func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath st
 func requirePrivateMaterialOutsideEvidence(env *installEnv, cfg *config.Config, configPath string, dryRun bool) error {
 	root, err := resolveContainWritePath(env, env.dataDir)
 	if err != nil {
+		if !dryRun || !errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("contain install config preflight failed for %s: resolve managed data directory %q: %w; make its ancestors inspectable by the installer and rerun contain install; refusing install", configPath, env.dataDir, err)
+		}
+		_, _ = fmt.Fprintf(env.out, "  [DEFERRED] cannot resolve managed data directory %q without privilege; the privileged install must re-check the private material paths.\n", env.dataDir)
 		root = filepath.Clean(env.dataDir)
 	}
 	for _, secret := range configuredSecrets(cfg, filepath.Dir(managedPipelockConfigPath(env))) {
@@ -176,8 +180,8 @@ func requirePrivateMaterialOutsideEvidence(env *installEnv, cfg *config.Config, 
 			}
 			resolved, err := resolveContainWritePath(env, path)
 			if err != nil {
-				// Unresolvable material is judged by its lexical location. That
-				// still refuses a path written inside an evidence directory.
+				// A lexical match can refuse an unsafe location, but cannot
+				// prove safety when an unreadable ancestor hides a symlink.
 				resolved = filepath.Clean(path)
 				if dryRun && errors.Is(err, os.ErrPermission) && evidenceDirContaining(env, root, resolved) == "" {
 					_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %q without privilege; the privileged install must re-check that it stays outside the evidence directories.\n", secret.field, path)
@@ -186,6 +190,9 @@ func requirePrivateMaterialOutsideEvidence(env *installEnv, cfg *config.Config, 
 			}
 			if evidenceDir := evidenceDirContaining(env, root, resolved); evidenceDir != "" {
 				return fmt.Errorf("contain install config preflight failed for %s: %s %q resolves inside operator-readable evidence directory %s; move this private material outside %s and %s and set %s to the new location, then rerun contain install; refusing install", configPath, secret.field, secret.value, evidenceDir, env.logsDir(), env.recorderDir(), secret.field)
+			}
+			if err != nil {
+				return fmt.Errorf("contain install config preflight failed for %s: %s %q: resolve private material path: %w; make its ancestors inspectable by the installer or move the material outside %s and %s and set %s to the new location, then rerun contain install; refusing install", configPath, secret.field, secret.value, err, env.logsDir(), env.recorderDir(), secret.field)
 			}
 		}
 	}
