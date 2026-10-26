@@ -41,7 +41,7 @@ if [ "$2" = "add" ]; then printf '%%s\000' "$@" > %q; fi
 	if err := os.WriteFile(bin, []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(bin, 0o700); err != nil { //nolint:gosec // G302: private shell fixture needs the owner-execute bit.
+	if err := os.Chmod(bin, 0o700); err != nil { // #nosec G302 -- private shell fixture needs the owner-execute bit.
 		t.Fatal(err)
 	}
 	cmd := setup.CodexCmd()

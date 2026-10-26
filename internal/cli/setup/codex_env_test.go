@@ -416,8 +416,7 @@ func TestCodexEnvironmentPreservesLocalTimes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				//nolint:gosec // G204: reruns this test binary with a fixed test filter.
-				cmd := exec.CommandContext(t.Context(), self, "-test.run=^TestCodexEnvironmentPreservesLocalTimes$", "-test.count=1", "-test.v")
+				cmd := exec.CommandContext(t.Context(), self, "-test.run=^TestCodexEnvironmentPreservesLocalTimes$", "-test.count=1", "-test.v") // #nosec G204 -- reruns this test binary with a fixed test filter.
 				cmd.Env = append(os.Environ(), "TZ="+zone, codexLocalTimeChildEnv+"="+zone)
 				out, err := cmd.CombinedOutput()
 				if err != nil || !strings.Contains(string(out), "--- PASS: TestCodexEnvironmentPreservesLocalTimes") {
