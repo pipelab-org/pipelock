@@ -270,6 +270,12 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 	opts := d.opts
 	opts.WarnContext = ctx
 	opts.toolContractDiscovery = true
+	// Nothing in this inventory reaches the agent, so there is nothing for an
+	// operator to approve, and an approval wait would hold the principal's
+	// contract lock past the request. Without an approver an ask finding
+	// blocks, which refuses discovery; a client tools/list takes the normal
+	// approval path and establishes the contracts.
+	opts.Approver = nil
 	if cfg := opts.toolCfg(); cfg != nil {
 		copyCfg := *cfg
 		copyCfg.Baseline = d.state.baseline
