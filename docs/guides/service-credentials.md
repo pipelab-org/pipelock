@@ -41,6 +41,16 @@ replacing their encrypted source requires a service restart to change the runnin
 service's credential. SIGHUP reads its current invocation's credential, which
 systemd exposes read-only.
 
+`$CREDENTIALS_DIRECTORY` exists only inside the service invocation. Commands
+that load the full config from an operator shell, such as `pipelock check
+--config`, `pipelock support bundle`, and `pipelock keys status`, refuse a
+config that uses the credential reference. Validate it with `pipelock check
+--service pipelock --config` instead. For `pipelock session` commands, pass both
+`--api-url` and `--api-token` (or `PIPELOCK_KILLSWITCH_API_TOKEN`) so the
+command doesn't load the config. Releases without `api_token_file` reject the
+field when they parse the config, so roll the config back together with the
+binary.
+
 ## Service validation and migration
 
 The service configuration check accepts exactly one matching `LoadCredential` or

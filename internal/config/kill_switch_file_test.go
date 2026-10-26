@@ -135,3 +135,56 @@ func TestKillSwitchTokenFileInspectionAndErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestKillSwitchTokenFilePermissions(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, "")
+	for _, tt := range []struct {
+		name    string
+		mode    os.FileMode
+		wantErr bool
+	}{
+		{name: "owner only", mode: 0o600},
+		{name: "owner read only", mode: 0o400},
+		{name: "group read", mode: 0o640},
+		{name: "group write", mode: 0o660, wantErr: true},
+		{name: "world read", mode: 0o604, wantErr: true},
+		{name: "world readable", mode: 0o644, wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "admin-token")
+			if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n"))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
+			}
+			if err == nil && cfg.EffectiveKillSwitchAPIToken() != "file-token" {
+				t.Fatal("permitted token file not resolved")
+			}
+		})
+	}
+}
+
+func TestKillSwitchTokenFileNullAndBlank(t *testing.T) {
+	t.Setenv(EnvKillSwitchAPIToken, "")
+	for _, value := range []string{"~", "null", "''", ""} {
+		t.Run(value, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + value + "\n"))
+			if err != nil {
+				t.Fatalf("unset token file rejected: %v", err)
+			}
+			if cfg.KillSwitch.APITokenFile != "" || cfg.EffectiveKillSwitchAPIToken() != "" {
+				t.Fatal("null or blank token file produced a token")
+			}
+			// Unset must not satisfy the dedicated listener's token requirement.
+			if _, err := LoadBytes([]byte("kill_switch:\n  api_listen: 127.0.0.1:9091\n  api_token_file: " + value + "\n")); err == nil {
+				t.Fatal("api_listen accepted a null or blank token file")
+			}
+		})
+	}
+}
