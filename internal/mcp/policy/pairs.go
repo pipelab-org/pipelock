@@ -477,8 +477,11 @@ func leadingWords(pat *regexp.Regexp) []string {
 	}
 	var words []string
 	if re, err := syntax.Parse(pat.String(), syntax.Perl); err == nil {
-		words = leadWords([]*syntax.Regexp{re.Simplify()}, "")
-		if len(words) > maxLeadingWords || slices.Contains(words, "") {
+		steps := maxLeadWordSteps
+		words = leadWords([]*syntax.Regexp{re.Simplify()}, "", &steps)
+		slices.Sort(words)
+		words = slices.Compact(words)
+		if steps < 0 || len(words) > maxLeadingWords || slices.Contains(words, "") {
 			words = nil
 		}
 	}
@@ -486,34 +489,70 @@ func leadingWords(pat *regexp.Regexp) []string {
 	return words
 }
 
-// leadWords is leadingWords for the sequence seq after prefix.
-func leadWords(seq []*syntax.Regexp, prefix string) []string {
+// maxLeadWordSteps bounds the work leadingWords does for one pattern; a
+// pattern that needs more, or has more than maxLeadingWords ways to start,
+// gets no words.
+const maxLeadWordSteps = 4096
+
+// leadWords is leadingWords for the sequence seq after prefix. steps is
+// counted down once per call. An optional or repeated part before the first
+// word is either left out or taken once; a repeated part taken once ends the
+// word. Inside a word, such a part ends it.
+func leadWords(seq []*syntax.Regexp, prefix string, steps *int) []string {
+	*steps--
+	if *steps < 0 {
+		return []string{""}
+	}
 	if len(seq) == 0 {
 		return []string{prefix}
 	}
 	x, rest := seq[0], seq[1:]
 	switch x.Op {
+	case syntax.OpEmptyMatch:
+		return leadWords(rest, prefix, steps)
 	case syntax.OpBeginText, syntax.OpBeginLine, syntax.OpWordBoundary:
 		if prefix == "" {
-			return leadWords(rest, prefix)
+			return leadWords(rest, prefix, steps)
 		}
 	case syntax.OpLiteral:
-		return leadWords(rest, prefix+foldString(string(x.Rune)))
+		return leadWords(rest, prefix+foldString(string(x.Rune)), steps)
 	case syntax.OpCapture:
-		return leadWords(slices.Concat(x.Sub[:1], rest), prefix)
+		return leadWords(slices.Concat(x.Sub[:1], rest), prefix, steps)
 	case syntax.OpConcat:
-		return leadWords(slices.Concat(x.Sub, rest), prefix)
+		return leadWords(slices.Concat(x.Sub, rest), prefix, steps)
 	case syntax.OpAlternate:
-		var out []string
-		for _, sub := range x.Sub {
-			out = append(out, leadWords(slices.Concat([]*syntax.Regexp{sub}, rest), prefix)...)
-			if len(out) > maxLeadingWords {
-				return out
-			}
+		return leadWordsOf(x.Sub, rest, prefix, steps)
+	case syntax.OpQuest:
+		if prefix == "" {
+			return leadWordsOf([]*syntax.Regexp{emptyRegexp, x.Sub[0]}, rest, prefix, steps)
 		}
-		return out
+	case syntax.OpStar:
+		if prefix == "" {
+			out := leadWords(rest, prefix, steps)
+			return append(out, leadWords(x.Sub[:1], prefix, steps)...)
+		}
+	case syntax.OpPlus:
+		if prefix == "" {
+			return leadWords(x.Sub[:1], prefix, steps)
+		}
 	}
 	return []string{prefix}
+}
+
+// emptyRegexp matches the empty string.
+var emptyRegexp = &syntax.Regexp{Op: syntax.OpEmptyMatch}
+
+// leadWordsOf is leadWords for each of alts followed by rest.
+func leadWordsOf(alts, rest []*syntax.Regexp, prefix string, steps *int) []string {
+	var out []string
+	for _, sub := range alts {
+		out = append(out, leadWords(slices.Concat([]*syntax.Regexp{sub}, rest), prefix, steps)...)
+		if len(out) > maxLeadingWords {
+			*steps = -1 // a cut list is not every word
+			return out
+		}
+	}
+	return out
 }
 
 // oneWordMatch reports whether pat matches command followed by any one of
