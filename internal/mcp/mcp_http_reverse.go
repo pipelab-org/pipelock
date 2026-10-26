@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -680,7 +681,8 @@ func RunHTTPListenerProxy(
 				setClientState(state)
 				stateBound = true
 			} else {
-				sessionCapacityErr = err
+				// A nil state always refuses, even if a future path omits the error.
+				sessionCapacityErr = cmp.Or(err, session.ErrCapacity)
 			}
 		}
 		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
