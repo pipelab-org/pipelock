@@ -13,6 +13,12 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
+// capacityAdaptiveConfig enables adaptive enforcement so escalation levels are
+// live, with a recovery sweep slow enough not to race the test.
+func capacityAdaptiveConfig() *config.AdaptiveEnforcement {
+	return &config.AdaptiveEnforcement{Enabled: true, DeescalationCheckSeconds: 3600}
+}
+
 func capacityProtectionCases() map[string]func(*SessionState) {
 	return map[string]func(*SessionState){
 		"global level":     func(s *SessionState) { s.escalationLevel = 1 },
@@ -39,7 +45,7 @@ func TestSessionCapacityProtectsEnforcement(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := testSessionConfig()
 			cfg.MaxSessions = 2
-			sm := NewSessionManager(cfg, nil, nil)
+			sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
 			t.Cleanup(sm.Close)
 			victim := sm.GetOrCreate("victim")
 			victim.mu.Lock()
@@ -81,7 +87,7 @@ func TestSessionCapacityIdleBoundary(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := testSessionConfig()
 			cfg.MaxSessions = 1
-			sm := NewSessionManager(cfg, nil, nil)
+			sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
 			t.Cleanup(sm.Close)
 			victim := sm.GetOrCreate("victim")
 			victim.mu.Lock()
@@ -102,7 +108,7 @@ func TestSessionCapacityRecoveryAndCleanTaint(t *testing.T) {
 		t.Run(scope, func(t *testing.T) {
 			cfg := testSessionConfig()
 			cfg.MaxSessions = 1
-			sm := NewSessionManager(cfg, nil, nil)
+			sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
 			t.Cleanup(sm.Close)
 			s := sm.GetOrCreate("victim")
 			s.mu.Lock()
@@ -132,10 +138,48 @@ func TestSessionCapacityRecoveryAndCleanTaint(t *testing.T) {
 	}
 }
 
+// Disabling adaptive enforcement makes residual levels inert: enforcement
+// ignores them and the recovery sweep stops. They must not hold capacity.
+func TestSessionCapacityReleasesLevelsWhenAdaptiveDisabled(t *testing.T) {
+	for _, scope := range []string{"", "vendor.example"} {
+		for _, reload := range []bool{false, true} {
+			t.Run(fmt.Sprintf("scope=%q/reload=%t", scope, reload), func(t *testing.T) {
+				cfg := testSessionConfig()
+				cfg.MaxSessions = 1
+				adaptive := capacityAdaptiveConfig()
+				if !reload {
+					adaptive = nil
+				}
+				sm := NewSessionManager(cfg, adaptive, nil)
+				t.Cleanup(sm.Close)
+				s := sm.GetOrCreate("victim")
+				s.mu.Lock()
+				if scope == "" {
+					s.escalationLevel = 2
+					s.globalSignalsAuthoritative = true
+				} else {
+					s.getOrCreateScopeLocked(scope).escalationLevel = 2
+				}
+				s.mu.Unlock()
+				if reload {
+					if sm.GetOrCreate("while-enabled") != nil {
+						t.Fatal("live escalation was evicted")
+					}
+					sm.UpdateConfig(cfg, &config.AdaptiveEnforcement{Enabled: false}, nil)
+					sm.sweepDeescalation()
+				}
+				if sm.GetOrCreate("after-disable") == nil || sm.SessionByKey("victim") != nil {
+					t.Fatal("inert escalation level held capacity with adaptive disabled")
+				}
+			})
+		}
+	}
+}
+
 func TestSessionCapacityConcurrentEnforcement(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
-	sm := NewSessionManager(cfg, nil, nil)
+	sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
 	t.Cleanup(sm.Close)
 	victim := sm.GetOrCreate("victim")
 	victim.ObserveRisk(session.RiskObservation{Source: session.TaintSourceRef{Level: session.TaintExternalHostile}})
@@ -158,7 +202,7 @@ func TestSessionCapacityDefaultLimitFlood(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// Resolve the shipped default instead of copying its numeric value.
 			cfg := config.Defaults().SessionProfiling
-			sm := NewSessionManager(&cfg, nil, nil)
+			sm := NewSessionManager(&cfg, capacityAdaptiveConfig(), nil)
 			t.Cleanup(sm.Close)
 			victim := sm.GetOrCreate("victim")
 			victim.mu.Lock()
@@ -181,7 +225,7 @@ func TestSessionToolCallRefreshesIdleActivity(t *testing.T) {
 	for _, blocked := range []bool{false, true} {
 		t.Run(fmt.Sprint(blocked), func(t *testing.T) {
 			cfg := testSessionConfig()
-			sm := NewSessionManager(cfg, nil, nil)
+			sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
 			t.Cleanup(sm.Close)
 			s := sm.GetOrCreate("mcp-stdio-test")
 			old := time.Now().Add(-2 * time.Duration(cfg.SessionTTLMinutes) * time.Minute)

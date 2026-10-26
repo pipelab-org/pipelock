@@ -2915,13 +2915,18 @@ func (sm *SessionManager) Delete(key string) {
 
 // hasCapacityProtectionLocked reports whether dropping this session would
 // discard live enforcement. Idle expiry remains a separate session boundary.
-// Caller holds s.mu.
-func (s *SessionState) hasCapacityProtectionLocked() bool {
-	if s.hasActiveAirlockLocked() || s.escalationLevel > 0 || s.atBlockAll || s.risk.HasPolicyTaint() {
+// Adaptive levels count only while adaptive enforcement is enabled: every
+// consumer ignores them otherwise, and the de-escalation sweep stops, so a
+// residual level would hold capacity that nothing enforces. Caller holds s.mu.
+func (s *SessionState) hasCapacityProtectionLocked(adaptiveEnabled bool) bool {
+	if s.hasActiveAirlockLocked() || s.atBlockAll || s.risk.HasPolicyTaint() {
+		return true
+	}
+	if adaptiveEnabled && s.escalationLevel > 0 {
 		return true
 	}
 	for _, st := range s.scopes {
-		if st.escalationLevel > 0 || st.atBlockAll {
+		if st.atBlockAll || (adaptiveEnabled && st.escalationLevel > 0) {
 			return true
 		}
 	}
@@ -2936,11 +2941,13 @@ func (sm *SessionManager) evictOldest() *SessionState {
 	var oldestKey string
 	var oldestTime time.Time
 	var oldestSess *SessionState
+	adaptiveCfg := sm.adaptiveCfgPtr.Load()
+	adaptiveEnabled := adaptiveCfg != nil && adaptiveCfg.Enabled
 
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		la := sess.lastActivity
-		protected := sess.hasCapacityProtectionLocked()
+		protected := sess.hasCapacityProtectionLocked(adaptiveEnabled)
 		sess.mu.Unlock()
 
 		// Capacity pressure must not reset enforcement history.
@@ -2960,7 +2967,7 @@ func (sm *SessionManager) evictOldest() *SessionState {
 		// Recheck under the session lock and hold it through removal.
 		oldestSess.mu.Lock()
 		defer oldestSess.mu.Unlock()
-		if oldestSess.hasCapacityProtectionLocked() {
+		if oldestSess.hasCapacityProtectionLocked(adaptiveEnabled) {
 			return nil
 		}
 		delete(sm.sessions, oldestKey)

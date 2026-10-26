@@ -922,7 +922,7 @@ func TestSessionManager_EvictOldest_PreservesEscalatedGauge(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
 	m := metrics.New()
-	sm := NewSessionManager(cfg, nil, m)
+	sm := NewSessionManager(cfg, capacityAdaptiveConfig(), m)
 	defer sm.Close()
 
 	// Create and escalate the first session.
