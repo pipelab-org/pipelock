@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 )
 
 // codexEnvKeys combines literal declarations and Codex's name-only whitelist.
@@ -40,13 +41,17 @@ func codexEnvKeys(transport codexMCPTransport) (map[string]string, error) {
 // validateCodexEnv refuses to convert a literal unless inheritance preserves
 // its value. Only the key is included in diagnostics, even on mismatches.
 func validateCodexEnv(transport codexMCPTransport) error {
-	if _, err := codexEnvKeys(transport); err != nil {
+	keys, err := codexEnvKeys(transport)
+	if err != nil {
+		return err
+	}
+	if err := validateCodexForwarding(keys); err != nil {
 		return err
 	}
 	for key, value := range transport.Env {
 		inherited, present := os.LookupEnv(key)
 		if !present || inherited != value {
-			return fmt.Errorf("environment variable %q must be exported with its configured value in the environment running setup and Codex; export it there and retry", key)
+			return fmt.Errorf("environment variable %q must be exported with its configured value in the environment running setup and Codex; load it from a secret store or file into setup and the launcher environment (IDE, desktop launcher or systemd EnvironmentFile/profile), then retry; do not type the value on a command line", key)
 		}
 	}
 	return nil
@@ -229,6 +234,16 @@ func preflightCodexEnv(transport codexMCPTransport) error {
 		}
 		_, err = encodeCodexConfig(document)
 		return err
+	}
+	return nil
+}
+
+// validateCodexForwarding joins the runtime's policy without copying its lists.
+func validateCodexForwarding(keys map[string]string) error {
+	for key := range keys {
+		if mcp.IsDangerousEnvKey(key) {
+			return fmt.Errorf("environment variable %q is blocked by the MCP wrapper because it can inject code or redirect child traffic; remove it from the server environment before installing", key)
+		}
 	}
 	return nil
 }

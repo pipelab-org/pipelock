@@ -135,12 +135,12 @@ func TestCodexMCPListCommandStreams(t *testing.T) {
 			wantErrSub: "parsing codex mcp list JSON",
 		},
 		{
-			name:       "nonzero command preserves stderr diagnostic",
+			name:       "nonzero command withholds stderr diagnostic",
 			stdout:     validList,
 			stderr:     "Error: Codex configuration is unavailable",
 			exitCode:   1,
 			wantErr:    true,
-			wantErrSub: "Codex configuration is unavailable",
+			wantErrSub: "parser details withheld",
 		},
 	}
 

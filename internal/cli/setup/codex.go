@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcpwrap"
 	"github.com/spf13/cobra"
 )
@@ -195,18 +197,17 @@ func codexMCPList(ctx context.Context, codexBin string) ([]codexMCPServer, error
 }
 
 // runCodexMCPListCommand returns only stdout because Codex emits the JSON list
-// there. Stderr remains available in a failed-command diagnostic; it must not
-// be mixed into the JSON parser when a successful command prints a warning.
+// there. Child diagnostics are withheld on failure because parser errors can
+// quote environment values. Successful stderr warnings never enter the parser.
 //
 //nolint:gosec // G204: canonical CLI subprocess invocation; see runCodexCommand.
 func runCodexMCPListCommand(ctx context.Context, codexBin string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, codexBin, "mcp", "list", "--json")
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	cmd.Stderr = io.Discard
 	stdout, err := cmd.Output()
 	if err != nil {
-		return stdout, fmt.Errorf("%w: %s", err, bytes.TrimSpace(stderr.Bytes()))
+		return nil, fmt.Errorf("codex mcp list failed; %s: %w", codexParserFailureHint, err)
 	}
 	return stdout, nil
 }
@@ -336,7 +337,9 @@ func wrapCodexArgs(origCmd string, origArgs []string, env map[string]string, con
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, codexFlagEnv, k)
+		if !mcp.IsSafeEnvKey(k) {
+			args = append(args, codexFlagEnv, k)
+		}
 	}
 	args = append(args, codexArgSeparator)
 	args = append(args, origCmd)
@@ -409,6 +412,13 @@ type codexInstallPlan struct {
 func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) ([]codexInstallPlan, error) {
 	plans := make([]codexInstallPlan, 0, len(servers))
 	for _, s := range servers {
+		// Blocked declarations must be refused even on an existing wrapper,
+		// rather than silently skipped as already installed or unsupported.
+		if keys, err := codexEnvKeys(s.Transport); err == nil {
+			if err := validateCodexForwarding(keys); err != nil {
+				return nil, fmt.Errorf("server %q: %w", s.Name, err)
+			}
+		}
 		unsupportedReason := unsupportedCodexInstallReason(s)
 		switch {
 		case isCodexWrappedBySelf(s):
@@ -569,6 +579,14 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 		return err
 	}
 
+	// Validate every candidate before any remove/add can change a server.
+	for _, p := range plans {
+		if p.Action == codexActionWrapStdio || p.Action == codexActionWrapURL {
+			if err := preflightCodexEnv(p.Original); err != nil {
+				return fmt.Errorf("wrapping %q: %w", p.Server, err)
+			}
+		}
+	}
 	wrapped, skipped := 0, 0
 	for _, p := range plans {
 		switch p.Action {
@@ -587,6 +605,7 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 				return fmt.Errorf("wrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrapped %s\n", p.Server)
+			writeCodexRuntimeEnv(cmd.OutOrStdout(), p.Server, p.Env, p.EnvVars)
 			wrapped++
 		case codexActionSkipWrapped, codexActionSkipUnsupported:
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "skip %s (%s)\n", p.Server, p.Reason)
@@ -626,6 +645,13 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 		return err
 	}
 
+	for _, p := range plans {
+		if p.Action == codexActionUnwrapStdio || p.Action == codexActionUnwrapURL {
+			if err := preflightCodexEnv(p.Original); err != nil {
+				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
+			}
+		}
+	}
 	unwrapped, skipped := 0, 0
 	for _, p := range plans {
 		switch p.Action {
@@ -641,6 +667,7 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unwrapped %s\n", p.Server)
+			writeCodexRuntimeEnv(cmd.OutOrStdout(), p.Server, p.Env, p.EnvVars)
 			unwrapped++
 		case codexActionUnwrapURL:
 			if dryRun {
@@ -652,6 +679,7 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unwrapped %s\n", p.Server)
+			writeCodexRuntimeEnv(cmd.OutOrStdout(), p.Server, p.Env, p.EnvVars)
 			unwrapped++
 		case codexActionSkipNotWrapped:
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "skip %s (%s)\n", p.Server, p.Reason)
@@ -745,25 +773,16 @@ func rollbackCodexAdd(ctx context.Context, codexBin, name string, original codex
 
 // codexMCPRemoveBestEffort removes a server, treating "not found" as success.
 func codexMCPRemoveBestEffort(ctx context.Context, codexBin, name string) error {
-	out, err := runCodexCommand(ctx, codexBin, "mcp", "remove", name)
-	if err == nil {
-		return nil
-	}
-	// Codex returns nonzero with a "not found" message when the server is
-	// already gone. We don't have a stable error code to key on, so match the
-	// substring as a fallback (case-insensitive in case Codex changes message
-	// casing). Worst case: a real failure becomes a soft error and the
-	// subsequent `mcp add` will fail loudly with the duplicate.
-	low := bytes.ToLower(out)
-	if bytes.Contains(low, []byte("not found")) || bytes.Contains(low, []byte("does not exist")) {
+	_, err := runCodexCommand(ctx, codexBin, "mcp", "remove", name)
+	if err == nil || errors.Is(err, errCodexServerNotFound) {
 		return nil
 	}
 	return fmt.Errorf("codex mcp remove %s: %w", name, err)
 }
 
-// runCodexCommand executes `codexBin args...` and returns combined output.
-// Used directly so we can inspect stderr in error paths (Codex emits errors
-// there). codexBin is the resolved path of an external CLI tool, either from
+// runCodexCommand returns output only on success. Failed child output may
+// contain config values, so only the exit status and safe repair hint escape.
+// Missing-server classification for remove stays private to this function. codexBin is the resolved path of an external CLI tool, either from
 // exec.LookPath (PATH) or the user-supplied --codex-path; passing a malicious
 // path would be the user attacking themselves.
 //
@@ -773,9 +792,33 @@ func runCodexCommand(ctx context.Context, codexBin string, args ...string) ([]by
 	cmd.Env = append(os.Environ(), "NO_COLOR=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return out, fmt.Errorf("%w: %s", err, bytes.TrimSpace(out))
+		safeErr := fmt.Errorf("codex MCP command failed; %s: %w", codexParserFailureHint, err)
+		if len(args) >= 2 && args[0] == codexMCP && args[1] == "remove" {
+			low := bytes.ToLower(out)
+			if bytes.Contains(low, []byte("not found")) || bytes.Contains(low, []byte("does not exist")) {
+				return nil, errors.Join(errCodexServerNotFound, safeErr)
+			}
+		}
+		return nil, safeErr
 	}
 	return out, nil
+}
+
+const codexParserFailureHint = "repair config.toml before retrying; parser details withheld to protect environment values"
+
+var errCodexServerNotFound = errors.New("codex MCP server not found")
+
+func writeCodexRuntimeEnv(w io.Writer, server string, env map[string]string, envVars []string) {
+	keys, _ := codexEnvKeys(codexMCPTransport{Env: env, EnvVars: envVars})
+	if len(keys) == 0 {
+		return
+	}
+	names := make([]string, 0, len(keys))
+	for key := range keys {
+		names = append(names, key)
+	}
+	sort.Strings(names)
+	_, _ = fmt.Fprintf(w, "Codex must inherit for %s: %s\n", server, strings.Join(names, ", "))
 }
 
 // formatEnvFlags previews the config whitelist without displaying values.
