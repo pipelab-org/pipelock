@@ -67,7 +67,7 @@ type codexMCPTransport struct {
 	Command           string            `json:"command,omitempty"`
 	Args              []string          `json:"args,omitempty"`
 	Env               map[string]string `json:"env,omitempty"`
-	EnvVars           []string          `json:"env_vars,omitempty"`
+	EnvVars           codexEnvNames     `json:"env_vars,omitempty"`
 	CWD               string            `json:"cwd,omitempty"`
 	URL               string            `json:"url,omitempty"`
 	BearerTokenEnvVar string            `json:"bearer_token_env_var,omitempty"`

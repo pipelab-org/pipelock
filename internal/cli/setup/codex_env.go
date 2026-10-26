@@ -5,6 +5,7 @@ package setup
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,38 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 )
+
+// codexEnvNames normalizes both local whitelist forms from the Codex config
+// reference: strings and {name, source: "local"}. Remote sources must not be
+// turned into local inheritance by dropping their source declaration.
+type codexEnvNames []string
+
+func (names *codexEnvNames) UnmarshalJSON(data []byte) error {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return errors.New("invalid Codex env_vars whitelist; repair config.toml before retrying")
+	}
+	var normalized codexEnvNames
+	for _, raw := range entries {
+		var name string
+		if err := json.Unmarshal(raw, &name); err == nil {
+			normalized = append(normalized, name)
+			continue
+		}
+		var entry struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&entry); err != nil || entry.Source != "local" {
+			return errors.New("unsupported Codex env_vars entry; only names and source=local entries can use local forwarding; manage other sources in config.toml manually")
+		}
+		normalized = append(normalized, entry.Name)
+	}
+	*names = normalized
+	return nil
+}
 
 // codexEnvKeys combines literal declarations and Codex's name-only whitelist.
 // Name syntax matches the child-environment contract in internal/mcpwrap,

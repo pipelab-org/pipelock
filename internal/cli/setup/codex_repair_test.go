@@ -220,3 +220,50 @@ func TestCodexRuntimeEnvironmentGuidance(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexStructuredLocalEnvironmentWhitelist(t *testing.T) {
+	// Codex's config reference permits local-source objects alongside names;
+	// codex-cli 0.162.0 preserves those objects in `mcp list --json`.
+	for _, action := range []string{"install", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			command, args := "node", `[]`
+			if action == "remove" {
+				command, args = pipelockBin, `["mcp","proxy","--env","EXAMPLE_FIRST","--env","EXAMPLE_SECOND","--","node"]`
+			}
+			list := fmt.Sprintf(`[{"name":"example","transport":{"type":"stdio","command":%q,"args":%s,"env_vars":[{"name":"EXAMPLE_FIRST","source":"local"},"EXAMPLE_SECOND"]}}]`, command, args)
+			bin, _ := fakeCodex(t, list)
+			if output, err := executeCodexRepair(t, bin, action); err != nil {
+				t.Fatalf("local whitelist refused: %v; %s", err, output)
+			}
+			assertCodexEnvNames(t, "example", []string{"EXAMPLE_FIRST", "EXAMPLE_SECOND"})
+		})
+	}
+}
+
+func TestCodexStructuredEnvironmentRefusesUnsupportedSources(t *testing.T) {
+	value := "test-" + "only-invalid-whitelist"
+	if _, err := parseCodexMCPList([]byte(`[{"name":"example","transport":{"env_vars":"` + value + `"}}]`)); err == nil || strings.Contains(err.Error(), value) {
+		t.Fatal("malformed whitelist accepted or exposed its contents")
+	}
+	for _, entry := range []string{
+		`{"name":"EXAMPLE_NAME","source":"remote"}`,
+		`{"name":"EXAMPLE_NAME","source":"unknown"}`,
+		`{"name":"EXAMPLE_NAME"}`,
+		`{"name":7,"source":"local"}`,
+		`{"name":"EXAMPLE_NAME","source":"local","extra":true}`,
+		`7`,
+	} {
+		t.Run(entry, func(t *testing.T) {
+			if _, err := parseCodexMCPList([]byte(`[{"name":"example","transport":{"env_vars":[` + entry + `]}}]`)); err == nil {
+				t.Fatal("unsupported whitelist source silently converted to local inheritance")
+			}
+		})
+	}
+	servers, err := parseCodexMCPList([]byte(`[{"name":"example","transport":{"env_vars":[{"name":"HTTPS_PROXY","source":"local"}]}}]`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateCodexEnv(servers[0].Transport); err == nil || !strings.Contains(err.Error(), "blocked") {
+		t.Fatal("structured names bypassed the runtime environment policy")
+	}
+}
