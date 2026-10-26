@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -93,6 +95,30 @@ func TestInterceptServerIssuedDirectoryID(t *testing.T) {
 			if got := do(child); got != tc.want {
 				t.Fatalf("after listing = %d, want %d", got, tc.want)
 			}
+			for _, path := range []string{
+				items + serverIDListed + ":/report.txt:/content",
+				items + serverIDListed + "%3A/report.txt%3A/content",
+				items + "%41" + serverIDListed[1:] + ":/nested/report.txt:/content",
+			} {
+				if got := do(path); got != tc.want {
+					t.Fatalf("relative path %s = %d, want %d", path, got, tc.want)
+				}
+				if got := doAt(other, path); got != http.StatusForbidden {
+					t.Fatalf("relative path at different origin = %d, want 403", got)
+				}
+			}
+			for _, path := range []string{
+				items + serverIDListed + ":/" + agentBlob + ":/content",
+				items + serverIDListed + ":" + agentBlob + "/report.txt:/content",
+				items + serverIDListed + "::/report.txt:/content",
+				items + serverIDListed + "%253A/report.txt:/content",
+				items + serverIDListed + ":/report.txt:/content?q=" + agentBlob,
+				items + serverIDListed + ":/" + issuerUnissuedSecret() + ":/content",
+			} {
+				if got := do(path); got != http.StatusForbidden {
+					t.Fatalf("additional content %s = %d, want 403", path, got)
+				}
+			}
 			if got := do(items + serverIDOther + "/children"); got != http.StatusForbidden {
 				t.Fatalf("unissued sibling = %d, want 403", got)
 			}
@@ -115,6 +141,58 @@ func TestInterceptServerIssuedDirectoryID(t *testing.T) {
 				t.Fatalf("issued query = %d, want %d", got, tc.wantLinked)
 			}
 		})
+	}
+}
+
+func TestInterceptServerIssuedIDRelativeUpload(t *testing.T) {
+	h := newWebPlatformHarness(t)
+	var uploads atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/listing" {
+			_, _ = io.WriteString(w, `{"value":[{"id":"`+serverIDListed+`"},{"id":"`+agentBlob+`"}]}`)
+			return
+		}
+		if r.Method == http.MethodPut {
+			uploads.Add(1)
+			w.WriteHeader(http.StatusCreated)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(upstream.Close)
+	const agent = "directory-agent"
+	path := "/v1.0/me/drive/items/" + serverIDListed + ":/report.txt:/content"
+	if got := h.send(upstream, http.MethodPut, path, agent, "text/plain", "report"); got != http.StatusForbidden {
+		t.Fatalf("unissued upload = %d, want 403", got)
+	}
+	// A header send is recorded even when the server later lists that value
+	// as an ID. The colon delimiter must not turn a reflection into an issue.
+	if got := h.sendHeader(upstream, http.MethodGet, "/submit", agent, "X-Criteria", agentBlob, ""); got != http.StatusNoContent {
+		t.Fatalf("submit = %d", got)
+	}
+	if got := h.send(upstream, http.MethodGet, "/listing", agent, "", ""); got != http.StatusOK {
+		t.Fatalf("listing = %d", got)
+	}
+	if got := h.send(upstream, http.MethodPut, path, agent, "text/plain", "report"); got != http.StatusCreated {
+		t.Fatalf("issued upload = %d, want 201", got)
+	}
+	for _, tc := range []struct {
+		name, path, agent string
+	}{
+		{"reflected", strings.Replace(path, serverIDListed, agentBlob, 1), agent},
+		{"other session", path, "peer-agent"},
+		{"payload filename", strings.Replace(path, "report.txt", agentBlob, 1), agent},
+		{"encoded payload", strings.Replace(path, "report.txt", "%4B"+agentBlob[1:], 1), agent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := h.send(upstream, http.MethodPut, tc.path, tc.agent, "text/plain", "report"); got != http.StatusForbidden {
+				t.Fatalf("upload = %d, want 403", got)
+			}
+		})
+	}
+	if got := uploads.Load(); got != 1 {
+		t.Fatalf("upstream uploads = %d, want exactly one", got)
 	}
 }
 

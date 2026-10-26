@@ -409,8 +409,13 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 }
 
 // serverIDIssued reports whether the origin in target issued segment to the
-// session as an ID.
+// session as an ID. Path-based addressing can append one colon delimiter to
+// the ID before a relative path; the delimiter isn't part of the issued ID.
+// See https://learn.microsoft.com/en-us/graph/onedrive-addressing-driveitems
+// and https://learn.microsoft.com/en-us/graph/api/driveitem-put-content.
+// No other punctuation or content is removed; minting still requires a bare ID.
 func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segment string) bool {
+	segment = strings.TrimSuffix(segment, ":")
 	if s == nil || s.disabled || session == "" || !issuerServerIDShaped(segment) {
 		return false
 	}
