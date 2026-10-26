@@ -228,7 +228,7 @@ func TestInstallWritePathsPrivateMaterialUnreadableAlias(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() {
-				if err := os.Chmod(privateDir, 0o700); err != nil { //nolint:gosec // G302: restore directory traversal for test cleanup.
+				if err := os.Chmod(privateDir, 0o700); err != nil { // #nosec G302 -- restore directory traversal for test cleanup.
 					t.Error(err)
 				}
 			})
