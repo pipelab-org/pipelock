@@ -251,6 +251,39 @@ func doctorUnitState(ctx context.Context, env *probeEnv, unit string) (enabled, 
 	return enabled, active, enabled != "" && active != ""
 }
 
+// observeNamespaceForwarderReadiness uses systemd's effective service state,
+// including drop-ins. Active/running on a notify service means READY=1 was
+// accepted. A historical restart count alone does not condemn a recovered unit.
+// A forwarder on the exact pre-readiness definition may load as Type=simple;
+// it is still refused while restart-looping or not running.
+func observeNamespaceForwarderReadiness(ctx context.Context, env *probeEnv, doorway managedDoorway, state doorwayUnitState) doctorResult {
+	out, code, err := env.runCmd(ctx, "systemctl", "show", doorway.forwarder,
+		"--property=ActiveState,SubState,Type,NRestarts")
+	if err != nil || code != 0 {
+		return unknown("namespace forwarder "+doorway.forwarder+" readiness state could not be read", doorwayInspectionRemedy)
+	}
+	fields := parseSystemdShow(out)
+	active, sub, kind := fields["ActiveState"], fields["SubState"], fields["Type"]
+	restarts, parseErr := strconv.ParseUint(fields["NRestarts"], 10, 64)
+	if active == "" || sub == "" || kind == "" || parseErr != nil {
+		return unknown("namespace forwarder "+doorway.forwarder+" readiness properties are incomplete", doorwayInspectionRemedy)
+	}
+	if kind != "notify" && (kind != "simple" || !doorway.legacySimple) {
+		return fail(classInfra, "namespace forwarder "+doorway.forwarder+" does not use Type=notify bind readiness (Type="+oneLine(kind)+")", "inspect systemd drop-ins for a Type override, then "+installRemedyForPort(env.port))
+	}
+	detail := fmt.Sprintf("namespace forwarder %s is not ready on %s inside the agent network namespace (ActiveState=%s SubState=%s NRestarts=%d)", doorway.forwarder, doorway.listen, oneLine(active), oneLine(sub), restarts)
+	if sub == "auto-restart" || sub == "auto-restart-queued" || (active == "activating" && restarts > 0) {
+		return fail(classInfra, detail, "check for an address/port collision at "+doorway.listen+" inside the agent network namespace; inspect `journalctl -u "+doorway.forwarder+"`, then run `"+namespaceForwarderRemedy(doorway.forwarder, state.enabled, systemctlFailed, env.port)+"`")
+	}
+	if doorwayStateChanging(active) {
+		return doorwayTransitionResult("namespace forwarder", doorway.forwarder, active, "namespace forwarder")
+	}
+	if active != systemctlActive || sub != "running" {
+		return fail(classInfra, detail, namespaceForwarderRemedy(doorway.forwarder, state.enabled, active, env.port))
+	}
+	return pass("namespace forwarder " + doorway.forwarder + " is ready")
+}
+
 // doctorDoorwayState inspects every managed doorway socket and every
 // in-namespace forwarder service. Every admitted doorway contributes its
 // result so an earlier failure cannot hide a later installation failure.
@@ -261,7 +294,11 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 	for _, doorway := range doorways {
 		results = append(results, doctorSingleDoorwayState(ctx, env, doorway))
 	}
-	return combineDoorwayResults(results)
+	combined := combineDoorwayResults(results)
+	if note := legacyNamespaceForwarderNote(doorways, env.port); note != "" && combined.status == statusPass {
+		combined.detail += "; " + note
+	}
+	return combined
 }
 
 func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway managedDoorway) doctorResult {
@@ -271,6 +308,9 @@ func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway manage
 	forwarderEnabled, forwarderActive, forwarderOK := doctorUnitState(ctx, env, doorway.forwarder)
 	forwarder := doorwayUnitState{forwarderEnabled, forwarderActive}
 	var results []doctorResult
+	if forwarderOK && (forwarder.active == systemctlActive || forwarder.active == "activating") {
+		results = append(results, observeNamespaceForwarderReadiness(ctx, env, doorway, forwarder))
+	}
 	for _, observation := range []struct {
 		kind, unit string
 		ok         bool

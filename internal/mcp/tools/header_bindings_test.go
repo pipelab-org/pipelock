@@ -410,3 +410,90 @@ func TestExtractHeaderBindings_LegacySchemaLocations(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractHeaderBindings_AmbiguousPrimitiveDomains(t *testing.T) {
+	for _, domain := range []string{
+		`"type":["string",42]`, `"type":["null","null","string"]`, `"type":["null"]`,
+		`"anyOf":[42]`, `"oneOf":[{"type":"null"},{"type":"null"},{"type":"string"}]`,
+		`"anyOf":[{"type":"null"}]`, `"oneOf":[{"type":"integer"},{"type":"boolean"}]`,
+		`"enum":[]`, `"enum":[0,1e-999]`,
+	} {
+		t.Run(domain, func(t *testing.T) {
+			schema := json.RawMessage(`{"type":"object","properties":{"value":{"x-mcp-header":"Value",` + domain + `}}}`)
+			if _, err := ExtractHeaderBindings(schema); err == nil {
+				t.Fatalf("ambiguous or unsupported domain accepted: %s", domain)
+			}
+		})
+	}
+	// Zero, including an exponent spelling, is a supported safe integer. A
+	// nonzero mantissa that underflows float64 must not be mistaken for zero.
+	for _, value := range []string{`0e999`, `-0.0`, `true`} {
+		schema := json.RawMessage(`{"type":"object","properties":{"value":{"x-mcp-header":"Value","const":` + value + `}}}`)
+		if bindings, err := ExtractHeaderBindings(schema); err != nil || len(bindings) != 1 {
+			t.Fatalf("supported domain %s: bindings=%v err=%v", value, bindings, err)
+		}
+	}
+}
+
+func TestExtractHeaderBindings_TraversalBudget(t *testing.T) {
+	schema := `{"type":"string"}`
+	for range maxSchemaDepth + 1 {
+		schema = `{"properties":{"child":` + schema + `}}`
+	}
+	if _, err := ExtractHeaderBindings(json.RawMessage(schema)); err == nil {
+		t.Fatal("schema traversal beyond shared inspection budget accepted")
+	}
+}
+
+func TestFilterInvalidHeaderTools_RejectsUninspectableEnvelope(t *testing.T) {
+	defs := []ToolDef{{Name: "echo", InputSchema: json.RawMessage(`{"properties":{"value":{"type":"number","x-mcp-header":"Value"}}}`)}}
+	for _, line := range []string{`{`, `{"result":42}`, `{"result":{"tools":{}}}`, `{"result":{"tools":[42]}}`} {
+		if _, _, _, err := FilterInvalidHeaderTools([]byte(line), defs); err == nil {
+			t.Fatalf("uninspectable envelope accepted: %s", line)
+		}
+	}
+}
+
+func TestFilterInvalidHeaderTools_PreservesUnannotatedInventory(t *testing.T) {
+	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object"}}],"nextCursor":"next-page"}}`)
+	filtered, names, rejected, err := FilterInvalidHeaderTools(line, []ToolDef{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+	if err != nil || string(filtered) != string(line) || len(names) != 1 || names[0] != "echo" || len(rejected) != 0 {
+		t.Fatalf("unannotated inventory changed: line=%s names=%v rejected=%v error=%v", filtered, names, rejected, err)
+	}
+}
+
+func TestScanTools_ContractDiscoveryPreservesDrift(t *testing.T) {
+	for _, mode := range []string{"first", "first empty", "identical", "descriptive change", "structural change", "empty"} {
+		t.Run(mode, func(t *testing.T) {
+			sc := testScanner(t)
+			baseline := NewToolBaseline()
+			original := ToolDef{Name: "echo", Description: "Echo input", InputSchema: json.RawMessage(`{"type":"object"}`)}
+			cfg := &ToolScanConfig{Baseline: baseline, Action: config.ActionWarn, DetectDrift: true}
+			encode := func(defs []ToolDef) []byte {
+				data, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"tools": defs}})
+				return data
+			}
+			if mode != "first" && mode != "first empty" {
+				ScanTools(encode([]ToolDef{original}), sc, cfg)
+			}
+			beforeHash := baseline.hashes["echo"]
+			beforeEstablished := baseline.HasDriftBaseline()
+			next := original
+			if mode == "descriptive change" {
+				next.Description += " in the selected region"
+			}
+			if mode == "structural change" {
+				next.InputSchema = json.RawMessage(`{"type":"object","properties":{"region":{"type":"string"}}}`)
+			}
+			defs := []ToolDef{next}
+			if mode == "empty" || mode == "first empty" {
+				defs = []ToolDef{}
+			}
+			cfg.ContractDiscovery = true
+			result := ScanTools(encode(defs), sc, cfg)
+			if !result.IsToolsList || baseline.hashes["echo"] != beforeHash || baseline.HasDriftBaseline() != beforeEstablished || baseline.HasBaseline() {
+				t.Fatalf("discovery changed trust: result=%+v", result)
+			}
+		})
+	}
+}

@@ -38,6 +38,9 @@ func doorwayReaderFor(states map[string]fakeUnitState, runErr error) (func() doc
 		if runErr != nil {
 			return "", -1, runErr
 		}
+		if name == "systemctl" && len(args) == 3 && args[0] == "show" {
+			return testForwarderReady, 0, nil
+		}
 		if name != "systemctl" || len(args) != 2 {
 			return "", 1, errors.New("unexpected command")
 		}
@@ -223,6 +226,17 @@ func diagnosticDoorwayEnv(states map[string]fakeUnitState) *probeEnv {
 		return nil, os.ErrNotExist
 	}
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
+		if name == "systemctl" && len(args) == 3 && args[0] == "show" {
+			st, ok := states[args[1]]
+			if !ok {
+				st = fakeUnitState{systemctlEnabled, systemctlActive}
+			}
+			sub := "running"
+			if st.active == "activating" {
+				sub = "start"
+			}
+			return "ActiveState=" + st.active + "\nSubState=" + sub + "\nType=notify\nNRestarts=0\n", 0, nil
+		}
 		if name != "systemctl" || len(args) != 2 || (args[0] != "is-enabled" && args[0] != "is-active") {
 			return "", -1, errors.New("diagnostic attempted mutation")
 		}
@@ -284,7 +298,9 @@ func TestDoorwayDiagnosticsObservations(t *testing.T) {
 			run := env.runCmd
 			calls := map[string]int{}
 			env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
-				if name != "systemctl" || len(args) != 2 || (args[0] != "is-enabled" && args[0] != "is-active") {
+				stateQuery := len(args) == 2 && (args[0] == "is-enabled" || args[0] == "is-active")
+				readinessQuery := len(args) == 3 && args[0] == "show" && args[2] == "--property=ActiveState,SubState,Type,NRestarts"
+				if name != "systemctl" || (!stateQuery && !readinessQuery) {
 					t.Fatalf("diagnostic attempted mutation: %s %v", name, args)
 				}
 				calls[strings.Join(args, " ")]++

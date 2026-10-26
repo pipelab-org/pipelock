@@ -260,6 +260,9 @@ func TestRequestTracker_NilTracker(t *testing.T) {
 	var tr *RequestTracker
 
 	// All operations on nil tracker should be safe.
+	if tr.HasPending() {
+		t.Fatal("nil tracker invented an outstanding request")
+	}
 	tr.Track(json.RawMessage(`1`))
 	if !tr.Validate(json.RawMessage(`1`)) {
 		t.Error("expected nil tracker Validate to return true")
