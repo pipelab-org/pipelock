@@ -144,7 +144,8 @@ Must be run as root.
 
 Exit codes:
   0  Upgrade completed and verified.
-  1  Upgrade failed; previous state restored.
+  1  Upgrade failed; previous state restored, or the error names each
+     rollback step that could not be restored.
   2  Precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
