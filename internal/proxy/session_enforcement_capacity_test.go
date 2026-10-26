@@ -176,6 +176,29 @@ func TestSessionCapacityReleasesLevelsWhenAdaptiveDisabled(t *testing.T) {
 	}
 }
 
+// Terminate is the documented destructive control, but like reset it keeps
+// taint; only the task boundary releases a tainted slot.
+func TestSessionCapacityTerminateKeepsTaint(t *testing.T) {
+	cfg := testSessionConfig()
+	cfg.MaxSessions = 1
+	sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
+	t.Cleanup(sm.Close)
+	const key = "agent|192.0.2.1"
+	sm.GetOrCreate(key).ObserveRisk(session.RiskObservation{Source: session.TaintSourceRef{Level: session.TaintExternalUntrusted}})
+	if _, found, err := sm.SnapshotAndResetIfResettable(key); !found || err != nil {
+		t.Fatalf("terminate reset: found=%t err=%v", found, err)
+	}
+	if sm.GetOrCreate("agent|192.0.2.2") != nil {
+		t.Fatal("terminate released a tainted slot")
+	}
+	if _, _, _, found, err := sm.BeginNewTask(key, "recovery"); !found || err != nil {
+		t.Fatalf("new task: found=%t err=%v", found, err)
+	}
+	if sm.GetOrCreate("agent|192.0.2.2") == nil {
+		t.Fatal("task boundary did not release the slot")
+	}
+}
+
 func TestSessionCapacityConcurrentEnforcement(t *testing.T) {
 	cfg := testSessionConfig()
 	cfg.MaxSessions = 2
