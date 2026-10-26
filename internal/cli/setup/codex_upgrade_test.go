@@ -79,7 +79,7 @@ printf '\000' >> %q
 			if installErr != nil {
 				t.Fatal(installErr)
 			}
-			wantAdd := []string{"mcp", "add", "--env", "EXAMPLE_MODE=local", "upgrading", "--", exe, "mcp", "proxy", "--config", cfgPath}
+			wantAdd := []string{"mcp", "add", "upgrading", "--", exe, "mcp", "proxy", "--config", cfgPath}
 			wantAdd = append(wantAdd, tc.want...)
 			wantLog := strings.Join([]string{"mcp", "remove", "upgrading"}, "\x00") + "\x00\x00" + strings.Join(wantAdd, "\x00") + "\x00\x00"
 			if !slices.Equal(logData, []byte(wantLog)) {

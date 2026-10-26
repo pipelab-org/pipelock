@@ -445,25 +445,17 @@ func TestHostCapabilities_MatchRealWrapFunctions(t *testing.T) {
 			t.Errorf("host %q: declared header capability %q, observed %q (reason=%q)", "codex", declared.Headers, observedHeaders, reason)
 		}
 
-		// buildCodexAddArgs is what actually runs as `codex mcp add ...`:
-		// codex's own storage is not a file pipelock rewrites, it is codex's
-		// live config reached only through this CLI invocation, so the
-		// literal env value has to be embedded in this argv for codex to
-		// persist it at all.
-		addArgs := buildCodexAddArgs("example", "/usr/bin/node", nil, map[string]string{"API_KEY": "test-only-value"})
-		observedEnv := envCapabilityKeyOnly
-		for i, a := range addArgs {
-			if a == "--env" && i+1 < len(addArgs) {
-				switch addArgs[i+1] {
-				case "API_KEY=test-only-value":
-					observedEnv = envCapabilityKeyValue
-				case "API_KEY":
-					observedEnv = envCapabilityKeyOnly
-				default:
-					t.Fatalf("unexpected --env value shape in codex add args: %q", addArgs[i+1])
-				}
-			}
+		// Derive the name-only contract from registration and the persisted
+		// whitelist, with a positive control for the inner proxy flag.
+		bin, _ := fakeCodex(t, `[{"name":"example","transport":{"type":"stdio","command":"node","env":{"API_KEY":"test-only-value"}}}]`)
+		transport := codexMCPTransport{Type: codexTransportStdio, Command: "node", Env: map[string]string{"API_KEY": "test-only-value"}}
+		wrapped := transport
+		wrapped.Args = wrapCodexArgs("node", nil, transport.Env, "")
+		if err := codexReplaceServer(t.Context(), bin, "example", wrapped, transport); err != nil {
+			t.Fatal(err)
 		}
+		assertCodexEnvNames(t, "example", []string{"API_KEY"})
+		observedEnv := deriveEnvCapabilityFromArgs(t, map[string]interface{}{mcpFieldArgs: wrapped.Args})
 		if observedEnv != declared.Env {
 			t.Errorf("host %q: declared env capability %q, observed %q", "codex", declared.Env, observedEnv)
 		}

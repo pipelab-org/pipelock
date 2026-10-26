@@ -562,15 +562,6 @@ func TestPlanCodexInstall_SkipsUnsupportedCodexState(t *testing.T) {
 			},
 		},
 		{
-			Name: "with-env-vars",
-			Transport: codexMCPTransport{
-				Type:    "stdio",
-				Command: "/usr/bin/node",
-				Args:    []string{"server.js"},
-				EnvVars: []string{"TOKEN"},
-			},
-		},
-		{
 			Name: "with-timeout",
 			Transport: codexMCPTransport{
 				Type:    "stdio",
@@ -719,14 +710,6 @@ func TestPlanCodexRemove_UnsupportedCodexStateErrors(t *testing.T) {
 			errMatch: "cwd cannot be preserved",
 		},
 		{
-			name: "env_vars passthrough",
-			transport: codexMCPTransport{
-				Type: "stdio", Command: pipelockBin, Args: wrappedArgs,
-				EnvVars: []string{"HOME"},
-			},
-			errMatch: "env_vars passthrough",
-		},
-		{
 			name: "unsafe env key",
 			transport: codexMCPTransport{
 				Type: "stdio", Command: pipelockBin, Args: wrappedArgs,
@@ -862,6 +845,7 @@ func fakeCodex(t *testing.T, listJSON string) (binPath, invokeLog string) {
 	if runtime.GOOS == osWindows {
 		t.Skip("fakeCodex shell helper not supported on Windows")
 	}
+	seedCodexTestConfig(t, listJSON)
 	dir := t.TempDir()
 	binPath = filepath.Join(dir, "codex")
 	invokeLog = filepath.Join(dir, "invocations.log")
@@ -916,7 +900,7 @@ func TestRunCodexInstall_DryRun(t *testing.T) {
 	if leakedEnv.MatchString(out.String()) {
 		t.Errorf("dry-run output leaked env value: %s", out.String())
 	}
-	if !strings.Contains(out.String(), "--env PORT=<redacted>") {
+	if !strings.Contains(out.String(), "Codex env_vars: PORT") {
 		t.Errorf("expected redacted env preview, got: %s", out.String())
 	}
 
@@ -968,9 +952,10 @@ func TestRunCodexInstall_RealInstall(t *testing.T) {
 	if !strings.Contains(logStr, "mcp add") {
 		t.Errorf("expected codex mcp add in log, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, "--env PORT=3000") {
-		t.Errorf("expected env to be passed to codex mcp add, got: %s", logStr)
+	if strings.Contains(logStr, "PORT=3000") {
+		t.Errorf("env value leaked to codex mcp add: %s", logStr)
 	}
+	assertCodexEnvNames(t, "demo", []string{"PORT"})
 	if !strings.Contains(logStr, "--config "+installCfgPath) {
 		t.Errorf("expected --config %s passthrough in log, got: %s", installCfgPath, logStr)
 	}
@@ -1229,9 +1214,10 @@ func TestRunCodexRemove_RoundTrip(t *testing.T) {
 	if !strings.Contains(logStr, "x.ts") {
 		t.Errorf("expected original args preserved: %s", logStr)
 	}
-	if !strings.Contains(logStr, "--env TOKEN=abc") {
-		t.Errorf("expected env preserved: %s", logStr)
+	if strings.Contains(logStr, "TOKEN=abc") {
+		t.Errorf("env value leaked: %s", logStr)
 	}
+	assertCodexEnvNames(t, "wrapped", []string{"TOKEN"})
 }
 
 // rollbackFakeCodex returns a codex binary that simulates a failed wrap-add
@@ -1244,6 +1230,7 @@ func rollbackFakeCodex(t *testing.T, listJSON string) (binPath, invokeLog string
 	if runtime.GOOS == osWindows {
 		t.Skip("rollbackFakeCodex shell helper not supported on Windows")
 	}
+	seedCodexTestConfig(t, listJSON)
 	dir := t.TempDir()
 	binPath = filepath.Join(dir, "codex")
 	invokeLog = filepath.Join(dir, "invocations.log")
@@ -1285,6 +1272,7 @@ func failingFakeCodex(t *testing.T, listJSON string) string {
 	if runtime.GOOS == osWindows {
 		t.Skip("failingFakeCodex shell helper not supported on Windows")
 	}
+	seedCodexTestConfig(t, listJSON)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "codex")
 	listFile := filepath.Join(dir, "list.json")
@@ -1392,9 +1380,10 @@ func TestRunCodexInstall_AddFailsRollsBackToOriginal(t *testing.T) {
 	if !strings.Contains(logStr, "/usr/bin/node") {
 		t.Errorf("rollback should re-add original /usr/bin/node command, got: %s", logStr)
 	}
-	if !strings.Contains(logStr, "--env PORT=3000") {
-		t.Errorf("rollback should preserve original env, got: %s", logStr)
+	if strings.Contains(logStr, "PORT=3000") {
+		t.Errorf("rollback leaked original env: %s", logStr)
 	}
+	assertCodexEnvNames(t, "demo", []string{"PORT"})
 }
 
 func TestRunCodexInstall_AddFailsAndRollbackFails(t *testing.T) {
@@ -1446,6 +1435,7 @@ func TestRunCodexRemove_AddFailsRollsBackToWrapped(t *testing.T) {
 			"env": {"PORT": "3000"}
 		}
 	}]`
+	seedCodexTestConfig(t, listJSON)
 	dir := t.TempDir()
 	codexBin := filepath.Join(dir, "codex")
 	invokeLog := filepath.Join(dir, "invocations.log")
@@ -1560,11 +1550,11 @@ func TestCopyStringMap(t *testing.T) {
 func TestFormatEnvFlagsRedactsValues(t *testing.T) {
 	got := formatEnvFlags(map[string]string{
 		"TOKEN": "secret value",
-	})
+	}, nil)
 	if strings.Contains(got, "secret value") {
 		t.Fatalf("formatEnvFlags leaked env value: %s", got)
 	}
-	if got != " --env TOKEN=<redacted>" {
+	if got != " (Codex env_vars: TOKEN)" {
 		t.Fatalf("got %q, want redacted env flag", got)
 	}
 }

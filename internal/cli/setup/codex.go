@@ -24,9 +24,9 @@ import (
 // Codex MCP wrapping uses the same shape as VS Code: rewrite each server's
 // command/args so traffic flows through `pipelock mcp proxy` before reaching
 // the original server. Differences from vscode.go: Codex stores config in
-// TOML (~/.codex/config.toml), so we shell out to `codex mcp list/add/remove`
-// rather than parse the file directly. This avoids a TOML dependency and
-// keeps us aligned with whatever schema Codex evolves to.
+// TOML (~/.codex/config.toml). We use `codex mcp list/add/remove` for
+// registration, then persist env_vars by name with a private atomic write.
+// The add CLI accepts literal env values only, which must never reach argv.
 
 const (
 	codexBinaryDefault  = "codex"
@@ -288,10 +288,7 @@ func unsupportedCodexInstallReason(server codexMCPServer) string {
 	if server.Transport.CWD != "" {
 		return "cwd cannot be preserved by codex mcp add"
 	}
-	if len(server.Transport.EnvVars) > 0 {
-		return "env_vars passthrough cannot be preserved by codex mcp add"
-	}
-	if hasUnsafeEnvKey(server.Transport.Env) {
+	if _, err := codexEnvKeys(server.Transport); err != nil {
 		return "unsafe env key cannot be passed through safely"
 	}
 	if server.Transport.URL != "" && codexURLTransportHasAuthOrHeaders(server.Transport) {
@@ -310,10 +307,7 @@ func unsupportedCodexRemoveReason(server codexMCPServer) string {
 	if server.Transport.CWD != "" {
 		return "cwd cannot be preserved by codex mcp add"
 	}
-	if len(server.Transport.EnvVars) > 0 {
-		return "env_vars passthrough cannot be preserved by codex mcp add"
-	}
-	if hasUnsafeEnvKey(server.Transport.Env) {
+	if _, err := codexEnvKeys(server.Transport); err != nil {
 		return "unsafe env key cannot be passed through safely"
 	}
 	return ""
@@ -325,21 +319,11 @@ func codexURLTransportHasAuthOrHeaders(transport codexMCPTransport) bool {
 		rawJSONHasValue(transport.EnvHTTPHeaders)
 }
 
-func hasUnsafeEnvKey(env map[string]string) bool {
-	for key := range env {
-		if key == "" || strings.HasPrefix(key, "-") {
-			return true
-		}
-	}
-	return false
-}
-
 // wrapCodexArgs builds the args list for a stdio server wrapped through
 // pipelock. The result is: ["mcp", "proxy", "--config", CFG?, "--env", K1, ...,
 // "--", ORIG_CMD, ORIG_ARG_1, ...]. Pass-through env keys are included as
 // `--env KEY` repeats so pipelock's mcp proxy forwards them to the wrapped
-// subprocess (matching the `--env` flag pattern used in claude-peers/openclaw
-// entries on Josh's machine).
+// subprocess without embedding values in its command line.
 func wrapCodexArgs(origCmd string, origArgs []string, env map[string]string, configFile string) []string {
 	args := []string{codexMCP, codexMCPProxy}
 	if configFile != "" {
@@ -416,6 +400,7 @@ type codexInstallPlan struct {
 	NewCmd   string
 	NewArgs  []string
 	Env      map[string]string
+	EnvVars  []string
 	Original codexMCPTransport // pre-wrap state, used for rollback if `codex mcp add` fails
 }
 
@@ -440,7 +425,11 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 			})
 		case s.Transport.Type == codexTransportStdio && s.Transport.Command != "":
 			action := codexActionWrapStdio
-			newArgs := wrapCodexArgs(s.Transport.Command, s.Transport.Args, s.Transport.Env, configFile)
+			envKeys, err := codexEnvKeys(s.Transport)
+			if err != nil {
+				return nil, err
+			}
+			newArgs := wrapCodexArgs(s.Transport.Command, s.Transport.Args, envKeys, configFile)
 			if classifyCodexWrapper(s) == stateForeignWrapper {
 				if codexURLTransportHasAuthOrHeaders(s.Transport) {
 					return nil, fmt.Errorf("server %q: %w: wrapper has HTTP authentication settings outside its invocation; restore the original server configuration before installing again", s.Name, mcpwrap.ErrCannotNormalize)
@@ -453,7 +442,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 					action = codexActionWrapURL
 					newArgs = wrapCodexURL(inner.UpstreamURL, configFile)
 				} else {
-					newArgs = wrapCodexArgs(inner.Command, inner.Args, s.Transport.Env, configFile)
+					newArgs = wrapCodexArgs(inner.Command, inner.Args, envKeys, configFile)
 				}
 			}
 			plans = append(plans, codexInstallPlan{
@@ -463,6 +452,7 @@ func planCodexInstall(servers []codexMCPServer, pipelockBin, configFile string) 
 				NewCmd:   pipelockBin,
 				NewArgs:  newArgs,
 				Env:      copyStringMap(s.Transport.Env),
+				EnvVars:  append([]string(nil), s.Transport.EnvVars...),
 				Original: s.Transport,
 			})
 		case s.Transport.URL != "":
@@ -494,6 +484,7 @@ type codexRemovePlan struct {
 	NewArgs  []string
 	NewURL   string
 	Env      map[string]string
+	EnvVars  []string
 	Original codexMCPTransport // pre-unwrap (wrapped) state, used for rollback if `codex mcp add` fails
 }
 
@@ -518,6 +509,9 @@ func planCodexRemove(servers []codexMCPServer) ([]codexRemovePlan, error) {
 		}
 		switch {
 		case origURL != "":
+			if len(s.Transport.Env)+len(s.Transport.EnvVars) > 0 {
+				return nil, fmt.Errorf("unwrapping %q: stdio environment cannot be preserved on a Codex URL server; restore its URL configuration manually", s.Name)
+			}
 			plans = append(plans, codexRemovePlan{
 				Server:   s.Name,
 				Action:   codexActionUnwrapURL,
@@ -531,6 +525,7 @@ func planCodexRemove(servers []codexMCPServer) ([]codexRemovePlan, error) {
 				NewCmd:   origCmd,
 				NewArgs:  origArgs,
 				Env:      copyStringMap(s.Transport.Env),
+				EnvVars:  append([]string(nil), s.Transport.EnvVars...),
 				Original: s.Transport,
 			})
 		}
@@ -583,12 +578,12 @@ func runCodexInstall(cmd *cobra.Command, dryRun bool, configFile, codexPathOverr
 			}
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"would wrap %s (%s): codex mcp add %s%s -- %s %s\n",
-					p.Server, p.Action, p.Server, formatEnvFlags(p.Env), strconv.Quote(p.NewCmd), joinArgs(p.NewArgs))
+					"would wrap %s (%s): codex mcp add %s -- %s %s\n",
+					p.Server, p.Action, p.Server, strconv.Quote(p.NewCmd), joinArgs(p.NewArgs)+formatEnvFlags(p.Env, p.EnvVars))
 				wrapped++
 				continue
 			}
-			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env, p.Original); err != nil {
+			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, codexMCPTransport{Type: codexTransportStdio, Command: p.NewCmd, Args: p.NewArgs, Env: p.Env, EnvVars: p.EnvVars}, p.Original); err != nil {
 				return fmt.Errorf("wrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "wrapped %s\n", p.Server)
@@ -637,12 +632,12 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 		case codexActionUnwrapStdio:
 			if dryRun {
 				_, _ = fmt.Fprintf(cmd.OutOrStdout(),
-					"would unwrap %s: codex mcp add %s%s -- %s %s\n",
-					p.Server, p.Server, formatEnvFlags(p.Env), strconv.Quote(p.NewCmd), joinArgs(p.NewArgs))
+					"would unwrap %s: codex mcp add %s -- %s %s\n",
+					p.Server, p.Server, strconv.Quote(p.NewCmd), joinArgs(p.NewArgs)+formatEnvFlags(p.Env, p.EnvVars))
 				unwrapped++
 				continue
 			}
-			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, p.NewCmd, p.NewArgs, p.Env, p.Original); err != nil {
+			if err := codexReplaceServer(cmd.Context(), codexBin, p.Server, codexMCPTransport{Type: codexTransportStdio, Command: p.NewCmd, Args: p.NewArgs, Env: p.Env, EnvVars: p.EnvVars}, p.Original); err != nil {
 				return fmt.Errorf("unwrapping %q: %w", p.Server, err)
 			}
 			_, _ = fmt.Fprintf(cmd.OutOrStdout(), "unwrapped %s\n", p.Server)
@@ -673,19 +668,24 @@ func runCodexRemove(cmd *cobra.Command, dryRun bool, codexPathOverride string) e
 }
 
 // codexReplaceServer is the stdio-server replace primitive: remove + add.
-// Codex's `mcp add` rejects duplicates, so we always remove first. The remove
-// is best-effort: a "not found" error is treated as success (idempotent).
+// The remove is best-effort: a "not found" error is treated as success.
 //
 // If the add step fails after the remove succeeded, the server is gone from
 // Codex's config. We attempt to roll back by re-adding the original transport
 // (captured before the remove call). The error returned distinguishes the
 // rollback-succeeded case ("rolled back to original config") from the
 // rollback-failed case ("rollback also failed; verify with codex mcp list").
-func codexReplaceServer(ctx context.Context, codexBin, name, command string, args []string, env map[string]string, original codexMCPTransport) error {
+func codexReplaceServer(ctx context.Context, codexBin, name string, replacement, original codexMCPTransport) error {
+	// Check inheritance and config readability before removing the original.
+	for _, transport := range []codexMCPTransport{replacement, original} {
+		if err := preflightCodexEnv(transport); err != nil {
+			return err
+		}
+	}
 	if err := codexMCPRemoveBestEffort(ctx, codexBin, name); err != nil {
 		return err
 	}
-	if _, addErr := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, command, args, env)...); addErr != nil {
+	if addErr := addCodexStdio(ctx, codexBin, name, replacement); addErr != nil {
 		if rbErr := rollbackCodexAdd(ctx, codexBin, name, original); rbErr != nil {
 			return fmt.Errorf("codex mcp add %s failed and rollback also failed (server may be missing; verify with `codex mcp list`): %w", name, errors.Join(addErr, rbErr))
 		}
@@ -697,6 +697,9 @@ func codexReplaceServer(ctx context.Context, codexBin, name, command string, arg
 // codexReplaceURL is the URL-server replace primitive: remove + add --url.
 // Same rollback semantics as codexReplaceServer.
 func codexReplaceURL(ctx context.Context, codexBin, name, url string, original codexMCPTransport) error {
+	if err := preflightCodexEnv(original); err != nil {
+		return err
+	}
 	if err := codexMCPRemoveBestEffort(ctx, codexBin, name); err != nil {
 		return err
 	}
@@ -709,22 +712,21 @@ func codexReplaceURL(ctx context.Context, codexBin, name, url string, original c
 	return nil
 }
 
-// buildCodexAddArgs assembles the argv for `codex mcp add NAME [--env K=V]... -- COMMAND ARGS...`.
-// Extracted so codexReplaceServer and rollbackCodexAdd share one source of
-// truth for the add shape.
-func buildCodexAddArgs(name, command string, args []string, env map[string]string) []string {
-	addArgs := []string{"mcp", "add"}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
+// buildCodexAddArgs contains only the command and its arguments. Environment
+// declarations are persisted separately as env_vars, never as --env KEY=VALUE.
+func buildCodexAddArgs(name, command string, args []string) []string {
+	addArgs := []string{"mcp", "add", name, "--", command}
+	return append(addArgs, args...)
+}
+
+func addCodexStdio(ctx context.Context, codexBin, name string, transport codexMCPTransport) error {
+	if err := preflightCodexEnv(transport); err != nil {
+		return err
 	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		addArgs = append(addArgs, "--env", k+"="+env[k])
+	if _, err := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, transport.Command, transport.Args)...); err != nil {
+		return err
 	}
-	addArgs = append(addArgs, name, "--", command)
-	addArgs = append(addArgs, args...)
-	return addArgs
+	return persistCodexEnvNames(name, transport)
 }
 
 // rollbackCodexAdd re-registers a server using the captured original transport
@@ -732,8 +734,7 @@ func buildCodexAddArgs(name, command string, args []string, env map[string]strin
 // missing server. Returns the rollback error if the re-add itself fails.
 func rollbackCodexAdd(ctx context.Context, codexBin, name string, original codexMCPTransport) error {
 	if original.Type == codexTransportStdio || (original.Command != "" && original.URL == "") {
-		_, err := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, original.Command, original.Args, original.Env)...)
-		return err
+		return addCodexStdio(ctx, codexBin, name, original)
 	}
 	if original.URL != "" {
 		_, err := runCodexCommand(ctx, codexBin, "mcp", "add", name, "--url", original.URL)
@@ -777,23 +778,18 @@ func runCodexCommand(ctx context.Context, codexBin string, args ...string) ([]by
 	return out, nil
 }
 
-// formatEnvFlags renders redacted `--env K=<redacted> ...` entries for dry-run
-// output. Codex stores env values in its MCP config, and those values are often
-// credentials; dry-run output must not copy them into terminal scrollback.
-func formatEnvFlags(env map[string]string) string {
-	if len(env) == 0 {
+// formatEnvFlags previews the config whitelist without displaying values.
+func formatEnvFlags(env map[string]string, envVars []string) string {
+	keys, _ := codexEnvKeys(codexMCPTransport{Env: env, EnvVars: envVars})
+	if len(keys) == 0 {
 		return ""
 	}
-	keys := make([]string, 0, len(env))
-	for k := range env {
-		keys = append(keys, k)
+	names := make([]string, 0, len(keys))
+	for key := range keys {
+		names = append(names, key)
 	}
-	sort.Strings(keys)
-	out := ""
-	for _, k := range keys {
-		out += " --env " + k + "=<redacted>"
-	}
-	return out
+	sort.Strings(names)
+	return " (Codex env_vars: " + strings.Join(names, ", ") + ")"
 }
 
 // joinArgs renders args for human-readable preview output.
