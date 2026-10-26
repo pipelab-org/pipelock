@@ -158,9 +158,17 @@ func TestHTTPListener_ContractDiscoveryCancelDuringScan(t *testing.T) {
 			_ = resp.Body.Close()
 		}
 	}()
-	<-written
+	select {
+	case <-written:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("discovery never requested the upstream inventory")
+	}
 	cancel()
-	<-done
+	select {
+	case <-done:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("canceled call did not return")
+	}
 	select {
 	case <-abandoned:
 	case <-time.After(testwait.Deadline(10 * time.Second)):
