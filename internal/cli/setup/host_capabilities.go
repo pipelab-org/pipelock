@@ -35,11 +35,7 @@ const (
 	// wrapped command (`--env KEY`); pipelock's mcp proxy inherits the
 	// value from its own process environment, which the host is relied on
 	// to have already set before starting the wrapped command.
-	envCapabilityKeyOnly envCapability = "key-only"
-	// envCapabilityKeyValue means the literal value is written into the
-	// wrapped command/config (`--env KEY=VALUE`), because the host's own
-	// install mechanism (codex mcp add) does not run as a child of a
-	// process that already has the value set.
+	envCapabilityKeyOnly  envCapability = "key-only"
 	envCapabilityKeyValue envCapability = "key-value"
 )
 
@@ -138,12 +134,10 @@ var hostCapabilities = map[string]hostCapability{
 		SelfWrapSkip: true, ForeignRefusal: true,
 	},
 	"codex": {
-		// Codex has no config-file rewrite path; install shells out to
-		// `codex mcp add/remove`, so env values must be literal
-		// (--env KEY=VALUE) and any HTTP auth/header settings on the
-		// upstream transport make the whole server unsupported.
+		// Codex registration persists env_vars in config.toml. Only names
+		// reach the wrapper; HTTP auth/header settings remain unsupported.
 		Host: "codex", Engine: engineWrapRuntime,
-		Headers: headerCapabilityRejected, Env: envCapabilityKeyValue,
+		Headers: headerCapabilityRejected, Env: envCapabilityKeyOnly,
 		SelfWrapSkip: true, ForeignRefusal: true,
 	},
 }
