@@ -39,6 +39,17 @@ func TestHostileFindingKindsVerdictEquivalence(t *testing.T) {
 			if old.Level != attributed.Level || old.PromptHit != attributed.PromptHit || old.Contaminated != attributed.Contaminated || old.Sources[0].MatchReason != attributed.Sources[0].MatchReason {
 				t.Fatalf("mask=%d level=%v boolean=%+v attributed=%+v", mask, level, old, attributed)
 			}
+			// Both sides above run the current Observe. Pin the outcomes the
+			// pre-attribution boolean path produced, so a change shared by both
+			// entry points cannot pass as equivalence.
+			wantLevel, wantReason := level, ""
+			if len(kinds) > 0 {
+				wantLevel, wantReason = session.TaintExternalHostile, "prompt_injection_pattern"
+			}
+			if attributed.Level != wantLevel || attributed.Sources[0].Level != wantLevel || attributed.PromptHit != (len(kinds) > 0) ||
+				attributed.Contaminated != (wantLevel >= session.TaintExternalUntrusted) || attributed.Sources[0].MatchReason != wantReason {
+				t.Fatalf("mask=%d level=%v departs from the boolean outcome: %+v", mask, level, attributed)
+			}
 			old.FindingKinds, attributed.FindingKinds = nil, nil
 			old.Sources[0].FindingKinds, attributed.Sources[0].FindingKinds = nil, nil
 			if !reflect.DeepEqual(old, attributed) {
