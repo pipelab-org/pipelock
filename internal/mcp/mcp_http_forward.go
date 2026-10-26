@@ -22,7 +22,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
-	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -437,14 +436,14 @@ func RunHTTPProxy(
 
 					releaseHeaders, headerContractErr = bridgeHeaders.prepare(ctx, deferredReq.ForwardMessage)
 					if headerContractErr != nil {
+						// The resolution receipt closes the held action, as for the
+						// live upstream gate above. The hold wrote a defer receipt,
+						// not an intent, so an outcome under its ID would read as
+						// "outcome without matching intent" to completeness checks.
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused deferred call %s: %v\n", deferredReq.DeferID, headerContractErr)
 						res.FinalDecision = config.ActionBlock
 						res.ResolutionSource = deferred.SourceUpstreamContract
 						res.Reason = "tool_header_contract_unavailable"
-						emitBridgeHeaderContractRefusal(safeLogW, TrackedRequestOutcome{Receipt: receipt.EmitOpts{
-							ActionID: deferredReq.DeferID, Target: deferredReq.ToolName, ToolName: deferredReq.ToolName,
-							MCPMethod: deferredReq.Method, Transport: fwdOpts.Transport,
-							ShardIndex: deferredReq.ShardIndex, ShardSelected: deferredReq.ShardSelected,
-						}}, fwdOpts)
 						br := BlockedRequest{ID: deferredReq.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"}
 						gateBlock = &br
 						gateAudit = mcpListenerInspectionDenialAudit()

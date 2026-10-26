@@ -253,15 +253,21 @@ func TestHTTPBridgeHeaderDiscoveryRefuses(t *testing.T) {
 			for _, r := range readActionReceipts(t, h.dir) {
 				record := r.ActionRecord
 				switch record.DecisionPhase {
-				case receipt.DecisionPhaseIntent, "":
-					if record.Verdict == config.ActionAllow {
-						intent = &record
-					}
+				case receipt.DecisionPhaseIntent:
+					intent = &record
 				case receipt.DecisionPhaseOutcome:
 					outcome = &record
 				}
 			}
-			if intent == nil || outcome == nil || intent.ActionID != outcome.ActionID || outcome.Verdict != config.ActionBlock || outcome.Layer != mcpReceiptLayerHeaderContract {
+			if !opts.RequireReceipts {
+				// A best-effort allow is single-phase, so nothing may claim to
+				// close it; the completeness verifier would read a broken chain.
+				if intent != nil || outcome != nil {
+					t.Fatalf("best-effort refusal wrote phased receipts: intent=%+v outcome=%+v", intent, outcome)
+				}
+				return
+			}
+			if intent == nil || outcome == nil || intent.ActionID != outcome.ActionID || intent.Verdict != config.ActionAllow || outcome.Verdict != config.ActionBlock || outcome.Layer != mcpReceiptLayerHeaderContract {
 				t.Fatalf("intent=%+v outcome=%+v logs=%s", intent, outcome, logs)
 			}
 		})
@@ -589,15 +595,21 @@ func TestHTTPBridgeHeaderDeferredRelease(t *testing.T) {
 				if !strings.Contains(out.String(), `"code":-32020`) {
 					t.Fatalf("out=%s", out.String())
 				}
-				found := false
+				resolutions := 0
 				for _, r := range readActionReceipts(t, h.dir) {
 					a := r.ActionRecord
-					if a.ActionID == held.DeferID && a.DecisionPhase == receipt.DecisionPhaseOutcome && a.Layer == mcpReceiptLayerHeaderContract && a.Verdict == config.ActionBlock {
-						found = true
+					if a.ActionID == held.DeferID && a.DecisionPhase == receipt.DecisionPhaseOutcome {
+						t.Fatalf("held action has an outcome without an intent: %+v", a)
+					}
+					if a.DeferID == held.DeferID && a.DecisionPhase == receipt.DecisionPhaseResolution {
+						resolutions++
+						if a.Verdict != config.ActionBlock || a.ResolutionSource != deferred.SourceUpstreamContract || a.Pattern != "tool_header_contract_unavailable" {
+							t.Fatalf("deferred refusal resolution=%+v", a)
+						}
 					}
 				}
-				if !found {
-					t.Fatal("deferred refusal lacks blocked outcome under held action ID")
+				if resolutions != 1 {
+					t.Fatalf("deferred refusal resolution receipts=%d, want 1", resolutions)
 				}
 				assertTerminalJournal(t, manager, held.DeferID, deferred.StateResolvedBlock, deferred.SourceUpstreamContract)
 			}
