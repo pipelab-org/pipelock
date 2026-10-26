@@ -143,7 +143,7 @@ Group=%s
 ExecStart=%s contain netns-forward --listen %s --target %s
 %s
 BindReadOnlyPaths=%s
-BindReadOnlyPaths=/run/systemd/notify
+BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
 PrivateTmp=true
@@ -160,7 +160,8 @@ WantedBy=multi-user.target
 		systemdListenAddress(service.Host, service.Port),
 		declaredLoopbackDoorwayPath(service.Host, service.Port),
 		strings.Join(runtimeSocketMountProperties(), "\n"),
-		filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port)))
+		filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port)),
+		systemdNotifySocketPath)
 }
 
 // renderDeclaredLoopbackForwarderUnit relays one declared service's host
@@ -235,7 +236,11 @@ const (
 	// systemd creates the doorway's dedicated parent directory. Binding that
 	// directory preserves replacement visibility while RemoveOnStop clears
 	// the socket itself. The agent unit does not receive this directory.
-	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy/doorway.sock"
+	containedDoorwaySocketPath = "/run/pipelock-agent-proxy/doorway.sock"
+	// The system manager's NOTIFY_SOCKET. Namespace forwarders bind it
+	// read-only through their /run mask so Type=notify readiness can reach
+	// systemd; NotifyAccess=main limits who systemd accepts it from.
+	systemdNotifySocketPath       = "/run/systemd/notify"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
 	legacyOwnedLoopbackMark       = "0x504c4b01"
 	legacyOwnedLoopbackSlice      = "pipelock_contained.slice"
@@ -716,7 +721,7 @@ Group=%s
 ExecStart=%s contain netns-forward --listen 127.0.0.1:%d --target %s
 %s
 BindReadOnlyPaths=%s
-BindReadOnlyPaths=/run/systemd/notify
+BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
 PrivateTmp=true
@@ -730,7 +735,7 @@ WantedBy=multi-user.target
 		containedProxyForwarderUnit, containedProxyForwarderUnit,
 		containedNetworkNamespaceUnit,
 		int64(cliutil.ServiceStartTimeout/time.Second),
-		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), filepath.Dir(containedDoorwaySocketPath))
+		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), filepath.Dir(containedDoorwaySocketPath), systemdNotifySocketPath)
 }
 
 // renderContainedProxyForwarderUnit relays the host doorway to Pipelock's own
