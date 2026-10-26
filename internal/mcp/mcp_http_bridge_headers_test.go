@@ -637,3 +637,86 @@ func TestHTTPBridgeHeaderDeferredRelease(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPBridgeHeaderDiscoveryPreservesSession(t *testing.T) {
+	for _, initialized := range []bool{false, true} {
+		for _, scenario := range []string{"accepted", "absent", "wrong-id", "empty-202"} {
+			t.Run(fmt.Sprintf("%s/initialized=%t", scenario, initialized), func(t *testing.T) {
+				oldToken, newToken := strings.Repeat("a", 43), strings.Repeat("b", 43)
+				wantSession := "original-session"
+				if !initialized {
+					oldToken, wantSession = "", ""
+				}
+				var calls, pings atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodPost {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					body, _ := io.ReadAll(r.Body)
+					frame := ParseMCPFrame(body)
+					w.Header().Set("Content-Type", "application/json")
+					switch frame.Method {
+					case "initialize":
+						w.Header().Set("Mcp-Session-Id", "original-session")
+						w.Header().Set(listenerSessionTokenHeader, oldToken)
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2026-07-28","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}`, frame.ID)
+					case "tools/list":
+						if r.Header.Get("Mcp-Session-Id") != wantSession || r.Header.Get(listenerSessionTokenHeader) != oldToken {
+							t.Error("discovery lost existing session")
+						}
+						w.Header().Set("Mcp-Session-Id", "discovery-session")
+						w.Header().Set(listenerSessionTokenHeader, newToken)
+						switch scenario {
+						case "accepted":
+							discoveryList(w, frame, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+						case "absent":
+							discoveryList(w, frame, `[]`, "")
+						case "wrong-id":
+							frame.ID = []byte(`99`)
+							discoveryList(w, frame, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+						case "empty-202":
+							w.WriteHeader(http.StatusAccepted)
+						}
+					case methodToolsCall, "ping":
+						if frame.Method == methodToolsCall {
+							calls.Add(1)
+						} else {
+							pings.Add(1)
+						}
+						if got := r.Header.Get("Mcp-Session-Id"); got != wantSession {
+							t.Errorf("%s session=%q, want %q", frame.Method, got, wantSession)
+						}
+						if r.Header.Get(listenerSessionTokenHeader) != oldToken {
+							t.Errorf("%s replayed private discovery token", frame.Method)
+						}
+						_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{}}`, frame.ID)
+					}
+				}))
+				defer upstream.Close()
+				initialize := `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`
+				if !initialized {
+					initialize = ""
+				}
+				input := strings.Join([]string{
+					initialize,
+					bridgeHeaderCall(`{"region":"body"}`), currentWireBody(3, "ping", ""), "",
+				}, "\n")
+				var out, logs bytes.Buffer
+				if err := RunHTTPProxy(t.Context(), strings.NewReader(strings.TrimSpace(input)+"\n"), &out, &logs, upstream.URL, nil, bridgeHeaderOpts(t)); err != nil {
+					t.Fatalf("bridge=%v logs=%s", err, &logs)
+				}
+				wantCalls := int32(0)
+				if scenario == "accepted" {
+					wantCalls = 1
+				}
+				if calls.Load() != wantCalls || pings.Load() != 1 {
+					t.Fatalf("calls=%d pings=%d output=%s logs=%s", calls.Load(), pings.Load(), &out, &logs)
+				}
+				if scenario != "accepted" && !strings.Contains(out.String(), `"code":-32020`) {
+					t.Fatalf("missing refusal: %s", &out)
+				}
+			})
+		}
+	}
+}

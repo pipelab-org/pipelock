@@ -84,3 +84,46 @@ func TestHTTPClientDiscoveryByteBudget(t *testing.T) {
 		})
 	}
 }
+
+func TestHTTPClientPreserveSession(t *testing.T) {
+	const message = `{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}`
+	for _, tc := range []struct {
+		name, content, body string
+		status              int
+		validate            bool
+	}{
+		{"JSON", "application/json", message, http.StatusOK, false},
+		{"validated JSON", "application/json", message, http.StatusOK, true},
+		{"validated SSE", "text/event-stream", "data: " + message + "\n\n", http.StatusOK, true},
+		{"empty acknowledgement", "application/json", "", http.StatusAccepted, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalToken := strings.Repeat("a", 43)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Mcp-Session-Id") != "original-session" || r.Header.Get(pipelockSessionTokenHeader) != originalToken {
+					t.Error("private request lost established session")
+				}
+				w.Header().Set("Mcp-Session-Id", "replacement-session")
+				w.Header().Set(pipelockSessionTokenHeader, strings.Repeat("b", 43))
+				w.Header().Set("Content-Type", tc.content)
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			client := NewHTTPClient(server.URL, nil)
+			client.sessionID = "original-session"
+			client.listenerSessionToken = originalToken
+			if tc.validate {
+				client.ResponseKeyValidator = func([]byte) error { return nil }
+			}
+			reader, err := client.SendMessageWithOptions(t.Context(), []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`), HTTPMessageOptions{PreserveSession: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			drain(t, reader)
+			if client.SessionID() != "original-session" || client.listenerSessionToken != originalToken {
+				t.Fatal("private response changed session state")
+			}
+		})
+	}
+}

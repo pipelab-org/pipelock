@@ -170,6 +170,9 @@ func (c *HTTPClient) ProtocolVersion() string {
 type HTTPMessageOptions struct {
 	Headers            http.Header
 	ResponseByteBudget *int
+	// PreserveSession keeps private requests from changing the caller's
+	// session ID or listener token. Existing state still accompanies the send.
+	PreserveSession bool
 }
 
 // SendMessage POSTs msg as a JSON-RPC 2.0 request and returns a MessageReader
@@ -262,6 +265,9 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 		token := resp.Header.Get(pipelockSessionTokenHeader)
 		if token != "" && !validPipelockSessionToken(token) {
 			return ErrInvalidPipelockSessionToken
+		}
+		if opts.PreserveSession {
+			return nil
 		}
 		c.sessionMu.Lock()
 		defer c.sessionMu.Unlock()

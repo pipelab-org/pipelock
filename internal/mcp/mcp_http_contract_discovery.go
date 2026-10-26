@@ -227,7 +227,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		headers.Set(listenerMCPMethod, "tools/list")
 		headers.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
 		var err error
-		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining})
+		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining, PreserveSession: true})
 		if err != nil {
 			return nil, fmt.Errorf("upstream discovery request: %w", err)
 		}
