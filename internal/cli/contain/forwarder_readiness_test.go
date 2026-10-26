@@ -187,52 +187,180 @@ func TestReinstallMigratesSimpleNamespaceForwarders(t *testing.T) {
 	}
 }
 
-func TestLegacyNamespaceForwarderReadinessRemedy(t *testing.T) {
-	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9201}
-	unit := loopbackForwarderUnitBase(service.Host, service.Port) + "-netns.service"
-	for _, declared := range []bool{false, true} {
-		t.Run(fmt.Sprintf("declared=%t", declared), func(t *testing.T) {
-			env := diagnosticDoorwayEnv(nil)
-			oldRead := env.readFile
-			target, remedy := containedNamespaceForwarderUnit, installRemedy
-			var services []config.ContainmentLoopbackService
-			if declared {
-				target = unit
-				remedy = loopbackDefinitionRemedy
-				services = []config.ContainmentLoopbackService{service}
-			}
-			env.readFile = func(path string) ([]byte, error) {
-				var body []byte
-				var err error
-				if filepath.Base(path) == unit {
-					body = []byte(renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service))
-				} else {
-					body, err = oldRead(path)
-				}
-				if filepath.Base(path) == target {
-					legacy := strings.ReplaceAll(string(body), "Type=notify\nNotifyAccess=main\n", "Type=simple\n")
-					legacy = strings.ReplaceAll(legacy, "BindReadOnlyPaths=/run/systemd/notify\n", "")
-					return []byte(legacy), nil
-				}
-				// Supply healthy definitions for the declared service's siblings.
-				if declared {
-					switch filepath.Base(path) {
-					case strings.TrimSuffix(unit, "-netns.service") + ".socket":
-						return []byte(renderDeclaredLoopbackSocketUnit(env.agentUserName, service)), nil
-					case strings.TrimSuffix(unit, "-netns.service") + ".service":
-						return []byte(renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service)), nil
-					}
-				}
-				return body, err
-			}
-			got := doctorDoorwayState(t.Context(), env, services)
-			if got.status != statusFail || !strings.Contains(got.detail, "without bind readiness") || !strings.Contains(got.remediation, remedy) {
-				t.Fatalf("legacy definition = %+v", got)
-			}
-			if status, _ := probeManagedDoorwaySockets(t.Context(), env, services); status != statusFail {
-				t.Fatalf("legacy verification = %s", status)
+// priorReleaseForwarderUnits are namespace forwarder definitions as the last
+// release before bind readiness rendered them for the fixture arguments below,
+// with the host-selected runtime mounts replaced by {{MOUNTS}}.
+const priorReleaseProxyForwarderUnit = `[Unit]
+Description=Pipelock proxy listener inside the contained-agent network namespace
+Requires=pipelock-agent-netns.service
+After=pipelock-agent-netns.service
+Requires=pipelock-agent-proxy.socket
+After=pipelock-agent-proxy.socket
+JoinsNamespaceOf=pipelock-agent-netns.service
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+ExecStart=/usr/local/bin/pipelock contain netns-forward --listen 127.0.0.1:8888 --target /run/pipelock-agent-proxy/doorway.sock
+{{MOUNTS}}
+BindReadOnlyPaths=/run/pipelock-agent-proxy
+PrivateNetwork=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+`
+
+const priorReleaseDeclaredForwarderUnit = `[Unit]
+Description=Pipelock declared loopback listener inside the contained-agent network namespace
+Requires=pipelock-agent-netns.service
+After=pipelock-agent-netns.service
+Requires=pipelock-agent-loopback-v4-5432.socket
+After=pipelock-agent-loopback-v4-5432.socket
+JoinsNamespaceOf=pipelock-agent-netns.service
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+ExecStart=/usr/local/bin/pipelock contain netns-forward --listen 127.0.0.1:5432 --target /run/pipelock-agent-loopback-v4-5432/doorway.sock
+{{MOUNTS}}
+BindReadOnlyPaths=/run/pipelock-agent-loopback-v4-5432
+PrivateNetwork=true
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+`
+
+func TestLegacyNamespaceForwarderDefinitionMatchesPriorRelease(t *testing.T) {
+	mounts := strings.Join(runtimeSocketMountProperties(), "\n")
+	for name, tc := range map[string]struct{ current, prior string }{
+		"proxy":    {renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", "agent", 8888), priorReleaseProxyForwarderUnit},
+		"declared": {renderDeclaredLoopbackNamespaceForwarderUnit("/usr/local/bin/pipelock", "agent", config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 5432}), priorReleaseDeclaredForwarderUnit},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := legacyNamespaceForwarderDefinition(tc.current)
+			want := strings.Replace(tc.prior, "{{MOUNTS}}", mounts, 1)
+			if !ok || got != want {
+				t.Fatalf("derived legacy definition (ok=%t):\n%s\nwant:\n%s", ok, got, want)
 			}
 		})
+	}
+	if _, ok := legacyNamespaceForwarderDefinition(renderContainedProxySocketUnit("agent")); ok {
+		t.Fatal("a unit without readiness directives has no legacy form")
+	}
+}
+
+// TestLegacyNamespaceForwarderAfterBinaryUpgrade covers a host whose binary was
+// replaced by `contain upgrade`, which does not rewrite doorway units. Final
+// verification must accept the exact prior definition while it is running,
+// keep naming the migration, and still refuse a restart-looping listener.
+func TestLegacyNamespaceForwarderAfterBinaryUpgrade(t *testing.T) {
+	service := config.ContainmentLoopbackService{Host: "127.0.0.1", Port: 9201}
+	unit := loopbackForwarderUnitBase(service.Host, service.Port) + "-netns.service"
+	timeout := fmt.Sprintf("TimeoutStartSec=%d\n", int64(cliutil.ServiceStartTimeout/time.Second))
+	for _, declared := range []bool{false, true} {
+		for _, tc := range []struct {
+			name, active, sub, kind string
+			hybrid                  bool
+			want                    string
+		}{
+			{name: "prior definition running", active: "active", sub: "running", kind: "simple", want: statusPass},
+			{name: "prior definition restart-looping", active: "activating", sub: "auto-restart", kind: "simple", want: statusFail},
+			{name: "prior definition exited", active: "active", sub: "exited", kind: "simple", want: statusFail},
+			{name: "prior definition other type", active: "active", sub: "running", kind: "forking", want: statusFail},
+			{name: "hybrid simple definition", active: "active", sub: "running", kind: "simple", hybrid: true, want: statusFail},
+		} {
+			t.Run(fmt.Sprintf("declared=%t/%s", declared, tc.name), func(t *testing.T) {
+				env := diagnosticDoorwayEnv(nil)
+				oldRead, oldRun := env.readFile, env.runCmd
+				target, remedy := containedNamespaceForwarderUnit, installRemedy
+				var services []config.ContainmentLoopbackService
+				if declared {
+					target = unit
+					remedy = loopbackDefinitionRemedy
+					services = []config.ContainmentLoopbackService{service}
+				}
+				env.readFile = func(path string) ([]byte, error) {
+					var body []byte
+					var err error
+					switch filepath.Base(path) {
+					case unit:
+						body = []byte(renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service))
+					case strings.TrimSuffix(unit, "-netns.service") + ".socket":
+						body = []byte(renderDeclaredLoopbackSocketUnit(env.agentUserName, service))
+					case strings.TrimSuffix(unit, "-netns.service") + ".service":
+						body = []byte(renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service))
+					default:
+						body, err = oldRead(path)
+					}
+					if err != nil || filepath.Base(path) != target {
+						return body, err
+					}
+					legacy, ok := legacyNamespaceForwarderDefinition(string(body))
+					if !ok {
+						t.Fatalf("no legacy form for %s", path)
+					}
+					if tc.hybrid {
+						legacy = strings.Replace(legacy, "Type=simple\n", "Type=simple\n"+timeout, 1)
+					}
+					return []byte(legacy), nil
+				}
+				env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+					if name == "systemctl" && len(args) > 1 && args[1] == target {
+						switch args[0] {
+						case "is-enabled":
+							return systemctlEnabled, 0, nil
+						case "is-active":
+							return tc.active, 0, nil
+						case "show":
+							return fmt.Sprintf("ActiveState=%s\nSubState=%s\nType=%s\nNRestarts=3\n", tc.active, tc.sub, tc.kind), 0, nil
+						}
+					}
+					if name == "systemctl" && len(args) > 1 && args[0] == "show" {
+						return testForwarderReady, 0, nil
+					}
+					if name == "systemctl" && len(args) > 1 && args[0] == "is-enabled" {
+						return systemctlEnabled, 0, nil
+					}
+					if name == "systemctl" && len(args) > 1 && args[0] == "is-active" {
+						return systemctlActive, 0, nil
+					}
+					return oldRun(ctx, name, args...)
+				}
+				got := doctorDoorwayState(t.Context(), env, services)
+				status, detail := probeManagedDoorwaySockets(t.Context(), env, services)
+				if got.status != tc.want || status != tc.want {
+					t.Fatalf("doctor=%+v verify=%s %q; want %s", got, status, detail, tc.want)
+				}
+				switch {
+				case tc.want == statusPass:
+					for _, text := range []string{target, "without bind readiness", "contain install"} {
+						if !strings.Contains(got.detail, text) || !strings.Contains(detail, text) {
+							t.Fatalf("passing legacy listener hides %q: doctor=%q verify=%q", text, got.detail, detail)
+						}
+					}
+				case tc.hybrid:
+					if !strings.Contains(got.detail, "without bind readiness") || !strings.Contains(got.remediation, remedy) {
+						t.Fatalf("hybrid definition = %+v", got)
+					}
+				default:
+					if !strings.Contains(got.detail, target) {
+						t.Fatalf("legacy runtime failure hides the listener: %+v", got)
+					}
+				}
+			})
+		}
 	}
 }
 

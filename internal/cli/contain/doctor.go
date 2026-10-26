@@ -254,6 +254,8 @@ func doctorUnitState(ctx context.Context, env *probeEnv, unit string) (enabled, 
 // observeNamespaceForwarderReadiness uses systemd's effective service state,
 // including drop-ins. Active/running on a notify service means READY=1 was
 // accepted. A historical restart count alone does not condemn a recovered unit.
+// A forwarder on the exact pre-readiness definition may load as Type=simple;
+// it is still refused while restart-looping or not running.
 func observeNamespaceForwarderReadiness(ctx context.Context, env *probeEnv, doorway managedDoorway, state doorwayUnitState) doctorResult {
 	out, code, err := env.runCmd(ctx, "systemctl", "show", doorway.forwarder,
 		"--property=ActiveState,SubState,Type,NRestarts")
@@ -266,7 +268,7 @@ func observeNamespaceForwarderReadiness(ctx context.Context, env *probeEnv, door
 	if active == "" || sub == "" || kind == "" || parseErr != nil {
 		return unknown("namespace forwarder "+doorway.forwarder+" readiness properties are incomplete", doorwayInspectionRemedy)
 	}
-	if kind != "notify" {
+	if kind != "notify" && (kind != "simple" || !doorway.legacySimple) {
 		return fail(classInfra, "namespace forwarder "+doorway.forwarder+" does not use Type=notify bind readiness (Type="+oneLine(kind)+")", "inspect systemd drop-ins for a Type override, then "+installRemedyForPort(env.port))
 	}
 	detail := fmt.Sprintf("namespace forwarder %s is not ready on %s inside the agent network namespace (ActiveState=%s SubState=%s NRestarts=%d)", doorway.forwarder, doorway.listen, oneLine(active), oneLine(sub), restarts)
@@ -292,7 +294,11 @@ func doctorDoorwayState(ctx context.Context, env *probeEnv, services []config.Co
 	for _, doorway := range doorways {
 		results = append(results, doctorSingleDoorwayState(ctx, env, doorway))
 	}
-	return combineDoorwayResults(results)
+	combined := combineDoorwayResults(results)
+	if note := legacyNamespaceForwarderNote(doorways, env.port); note != "" && combined.status == statusPass {
+		combined.detail += "; " + note
+	}
+	return combined
 }
 
 func doctorSingleDoorwayState(ctx context.Context, env *probeEnv, doorway managedDoorway) doctorResult {

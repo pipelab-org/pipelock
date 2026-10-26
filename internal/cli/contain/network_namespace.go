@@ -333,7 +333,8 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 		return statusFail, "loopback forwarder inventory does not match containment.loopback_services; run `pipelock contain reload-nft-rules`"
 	}
 
-	if socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services); socketStatus != statusPass {
+	socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services)
+	if socketStatus != statusPass {
 		return socketStatus, socketDetail
 	}
 	namespaceUnit := filepath.Base(env.networkNamespaceUnitPath)
@@ -383,7 +384,12 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 	if publishedStatus != statusPass {
 		return publishedStatus, publishedDetail
 	}
-	return statusPass, boundaryDetail + "; " + processDetail + "; " + publishedDetail
+	detail := boundaryDetail + "; " + processDetail + "; " + publishedDetail
+	// A passing doorway result only adds detail for a legacy listener.
+	if socketDetail != doorwaysHealthyDetail {
+		detail += "; " + socketDetail
+	}
+	return statusPass, detail
 }
 
 func managedDoorwaySocketNames(proxySocketPath string, services []config.ContainmentLoopbackService) []string {

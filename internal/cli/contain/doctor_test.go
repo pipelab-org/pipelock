@@ -372,7 +372,8 @@ func TestDoctorDoorwaySocketReaderConfigAvailability(t *testing.T) {
 			if result.status != tc.wantStatus || !strings.Contains(result.detail, tc.wantDetail) {
 				t.Fatalf("result = (%q, %q), want %q containing %q", result.status, result.detail, tc.wantStatus, tc.wantDetail)
 			}
-			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 6 {
+			// Six enablement/activity reads plus the forwarder readiness read.
+			if tc.wantStatus == statusUnknown && calls != 0 || tc.wantStatus == statusPass && calls != 7 {
 				t.Fatalf("socket probe calls = %d for %s", calls, tc.name)
 			}
 		})
