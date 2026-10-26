@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	session "github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -211,6 +212,16 @@ func RunHTTPProxy(
 		}
 	}
 
+	if fwdToolCfg == nil {
+		fwdToolCfg = &tools.ToolScanConfig{
+			Baseline:            tools.NewToolBaseline(),
+			Action:              config.ActionBlock,
+			HeaderContractsOnly: true,
+			CredentialAcks:      nil, // The caller supplied no tool-scanning configuration.
+		}
+	}
+	contractState := &mcpListenerClientState{baseline: fwdToolCfg.Baseline}
+
 	// Request tracker for confused deputy protection.
 	tracker := NewRequestTracker()
 	// The background GET stream carries server requests and notifications. A
@@ -223,6 +234,9 @@ func RunHTTPProxy(
 	fwdOpts.Rec = rec
 	fwdOpts.ToolCfg = fwdToolCfg
 	fwdOpts.ToolCfgFn = nil
+	if toolCfg == nil {
+		fwdOpts.ToolCfg = nil
+	}
 	fwdOpts.WarnContext = ctx
 	fwdOpts.sessionExit = sessionExit
 	resolverRuntime := newDeferResolverRuntime(ctx)
@@ -237,6 +251,9 @@ func RunHTTPProxy(
 		}
 		resolverRuntime.Wait()
 	}()
+
+	bridgeHeaders := &mcpBridgeHeaders{client: httpClient, state: contractState, opts: fwdOpts, log: safeLogW}
+	bridgeHeaders.opts.ToolCfg = fwdToolCfg
 
 	clientReader := transport.NewStdioReader(clientIn)
 
@@ -260,7 +277,12 @@ func RunHTTPProxy(
 		// Parse the inbound frame once per message. Kill switch, request
 		// tracking, and upstream-error responses all read frame.ID
 		// instead of re-parsing.
+		fwdOpts := fwdOpts // Each deferred closure retains this message's policy snapshot.
 		frame := ParseMCPFrame(msg)
+		fwdOpts.validateToolHeaders = bridgeHeaders.version(msg) >= currentMCPVersion
+		if fwdOpts.validateToolHeaders {
+			fwdOpts.ToolCfg = fwdToolCfg
+		}
 		var denialAudit mcpDenialAudit
 
 		select {
@@ -337,6 +359,8 @@ func RunHTTPProxy(
 			// Prepare to Resolve for this hold.
 			var gateBlock *BlockedRequest
 			var gateAudit mcpDenialAudit
+			var releaseHeaders http.Header
+			var headerContractErr error
 			receiptSettle := &deferredReceiptSettlement{}
 			var terminalSlot mcpDeferredTerminal
 			// A receipt or journal failure can downgrade a prepared allow to
@@ -410,6 +434,22 @@ func RunHTTPProxy(
 					if res.FinalDecision != config.ActionAllow {
 						return res, nil
 					}
+
+					releaseHeaders, headerContractErr = bridgeHeaders.prepare(ctx, deferredReq.ForwardMessage)
+					if headerContractErr != nil {
+						res.FinalDecision = config.ActionBlock
+						res.ResolutionSource = deferred.SourceUpstreamContract
+						res.Reason = "tool_header_contract_unavailable"
+						emitBridgeHeaderContractRefusal(safeLogW, TrackedRequestOutcome{Receipt: receipt.EmitOpts{
+							ActionID: deferredReq.DeferID, Target: deferredReq.ToolName, ToolName: deferredReq.ToolName,
+							MCPMethod: deferredReq.Method, Transport: fwdOpts.Transport,
+							ShardIndex: deferredReq.ShardIndex, ShardSelected: deferredReq.ShardSelected,
+						}}, fwdOpts)
+						br := BlockedRequest{ID: deferredReq.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"}
+						gateBlock = &br
+						gateAudit = mcpListenerInspectionDenialAudit()
+						return res, nil
+					}
 					// Irreversible release boundary. Take the upstream lock
 					// first so no wait for another send sits between the
 					// kill-switch claim and SendMessage; see
@@ -461,7 +501,7 @@ func RunHTTPProxy(
 						if isRequest(deferredReq.ForwardMessage) {
 							tracker.TrackRequest(deferredReq.ID, deferredReq.Method)
 						}
-						respReader, sendErr := httpClient.SendMessage(ctx, deferredReq.ForwardMessage)
+						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						if sendErr != nil {
 							if !deferredReq.IsNotification {
 								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
@@ -603,13 +643,44 @@ func RunHTTPProxy(
 			continue
 		}
 
+		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
+		if headerErr != nil {
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %v\n", headerErr)
+			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"})
+			if !isRPCNotification(frame.ID) {
+				_ = writeMCPInputDenial(fwdOpts, mcpListenerInspectionDenialAudit(), safeClientOut, response)
+			}
+			outcome, ok := consumeTrackedRequestOutcome(tracker, frame.ID)
+			if ok {
+				emitBridgeHeaderContractRefusal(safeLogW, outcome, fwdOpts)
+			}
+			continue
+		}
+
+		unlockInventory := func() {}
+		if frame.Method == "tools/list" {
+			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
+				return lockErr
+			}
+			var inventoryResolutions []string
+			fwdOpts.toolInventoryResolution = func(decision string) { inventoryResolutions = append(inventoryResolutions, decision) }
+			unlockInventory = sync.OnceFunc(func() {
+				contractState.contractMu.Unlock()
+				if manager := fwdOpts.deferManager(); manager != nil {
+					for _, decision := range inventoryResolutions {
+						manager.ResolveToolInventory(invocationKey, decision)
+					}
+				}
+			})
+		}
 		// POST to upstream.
 		respReader, err := func() (transport.MessageReader, error) {
 			upstreamMu.Lock()
 			defer upstreamMu.Unlock()
-			return httpClient.SendMessage(ctx, decision.ForwardMessage)
+			return httpClient.SendMessageWithOptions(ctx, decision.ForwardMessage, transport.HTTPMessageOptions{Headers: requestHeaders})
 		}()
 		if err != nil {
+			unlockInventory()
 			// SendMessage returns context cancellation/deadline errors as-is
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
@@ -650,6 +721,7 @@ func RunHTTPProxy(
 				fwdOpts,
 			)
 			lastScanErr = scanErr
+			unlockInventory()
 			continue
 		}
 		if scanErr != nil {
@@ -664,6 +736,8 @@ func RunHTTPProxy(
 		} else if !foundInjection {
 			commitMCPToolCall(baselineMetricsRecorder(fwdOpts, rec), mcpFrameBaselineIdentity(frame))
 		}
+
+		unlockInventory()
 
 		// After first successful response with a session ID, start GET stream
 		// for server-initiated messages. Check session ID OUTSIDE the Once so
@@ -687,4 +761,10 @@ func RunHTTPProxy(
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 
 	return lastScanErr
+}
+
+func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, opts MCPProxyOpts) {
+	intent := outcome.Receipt
+	intent.Layer = mcpReceiptLayerHeaderContract
+	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, "tool_header_contract_unavailable", opts.requireReceipts())
 }

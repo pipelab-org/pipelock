@@ -156,6 +156,22 @@ func (c *HTTPClient) SessionID() string {
 	return c.sessionID
 }
 
+// ProtocolVersion returns the version learned from the initialize response.
+func (c *HTTPClient) ProtocolVersion() string {
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.protocolVersion
+}
+
+// HTTPMessageOptions supplies per-message metadata and an optional shared raw
+// response budget. A non-nil Headers replaces static routing/parameter headers:
+// MCP 2026-07-28 Streamable HTTP "Client Behavior" requires body-derived values.
+// The budget counts decoded bytes before SSE framing, including comments.
+type HTTPMessageOptions struct {
+	Headers            http.Header
+	ResponseByteBudget *int
+}
+
 // SendMessage POSTs msg as a JSON-RPC 2.0 request and returns a MessageReader
 // for reading the response. The caller must drain the reader to release resources.
 //
@@ -171,6 +187,11 @@ func (c *HTTPClient) SessionID() string {
 //
 // The Mcp-Session-Id header is tracked from responses and sent on subsequent requests.
 func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader, error) {
+	return c.SendMessageWithOptions(ctx, msg, HTTPMessageOptions{})
+}
+
+// SendMessageWithOptions sends one message with body-derived request metadata.
+func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opts HTTPMessageOptions) (MessageReader, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(msg))
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
@@ -215,6 +236,18 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		req.Header.Set(pipelockSessionTokenHeader, c.listenerSessionToken)
 	}
 	c.sessionMu.Unlock()
+
+	if opts.Headers != nil {
+		for name := range req.Header {
+			lower := strings.ToLower(name)
+			if lower == "mcp-method" || lower == "mcp-name" || strings.HasPrefix(lower, "mcp-param-") {
+				delete(req.Header, name)
+			}
+		}
+		for name, values := range opts.Headers {
+			req.Header[name] = append([]string(nil), values...)
+		}
+	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -311,6 +344,10 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 			_ = resp.Body.Close()
 			return nil, ErrCompressedResponse
 		}
+	}
+
+	if opts.ResponseByteBudget != nil {
+		resp.Body = &budgetResponseBody{body: resp.Body, remaining: opts.ResponseByteBudget}
 	}
 
 	// Route based on Content-Type.
@@ -824,3 +861,27 @@ func (c *HTTPClient) DeleteSession(logW io.Writer) {
 		_, _ = fmt.Fprintf(logW, "pipelock: session delete: server returned HTTP %d\n", resp.StatusCode)
 	}
 }
+
+// budgetResponseBody charges bytes even when SSE discards them as framing. Read
+// one byte beyond the budget to distinguish an exact-size body from overflow.
+type budgetResponseBody struct {
+	body      io.ReadCloser
+	remaining *int
+}
+
+func (r *budgetResponseBody) Read(p []byte) (int, error) {
+	if *r.remaining < 0 {
+		return 0, errors.New("discovery inventory exceeds response byte budget")
+	}
+	if len(p) > *r.remaining+1 {
+		p = p[:*r.remaining+1]
+	}
+	n, err := r.body.Read(p)
+	*r.remaining -= n
+	if *r.remaining < 0 {
+		return 0, errors.New("discovery inventory exceeds response byte budget")
+	}
+	return n, err
+}
+
+func (r *budgetResponseBody) Close() error { return r.body.Close() }

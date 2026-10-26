@@ -5,8 +5,12 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"math"
 	"math/big"
+	"net/http"
 	"strconv"
 	"strings"
 
@@ -122,21 +126,125 @@ func mcpParamValueMatches(header string, raw json.RawMessage, valueType string) 
 		var body bool
 		return json.Unmarshal(raw, &body) == nil && header == strconv.FormatBool(body)
 	case "integer":
-		bodyNumber := new(big.Rat)
-		if _, ok := bodyNumber.SetString(string(bytes.TrimSpace(raw))); !ok || !bodyNumber.IsInt() {
+		body, ok := canonicalMCPMirrorInteger(raw)
+		if !ok {
 			return false
 		}
-		body := bodyNumber.Num()
-		limit := big.NewInt(maxMCPMirrorInteger)
-		if body.Cmp(limit) > 0 || body.Cmp(new(big.Int).Neg(limit)) < 0 {
-			return false
-		}
-		headerInteger, err := strconv.ParseInt(header, 10, 64)
-		if err != nil || strconv.FormatInt(headerInteger, 10) != header || headerInteger > maxMCPMirrorInteger || headerInteger < -maxMCPMirrorInteger {
-			return false
-		}
-		return body.Cmp(big.NewInt(headerInteger)) == 0
+		return header == body
 	default:
 		return false
 	}
+}
+
+// encodeMCPHeaderValue implements MCP 2026-07-28 Streamable HTTP, Request
+// Metadata / Value Encoding. Empty values are encoded to preserve them over
+// HTTP's empty/omitted and whitespace normalization. Partial sentinels are also
+// encoded to round-trip through decodeMCPWireValue's existing reserved markers.
+// https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#value-encoding
+func encodeMCPHeaderValue(value string) string {
+	unsafe := value == "" || strings.TrimSpace(value) != value || strings.HasPrefix(value, "=?base64?") || strings.HasSuffix(value, "?=")
+	for i := range len(value) {
+		if (value[i] < 0x20 || value[i] > 0x7e) && value[i] != '\t' {
+			unsafe = true
+		}
+	}
+	if unsafe {
+		return "=?base64?" + base64.StdEncoding.EncodeToString([]byte(value)) + "?="
+	}
+	return value
+}
+
+// canonicalMCPMirrorInteger uses decimal integer spelling (HTTP Value Encoding)
+// and the ±(2^53-1) domain from MCP tools#x-mcp-header. Numeric comparison accepts
+// integral JSON spellings such as 42.0, as HTTP Server Validation recommends.
+// Bound exponents before exact arithmetic, like tools.safeHeaderEnumInteger.
+func canonicalMCPMirrorInteger(raw json.RawMessage) (string, bool) {
+	text := string(bytes.TrimSpace(raw))
+	if !json.Valid(raw) {
+		return "", false
+	}
+	f, err := strconv.ParseFloat(text, 64)
+	if err != nil || math.IsInf(f, 0) || math.Trunc(f) != f || f > float64(maxMCPMirrorInteger) || f < -float64(maxMCPMirrorInteger) {
+		return "", false
+	}
+	if f == 0 {
+		mantissa, _, _ := strings.Cut(strings.ToLower(text), "e")
+		for _, c := range mantissa {
+			if c >= '1' && c <= '9' {
+				return "", false
+			}
+		}
+		return "0", true
+	}
+	n, ok := new(big.Rat).SetString(text)
+	if !ok || !n.IsInt() || !n.Num().IsInt64() {
+		return "", false
+	}
+	value := n.Num().Int64()
+	if value > maxMCPMirrorInteger || value < -maxMCPMirrorInteger {
+		return "", false
+	}
+	return strconv.FormatInt(value, 10), true
+}
+
+// synthesizeMCPRequestHeaders follows MCP 2026-07-28 Request Metadata:
+// Mcp-Method for requests; Mcp-Name from tools/call and prompts/get params.name,
+// or resources/read params.uri. Sending Messages explicitly leaves notification
+// header requirements undefined and forbids responses; neither gets synthesis.
+// Custom Headers / Client Behavior selects exact property paths; Server Behavior
+// for Custom Headers requires omission for null or absent values.
+func synthesizeMCPRequestHeaders(frame MCPFrame, baseline *tools.ToolBaseline) (http.Header, error) {
+	headers := make(http.Header)
+	if frame.Method == "" || isRPCNotification(frame.ID) {
+		return headers, nil
+	}
+	if frame.ParseErr != nil {
+		return nil, fmt.Errorf("invalid request metadata")
+	}
+	headers.Set(listenerMCPMethod, frame.Method)
+	switch frame.Method {
+	case methodToolsCall, methodResourcesRead, methodPromptsGet:
+		if frame.RoutingNameErr != nil || !frame.RoutingNamePresent || frame.RoutingName == "" {
+			return nil, fmt.Errorf("missing request routing name")
+		}
+		headers.Set(listenerMCPName, encodeMCPHeaderValue(frame.RoutingName))
+	}
+	if frame.Method != methodToolsCall {
+		return headers, nil
+	}
+	contract := baseline.HeaderContract(frame.RoutingName)
+	if contract.State == tools.HeaderContractUnknown || contract.State == tools.HeaderContractInvalid {
+		return nil, fmt.Errorf("tool header contract unavailable or invalid")
+	}
+	for _, binding := range contract.Bindings {
+		raw, present, ok := argumentAtPath(frame.Args, binding.Path)
+		if !ok {
+			return nil, fmt.Errorf("invalid argument path for mirrored parameter")
+		}
+		if !present || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			continue
+		}
+		var value string
+		switch binding.Type {
+		case "string":
+			if json.Unmarshal(raw, &value) != nil {
+				return nil, fmt.Errorf("mirrored argument must be a string")
+			}
+		case "boolean":
+			var boolean bool
+			if json.Unmarshal(raw, &boolean) != nil {
+				return nil, fmt.Errorf("mirrored argument must be a boolean")
+			}
+			value = strconv.FormatBool(boolean)
+		case "integer":
+			value, ok = canonicalMCPMirrorInteger(raw)
+			if !ok {
+				return nil, fmt.Errorf("mirrored argument must be a safe integer")
+			}
+		default:
+			return nil, fmt.Errorf("unsupported mirrored parameter type")
+		}
+		headers.Set("Mcp-Param-"+binding.HeaderName, encodeMCPHeaderValue(value))
+	}
+	return headers, nil
 }

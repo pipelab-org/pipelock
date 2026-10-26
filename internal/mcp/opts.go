@@ -141,6 +141,10 @@ type MCPProxyOpts struct {
 	// JSON listener scanning writes to a buffer. Defer inventory admission until
 	// the real downstream write succeeds; streaming transports commit directly.
 	toolInventoryDelivery func(commit, release func())
+	// A bridge queues held-action decisions until its inventory lock is released.
+	// A release can itself acquire a header contract; resolving under the writer
+	// hold would deadlock. Private discovery never invokes this callback.
+	toolInventoryResolution func(string)
 	// OnResponseKeysValidated admits transport metadata only after message keys
 	// pass the shared guard. It must be set before response scanning starts.
 	OnResponseKeysValidated func()

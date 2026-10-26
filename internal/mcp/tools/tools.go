@@ -156,6 +156,11 @@ type ExtraPoisonPattern struct {
 // Session binding fields are optional: when BindingUnknownAction is non-empty,
 // tools/call requests are validated against the baseline captured from tools/list.
 type ToolScanConfig struct {
+	// HeaderContractsOnly collects structural inventory for HTTP header
+	// synthesis without enabling optional poisoning or drift checks. The bridge
+	// uses it only when the operator supplied no tool-scanning configuration;
+	// nil otherwise retains its existing meaning of disabling tool scanning.
+	HeaderContractsOnly bool
 	// RequireHeaderContracts enables modern HTTP structural validation. A
 	// definition excluded for an invalid contract never becomes drift trust;
 	// warned definitions follow the ordinary warn-policy adoption.
@@ -2763,6 +2768,9 @@ func scanToolDefs(tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (ma
 }
 
 func scanToolDefsContext(ctx context.Context, tools []ToolDef, sc *scanner.Scanner, cfg *ToolScanConfig) (matches, observations []ToolScanMatch, capacityExceeded, epochChanged bool) {
+	if cfg.HeaderContractsOnly {
+		return nil, nil, false, false
+	}
 	confusableNames := confusableToolNameCollisions(tools)
 	var headerContracts map[string]HeaderContract
 	if cfg.RequireHeaderContracts && cfg.DetectDrift {

@@ -243,7 +243,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Deferred.ShardIndex = receiptShard.ShardIndex
 			result.Deferred.ShardSelected = receiptShard.ShardSelected
 		}
-		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
+		// Header-contract checks can refuse after this intent even in best-effort
+		// receipt mode; retain its identity so that refusal closes the same action.
+		if (requiredReceipt || opts.validateToolHeaders) && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
 			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID:            emitActionID,
 				Verdict:             emitVerdict,
