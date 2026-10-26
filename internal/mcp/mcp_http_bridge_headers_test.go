@@ -790,3 +790,142 @@ func TestHTTPBridgeHeaderDiscoveryPreservesSession(t *testing.T) {
 		}
 	}
 }
+
+// A modern bridge keeps its header contract for the process lifetime. A second
+// initialize must not reset negotiation while ordinary or held calls use it.
+func TestHTTPBridgeHeaderReinitialize(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		for _, held := range []bool{false, true} {
+			for _, notification := range []bool{false, true} {
+				t.Run(fmt.Sprintf("required=%t/held=%t/notification=%t", required, held, notification), func(t *testing.T) {
+					opts := bridgeHeaderOpts(t)
+					h := openReceiptHarness(t, &opts, required)
+					manager := newDeferKillManager(t)
+					if held {
+						opts.DeferManager = manager
+						policy := deferApprovalPolicy(config.DeferResolverProfile{})
+						policy.Rules[0].ToolPattern = regexp.MustCompile(`^echo$`)
+						policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+						opts.PolicyCfg = policy
+					}
+					var inits, calls, lists atomic.Int32
+					secondStarted := make(chan struct{})
+					finishSecond := make(chan struct{})
+					finish := func() {
+						select {
+						case <-finishSecond:
+						default:
+							close(finishSecond)
+						}
+					}
+					t.Cleanup(finish)
+					up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Method != http.MethodPost {
+							w.WriteHeader(http.StatusMethodNotAllowed)
+							return
+						}
+						body, _ := io.ReadAll(r.Body)
+						f := ParseMCPFrame(body)
+						w.Header().Set("Content-Type", "application/json")
+						switch f.Method {
+						case "initialize":
+							if inits.Add(1) == 1 {
+								_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2026-07-28","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}`, f.ID)
+							} else {
+								// Let a held call resolve while the transport has cleared its
+								// version and the second handshake has not supplied a result.
+								w.WriteHeader(http.StatusOK)
+								w.(http.Flusher).Flush()
+								close(secondStarted)
+								if held {
+									select {
+									case <-finishSecond:
+									case <-r.Context().Done():
+										return
+									}
+								}
+								_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32600,"message":"already initialized"}}`, f.ID)
+							}
+						case "tools/list":
+							lists.Add(1)
+							discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+						case methodToolsCall:
+							calls.Add(1)
+							if r.Header.Get(listenerMCPMethod) != methodToolsCall || r.Header.Get(listenerMCPName) != "echo" || r.Header.Get("Mcp-Param-Region") != "body" || r.Header.Get(listenerProtocolVersion) != currentMCPVersion {
+								t.Errorf("call lost modern metadata: %v", r.Header)
+							}
+							if notification {
+								w.WriteHeader(http.StatusAccepted)
+							} else {
+								_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, f.ID)
+							}
+						}
+					}))
+					defer up.Close()
+					defer finish()
+					inputR, inputW := io.Pipe()
+					defer func() { _ = inputW.Close(); _ = inputR.Close() }()
+					var out, logs syncBuffer
+					done := make(chan error, 1)
+					go func() { done <- RunHTTPProxy(t.Context(), inputR, &out, &logs, up.URL, nil, opts) }()
+					write := func(line string) {
+						t.Helper()
+						if _, err := io.WriteString(inputW, line+"\n"); err != nil {
+							t.Fatal(err)
+						}
+					}
+					write(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`)
+					testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), `"id":0`) }, "first initialize response")
+					call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"}}}`
+					if notification {
+						call = strings.Replace(call, `"id":2,`, "", 1)
+					}
+					if held {
+						write(call)
+						testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "held call")
+					}
+					write(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}`)
+					testwait.For(t, 5*time.Second, func() bool {
+						select {
+						case <-secondStarted:
+							return true
+						default:
+						}
+						return strings.Contains(out.String(), `"id":1`)
+					}, "second initialize handled")
+					if held {
+						if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+							t.Fatal(err)
+						}
+						finish()
+					} else {
+						testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), `"id":1`) }, "second initialize response")
+						write(call)
+					}
+					if err := inputW.Close(); err != nil {
+						t.Fatal(err)
+					}
+					select {
+					case err := <-done:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(testwait.Deadline(5 * time.Second)):
+						t.Fatal("bridge did not finish")
+					}
+					wantCalls := int32(1)
+					if notification {
+						wantCalls = 0
+					}
+					if inits.Load() != 1 || calls.Load() != wantCalls {
+						t.Fatalf("inits=%d calls=%d lists=%d out=%s logs=%s", inits.Load(), calls.Load(), lists.Load(), out.String(), logs.String())
+					}
+					if !strings.Contains(out.String(), `"code":-32020`) {
+						t.Fatalf("reinitialize not refused: %s", out.String())
+					}
+					requireEvidenceNotBroken(t, "bridge", h)
+				})
+			}
+		}
+	}
+}

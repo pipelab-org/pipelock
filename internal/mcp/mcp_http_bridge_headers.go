@@ -40,6 +40,13 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 		return nil, nil
 	}
 	frame := ParseMCPFrame(msg)
+	if frame.Method == "initialize" && b.client.ProtocolVersion() >= currentMCPVersion {
+		// This process already established its modern header contract. A
+		// second handshake would clear the transport's negotiated version,
+		// including while deferred calls can be released. Refuse it before
+		// that reset rather than let those calls take the legacy path.
+		return nil, fmt.Errorf("modern bridge is already initialized")
+	}
 	if isRPCNotification(frame.ID) {
 		switch frame.Method {
 		case methodToolsCall, methodResourcesRead, methodPromptsGet:
