@@ -213,7 +213,7 @@ The sequence is:
    A failing probe exits 1 and a skipped or inconclusive probe exits 2, so
    both roll the upgrade back.
 
-If any step after binary replacement fails, the command rolls back both the binary and its integrity pin to the pre-upgrade state, then best-effort restarts the service.
+If any step after binary replacement fails, the command restores the binary, its integrity pin and, when the upgrade migrated the service unit, the original unit file (bytes, owner and mode), reloads systemd, then best-effort restarts the service. A rollback step that fails is reported together with the original error.
 
 Release-signature verification is performed by the deployed binary at `/usr/local/bin/pipelock`, not by whichever copy of pipelock you invoke this command from. The command deliberately does not pre-check the invoking binary's embedded release keyring: that would decide against one artifact while the upgrade acts on another, and it would refuse a legitimate upgrade whenever an operator runs a custom or RC copy against a healthy deployed binary. A build with no embedded release keyring cannot verify a release, so its `update` step refuses; recover such a host with `contain install --pipelock-binary <path>` after independent signature, checksum, and attestation verification.
 

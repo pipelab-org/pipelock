@@ -4,7 +4,7 @@
 // This file implements `pipelock contain upgrade`, a containment-aware
 // one-command upgrade that atomically replaces the deployed binary, re-pins
 // the integrity hash, restarts the service, and verifies the containment
-// boundary — rolling back both binary and pin on any post-replacement failure.
+// boundary, restoring the binary, pin, and migrated unit on failure.
 //
 // Checked 2026-08-03: no existing contain subcommand performs this lifecycle.
 // `pipelock update` (internal/cli/selfupdate) replaces the binary but is
@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -126,8 +127,8 @@ The upgrade is FAIL-CLOSED at every step:
   3. Restart the pipelock systemd service and wait for readiness.
   4. Run 'contain verify' and require exit 0 (every probe passed).
 
-If any step after binary replacement fails, the previous binary AND its
-integrity pin are restored before exit.
+If any step after binary replacement fails, the previous binary, integrity
+pin, and any migrated service unit are restored before exit.
 
 This eliminates the gap between 'pipelock update' and the containment
 integrity pin: an ordinary update leaves the pin stale, causing probe 10
@@ -263,7 +264,8 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 
 	// ── Rollback helper ─────────────────────────────────────────────────
 	// Direction: restores binary FIRST (so the pin is always consistent
-	// with whatever is on disk), then pin, then best-effort restart.
+	// with whatever is on disk), then pin and unit, then best-effort restart.
+	var restoreUnit func() error
 	rollbackAll := func() error {
 		var errs []error
 		_, _ = fmt.Fprintln(w, "restoring previous binary...")
@@ -283,7 +285,14 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 			// eliminate, reintroduced through its own recovery path.
 			errs = append(errs, fmt.Errorf("restore pin ownership: %w", ownErr))
 		}
-		_, _, _ = env.runCmd(ctx, "systemctl", "daemon-reload")
+		if restoreUnit != nil {
+			if err := restoreUnit(); err != nil {
+				errs = append(errs, fmt.Errorf("restore service unit: %w", err))
+			}
+		}
+		if err := upgradeDaemonReload(ctx, env); err != nil {
+			errs = append(errs, fmt.Errorf("daemon-reload after rollback: %w", err))
+		}
 		if _, code, rErr := env.runCmd(ctx, "systemctl", "restart", env.serviceName); rErr != nil || code != 0 {
 			_, _ = fmt.Fprintf(env.errOut,
 				"warning: best-effort restart of %s after rollback did not succeed (code %d, err %v)\n",
@@ -345,10 +354,8 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 	// the one moment the correction costs nothing extra.
 	// The stop timeout rides the same moment: an upgraded host otherwise keeps
 	// systemd's default stop budget, which a receipt-group close can outlast.
-	unitErr := ensureContainmentMarkerInUnit(env)
-	if unitErr == nil {
-		unitErr = ensureStopTimeoutInUnit(env)
-	}
+	var unitErr error
+	restoreUnit, unitErr = upgradeMigrateUnit(env)
 	if err := unitErr; err != nil {
 		_, _ = fmt.Fprintf(env.errOut, "unit update failed: %v\n", err)
 		if rbErr := rollbackAll(); rbErr != nil {
@@ -481,12 +488,19 @@ func upgradeRestorePinOwnership(env *upgradeEnv) error {
 	return nil
 }
 
-// upgradeRestartAndWait does daemon-reload + restart + readiness poll.
-func upgradeRestartAndWait(ctx context.Context, env *upgradeEnv) error {
+func upgradeDaemonReload(ctx context.Context, env *upgradeEnv) error {
 	if _, code, err := env.runCmd(ctx, "systemctl", "daemon-reload"); err != nil {
 		return fmt.Errorf("daemon-reload: %w", err)
 	} else if code != 0 {
 		return fmt.Errorf("daemon-reload exited %d", code)
+	}
+	return nil
+}
+
+// upgradeRestartAndWait does daemon-reload + restart + readiness poll.
+func upgradeRestartAndWait(ctx context.Context, env *upgradeEnv) error {
+	if err := upgradeDaemonReload(ctx, env); err != nil {
+		return err
 	}
 
 	out, code, err := env.runCmd(ctx, "systemctl", "restart", env.serviceName)
@@ -566,6 +580,46 @@ func unitHasActiveContainmentMarker(body, marker string) bool {
 	return false
 }
 
+// upgradeMigrateUnit captures the unit before either migration can write it.
+// The restore closure is returned even on a migration error: an atomic writer
+// can report a directory-sync failure after its rename has already taken effect.
+// Units that need no migration have no restore closure and are never rewritten.
+func upgradeMigrateUnit(env *upgradeEnv) (func() error, error) {
+	body, info, err := readManagedUnitState(env)
+	if err != nil {
+		return nil, err
+	}
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+	if unitHasActiveContainmentMarker(body, marker) && unitServiceSetsDirective(body, "TimeoutStopSec", "TimeoutSec") {
+		return nil, nil
+	}
+	uid, uidOK := fileOwnerUID(info)
+	gid, gidOK := fileOwnerGID(info)
+	if runtime.GOOS != "windows" && (!uidOK || !gidOK) {
+		return nil, fmt.Errorf("cannot determine service unit ownership for %s; refusing migration", env.unitPath)
+	}
+	restore := func() error {
+		if err := env.writeFile(env.unitPath, []byte(body), info.Mode()); err != nil {
+			return fmt.Errorf("write %s: %w", env.unitPath, err)
+		}
+		var errs []error
+		if uidOK && gidOK {
+			if err := env.chown(env.unitPath, int(uid), int(gid)); err != nil {
+				errs = append(errs, fmt.Errorf("chown %s: %w", env.unitPath, err))
+			}
+		}
+		// chown may clear special permission bits, so restore the mode last.
+		if err := env.chmod(env.unitPath, info.Mode()); err != nil {
+			errs = append(errs, fmt.Errorf("chmod %s: %w", env.unitPath, err))
+		}
+		return errors.Join(errs...)
+	}
+	if err := ensureContainmentMarkerInUnit(env); err != nil {
+		return restore, err
+	}
+	return restore, ensureStopTimeoutInUnit(env)
+}
+
 func ensureContainmentMarkerInUnit(env *upgradeEnv) error {
 	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
 
@@ -621,18 +675,26 @@ func ensureStopTimeoutInUnit(env *upgradeEnv) error {
 // not a plain file is refused first. A symlink here would redirect the write to
 // a target of someone else's choosing.
 func readManagedUnit(env *upgradeEnv) (string, error) {
-	if info, err := env.lstat(env.unitPath); err != nil {
-		return "", fmt.Errorf("inspect service unit %s: %w", env.unitPath, err)
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("service unit %s is a symlink; refusing privileged write", env.unitPath)
-	} else if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("service unit %s is not a regular file; refusing privileged write", env.unitPath)
+	body, _, err := readManagedUnitState(env)
+	return body, err
+}
+
+func readManagedUnitState(env *upgradeEnv) (string, os.FileInfo, error) {
+	info, err := env.lstat(env.unitPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("inspect service unit %s: %w", env.unitPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", nil, fmt.Errorf("service unit %s is a symlink; refusing privileged write", env.unitPath)
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("service unit %s is not a regular file; refusing privileged write", env.unitPath)
 	}
 	current, err := env.readFile(env.unitPath)
 	if err != nil {
-		return "", fmt.Errorf("read service unit %s: %w", env.unitPath, err)
+		return "", nil, fmt.Errorf("read service unit %s: %w", env.unitPath, err)
 	}
-	return string(current), nil
+	return string(current), info, nil
 }
 
 // unitServiceSetsDirective reports whether any of keys has a non-empty
@@ -680,6 +742,12 @@ func scanServiceSection(body string) ([]unitAssignment, int) {
 	logical := ""
 	continuing := false
 	for index, raw := range strings.Split(body, "\n") {
+		// systemd's config_parse() skips a UTF-8 BOM before parsing a line:
+		// https://github.com/systemd/systemd/blob/v261/src/shared/conf-parser.c
+		// Keep the original bytes and physical line index for insertion.
+		if index == 0 {
+			raw = strings.TrimPrefix(raw, "\ufeff")
+		}
 		line := strings.TrimSpace(raw)
 		if line == "" && !continuing {
 			continue
