@@ -393,3 +393,36 @@ func TestNamespaceForwarderReadinessObservationErrors(t *testing.T) {
 		})
 	}
 }
+
+// TestVerifyNamespaceProbeNamesLegacyForwarder drives the full verify probe on
+// a binary-only upgraded host: the namespace check passes and keeps the
+// pre-readiness listener and its migration command in the reported detail.
+func TestVerifyNamespaceProbeNamesLegacyForwarder(t *testing.T) {
+	env := covNSProbeBase(t)
+	current := renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)
+	legacy, ok := legacyNamespaceForwarderDefinition(current)
+	if !ok {
+		t.Fatal("no legacy form for the proxy forwarder")
+	}
+	if err := os.WriteFile(env.namespaceForwarderServicePath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+			return "ActiveState=active\nSubState=running\nType=simple\nNRestarts=0\n", 0, nil
+		}
+		return run(ctx, name, args...)
+	}
+	status, detail := probeAgentNetworkNamespace(t.Context(), env)
+	if status != statusPass || !strings.Contains(detail, containedNamespaceForwarderUnit) || !strings.Contains(detail, "contain install") {
+		t.Fatalf("legacy forwarder verify = (%q, %q), want pass naming the migration", status, detail)
+	}
+	if err := os.WriteFile(env.namespaceForwarderServicePath, []byte(current), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.runCmd = run
+	if status, detail := probeAgentNetworkNamespace(t.Context(), env); status != statusPass || strings.Contains(detail, "without bind readiness") {
+		t.Fatalf("current forwarder verify = (%q, %q), want pass without a migration note", status, detail)
+	}
+}
