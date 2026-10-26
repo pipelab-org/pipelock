@@ -754,6 +754,8 @@ func (l *Logger) LogResponseScan(ctx LogContext, action string, matchCount int, 
 
 	e := newLogEntry(l.zl.Warn(), EventResponseScan).
 		optStr("method", ctx.method).
+		optStr("transport", ctx.scanTransport).
+		optStr("mcp_server", ctx.mcpServer).
 		optStr("url", loggedURL).
 		optStr("target", loggedTarget).
 		optStr("resource", loggedResource).

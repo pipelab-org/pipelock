@@ -1177,6 +1177,8 @@ existing signed reason fields; their schema is unchanged. Hot reload updates the
 scanner snapshot; strict-mode security downgrade checks still apply, so a
 weakening rejected on reload requires an explicit restart with the new config.
 
+Warn-only observations carry the available destination, agent label, transport, and MCP server name. Audit destinations use the same content redaction as other response-scan events. Scans without request context omit unavailable attribution. Encrypted CONNECT tunnel payloads aren't scanned unless TLS interception is enabled.
+
 ## Response Scanning
 
 Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection.

@@ -3040,6 +3040,22 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 
 	// Exempt domains are still scanned for visibility but findings are pinned
 	// to warn with no adaptive scoring or action upgrade.
+	wc := scanner.DLPWarnContextFromCtx(ctx)
+	wc.Method = "WS"
+	if r.targetURL != "" {
+		wc.URL = r.targetURL
+	}
+	if r.clientIP != "" {
+		wc.ClientIP = r.clientIP
+	}
+	if r.requestID != "" {
+		wc.RequestID = r.requestID
+	}
+	if r.agent != "" {
+		wc.Agent = r.agent
+	}
+	wc.Transport = TransportWS
+	ctx = scanner.WithDLPWarnContext(ctx, wc)
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
 	if ctx.Err() != nil {

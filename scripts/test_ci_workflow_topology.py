@@ -25,7 +25,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 SHARDS = {
-    "proxy-0", "proxy-1", "proxy-2", "proxy-3", "proxy-4", "scanner-0", "scanner-1", "scanner-2", "scanner-3",
+    "proxy-0", "proxy-1", "proxy-2", "proxy-3", "proxy-4", "proxy-5", "scanner-0", "scanner-1", "scanner-2", "scanner-3",
     "mcp-0", "mcp-1", "mcp-2", "mcp-3", "mcp-4", "mcp-5",
     "runtime-0", "runtime-1", "rest-0", "rest-1", "rest-2", "rest-3",
 }
@@ -620,6 +620,16 @@ class CIWorkflowTopologyTest(unittest.TestCase):
 
     def test_topology_is_truthful_and_complete(self):
         self.assertEqual(topology_errors(self.jobs), [])
+
+    def test_local_sharded_targets_run_every_ci_shard(self):
+        # `make test` and `make test-sharded-enterprise` loop over TEST_SHARDS; a
+        # shard missing there silently drops that slice of the suite locally.
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        declaration = re.search(r"^TEST_SHARDS := (.+)$", makefile, re.MULTILINE)
+        self.assertIsNotNone(declaration)
+        listed = declaration.group(1).split()
+        self.assertEqual(len(listed), len(set(listed)))
+        self.assertEqual(set(listed), SHARDS)
 
     def test_failed_policy_detection_cannot_green_skipped_race_producers(self):
         gate = self.jobs["test-go127"]["steps"][0]["run"]

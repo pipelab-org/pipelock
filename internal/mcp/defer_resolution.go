@@ -48,11 +48,8 @@ func EmitDeferredResolutionReceipt(opts MCPProxyOpts, logW io.Writer, res deferr
 	}
 	shard := receipt.EmitOpts{ShardIndex: res.ShardIndex, ShardSelected: res.ShardSelected}
 	return emitMCPToolReceipt(mcpToolReceiptOpts{
-		Emitter:         opts.receiptEmitter(),
-		V2Emitter:       opts.v2ReceiptEmitter(),
-		Group:           opts.ReceiptGroup,
+		ProxyOpts:       opts,
 		Shard:           shard,
-		PolicyHash:      opts.receiptPolicyHash(),
 		Log:             logW,
 		Transport:       opts.Transport,
 		ActionID:        receipt.NewActionID(),

@@ -287,7 +287,6 @@ func ForwardScannedInput(
 	obs := opts.captureObserver()
 	redactionCfg := opts.redactionConfig()
 	receiptEmitter := opts.receiptEmitter()
-	v2ReceiptEmitter := opts.v2ReceiptEmitter()
 	policyHash := opts.receiptPolicyHash()
 	envelopeEmitter := opts.envelopeEmitter()
 	redirectRT := opts.redirectRT()
@@ -717,11 +716,8 @@ func ForwardScannedInput(
 				receiptShard = opts.ReceiptGroup.Shards.Admit(receiptShard)
 			}
 			receiptOpts := mcpToolReceiptOpts{
-				Emitter:           receiptEmitter,
-				V2Emitter:         v2ReceiptEmitter,
-				Group:             opts.ReceiptGroup,
+				ProxyOpts:         opts,
 				Shard:             receiptShard,
-				PolicyHash:        policyHash,
 				Log:               logW,
 				Transport:         opts.Transport,
 				RedactionProfile:  redactionCfg.Profile,
@@ -1084,7 +1080,7 @@ func ForwardScannedInput(
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
 				var emitErr error
-				fwdLine, emitErr = EmitMCPDecision(nil, nil, envelopeEmitter, MCPDecision{
+				fwdLine, emitErr = emitMCPEnvelopeDecision(envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})
@@ -1335,7 +1331,7 @@ func ForwardScannedInput(
 			if result.Success {
 				// Scan redirect handler output for prompt injection AND DLP before
 				// sending to client. Handler output is untrusted.
-				scanVerdict := ScanResponseInjection(result.Response, sc)
+				scanVerdict := scanResponseOpts(result.Response, sc, ResponseScanOptions{Context: stdioInputCtx}, false)
 				stdioWarnCtxMeta := scanner.DLPWarnContextFromCtx(stdioInputCtx)
 				stdioWarnCtxMeta.Transport = transportMCPStdio
 				stdioWarnCtxMeta.Method = mcpWarnMethod
@@ -1795,7 +1791,7 @@ func ForwardScannedInput(
 					RequiresReauth: taintDecision.RequiresReauth,
 				}
 				var emitErr error
-				fwdLine, emitErr = EmitMCPDecision(nil, nil, envelopeEmitter, MCPDecision{
+				fwdLine, emitErr = emitMCPEnvelopeDecision(envelopeEmitter, MCPDecision{
 					Envelope:   &buildOpts,
 					InboundMsg: line,
 				})

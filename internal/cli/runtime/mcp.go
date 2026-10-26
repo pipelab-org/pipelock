@@ -474,10 +474,7 @@ func resolvedMCPDoWAgentName(requested, resolved string, found bool) string {
 func recoverDeferredActions(
 	manager *deferred.Manager,
 	journalPath string,
-	receiptEmitter *receipt.Emitter,
-	v2ReceiptEmitter *proxydecision.Emitter,
-	receiptGroup *mcp.MCPReceiptGroup,
-	policyHash string,
+	opts mcp.MCPProxyOpts,
 	logW io.Writer,
 ) error {
 	if journalPath == "" && manager != nil {
@@ -492,7 +489,7 @@ func recoverDeferredActions(
 	}
 	// Validate every saved selection before closing any hold. A restart must
 	// not assign an unresolved action to a different receipt shard.
-	if receiptGroup != nil && receiptGroup.Shards != nil {
+	if opts.ReceiptGroup != nil && opts.ReceiptGroup.Shards != nil {
 		for _, held := range pending {
 			if !held.ShardSelected {
 				return fmt.Errorf("deferred restart recovery %q has no recorded receipt shard; start once with flight_recorder.receipt_chains set to 1 to close it, and preserve journal %q and its receipt evidence: %w", held.DeferID, journalPath, mcp.ErrReceiptRequired)
@@ -500,8 +497,8 @@ func recoverDeferredActions(
 			if held.ShardIndex < 0 {
 				return fmt.Errorf("deferred restart recovery %q has invalid saved receipt shard %d; preserve journal %q and its receipt evidence for recovery: %w", held.DeferID, held.ShardIndex, journalPath, mcp.ErrReceiptRequired)
 			}
-			if held.ShardIndex >= receiptGroup.Shards.ShardCount() {
-				return fmt.Errorf("deferred restart recovery %q needs saved receipt shard %d, unavailable in the configured group of %d; set flight_recorder.receipt_chains to at least %d and preserve journal %q: %w", held.DeferID, held.ShardIndex, receiptGroup.Shards.ShardCount(), held.ShardIndex+1, journalPath, mcp.ErrReceiptRequired)
+			if held.ShardIndex >= opts.ReceiptGroup.Shards.ShardCount() {
+				return fmt.Errorf("deferred restart recovery %q needs saved receipt shard %d, unavailable in the configured group of %d; set flight_recorder.receipt_chains to at least %d and preserve journal %q: %w", held.DeferID, held.ShardIndex, opts.ReceiptGroup.Shards.ShardCount(), held.ShardIndex+1, journalPath, mcp.ErrReceiptRequired)
 			}
 		}
 	}
@@ -512,14 +509,8 @@ func recoverDeferredActions(
 		return pending[i].DeferID < pending[j].DeferID
 	})
 	for _, held := range pending {
-		opts := mcp.MCPProxyOpts{
-			ReceiptEmitter:   receiptEmitter,
-			V2ReceiptEmitter: v2ReceiptEmitter,
-			ReceiptGroup:     receiptGroup,
-			PolicyHash:       policyHash,
-			RequireReceipts:  true,
-			Transport:        held.Surface,
-		}
+		opts.RequireReceipts = true
+		opts.Transport = held.Surface
 		if err := mcp.EmitDeferredResolutionReceipt(opts, logW, deferred.Resolution{
 			DeferID:          held.DeferID,
 			ParentActionID:   held.ActionID,
@@ -1562,7 +1553,10 @@ Key-free evidence capture:
 			}
 			a2aCardBaseline := mcp.NewCardBaseline(1000)
 			deferManager := buildDeferManager(cfg, cmd.ErrOrStderr())
-			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), receiptEmitter, v2ReceiptEmitter, receiptGroup, captureConfigHash, cmd.ErrOrStderr()); err != nil {
+			if err := recoverDeferredActions(deferManager, deferJournalPath(cfg), mcp.MCPProxyOpts{
+				Scanner: sc, ReceiptEmitter: receiptEmitter, V2ReceiptEmitter: v2ReceiptEmitter,
+				ReceiptGroup: receiptGroup, PolicyHash: captureConfigHash,
+			}, cmd.ErrOrStderr()); err != nil {
 				return err
 			}
 			if hasUpstream {

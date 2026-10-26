@@ -585,7 +585,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// evidence of clean behavior, so it earns no clean credit either.
 		toolAcknowledged := false
 		if toolCfg != nil {
-			toolResult = tools.ScanToolsForMethod(line, sc, toolCfg.WithServerMode(opts.ServerName, opts.ServerBinding, opts.ServerBindingMode, opts.ServerRevision), trackedMethod)
+			toolResult = tools.ScanToolsForMethodContext(opts.warnContext(), line, sc, toolCfg.WithServerMode(opts.ServerName, opts.ServerBinding, opts.ServerBindingMode, opts.ServerRevision), trackedMethod)
 			if err := opts.warnContext().Err(); err != nil {
 				if writeErr := blockScanError("response scan failed: " + err.Error()); writeErr != nil {
 					return foundInjection, writeErr
@@ -1195,7 +1195,7 @@ func writeUnparseableResponse(o unparseableResponseOptions) (bool, []byte, error
 	frame, detail, lineNum, sc, writer, logW, opts := o.frame, o.detail, o.lineNum, o.sc, o.writer, o.logW, o.opts
 	denialAudit := mcpResponseInspectionBlockAudit("MCP response is unparseable")
 	_, _ = fmt.Fprintf(logW, "pipelock: line %d: %s\n", lineNum, detail)
-	rawResult := sc.ScanResponse(context.Background(), string(frame.Raw))
+	rawResult := sc.ScanResponse(opts.warnContext(), string(frame.Raw))
 	if !rawResult.Clean {
 		_, _ = fmt.Fprintf(logW, "pipelock: line %d: injection in non-JSON content (%s)\n", lineNum, strings.Join(matchNames(rawResult.Matches), ", "))
 	}

@@ -469,3 +469,9 @@ func stringSliceContains(values []string, want string) bool {
 	}
 	return false
 }
+
+// emitMCPEnvelopeDecision only decorates a message. It has no signed receipt
+// emitter and cannot make a policy decision or emit an unbound receipt.
+func emitMCPEnvelopeDecision(emitter *envelope.Emitter, d MCPDecision) ([]byte, error) {
+	return EmitMCPDecision(nil, nil, emitter, d)
+}
