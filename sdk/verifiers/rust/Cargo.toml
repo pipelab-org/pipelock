@@ -25,15 +25,15 @@ base64 = "=0.23.1"
 data-encoding = "=2.11.1"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
 hex = "=0.4.3"
-html-escape = "=0.2.15"
+html-escape = "=0.3.0"
 hmac = "=0.12.1"
 jsonschema = { version = "=0.18.3", default-features = false, features = ["draft202012"] }
-libc = "=0.2.189"
+libc = "=0.2.190"
 p256 = { version = "=0.13.2", default-features = false, features = ["ecdsa", "pkcs8"] }
 percent-encoding = "=2.3.2"
 serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = { version = "=1.0.151", features = ["preserve_order", "unbounded_depth"] }
-sha2 = "=0.11.0"
+serde_json = { version = "=1.0.154", features = ["preserve_order", "unbounded_depth"] }
+sha2 = "=0.11.1"
 sha2_10 = { package = "sha2", version = "=0.10.9" }
 thiserror = "=2.0.21"
 # NFC normalization to match Go's golang.org/x/text/unicode/norm in the AARP
