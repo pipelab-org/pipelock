@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ func TestInstallWritePathsPrivateMaterialOutsideEvidence(t *testing.T) {
 		{"recorder_signing_key", "flight_recorder.signing_key_path", func(cfg *config.Config, path string) { cfg.FlightRecorder.SigningKeyPath = path }},
 		{"mediation_signing_key", "mediation_envelope.signing_key_path", func(cfg *config.Config, path string) { cfg.MediationEnvelope.SigningKeyPath = path }},
 		{"tls_ca_key", "tls_interception.ca_key", func(cfg *config.Config, path string) { cfg.TLSInterception.CAKeyPath = path }},
+		{"rekor_key", "flight_recorder.anchor.rekor_key_path", func(cfg *config.Config, path string) { cfg.FlightRecorder.Anchor.RekorKeyPath = path }},
 		{"license_file", "license_file", func(cfg *config.Config, path string) { cfg.LicenseFile = path }},
 		{"commitment_keyring", "evidence_provenance.commitment_keyring_path", func(cfg *config.Config, path string) {
 			cfg.EvidenceProvenance.CommitmentKeyringPath = path
@@ -167,5 +169,16 @@ func TestInstallWritePathsPrivateMaterialSymlinkedDataDirFallback(t *testing.T) 
 	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), true)
 	if err == nil || !strings.Contains(err.Error(), "operator-readable evidence directory") {
 		t.Fatalf("want evidence refusal, got %v", err)
+	}
+}
+
+// The Rekor entry-signing key is private material and is hidden from the agent
+// like the other configured signing keys.
+func TestConfiguredSecretPathsHideRekorKey(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.FlightRecorder.Anchor.RekorKeyPath = "keys/rekor-entry.key"
+	_, optional := configuredSecretPaths(cfg, "/etc/pipelock")
+	if !slices.Contains(optional, "/etc/pipelock/keys/rekor-entry.key") {
+		t.Fatalf("rekor key not hidden: %v", optional)
 	}
 }

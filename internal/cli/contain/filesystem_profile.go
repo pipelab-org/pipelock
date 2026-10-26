@@ -688,6 +688,7 @@ func configuredSecrets(cfg *config.Config, configDir string) []configuredSecret 
 	// verification material (CA certificate, client certificate, server CA,
 	// posture proof, tools.list) stays readable.
 	add("tls_interception.ca_key", absoluteConfiguredPath(configDir, cfg.TLSInterception.CAKeyPath))
+	add("flight_recorder.anchor.rekor_key_path", absoluteConfiguredPath(configDir, cfg.FlightRecorder.Anchor.RekorKeyPath))
 	add("license_file", absoluteConfiguredPath(configDir, cfg.LicenseFile))
 	add("evidence_provenance.commitment_keyring_path", absoluteConfiguredPath(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath))
 	add("dlp.secrets_file", absoluteConfiguredPath(configDir, cfg.DLP.SecretsFile))
