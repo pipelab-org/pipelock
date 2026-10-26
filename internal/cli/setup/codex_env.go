@@ -111,17 +111,21 @@ func encodeCodexConfig(document map[string]any) ([]byte, error) {
 }
 
 // The TOML library decodes local date/time values in the host's UTC offset and
-// encodes them converted to UTC, shifting their wall-clock text. tomlLocalTime
-// writes the decoded text back unchanged.
-type tomlLocalTime string
+// encodes them converted to UTC, shifting their wall-clock text. It also writes
+// a numeric zero offset (+00:00) as Z, which reparses in a different location.
+// tomlTimeText writes the decoded text back in its original form.
+type tomlTimeText string
 
-func (t tomlLocalTime) MarshalTOML() ([]byte, error) { return []byte(t), nil }
+func (t tomlTimeText) MarshalTOML() ([]byte, error) { return []byte(t), nil }
 
 var tomlLocalLayouts = map[string]string{
 	"datetime-local": "2006-01-02T15:04:05.999999999",
 	"date-local":     "2006-01-02",
 	"time-local":     "15:04:05.999999999",
 }
+
+// tomlNumericOffsetLayout renders a zero offset as +00:00 rather than Z.
+const tomlNumericOffsetLayout = "2006-01-02T15:04:05.999999999-07:00"
 
 func preserveTOMLLocalTimes(value any) any {
 	switch v := value.(type) {
@@ -145,7 +149,11 @@ func preserveTOMLLocalTimes(value any) any {
 		return out
 	case time.Time:
 		if layout, local := tomlLocalLayouts[v.Location().String()]; local {
-			return tomlLocalTime(v.Format(layout))
+			return tomlTimeText(v.Format(layout))
+		}
+		// The decoder returns time.UTC only for a Z suffix.
+		if v.Location() != time.UTC {
+			return tomlTimeText(v.Format(tomlNumericOffsetLayout))
 		}
 	}
 	return value

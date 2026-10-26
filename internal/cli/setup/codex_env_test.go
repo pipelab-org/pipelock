@@ -402,32 +402,39 @@ func TestCodexEnvironmentErrorGuards(t *testing.T) {
 
 const codexLocalTimeChildEnv = "PIPELOCK_TEST_CODEX_LOCAL_TIME_CHILD"
 
-// The TOML library fixes its local-time offset at package init, so a host in UTC
-// cannot show the shift. Rerun this test in a child process with a non-UTC zone.
+// The TOML library fixes its local-time offset at package init, and Go names the
+// local zone differently when TZ=UTC is explicit. Rerun this test in child
+// processes for a non-UTC zone and for explicit UTC.
 func TestCodexEnvironmentPreservesLocalTimes(t *testing.T) {
 	if os.Getenv(codexLocalTimeChildEnv) == "" {
-		if _, err := time.LoadLocation("America/New_York"); err != nil {
-			t.Skip("zoneinfo unavailable")
-		}
-		self, err := os.Executable()
-		if err != nil {
-			t.Fatal(err)
-		}
-		//nolint:gosec // G204: reruns this test binary with a fixed test filter.
-		cmd := exec.CommandContext(t.Context(), self, "-test.run=^TestCodexEnvironmentPreservesLocalTimes$", "-test.count=1", "-test.v")
-		cmd.Env = append(os.Environ(), "TZ=America/New_York", codexLocalTimeChildEnv+"=1")
-		out, err := cmd.CombinedOutput()
-		if err != nil || !strings.Contains(string(out), "--- PASS: TestCodexEnvironmentPreservesLocalTimes") {
-			t.Fatalf("child run failed: %v\n%s", err, out)
+		for _, zone := range []string{"America/New_York", "UTC"} {
+			t.Run(zone, func(t *testing.T) {
+				if _, err := time.LoadLocation(zone); err != nil {
+					t.Skip("zoneinfo unavailable")
+				}
+				self, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				//nolint:gosec // G204: reruns this test binary with a fixed test filter.
+				cmd := exec.CommandContext(t.Context(), self, "-test.run=^TestCodexEnvironmentPreservesLocalTimes$", "-test.count=1", "-test.v")
+				cmd.Env = append(os.Environ(), "TZ="+zone, codexLocalTimeChildEnv+"="+zone)
+				out, err := cmd.CombinedOutput()
+				if err != nil || !strings.Contains(string(out), "--- PASS: TestCodexEnvironmentPreservesLocalTimes") {
+					t.Fatalf("child run failed: %v\n%s", err, out)
+				}
+			})
 		}
 		return
 	}
-	if _, offset := time.Now().Zone(); offset == 0 {
+	if _, offset := time.Now().Zone(); offset == 0 && os.Getenv(codexLocalTimeChildEnv) != "UTC" {
 		t.Fatal("child process did not run with a non-UTC offset")
 	}
 	t.Setenv("CODEX_HOME", t.TempDir())
 	path := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
-	content := "wake = 07:32:00\nstamp = 2026-01-02T03:04:05\nday = 2026-01-02\nzoned = 2026-01-02T03:04:05+02:00\n[mcp_servers.example]\ncommand = 'node'\n"
+	content := "wake = 07:32:00\nstamp = 2026-01-02T03:04:05\nday = 2026-01-02\nzoned = 2026-01-02T03:04:05+02:00\n" +
+		"utc = 2026-01-02T03:04:05Z\nnumeric = 2026-01-02T03:04:05+00:00\nunknown = 2026-01-02T03:04:05-00:00\n" +
+		"[mcp_servers.example]\ncommand = 'node'\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -438,7 +445,11 @@ func TestCodexEnvironmentPreservesLocalTimes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"wake = 07:32:00\n", "stamp = 2026-01-02T03:04:05\n", "day = 2026-01-02\n", "zoned = 2026-01-02T03:04:05+02:00\n"} {
+	// -00:00 has no distinct decoded form, so it is written as the same zero offset.
+	for _, want := range []string{
+		"wake = 07:32:00\n", "stamp = 2026-01-02T03:04:05\n", "day = 2026-01-02\n", "zoned = 2026-01-02T03:04:05+02:00\n",
+		"utc = 2026-01-02T03:04:05Z\n", "numeric = 2026-01-02T03:04:05+00:00\n", "unknown = 2026-01-02T03:04:05+00:00\n",
+	} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("rewrite changed %q:\n%s", strings.TrimSpace(want), data)
 		}
