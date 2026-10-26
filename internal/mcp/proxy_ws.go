@@ -79,11 +79,13 @@ func RunWSProxy(
 	// Per-invocation adaptive enforcement recorder.
 	var rec session.Recorder
 	if opts.Store != nil {
-		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-ws"))
+		invocationKey := session.NextInvocationKey("mcp-ws")
+		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
 			dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
+		defer opts.Store.Delete(invocationKey)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 

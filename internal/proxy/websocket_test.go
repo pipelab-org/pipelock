@@ -1975,7 +1975,7 @@ func TestWSProxyResponseTaintControls(t *testing.T) {
 	}
 }
 
-func TestWSRelayResponseTaint_ReResolvesEvictedSession(t *testing.T) {
+func TestWSRelayResponseTaint_ReResolvesDeletedSession(t *testing.T) {
 	_, p, cleanup := setupWSProxyDefaultWithProxy(t, func(cfg *config.Config) {
 		cfg.SessionProfiling.Enabled = true
 		cfg.SessionProfiling.MaxSessions = 1
@@ -1995,12 +1995,12 @@ func TestWSRelayResponseTaint_ReResolvesEvictedSession(t *testing.T) {
 	if !original.RiskSnapshot().Contaminated {
 		t.Fatal("first external WebSocket response did not contaminate session")
 	}
-	sm.GetOrCreate("evict-response-taint-session")
+	sm.Delete(key)
 
 	relay.observeUpstreamResponseTaint(true)
 	current := sm.GetOrCreate(key)
 	if current == original {
-		t.Fatal("test did not evict the original session")
+		t.Fatal("test did not delete the original session")
 	}
 	if risk := current.RiskSnapshot(); !risk.PromptHit || risk.Level != session.TaintExternalHostile {
 		t.Fatalf("recreated session risk = %+v, want hostile prompt hit", risk)

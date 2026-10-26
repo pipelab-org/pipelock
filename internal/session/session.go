@@ -167,8 +167,8 @@ type RecoveryEventRecorder interface {
 }
 
 // ErrCapacity indicates that admitting another session would discard active
-// quarantine or exceed the store's configured memory bound.
-var ErrCapacity = errors.New("session capacity exhausted; release active quarantine or increase max_sessions")
+// enforcement state or exceed the store's configured memory bound.
+var ErrCapacity = errors.New("session capacity exhausted; wait for session recovery or increase max_sessions")
 
 // Store manages session lifecycle. When a non-nil store returns a nil recorder,
 // admission was refused and the caller must return ErrCapacity before new work.
@@ -204,6 +204,12 @@ type ToolCallBaselineRecorder interface {
 	BaselineMetrics() BaselineMetrics
 	ProvisionalToolCallMetrics(toolName string) BaselineMetrics
 	RecordToolCall(toolName string)
+}
+
+// ToolCallActivityRecorder refreshes idle activity for committed MCP calls
+// without adding request-local baseline metrics to a shared session.
+type ToolCallActivityRecorder interface {
+	RecordToolActivity()
 }
 
 // BaselineChecker evaluates a live recorder against an identity-keyed

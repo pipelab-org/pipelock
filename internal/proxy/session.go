@@ -1125,11 +1125,27 @@ func (s *SessionState) RecordBytes(n int64) {
 	s.bytesTotal += n
 }
 
+// RecordToolActivity refreshes activity for a committed MCP tool call. Listener
+// baselines stay request-local; this only updates the shared session's idle clock.
+func (s *SessionState) RecordToolActivity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordToolActivityLocked()
+}
+
+func (s *SessionState) recordToolActivityLocked() {
+	// Match RecordRequest: blocked retries must not prevent idle recovery.
+	if !s.atBlockAll {
+		s.lastActivity = time.Now()
+	}
+}
+
 // RecordToolCall increments the session's tool call counter and tracks
 // unique tool names. Called by MCP proxy when a tool invocation completes.
 func (s *SessionState) RecordToolCall(toolName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.recordToolActivityLocked()
 	s.toolCalls++
 	if s.uniqueTools == nil {
 		s.uniqueTools = make(map[string]struct{})
@@ -1746,7 +1762,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 
 // GetOrCreate returns the session for a key, creating if needed.
 // It evicts the oldest eligible session at capacity. A nil result refuses
-// admission: active quarantine must not be evicted or exceed MaxSessions.
+// admission: live enforcement state must not be evicted or exceed MaxSessions.
 // Callers must deny new work rather than treating nil as disabled profiling.
 func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 	sm.startMaintenance()
@@ -2897,7 +2913,22 @@ func (sm *SessionManager) Delete(key string) {
 	sm.mu.Unlock()
 }
 
-// evictOldest removes the session with the oldest lastActivity.
+// hasCapacityProtectionLocked reports whether dropping this session would
+// discard live enforcement. Idle expiry remains a separate session boundary.
+// Caller holds s.mu.
+func (s *SessionState) hasCapacityProtectionLocked() bool {
+	if s.hasActiveAirlockLocked() || s.escalationLevel > 0 || s.atBlockAll || s.risk.HasPolicyTaint() {
+		return true
+	}
+	for _, st := range s.scopes {
+		if st.escalationLevel > 0 || st.atBlockAll {
+			return true
+		}
+	}
+	return false
+}
+
+// evictOldest removes the eligible session with the oldest lastActivity.
 // Must be called with sm.mu held for writing. Returns the evicted
 // session (if any) so the caller can record baseline metrics after
 // releasing the lock.
@@ -2906,33 +2937,31 @@ func (sm *SessionManager) evictOldest() *SessionState {
 	var oldestTime time.Time
 	var oldestSess *SessionState
 
-	var oldestEscLevel int
-
 	for key, sess := range sm.sessions {
 		sess.mu.Lock()
 		la := sess.lastActivity
-		escLevel := sess.escalationLevel
-		quarantined := sess.hasActiveAirlockLocked()
+		protected := sess.hasCapacityProtectionLocked()
 		sess.mu.Unlock()
 
-		// Skip quarantined sessions: evicting them would escape enforcement.
-		if quarantined {
+		// Capacity pressure must not reset enforcement history.
+		if protected {
 			continue
 		}
 
 		if oldestKey == "" || la.Before(oldestTime) {
 			oldestKey = key
 			oldestTime = la
-			oldestEscLevel = escLevel
 			oldestSess = sess
 		}
 	}
 
 	if oldestKey != "" {
-		if oldestEscLevel > 0 {
-			if sm.metrics != nil {
-				sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(oldestEscLevel), -1)
-			}
+		// A signal can arrive while the remaining candidates are inspected.
+		// Recheck under the session lock and hold it through removal.
+		oldestSess.mu.Lock()
+		defer oldestSess.mu.Unlock()
+		if oldestSess.hasCapacityProtectionLocked() {
+			return nil
 		}
 		delete(sm.sessions, oldestKey)
 		if sm.metrics != nil {

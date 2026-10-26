@@ -1261,6 +1261,7 @@ func RunHTTPListenerProxy(
 
 			reqRec := clientState.recorder
 			baselineRec := newMCPRequestBaselineRecorder()
+			baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 			baselineOpts := requestBaseOpts
 			baselineOpts.BaselineRec = baselineRec
 			defer recordMCPBaselineSample(baselineOpts, nil)
@@ -1710,6 +1711,7 @@ func RunHTTPListenerProxy(
 		auditSessionKey := listenerStateAuditKey()
 		reqRec := clientState.recorder
 		baselineRec := newMCPRequestBaselineRecorder()
+		baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 		baselineOpts := requestBaseOpts
 		baselineOpts.BaselineRec = baselineRec
 		defer recordMCPBaselineSample(baselineOpts, nil)

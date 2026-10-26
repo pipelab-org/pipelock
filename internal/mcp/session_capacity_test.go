@@ -25,11 +25,16 @@ import (
 )
 
 type capacityTestStore struct {
-	rec session.Recorder
+	rec         session.Recorder
+	admittedKey string
+	deletedKey  string
 }
 
-func (s *capacityTestStore) GetOrCreate(string) session.Recorder { return s.rec }
-func (*capacityTestStore) Delete(string)                         {}
+func (s *capacityTestStore) GetOrCreate(key string) session.Recorder {
+	s.admittedKey = key
+	return s.rec
+}
+func (s *capacityTestStore) Delete(key string) { s.deletedKey = key }
 
 func TestSessionCapacityRefusesMCPInvocationsAudit(t *testing.T) {
 	for _, transport := range []string{"stdio", "sandbox", "http", "websocket"} {
@@ -77,6 +82,9 @@ func TestSessionCapacityRefusesMCPInvocationsAudit(t *testing.T) {
 						t.Fatalf("refused invocation: err=%v dials=%d", err, dials.Load())
 					}
 					return
+				}
+				if store.deletedKey == "" || store.deletedKey != store.admittedKey {
+					t.Fatalf("invocation retained its shared-store entry: admitted=%q deleted=%q", store.admittedKey, store.deletedKey)
 				}
 				if strings.Contains(events.String(), `"event":"blocked"`) {
 					t.Fatal(events.String())

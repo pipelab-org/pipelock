@@ -20,12 +20,13 @@ const (
 )
 
 type mcpRequestBaselineRecorder struct {
-	mu           sync.Mutex
-	created      time.Time
-	lastActivity time.Time
-	toolCalls    int
-	uniqueTools  map[string]struct{}
-	requests     int
+	mu               sync.Mutex
+	created          time.Time
+	lastActivity     time.Time
+	toolCalls        int
+	uniqueTools      map[string]struct{}
+	requests         int
+	activityRecorder session.ToolCallActivityRecorder
 }
 
 func newMCPRequestBaselineRecorder() *mcpRequestBaselineRecorder {
@@ -77,6 +78,9 @@ func (r *mcpRequestBaselineRecorder) RecordToolCall(toolName string) {
 	r.toolCalls++
 	r.uniqueTools[toolName] = struct{}{}
 	r.lastActivity = time.Now()
+	if r.activityRecorder != nil {
+		r.activityRecorder.RecordToolActivity()
+	}
 }
 
 func baselineMetricsRecorder(opts MCPProxyOpts, rec session.Recorder) session.ToolCallBaselineRecorder {

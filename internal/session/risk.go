@@ -293,6 +293,12 @@ func taintLevelEscalates(level TaintLevel) bool {
 	return level >= TaintExternalUntrusted
 }
 
+// HasPolicyTaint reports whether the sticky level can affect taint policy.
+// Use the policy matrix's predicate rather than the diagnostic Contaminated flag.
+func (sr SessionRisk) HasPolicyTaint() bool {
+	return taintLevelEscalates(sr.Level)
+}
+
 // hasTaintOrigin reports whether a taint origin has been resolved for the
 // current sticky level. Any one field is sufficient, and all of them must be
 // consulted. An MCP tool result taints with a Kind and no URL, so keying on
