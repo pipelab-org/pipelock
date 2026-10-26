@@ -57,6 +57,11 @@ var findStartRows = []verdictRow{
 	{"comment line before find", "# note\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"here-document before find", "cat <<E\nx\nE\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"line break in quotes", "find . -name 'a\nb' -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A find that is not where a command starts is a word like any other:
+	// read sets PATH here, which changes the find that runs next.
+	{"read into PATH", "read find PATH < p; find . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"read into another name", "read find x < p; find . -perm 0777 | xargs chmod 644", "", ""},
 }
 
 // TestDefaultRules_FindStartingPoints checks findStartRows with the default
