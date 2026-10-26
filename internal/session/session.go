@@ -177,6 +177,15 @@ type Store interface {
 	Delete(key string)
 }
 
+// CapacityEvictor optionally supports pressure eviction of a transport-owned
+// recorder. EvictIfUnprotected checks enforcement and removes the matching store
+// entry atomically. It must also check a retained recorder whose clean store
+// entry was already evicted. A false result leaves both records untouched.
+// Stores without this capability cannot safely pressure-evict listener state.
+type CapacityEvictor interface {
+	EvictIfUnprotected(key string, recorder Recorder) bool
+}
+
 // BaselineDecision is the transport-neutral behavioral baseline result.
 type BaselineDecision struct {
 	Blocked bool

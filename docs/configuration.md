@@ -1989,7 +1989,7 @@ Replacing a file-backed listener bearer starts a new credential epoch on the nex
 
 For migration, older clients may continue returning a Pipelock-issued `Pipelock-Session-Token` after a legacy `initialize` exchange. That compatibility capability is isolated from principal-owned state, is never forwarded upstream, and is never issued for a `2026-07-28` request. New integrations must use authenticated principal state instead.
 
-The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new authenticated principal evicts legacy state first but never pressure-evicts another live principal's security history; if every slot belongs to a live principal, admission fails closed. Stateless listener configurations do not allocate persistent client state.
+The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new client can replace inactive legacy state only when it carries no protected enforcement state. Live principal history and legacy airlock, adaptive restrictions, and policy-relevant taint are protected from pressure eviction. If no state can be safely dropped, admission fails closed. Without a session store, legacy compatibility state keeps its existing least-recently-used eviction behavior. Stateless listener configurations do not allocate persistent client state.
 
 ## MCP WebSocket Listener
 

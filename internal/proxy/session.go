@@ -2890,6 +2890,41 @@ func (a *storeAdapter) Delete(key string) {
 	a.sm.Delete(key)
 }
 
+// EvictIfUnprotected uses the same enforcement predicate as shared capacity
+// eviction. Listener state may retain a recorder after its clean store entry
+// was evicted, so inspect that recorder even when the map no longer holds it.
+func (a *storeAdapter) EvictIfUnprotected(key string, recorder session.Recorder) bool {
+	sess, ok := recorder.(*SessionState)
+	if !ok || sess == nil {
+		return false
+	}
+	sm := a.sm
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.key != key {
+		return false
+	}
+	current := sm.sessions[key]
+	if current != nil && current != sess {
+		// Never remove a replacement created by another owner of this key.
+		return false
+	}
+	adaptiveCfg := sm.adaptiveCfgPtr.Load()
+	if sess.hasCapacityProtectionLocked(adaptiveCfg != nil && adaptiveCfg.Enabled) {
+		return false
+	}
+	if current != nil {
+		delete(sm.sessions, key)
+		if sm.metrics != nil {
+			sm.metrics.RecordSessionEvicted()
+			sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+		}
+	}
+	return true
+}
+
 // AsStore returns a session.Store interface for this SessionManager.
 func (sm *SessionManager) AsStore() session.Store {
 	return &storeAdapter{sm: sm}
