@@ -2036,7 +2036,11 @@ The adaptive `whoami` endpoint and session admin API require `session_profiling.
 
 `session_profiling.volume_spike_ratio` was removed because it had no enforcement behavior. Config files that still contain it are refused at load; remove the field.
 
-`max_sessions` fails closed. At the cap, Pipelock evicts the oldest session it can safely drop, and never one held in airlock. When no session can be dropped, the new request is refused with HTTP 503 and layer `session_capacity` instead of running without session state; proxy, MCP and Browser Shield admission all follow this rule.
+`max_sessions` fails closed. At the cap, Pipelock evicts the oldest session it can safely drop, and never one held in airlock, carrying an adaptive escalation or `block_all` restriction (global or destination-scoped), or carrying taint at a level used by taint policy (`external_untrusted` or higher). When no session can be dropped, the new request is refused with HTTP 503 and layer `session_capacity` instead of running without session state; proxy, MCP and Browser Shield admission all follow this rule.
+
+Capacity protection doesn't change `session_ttl_minutes`: a session idle beyond that limit can expire at the next cleanup, clearing its adaptive and taint history. Airlock sessions remain exempt from idle expiry. Committed MCP tool calls refresh activity unless the session-wide `block_all` latch is set; blocked retries don't keep that latch alive. Standalone MCP invocation records are removed when the invocation exits.
+
+Refusal has no fixed recovery deadline. Active tainted sessions can keep their state, and airlock timers can be disabled. Adaptive recovery uses its configured level timers. Reset clears adaptive and airlock restrictions but preserves taint; an identity session's new-task boundary clears taint. MCP sessions reject admin reset and task boundaries, so end the invocation, use an applicable configured trust override for the refused action, or allow idle expiry where supported. A trust override doesn't release capacity while taint remains.
 
 ## Behavioral Baseline
 
