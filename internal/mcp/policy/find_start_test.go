@@ -37,6 +37,7 @@ var findStartRows = []verdictRow{
 	{"source after a pipe", "find . -perm 1 | source ./x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"find not first", "env find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"starting point printed", "find . 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"find as an argument", "find . -name a; cat find -perm 0777 -name -R | xargs chmod 777", incompletePairCheckRule, rulePermissions},
 }
 
 // TestDefaultRules_FindStartingPoints checks findStartRows with the default
