@@ -15,6 +15,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -290,7 +291,14 @@ func mcpListenerBlockAudit(dec mcpListenerBlockDecision) mcpDenialAudit {
 	}
 	switch dec.layer {
 	case "session_capacity":
-		return mcpDenialAudit{kind: "listener_capacity"}
+		switch dec.pattern {
+		case errMCPListenerRegistryCapacity.Error():
+			return mcpDenialAudit{kind: "listener_registry_capacity"}
+		case session.ErrCapacity.Error():
+			return mcpDenialAudit{kind: "listener_session_capacity"}
+		default:
+			return mcpDenialAudit{kind: "listener_capacity"}
+		}
 	case "mcp_listener_session":
 		// One receipt layer covers three refusals; its fixed receipt pattern
 		// names which one. Only the principal-state cap is a capacity refusal.

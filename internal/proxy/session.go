@@ -1943,9 +1943,9 @@ func (sm *SessionManager) AdaptiveSessionLevelCounts() map[string]float64 {
 	}
 
 	// Snapshot session pointers under the manager lock, then release it before
-	// taking individual session locks. Several lifecycle paths acquire these
-	// locks in the opposite order, so holding sm.mu here would risk a scrape
-	// deadlock. Removed sessions remain valid Go objects; a concurrent eviction
+	// taking individual session locks, keeping the scrape's manager lock hold
+	// short. The lock order is listener registry, store, session, then airlock.
+	// Removed sessions remain valid Go objects; a concurrent eviction
 	// may make one scrape briefly stale, but the next scrape reconciles from the
 	// current map and cannot go negative.
 	sm.mu.RLock()

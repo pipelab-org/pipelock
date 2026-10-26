@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
@@ -161,11 +162,11 @@ func TestSessionEnforcementListenerRegistryProtectedCapacity(t *testing.T) {
 	}
 	before := l.hits.Load()
 	record.Store(true)
-	if status, body := l.send("overflow", "read_file"); status != http.StatusServiceUnavailable || l.hits.Load() != before || !strings.Contains(body, "session capacity") {
+	if status, body := l.send("overflow", "read_file"); status != http.StatusServiceUnavailable || l.hits.Load() != before || !strings.Contains(body, "client-registry capacity exhausted (4096 clients)") || strings.Contains(body, "increase max_sessions") {
 		t.Fatalf("protected registry capacity: %d upstream=%d %s", status, l.hits.Load()-before, body)
 	}
 	record.Store(false)
-	if !strings.Contains(events.String(), `"event":"blocked"`) || !strings.Contains(events.String(), `"scanner":"mcp_protocol"`) {
+	if !strings.Contains(events.String(), `"event":"blocked"`) || !strings.Contains(events.String(), `"scanner":"mcp_protocol"`) || !strings.Contains(events.String(), `"block_class":"protective"`) || !strings.Contains(events.String(), "client-registry capacity exhausted (4096 clients)") {
 		t.Fatalf("capacity audit missing: %s", events.String())
 	}
 	if err := rec.Close(); err != nil {
@@ -208,7 +209,7 @@ func TestSessionEnforcementListenerSharedCapacityGuidance(t *testing.T) {
 					t.Fatalf("listener client %d: %d %s", i, status, body)
 				}
 			}
-			note := strings.Contains(l.logs.String(), "retained sessions can exhaust shared capacity")
+			note := strings.Contains(l.logs.String(), "retained sessions can exhaust listener capacity")
 			if note == principal {
 				t.Fatalf("startup note=%t, principal=%t: %s", note, principal, l.logs.String())
 			}
@@ -238,6 +239,64 @@ func TestSessionEnforcementListenerSharedCapacityGuidance(t *testing.T) {
 			if _, body := l.send("routing-0", "exec"); !strings.Contains(body, `"error"`) || l.hits.Load() != before {
 				t.Fatal("shared-capacity check erased listener enforcement")
 			}
+		})
+	}
+}
+
+// A clean store entry can be dropped under pressure before its listener recorder
+// learns policy-relevant taint. The listener must honor that retained recorder.
+func TestSessionEnforcementListenerOrphanRecorderProtected(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		pressure, rotation int
+	}{
+		{"store-pressure-then-registry-rotation", 60, 4200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			l, sm := startCapacityListener(t, 50, false, nil)
+			const notification = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+			if status, body := l.sendBody("victim", notification); status != http.StatusOK {
+				t.Fatalf("initial client: %d %s", status, body)
+			}
+			key := fmt.Sprintf("mcp-http-listener:%x", sha256.Sum256([]byte("victim")))
+			sm.mu.RLock()
+			original := sm.sessions[key]
+			sm.mu.RUnlock()
+			if original == nil {
+				t.Fatal("positive control: clean client missing from store")
+			}
+			flood := func(prefix string, count int) {
+				t.Helper()
+				for i := range count {
+					if status, body := l.sendBody(fmt.Sprintf("%s-%d", prefix, i), notification); status != http.StatusOK {
+						t.Fatalf("%s notification %d: %d %s", prefix, i, status, body)
+					}
+				}
+			}
+			flood("pressure", tc.pressure)
+			sm.mu.RLock()
+			_, present := sm.sessions[key]
+			sm.mu.RUnlock()
+			if present {
+				t.Fatal("pressure did not drop the clean store entry")
+			}
+			if status, body := l.send("victim", "read_file"); status != http.StatusOK || strings.Contains(body, `"error"`) {
+				t.Fatalf("listener-held recorder control: %d %s", status, body)
+			}
+			if !original.RiskSnapshot().Contaminated {
+				t.Fatal("listener did not taint its orphaned recorder")
+			}
+			assertDenied := func() {
+				t.Helper()
+				before := l.hits.Load()
+				if status, body := l.send("victim", "exec"); status != http.StatusOK || !strings.Contains(body, `"error"`) || l.hits.Load() != before {
+					t.Fatalf("client lost policy enforcement: %d upstream=%d %s", status, l.hits.Load()-before, body)
+				}
+			}
+			assertDenied()
+			flood("rotation", tc.rotation)
+			assertDenied()
+			t.Logf("clean store entry dropped; listener recorder enforced before and after %d session IDs (store=%d)", tc.rotation, sm.Len())
 		})
 	}
 }

@@ -110,6 +110,8 @@ var mcpDenialCatalog = [...]mcpDenialSpec{
 	{"listener_admission", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, "MCP listener admission refused"},
 	{"listener_protocol", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, "MCP listener protocol refused"},
 	{"listener_capacity", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, "MCP listener state capacity exhausted"},
+	{"listener_registry_capacity", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, errMCPListenerRegistryCapacity.Error()},
+	{"listener_session_capacity", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceListener, session.ErrCapacity.Error()},
 	{"listener_inspection", scanner.AuditMCPResponseInspection, audit.BlockClassInfrastructureError, mcpResourceListener, "MCP upstream reply withheld"},
 	{"listener_metadata", scanner.ScannerSSRFMetadata, audit.BlockClassThreat, mcpResourceListener, "MCP upstream resolves to a cloud metadata endpoint"},
 	{"listener_contract", scanner.AuditContract, audit.BlockClassProtective, mcpResourceListener, "MCP upstream URL blocked by live-lock contract"},

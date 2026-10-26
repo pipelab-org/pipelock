@@ -340,15 +340,21 @@ func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincip
 // session header. That is the production default: requiring a Pipelock
 // token is an opt-in (mcp_session_binding.listener_require_state_token).
 func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpListenerClientState {
+	state, _ := s.stateForLegacySessionWithCapacity(sessionID)
+	return state
+}
+
+// stateForLegacySessionWithCapacity preserves the rejecting limit for guidance.
+func (s *mcpListenerClientStates) stateForLegacySessionWithCapacity(sessionID string) (*mcpListenerClientState, error) {
 	if sessionID == "" {
-		return newMCPListenerTransientState()
+		return newMCPListenerTransientState(), nil
 	}
 	key := mcpListenerStateKey(sessionID)
 	s.mu.Lock()
 	if state := s.clients[key]; state != nil && !state.revoked.Load() {
 		s.touchLocked(state)
 		s.mu.Unlock()
-		return state
+		return state, nil
 	}
 	var removed []*mcpListenerClientState
 	if len(s.clients) >= maxMCPListenerClients {
@@ -362,9 +368,9 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 			s.mu.Unlock()
 			s.revokeRemoved(removed)
 			if s.store != nil {
-				return nil
+				return nil, errMCPListenerRegistryCapacity
 			}
-			return newMCPListenerTransientState()
+			return newMCPListenerTransientState(), nil
 		}
 	}
 	state := newMCPListenerClientState("", key)
@@ -374,14 +380,14 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 			s.mu.Unlock()
 			s.revokeRemoved(removed)
 			state.revoke()
-			return nil
+			return nil, session.ErrCapacity
 		}
 	}
 	s.touchLocked(state)
 	s.clients[key] = state
 	s.mu.Unlock()
 	s.revokeRemoved(removed)
-	return state
+	return state, nil
 }
 
 func (s *mcpListenerClientStates) newSetupState() (*mcpListenerClientState, error) {
@@ -803,7 +809,9 @@ func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientS
 // evictUnprotectedLegacyLocked never waits for an active request or response
 // commit while holding the registry lock. The store linearizes its protection
 // check and deletion; commitMu prevents a response from acquiring protection
-// between that deletion and revocation. Request lookup also holds s.mu.
+// between that deletion and revocation. Request lookup holds s.mu but does not
+// reserve an in-flight request. A POST is counted only when requestContext runs
+// after its body is read, so lookup alone does not exclude pressure eviction.
 func (s *mcpListenerClientStates) evictUnprotectedLegacyLocked() {
 	evictor, ok := s.store.(session.CapacityEvictor)
 	if !ok {

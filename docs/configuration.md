@@ -1991,9 +1991,27 @@ For migration, older clients may continue returning a Pipelock-issued `Pipelock-
 
 The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new client can replace inactive legacy state only when it carries no protected enforcement state. Live principal history and legacy airlock, adaptive restrictions, and policy-relevant taint are protected from pressure eviction. If no state can be safely dropped, admission fails closed. Without a session store, legacy compatibility state keeps its existing least-recently-used eviction behavior. Stateless listener configurations do not allocate persistent client state.
 
-With `session_profiling.enabled: true`, the MCP HTTP listener and the HTTP proxy in `pipelock run` share `session_profiling.max_sessions`. In legacy mode, each client-selected `Mcp-Session-Id` can hold a separate slot. Upstream MCP responses count as external content, so taint policy can retain those slots even without an injection finding. One client using many IDs can therefore exhaust shared capacity and refuse new clients on other transports until sessions expire or end. A startup note identifies this configuration.
+With a session store, unauthenticated legacy `Mcp-Session-Id` values and Pipelock-issued tokens can each hold a separate slot. An anonymous client can obtain many tokens, so `listener_require_state_token: true` does not limit capacity. Upstream MCP responses count as external content, so taint policy can retain those slots even without an injection finding. In `pipelock run`, the listener shares `session_profiling.max_sessions` with the HTTP proxy and can exhaust capacity for other transports. Standalone `pipelock mcp proxy --listen` uses a private store, so only the listener's own capacity is affected.
 
-For multi-client listeners, configure authenticated principal state so changing routing IDs cannot multiply one principal's slots. A shared listener bearer identifies one shared trust domain; use distinct verified principals when callers need separate histories. `mcp_session_binding.listener_require_state_token: true` is an existing migration option for legacy clients, but issuing multiple compatibility tokens is still possible: tokens do not provide a per-caller quota. Neither option reserves capacity for another transport. Existing retained listener sessions still require an actual session end or expiry; admin reset, terminate and new-task remain unavailable for invocation-scoped listener keys.
+Retained listener clients free slots on their listener idle expiry (24 hours) or session end, not the store's `session_ttl_minutes`. A store refusal names `max_sessions`; a registry refusal names the fixed 4,096-client limit. Raising `max_sessions` does not raise the registry limit.
+
+For multi-client listeners, configure authenticated principal state (bearer or principal auth) to bind one principal to one slot. A shared listener bearer identifies one shared trust domain; use distinct verified principals when callers need separate histories. Authentication does not reserve capacity for another transport. Admin reset, terminate and new-task remain unavailable for invocation-scoped listener keys.
+
+The capacity note is startup-only; reload does not emit it. It requires a session store and either stateful controls or token mode, with no configured bearer or principal authentication. A listener with a store but no stateful controls and no token mode creates no persistent client partitions and emits no note.
+
+| Session store | Stateful controls | Token mode | Bearer or principal auth | Startup capacity note |
+|---|---|---|---|---|
+| absent | enabled | disabled | absent | no |
+| present | disabled | disabled | absent | no |
+| present | enabled | disabled | absent | yes |
+| present | disabled | enabled | absent | yes |
+| present | enabled | enabled | absent | yes |
+| present | enabled | disabled | configured | no |
+| present | disabled | enabled | configured | no |
+
+The emitted note is:
+
+> pipelock: unauthenticated legacy MCP listener session IDs and Pipelock-issued tokens can each hold a session slot; retained sessions can exhaust listener capacity. In pipelock run, session_profiling.max_sessions is shared with other transports; standalone pipelock mcp proxy --listen uses its own store. Retained listener clients are released on listener idle expiry (24h) or session end, not session_ttl_minutes. Configure authenticated principal state (bearer or principal auth) to bind one principal to one slot. listener_require_state_token does not limit capacity: one anonymous client can obtain many tokens. This note is startup-only; reload does not emit it.
 
 ## MCP WebSocket Listener
 

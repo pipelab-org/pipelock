@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -205,6 +206,9 @@ func TestSessionCapacityListenerRefusesBeforeUpstream(t *testing.T) {
 					t.Fatal(err)
 				}
 				if !admit {
+					if !strings.Contains(string(output), session.ErrCapacity.Error()) || strings.Contains(string(output), "client-registry") {
+						t.Fatalf("store refusal lost max_sessions guidance: %s", output)
+					}
 					if resp.StatusCode != http.StatusServiceUnavailable || calls.Load() != 0 || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.DataBudget) {
 						t.Fatalf("capacity refusal: status=%d upstream=%d reason=%q body=%s", resp.StatusCode, calls.Load(), resp.Header.Get(blockreason.HeaderReason), output)
 					}
@@ -220,12 +224,37 @@ func TestSessionCapacityListenerRefusesBeforeUpstream(t *testing.T) {
 // by that exact text, so a changed message must keep its capacity guidance
 // rather than falling back to the protocol label's batch-request hint.
 func TestSessionCapacityRefusalKeepsRemediation(t *testing.T) {
-	spec, ok := denialSpec("startup_capacity")
-	if !ok || spec.reason != session.ErrCapacity.Error() {
-		t.Fatalf("startup capacity audit reason = %q, want %q", spec.reason, session.ErrCapacity.Error())
+	doc, err := os.ReadFile("../../docs/specs/block-reason-header.md")
+	if err != nil {
+		t.Fatal(err)
 	}
-	guidance, ok := scanner.GuidanceForResult(spec.label, spec.reason)
-	if !ok || !strings.Contains(guidance.OperatorKnob, "session_profiling.max_sessions") || !strings.Contains(guidance.OperatorKnob, "task boundary") {
-		t.Fatalf("capacity refusal guidance = %+v (ok=%t)", guidance, ok)
+	for _, tc := range []struct {
+		kind mcpDenialKind
+		err  error
+		want string
+	}{
+		{"startup_capacity", session.ErrCapacity, "task boundary"},
+		{"listener_session_capacity", session.ErrCapacity, "session_profiling.max_sessions"},
+		{"listener_registry_capacity", errMCPListenerRegistryCapacity, "does not raise this registry limit"},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			spec, ok := denialSpec(tc.kind)
+			if !ok || spec.reason != tc.err.Error() {
+				t.Fatalf("capacity audit reason = %q, want %q", spec.reason, tc.err.Error())
+			}
+			guidance, ok := scanner.GuidanceForResult(spec.label, spec.reason)
+			if !ok || !strings.Contains(guidance.OperatorKnob, "session_profiling.max_sessions") || !strings.Contains(guidance.OperatorKnob, tc.want) {
+				t.Fatalf("capacity refusal guidance = %+v (ok=%t)", guidance, ok)
+			}
+			if !strings.Contains(string(doc), spec.reason) {
+				t.Fatalf("block-reason spec missing capacity reason %q", spec.reason)
+			}
+			if tc.kind != "startup_capacity" {
+				descriptor := mcpListenerBlockAudit(mcpListenerBlockDecision{layer: "session_capacity", pattern: tc.err.Error()})
+				if descriptor.kind != tc.kind {
+					t.Fatalf("capacity descriptor = %q, want %q", descriptor.kind, tc.kind)
+				}
+			}
+		})
 	}
 }
