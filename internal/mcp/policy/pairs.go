@@ -421,22 +421,24 @@ var findWordsUnsafe = []string{
 // it is when a find may print anything else or may not be find: when its
 // output is joined with its errors, when it has a word in findWordsUnsafe,
 // when it is not named find, /bin/find or /usr/bin/find at the start of a
-// command, or when a word outside the arguments of such a find may change
-// what find runs (see mayRedefineFind). Those arguments are given to find,
-// not run by the shell, so a starting point such as . or a test such as
-// -path is not taken as such a word.
+// command, when a word outside the arguments of such a find may change
+// what find runs (see mayRedefineFind), or when a word has ; | or & before
+// its end, as where a command starts in it is not known. Those arguments are
+// given to find, not run by the shell, so a starting point such as . or a
+// test such as -path is not taken as such a word.
 func findPathsOnly(segs [][]string) [][]string {
 	seen := false
 	for _, seg := range segs {
 		start, args := true, false
 		for _, t := range seg {
-			if strings.Contains(t, ">&") || strings.Contains(t, "&>") || strings.Contains(t, "|&") {
+			if strings.Contains(t, ">&") || strings.Contains(t, "&>") || strings.Contains(t, "|&") ||
+				strings.ContainsAny(strings.TrimRight(t, ";|&"), ";|&") {
 				return segs
 			}
 			switch {
 			case start && isFindCommand(t):
 				seen, args = true, true
-			case args && !strings.ContainsAny(strings.TrimRight(t, ";|&"), ";|&"):
+			case args:
 				// One of find's arguments.
 			default:
 				args = false

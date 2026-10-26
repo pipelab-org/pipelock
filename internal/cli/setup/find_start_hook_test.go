@@ -13,5 +13,8 @@ func TestHooks_FindStartingPoints(t *testing.T) {
 		{"starting point naming path", "find ./mypath -perm 0777 | xargs chmod 644", false, false, false, false},
 		{"dot sourced first", ". ./x; find . -perm 777 | xargs chmod -R", false, true, true, true},
 		{"PATH after env", "env PATH=/tmp find . -perm 777 | xargs chmod -R", false, true, true, true},
+		{"& ends a find", "find . -name a& find . -perm 0777 | xargs chmod 644", false, false, false, false},
+		{"word after &", "find . -perm 1&x; find . -perm 777 | xargs chmod -R", false, true, true, true},
+		{"word after |", "find . -perm 1|x; find . -perm 777 | xargs chmod -R", false, true, true, true},
 	})
 }
