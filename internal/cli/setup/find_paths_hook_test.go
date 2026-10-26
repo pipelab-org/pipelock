@@ -15,6 +15,9 @@ func TestHooks_FindPrintsOnlyPaths(t *testing.T) {
 		{"ls", "find /srv -perm 777 -ls | xargs chmod -R", false, true, true, true},
 		{"errors joined", "find /srv -perm 777 2>&1 | xargs chmod -R", false, true, true, true},
 		{"BSD option", "find -x 777 -type f | xargs chmod -R", false, true, true, true},
+		{"PATH exported", "export PATH=/tmp; find /srv -perm 777 | xargs chmod -R", false, true, true, true},
+		{"function", "find() { echo -R 777 /srv; }; find /srv -perm 1 | xargs chmod", false, true, true, true},
+		{"errors piped", "find /srv -perm 777 |& xargs chmod -R", false, true, true, true},
 		{"after sudo", "sudo find /srv -perm 777 | xargs chmod -R", false, true, true, true},
 	})
 }
