@@ -267,3 +267,53 @@ func TestSessionToolCallRefreshesIdleActivity(t *testing.T) {
 		})
 	}
 }
+
+func TestSessionCapacityRetriesWhenCandidateTurnsProtected(t *testing.T) {
+	tests := []struct {
+		name        string
+		protectKeys map[string]bool
+		wantAdmit   bool
+		wantEvicted string
+	}{
+		{name: "next oldest is evicted", protectKeys: map[string]bool{"oldest": true}, wantAdmit: true, wantEvicted: "middle"},
+		{name: "every candidate turns protected", protectKeys: map[string]bool{"oldest": true, "middle": true, "newest": true}, wantAdmit: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testSessionConfig()
+			cfg.MaxSessions = 3
+			sm := NewSessionManager(cfg, capacityAdaptiveConfig(), nil)
+			t.Cleanup(sm.Close)
+			now := time.Now()
+			for i, key := range []string{"oldest", "middle", "newest"} {
+				sess := sm.GetOrCreate(key)
+				sess.mu.Lock()
+				sess.lastActivity = now.Add(time.Duration(i-3) * time.Minute)
+				sess.mu.Unlock()
+			}
+			sm.beforeEvictRecheck = func(candidate *SessionState) {
+				if !tt.protectKeys[candidate.key] {
+					return
+				}
+				candidate.mu.Lock()
+				candidate.escalationLevel = 1
+				candidate.mu.Unlock()
+			}
+			admitted := sm.GetOrCreate("new") != nil
+			if admitted != tt.wantAdmit {
+				t.Fatalf("admitted = %v, want %v", admitted, tt.wantAdmit)
+			}
+			if sm.Len() != cfg.MaxSessions {
+				t.Fatalf("sessions = %d, want %d", sm.Len(), cfg.MaxSessions)
+			}
+			for key := range tt.protectKeys {
+				if sm.SessionByKey(key) == nil {
+					t.Fatalf("session %q turned protected but was evicted", key)
+				}
+			}
+			if tt.wantEvicted != "" && sm.SessionByKey(tt.wantEvicted) != nil {
+				t.Fatalf("session %q should have been evicted", tt.wantEvicted)
+			}
+		})
+	}
+}

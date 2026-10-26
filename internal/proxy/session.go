@@ -1408,6 +1408,10 @@ type SessionManager struct {
 	// warn again.
 	baselineWarningMu          sync.Mutex
 	baselineUnproducibleWarned map[string]struct{}
+
+	// beforeEvictRecheck lets tests change a candidate between selection and
+	// the locked recheck. Nil in production.
+	beforeEvictRecheck func(*SessionState)
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -2973,42 +2977,66 @@ func (s *SessionState) hasCapacityProtectionLocked(adaptiveEnabled bool) bool {
 // session (if any) so the caller can record baseline metrics after
 // releasing the lock.
 func (sm *SessionManager) evictOldest() *SessionState {
-	var oldestKey string
-	var oldestTime time.Time
-	var oldestSess *SessionState
 	adaptiveCfg := sm.adaptiveCfgPtr.Load()
 	adaptiveEnabled := adaptiveCfg != nil && adaptiveCfg.Enabled
 
-	for key, sess := range sm.sessions {
-		sess.mu.Lock()
-		la := sess.lastActivity
-		protected := sess.hasCapacityProtectionLocked(adaptiveEnabled)
-		sess.mu.Unlock()
+	// A candidate that turns protected before removal is skipped and the next
+	// oldest is tried, so one late signal cannot refuse admission while another
+	// session is still safe to drop. Each pass removes a session or skips a new
+	// key, so the loop ends within len(sm.sessions) passes.
+	var skipped map[string]struct{}
+	for {
+		var oldestKey string
+		var oldestTime time.Time
+		var oldestSess *SessionState
+		for key, sess := range sm.sessions {
+			if _, ok := skipped[key]; ok {
+				continue
+			}
+			sess.mu.Lock()
+			la := sess.lastActivity
+			protected := sess.hasCapacityProtectionLocked(adaptiveEnabled)
+			sess.mu.Unlock()
 
-		// Capacity pressure must not reset enforcement history.
-		if protected {
-			continue
+			// Capacity pressure must not reset enforcement history.
+			if protected {
+				continue
+			}
+
+			if oldestKey == "" || la.Before(oldestTime) {
+				oldestKey = key
+				oldestTime = la
+				oldestSess = sess
+			}
 		}
-
-		if oldestKey == "" || la.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = la
-			oldestSess = sess
-		}
-	}
-
-	if oldestKey != "" {
-		// A signal can arrive while the remaining candidates are inspected.
-		// Recheck under the session lock and hold it through removal.
-		oldestSess.mu.Lock()
-		defer oldestSess.mu.Unlock()
-		if oldestSess.hasCapacityProtectionLocked(adaptiveEnabled) {
+		if oldestKey == "" {
 			return nil
 		}
-		delete(sm.sessions, oldestKey)
-		if sm.metrics != nil {
-			sm.metrics.RecordSessionEvicted()
+		if sm.beforeEvictRecheck != nil {
+			sm.beforeEvictRecheck(oldestSess)
 		}
+		if sm.removeIfUnprotected(oldestKey, oldestSess, adaptiveEnabled) {
+			return oldestSess
+		}
+		if skipped == nil {
+			skipped = make(map[string]struct{})
+		}
+		skipped[oldestKey] = struct{}{}
 	}
-	return oldestSess
+}
+
+// removeIfUnprotected rechecks a capacity candidate under its session lock
+// and holds that lock through removal, so a signal cannot land in between.
+// Caller holds sm.mu for writing.
+func (sm *SessionManager) removeIfUnprotected(key string, sess *SessionState, adaptiveEnabled bool) bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.hasCapacityProtectionLocked(adaptiveEnabled) {
+		return false
+	}
+	delete(sm.sessions, key)
+	if sm.metrics != nil {
+		sm.metrics.RecordSessionEvicted()
+	}
+	return true
 }
