@@ -201,7 +201,7 @@ func runInstall(ctx context.Context, env *installEnv, opts installOpts) error {
 		// or directories for a service that cannot start.
 		return cliutil.ExitCodeError(cliutil.ExitConfig, missingManagedPipelockConfigError(target.unitPath))
 	}
-	if err := requireContainForwardProxy(env, target.checkPath, target.checkPath); err != nil {
+	if err := requireContainForwardProxy(env, target.checkPath, target.checkPath, opts); err != nil {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 
@@ -1685,7 +1685,9 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	if target.missingManaged {
 		return missingManagedPipelockConfigError(target.unitPath)
 	}
+	pathCheckOpts := installOpts{dryRun: dryRun}
 	if target.drySource {
+		pathCheckOpts.configSource = opts.configSource
 		_, _ = fmt.Fprintf(env.out,
 			"  [INFO] dry-run config preflight: validating --config %s before it would be installed as %s\n",
 			target.checkPath, target.unitPath)
@@ -1721,7 +1723,7 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 	}); err != nil {
 		if dryRun && errors.Is(err, serviceenv.ErrUnavailable) {
 			_, _ = fmt.Fprintln(env.out, "  [DEFERRED] service environment validation unavailable; configuration not validated. The privileged install must validate after creating the service identity and again before service start.")
-			return requireContainForwardProxy(env, target.checkPath, target.unitPath)
+			return requireContainForwardProxy(env, target.checkPath, target.unitPath, pathCheckOpts)
 		}
 		return fmt.Errorf("contain install config preflight failed for %s using selected binary %s: %w. "+
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; fix the config and rerun install",
@@ -1738,7 +1740,7 @@ func preflightPipelockConfig(ctx context.Context, env *installEnv, opts installO
 			"Refusing before replacing the service binary, writing the system unit, restarting pipelock, or loading nftables rules; rerun install with a stable --pipelock-binary path",
 			target.unitPath, env.pipelockBinary)
 	}
-	if err := requireContainForwardProxy(env, target.checkPath, target.unitPath); err != nil {
+	if err := requireContainForwardProxy(env, target.checkPath, target.unitPath, pathCheckOpts); err != nil {
 		return err
 	}
 	if !dryRun {
@@ -1757,21 +1759,28 @@ func missingManagedPipelockConfigError(path string) error {
 
 // General config validation permits fetch-only operation. Containment needs
 // forwarding because its clients use CONNECT and absolute-URI requests.
-func requireContainForwardProxy(env *installEnv, checkPath, displayPath string) error {
+func requireContainForwardProxy(env *installEnv, checkPath, displayPath string, opts installOpts) error {
 	data, err := env.readFile(checkPath)
 	if err != nil {
 		return fmt.Errorf("contain install config preflight failed for %s: read config: %w; refusing config promotion, binary installation, service restart, or nftables loading", displayPath, err)
 	}
-	var cfg config.Config
+	if opts.configSource != "" {
+		data, err = previewContainWritablePaths(env, opts.configSource, data)
+		if err != nil {
+			return fmt.Errorf("contain install config preflight failed for %s: parse config for migration preview: %w", displayPath, err)
+		}
+	}
+	cfg := config.Defaults()
+	cfg.ForwardProxy.Enabled = false // containment requires an explicit declaration
 	// The selected binary still owns full schema and build compatibility.
-	// Decode the same boolean type here without resolving runtime files.
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	// Apply runtime defaults without opening runtime files.
+	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("contain install config preflight failed for %s: parse config: %w; refusing config promotion, binary installation, service restart, or nftables loading", displayPath, err)
 	}
 	if !cfg.ForwardProxy.Enabled {
 		return fmt.Errorf("contain install config preflight failed for %s: containment requires forward_proxy.enabled: true for CONNECT and absolute-URI requests; set forward_proxy.enabled: true in this config and rerun contain install; refusing config promotion, binary installation, service restart, or nftables loading", displayPath)
 	}
-	return nil
+	return requireContainWritePaths(env, cfg, displayPath, opts.dryRun)
 }
 
 // pipelockConfigPreflightTargetFor resolves which config path preflight checks

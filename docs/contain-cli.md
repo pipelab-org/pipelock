@@ -188,6 +188,14 @@ The proxy listener and every declared loopback listener inside the agent network
 
 ### Post-install output
 
+The managed service writes only inside `/var/lib/pipelock`. When the flight recorder is configured and enabled, `flight_recorder.dir` must resolve to `/var/lib/pipelock/recorder`; a custom recorder location is refused, including another directory inside the data directory. Install checks the configuration after its home-directory path migration, before changing the host, and names the field and required replacement when refusing a path. Other configured runtime write paths must remain inside the data directory, including through symlinks. This includes `license_crl_file`: every CRL load writes anti-rollback high-water files beside the CRL, so a CRL kept in a read-only directory such as `/etc/pipelock` would fail the license check at runtime.
+
+Private service state, including baseline integrity keys, must stay outside the operator-readable `logs` and `recorder` directories. The recorder, its local anchor log, and dashboard snapshot may use `recorder`; the audit log may use `logs`. Install refuses other service writers in either evidence directory, including paths that resolve there through symlinks. It also refuses configured private material the service only reads, such as signing keys, the TLS CA key, the license token, keyrings and learn captures, when it resolves inside either evidence directory; that material may stay outside the data directory.
+
+A real install refuses private-input paths or a data directory whose existing ancestors cannot be resolved; make those ancestors inspectable by the installer or move the private material outside the evidence directories and update its configuration path. Missing files are allowed when their existing ancestors resolve.
+
+An unprivileged `--dry-run` prints `[DEFERRED]` for paths it cannot inspect because of permissions; the privileged install must check them before proceeding.
+
 On success, `install` prints a **Next steps** block with:
 
 - **sudo secure_path check** -- if `/usr/local/bin` is not in sudo's `secure_path`, a warning explains how to add it. Without this, `sudo pipelock ...` reports "command not found" even though the binary is installed. Install emits guidance rather than silently editing sudoers.
