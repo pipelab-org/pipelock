@@ -184,6 +184,8 @@ Exit codes:
 - **1**, a step failed; earlier applied steps were rolled back, except that a removed or expired loopback or published-service doorway stays closed. If an undo also failed, the error says `rollback incomplete`, names the step, and the host needs another `pipelock contain install`.
 - **2**, precondition error: not root, missing executable, bad `--config`.
 
+The proxy listener and every declared loopback listener inside the agent network namespace use systemd `Type=notify`. The forwarder reports `READY=1` only after it binds its TCP listener. Install waits for that readiness; a bind failure fails the start job and runs the existing rollback. The error names the namespace-local address and port and suggests checking for a collision inside that namespace. A host-side listener on the same address is expected and does not establish a namespace collision. Automatic restarts use the same readiness contract. The units state the existing service-start timeout, so a missing readiness notification cannot wait forever under an unbounded systemd default.
+
 ### Post-install output
 
 On success, `install` prints a **Next steps** block with:
@@ -213,7 +215,9 @@ The sequence is:
    A failing probe exits 1 and a skipped or inconclusive probe exits 2, so
    both roll the upgrade back.
 
-If any step after binary replacement fails, the command rolls back both the binary and its integrity pin to the pre-upgrade state, then best-effort restarts the service.
+If any step after binary replacement fails, the command restores the binary, its integrity pin and, when the upgrade migrated the service unit, the original unit file (bytes, owner and mode), reloads systemd, then best-effort restarts the service. A rollback step that fails is reported together with the original error.
+
+`contain upgrade` replaces only the binary, so namespace forwarder definitions written before bind readiness keep `Type=simple`. Final verification accepts that exact earlier definition while its listener is `active/running`, and names the listener and `contain install` in its passing detail. The same listener still fails while it is auto-restarting, stopped, or loaded with any other type, and any other `Type=simple` edit fails as drift. `contain install` and `contain reload-nft-rules` rewrite both kinds of listener definition and restart active listeners, which completes the migration.
 
 Release-signature verification is performed by the deployed binary at `/usr/local/bin/pipelock`, not by whichever copy of pipelock you invoke this command from. The command deliberately does not pre-check the invoking binary's embedded release keyring: that would decide against one artifact while the upgrade acts on another, and it would refuse a legitimate upgrade whenever an operator runs a custom or RC copy against a healthy deployed binary. A build with no embedded release keyring cannot verify a release, so its `update` step refuses; recover such a host with `contain install --pipelock-binary <path>` after independent signature, checksum, and attestation verification.
 
@@ -233,7 +237,7 @@ Flags:
 Exit codes:
 
 - **0**, upgrade completed and all verification probes passed.
-- **1**, upgrade failed; previous state was restored.
+- **1**, upgrade failed; previous state was restored, or the error names each rollback step that could not be restored.
 - **2**, precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).
 
 ## `pipelock contain verify`
@@ -264,13 +268,15 @@ pipelock contain verify
 | 16 | `private_tmp_isolation` | A transient service cannot see temporary canaries created in the operator's `/tmp` and `/var/tmp`. Requires root; the canaries are removed before the probe returns. |
 | 19 | `pipelock_ca_export_current` | `/etc/pipelock/ca.pem` is a valid CA and exactly matches the CA selected in the contain-managed keystore. It fails with `contain ca-refresh` when a rotation left the export stale. |
 | 20 | `agent_browser_ca_trust` | The contained agent's per-user NSS database trusts the Pipelock CA with SSL CA trust `C`. It reports trust, not provenance: a matching certificate an operator added themselves passes, because the agent can browse either way. Fails when `certutil` is absent, when the nickname holds a different certificate, or when the trust flags were narrowed. Install and rollback consult the ownership marker so rollback removes only what install added. Probes 17 and 18 are published by `contain run`, not `verify`. |
-| 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, the namespace proxy socket reaches Pipelock, and every live process under the managed agent UID occupies that same namespace. |
+| 21 | `agent_network_namespace` | The namespace anchor and socket-forwarder units match the managed definitions, every namespace listener has effective `Type=notify` (or, for the exact definition an earlier release wrote, `Type=simple`) and `active/running` service state, the namespace differs from the host network namespace, a contained process can't reach a host loopback canary, the namespace proxy socket reaches Pipelock, and every live process under the managed agent UID occupies that same namespace. |
 | 22 | `agent_display` (conditional) | Present when `containment.display` is enabled, or a prior display install is detected. The configured fallback display is agent-owned and locally isolated. |
 | 23 | `agent_display_rfb` (conditional) | Present with the Xvnc display backend. The agent RFB Unix socket is private and TCP RFB is disabled. |
 | 24 | `viewer_service` (conditional) | Present with the Xvnc display backend. The contained display viewer socket is restricted to its operator. |
 | 25 | `viewer_rfb_access` (conditional) | Present with the Xvnc display backend. RFB socket mode and group match the viewer setting. |
 | 26 | `legacy_viewer_acl` (conditional) | Present whenever an agent home directory exists, whatever the current display backend. Obsolete pre-namespace agent-home viewer access is absent. |
 | 27 | `filesystem_confinement` | In both filesystem modes, a transient service with the selected profile runs the same runtime-mount guard as the launcher; a refusal reports FAIL. When `containment.filesystem.mode` is `enforce`, a transient service with the same filesystem properties cannot read an operator-home canary or a hidden secret, cannot create a file on the protected filesystem, and can write a read-write workspace grant when one exists. Omitted or `off` reports `filesystem profile: off`. |
+
+The namespace listener check is shared with `contain doctor` check 8. It reads `ActiveState`, `SubState`, `Type`, and `NRestarts` from `systemctl show`. An auto-restarting listener or repeated activation fails with the affected address and recovery guidance. A historical restart count does not fail an otherwise ready `active/running` listener. An unreadable or incomplete observation is inconclusive in doctor and fails verification; an ordinary state transition is also inconclusive until it settles.
 
 ## Filesystem confinement
 
@@ -417,7 +423,7 @@ ExecStart=/usr/local/bin/plk-launch agent-tool
 Restart=on-failure
 ```
 
-Workspace and agent-home binds inside `/run`, `/var/run`, or `/dev/shm` are refused so a grant cannot reopen those runtime directories. The runtime mounts hide host pathname sockets in those directories. A filesystem grant also grants access to sockets inside that tree, including sockets outside the masked runtime directories; inspect the granted tree before admitting it. Socket-bearing grants are not automatically rejected. The example assumes `/var/run` resolves to `/run`; add `TemporaryFileSystem=/var/run:ro` if it is a separate directory. Managed units select this from the host filesystem during installation. Managed namespace forwarders receive only their doorway's dedicated directory, and managed display services retain only their display runtime directory under `/run`. Re-run `contain install` to update managed helpers and wrappers; operator-written units need the properties shown above. `contain doctor` checks the managed wrapper and configured unit mount settings and names `contain install` when that configuration is stale. The launcher checks applied runtime mounts before tool execution and posture signing. The existing user-namespace remount and same-UID `/proc` limitations still apply.
+Workspace and agent-home binds inside `/run`, `/var/run`, or `/dev/shm` are refused so a grant cannot reopen those runtime directories. The runtime mounts hide host pathname sockets in those directories. A filesystem grant also grants access to sockets inside that tree, including sockets outside the masked runtime directories; inspect the granted tree before admitting it. Socket-bearing grants are not automatically rejected. The example assumes `/var/run` resolves to `/run`; add `TemporaryFileSystem=/var/run:ro` if it is a separate directory. Managed units select this from the host filesystem during installation. Managed namespace forwarders receive only their doorway's dedicated directory and a read-only bind of systemd's notification socket, `/run/systemd/notify`, which their `Type=notify` readiness report needs. Managed display services retain only their display runtime directory under `/run`. Re-run `contain install` to update managed helpers and wrappers; operator-written units need the properties shown above. `contain doctor` checks the managed wrapper and configured unit mount settings and names `contain install` when that configuration is stale. The launcher checks applied runtime mounts before tool execution and posture signing. The existing user-namespace remount and same-UID `/proc` limitations still apply.
 
 Restart all running agent services and sessions after upgrading. Sessions started before the upgrade keep host `/run` and are reachable from new sessions through same-UID `/proc`.
 
