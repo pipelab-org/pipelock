@@ -249,6 +249,54 @@ func TestUpgradeUnitWithBOM(t *testing.T) {
 	}
 }
 
+func TestUpgradeUnitWithLaterBOM(t *testing.T) {
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+	for _, body := range []string{
+		"[Unit]\nDescription=Proxy\n\ufeff[Service]\nExecStart=/usr/bin/true\n",
+		"[Service]\nExecStart=/usr/bin/true\n\ufeff[Unit]\n" + marker + "\nTimeoutStopSec=600\n",
+	} {
+		t.Run(body, func(t *testing.T) {
+			env := testUpgradeEnv(t)
+			if err := writeFileAtomic(env.unitPath, []byte(body), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			restore, err := upgradeMigrateUnit(env)
+			if err != nil || restore == nil {
+				t.Fatalf("migration = %v, restore present=%t", err, restore != nil)
+			}
+			want := strings.Replace(body, "[Service]\n", "[Service]\n"+wantStopTimeoutDirective()+"\n"+marker+"\n", 1)
+			got, err := os.ReadFile(env.unitPath)
+			if err != nil || string(got) != want {
+				t.Fatalf("migrated unit = %q, %v; want %q", got, err, want)
+			}
+			if err := restore(); err != nil {
+				t.Fatal(err)
+			}
+			got, err = os.ReadFile(env.unitPath)
+			if err != nil || string(got) != body {
+				t.Fatalf("restored unit = %q, %v; want %q", got, err, body)
+			}
+		})
+	}
+}
+
+func TestUpgradeUnitBOMIsSkippedOnlyOnce(t *testing.T) {
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+	for _, tt := range []struct {
+		body string
+		want bool
+	}{
+		{"[Service]\n\ufeff" + marker + "\n", true},
+		{"\ufeff[Service]\n\ufeff" + marker + "\n", false},
+	} {
+		t.Run(tt.body, func(t *testing.T) {
+			if got := unitHasActiveContainmentMarker(tt.body, marker); got != tt.want {
+				t.Fatalf("active marker = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 type upgradeUnitOwnerInfo struct {
 	os.FileInfo
 }

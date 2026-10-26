@@ -741,12 +741,15 @@ func scanServiceSection(body string) ([]unitAssignment, int) {
 	section := ""
 	logical := ""
 	continuing := false
+	bomSeen := false
 	for index, raw := range strings.Split(body, "\n") {
-		// systemd's config_parse() skips a UTF-8 BOM before parsing a line:
+		// systemd's config_parse() skips the first UTF-8 BOM at a line's start,
+		// even when earlier lines had no BOM:
 		// https://github.com/systemd/systemd/blob/v261/src/shared/conf-parser.c
 		// Keep the original bytes and physical line index for insertion.
-		if index == 0 {
+		if !bomSeen && strings.HasPrefix(raw, "\ufeff") {
 			raw = strings.TrimPrefix(raw, "\ufeff")
+			bomSeen = true
 		}
 		line := strings.TrimSpace(raw)
 		if line == "" && !continuing {
