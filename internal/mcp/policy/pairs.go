@@ -420,18 +420,32 @@ var findWordsUnsafe = []string{
 // it is when a find may print anything else or may not be find: when its
 // output is joined with its errors, when it has a word in findWordsUnsafe,
 // when it is not named find, /bin/find or /usr/bin/find at the start of a
-// command, or when a word may change what find runs (see mayRedefineFind).
+// command, or when a word outside the arguments of such a find may change
+// what find runs (see mayRedefineFind). Those arguments are given to find,
+// not run by the shell, so a starting point such as . or a test such as
+// -path is not taken as such a word.
 func findPathsOnly(segs [][]string) [][]string {
 	seen := false
 	for _, seg := range segs {
+		start, args := true, false
 		for _, t := range seg {
-			f := foldString(t)
-			switch {
-			case strings.Contains(t, ">&"), strings.Contains(t, "&>"), strings.Contains(t, "|&"),
-				mayRedefineFind(t, f):
+			if strings.Contains(t, ">&") || strings.Contains(t, "&>") || strings.Contains(t, "|&") {
 				return segs
-			case isFindCommand(t):
-				seen = true
+			}
+			switch {
+			case start && isFindCommand(t):
+				seen, args = true, true
+			case args && !strings.ContainsAny(strings.TrimRight(t, ";|&"), ";|&"):
+				// One of find's arguments.
+			default:
+				args = false
+				if mayRedefineFind(t, foldString(t)) {
+					return segs
+				}
+			}
+			start = endsCommand(t)
+			if start {
+				args = false
 			}
 		}
 	}
@@ -457,12 +471,12 @@ var findRedefiners = []string{
 }
 
 // mayRedefineFind reports whether word t, f folded, may change what a later
-// find runs: a word that names PATH (other than the -path and -ipath tests)
-// or find (other than as the command), or one of findRedefiners.
+// find runs: a word that names PATH or find (other than as the command), or
+// one of findRedefiners.
 func mayRedefineFind(t, f string) bool {
 	w := handOffWord(t)
 	switch {
-	case strings.Contains(f, foldString("path")) && w != "-path" && w != "-ipath":
+	case strings.Contains(f, foldString("path")):
 		return true
 	case strings.Contains(f, foldString("find")) && !isFindCommand(t):
 		return true
