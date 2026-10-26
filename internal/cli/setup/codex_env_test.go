@@ -7,12 +7,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -395,4 +398,84 @@ func TestCodexEnvironmentErrorGuards(t *testing.T) {
 			t.Fatal("preflight accepted an unavailable home")
 		}
 	})
+}
+
+const codexLocalTimeChildEnv = "PIPELOCK_TEST_CODEX_LOCAL_TIME_CHILD"
+
+// The TOML library fixes its local-time offset at package init, so a host in UTC
+// cannot show the shift. Rerun this test in a child process with a non-UTC zone.
+func TestCodexEnvironmentPreservesLocalTimes(t *testing.T) {
+	if os.Getenv(codexLocalTimeChildEnv) == "" {
+		if _, err := time.LoadLocation("America/New_York"); err != nil {
+			t.Skip("zoneinfo unavailable")
+		}
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		//nolint:gosec // G204: reruns this test binary with a fixed test filter.
+		cmd := exec.CommandContext(t.Context(), self, "-test.run=^TestCodexEnvironmentPreservesLocalTimes$", "-test.count=1", "-test.v")
+		cmd.Env = append(os.Environ(), "TZ=America/New_York", codexLocalTimeChildEnv+"=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestCodexEnvironmentPreservesLocalTimes") {
+			t.Fatalf("child run failed: %v\n%s", err, out)
+		}
+		return
+	}
+	if _, offset := time.Now().Zone(); offset == 0 {
+		t.Fatal("child process did not run with a non-UTC offset")
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	path := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+	content := "wake = 07:32:00\nstamp = 2026-01-02T03:04:05\nday = 2026-01-02\nzoned = 2026-01-02T03:04:05+02:00\n[mcp_servers.example]\ncommand = 'node'\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistCodexEnvNames("example", codexMCPTransport{EnvVars: []string{"EXAMPLE_NAME"}}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"wake = 07:32:00\n", "stamp = 2026-01-02T03:04:05\n", "day = 2026-01-02\n", "zoned = 2026-01-02T03:04:05+02:00\n"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("rewrite changed %q:\n%s", strings.TrimSpace(want), data)
+		}
+	}
+}
+
+func TestCodexEnvironmentRefusesLossyRewrite(t *testing.T) {
+	// A zone the encoder cannot name reparses as an anonymous offset.
+	lossy := map[string]any{"when": time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("example-zone", 3600))}
+	if _, err := encodeCodexConfig(lossy); err == nil || !strings.Contains(err.Error(), "without changing other settings") {
+		t.Fatalf("lossy rewrite accepted: %v", err)
+	}
+	faithful := map[string]any{"nan": math.NaN(), "tables": []any{map[string]any{"a": int64(1)}}}
+	if _, err := encodeCodexConfig(faithful); err != nil {
+		t.Fatalf("faithful rewrite refused: %v", err)
+	}
+}
+
+func TestCodexEnvironmentWritesThroughSymlink(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("symlink creation needs privileges on Windows")
+	}
+	t.Setenv("CODEX_HOME", t.TempDir())
+	target := filepath.Join(t.TempDir(), "managed.toml")
+	if err := os.WriteFile(target, []byte("[mcp_servers.example]\ncommand = 'node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := persistCodexEnvNames("example", codexMCPTransport{EnvVars: []string{"EXAMPLE_NAME"}}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("config symlink was replaced by a regular file")
+	}
+	assertCodexEnvNames(t, "example", []string{"EXAMPLE_NAME"})
 }

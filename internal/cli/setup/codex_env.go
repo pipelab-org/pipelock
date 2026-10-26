@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -73,12 +76,106 @@ func readCodexConfig() (string, map[string]any, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("reading Codex config: %w", err)
 	}
+	// Codex writes through a symlinked config.toml; replacing the link with a
+	// regular file would detach it from the operator's managed copy.
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving Codex config: %w", err)
+	}
 	var document map[string]any
 	if _, err := toml.Decode(string(data), &document); err != nil {
 		// TOML errors can quote a line containing credentials.
 		return "", nil, errors.New("cannot parse Codex config; repair config.toml before retrying (parser details withheld to protect environment values)")
 	}
 	return path, document, nil
+}
+
+// encodeCodexConfig re-encodes the whole document and refuses unless decoding
+// the output yields the same data. Comments and layout are still normalized.
+func encodeCodexConfig(document map[string]any) ([]byte, error) {
+	var output bytes.Buffer
+	if err := toml.NewEncoder(&output).Encode(preserveTOMLLocalTimes(document)); err != nil {
+		return nil, errors.New("cannot encode Codex config for name-only environment forwarding")
+	}
+	var reparsed map[string]any
+	if _, err := toml.Decode(output.String(), &reparsed); err != nil ||
+		!reflect.DeepEqual(canonicalTOML(document), canonicalTOML(reparsed)) {
+		return nil, errors.New("cannot rewrite Codex config without changing other settings; add env_vars to the server entry manually")
+	}
+	return output.Bytes(), nil
+}
+
+// The TOML library decodes local date/time values in the host's UTC offset and
+// encodes them converted to UTC, shifting their wall-clock text. tomlLocalTime
+// writes the decoded text back unchanged.
+type tomlLocalTime string
+
+func (t tomlLocalTime) MarshalTOML() ([]byte, error) { return []byte(t), nil }
+
+var tomlLocalLayouts = map[string]string{
+	"datetime-local": "2006-01-02T15:04:05.999999999",
+	"date-local":     "2006-01-02",
+	"time-local":     "15:04:05.999999999",
+}
+
+func preserveTOMLLocalTimes(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = preserveTOMLLocalTimes(item)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(v))
+		for i, item := range v {
+			out[i], _ = preserveTOMLLocalTimes(item).(map[string]any)
+		}
+		return out
+	case []any:
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = preserveTOMLLocalTimes(item)
+		}
+		return out
+	case time.Time:
+		if layout, local := tomlLocalLayouts[v.Location().String()]; local {
+			return tomlLocalTime(v.Format(layout))
+		}
+	}
+	return value
+}
+
+// tomlScalar compares values whose Go form is not comparable as decoded:
+// wall-clock text and zone for times, and formatted text for floats (NaN).
+type tomlScalar struct{ kind, text string }
+
+func canonicalTOML(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = canonicalTOML(item)
+		}
+		return out
+	case time.Time:
+		layout, local := tomlLocalLayouts[v.Location().String()]
+		if !local {
+			layout = time.RFC3339Nano
+		}
+		return tomlScalar{kind: "time:" + v.Location().String(), text: v.Format(layout)}
+	case float64:
+		return tomlScalar{kind: "float", text: strconv.FormatFloat(v, 'g', -1, 64)}
+	}
+	// Decoding yields []any or []map[string]any; written values may be typed.
+	if rv := reflect.ValueOf(value); rv.Kind() == reflect.Slice {
+		out := make([]any, rv.Len())
+		for i := range out {
+			out[i] = canonicalTOML(rv.Index(i).Interface())
+		}
+		return out
+	}
+	return value
 }
 
 // persistCodexEnvNames updates the entry written by `codex mcp add`. The CLI
@@ -113,11 +210,11 @@ func persistCodexEnvNames(name string, transport codexMCPTransport) error {
 	sort.Strings(keys)
 	delete(server, "env")
 	server["env_vars"] = keys
-	var output bytes.Buffer
-	if err := toml.NewEncoder(&output).Encode(document); err != nil {
-		return errors.New("cannot encode Codex config for name-only environment forwarding")
+	output, err := encodeCodexConfig(document)
+	if err != nil {
+		return err
 	}
-	return vscodeAtomicWrite(path, output.Bytes(), filepath.Dir(path))
+	return vscodeAtomicWrite(path, output, filepath.Dir(path))
 }
 
 // preflightCodexEnv verifies all value-bearing prerequisites before mutation.
@@ -126,7 +223,11 @@ func preflightCodexEnv(transport codexMCPTransport) error {
 		return err
 	}
 	if len(transport.Env)+len(transport.EnvVars) > 0 {
-		_, _, err := readCodexConfig()
+		_, document, err := readCodexConfig()
+		if err != nil {
+			return err
+		}
+		_, err = encodeCodexConfig(document)
 		return err
 	}
 	return nil
