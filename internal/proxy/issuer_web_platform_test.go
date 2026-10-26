@@ -566,7 +566,7 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 				}
 				store := runtime.query
 				store.mu.Lock()
-				held := len(store.sessions) + len(store.paths) + len(store.documents) + len(store.redirects)
+				held := len(store.sessions) + len(store.paths) + len(store.documents) + len(store.redirects) + len(store.ids)
 				store.mu.Unlock()
 				if held != 0 {
 					t.Fatalf("%s recorded issuer evidence (%d buckets)", transport, held)
