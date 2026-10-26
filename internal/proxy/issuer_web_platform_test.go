@@ -486,6 +486,11 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 	var origin, tlsOrigin string
 	handler := func(self *string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/listing" {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"value":[{"id":"`+serverIDListed+`"}]}`)
+				return
+			}
 			w.Header().Set("Content-Type", "text/html")
 			if r.URL.Path == "/" {
 				_, _ = io.WriteString(w, `<img src="`+*self+webImagePath+`?`+webImageQuery()+`"><link href="`+*self+webMediaPath+`">`)
@@ -540,6 +545,8 @@ func TestWebPlatformIssuerEvidenceIsInterceptOnly(t *testing.T) {
 			want       int
 		}{
 			{"page", "/", http.StatusOK},
+			{"ID listing", "/listing", http.StatusOK},
+			{"colon addressed ID", "/items/" + serverIDListed + ":/report.txt:/content", http.StatusForbidden},
 			{"ordinary path", "/plain/path?x=1", http.StatusOK},
 			{"linked image query", webImagePath + "?" + webImageQuery(), http.StatusForbidden},
 			{"linked media path", webMediaPath, http.StatusForbidden},

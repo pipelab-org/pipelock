@@ -356,6 +356,49 @@ func newTestServerIDStore(t *testing.T) *issuerQueryStore {
 	return s
 }
 
+func TestIssuerServerIDAddressing(t *testing.T) {
+	origin := mustIssuerQueryURL(t, "https://api.vendor.example/items")
+	now := time.Now()
+	s := newTestServerIDStore(t)
+	s.recordSent("owner", origin, nil, nil, true, now)
+	s.mintServerID("owner", origin, serverIDListed, now)
+	for _, tc := range []struct {
+		name, segment string
+		want          bool
+	}{
+		{"bare", serverIDListed, true},
+		{"delimiter", serverIDListed + ":", true},
+		{"two delimiters", serverIDListed + "::", false},
+		{"prefix", ":" + serverIDListed, false},
+		{"suffix payload", serverIDListed + ":" + agentBlob, false},
+		{"other punctuation", serverIDListed + ";", false},
+		{"empty ID", ":", false},
+		{"unissued", serverIDOther + ":", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := s.serverIDIssued("owner", origin, tc.segment); got != tc.want {
+				t.Fatalf("issued = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// Issuance accepts only bare IDs, even though lookup understands the
+	// addressing delimiter. A server returning a colon-bearing string cannot
+	// mint the bare value or its colon-addressed spelling.
+	s.mintServerID("owner", origin, serverIDOther+":", now)
+	if s.serverIDIssued("owner", origin, serverIDOther+":") {
+		t.Fatal("mint accepted a delimiter as part of the ID")
+	}
+	for i := range issuerCookieMaxEntries {
+		s.mintServerID("owner", origin, fmt.Sprintf("object-identifier-%016d", i), now)
+	}
+	if s.serverIDIssued("owner", origin, serverIDListed+":") {
+		t.Fatal("evicted ID retained addressing allowance")
+	}
+	if newTestServerIDStore(t).serverIDIssued("owner", origin, serverIDListed+":") {
+		t.Fatal("fresh store retained addressing allowance")
+	}
+}
+
 func TestIssuerServerIDHistoryRequired(t *testing.T) {
 	origin := mustIssuerQueryURL(t, "https://api.vendor.example/items")
 	now := time.Now()
