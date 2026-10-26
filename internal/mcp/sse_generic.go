@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // ErrSSEStreamFinding is returned by ScanGenericSSEStream when scanning
@@ -273,7 +274,7 @@ func ScanGenericSSEStreamWithOptions(
 		}
 		if !injectResult.Clean {
 			findingErr := fmt.Errorf("%w: injection: %s",
-				ErrSSEStreamFinding, sseInjectionNames(injectResult.Matches))
+				sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(injectResult.Matches))
 			if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 				onFinding(findingErr)
 				clearInjectionTailAfterCurrent = true
@@ -324,7 +325,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			if !tailInjectResult.Clean {
 				findingErr := fmt.Errorf("%w: cross-event injection: %s",
-					ErrSSEStreamFinding, sseInjectionNames(tailInjectResult.Matches))
+					sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(tailInjectResult.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 					onFinding(findingErr)
 					resetInjectionTail = true
@@ -340,7 +341,7 @@ func ScanGenericSSEStreamWithOptions(
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 			}
 			if !result.Clean {
-				findingErr := fmt.Errorf("%w: cross-event injection: %s", ErrSSEStreamFinding, sseInjectionNames(result.Matches))
+				findingErr := fmt.Errorf("%w: cross-event injection: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 					onFinding(findingErr)
 					resetInjectionTail = true
@@ -438,7 +439,7 @@ func ScanGenericSSEStreamWithOptions(
 				if result.Clean {
 					continue
 				}
-				findingErr := fmt.Errorf("%w: cross-event injection: %s", ErrSSEStreamFinding, sseInjectionNames(result.Matches))
+				findingErr := fmt.Errorf("%w: cross-event injection: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 					onFinding(findingErr)
 					resetFieldInjectionTail = true
@@ -841,7 +842,7 @@ func sseDLPFindingError(matches []scanner.TextDLPMatch, phase string) error {
 	if scanner.HasInspectionLimit(matches) {
 		return fmt.Errorf("%w: %s: %s", ErrSSEStreamScanError, phase, sseDLPMatchNames(matches))
 	}
-	return fmt.Errorf("%w: %s: %s", ErrSSEStreamFinding, phase, sseDLPMatchNames(matches))
+	return fmt.Errorf("%w: %s: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingDLP), phase, sseDLPMatchNames(matches))
 }
 
 // keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.

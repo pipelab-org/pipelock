@@ -2344,11 +2344,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// taint key the request path evaluated, so a prompt-injection hit or an
 	// untrusted-origin response introduces taint that a later request on any
 	// transport sees. The defer runs on every exit path (buffered scan, media
-	// stream, oversize, shield); responsePromptHit is set true when the buffered
+	// stream, oversize, shield); responseFindingKinds is populated when the buffered
 	// injection scan below finds a hit. taint_disabled and a nil owner/session
-	// manager make observeHTTPResponseTaint inert, so this changes nothing when
+	// manager make observeHTTPResponseFindings inert, so this changes nothing when
 	// the feature is off.
-	responsePromptHit := false
+	var responseFindingKinds []session.HostileFindingKind
 	var responseTaintRec session.Recorder
 	// sseHandlesResponseTaint is set true only on the SSE scanning path, which
 	// scans asynchronously in its onComplete goroutine AFTER this function (and
@@ -2356,7 +2356,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 	// finding is known, so the defer below skips it to avoid firing with a
 	// premature clean promptHit and to avoid double-counting. Every non-SSE exit
 	// (buffered scan, oversize, shield, read-error, compressed) completes before
-	// the defer, so responsePromptHit is already final for those. This mirrors the
+	// the defer, so responseFindingKinds is already final for those. This mirrors the
 	// forward proxy, whose SSE scan runs synchronously so its single deferred
 	// observation already reflects the final promptHit.
 	sseHandlesResponseTaint := false
@@ -2373,7 +2373,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				if sseHandlesResponseTaint {
 					return
 				}
-				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responsePromptHit)
+				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, responseTaintType, "reverse_response", responseFindingKinds)
 			}()
 		}
 	}
@@ -2960,14 +2960,14 @@ responseScanning:
 		}
 		// This scanning SSE path owns the response-taint observation: it scans
 		// asynchronously in onComplete below, so the modifyResponse-level defer
-		// must not record early with a clean promptHit. sseResponsePromptHit is
-		// set by OnFinding (warn mode, forwarded inline) and by an
+		// must not record early with a clean promptHit. sseResponseFindingKinds is
+		// populated by OnFinding (warn mode, forwarded inline) and by an
 		// IsSSEStreamFinding onComplete error (block mode), matching the forward
-		// proxy which sets responsePromptHit on both. When there is no session
+		// proxy which sets responseFindingKinds on both. When there is no session
 		// recorder (nil owner or session manager), the defer already records
 		// nothing, so leave it in charge.
 		sseContentType := resp.Header.Get("Content-Type")
-		sseResponsePromptHit := false
+		var sseResponseFindingKinds []session.HostileFindingKind
 		if responseTaintRec != nil {
 			sseHandlesResponseTaint = true
 		}
@@ -2986,7 +2986,7 @@ responseScanning:
 					recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportReverse)
 				},
 				OnFinding: func(err error) {
-					sseResponsePromptHit = true
+					sseResponseFindingKinds = session.MergeFindingKinds(sseResponseFindingKinds, observedSSEFindingKinds(err))
 					rp.logger.LogResponseScan(actx, config.ActionWarn, 0, []string{sseLayer + ": " + err.Error()}, nil)
 				},
 				OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
@@ -3003,12 +3003,12 @@ responseScanning:
 			// IsSSEStreamFinding error (block mode) both mean the stream carried an
 			// injection, so it upgrades the session to hostile taint the same way a
 			// buffered injection response would. This runs on every completion path
-			// (clean EOF, finding, scan error, cancel); observeHTTPResponseTaint is
+			// (clean EOF, finding, scan error, cancel); observeHTTPResponseFindings is
 			// inert when taint is disabled. Both operands are final at this point:
 			// DispatchSSEScan (and every OnFinding it fires) completes before
 			// onComplete, all in the one streaming goroutine.
 			if responseTaintRec != nil {
-				observeHTTPResponseTaint(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", sseResponsePromptHit || IsSSEStreamFinding(err))
+				observeHTTPResponseFindings(responseTaintRec, cfg, targetURL, sseContentType, "reverse_response", session.MergeFindingKinds(sseResponseFindingKinds, sseTaintFindingKinds(err)))
 			}
 			if err == nil {
 				return
@@ -3445,7 +3445,7 @@ responseScanning:
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 	// A response injection match is a taint source; the deferred taint
 	// observation above reads this flag when the response completes.
-	responsePromptHit = !result.Clean
+	responseFindingKinds = responseScanFindingKinds(result)
 	actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 	recordDroppedResponseScanMatches(rp.metrics, rp.logger, actx, result.SuppressedMatches, TransportReverse)
 	recordObservedCoreResponseMatches(rp.metrics, rp.logger, actx, result.ObservedCoreMatches, TransportReverse)

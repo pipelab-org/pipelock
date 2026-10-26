@@ -58,10 +58,11 @@ func ClassifyCrossAgentObservation(current SessionRisk, boundary CrossAgentBound
 	}
 	return RiskObservation{
 		Source: TaintSourceRef{
-			URL:         url,
-			Kind:        TaintSourceKindCrossAgent,
-			Level:       level,
-			MatchReason: crossAgentMatchReason(boundary),
+			URL:          url,
+			Kind:         TaintSourceKindCrossAgent,
+			Level:        level,
+			MatchReason:  crossAgentMatchReason(boundary),
+			FindingKinds: current.HostileFindingKinds(),
 		},
 	}
 }

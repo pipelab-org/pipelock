@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // ResponseScanOptions carries per-server suppression context for stdio MCP
@@ -625,6 +626,7 @@ func scanToolsListCertified(line []byte, sc *scanner.Scanner, toolCfg *tools.Too
 		return verdict
 	}
 
+	verdict.TaintFindingKinds = taintFindingLabels(session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), toolTaintFindingKinds(result, true, result.CredentialAckApplied())))
 	verdict.Clean = false
 	for _, m := range result.Matches {
 		verdict.ToolFindings = append(verdict.ToolFindings, jsonrpc.ToolFinding{
@@ -925,6 +927,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{Clean: true}, false
 	}
 
+	var allKinds []session.HostileFindingKind
 	var allMatches []scanner.ResponseMatch
 	var allDLPMatches []scanner.TextDLPMatch
 	var allToolFindings []jsonrpc.ToolFinding
@@ -950,6 +953,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 			}
 		}
 		if !v.Clean && v.Error == "" {
+			allKinds = session.MergeFindingKinds(allKinds, ResponseTaintFindingKinds(v))
 			allMatches = append(allMatches, v.Matches...)
 			allDLPMatches = append(allDLPMatches, v.DLPMatches...)
 			allToolFindings = append(allToolFindings, v.ToolFindings...)
@@ -971,7 +975,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false
 	}
 	return jsonrpc.ScanVerdict{
-		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches,
+		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches, TaintFindingKinds: taintFindingLabels(allKinds),
 		ToolFindings: allToolFindings, Unscanned: allUnscanned,
 	}, len(allMatches) > 0 || len(allDLPMatches) > 0 || len(allToolFindings) > 0
 }
@@ -1423,6 +1427,8 @@ func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanV
 	if verdict.Error != "" || joined.Clean {
 		return verdict
 	}
+	kinds := session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), ResponseTaintFindingKinds(joined))
+	verdict.TaintFindingKinds = taintFindingLabels(kinds)
 	verdict.Clean = false
 	verdict.Action = config.StricterAction(verdict.Action, joined.Action)
 	verdict.Matches = appendUniqueResponseViewMatches(verdict.Matches, joined.Matches)
@@ -1533,11 +1539,12 @@ func a2aScanToVerdict(rpcID json.RawMessage, result A2AScanResult) jsonrpc.ScanV
 	}
 
 	return jsonrpc.ScanVerdict{
-		ID:         rpcID,
-		Clean:      false,
-		Action:     result.Action,
-		Matches:    matches,
-		DLPMatches: result.DLPFindings,
+		ID:                rpcID,
+		Clean:             false,
+		Action:            result.Action,
+		Matches:           matches,
+		DLPMatches:        result.DLPFindings,
+		TaintFindingKinds: taintFindingLabels(A2ATaintFindingKinds(result)),
 	}
 }
 
@@ -1556,6 +1563,13 @@ func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *
 		action = cfg.Action
 	}
 
+	kinds := ResponseTaintFindingKinds(verdict)
+	if result.BaselineCapacityExceeded || (result.DriftDetected && !result.DriftAdopted) {
+		kinds = session.MergeFindingKinds(kinds, []session.HostileFindingKind{session.FindingAgentCard})
+	}
+	if len(kinds) == 0 {
+		kinds = []session.HostileFindingKind{session.FindingUnattributed}
+	}
 	var matches []scanner.ResponseMatch
 	if result.BaselineCapacityExceeded {
 		matches = append(matches, scanner.ResponseMatch{
@@ -1571,11 +1585,12 @@ func agentCardToVerdict(rpcID json.RawMessage, result AgentCardScanResult, cfg *
 	matches = append(matches, verdict.Matches...)
 
 	return jsonrpc.ScanVerdict{
-		ID:         rpcID,
-		Clean:      false,
-		Action:     action,
-		Matches:    matches,
-		DLPMatches: verdict.DLPMatches,
+		ID:                rpcID,
+		Clean:             false,
+		Action:            action,
+		Matches:           matches,
+		DLPMatches:        verdict.DLPMatches,
+		TaintFindingKinds: taintFindingLabels(kinds),
 	}
 }
 
@@ -1727,10 +1742,11 @@ func ProvenanceVerdictToScanVerdict(pv ProvenanceVerdict, rpcID json.RawMessage)
 	}
 
 	return jsonrpc.ScanVerdict{
-		ID:      rpcID,
-		Clean:   false,
-		Action:  pv.Action,
-		Matches: matches,
+		ID:                rpcID,
+		Clean:             false,
+		Action:            pv.Action,
+		Matches:           matches,
+		TaintFindingKinds: []string{string(session.FindingToolProvenance)},
 	}
 }
 

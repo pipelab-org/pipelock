@@ -1040,6 +1040,24 @@ func (s *SessionState) RuntimeTrustOverrides() []session.TrustOverride {
 	return append([]session.TrustOverride(nil), s.runtimeOverrides...)
 }
 
+// recordRetainedFindingKinds enriches evidence for a deduplicated source without
+// changing source history, timestamps, origin attribution or policy state.
+// The task ID binds the metadata to the snapshot used for deduplication.
+func (s *SessionState) recordRetainedFindingKinds(taskID string, kinds []session.HostileFindingKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.task.CurrentTaskID != taskID {
+		return
+	}
+	s.risk.FindingKinds = session.MergeFindingKinds(s.risk.HostileFindingKinds(), kinds)
+}
+
+func (s *SessionState) responseRiskSnapshot() (session.SessionRisk, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.risk.Snapshot(), s.task.CurrentTaskID
+}
+
 // ObserveRisk folds a new taint observation into the session's sticky risk state.
 func (s *SessionState) ObserveRisk(observation session.RiskObservation) {
 	s.mu.Lock()
@@ -1205,19 +1223,20 @@ var invocationPrefixes = []string{"mcp-stdio-", "mcp-http-", "mcp-ws-"}
 
 // SessionSnapshot is a read-only DTO for the admin API.
 type SessionSnapshot struct {
-	Key              string    `json:"key"`
-	Agent            string    `json:"agent"`
-	ClientIP         string    `json:"client_ip"`
-	Kind             string    `json:"kind"`
-	CurrentTaskID    string    `json:"current_task_id,omitempty"`
-	CurrentTaskLabel string    `json:"current_task_label,omitempty"`
-	ThreatScore      float64   `json:"threat_score"`
-	EscalationLevel  string    `json:"escalation_level"`
-	BlockAll         bool      `json:"block_all"`
-	AirlockTier      string    `json:"airlock_tier"`
-	TaintLevel       string    `json:"taint_level"`
-	Contaminated     bool      `json:"contaminated"`
-	LastActivity     time.Time `json:"last_activity"`
+	Key              string                       `json:"key"`
+	Agent            string                       `json:"agent"`
+	ClientIP         string                       `json:"client_ip"`
+	Kind             string                       `json:"kind"`
+	CurrentTaskID    string                       `json:"current_task_id,omitempty"`
+	CurrentTaskLabel string                       `json:"current_task_label,omitempty"`
+	ThreatScore      float64                      `json:"threat_score"`
+	EscalationLevel  string                       `json:"escalation_level"`
+	BlockAll         bool                         `json:"block_all"`
+	AirlockTier      string                       `json:"airlock_tier"`
+	TaintLevel       string                       `json:"taint_level"`
+	FindingKinds     []session.HostileFindingKind `json:"finding_kinds,omitempty"`
+	Contaminated     bool                         `json:"contaminated"`
+	LastActivity     time.Time                    `json:"last_activity"`
 }
 
 type AdaptiveTopAnomaly struct {
@@ -1968,6 +1987,7 @@ func (sm *SessionManager) Snapshot() []SessionSnapshot {
 			BlockAll:         s.atBlockAll,
 			AirlockTier:      s.airlock.Tier(),
 			TaintLevel:       s.risk.Level.String(),
+			FindingKinds:     s.risk.HostileFindingKinds(),
 			Contaminated:     s.risk.Contaminated,
 			LastActivity:     s.lastActivity,
 		}
@@ -2038,6 +2058,7 @@ func (sm *SessionManager) ResetSession(key string) (prev SessionSnapshot, found 
 		EscalationLevel:  session.EscalationLabel(prevLevel),
 		BlockAll:         false,
 		TaintLevel:       riskSnapshot.Level.String(),
+		FindingKinds:     riskSnapshot.HostileFindingKinds(),
 		Contaminated:     riskSnapshot.Contaminated,
 		LastActivity:     time.Now(),
 	}
@@ -2110,6 +2131,7 @@ func (sm *SessionManager) ResetSessionIfResettable(key string) (prev SessionSnap
 		EscalationLevel:  session.EscalationLabel(prevLevel),
 		BlockAll:         false,
 		TaintLevel:       riskSnapshot.Level.String(),
+		FindingKinds:     riskSnapshot.HostileFindingKinds(),
 		Contaminated:     riskSnapshot.Contaminated,
 		LastActivity:     time.Now(),
 	}
@@ -2167,6 +2189,7 @@ func (sm *SessionManager) SnapshotAndResetIfResettable(key string) (preSnap sess
 			BlockAll:         sess.atBlockAll,
 			AirlockTier:      sess.airlock.tier,
 			TaintLevel:       sess.risk.Level.String(),
+			FindingKinds:     sess.risk.HostileFindingKinds(),
 			Contaminated:     sess.risk.Contaminated,
 			LastActivity:     sess.lastActivity,
 		},
@@ -2287,6 +2310,7 @@ func (sm *SessionManager) AdaptiveStatus() AdaptiveStatus {
 			BlockAll:         sess.atBlockAll,
 			AirlockTier:      tier,
 			TaintLevel:       sess.risk.Level.String(),
+			FindingKinds:     sess.risk.HostileFindingKinds(),
 			Contaminated:     sess.risk.Contaminated,
 			LastActivity:     sess.lastActivity,
 		})
@@ -2526,6 +2550,7 @@ func (sm *SessionManager) AdminSnapshotByKey(key string) (sessionAdminSnapshot, 
 			BlockAll:         sess.atBlockAll,
 			AirlockTier:      airlockTier,
 			TaintLevel:       sess.risk.Level.String(),
+			FindingKinds:     sess.risk.HostileFindingKinds(),
 			Contaminated:     sess.risk.Contaminated,
 			LastActivity:     sess.lastActivity,
 		},

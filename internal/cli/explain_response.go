@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // errExplainResponseScan is returned when the offline response scanner could
@@ -199,6 +200,9 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 		report.Notes = append(report.Notes, "response_scanning.action is strip; runtime redacts matches when transformation is possible, otherwise blocks")
 	case config.ActionAsk:
 		report.Notes = append(report.Notes, "response_scanning.action is ask; runtime prompts an approver before releasing the response, and hard-blocks when none is configured, which is the verdict shown here")
+	}
+	if len(result.Matches) > 0 {
+		report.Notes = append(report.Notes, "Response finding kinds: "+session.DescribeFindingKinds([]session.HostileFindingKind{session.FindingWording})+".")
 	}
 	for _, match := range result.Matches {
 		span := match.Span()

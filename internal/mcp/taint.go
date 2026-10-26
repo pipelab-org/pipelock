@@ -74,6 +74,14 @@ type taintDecision struct {
 }
 
 func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
+	var kinds []session.HostileFindingKind
+	if promptHit {
+		kinds = []session.HostileFindingKind{session.FindingUnattributed}
+	}
+	observeMCPResponseFindings(opts, kinds)
+}
+
+func observeMCPResponseFindings(opts MCPProxyOpts, kinds []session.HostileFindingKind) {
 	taintCfg := opts.taintCfg()
 	if taintCfg == nil || !taintCfg.Enabled {
 		return
@@ -82,7 +90,7 @@ func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
 	if !ok {
 		return
 	}
-	observation := session.ClassifyMCPResponseObservation(mcpTaintSourceKind, opts.mcpResponseTaintExternal(), promptHit)
+	observation := session.ClassifyMCPResponseFindings(mcpTaintSourceKind, opts.mcpResponseTaintExternal(), kinds)
 	observation.MaxSources = taintCfg.RecentSources
 	rs.ObserveRisk(observation)
 }

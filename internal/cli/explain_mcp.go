@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // mcpExplainReport is the structured form of an `explain mcp-response` verdict.
@@ -385,6 +386,9 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 		report.Scanner = explainMCPResponseScanner
 	}
 	report.Action = effectiveMCPExplainAction(verdict)
+	if kinds := mcp.ResponseTaintFindingKinds(verdict); len(kinds) > 0 {
+		report.Notes = append(report.Notes, "Response finding kinds: "+session.DescribeFindingKinds(kinds)+".")
+	}
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
 	if scanner.HasInspectionLimit(verdict.DLPMatches) {

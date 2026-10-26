@@ -6521,10 +6521,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	responsePromptHit := false
+	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
 	defer func() {
-		observeHTTPResponseTaint(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response", responsePromptHit)
+		observeHTTPResponseFindings(fetchRec, cfg, resp.Request.URL.String(), responseTaintType, "fetch_response", responseFindingKinds)
 	}()
 
 	// Limit response body size: use the tighter of max_response_mb and the
@@ -6749,7 +6749,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// TransformedContent cannot map back to the full HTML (it operates on
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !surface.readabilityOK {
-		responsePromptHit = true
+		responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(*hiddenScanResult))
 		// Preserve scoring and named audit/receipt evidence when readability
 		// cannot produce a deliverable representation. Discard strip output:
 		// hidden-fragment offsets do not address the full HTML.
@@ -6813,7 +6813,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		recordDroppedResponseScanMatches(p.metrics, log, actx, scanResult.SuppressedMatches, TransportFetch)
 		recordObservedCoreResponseMatches(p.metrics, log, actx, scanResult.ObservedCoreMatches, TransportFetch)
 		if !scanResult.Clean && !scanResult.Failed() {
-			responsePromptHit = true
+			responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
 		}
 
 		// Capture observer: record response scan verdict for policy replay.

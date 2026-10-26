@@ -86,6 +86,20 @@ func ClassifyMCPResponseObservation(kind string, external bool, promptHit bool) 
 	}
 }
 
+// ClassifyHTTPResponseFindings classifies the same HTTP source with attributed evidence.
+func ClassifyHTTPResponseFindings(rawURL, contentType string, allowlistedDomains []string, kinds []HostileFindingKind) RiskObservation {
+	observation := ClassifyHTTPResponseObservation(rawURL, contentType, allowlistedDomains, len(kinds) > 0)
+	observation.FindingKinds = MergeFindingKinds(kinds)
+	return observation
+}
+
+// ClassifyMCPResponseFindings classifies the same MCP source with attributed evidence.
+func ClassifyMCPResponseFindings(kind string, external bool, kinds []HostileFindingKind) RiskObservation {
+	observation := ClassifyMCPResponseObservation(kind, external, len(kinds) > 0)
+	observation.FindingKinds = MergeFindingKinds(kinds)
+	return observation
+}
+
 // IsMediaContentType reports whether a response content type is image/audio/video.
 func IsMediaContentType(contentType string) bool {
 	base := strings.ToLower(strings.TrimSpace(strings.Split(contentType, ";")[0]))

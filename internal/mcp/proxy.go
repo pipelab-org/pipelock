@@ -894,7 +894,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			commitToolInventory()
 			emitTrackedOutcome(mcpResponseStatus(line), "complete", line)
-			observeMCPResponseTaint(taintOpts, toolPoisonDetected || toolAcknowledged)
+			observeMCPResponseFindings(taintOpts, toolTaintFindingKinds(toolResult, toolPoisonDetected, toolAcknowledged))
 			continue
 		}
 
@@ -977,7 +977,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					effectiveAction = config.ActionAllow
 					outbound = line
 					writeContext = "writing line"
-					observeMCPResponseTaint(taintOpts, true)
+					observeMCPResponseFindings(taintOpts, session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), toolTaintFindingKinds(toolResult, toolPoisonDetected, toolAcknowledged)))
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
 					if len(verdict.DLPMatches) > 0 && !scanner.OnlyInformational(verdict.DLPMatches) {
@@ -992,7 +992,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 						outbound = msg
 						writeContext = "writing strip/block response"
 						if actualAction == config.ActionStrip {
-							observeMCPResponseTaint(taintOpts, true)
+							observeMCPResponseFindings(taintOpts, session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), toolTaintFindingKinds(toolResult, toolPoisonDetected, toolAcknowledged)))
 						}
 					}
 				default: // DecisionBlock
@@ -1015,13 +1015,13 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				outbound = msg
 				writeContext = "writing strip/block response"
 				if actualAction == config.ActionStrip {
-					observeMCPResponseTaint(taintOpts, true)
+					observeMCPResponseFindings(taintOpts, session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), toolTaintFindingKinds(toolResult, toolPoisonDetected, toolAcknowledged)))
 				}
 			}
 		default: // warn
 			outbound = line
 			writeContext = "writing line"
-			observeMCPResponseTaint(taintOpts, true)
+			observeMCPResponseFindings(taintOpts, session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), toolTaintFindingKinds(toolResult, toolPoisonDetected, toolAcknowledged)))
 		}
 
 		requestID := canonicalID(verdict.ID)

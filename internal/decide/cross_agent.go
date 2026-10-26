@@ -69,6 +69,8 @@ func ObserveCrossAgentContamination(rec session.Recorder, taintCfg *config.Taint
 		ShouldEscalate: snap.PromptHit || snap.Level >= session.TaintExternalHostile,
 	}
 
+	// The classifier carries accumulated finding kinds on the synthesized
+	// source without reasserting PromptHit or changing boundary deduplication.
 	obs := session.ClassifyCrossAgentObservation(snap, boundary)
 	if crossAgentSourceIsDuplicate(snap.Sources, obs.Source) {
 		return result
