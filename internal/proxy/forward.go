@@ -2437,10 +2437,10 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	responsePromptHit := false
+	var responseFindingKinds []session.HostileFindingKind
 	responseTaintType := responseTaintContentType(resp.Header)
 	defer func() {
-		observeHTTPResponseTaint(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responsePromptHit)
+		observeHTTPResponseFindings(forwardRec, cfg, resp.Request.URL.String(), responseTaintType, "forward_response", responseFindingKinds)
 	}()
 
 	// Size limit: tighter of max_response_mb and remaining byte budget.
@@ -2496,7 +2496,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					recordObservedCoreResponseMatches(p.metrics, p.logger, actx, []scanner.ObservedCoreMatch{observed}, TransportForward)
 				},
 				OnFinding: func(err error) {
-					// Track BOTH responsePromptHit (for receipt context)
+					// Track BOTH responseFindingKinds (for taint context)
 					// AND hasFinding (for adaptive-decay protection). The
 					// success branch below decays the adaptive score when
 					// hasFinding is false; warn-mode generic SSE findings
@@ -2504,7 +2504,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					// the dispatcher returns nil, so without setting
 					// hasFinding here a flood of warn-only findings would
 					// dilute the session escalation signal.
-					responsePromptHit = true
+					responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, observedSSEFindingKinds(err))
 					hasFinding = true
 					p.logger.LogAnomaly(actx, LayerSSEStream, err.Error(), 0)
 				},
@@ -2581,7 +2581,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if IsSSEStreamFinding(err) {
-				responsePromptHit = true
+				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, sseTaintFindingKinds(err))
 				// Same adaptive-decay protection as the OnFinding path
 				// above. A2A warn-mode findings reach this branch (the
 				// A2A scanner returns ErrA2AStreamFinding on detection),
@@ -3125,7 +3125,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !a2aResult.Clean {
-				responsePromptHit = true
+				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, mcp.A2ATaintFindingKinds(a2aResult))
 				hasFinding = true
 				a2aAction := a2aResult.Action
 				if a2aAction == "" {
@@ -3191,7 +3191,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
 			if !scanResult.Clean && !scanResult.Failed() {
-				responsePromptHit = true
+				responseFindingKinds = session.MergeFindingKinds(responseFindingKinds, responseScanFindingKinds(scanResult))
 			}
 
 			// Capture observer: record forward response scan verdict for

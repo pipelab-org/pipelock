@@ -4,6 +4,7 @@
 package session_test
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -225,5 +226,47 @@ func TestClassifyMCPToolCall_MutatingNetworkIntentWithSpacedJSON(t *testing.T) {
 	}
 	if target != "https://api.example.com/publish" {
 		t.Fatalf("target = %q, want publish URL", target)
+	}
+}
+
+func TestClassifyResponseFindingsMatchesBooleanClassification(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		kinds []session.HostileFindingKind
+		want  []session.HostileFindingKind
+	}{
+		{name: "no findings", kinds: nil, want: nil},
+		{name: "wording", kinds: []session.HostileFindingKind{session.FindingWording}, want: []session.HostileFindingKind{session.FindingWording}},
+		{name: "mixed with duplicate", kinds: []session.HostileFindingKind{session.FindingDLP, session.FindingWording, session.FindingDLP}, want: []session.HostileFindingKind{session.FindingDLP, session.FindingWording}},
+		{name: "unknown label", kinds: []session.HostileFindingKind{"not-a-kind"}, want: []session.HostileFindingKind{session.FindingUnattributed}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			hit := len(tt.kinds) > 0
+			want := tt.want
+
+			httpGot := session.ClassifyHTTPResponseFindings("https://evil.example/page", "text/html", nil, tt.kinds)
+			httpWant := session.ClassifyHTTPResponseObservation("https://evil.example/page", "text/html", nil, hit)
+			assertFindingsObservation(t, "http", httpGot, httpWant, want)
+
+			mcpGot := session.ClassifyMCPResponseFindings("tool_result", true, tt.kinds)
+			mcpWant := session.ClassifyMCPResponseObservation("tool_result", true, hit)
+			assertFindingsObservation(t, "mcp", mcpGot, mcpWant, want)
+		})
+	}
+}
+
+func assertFindingsObservation(t *testing.T, surface string, got, boolean session.RiskObservation, kinds []session.HostileFindingKind) {
+	t.Helper()
+	if !reflect.DeepEqual(got.FindingKinds, kinds) {
+		t.Fatalf("%s finding kinds = %v, want %v", surface, got.FindingKinds, kinds)
+	}
+	got.FindingKinds = nil
+	if !reflect.DeepEqual(got, boolean) {
+		t.Fatalf("%s observation = %+v, want boolean classification %+v", surface, got, boolean)
 	}
 }
