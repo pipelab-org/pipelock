@@ -420,8 +420,7 @@ var findWordsUnsafe = []string{
 // it is when a find may print anything else or may not be find: when its
 // output is joined with its errors, when it has a word in findWordsUnsafe,
 // when it is not named find, /bin/find or /usr/bin/find at the start of a
-// command, or when PATH, an alias, hash or enable could change which
-// program runs.
+// command, or when a word may change what find runs (see mayRedefineFind).
 func findPathsOnly(segs [][]string) [][]string {
 	seen := false
 	for _, seg := range segs {
@@ -429,8 +428,7 @@ func findPathsOnly(segs [][]string) [][]string {
 			f := foldString(t)
 			switch {
 			case strings.Contains(t, ">&"), strings.Contains(t, "&>"), strings.Contains(t, "|&"),
-				strings.HasPrefix(f, foldString("PATH=")), strings.Contains(f, foldString("find=")),
-				slices.Contains([]string{foldString("alias"), foldString("hash"), foldString("enable")}, f):
+				mayRedefineFind(t, f):
 				return segs
 			case isFindCommand(t):
 				seen = true
@@ -450,6 +448,27 @@ func findPathsOnly(segs [][]string) [][]string {
 // findLeadingOption matches the options GNU and BSD find take before the
 // starting points; -D takes a value.
 var findLeadingOption = regexp.MustCompile(`^(?:-[HLPEXdsx]+|-O[0-9]*|-D)$`)
+
+// findRedefiners are shell words that may change which program or function
+// a later find runs.
+var findRedefiners = []string{
+	"alias", "hash", "enable", "eval", "source", ".", "function", "declare",
+	"typeset", "export", "readonly", "local", "builtin", "set", "shopt",
+}
+
+// mayRedefineFind reports whether word t, f folded, may change what a later
+// find runs: a word that names PATH (other than the -path and -ipath tests)
+// or find (other than as the command), or one of findRedefiners.
+func mayRedefineFind(t, f string) bool {
+	w := handOffWord(t)
+	switch {
+	case strings.Contains(f, foldString("path")) && w != "-path" && w != "-ipath":
+		return true
+	case strings.Contains(f, foldString("find")) && !isFindCommand(t):
+		return true
+	}
+	return slices.ContainsFunc(findRedefiners, func(r string) bool { return foldString(r) == foldString(w) })
+}
 
 // isFindWordUnsafe reports whether w is in findWordsUnsafe, case-folded.
 func isFindWordUnsafe(w string) bool {
