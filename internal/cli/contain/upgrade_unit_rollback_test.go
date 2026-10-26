@@ -24,7 +24,7 @@ func TestUpgradeUnitRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Chmod(env.unitPath, 0o640); err != nil {
+			if err := os.Chmod(env.unitPath, 0o640); err != nil { // #nosec G302 -- fixture mode must differ from the 0600 writer default to prove rollback restores the original mode.
 				t.Fatal(err)
 			}
 			before, err := os.Stat(env.unitPath)

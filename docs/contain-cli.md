@@ -233,7 +233,7 @@ Flags:
 Exit codes:
 
 - **0**, upgrade completed and all verification probes passed.
-- **1**, upgrade failed; previous state was restored.
+- **1**, upgrade failed; previous state was restored, or the error names each rollback step that could not be restored.
 - **2**, precondition error (not root, deployed binary missing or not a regular file, or no integrity pin).
 
 ## `pipelock contain verify`
