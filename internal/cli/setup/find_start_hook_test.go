@@ -17,6 +17,8 @@ func TestHooks_FindStartingPoints(t *testing.T) {
 		{"word after &", "find . -perm 1&x; find . -perm 777 | xargs chmod -R", false, true, true, true},
 		{"word after |", "find . -perm 1|x; find . -perm 777 | xargs chmod -R", false, true, true, true},
 		{"comma before a starting point", "find . , 777 -type f | xargs chmod -R", false, true, true, true},
+		{"lone dash as a test's value", "find . -name - -perm 0777 | xargs chmod 644", false, false, false, false},
+		{"lone dash before a starting point", "find . - 777 | xargs chmod -R", false, true, true, true},
 		{"two lines", "find . -name x\nfind . -perm 0777 | xargs chmod 644", false, false, false, false},
 		{"comment after find", "find . -perm 777 | xargs chmod -R # note", false, true, true, true},
 	})

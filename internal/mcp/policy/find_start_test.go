@@ -50,6 +50,13 @@ var findStartRows = []verdictRow{
 	{"comma before a starting point", "find . , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"comma first", "find , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 
+	// A lone - before find's expression is one more starting point.
+	{"lone dash as a test's value", "find . -name - -perm 0777 | xargs chmod 644", "", ""},
+	{"lone dash before a starting point", "find . - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"lone dash first", "find - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"lone dash after an option", "find -L - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"double dash first", "find -- 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
 	// A comment, a here-document or a line break in quotes keeps every
 	// find word in the check.
 	{"two lines", "find . -name x\nfind . -perm 0777 | xargs chmod 644", "", ""},
@@ -74,7 +81,18 @@ func TestDefaultRules_FindStartingPoints(t *testing.T) {
 // request under configs/strict.yaml: allowed rows pass, and checked rows are
 // blocked as incomplete.
 func TestStrictPreset_FindStartingPoints(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("..", "..", "..", "configs", "strict.yaml"))
+	runPresetFindRows(t, "strict.yaml")
+}
+
+// TestHostileModelPreset_FindStartingPoints checks findStartRows the same way
+// under configs/hostile-model.yaml.
+func TestHostileModelPreset_FindStartingPoints(t *testing.T) {
+	runPresetFindRows(t, "hostile-model.yaml")
+}
+
+func runPresetFindRows(t *testing.T, preset string) {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "configs", preset))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +102,7 @@ func TestStrictPreset_FindStartingPoints(t *testing.T) {
 	}
 	pc := New(cfg.MCPToolPolicy)
 	if pc == nil {
-		t.Fatal("strict tool policy is disabled")
+		t.Fatalf("%s tool policy is disabled", preset)
 	}
 	for _, tt := range findStartRows {
 		t.Run(tt.name, func(t *testing.T) {
@@ -129,6 +147,8 @@ func TestFindPathsOnly_StartingPoints(t *testing.T) {
 		{"find . -name 'a;b' -perm 1", "find . -name 'a;b' -perm 1"},
 		{"find . , 777 -type f", "find . , 777"},
 		{"find . -type f , -perm 1", "find ."},
+		{"find . - 777 -type f", "find . - 777"},
+		{"find . -name - -perm 1", "find ."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {

@@ -576,8 +576,9 @@ func findKept(args []string) []string {
 	for ; j < len(args); j++ {
 		a := args[j]
 		w := handOffWord(a)
-		// A , before the expression is a starting point to GNU find.
-		if !expr && (strings.HasPrefix(w, "-") || w == "!" || w == "(") {
+		// A , before the expression is a starting point to GNU find, and so
+		// is a lone -.
+		if !expr && ((strings.HasPrefix(w, "-") && w != "-") || w == "!" || w == "(") {
 			expr = true
 		}
 		switch {
