@@ -45,6 +45,12 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config, bundleYAML
 	newCfg.WebSocketProxy = oldCfg.WebSocketProxy
 	newCfg.TLSInterception = oldCfg.TLSInterception
 	newCfg.KillSwitch = oldCfg.KillSwitch
+	// The admin token is resolved into private state at load time (from
+	// api_token_file or the env override). A bundle config is loaded without
+	// runtime file access, so the preserved section must carry the follower's
+	// accepted snapshot or ResolveRuntime would drop a file-only token.
+	newCfg.resolvedKillSwitchAPIToken = oldCfg.resolvedKillSwitchAPIToken
+	newCfg.killSwitchAPITokenWasResolved = oldCfg.killSwitchAPITokenWasResolved
 	newCfg.ExplainBlocks = oldCfg.ExplainBlocks
 	newCfg.Logging = oldCfg.Logging
 	newCfg.Emit = oldCfg.Emit
