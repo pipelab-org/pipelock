@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"fmt"
 	"path"
 	"regexp"
 	"regexp/syntax"
@@ -575,18 +576,23 @@ func endsCommand(t string) bool {
 // the words before it; that match counts when the words after it alone do
 // not make it. It checks each
 // command of segs, where pipelines and file hand-offs are already joined, at
-// each command word in it.
+// each command word in it. When the command words of pat cannot be
+// worked out within the bounds of leadingWords, every word is taken as one,
+// and a command of more than maxPairwiseTokens words is reported as is.
 func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
-	words := leadingWords(pat)
-	if len(words) == 0 {
+	words, over := leadingWordsBounded(pat)
+	if len(words) == 0 && !over {
 		return false
 	}
 	for _, seg := range segs {
+		if over && len(seg) > maxPairwiseTokens {
+			return true
+		}
 		var handed []string
 		var at []int
 		for _, t := range seg {
 			w := handOffWord(t)
-			if len(handed) > 0 && (isCommandWord(t, words) || isCommandWord(w, words)) {
+			if len(handed) > 0 && (over || isCommandWord(t, words) || isCommandWord(w, words)) {
 				at = append(at, len(handed))
 			}
 			if w != "" {
@@ -622,8 +628,14 @@ func isCommandWord(t string, words []string) bool {
 	return slices.Contains(words, whole) || slices.Contains(words, base)
 }
 
-// leadingWordsCache holds leadingWords results by compiled pattern.
-var leadingWordsCache sync.Map // *regexp.Regexp -> []string
+// leadingWordsCache holds leadingWordsBounded results by compiled pattern.
+var leadingWordsCache sync.Map // *regexp.Regexp -> leadWordsResult
+
+// leadWordsResult is a leadingWordsBounded result.
+type leadWordsResult struct {
+	words []string
+	over  bool
+}
 
 // maxLeadingWords bounds the words leadingWords returns for one pattern.
 const maxLeadingWords = 16
@@ -632,68 +644,124 @@ const maxLeadingWords = 16
 // pat starts with, one entry per alternative (chmod and chown for
 // ch(?:mod|own)...), or nil when a match can start some other way.
 func leadingWords(pat *regexp.Regexp) []string {
+	words, _ := leadingWordsBounded(pat)
+	return words
+}
+
+// leadingWordsBounded is leadingWords, and also reports over when the words
+// could not be worked out within maxLeadWordSteps steps, or there are more
+// than maxLeadingWords of them. The words are nil then. A pattern a match
+// of which can start with something other than a literal gets nil words and
+// is not over.
+func leadingWordsBounded(pat *regexp.Regexp) (words []string, over bool) {
 	if cached, hit := leadingWordsCache.Load(pat); hit {
-		return cached.([]string)
+		r := cached.(leadWordsResult)
+		return r.words, r.over
 	}
-	var words []string
 	if re, err := syntax.Parse(pat.String(), syntax.Perl); err == nil {
+		seq := []*syntax.Regexp{re.Simplify()}
 		steps := maxLeadWordSteps
-		words = leadWords([]*syntax.Regexp{re.Simplify()}, "", &steps)
+		words = leadWords(seq, "", &steps)
+		if steps < 0 {
+			// Cut short: walk again without the word limit, to tell a
+			// pattern that can start with a non-literal from one that is
+			// too big to work out.
+			steps = maxLeadWordSteps
+			w := leadWalk{steps: &steps, memo: map[string][]string{}}
+			words = w.words(seq, "")
+		}
 		slices.Sort(words)
 		words = slices.Compact(words)
-		if steps < 0 || len(words) > maxLeadingWords || slices.Contains(words, "") {
+		switch {
+		case steps >= 0 && slices.Contains(words, ""):
 			words = nil
+		case steps < 0 || len(words) > maxLeadingWords:
+			words, over = nil, true
 		}
 	}
-	leadingWordsCache.Store(pat, words)
-	return words
+	leadingWordsCache.Store(pat, leadWordsResult{words, over})
+	return words, over
 }
 
 // maxLeadWordSteps bounds the work leadingWords does for one pattern; a
 // pattern that needs more, or has more than maxLeadingWords ways to start,
-// gets no words.
+// gets no words, and commandAfterParts then takes every word as one.
 const maxLeadWordSteps = 4096
 
 // leadWords is leadingWords for the sequence seq after prefix. steps is
-// counted down once per call. An optional or repeated part before the first
-// word is either left out or taken once; a repeated part taken once ends the
-// word. Inside a word, such a part ends it.
+// counted down once per part worked out, and more for a long seq; a part
+// seen before with the same prefix is not worked out again. An optional or repeated part before the
+// first word is either left out or taken once; a repeated part taken once
+// ends the word. Inside a word, such a part ends it. More than
+// maxLeadingWords ways to start cut the walk short.
 func leadWords(seq []*syntax.Regexp, prefix string, steps *int) []string {
-	*steps--
-	if *steps < 0 {
+	w := leadWalk{steps: steps, memo: map[string][]string{}, cut: true}
+	return w.words(seq, prefix)
+}
+
+// leadWalk holds the state of one leadWords walk. A walk that runs out of
+// steps, or is cut, leaves steps at -1, and its words are a cut list then.
+type leadWalk struct {
+	steps *int
+	memo  map[string][]string // part and prefix -> words
+	cut   bool                // stop at more than maxLeadingWords ways
+}
+
+// words is leadWords for seq after prefix.
+func (w *leadWalk) words(seq []*syntax.Regexp, prefix string) []string {
+	// A long seq costs more steps, for the key below.
+	if *w.steps -= len(seq) / 64; *w.steps < 0 {
+		*w.steps = -1
 		return []string{""}
 	}
+	var key strings.Builder
+	key.WriteString(prefix)
+	for _, x := range seq {
+		fmt.Fprintf(&key, "\x00%p", x)
+	}
+	if got, seen := w.memo[key.String()]; seen && *w.steps >= 0 {
+		return got
+	}
+	if *w.steps--; *w.steps < 0 {
+		return []string{""}
+	}
+	got := w.part(seq, prefix)
+	w.memo[key.String()] = got
+	return got
+}
+
+// part is words for seq after prefix, worked out from its first part.
+func (w *leadWalk) part(seq []*syntax.Regexp, prefix string) []string {
 	if len(seq) == 0 {
 		return []string{prefix}
 	}
 	x, rest := seq[0], seq[1:]
 	switch x.Op {
 	case syntax.OpEmptyMatch:
-		return leadWords(rest, prefix, steps)
+		return w.words(rest, prefix)
 	case syntax.OpBeginText, syntax.OpBeginLine, syntax.OpWordBoundary:
 		if prefix == "" {
-			return leadWords(rest, prefix, steps)
+			return w.words(rest, prefix)
 		}
 	case syntax.OpLiteral:
-		return leadWords(rest, prefix+foldString(string(x.Rune)), steps)
+		return w.words(rest, prefix+foldString(string(x.Rune)))
 	case syntax.OpCapture:
-		return leadWords(slices.Concat(x.Sub[:1], rest), prefix, steps)
+		return w.words(slices.Concat(x.Sub[:1], rest), prefix)
 	case syntax.OpConcat:
-		return leadWords(slices.Concat(x.Sub, rest), prefix, steps)
+		return w.words(slices.Concat(x.Sub, rest), prefix)
 	case syntax.OpAlternate:
-		return leadWordsOf(x.Sub, rest, prefix, steps)
+		return w.of(x.Sub, rest, prefix)
 	case syntax.OpQuest:
 		if prefix == "" {
-			return leadWordsOf([]*syntax.Regexp{emptyRegexp, x.Sub[0]}, rest, prefix, steps)
+			return w.of([]*syntax.Regexp{emptyRegexp, x.Sub[0]}, rest, prefix)
 		}
 	case syntax.OpStar:
 		if prefix == "" {
-			out := leadWords(rest, prefix, steps)
-			return append(out, leadWords(x.Sub[:1], prefix, steps)...)
+			return w.merge(slices.Concat(w.words(rest, prefix), w.words(x.Sub[:1], prefix)))
 		}
 	case syntax.OpPlus:
 		if prefix == "" {
-			return leadWords(x.Sub[:1], prefix, steps)
+			return w.words(x.Sub[:1], prefix)
 		}
 	}
 	return []string{prefix}
@@ -702,17 +770,27 @@ func leadWords(seq []*syntax.Regexp, prefix string, steps *int) []string {
 // emptyRegexp matches the empty string.
 var emptyRegexp = &syntax.Regexp{Op: syntax.OpEmptyMatch}
 
-// leadWordsOf is leadWords for each of alts followed by rest.
-func leadWordsOf(alts, rest []*syntax.Regexp, prefix string, steps *int) []string {
+// of is words for each of alts followed by rest.
+func (w *leadWalk) of(alts, rest []*syntax.Regexp, prefix string) []string {
 	var out []string
 	for _, sub := range alts {
-		out = append(out, leadWords(slices.Concat([]*syntax.Regexp{sub}, rest), prefix, steps)...)
-		if len(out) > maxLeadingWords {
-			*steps = -1 // a cut list is not every word
+		out = append(out, w.words(slices.Concat([]*syntax.Regexp{sub}, rest), prefix)...)
+		if w.cut && len(out) > maxLeadingWords {
+			*w.steps = -1 // a cut list is not every word
 			return out
 		}
 	}
-	return out
+	return w.merge(out)
+}
+
+// merge drops repeated words from out when the walk is not cut, so that
+// the same word reached many ways is kept once.
+func (w *leadWalk) merge(out []string) []string {
+	if w.cut {
+		return out
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // oneWordMatch reports whether pat matches command followed by any one of

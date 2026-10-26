@@ -32,9 +32,11 @@ func TestLeadingWords_OptionalLeadingParts(t *testing.T) {
 		{`\s*rm`, nil},
 		{`.*rm`, nil},
 		{`(?:a?b?)x`, []string{"a", "bx", "x"}},
-		// More ways to start than are kept, even when they are the same word.
-		{`(?:a?b?c?d?e?f?){8}x`, nil},
-		{`(?:\b?){20}x`, nil},
+		// Many ways to start that come to a few words.
+		{`(?:a?b?c?d?e?f?){8}x`, []string{"a", "b", "c", "d", "e", "f", "fx", "x"}},
+		{`(?:\b?){20}x`, []string{"x"}},
+		// More words to start with than are kept.
+		{`(?:a|b|c|d|e|f|g|h|i|j|k|l|m|n|o|p|q)x`, nil},
 		// Too much work for one pattern, and a control.
 		{strings.Repeat(`\b`, maxLeadWordSteps) + `x`, nil},
 		{strings.Repeat(`\b`, 100) + `x`, []string{"x"}},
