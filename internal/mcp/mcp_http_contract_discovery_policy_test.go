@@ -7,16 +7,19 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // discovery refusal outcome receipts carry the wording policy and
@@ -69,7 +72,9 @@ func TestHTTPListener_ContractDiscoveryRefusalWordingPolicy(t *testing.T) {
 						}
 					}
 				}
-				t.Logf("mode=%s v1 pattern=%q v2 outcome records=%d", mode, outcome.Pattern, v2Block)
+				if v2Block == 0 {
+					t.Fatalf("mode=%s: no v2 outcome receipt carried %q", mode, tc.reason)
+				}
 			})
 		}
 	}
@@ -112,52 +117,60 @@ func TestHTTPListener_ContractDiscoveryWarnWording(t *testing.T) {
 	_ = tools.HeaderContractUnknown
 }
 
-// cancellation while the private inventory is being scanned (main's
-// detached scan context) never commits a contract or forwards the call.
+// A call canceled while its private inventory is still arriving never
+// commits a contract or forwards the call. The upstream holds the response
+// open until Pipelock abandons it, so discovery can only end by cancellation.
+// Cancellation after inspection is covered by
+// TestContractDiscoveryCanceledAtStructuralCommit.
 func TestHTTPListener_ContractDiscoveryCancelDuringScan(t *testing.T) {
-	var big strings.Builder
-	big.WriteString("[")
-	for i := 0; i < 3000; i++ {
-		fmt.Fprintf(&big, `{"name":"filler%d","description":"%s","inputSchema":{"type":"object","properties":{"a":{"type":"string"}}}},`, i, strings.Repeat("plain words here ", 20))
+	var partial strings.Builder
+	partial.WriteString(`{"jsonrpc":"2.0","id":1,"result":{"tools":[`)
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&partial, `{"name":"filler%d","description":"plain words","inputSchema":{"type":"object"}},`, i)
 	}
-	big.WriteString(headerStateDefs(headerStateSchema, "Echo input")[1:])
-	written := make(chan struct{}, 4)
+	written := make(chan struct{}, 1)
+	abandoned := make(chan struct{}, 1)
 	var second atomic.Bool
-	f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, n int) {
+	f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, r *http.Request, frame MCPFrame, _ int) {
 		if second.Load() {
 			discoveryList(w, frame, headerStateDefs(headerStateInvalid, "Echo input"), "")
 			return
 		}
-		discoveryList(w, frame, big.String(), "")
+		_, _ = io.WriteString(w, partial.String())
 		if fl, ok := w.(http.Flusher); ok {
 			fl.Flush()
 		}
 		written <- struct{}{}
+		<-r.Context().Done()
+		abandoned <- struct{}{}
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, f.url, currentWireBodyReader())
 	req.Header = currentWireHeaders(methodToolsCall, "echo")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Proxy-Authorization", headerStateBearer)
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		resp, err := http.DefaultClient.Do(req)
-		if resp != nil {
+		if err == nil {
 			_ = resp.Body.Close()
 		}
-		done <- err
 	}()
 	<-written
 	cancel()
-	err := <-done
-	t.Logf("first call err=%v upstream calls=%d lists=%d", err, f.calls.Load(), f.lists.Load())
+	<-done
+	select {
+	case <-abandoned:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("canceled call did not abandon its discovery request")
+	}
 	if f.calls.Load() != 0 {
 		t.Fatal("canceled discovery forwarded the call")
 	}
 	second.Store(true)
 	status, body := f.call(t, "body", "first")
-	t.Logf("second status=%d lists=%d body=%s", status, f.lists.Load(), body)
 	if status == http.StatusOK {
-		t.Fatal("canceled discovery committed a contract that a later call relied on")
+		t.Fatalf("canceled discovery committed a contract that a later call relied on: %s", body)
 	}
 }
