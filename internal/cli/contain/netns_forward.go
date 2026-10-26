@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/sdnotify"
 )
 
 // The contained agent keeps the long-standing 127.0.0.1 proxy contract, but
@@ -196,6 +197,12 @@ func runNetnsForward(ctx context.Context, opts netnsForwardOpts, rawErrOut io.Wr
 	}
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", source, err)
+	}
+	// Only this process owns the listener. NotifyAccess=main lets systemd
+	// attribute readiness to it, after bind/adoption and before accepting work.
+	if _, err := sdnotify.Send("READY=1"); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("report listener readiness on %s: %w", source, err)
 	}
 	return serveNetnsForward(ctx, ln, source, opts, errOut)
 }

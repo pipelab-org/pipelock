@@ -7,13 +7,16 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 const (
 	doorwayInspectionRemedy  = "restore access to the managed containment state and rerun the diagnostic"
 	loopbackDefinitionRemedy = "rerun `pipelock contain reload-nft-rules`"
+	doorwaysHealthyDetail    = "all managed doorway sockets and namespace forwarders are enabled and active"
 )
 
 type managedDoorway struct {
@@ -21,13 +24,17 @@ type managedDoorway struct {
 	relay     string
 	forwarder string
 	path      string
+	listen    string
+	// legacySimple marks a namespace forwarder whose definition is the exact
+	// Type=simple rendering from before bind readiness.
+	legacySimple bool
 }
 
 // combineDoorwayResults follows runDoctor's result contract: retain every
 // finding, with fail taking precedence over unknown and unknown over pass.
 // The caller supplies the established sorted doorway order.
 func combineDoorwayResults(results []doctorResult) doctorResult {
-	combined := pass("all managed doorway sockets and namespace forwarders are enabled and active")
+	combined := pass(doorwaysHealthyDetail)
 	var findings []doctorResult
 	for _, result := range results {
 		if result.status == statusPass {
@@ -71,11 +78,11 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}}
-	doorways := []managedDoorway{{containedProxyForwarderUnit + ".socket", containedProxyForwarderUnit + ".service", containedNamespaceForwarderUnit, containedDoorwaySocketPath}}
+	doorways := []managedDoorway{{socket: containedProxyForwarderUnit + ".socket", relay: containedProxyForwarderUnit + ".service", forwarder: containedNamespaceForwarderUnit, path: containedDoorwaySocketPath, listen: systemdListenAddress("127.0.0.1", env.port)}}
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 	for _, service := range services {
 		unit := loopbackForwarderUnitBase(service.Host, service.Port)
-		doorways = append(doorways, managedDoorway{unit + ".socket", unit + ".service", unit + "-netns.service", declaredLoopbackDoorwayPath(service.Host, service.Port)})
+		doorways = append(doorways, managedDoorway{socket: unit + ".socket", relay: unit + ".service", forwarder: unit + "-netns.service", path: declaredLoopbackDoorwayPath(service.Host, service.Port), listen: systemdListenAddress(service.Host, service.Port)})
 		definitions[unit+".socket"] = []doorwayDefinition{
 			{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service)},
 			{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service)},
@@ -93,9 +100,11 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 		if socket == containedProxyForwarderUnit+".socket" {
 			remedy = installRemedyForPort(env.port)
 		}
-		result := observeDoorwayDefinitions(env, definitions[socket], remedy)
+		result, legacy := observeDoorwayDefinitions(env, definitions[socket], remedy)
 		if result.status == statusPass {
-			ordered = append(ordered, bySocket[socket])
+			doorway := bySocket[socket]
+			doorway.legacySimple = legacy
+			ordered = append(ordered, doorway)
 		} else {
 			results = append(results, result)
 		}
@@ -105,15 +114,56 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 
 type doorwayDefinition struct{ path, want string }
 
-func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition, remedy string) doctorResult {
+// observeDoorwayDefinitions also reports whether a namespace forwarder still
+// carries the exact pre-readiness definition. `contain upgrade` replaces only
+// the binary, so refusing that definition would roll back every upgraded host;
+// the runtime check still refuses it when it is restart-looping.
+func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition, remedy string) (doctorResult, bool) {
+	legacy := false
 	for _, definition := range definitions {
 		body, err := env.readFile(filepath.Clean(definition.path))
 		if err != nil {
-			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), remedy)
+			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), remedy), false
 		}
-		if string(body) != definition.want {
-			return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), remedy)
+		if string(body) == definition.want {
+			continue
+		}
+		if old, ok := legacyNamespaceForwarderDefinition(definition.want); ok && string(body) == old {
+			legacy = true
+			continue
+		}
+		if strings.Contains(definition.want, "Type=notify\n") && strings.Contains(string(body), "Type=simple\n") {
+			return fail(classInfra, fmt.Sprintf("managed namespace listener %s uses Type=simple without bind readiness", definition.path), remedy), false
+		}
+		return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), remedy), false
+	}
+	return pass("managed doorway definitions match installation"), legacy
+}
+
+// legacyNamespaceForwarderDefinition derives the Type=simple definition that
+// releases before bind readiness rendered from the current one. Only the
+// readiness directives and the notification socket bind differ.
+func legacyNamespaceForwarderDefinition(want string) (string, bool) {
+	readiness := fmt.Sprintf("Type=notify\nNotifyAccess=main\nTimeoutStartSec=%d\n", int64(cliutil.ServiceStartTimeout/time.Second))
+	notifyBind := "BindReadOnlyPaths=" + systemdNotifySocketPath + "\n"
+	if strings.Count(want, readiness) != 1 || strings.Count(want, notifyBind) != 1 {
+		return "", false
+	}
+	old := strings.Replace(want, readiness, "Type=simple\n", 1)
+	return strings.Replace(old, notifyBind, "", 1), true
+}
+
+// legacyNamespaceForwarderNote names forwarders still on the pre-readiness
+// definition. A passing result keeps them visible with the migration command.
+func legacyNamespaceForwarderNote(doorways []managedDoorway, port int) string {
+	var units []string
+	for _, doorway := range doorways {
+		if doorway.legacySimple {
+			units = append(units, doorway.forwarder)
 		}
 	}
-	return pass("managed doorway definitions match installation")
+	if len(units) == 0 {
+		return ""
+	}
+	return "namespace listener " + strings.Join(units, ", ") + " still uses the Type=simple definition without bind readiness; " + installRemedyForPort(port) + " to migrate it"
 }

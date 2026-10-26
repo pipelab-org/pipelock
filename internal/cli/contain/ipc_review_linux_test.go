@@ -99,7 +99,7 @@ func TestDoctorRuntimeSocketUnits(t *testing.T) {
 					if !ok {
 						t.Fatalf("unexpected doorway bind probe: %v", args)
 					}
-					return parent + ":" + parent + ":rbind", 0, nil
+					return parent + ":" + parent + ":rbind " + notifyBindShow(), 0, nil
 				}
 				if args[2] != "--property=TemporaryFileSystem" {
 					t.Fatalf("unexpected property: %v", args)
@@ -168,7 +168,7 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 			}, runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
 				if len(args) == 4 && args[2] == "--property=BindReadOnlyPaths" {
 					parent := filepath.Dir(containedDoorwaySocketPath)
-					return parent + ":" + parent + ":rbind", 0, nil
+					return parent + ":" + parent + ":rbind " + notifyBindShow(), 0, nil
 				}
 				return tc.mounts, tc.showCode, tc.showErr
 			}}
@@ -204,17 +204,18 @@ func TestDoctorRuntimeDoorwayBinds(t *testing.T) {
 	for _, unit := range []string{containedNamespaceForwarderUnit, loopbackUnit} {
 		t.Run(unit, func(t *testing.T) {
 			parent := doorways[unit]
-			valid := parent + ":" + parent + ":rbind"
+			valid := parent + ":" + parent + ":rbind " + notifyBindShow()
 			for _, tc := range []struct {
 				name, bind, want string
 				code             int
 				err              error
 			}{
 				{name: "current colon", bind: valid, want: statusPass},
-				{name: "current tuple", bind: parent + " " + parent + " false 16384", want: statusPass},
+				{name: "current tuple", bind: parent + " " + parent + " false 16384 " + systemdNotifySocketPath + " " + systemdNotifySocketPath + " false 16384", want: statusPass},
+				{name: "doorway only without notify", bind: parent + ":" + parent + ":rbind", want: statusFail},
 				{name: "missing", want: statusFail},
-				{name: "wrong source", bind: "/other:" + parent + ":rbind", want: statusFail},
-				{name: "wrong destination", bind: parent + ":/other:rbind", want: statusFail},
+				{name: "wrong source", bind: "/other:" + parent + ":rbind " + notifyBindShow(), want: statusFail},
+				{name: "wrong destination", bind: parent + ":/other:rbind " + notifyBindShow(), want: statusFail},
 				{name: "nonrecursive", bind: parent + ":" + parent + ":norbind", want: statusFail},
 				{name: "missing flags", bind: parent + ":" + parent, want: statusFail},
 				{name: "ignore missing", bind: "-" + valid, want: statusFail},
@@ -247,7 +248,7 @@ func TestDoctorRuntimeDoorwayBinds(t *testing.T) {
 							if !ok {
 								t.Fatalf("non-forwarder unit requires a doorway bind: %s", args[1])
 							}
-							return other + ":" + other + ":rbind", 0, nil
+							return other + ":" + other + ":rbind " + notifyBindShow(), 0, nil
 						default:
 							t.Fatalf("unexpected property: %v", args)
 							return "", 1, nil
@@ -282,7 +283,7 @@ func TestReviewDoctorUnusedFlagsReproduction(t *testing.T) {
 		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
 			if len(args) == 4 && args[2] == "--property=BindReadOnlyPaths" {
 				parent := filepath.Dir(containedDoorwaySocketPath)
-				return parent + ":" + parent + ":rbind", 0, nil
+				return parent + ":" + parent + ":rbind " + notifyBindShow(), 0, nil
 			}
 			return strings.Join(runtimeSocketTemporaryFileSystems(), " "), 0, nil
 		},

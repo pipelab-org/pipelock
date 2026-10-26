@@ -957,6 +957,9 @@ func TestProbeAgentNetworkNamespace(t *testing.T) {
 			}
 			env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
 				joined := strings.Join(args, " ")
+				if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+					return testForwarderReady, 0, nil
+				}
 				switch {
 				case strings.HasPrefix(joined, "is-enabled "):
 					if tt.doorwayEnabled != "" && strings.HasSuffix(joined, filepath.Base(env.proxyForwarderSocketPath)) {
@@ -1045,6 +1048,9 @@ func TestProbeNetworkNamespaceBoundary(t *testing.T) {
 						t.Fatalf("command = %q, want %q", name, systemdRunPath)
 					}
 					joined := strings.Join(args, " ")
+					if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+						return testForwarderReady, 0, nil
+					}
 					for _, want := range []string{
 						"--property=PrivateNetwork=true",
 						"--property=JoinsNamespaceOf=" + containedNetworkNamespaceUnit,
