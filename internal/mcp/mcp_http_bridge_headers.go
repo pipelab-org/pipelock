@@ -40,7 +40,16 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 		return nil, nil
 	}
 	frame := ParseMCPFrame(msg)
-	if frame.Method == methodToolsCall && !isRPCNotification(frame.ID) {
+	if isRPCNotification(frame.ID) {
+		switch frame.Method {
+		case methodToolsCall, methodResourcesRead, methodPromptsGet:
+			// MCP defines these methods only as requests, which must carry
+			// Mcp-Name and parameter mirrors. A notification form would leave
+			// unmirrored, so it is refused like an unavailable contract.
+			return nil, fmt.Errorf("%s cannot be sent as a notification", frame.Method)
+		}
+	}
+	if frame.Method == methodToolsCall {
 		if frame.RoutingNameErr != nil || frame.RoutingName == "" {
 			return nil, fmt.Errorf("invalid tool routing name")
 		}

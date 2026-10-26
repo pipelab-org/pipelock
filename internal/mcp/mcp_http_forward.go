@@ -645,10 +645,15 @@ func RunHTTPProxy(
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %v\n", headerErr)
-			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"})
-			if !isRPCNotification(frame.ID) {
-				_ = writeMCPInputDenial(fwdOpts, mcpListenerInspectionDenialAudit(), safeClientOut, response)
+			// Notifications are never tracked: close their intent from the input
+			// decision, as the upstream gate above does.
+			if isRPCNotification(frame.ID) {
+				dropMCPDenial(fwdOpts, mcpListenerInspectionDenialAudit(), "input")
+				emitBridgeHeaderContractRefusal(safeLogW, decision.Outcome, fwdOpts)
+				continue
 			}
+			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"})
+			_ = writeMCPInputDenial(fwdOpts, mcpListenerInspectionDenialAudit(), safeClientOut, response)
 			outcome, ok := consumeTrackedRequestOutcome(tracker, frame.ID)
 			if ok {
 				emitBridgeHeaderContractRefusal(safeLogW, outcome, fwdOpts)

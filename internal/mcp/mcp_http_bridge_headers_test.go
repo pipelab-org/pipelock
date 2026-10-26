@@ -325,6 +325,76 @@ func TestHTTPBridgeHeaderLegacyMetaKeepsModernNegotiation(t *testing.T) {
 	}
 }
 
+// MCP defines tools/call, resources/read and prompts/get only as requests, and
+// a modern request carries its routing and parameter headers. A notification
+// form would leave without them, so the bridge drops it rather than forward it
+// unmirrored. Other modern notifications and legacy sessions are unchanged.
+func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
+	meta := fmt.Sprintf(`"_meta":{"io.modelcontextprotocol/protocolVersion":%q,"io.modelcontextprotocol/clientCapabilities":{}}`, currentMCPVersion)
+	// Required receipts already refuse methods without a receipt identity, so
+	// the unrelated notification is a forwarding control only when best-effort.
+	for _, tc := range []struct {
+		name, line                   string
+		forwarded, forwardedRequired bool
+	}{
+		{"tools_call_absent_id", `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"region":"body"},` + meta + `}}`, false, false},
+		{"tools_call_null_id", `{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"},` + meta + `}}`, false, false},
+		{"resources_read", `{"jsonrpc":"2.0","method":"resources/read","params":{"uri":"docs://notes",` + meta + `}}`, false, false},
+		{"prompts_get", `{"jsonrpc":"2.0","method":"prompts/get","params":{"name":"summary",` + meta + `}}`, false, false},
+		{"other_notification", `{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":1,` + meta + `}}`, true, false},
+		{"legacy_tools_call", `{"jsonrpc":"2.0","method":"tools/call","params":{"name":"echo","arguments":{"region":"body"}}}`, true, true},
+	} {
+		for _, required := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/required=%t", tc.name, required), func(t *testing.T) {
+				var received, lists atomic.Int32
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Method != http.MethodPost {
+						w.WriteHeader(http.StatusMethodNotAllowed)
+						return
+					}
+					body, _ := io.ReadAll(r.Body)
+					if frame := ParseMCPFrame(body); frame.Method == "tools/list" {
+						lists.Add(1)
+						w.Header().Set("Content-Type", "application/json")
+						discoveryList(w, frame, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+						return
+					}
+					received.Add(1)
+					w.WriteHeader(http.StatusAccepted)
+				}))
+				defer upstream.Close()
+				opts := bridgeHeaderOpts(t)
+				h := openReceiptHarness(t, &opts, required)
+				out, logs := runBridgeHeaderInput(t, upstream.URL, tc.line, nil, opts)
+				want := int32(0)
+				if tc.forwarded && (!required || tc.forwardedRequired) {
+					want = 1
+				}
+				if received.Load() != want || lists.Load() != 0 || strings.TrimSpace(out) != "" {
+					t.Fatalf("received=%d lists=%d out=%s logs=%s", received.Load(), lists.Load(), out, logs)
+				}
+				requireEvidenceNotBroken(t, "bridge", h)
+				if tc.forwarded {
+					return
+				}
+				// An open intent reads only as limited evidence, so check that each
+				// refused notification's intent is closed by a blocked outcome.
+				blocked := make(map[string]bool)
+				for _, r := range readActionReceipts(t, h.dir) {
+					if a := r.ActionRecord; a.DecisionPhase == "outcome" && a.Verdict == config.ActionBlock {
+						blocked[a.ActionID] = true
+					}
+				}
+				for _, r := range readActionReceipts(t, h.dir) {
+					if a := r.ActionRecord; a.DecisionPhase == "intent" && !blocked[a.ActionID] {
+						t.Fatalf("intent %s for a refused notification has no blocked outcome", a.ActionID)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestHTTPBridgeHeaderDisabledToolScanning(t *testing.T) {
 	for _, discover := range []bool{false, true} {
 		t.Run(fmt.Sprintf("discovery=%t", discover), func(t *testing.T) {
