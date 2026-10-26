@@ -5,6 +5,7 @@ package policy
 
 import (
 	"regexp"
+	"regexp/syntax"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +25,8 @@ func TestLeadingWords_OptionalLeadingParts(t *testing.T) {
 		{`(?:ab|cd)?(?:ef|gh)?x`, []string{"ab", "cd", "efx", "ghx", "x"}},
 		// Inside a word an optional part still ends it.
 		{`rm(?:dir)?\s`, []string{"rm"}},
+		// The same word both ways is kept once.
+		{`(?:\bgit\s+)?git\s`, []string{"git"}},
 		// Nothing literal leads.
 		{`(?:rm)?\s+-rf`, nil},
 		{`\s*rm`, nil},
@@ -54,6 +57,24 @@ func TestLeadingWords_OptionalLeadingParts(t *testing.T) {
 				t.Fatalf("leadingWords(%q) = %q, want %q", tt.pat, got, want)
 			}
 		})
+	}
+}
+
+// TestLeadWords_StopsAtTheBudget checks leadWords stops once its steps
+// run out, and a control with enough steps.
+func TestLeadWords_StopsAtTheBudget(t *testing.T) {
+	re, err := syntax.Parse(strings.Repeat(`\b`, 100)+`x`, syntax.Perl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := []*syntax.Regexp{re.Simplify()}
+	steps := 10
+	if got := leadWords(seq, "", &steps); !slices.Contains(got, "") || steps != -1 {
+		t.Fatalf("leadWords with 10 steps = %q, steps left %d, want a cut list and -1", got, steps)
+	}
+	steps = 1000
+	if got := leadWords(seq, "", &steps); !slices.Equal(got, []string{foldString("x")}) || steps < 0 {
+		t.Fatalf("leadWords with 1000 steps = %q, steps left %d", got, steps)
 	}
 }
 
