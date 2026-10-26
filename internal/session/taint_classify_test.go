@@ -235,18 +235,19 @@ func TestClassifyResponseFindingsMatchesBooleanClassification(t *testing.T) {
 	tests := []struct {
 		name  string
 		kinds []session.HostileFindingKind
+		want  []session.HostileFindingKind
 	}{
-		{name: "no findings", kinds: nil},
-		{name: "wording", kinds: []session.HostileFindingKind{session.FindingWording}},
-		{name: "mixed with duplicate", kinds: []session.HostileFindingKind{session.FindingDLP, session.FindingWording, session.FindingDLP}},
-		{name: "unknown label", kinds: []session.HostileFindingKind{"not-a-kind"}},
+		{name: "no findings", kinds: nil, want: nil},
+		{name: "wording", kinds: []session.HostileFindingKind{session.FindingWording}, want: []session.HostileFindingKind{session.FindingWording}},
+		{name: "mixed with duplicate", kinds: []session.HostileFindingKind{session.FindingDLP, session.FindingWording, session.FindingDLP}, want: []session.HostileFindingKind{session.FindingDLP, session.FindingWording}},
+		{name: "unknown label", kinds: []session.HostileFindingKind{"not-a-kind"}, want: []session.HostileFindingKind{session.FindingUnattributed}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			hit := len(tt.kinds) > 0
-			want := session.MergeFindingKinds(tt.kinds)
+			want := tt.want
 
 			httpGot := session.ClassifyHTTPResponseFindings("https://evil.example/page", "text/html", nil, tt.kinds)
 			httpWant := session.ClassifyHTTPResponseObservation("https://evil.example/page", "text/html", nil, hit)
