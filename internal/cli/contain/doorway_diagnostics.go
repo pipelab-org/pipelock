@@ -21,6 +21,7 @@ type managedDoorway struct {
 	relay     string
 	forwarder string
 	path      string
+	listen    string
 }
 
 // combineDoorwayResults follows runDoctor's result contract: retain every
@@ -71,11 +72,11 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}}
-	doorways := []managedDoorway{{containedProxyForwarderUnit + ".socket", containedProxyForwarderUnit + ".service", containedNamespaceForwarderUnit, containedDoorwaySocketPath}}
+	doorways := []managedDoorway{{containedProxyForwarderUnit + ".socket", containedProxyForwarderUnit + ".service", containedNamespaceForwarderUnit, containedDoorwaySocketPath, systemdListenAddress("127.0.0.1", env.port)}}
 	unitDir := filepath.Dir(env.proxyForwarderSocketPath)
 	for _, service := range services {
 		unit := loopbackForwarderUnitBase(service.Host, service.Port)
-		doorways = append(doorways, managedDoorway{unit + ".socket", unit + ".service", unit + "-netns.service", declaredLoopbackDoorwayPath(service.Host, service.Port)})
+		doorways = append(doorways, managedDoorway{unit + ".socket", unit + ".service", unit + "-netns.service", declaredLoopbackDoorwayPath(service.Host, service.Port), systemdListenAddress(service.Host, service.Port)})
 		definitions[unit+".socket"] = []doorwayDefinition{
 			{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service)},
 			{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service)},
@@ -112,6 +113,9 @@ func observeDoorwayDefinitions(env *probeEnv, definitions []doorwayDefinition, r
 			return fail(classInfra, fmt.Sprintf("managed doorway definition %s could not be read: %v", definition.path, err), remedy)
 		}
 		if string(body) != definition.want {
+			if strings.Contains(definition.want, "Type=notify\n") && strings.Contains(string(body), "Type=simple\n") {
+				return fail(classInfra, fmt.Sprintf("managed namespace listener %s uses Type=simple without bind readiness", definition.path), remedy)
+			}
 			return fail(classInfra, fmt.Sprintf("managed doorway definition %s is missing or drifted", definition.path), remedy)
 		}
 	}

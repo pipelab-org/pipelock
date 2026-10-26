@@ -8,37 +8,17 @@ package runtime
 import (
 	"fmt"
 	"io"
-	"net"
-	"os"
 	"strings"
 	"time"
 	"unicode"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/sdnotify"
 )
 
-// sdNotify sends a message using the protocol documented by sd_notify(3) and
-// systemd.service(5). It deliberately has no dependency on go-systemd.
-func sdNotify(state string) (bool, error) {
-	socket := os.Getenv("NOTIFY_SOCKET")
-	if socket == "" {
-		return false, nil
-	}
-
-	dialer := net.Dialer{Timeout: 100 * time.Millisecond}
-	conn, err := dialer.Dial("unixgram", socket)
-	if err != nil {
-		return false, fmt.Errorf("dial NOTIFY_SOCKET: %w", err)
-	}
-	defer func() { _ = conn.Close() }()
-	if err := conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
-		return false, fmt.Errorf("set NOTIFY_SOCKET deadline: %w", err)
-	}
-	if _, err := conn.Write([]byte(state)); err != nil {
-		return false, fmt.Errorf("write NOTIFY_SOCKET: %w", err)
-	}
-	return true, nil
-}
+// sdNotify shares the wire protocol with containment; reload policy stays here.
+func sdNotify(state string) (bool, error) { return sdnotify.Send(state) }
 
 func sdNotifyOrLog(stderr io.Writer, state string) {
 	if _, err := sdNotify(state); err != nil {

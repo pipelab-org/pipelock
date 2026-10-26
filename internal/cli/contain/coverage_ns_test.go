@@ -122,6 +122,9 @@ func covNSProbeBase(t *testing.T) *probeEnv {
 	}
 	env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
 		joined := strings.Join(args, " ")
+		if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+			return testForwarderReady, 0, nil
+		}
 		switch {
 		case strings.HasPrefix(joined, "is-enabled "):
 			return systemctlEnabled + "\n", 0, nil
@@ -232,6 +235,9 @@ func TestCovNSProbeAgentNetworkNamespaceNamespaceNotActive(t *testing.T) {
 	nsUnit := filepath.Base(env.networkNamespaceUnitPath)
 	env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
 		joined := strings.Join(args, " ")
+		if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+			return testForwarderReady, 0, nil
+		}
 		switch {
 		case strings.HasPrefix(joined, "is-enabled "):
 			return systemctlEnabled + "\n", 0, nil
@@ -265,6 +271,9 @@ func TestCovNSProbeAgentNetworkNamespacePIDFailures(t *testing.T) {
 			env := covNSProbeBase(t)
 			env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
 				joined := strings.Join(args, " ")
+				if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+					return testForwarderReady, 0, nil
+				}
 				switch {
 				case strings.HasPrefix(joined, "is-enabled "):
 					return systemctlEnabled + "\n", 0, nil
@@ -346,6 +355,9 @@ func TestCovNSProbeAgentNetworkNamespaceDefaultBoundaryProbe(t *testing.T) {
 	calls := 0
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		joined := strings.Join(args, " ")
+		if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+			return testForwarderReady, 0, nil
+		}
 		switch {
 		case name == systemdRunPath:
 			calls++
