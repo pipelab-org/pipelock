@@ -44,6 +44,11 @@ var findStartRows = []verdictRow{
 	{"word after &", "find . -perm 1&x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"word after |", "find . -perm 1|x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"word after & in a later find", "find . -perm 777 -name a&x | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A , before find's expression is one more starting point.
+	{"comma in the expression", "find . -type f , -perm 0777 | xargs chmod 644", "", ""},
+	{"comma before a starting point", "find . , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"comma first", "find , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 }
 
 // TestDefaultRules_FindStartingPoints checks findStartRows with the default
@@ -109,6 +114,8 @@ func TestFindPathsOnly_StartingPoints(t *testing.T) {
 		{"find . -perm 1&x ; find . -perm 1", "find . -perm 1&x ; find . -perm 1"},
 		{"find . -perm 1|x ; find . -perm 1", "find . -perm 1|x ; find . -perm 1"},
 		{"find . -name 'a;b' -perm 1", "find . -name 'a;b' -perm 1"},
+		{"find . , 777 -type f", "find . , 777"},
+		{"find . -type f , -perm 1", "find ."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
