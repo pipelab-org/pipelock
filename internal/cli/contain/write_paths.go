@@ -132,6 +132,24 @@ func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath st
 		} else if !pathWithin(root, resolved) {
 			return fmt.Errorf("contain install config preflight failed for %s: %s %s is outside the managed writable data directory %s; set %s so that it and every path the service derives from it stay inside %s, then rerun contain install; refusing install", configPath, p.field, p.describe(), env.dataDir, p.field, env.dataDir)
 		}
+		// Recursive evidence ACLs also grant read access to existing files on
+		// reinstall. Keep private state out even when its initial mode is 0600.
+		for _, evidenceDir := range env.evidenceACLDirs() {
+			evidenceRoot := filepath.Join(root, filepath.Base(evidenceDir))
+			if !pathWithin(evidenceRoot, resolved) {
+				continue
+			}
+			allowed := p.recorder
+			switch p.field {
+			case "flight_recorder.anchor.local_log", "dashboard_snapshot.path":
+				allowed = evidenceDir == env.recorderDir()
+			case "logging.file":
+				allowed = evidenceDir == env.logsDir()
+			}
+			if !allowed {
+				return fmt.Errorf("contain install config preflight failed for %s: %s %s resolves inside operator-readable evidence directory %s; set %s so that it and every path the service derives from it stay inside %s but outside %s and %s, then rerun contain install; refusing install", configPath, p.field, p.describe(), evidenceDir, p.field, env.dataDir, env.logsDir(), env.recorderDir())
+			}
+		}
 	}
 	return nil
 }

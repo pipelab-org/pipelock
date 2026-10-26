@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/setup"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/proxy/baseline"
 	"gopkg.in/yaml.v3"
 )
 
@@ -32,6 +33,15 @@ func TestInstallWritePathsRefuseBeforeMutation(t *testing.T) {
 		{"relative_logging", "logging.file", "logging: {output: file, file: audit.log}"},
 		{"rules", "rules.rules_dir", "rules: {rules_dir: /etc/rules}"},
 		{"baseline", "behavioral_baseline.profile_dir", "behavioral_baseline: {enabled: true, profile_dir: /etc/profiles}"},
+		{"baseline_evidence_recorder", "behavioral_baseline.profile_dir", "behavioral_baseline: {enabled: true, profile_dir: DATA/recorder/profiles}"},
+		{"baseline_evidence_logs", "behavioral_baseline.profile_dir", "behavioral_baseline: {enabled: true, profile_dir: DATA/logs/profiles}"},
+		{"rules_evidence", "rules.rules_dir", "rules: {rules_dir: DATA/recorder/rules}"},
+		{"learn_lock_evidence", "learn_lock.store_dir", "learn_lock: {enabled: true, store_dir: DATA/logs/contracts}"},
+		{"cache_evidence", "conductor.bundle_cache_dir", "conductor: {enabled: true, bundle_cache_dir: DATA/recorder/cache}"},
+		{"queue_evidence", "conductor.durable_audit_queue_dir", "conductor: {enabled: true, bundle_cache_dir: DATA/cache, durable_audit_queue_dir: DATA/logs/queue}"},
+		{"spool_evidence", "emit.forwarder.spool_file", "emit: {forwarder: {url: 'https://sink.example', spool_file: DATA/recorder/spool}}"},
+		{"cursor_evidence", "emit.forwarder.cursor_file", "emit: {forwarder: {url: 'https://sink.example', spool_file: DATA/spool, cursor_file: DATA/logs/cursor}}"},
+		{"crl_evidence", "license_crl_file", "license_crl_file: DATA/recorder/crl.json"},
 		{"baseline_key", "behavioral_baseline.profile_dir", "behavioral_baseline: {enabled: true, profile_dir: DATA}"},
 		{"learn_lock", "learn_lock.store_dir", "learn_lock: {enabled: true, store_dir: /etc/contracts}"},
 		{"cache", "conductor.bundle_cache_dir", "conductor: {enabled: true, bundle_cache_dir: /etc/cache}"},
@@ -73,6 +83,7 @@ func TestInstallWritePathsRefuseBeforeMutation(t *testing.T) {
 func TestInstallWritePathsAccept(t *testing.T) {
 	for i, body := range []string{
 		"",
+		"flight_recorder: {enabled: true, dir: DATA/recorder, anchor: {local_log: DATA/recorder/anchor.jsonl}}\nlogging: {output: both, file: DATA/logs/audit.log}",
 		"flight_recorder: {dir: DATA/recorder}", // default-enabled recorder
 		"flight_recorder: {enabled: false, dir: /etc/unused}\ndashboard_snapshot: {enabled: false}",
 		"behavioral_baseline: {enabled: false, profile_dir: /etc/unused}\nlearn_lock: {enabled: false, store_dir: /etc/unused}\nconductor: {enabled: false, bundle_cache_dir: /etc/unused}",
@@ -371,4 +382,55 @@ func TestInstallWritePathsDerivedPathNamesConfiguredValue(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("want %s, got %v", want, err)
 	}
+}
+
+func TestInstallWritePathsEvidenceAlias(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	if err := os.MkdirAll(env.recorderDir(), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(env.dataDir, "private")
+	if err := os.Symlink(env.recorderDir(), alias); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.BehavioralBaseline.Enabled = true
+	cfg.BehavioralBaseline.ProfileDir = filepath.Join(alias, "profiles")
+	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
+	if err == nil || !strings.Contains(err.Error(), "operator-readable evidence directory") {
+		t.Fatalf("want evidence refusal, got %v", err)
+	}
+}
+
+func TestInstallWritePathsExistingBaselineEvidence(t *testing.T) {
+	env, runner, _ := newFakeEnv(t)
+	profiles := filepath.Join(env.recorderDir(), "profiles")
+	manager, err := baseline.NewManager(baseline.Config{Enabled: true, ProfileDir: profiles, LearningWindow: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.RecordSession("agent", baseline.SessionMetrics{})
+	key := profiles + ".integrity.key"
+	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("baseline producer did not persist key: %v", err)
+	}
+	// Inspect the production ACL plan without executing host ACL commands.
+	grantFound := false
+	for _, command := range evidenceACLCommands(env.operatorUser, env.dataDir, env.evidenceACLDirs()) {
+		if command.name == "setfacl" && len(command.args) == 4 && command.args[0] == "-R" && pathWithin(command.args[3], key) {
+			grantFound = true
+		}
+	}
+	if !grantFound {
+		t.Fatal("key not covered by recursive evidence ACL plan")
+	}
+	src := managedPipelockConfigPath(env)
+	mustWriteFile(t, src, fmt.Sprintf("forward_proxy: {enabled: true}\nflight_recorder: {enabled: true, dir: %q}\nbehavioral_baseline: {enabled: true, profile_dir: %q}\n", env.recorderDir(), profiles))
+	for _, dryRun := range []bool{true, false} {
+		err := runInstall(context.Background(), env, installOpts{dryRun: dryRun})
+		if err == nil || !strings.Contains(err.Error(), "operator-readable evidence directory") {
+			t.Fatalf("dryRun=%v: want evidence refusal, got %v", dryRun, err)
+		}
+	}
+	assertNoServiceOrNFTMutationAfterPreflightFailure(t, runner)
 }

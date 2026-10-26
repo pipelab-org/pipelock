@@ -188,6 +188,8 @@ Exit codes:
 
 The managed service writes only inside `/var/lib/pipelock`. When the flight recorder is configured and enabled, `flight_recorder.dir` must resolve to `/var/lib/pipelock/recorder`; a custom recorder location is refused, including another directory inside the data directory. Install checks the configuration after its home-directory path migration, before changing the host, and names the field and required replacement when refusing a path. Other configured runtime write paths must remain inside the data directory, including through symlinks. This includes `license_crl_file`: every CRL load writes anti-rollback high-water files beside the CRL, so a CRL kept in a read-only directory such as `/etc/pipelock` would fail the license check at runtime.
 
+Private service state, including baseline integrity keys, must stay outside the operator-readable `logs` and `recorder` directories. The recorder, its local anchor log, and dashboard snapshot may use `recorder`; the audit log may use `logs`. Install refuses other service writers in either evidence directory, including paths that resolve there through symlinks.
+
 An unprivileged `--dry-run` prints `[DEFERRED]` for paths it cannot inspect because of permissions; the privileged install must check them before proceeding.
 
 On success, `install` prints a **Next steps** block with:
