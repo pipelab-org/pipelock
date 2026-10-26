@@ -42,6 +42,7 @@ func TestInstallWritePathsRefuseBeforeMutation(t *testing.T) {
 		{"default_snapshot", "dashboard_snapshot.path", "flight_recorder: {enabled: false, dir: /etc/receipts}"},
 		{"relative_writer", "rules.rules_dir", "rules: {rules_dir: relative-rules}"},
 		{"writer_prefix", "rules.rules_dir", "rules: {rules_dir: DATA-evil/rules}"},
+		{"license_crl", "license_crl_file", "license_crl_file: /etc/pipelock-crl.json"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
@@ -77,7 +78,7 @@ func TestInstallWritePathsAccept(t *testing.T) {
 		"behavioral_baseline: {enabled: false, profile_dir: /etc/unused}\nlearn_lock: {enabled: false, store_dir: /etc/unused}\nconductor: {enabled: false, bundle_cache_dir: /etc/unused}",
 		"logging: {output: stdout, file: /etc/unused}\nemit: {forwarder: {spool_file: /etc/unused}}",
 		"mcp_tool_policy: {quarantine_dir: /etc/unused}\nlearn: {capture_dir: /etc/unused}",
-		"flight_recorder: {enabled: true, dir: DATA/recorder, anchor: {local_log: DATA/anchor.log}}\nlogging: {output: both, file: DATA/logs/audit.log}\nrules: {rules_dir: DATA/rules}\nbehavioral_baseline: {enabled: true, profile_dir: DATA/profiles}\nlearn_lock: {enabled: true, store_dir: DATA/contracts}\nconductor: {enabled: true, bundle_cache_dir: DATA/cache, durable_audit_queue_dir: DATA/queue}\nemit: {forwarder: {url: 'https://sink.example', spool_file: DATA/spool, cursor_file: DATA/cursor}}\ndashboard_snapshot: {enabled: true, path: DATA/snapshot}",
+		"flight_recorder: {enabled: true, dir: DATA/recorder, anchor: {local_log: DATA/anchor.log}}\nlogging: {output: both, file: DATA/logs/audit.log}\nrules: {rules_dir: DATA/rules}\nbehavioral_baseline: {enabled: true, profile_dir: DATA/profiles}\nlearn_lock: {enabled: true, store_dir: DATA/contracts}\nconductor: {enabled: true, bundle_cache_dir: DATA/cache, durable_audit_queue_dir: DATA/queue}\nemit: {forwarder: {url: 'https://sink.example', spool_file: DATA/spool, cursor_file: DATA/cursor}}\ndashboard_snapshot: {enabled: true, path: DATA/snapshot}\nlicense_crl_file: DATA/license/crl.json",
 	} {
 		t.Run(fmt.Sprintf("layout_%d", i), func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
@@ -320,5 +321,54 @@ func TestInstallWritePathsAtomicParent(t *testing.T) {
 	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
 	if err == nil || !strings.Contains(err.Error(), "dashboard_snapshot.path") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestInstallWritePathsDerivedSidecarSymlinks(t *testing.T) {
+	for _, tc := range []struct {
+		name, field, leaf string
+		set               func(cfg *config.Config, path string)
+	}{
+		{"anchor_lock", "flight_recorder.anchor.local_log", "anchor.log.lock", func(cfg *config.Config, path string) {
+			cfg.FlightRecorder.Dir = filepath.Join(filepath.Dir(path), "recorder")
+			cfg.FlightRecorder.Anchor.LocalLog = filepath.Join(filepath.Dir(path), "anchor.log")
+		}},
+		{"crl_highwater", "license_crl_file", "crl.json.highwater", func(cfg *config.Config, path string) {
+			cfg.LicenseCRLFile = filepath.Join(filepath.Dir(path), "crl.json")
+		}},
+		{"crl_highwater_lock", "license_crl_file", "crl.json.highwater.lock", func(cfg *config.Config, path string) {
+			cfg.LicenseCRLFile = filepath.Join(filepath.Dir(path), "crl.json")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, _, _ := newFakeEnv(t)
+			if err := os.MkdirAll(env.dataDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			outside := filepath.Join(t.TempDir(), "outside")
+			mustWriteFile(t, outside, "fixture")
+			leaf := filepath.Join(env.dataDir, tc.leaf)
+			if err := os.Symlink(outside, leaf); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config.Defaults()
+			tc.set(cfg, leaf)
+			err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("got %v", err)
+			}
+		})
+	}
+}
+
+func TestInstallWritePathsDerivedPathNamesConfiguredValue(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	cfg := config.Defaults()
+	cfg.BehavioralBaseline.Enabled = true
+	cfg.BehavioralBaseline.ProfileDir = env.dataDir
+	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
+	want := fmt.Sprintf("behavioral_baseline.profile_dir %q (writes %q)", env.dataDir, env.dataDir+".integrity.key")
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want %s, got %v", want, err)
 	}
 }

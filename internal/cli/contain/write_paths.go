@@ -11,65 +11,96 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/license"
 )
+
+// writePath is one location the managed service writes. value is the
+// configured field; path is the write itself, which may be derived from value
+// (a sidecar, lock, or parent directory).
+type writePath struct {
+	field, value, path string
+	recorder           bool
+}
+
+// describe names the configured value and, when different, the derived write
+// so a refusal points the operator at the field they can change.
+func (p writePath) describe() string {
+	if p.path == p.value {
+		return fmt.Sprintf("%q", p.value)
+	}
+	return fmt.Sprintf("%q (writes %q)", p.value, p.path)
+}
 
 // requireContainWritePaths mirrors the writers reachable from managedServiceArgv.
 // ReadWritePaths permits only dataDir; the recursive evidence ACL additionally
 // requires the recorder to stay at its fixed managed location.
 func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath string, dryRun bool) error {
-	type writePath struct {
-		field, path string
-		recorder    bool
-	}
 	var paths []writePath
-	add := func(field, path string) {
+	add := func(field, value, path string) {
 		if path != "" {
-			paths = append(paths, writePath{field: field, path: path})
+			paths = append(paths, writePath{field: field, value: value, path: path})
 		}
 	}
-	addFile := func(field, path string) {
+	addFile := func(field, value, path string) {
 		if path != "" {
-			add(field, path)
+			add(field, value, path)
 			// Atomic replacement and sidecar creation write in the parent even
 			// when an existing leaf symlink resolves into the data directory.
-			add(field, filepath.Dir(path))
+			add(field, value, filepath.Dir(path))
 		}
 	}
 	if cfg.FlightRecorder.Enabled && cfg.FlightRecorder.Dir != "" {
-		paths = append(paths, writePath{"flight_recorder.dir", cfg.FlightRecorder.Dir, true})
-		add("flight_recorder.anchor.local_log", strings.TrimSpace(cfg.FlightRecorder.Anchor.LocalLog))
+		paths = append(paths, writePath{field: "flight_recorder.dir", value: cfg.FlightRecorder.Dir, path: cfg.FlightRecorder.Dir, recorder: true})
+		// anchor.AppendLocal creates the parent and a "<local_log>.lock" sibling.
+		if localLog := strings.TrimSpace(cfg.FlightRecorder.Anchor.LocalLog); localLog != "" {
+			addFile("flight_recorder.anchor.local_log", localLog, localLog)
+			addFile("flight_recorder.anchor.local_log", localLog, filepath.Clean(localLog)+".lock")
+		}
 	}
 	if cfg.Logging.Output == "file" || cfg.Logging.Output == "both" {
 		path := cfg.Logging.File
 		if path != "" && !filepath.IsAbs(path) {
 			path = filepath.Join(filepath.Dir(managedPipelockConfigPath(env)), path)
 		}
-		add("logging.file", path)
+		add("logging.file", cfg.Logging.File, path)
 	}
-	add("rules.rules_dir", cfg.Rules.RulesDir)
+	add("rules.rules_dir", cfg.Rules.RulesDir, cfg.Rules.RulesDir)
 	if cfg.BehavioralBaseline.Enabled && cfg.BehavioralBaseline.ProfileDir != "" {
-		add("behavioral_baseline.profile_dir", cfg.BehavioralBaseline.ProfileDir)
-		key := filepath.Clean(cfg.BehavioralBaseline.ProfileDir) + ".integrity.key"
-		addFile("behavioral_baseline.profile_dir", key)
-		addFile("behavioral_baseline.profile_dir", key+".generation")
-		addFile("behavioral_baseline.profile_dir", key+".generation.lock")
+		dir := cfg.BehavioralBaseline.ProfileDir
+		add("behavioral_baseline.profile_dir", dir, dir)
+		key := filepath.Clean(dir) + ".integrity.key"
+		addFile("behavioral_baseline.profile_dir", dir, key)
+		addFile("behavioral_baseline.profile_dir", dir, key+".generation")
+		addFile("behavioral_baseline.profile_dir", dir, key+".generation.lock")
 	}
 	if cfg.LearnLock.Enabled {
-		add("learn_lock.store_dir", cfg.LearnLock.StoreDir)
+		add("learn_lock.store_dir", cfg.LearnLock.StoreDir, cfg.LearnLock.StoreDir)
 	}
 	if cfg.Conductor.Enabled {
-		add("conductor.bundle_cache_dir", cfg.Conductor.BundleCacheDir)
-		add("conductor.durable_audit_queue_dir", cfg.Conductor.DurableAuditQueueDir)
+		add("conductor.bundle_cache_dir", cfg.Conductor.BundleCacheDir, cfg.Conductor.BundleCacheDir)
+		add("conductor.durable_audit_queue_dir", cfg.Conductor.DurableAuditQueueDir, cfg.Conductor.DurableAuditQueueDir)
 	}
 	if cfg.Emit.Forwarder.URL != "" {
-		addFile("emit.forwarder.spool_file", cfg.Emit.Forwarder.SpoolFile)
-		if cfg.Emit.Forwarder.SpoolFile != "" {
-			addFile("emit.forwarder.spool_file", cfg.Emit.Forwarder.SpoolFile+".lock")
+		spool := cfg.Emit.Forwarder.SpoolFile
+		addFile("emit.forwarder.spool_file", spool, spool)
+		if spool != "" {
+			addFile("emit.forwarder.spool_file", spool, spool+".lock")
 		}
-		addFile("emit.forwarder.cursor_file", cfg.Emit.Forwarder.CursorFile)
+		addFile("emit.forwarder.cursor_file", cfg.Emit.Forwarder.CursorFile, cfg.Emit.Forwarder.CursorFile)
 	}
 	if cfg.DashboardSnapshot.EnabledWithRecorderDir(cfg.FlightRecorder.Dir) {
-		addFile("dashboard_snapshot.path", cfg.DashboardSnapshot.PathWithRecorderDir(cfg.FlightRecorder.Dir))
+		snapshot := cfg.DashboardSnapshot.PathWithRecorderDir(cfg.FlightRecorder.Dir)
+		addFile("dashboard_snapshot.path", snapshot, snapshot)
+	}
+	// Every CRL load advances an anti-rollback high-water beside the CRL: a
+	// sidecar, its lock, and a protected state directory. A licensed service
+	// whose CRL sits in a read-only directory fails its license check closed.
+	// Checked whenever a CRL is configured, which covers every license source.
+	if crl := strings.TrimSpace(cfg.LicenseCRLFile); crl != "" {
+		highWater := license.CRLHighWaterPath(crl)
+		addFile("license_crl_file", crl, highWater)
+		addFile("license_crl_file", crl, highWater+".lock")
+		addFile("license_crl_file", crl, license.CRLHighWaterAnchorPath(crl))
 	}
 	for _, p := range paths {
 		// A system service without WorkingDirectory runs from /. Only logging.file
@@ -85,21 +116,21 @@ func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath st
 		}
 		if err != nil {
 			if dryRun && errors.Is(err, os.ErrPermission) {
-				_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %q without privilege; the privileged install must re-check this write path.\n", p.field, p.path)
+				_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %s without privilege; the privileged install must re-check this write path.\n", p.field, p.describe())
 				continue
 			}
 			remedy := ""
 			if p.recorder {
 				remedy = "; set flight_recorder.dir: " + env.recorderDir() + " and ensure its existing ancestors resolve"
 			}
-			return fmt.Errorf("contain install config preflight failed for %s: %s %q: resolve write path: %w%s; refusing install", configPath, p.field, p.path, err, remedy)
+			return fmt.Errorf("contain install config preflight failed for %s: %s %s: resolve write path: %w%s; refusing install", configPath, p.field, p.describe(), err, remedy)
 		}
 		if p.recorder {
 			if resolved != filepath.Join(root, "recorder") {
 				return fmt.Errorf("contain install config preflight failed for %s: %s %q must use the fixed managed recorder directory; set flight_recorder.dir: %s and rerun contain install; refusing install", configPath, p.field, p.path, env.recorderDir())
 			}
 		} else if !pathWithin(root, resolved) {
-			return fmt.Errorf("contain install config preflight failed for %s: %s %q is outside the managed writable data directory %s; set %s to a path inside %s and rerun contain install; refusing install", configPath, p.field, p.path, env.dataDir, p.field, env.dataDir)
+			return fmt.Errorf("contain install config preflight failed for %s: %s %s is outside the managed writable data directory %s; set %s so that it and every path the service derives from it stay inside %s, then rerun contain install; refusing install", configPath, p.field, p.describe(), env.dataDir, p.field, env.dataDir)
 		}
 	}
 	return nil
