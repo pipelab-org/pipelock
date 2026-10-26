@@ -3209,12 +3209,12 @@ func (r *wsRelay) denySessionCapacity(direction string) {
 		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(r.requestID).CloseFramePayload())
 }
 
-func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
+func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) {
 	var kinds []session.HostileFindingKind
 	if promptHit {
 		kinds = []session.HostileFindingKind{session.FindingUnattributed}
 	}
-	return r.observeUpstreamResponseFindings(kinds)
+	r.observeUpstreamResponseFindings(kinds)
 }
 
 func (r *wsRelay) observeUpstreamResponseFindings(kinds []session.HostileFindingKind) bool {
