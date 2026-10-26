@@ -25,8 +25,10 @@ type mcpBridgeHeaders struct {
 func (b *mcpBridgeHeaders) version(msg []byte) string {
 	// A modern per-request version takes precedence over a legacy handshake,
 	// matching the listener's request metadata contract. Otherwise preserve the
-	// transport's initialize negotiation, including its legacy fallback.
-	if version := ParseMCPFrame(msg).ProtocolVersion; version != "" {
+	// transport's initialize negotiation, including its legacy fallback. A
+	// legacy per-request version can't downgrade a modern negotiation, which
+	// would otherwise drop the request's routing and parameter headers.
+	if version := ParseMCPFrame(msg).ProtocolVersion; version >= currentMCPVersion {
 		return version
 	}
 	return b.client.ProtocolVersion()

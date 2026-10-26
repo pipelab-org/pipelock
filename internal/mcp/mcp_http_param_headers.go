@@ -143,8 +143,10 @@ func mcpParamValueMatches(header string, raw json.RawMessage, valueType string) 
 // https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#value-encoding
 func encodeMCPHeaderValue(value string) string {
 	unsafe := value == "" || strings.TrimSpace(value) != value || strings.HasPrefix(value, "=?base64?") || strings.HasSuffix(value, "?=")
+	// Value Encoding names control characters, so a tab is encoded too even
+	// though RFC 9110 field values may carry one.
 	for i := range len(value) {
-		if (value[i] < 0x20 || value[i] > 0x7e) && value[i] != '\t' {
+		if value[i] < 0x20 || value[i] > 0x7e {
 			unsafe = true
 		}
 	}

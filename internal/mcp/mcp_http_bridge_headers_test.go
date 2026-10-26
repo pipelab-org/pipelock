@@ -157,7 +157,7 @@ func TestHTTPBridgeHeaderValues(t *testing.T) {
 		{"empty", "string", `""`, "=?base64??="},
 		{"NUL", "string", `"\u0000"`, "=?base64?AA==?="},
 		{"DEL", "string", `"\u007f"`, "=?base64?fw==?="},
-		{"interior tab", "string", `"a\tb"`, "a\tb"},
+		{"interior tab", "string", `"a\tb"`, "=?base64?YQli?="},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			schema := fmt.Sprintf(`{"type":"object","properties":{"nested":{"type":"object","properties":{"value":{"type":[%q,"null"],"x-mcp-header":"Value"}}}}}`, tc.kind)
@@ -301,6 +301,27 @@ func TestHTTPBridgeHeaderLegacyAndUnannotated(t *testing.T) {
 				t.Fatalf("lists=%d calls=%d out=%s logs=%s", lists.Load(), calls.Load(), out, logs)
 			}
 		})
+	}
+}
+
+// A legacy per-request version can't downgrade a modern negotiation: the call
+// still carries its routing and parameter headers.
+func TestHTTPBridgeHeaderLegacyMetaKeepsModernNegotiation(t *testing.T) {
+	var calls atomic.Int32
+	up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, _ *http.Request, f MCPFrame) {
+		discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+	}, func(w http.ResponseWriter, r *http.Request, f MCPFrame) {
+		calls.Add(1)
+		if r.Header.Get(listenerMCPMethod) != methodToolsCall || r.Header.Get(listenerMCPName) != "echo" || r.Header.Get("Mcp-Param-Region") != "us-west1" {
+			t.Errorf("downgraded request lost metadata: %v", r.Header)
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, f.ID)
+	})
+	initialize := fmt.Sprintf(`{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`, currentMCPVersion)
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"us-west1"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}`
+	out, logs := runBridgeHeaderInput(t, up.URL, initialize+"\n"+call, nil, bridgeHeaderOpts(t))
+	if calls.Load() != 1 || strings.Contains(out, `"error"`) {
+		t.Fatalf("calls=%d out=%s logs=%s", calls.Load(), out, logs)
 	}
 }
 
