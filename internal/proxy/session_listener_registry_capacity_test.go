@@ -195,3 +195,49 @@ func TestSessionEnforcementListenerPrincipalRoutingCapacity(t *testing.T) {
 		t.Fatal("one authenticated caller exhausted cross-transport admission")
 	}
 }
+
+// Document the limitation and the supported principal-auth mitigation through
+// an actual listener and a second transport using the same SessionManager.
+func TestSessionEnforcementListenerSharedCapacityGuidance(t *testing.T) {
+	for _, principal := range []bool{false, true} {
+		t.Run(fmt.Sprintf("principal=%t", principal), func(t *testing.T) {
+			limit := testSessionConfig().MaxSessions
+			l, sm := startCapacityListener(t, limit, principal, nil)
+			for i := range limit {
+				if status, body := l.send(fmt.Sprintf("routing-%d", i), "read_file"); status != http.StatusOK || strings.Contains(body, `"error"`) {
+					t.Fatalf("listener client %d: %d %s", i, status, body)
+				}
+			}
+			note := strings.Contains(l.logs.String(), "retained sessions can exhaust shared capacity")
+			if note == principal {
+				t.Fatalf("startup note=%t, principal=%t: %s", note, principal, l.logs.String())
+			}
+
+			cfg := adaptiveConfig()
+			cfg.SessionProfiling.MaxSessions = limit
+			_, p, upstream := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = io.WriteString(w, "ordinary response")
+			})
+			original := p.sessionMgrPtr.Swap(sm)
+			t.Cleanup(func() { p.sessionMgrPtr.Store(original) })
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, upstream.String()+"/control", nil)
+			req.RemoteAddr = "198.51.100.7:12345"
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			want := http.StatusServiceUnavailable
+			if principal {
+				want = http.StatusOK
+			}
+			if w.Code != want {
+				t.Fatalf("shared HTTP admission=%d, want %d: %s", w.Code, want, w.Body.String())
+			}
+			if !principal && !strings.Contains(w.Body.String(), "session capacity") {
+				t.Fatalf("unexpected HTTP refusal: %s", w.Body.String())
+			}
+			before := l.hits.Load()
+			if _, body := l.send("routing-0", "exec"); !strings.Contains(body, `"error"`) || l.hits.Load() != before {
+				t.Fatal("shared-capacity check erased listener enforcement")
+			}
+		})
+	}
+}

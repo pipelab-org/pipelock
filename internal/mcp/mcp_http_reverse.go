@@ -232,6 +232,8 @@ func RunHTTPListenerProxy(
 		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
 	}
 
+	logListenerCapacityNote(safeLogW, opts)
+
 	listenerClients := newMCPListenerClientStates(opts.Store)
 	listenerClients.resetAuthorityToolCfgFn = opts.toolCfg
 	// Bounds presented-but-invalid listener bearer tokens per client address
