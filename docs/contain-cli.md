@@ -186,6 +186,10 @@ Exit codes:
 
 ### Post-install output
 
+The managed service writes only inside `/var/lib/pipelock`. When the flight recorder is configured and enabled, `flight_recorder.dir` must resolve to `/var/lib/pipelock/recorder`; a custom recorder location is refused, including another directory inside the data directory. Install checks the configuration after its home-directory path migration, before changing the host, and names the field and required replacement when refusing a path. Other configured runtime write paths must remain inside the data directory, including through symlinks.
+
+An unprivileged `--dry-run` prints `[DEFERRED]` for paths it cannot inspect because of permissions; the privileged install must check them before proceeding.
+
 On success, `install` prints a **Next steps** block with:
 
 - **sudo secure_path check** -- if `/usr/local/bin` is not in sudo's `secure_path`, a warning explains how to add it. Without this, `sudo pipelock ...` reports "command not found" even though the binary is installed. Install emits guidance rather than silently editing sudoers.
