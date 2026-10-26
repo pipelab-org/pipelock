@@ -85,6 +85,9 @@ func redactConfig(cfg *config.Config) map[string]any {
 				}
 				return ""
 			}(),
+			// The token file path may name a per-invocation credential
+			// directory; record presence only.
+			"api_token_file_configured": cfg.KillSwitch.APITokenFile != "",
 		},
 		"license": map[string]any{
 			"license_key": func() string {

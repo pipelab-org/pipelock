@@ -386,7 +386,7 @@ func startDeferredOperatorAPI(
 	}
 	apiToken := cfg.EffectiveKillSwitchAPIToken()
 	if apiToken == "" {
-		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token or %s to be set", killswitch.EnvAPIToken)
+		return func() {}, fmt.Errorf("kill_switch.api_listen requires kill_switch.api_token, api_token_file or %s to be set", killswitch.EnvAPIToken)
 	}
 	sessionAPI := proxy.NewSessionAPIHandler(proxy.SessionAPIOptions{
 		Logger:   logger,
