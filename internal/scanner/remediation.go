@@ -614,9 +614,9 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 		case "MCP listener protocol refused":
 			return RemediationGuidance{OperatorKnob: "The MCP listener refused a malformed or inconsistent request. Correct the client's MCP headers, protocol version or JSON-RPC body; no scanner or policy setting relaxes protocol validation.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener state capacity exhausted":
-			return RemediationGuidance{OperatorKnob: "Listener client state is at capacity. Retry after an existing state expires; when the session store is full, release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
-		case "session capacity exhausted; release active quarantine or increase max_sessions":
-			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted. Release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+			return RemediationGuidance{OperatorKnob: "Listener client state is at capacity. Retry after an existing state expires; when the session store is full, increase `session_profiling.max_sessions` or clear the restriction that keeps a session from being dropped.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "session capacity exhausted; wait for session recovery or increase max_sessions":
+			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted and every retained session carries airlock, adaptive escalation, `block_all` or policy taint. Increase `session_profiling.max_sessions` or clear the restriction; reset and terminate keep taint, which a new task boundary clears.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		}
 	}
 	if (label == ScannerMCPToolScanning || label == AuditToolScanning) && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {

@@ -6,6 +6,7 @@ package mcp
 import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 const (
@@ -32,7 +33,7 @@ var mcpDenialCatalog = [...]mcpDenialSpec{
 	{"unclassified", scanner.AuditScannerUnavailable, audit.BlockClassInfrastructureError, mcpResourceInput, "MCP denial classification unavailable"},
 	{"startup_contract", scanner.AuditContract, audit.BlockClassProtective, mcpResourceStartup, "MCP upstream URL blocked by live-lock contract"},
 	{"startup_contract_eval", scanner.AuditContract, audit.BlockClassInfrastructureError, mcpResourceStartup, "MCP contract upstream evaluation failed"},
-	{"startup_capacity", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceStartup, "session capacity exhausted; release active quarantine or increase max_sessions"},
+	{"startup_capacity", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceStartup, session.ErrCapacity.Error()},
 	{"startup_metadata", scanner.ScannerSSRFMetadata, audit.BlockClassThreat, mcpResourceStartup, "MCP upstream resolves to a cloud metadata endpoint"},
 
 	{"input_dlp", scanner.AuditMCPInputDLP, audit.BlockClassThreat, mcpResourceInput, ""},

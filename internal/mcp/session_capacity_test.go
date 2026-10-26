@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -212,5 +213,19 @@ func TestSessionCapacityListenerRefusesBeforeUpstream(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// The startup refusal audits the live capacity error text. Remediation is keyed
+// by that exact text, so a changed message must keep its capacity guidance
+// rather than falling back to the protocol label's batch-request hint.
+func TestSessionCapacityRefusalKeepsRemediation(t *testing.T) {
+	spec, ok := denialSpec("startup_capacity")
+	if !ok || spec.reason != session.ErrCapacity.Error() {
+		t.Fatalf("startup capacity audit reason = %q, want %q", spec.reason, session.ErrCapacity.Error())
+	}
+	guidance, ok := scanner.GuidanceForResult(spec.label, spec.reason)
+	if !ok || !strings.Contains(guidance.OperatorKnob, "session_profiling.max_sessions") || !strings.Contains(guidance.OperatorKnob, "task boundary") {
+		t.Fatalf("capacity refusal guidance = %+v (ok=%t)", guidance, ok)
 	}
 }
