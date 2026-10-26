@@ -129,8 +129,8 @@ func TestEmitterSanitationOutsideChain(t *testing.T) {
 	case <-seen:
 	case <-time.After(2 * time.Second):
 		em.chainMu.Unlock()
-		<-done
-		t.Fatal("sanitation stayed behind chain lock")
+		err := <-done
+		t.Fatalf("sanitation stayed behind chain lock; emit error: %v", err)
 	}
 	em.chainMu.Unlock()
 	if err := <-done; err != nil {

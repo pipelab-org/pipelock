@@ -185,7 +185,8 @@ func TestMCPBridgeStreamIntegrity(t *testing.T) {
 						t.Fatalf("bridge did not finish: %s", logs.String())
 					}
 					select {
-					case <-bridgeDone:
+					case err := <-bridgeDone:
+						t.Logf("goroutine result: %v", err)
 					case <-time.After(time.Second):
 						t.Fatal("cancelled bridge did not finish")
 					}

@@ -317,7 +317,8 @@ func TestHijackResponseForSSE_CtxCancelClosesUpstream(t *testing.T) {
 	cancel()
 
 	select {
-	case <-completeCh:
+	case err := <-completeCh:
+		t.Logf("goroutine result: %v", err)
 		// Good: the goroutine exited within the deadline. The pipe writer
 		// got closed too, so any read should now return.
 	case <-time.After(2 * time.Second):

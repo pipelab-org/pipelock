@@ -958,7 +958,7 @@ func TestContractDiscoveryFollowerRetriesUnrelatedFailure(t *testing.T) {
 			} else {
 				close(release)
 			}
-			<-leader
+			t.Logf("goroutine result: %v", <-leader)
 			err := <-follower
 			if err != nil || !followerDiscovered {
 				t.Fatalf("follower inherited an unrelated failure: err=%v discovered=%v", err, followerDiscovered)

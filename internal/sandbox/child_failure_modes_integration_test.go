@@ -510,8 +510,8 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 			}
 		case <-time.After(testwait.Deadline(5 * time.Second)):
 			_ = cmd.Process.Kill()
-			<-waitDone
-			t.Fatal("sandbox init child did not exit after SIGTERM")
+			err := <-waitDone
+			t.Fatalf("sandbox init child did not exit after SIGTERM; wait error: %v", err)
 		}
 	})
 }

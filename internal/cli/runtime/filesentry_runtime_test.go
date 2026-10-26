@@ -265,7 +265,8 @@ func TestRunJoinedCancelsBeforeJoining(t *testing.T) {
 	}, nil)
 
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 		t.Fatal("positive control: run returned before cleanup")
 	default:
 	}
@@ -302,7 +303,8 @@ func TestRunJoinedReportsLeakedRun(t *testing.T) {
 	defer func() {
 		unblock()
 		select {
-		case <-done:
+		case err := <-done:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(orphanJoinDeadline):
 			t.Error("released run did not return")
 		}

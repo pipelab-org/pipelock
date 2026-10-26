@@ -50,7 +50,8 @@ func TestKillAdoptedDescendants_PreservesProtectedDirectChild(t *testing.T) {
 		t.Fatalf("signaling protected child after cleanup: %v", err)
 	}
 	select {
-	case <-waitDone:
+	case err := <-waitDone:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("protected child did not exit after test cleanup SIGTERM")
 	}

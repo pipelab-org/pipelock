@@ -2329,7 +2329,7 @@ pauseDone:
 	countAfter := atomic.LoadInt32(&getCount)
 
 	_ = stdinW.Close()
-	<-done
+	t.Logf("goroutine result: %v", <-done)
 
 	// During kill switch, no new GET requests should have been made.
 	// Allow at most 1 extra (in-flight at activation time).

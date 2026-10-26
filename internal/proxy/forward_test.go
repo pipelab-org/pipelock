@@ -3446,7 +3446,8 @@ func startProxyOnFreePort(t *testing.T, cfg *config.Config) (string, func()) {
 	cleanup := func() {
 		cancel()
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(3 * time.Second):
 		}
 		p.Close() // closes scanner, registry, session manager

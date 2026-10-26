@@ -93,7 +93,8 @@ func waitForParentHardening() error {
 		return fmt.Errorf("waiting for parent hardening: %w", err)
 	case <-timer.C:
 		_ = ready.Close()
-		<-readResult
+		readErr := <-readResult
+		_ = readErr // drain the interrupted read; timeout remains the result
 		return errors.New("waiting for parent hardening: timed out")
 	}
 }
