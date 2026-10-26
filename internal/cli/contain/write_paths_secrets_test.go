@@ -287,3 +287,55 @@ func TestInstallWritePathsPrivateMaterialResolutionErrors(t *testing.T) {
 		}
 	}
 }
+
+// A dangling symlink has no resolvable target yet, but material the service
+// later creates through it lands under the evidence default ACL. The link must
+// not be judged by its own spelling. A plain missing key whose existing
+// ancestors resolve stays accepted.
+func TestInstallWritePathsPrivateMaterialDanglingSymlink(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input func(t *testing.T, env *installEnv) string
+		allow bool
+	}{
+		{"missing_key_existing_parent", func(t *testing.T, env *installEnv) string {
+			dir := filepath.Join(env.configDir, "keys")
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(dir, "signing.key")
+		}, true},
+		{"dangling_leaf_into_recorder", func(t *testing.T, env *installEnv) string {
+			link := filepath.Join(t.TempDir(), "signing.key")
+			if err := os.Symlink(filepath.Join(env.recorderDir(), "later.key"), link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}, false},
+		{"dangling_dir_into_recorder", func(t *testing.T, env *installEnv) string {
+			link := filepath.Join(t.TempDir(), "keys")
+			if err := os.Symlink(filepath.Join(env.recorderDir(), "keys"), link); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(link, "signing.key")
+		}, false},
+	} {
+		for _, dryRun := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s_dry_%v", tc.name, dryRun), func(t *testing.T) {
+				env, _, out := newFakeEnv(t)
+				cfg := &config.Config{}
+				cfg.FlightRecorder.SigningKeyPath = tc.input(t, env)
+				err := requirePrivateMaterialOutsideEvidence(env, cfg, managedPipelockConfigPath(env), dryRun)
+				if tc.allow {
+					if err != nil || out.Len() != 0 {
+						t.Fatalf("missing key with resolvable parent refused: %v\n%s", err, out)
+					}
+					return
+				}
+				if !errors.Is(err, os.ErrNotExist) || !strings.Contains(err.Error(), "flight_recorder.signing_key_path") {
+					t.Fatalf("dangling symlink into evidence accepted: %v\n%s", err, out)
+				}
+			})
+		}
+	}
+}
