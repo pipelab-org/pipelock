@@ -25,7 +25,7 @@ func TestKillSwitchTokenFileLoadReload(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte("kill_switch:\n  api_token_file: admin-token\n  api_listen: 127.0.0.1:9091\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	first, err := Load(cfgPath)
+	first, err := LoadForRuntime(cfgPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestKillSwitchTokenFileInputs(t *testing.T) {
 				t.Fatal(err)
 			}
 			data := "kill_switch:\n  api_token_file: '" + tt.path + "'\n  api_token: '" + tt.inline + "'\n"
-			cfg, err := LoadBytes([]byte(data))
+			cfg, err := loadRuntimeTokenBytes([]byte(data))
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
 			}
@@ -110,7 +110,7 @@ func TestKillSwitchTokenFileInspectionAndErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CREDENTIALS_DIRECTORY", "")
-	if _, err := Load(cfgPath); err == nil {
+	if _, err := LoadForRuntime(cfgPath); err == nil {
 		t.Fatal("missing credential directory accepted")
 	}
 	if _, err := LoadForInspection(cfgPath); err != nil {
@@ -123,10 +123,10 @@ func TestKillSwitchTokenFileInspectionAndErrors(t *testing.T) {
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", maxKillSwitchTokenFileBytes+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n")); err == nil {
+	if _, err := loadRuntimeTokenBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n")); err == nil {
 		t.Fatal("oversized token accepted")
 	}
-	if _, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + dir + "\n")); err == nil {
+	if _, err := loadRuntimeTokenBytes([]byte("kill_switch:\n  api_token_file: " + dir + "\n")); err == nil {
 		t.Fatal("directory accepted")
 	}
 	for _, name := range []string{"$CREDENTIALS_DIRECTORY", "$CREDENTIALS_DIRECTORY/", "$CREDENTIALS_DIRECTORY/..", "$CREDENTIALS_DIRECTORY/a:b", "$CREDENTIALS_DIRECTORY/" + strings.Repeat("x", 256)} {
@@ -159,7 +159,7 @@ func TestKillSwitchTokenFilePermissions(t *testing.T) {
 			if err := os.Chmod(path, tt.mode); err != nil {
 				t.Fatal(err)
 			}
-			cfg, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n"))
+			cfg, err := loadRuntimeTokenBytes([]byte("kill_switch:\n  api_token_file: " + path + "\n"))
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("error = %v, want error %v", err, tt.wantErr)
 			}
@@ -174,7 +174,7 @@ func TestKillSwitchTokenFileNullAndBlank(t *testing.T) {
 	t.Setenv(EnvKillSwitchAPIToken, "")
 	for _, value := range []string{"~", "null", "''", ""} {
 		t.Run(value, func(t *testing.T) {
-			cfg, err := LoadBytes([]byte("kill_switch:\n  api_token_file: " + value + "\n"))
+			cfg, err := loadRuntimeTokenBytes([]byte("kill_switch:\n  api_token_file: " + value + "\n"))
 			if err != nil {
 				t.Fatalf("unset token file rejected: %v", err)
 			}
@@ -182,9 +182,77 @@ func TestKillSwitchTokenFileNullAndBlank(t *testing.T) {
 				t.Fatal("null or blank token file produced a token")
 			}
 			// Unset must not satisfy the dedicated listener's token requirement.
-			if _, err := LoadBytes([]byte("kill_switch:\n  api_listen: 127.0.0.1:9091\n  api_token_file: " + value + "\n")); err == nil {
+			if _, err := loadRuntimeTokenBytes([]byte("kill_switch:\n  api_listen: 127.0.0.1:9091\n  api_token_file: " + value + "\n")); err == nil {
 				t.Fatal("api_listen accepted a null or blank token file")
 			}
 		})
+	}
+}
+
+// Runtime file tests opt in to the same credential path as daemon startup.
+func loadRuntimeTokenBytes(data []byte) (*Config, error) {
+	return loadBytes(data, "<memory>", ".", loadOptions{resolveLicense: true, resolveRuntimeCredentials: true})
+}
+
+func TestKillSwitchTokenFileOperatorLoad(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	for _, env := range []string{"", "operator-token"} {
+		t.Run("env="+env, func(t *testing.T) {
+			t.Setenv(EnvKillSwitchAPIToken, env)
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			data := []byte("kill_switch:\n  api_listen: 127.0.0.1:9091\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for name, load := range map[string]func(string) (*Config, error){"ordinary": Load, "rules": LoadForRules, "inspection": LoadForInspection} {
+				t.Run(name, func(t *testing.T) {
+					if _, err := load(path); err != nil {
+						t.Fatalf("operator load read service credential: %v", err)
+					}
+				})
+			}
+			cfg, err := LoadBytes(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clone, _ := cfg.ResolveRuntime(RuntimeResolveOpts{})
+			if err := clone.ResolveRuntimeCredentials(); err == nil {
+				t.Fatal("runtime resolution after cloning skipped missing credential")
+			}
+			if _, err := LoadForRuntime(path); err == nil {
+				t.Fatal("startup skipped missing credential")
+			}
+			if _, hash, err := LoadReload(path); err == nil || hash == "" {
+				t.Fatal("reload did not reject missing credential with a source hash")
+			}
+		})
+	}
+}
+
+func TestKillSwitchTokenFileOperatorSyntax(t *testing.T) {
+	for _, raw := range []string{
+		"api_token_file: $CREDENTIALS_DIRECTORY/../admin-token",
+		"api_token_file: admin-token\n  api_token: inline-token",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		if err := os.WriteFile(path, []byte("kill_switch:\n  "+raw+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, load := range map[string]func(string) (*Config, error){"ordinary": Load, "rules": LoadForRules, "inspection": LoadForInspection, "runtime": LoadForRuntime} {
+			t.Run(name+raw, func(t *testing.T) {
+				if _, err := load(path); err == nil {
+					t.Fatal("invalid token source accepted")
+				}
+			})
+		}
+	}
+}
+
+func TestKillSwitchTokenFileProgrammaticSource(t *testing.T) {
+	cfg := Defaults()
+	cfg.KillSwitch.APIToken = "inline-token"
+	cfg.KillSwitch.APITokenFile = "admin-token"
+	if err := cfg.ResolveRuntimeCredentials(); err == nil {
+		t.Fatal("programmatic config accepted conflicting token sources")
 	}
 }

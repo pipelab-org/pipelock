@@ -132,7 +132,7 @@ func (c *Config) ResolveRuntime(opts RuntimeResolveOpts) (*Config, ResolveRuntim
 	clone := c.Clone()
 	var info ResolveRuntimeInfo
 
-	if clone.KillSwitch.APITokenFile == "" || !clone.killSwitchAPITokenWasResolved {
+	if clone.KillSwitch.APITokenFile == "" {
 		clone.resolveKillSwitchAPIToken()
 	}
 

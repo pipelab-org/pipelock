@@ -22,15 +22,23 @@ import (
 
 type loadOptions struct {
 	resolveLicense             bool
+	resolveRuntimeCredentials  bool
 	skipValidate               bool
 	skipRuntimePathResolution  bool
 	fullValidateWithoutLicense bool
 }
 
 // Load reads, parses, defaults, and validates a Pipelock config file.
-// If path is "-", the config is read from stdin.
+// If path is "-", the config is read from stdin. Runtime credential files are
+// validated syntactically but are read only by LoadForRuntime or LoadReload.
 func Load(path string) (*Config, error) {
 	return load(path, loadOptions{resolveLicense: true})
+}
+
+// LoadForRuntime loads a config and resolves its runtime credential files.
+// A configured file must be readable and valid even when an env token overrides it.
+func LoadForRuntime(path string) (*Config, error) {
+	return load(path, loadOptions{resolveLicense: true, resolveRuntimeCredentials: true})
 }
 
 // LoadBytes parses, defaults, and validates a Pipelock config from memory using
@@ -79,7 +87,7 @@ func LoadForInspection(path string) (*Config, error) {
 // LoadReload reads the source once and returns its raw-byte hash even when
 // parsing or validation rejects it. Paths and environment remain daemon-owned.
 func LoadReload(path string) (*Config, string, error) {
-	return loadWithSourceHash(path, loadOptions{resolveLicense: true})
+	return loadWithSourceHash(path, loadOptions{resolveLicense: true, resolveRuntimeCredentials: true})
 }
 
 func load(path string, opts loadOptions) (*Config, error) {
@@ -162,6 +170,10 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	}
 
 	cfg.ApplyDefaults()
+	cfg.runtimeConfigDir = configDir
+	if err := cfg.validateKillSwitchTokenSource(); err != nil {
+		return nil, err
+	}
 
 	// Validate named-agent sandbox overrides before the enterprise license gate
 	// can strip named profiles. A configuration must not become valid merely
@@ -256,8 +268,8 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 		}
 	}
 
-	if !opts.skipValidate && !opts.skipRuntimePathResolution && opts.resolveLicense {
-		if err := cfg.resolveKillSwitchTokenFile(configDir); err != nil {
+	if opts.resolveRuntimeCredentials {
+		if err := cfg.ResolveRuntimeCredentials(); err != nil {
 			return nil, err
 		}
 	}

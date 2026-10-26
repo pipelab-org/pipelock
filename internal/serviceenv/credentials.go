@@ -15,6 +15,14 @@ import (
 type credentialSource struct{ Property, Name, Path string }
 
 func candidateCredential(data []byte) (string, error) {
+	path, err := candidateTokenFile(data)
+	if err != nil {
+		return "", err
+	}
+	return config.KillSwitchCredentialName(path)
+}
+
+func candidateTokenFile(data []byte) (string, error) {
 	var node yaml.Node
 	if yaml.Unmarshal(data, &node) != nil {
 		return "", errors.New("cannot inspect native credential reference in candidate")
@@ -28,7 +36,7 @@ func candidateCredential(data []byte) (string, error) {
 	if yaml.Unmarshal(data, &cfg) != nil {
 		return "", errors.New("cannot inspect native credential reference in candidate")
 	}
-	return config.KillSwitchCredentialName(cfg.KillSwitch.APITokenFile)
+	return cfg.KillSwitch.APITokenFile, nil
 }
 
 func requireCredential(data []byte, credential *credentialSource) error {

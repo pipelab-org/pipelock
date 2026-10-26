@@ -991,6 +991,9 @@ Key-free evidence capture:
 			if err != nil {
 				return err
 			}
+			if err := cfg.ResolveRuntimeCredentials(); err != nil {
+				return err
+			}
 
 			// Build edition so _default fallback works the same as HTTP proxy.
 			// Bootstrap scanner is used only for edition init; closed before

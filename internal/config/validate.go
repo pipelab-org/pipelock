@@ -4231,10 +4231,7 @@ func credentialAudienceSuppressPathSubset(raw string, audience []string) bool {
 }
 
 func (c *Config) validateKillSwitch() error {
-	if c.KillSwitch.APITokenFile != "" && c.KillSwitch.APIToken != "" {
-		return fmt.Errorf("kill_switch.api_token and api_token_file are mutually exclusive")
-	}
-	if _, err := KillSwitchCredentialName(c.KillSwitch.APITokenFile); err != nil {
+	if err := c.validateKillSwitchTokenSource(); err != nil {
 		return err
 	}
 	// Validate kill switch allowlist CIDRs are parseable

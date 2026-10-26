@@ -107,8 +107,11 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 		ep.URL = apiURL
 	}
 	if ep.Token == "" {
-		// The loaded config has already resolved api_token_file (or the inline
-		// token); reading KillSwitch.APIToken directly would ignore the file.
+		if cfg.KillSwitch.APITokenFile != "" {
+			if err := cfg.ResolveRuntimeCredentials(); err != nil {
+				return endpoint{}, fmt.Errorf("cannot read kill_switch.api_token_file: set --api-token or PIPELOCK_KILLSWITCH_API_TOKEN; use --api-url to select the admin API endpoint: %w", err)
+			}
+		}
 		ep.Token = cfg.EffectiveKillSwitchAPIToken()
 	}
 

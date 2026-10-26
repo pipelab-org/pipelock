@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -55,6 +56,34 @@ func TestCheckServiceRejectsInvalidCombinations(t *testing.T) {
 		cmd.SetArgs([]string{"--service", "pipelock", "--config", "candidate.yaml"})
 		if cmd.Execute() == nil {
 			t.Fatal("service failure accepted")
+		}
+	}
+}
+
+func TestCheckServiceCredentialResolution(t *testing.T) {
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	t.Setenv("PIPELOCK_KILLSWITCH_API_TOKEN", "operator-token")
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("kill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, resolve := range []bool{false, true} {
+		cmd := CheckCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		args := []string{"--config", path}
+		if resolve {
+			args = append(args, "--resolve-runtime-credentials")
+		}
+		cmd.SetArgs(args)
+		err := cmd.Execute()
+		if resolve {
+			if err == nil || !strings.Contains(err.Error(), "CREDENTIALS_DIRECTORY") || strings.Contains(out.String(), "Config validation: OK") {
+				t.Fatalf("runtime validator did not fail closed: %v", err)
+			}
+		} else if err != nil || !strings.Contains(out.String(), "Runtime credential file not checked") {
+			t.Fatalf("plain check did not qualify config validation: %v", err)
 		}
 	}
 }

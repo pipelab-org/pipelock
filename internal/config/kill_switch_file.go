@@ -37,14 +37,28 @@ func KillSwitchCredentialName(path string) (string, error) {
 	return name, nil
 }
 
-func (c *Config) resolveKillSwitchTokenFile(configDir string) error {
-	path := c.KillSwitch.APITokenFile
-	if path == "" {
+// ResolveRuntimeCredentials resolves a config's token file once. Reloads load a
+// new config; runtime clones and Conductor applies retain the accepted snapshot.
+func (c *Config) ResolveRuntimeCredentials() error {
+	if c.killSwitchAPITokenWasResolved || c.KillSwitch.APITokenFile == "" {
 		return nil
 	}
-	if c.KillSwitch.APIToken != "" {
+	return c.resolveKillSwitchTokenFile(c.runtimeConfigDir)
+}
+
+func (c *Config) validateKillSwitchTokenSource() error {
+	if c.KillSwitch.APITokenFile != "" && c.KillSwitch.APIToken != "" {
 		return errors.New("kill_switch.api_token and api_token_file are mutually exclusive")
 	}
+	_, err := KillSwitchCredentialName(c.KillSwitch.APITokenFile)
+	return err
+}
+
+func (c *Config) resolveKillSwitchTokenFile(configDir string) error {
+	if err := c.validateKillSwitchTokenSource(); err != nil {
+		return err
+	}
+	path := c.KillSwitch.APITokenFile
 	name, err := KillSwitchCredentialName(path)
 	if err != nil {
 		return err

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -80,5 +81,93 @@ func TestServerReloadNativeCredential(t *testing.T) {
 	}
 	if out := s.ReloadFile(); out.Verdict != proxy.ReloadUnchanged {
 		t.Fatalf("unchanged: %+v", out)
+	}
+}
+
+func TestServerMissingNativeCredential(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "operator-token")
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	path := writeServerTestConfig(t, "mode: balanced\nkill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+	if _, err := NewServer(ServerOpts{ConfigFile: path, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}}); err == nil {
+		t.Fatal("server started without its configured credential")
+	}
+}
+
+func TestServerReloadParsedFileCredential(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "")
+	path := writeServerTestConfig(t, "mode: balanced\nkill_switch:\n  api_token: first-token\n")
+	s, err := NewServer(ServerOpts{ConfigFile: path, Stdout: &syncBuffer{}, Stderr: &syncBuffer{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.cleanup)
+	tokenPath := filepath.Join(t.TempDir(), "admin-token")
+	if err := os.WriteFile(tokenPath, []byte("file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("mode: balanced\nkill_switch:\n  api_token_file: "+tokenPath+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if s.currentConfig().EffectiveKillSwitchAPIToken() != "file-token" {
+		t.Fatal("parsed config reload lost its file token")
+	}
+	if err := os.WriteFile(tokenPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Reload(cfg); err == nil {
+		t.Fatal("parsed config reload accepted empty token file")
+	}
+	if s.currentConfig().EffectiveKillSwitchAPIToken() != "file-token" {
+		t.Fatal("rejected parsed config reload replaced accepted token")
+	}
+}
+
+func TestMCPProxyMissingNativeCredential(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "operator-token")
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	path := writeServerTestConfig(t, "kill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+	cmd := mcpProxyCmd()
+	cmd.SetOut(&syncBuffer{})
+	cmd.SetErr(&syncBuffer{})
+	cmd.SetArgs([]string{"--config", path, "--", "not-launched"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "CREDENTIALS_DIRECTORY") {
+		t.Fatalf("MCP proxy did not reject missing credential before launch: %v", err)
+	}
+}
+
+func TestSandboxMissingNativeCredential(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "operator-token")
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	path := writeServerTestConfig(t, "kill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+	cmd := SandboxCmd()
+	cmd.SetOut(&syncBuffer{})
+	cmd.SetErr(&syncBuffer{})
+	cmd.SetArgs([]string{"--config", path, "--dry-run", "--", "not-launched"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "CREDENTIALS_DIRECTORY") {
+		t.Fatalf("sandbox did not reject missing credential before launch: %v", err)
+	}
+}
+
+func TestGuardMissingNativeCredential(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "operator-token")
+	t.Setenv("CREDENTIALS_DIRECTORY", "")
+	path := writeServerTestConfig(t, "kill_switch:\n  api_token_file: $CREDENTIALS_DIRECTORY/admin-token\n")
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := LaunchGuard(GuardLaunchOptions{Config: cfg, Command: []string{"not-launched"}}); err == nil || !strings.Contains(err.Error(), "CREDENTIALS_DIRECTORY") {
+		t.Fatalf("Guard did not reject missing credential before launch: %v", err)
 	}
 }

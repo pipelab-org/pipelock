@@ -59,6 +59,9 @@ func TestConductorApplyPreservesFileToken(t *testing.T) {
 	if candidate.EffectiveKillSwitchAPIToken() != "" {
 		t.Fatal("policy bundle must not resolve a follower-local token")
 	}
+	// A policy apply must retain accepted local credentials, even when the
+	// on-disk replacement would be rejected by an operator file reload.
+	writeToken("")
 	if err := s.reloadConductorPolicyBundle(candidate, raw); err != nil {
 		t.Fatal(err)
 	}

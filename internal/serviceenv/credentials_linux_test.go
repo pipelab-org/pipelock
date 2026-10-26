@@ -34,7 +34,7 @@ func TestCredentialValidatorArguments(t *testing.T) {
 	if strings.Contains(joined, "private-token") || strings.Contains(joined, "/service/home") {
 		t.Fatal("environment value leaked into arguments")
 	}
-	for _, want := range []string{"--property=LoadCredentialEncrypted=admin-token:/etc/credstore.encrypted/admin-token", "--setenv=" + config.EnvKillSwitchAPIToken, "--setenv=HOME", "--property=User=1234", "--property=SupplementaryGroups=1234 1235", "--expand-environment=no", "--require-build-compatibility", "--property=LimitCORE=0"} {
+	for _, want := range []string{"--property=LoadCredentialEncrypted=admin-token:/etc/credstore.encrypted/admin-token", "--setenv=" + config.EnvKillSwitchAPIToken, "--setenv=HOME", "--property=User=1234", "--property=SupplementaryGroups=1234 1235", "--expand-environment=no", "--require-build-compatibility", "--property=LimitCORE=0", "--resolve-runtime-credentials"} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("missing argument %s", want)
 		}

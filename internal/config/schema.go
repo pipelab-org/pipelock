@@ -615,6 +615,9 @@ type Config struct {
 	// Defaults(), Load(), and Clone().
 	canonicalRedactionKeyCache *canonicalHashCacheHolder `yaml:"-"`
 
+	// runtimeConfigDir anchors lazy credential reads to the config source.
+	runtimeConfigDir string `yaml:"-"`
+
 	// resolvedKillSwitchAPIToken stores the effective admin API token after
 	// runtime env/YAML resolution. It is deliberately unexported so env-sourced
 	// secret material is available to runtime wiring without entering YAML,

@@ -294,6 +294,14 @@ func executeValidator(ctx context.Context, opts CheckOptions, env []string, id i
 	// Linux /proc/self/fd and os/exec.ExtraFiles retain the opened executable
 	// across the credential change. argv[0] remains the selected binary's name.
 	cmd := exec.CommandContext(bounded, "/proc/self/fd/3", "check", "--config", "-")
+	// Older validators remain usable for configs without the new token source.
+	tokenFile, err := candidateTokenFile(candidate)
+	if err != nil {
+		return err
+	}
+	if tokenFile != "" {
+		cmd.Args = append(cmd.Args, "--resolve-runtime-credentials")
+	}
 	cmd.Args[0] = opts.Binary
 	if opts.RequireBuildCompatibility {
 		cmd.Args = append(cmd.Args, "--require-build-compatibility")
@@ -423,7 +431,7 @@ func credentialValidatorArgs(opts CheckOptions, env []string, id identity, fd ui
 	if len(unset) > 0 {
 		args = append(args, "--property=UnsetEnvironment="+strings.Join(unset, " "))
 	}
-	args = append(args, "--", opts.Binary, "check", "--config", "-")
+	args = append(args, "--", opts.Binary, "check", "--config", "-", "--resolve-runtime-credentials")
 	if opts.RequireBuildCompatibility {
 		args = append(args, "--require-build-compatibility")
 	}
