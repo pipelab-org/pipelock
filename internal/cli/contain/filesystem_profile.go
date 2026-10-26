@@ -644,11 +644,12 @@ func configuredSecretPaths(cfg *config.Config, configDir string) (required, opti
 	return required, optional
 }
 
-// configuredSecret is one path hidden from the agent. evidence marks the
+// configuredSecret is one path hidden from the agent. value is the configured
+// spelling and path the absolute form used for hiding. evidence marks the
 // recorder and audit-log directories, which the operator may read; every other
 // entry is private material that must also stay out of the operator evidence ACL.
 type configuredSecret struct {
-	field, path        string
+	field, value, path string
 	required, evidence bool
 }
 
@@ -658,18 +659,23 @@ func configuredSecrets(cfg *config.Config, configDir string) []configuredSecret 
 	}
 	var secrets []configuredSecret
 	if p := strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath); p != "" {
-		secrets = append(secrets, configuredSecret{field: "flight_recorder.signing_key_path", path: p, required: true})
+		secrets = append(secrets, configuredSecret{field: "flight_recorder.signing_key_path", value: p, path: p, required: true})
 	}
 	if p := strings.TrimSpace(cfg.MediationEnvelope.SigningKeyPath); p != "" {
-		secrets = append(secrets, configuredSecret{field: "mediation_envelope.signing_key_path", path: p, required: true})
+		secrets = append(secrets, configuredSecret{field: "mediation_envelope.signing_key_path", value: p, path: p, required: true})
 	}
 	add := func(field, p string) {
-		if strings.TrimSpace(p) != "" {
-			secrets = append(secrets, configuredSecret{field: field, path: strings.TrimSpace(p)})
+		if p = strings.TrimSpace(p); p != "" {
+			secrets = append(secrets, configuredSecret{field: field, value: p, path: p})
+		}
+	}
+	addConfigured := func(field, raw string) {
+		if p := absoluteConfiguredPath(configDir, raw); p != "" {
+			secrets = append(secrets, configuredSecret{field: field, value: strings.TrimSpace(raw), path: p})
 		}
 	}
 	if p := strings.TrimSpace(cfg.FlightRecorder.Dir); p != "" {
-		secrets = append(secrets, configuredSecret{field: "flight_recorder.dir", path: p, evidence: true})
+		secrets = append(secrets, configuredSecret{field: "flight_recorder.dir", value: p, path: p, evidence: true})
 	}
 	add("learn.capture_dir", cfg.Learn.CaptureDir)
 	add("behavioral_baseline.profile_dir", cfg.BehavioralBaseline.ProfileDir)
@@ -679,7 +685,7 @@ func configuredSecrets(cfg *config.Config, configDir string) []configuredSecret 
 		add("learn.privacy.salt_source", rest)
 	}
 	if file := strings.TrimSpace(cfg.Logging.File); file != "" {
-		secrets = append(secrets, configuredSecret{field: "logging.file", path: path.Dir(file), evidence: true})
+		secrets = append(secrets, configuredSecret{field: "logging.file", value: file, path: path.Dir(file), evidence: true})
 	}
 	if dir := strings.TrimSpace(cfg.MCPToolPolicy.QuarantineDir); strings.HasPrefix(dir, "/") {
 		add("mcp_tool_policy.quarantine_dir", dir)
@@ -687,30 +693,27 @@ func configuredSecrets(cfg *config.Config, configDir string) []configuredSecret 
 	// Private material outside the default configDir/tls hide. Public
 	// verification material (CA certificate, client certificate, server CA,
 	// posture proof, tools.list) stays readable.
-	add("tls_interception.ca_key", absoluteConfiguredPath(configDir, cfg.TLSInterception.CAKeyPath))
-	add("flight_recorder.anchor.rekor_key_path", absoluteConfiguredPath(configDir, cfg.FlightRecorder.Anchor.RekorKeyPath))
-	add("license_file", absoluteConfiguredPath(configDir, cfg.LicenseFile))
-	add("evidence_provenance.commitment_keyring_path", absoluteConfiguredPath(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath))
-	add("dlp.secrets_file", absoluteConfiguredPath(configDir, cfg.DLP.SecretsFile))
-	add("learn_lock.roster_path", absoluteConfiguredPath(configDir, cfg.LearnLock.RosterPath))
-	add("mcp_binary_integrity.manifest_path", absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.ManifestPath))
-	add("mcp_binary_integrity.keystore", absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.Keystore))
-	add("conductor.client_key_path", absoluteConfiguredPath(configDir, cfg.Conductor.ClientKeyPath))
-	add("conductor.enrollment_token_path", absoluteConfiguredPath(configDir, cfg.Conductor.EnrollmentTokenPath))
-	add("conductor.durable_audit_queue_keyring", absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueKeyring))
-	add("conductor.trust_roster_path", absoluteConfiguredPath(configDir, cfg.Conductor.TrustRosterPath))
-	add("conductor.durable_audit_queue_dir", absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueDir))
-	var dictionaries []string
+	addConfigured("tls_interception.ca_key", cfg.TLSInterception.CAKeyPath)
+	addConfigured("flight_recorder.anchor.rekor_key_path", cfg.FlightRecorder.Anchor.RekorKeyPath)
+	addConfigured("license_file", cfg.LicenseFile)
+	addConfigured("evidence_provenance.commitment_keyring_path", cfg.EvidenceProvenance.CommitmentKeyringPath)
+	addConfigured("dlp.secrets_file", cfg.DLP.SecretsFile)
+	addConfigured("learn_lock.roster_path", cfg.LearnLock.RosterPath)
+	addConfigured("mcp_binary_integrity.manifest_path", cfg.MCPBinaryIntegrity.ManifestPath)
+	addConfigured("mcp_binary_integrity.keystore", cfg.MCPBinaryIntegrity.Keystore)
+	addConfigured("conductor.client_key_path", cfg.Conductor.ClientKeyPath)
+	addConfigured("conductor.enrollment_token_path", cfg.Conductor.EnrollmentTokenPath)
+	addConfigured("conductor.durable_audit_queue_keyring", cfg.Conductor.DurableAuditQueueKeyring)
+	addConfigured("conductor.trust_roster_path", cfg.Conductor.TrustRosterPath)
+	addConfigured("conductor.durable_audit_queue_dir", cfg.Conductor.DurableAuditQueueDir)
+	var dictionaries []configuredSecret
 	for _, dict := range cfg.Redaction.Dictionaries {
 		if p := absoluteConfiguredPath(configDir, dict.EntriesFile); p != "" {
-			dictionaries = append(dictionaries, p)
+			dictionaries = append(dictionaries, configuredSecret{field: "redaction.dictionaries.entries_file", value: strings.TrimSpace(dict.EntriesFile), path: p})
 		}
 	}
-	sort.Strings(dictionaries)
-	for _, p := range dictionaries {
-		add("redaction.dictionaries.entries_file", p)
-	}
-	return secrets
+	sort.Slice(dictionaries, func(i, j int) bool { return dictionaries[i].path < dictionaries[j].path })
+	return append(secrets, dictionaries...)
 }
 
 // absoluteConfiguredPath keeps an absolute secret path and resolves a relative

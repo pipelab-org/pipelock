@@ -182,3 +182,17 @@ func TestConfiguredSecretPathsHideRekorKey(t *testing.T) {
 		t.Fatalf("rekor key not hidden: %v", optional)
 	}
 }
+
+// A relative path that config.Load does not rebase opens from the service
+// working directory, /, so that spelling is checked as well as the
+// config-relative one.
+func TestInstallWritePathsPrivateMaterialRelativeToServiceRoot(t *testing.T) {
+	env, _, _ := newFakeEnv(t)
+	cfg := config.Defaults()
+	rel := strings.TrimPrefix(filepath.Join(env.recorderDir(), "rekor-entry.key"), string(os.PathSeparator))
+	cfg.FlightRecorder.Anchor.RekorKeyPath = rel
+	err := requireContainWritePaths(env, cfg, managedPipelockConfigPath(env), false)
+	if err == nil || !strings.Contains(err.Error(), "flight_recorder.anchor.rekor_key_path") || !strings.Contains(err.Error(), "operator-readable evidence directory") {
+		t.Fatalf("want evidence refusal for service-root relative path, got %v", err)
+	}
+}

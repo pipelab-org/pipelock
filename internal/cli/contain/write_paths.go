@@ -163,22 +163,30 @@ func requirePrivateMaterialOutsideEvidence(env *installEnv, cfg *config.Config, 
 		if secret.evidence {
 			continue
 		}
-		path := secret.path
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(string(os.PathSeparator), path)
+		// config.Load rebases only some relative paths onto the config
+		// directory; the rest open relative to the service working directory,
+		// which is / for the managed unit. Check both spellings.
+		candidates := []string{secret.path}
+		if !filepath.IsAbs(secret.value) {
+			candidates = append(candidates, filepath.Join(string(os.PathSeparator), secret.value))
 		}
-		resolved, err := resolveContainWritePath(env, path)
-		if err != nil {
-			// Unresolvable material is judged by its lexical location. That
-			// still refuses a path written inside an evidence directory.
-			resolved = filepath.Clean(path)
-			if dryRun && errors.Is(err, os.ErrPermission) && evidenceDirContaining(env, root, resolved) == "" {
-				_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %q without privilege; the privileged install must re-check that it stays outside the evidence directories.\n", secret.field, secret.path)
-				continue
+		for _, path := range candidates {
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(string(os.PathSeparator), path)
 			}
-		}
-		if evidenceDir := evidenceDirContaining(env, root, resolved); evidenceDir != "" {
-			return fmt.Errorf("contain install config preflight failed for %s: %s %q resolves inside operator-readable evidence directory %s; move this private material outside %s and %s and set %s to the new location, then rerun contain install; refusing install", configPath, secret.field, secret.path, evidenceDir, env.logsDir(), env.recorderDir(), secret.field)
+			resolved, err := resolveContainWritePath(env, path)
+			if err != nil {
+				// Unresolvable material is judged by its lexical location. That
+				// still refuses a path written inside an evidence directory.
+				resolved = filepath.Clean(path)
+				if dryRun && errors.Is(err, os.ErrPermission) && evidenceDirContaining(env, root, resolved) == "" {
+					_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %q without privilege; the privileged install must re-check that it stays outside the evidence directories.\n", secret.field, path)
+					continue
+				}
+			}
+			if evidenceDir := evidenceDirContaining(env, root, resolved); evidenceDir != "" {
+				return fmt.Errorf("contain install config preflight failed for %s: %s %q resolves inside operator-readable evidence directory %s; move this private material outside %s and %s and set %s to the new location, then rerun contain install; refusing install", configPath, secret.field, secret.value, evidenceDir, env.logsDir(), env.recorderDir(), secret.field)
+			}
 		}
 	}
 	return nil
