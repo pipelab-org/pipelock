@@ -754,13 +754,14 @@ func RunHTTPProxy(
 		}
 	}
 
-	// Terminate session if established.
+	// Stop the GET stream and any held-call release before terminating the
+	// session. DeleteSession clears the negotiated version, so a release sent
+	// after it would leave without its modern request metadata; releases send
+	// on ctx, and DeleteSession uses its own context.
+	cancel()
 	if httpClient.SessionID() != "" {
 		httpClient.DeleteSession(safeLogW)
 	}
-
-	// Stop GET stream and wait for it to finish.
-	cancel()
 	wg.Wait()
 	emitPendingIncompleteOutcomes(safeLogW, tracker, fwdOpts, "upstream_closed")
 

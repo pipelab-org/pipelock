@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -927,5 +928,97 @@ func TestHTTPBridgeHeaderReinitialize(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// Shutdown's DeleteSession clears the negotiated version. A held call approved
+// while that DELETE is in flight must not leave without modern metadata.
+func TestHTTPBridgeHeaderShutdownRelease(t *testing.T) {
+	for _, required := range []bool{false, true} {
+		t.Run(fmt.Sprintf("required=%t", required), func(t *testing.T) {
+			opts := bridgeHeaderOpts(t)
+			h := openReceiptHarness(t, &opts, required)
+			manager := newDeferKillManager(t)
+			opts.DeferManager = manager
+			policy := deferApprovalPolicy(config.DeferResolverProfile{})
+			policy.Rules[0].ToolPattern = regexp.MustCompile(`^echo$`)
+			policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+			opts.PolicyCfg = policy
+			var calls, unmirrored atomic.Int32
+			deleteStarted := make(chan struct{})
+			finishDelete := make(chan struct{})
+			var finishOnce sync.Once
+			finish := func() { finishOnce.Do(func() { close(finishDelete) }) }
+			t.Cleanup(finish)
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodDelete {
+					close(deleteStarted)
+					select {
+					case <-finishDelete:
+					case <-r.Context().Done():
+					}
+					return
+				}
+				if r.Method != http.MethodPost {
+					w.WriteHeader(http.StatusMethodNotAllowed)
+					return
+				}
+				body, _ := io.ReadAll(r.Body)
+				f := ParseMCPFrame(body)
+				w.Header().Set("Content-Type", "application/json")
+				switch f.Method {
+				case "initialize":
+					w.Header().Set("Mcp-Session-Id", "fixture-session")
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2026-07-28","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}`, f.ID)
+				case "tools/list":
+					discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+				case methodToolsCall:
+					calls.Add(1)
+					if r.Header.Get(listenerMCPMethod) != methodToolsCall || r.Header.Get(listenerMCPName) != "echo" || r.Header.Get("Mcp-Param-Region") != "body" || r.Header.Get(listenerProtocolVersion) != currentMCPVersion {
+						unmirrored.Add(1)
+					}
+					_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, f.ID)
+				}
+			}))
+			defer up.Close()
+			defer finish()
+			inputR, inputW := io.Pipe()
+			defer func() { _ = inputR.Close() }()
+			var out, logs syncBuffer
+			done := make(chan error, 1)
+			go func() { done <- RunHTTPProxy(t.Context(), inputR, &out, &logs, up.URL, nil, opts) }()
+			if _, err := io.WriteString(inputW, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), `"id":0`) }, "initialize response")
+			if _, err := io.WriteString(inputW, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"}}}`+"\n"); err != nil {
+				t.Fatal(err)
+			}
+			testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "held call")
+			if err := inputW.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-deleteStarted:
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Fatalf("session was not deleted; logs=%s", logs.String())
+			}
+			if err := manager.Resolve(manager.Snapshot()[0].DeferID, config.ActionAllow, deferred.SourceApproval); err != nil {
+				t.Fatal(err)
+			}
+			finish()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Fatal("bridge did not finish")
+			}
+			if unmirrored.Load() != 0 {
+				t.Fatalf("calls=%d unmirrored=%d out=%s logs=%s", calls.Load(), unmirrored.Load(), out.String(), logs.String())
+			}
+			requireEvidenceNotBroken(t, "bridge", h)
+		})
 	}
 }
