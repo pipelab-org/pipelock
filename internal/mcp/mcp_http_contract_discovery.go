@@ -38,7 +38,9 @@ type mcpContractDiscoveryFlight struct {
 // inspection and commit. A newer list therefore cannot be overwritten by an
 // older discovery, including one that had to wait for that list. A follower
 // shares a failure only for the tool it asked about, and never the leader's own
-// cancellation; otherwise it retries, so one caller cannot refuse another's call.
+// cancellation; otherwise it retries. A shared failure can still come from the
+// leader's upstream credentials when callers of one principal send different
+// ones; that refusal lasts only for the overlap and a retry discovers again.
 func (state *mcpListenerClientState) acquireToolContract(ctx context.Context, name string, discover func() error) (func(), error) {
 	for {
 		state.discoveryMu.Lock()
