@@ -762,7 +762,16 @@ func addCodexStdio(ctx context.Context, codexBin, name string, transport codexMC
 	if _, err := runCodexCommand(ctx, codexBin, buildCodexAddArgs(name, transport.Command, transport.Args)...); err != nil {
 		return err
 	}
-	return persistCodexEnvNames(name, transport)
+	if err := persistCodexEnvNames(name, transport); err != nil {
+		// The add succeeded but its env_vars were not recorded, so the new
+		// registration would start without its environment. Remove it before
+		// the caller restores the original.
+		if rmErr := codexMCPRemoveBestEffort(ctx, codexBin, name); rmErr != nil {
+			return errors.Join(err, fmt.Errorf("removing incomplete registration: %w", rmErr))
+		}
+		return err
+	}
+	return nil
 }
 
 // rollbackCodexAdd re-registers a server using the captured original transport

@@ -489,3 +489,34 @@ func TestCodexEnvironmentWritesThroughSymlink(t *testing.T) {
 	}
 	assertCodexEnvNames(t, "example", []string{"EXAMPLE_NAME"})
 }
+
+func TestCodexAddRemovesRegistrationWhenEnvNamesNotPersisted(t *testing.T) {
+	if runtime.GOOS == osWindows {
+		t.Skip("shell helper not supported on Windows")
+	}
+	dir := t.TempDir()
+	t.Setenv("CODEX_HOME", dir)
+	// The add "succeeds" but writes no server entry, so persisting env_vars fails.
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("[mcp_servers.other]\ncommand = 'node'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invokeLog := filepath.Join(dir, "invocations.log")
+	codexBin := filepath.Join(dir, "codex")
+	writeShellScript(t, codexBin, fmt.Sprintf("#!/bin/sh\necho \"$@\" >> %q\nexit 0\n", invokeLog))
+	t.Setenv("EXAMPLE_NAME", "x")
+
+	err := addCodexStdio(t.Context(), codexBin, "example", codexMCPTransport{
+		Type: codexTransportStdio, Command: "/usr/bin/node", Args: []string{"server.js"}, EnvVars: []string{"EXAMPLE_NAME"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "no server") {
+		t.Fatalf("addCodexStdio error = %v, want persistence failure", err)
+	}
+	data, readErr := os.ReadFile(filepath.Clean(invokeLog))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 || !strings.HasPrefix(lines[0], "mcp add example ") || lines[1] != "mcp remove example" {
+		t.Fatalf("invocations = %q, want add then remove of the incomplete registration", lines)
+	}
+}
