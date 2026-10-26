@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func executeCodexRepair(t *testing.T, bin, action string) (string, error) {
@@ -254,8 +257,16 @@ func TestCodexStructuredEnvironmentRefusesUnsupportedSources(t *testing.T) {
 		`7`,
 	} {
 		t.Run(entry, func(t *testing.T) {
-			if _, err := parseCodexMCPList([]byte(`[{"name":"example","transport":{"env_vars":[` + entry + `]}}]`)); err == nil {
+			servers, err := parseCodexMCPList([]byte(`[{"name":"example","transport":{"type":"stdio","command":"node","env_vars":["EXAMPLE_LOCAL",` + entry + `]}}]`))
+			if err != nil {
+				t.Fatalf("one server's whitelist refused the whole list: %v", err)
+			}
+			transport := servers[0].Transport
+			if !transport.EnvVarsNonLocal || strings.Contains(strings.Join(transport.EnvVars, ","), "EXAMPLE_NAME") {
 				t.Fatal("unsupported whitelist source silently converted to local inheritance")
+			}
+			if unsupportedCodexInstallReason(servers[0]) != codexNonLocalEnvReason || unsupportedCodexRemoveReason(servers[0]) != codexNonLocalEnvReason {
+				t.Fatal("server with a non-local whitelist entry was not marked unsupported")
 			}
 		})
 	}
@@ -266,4 +277,72 @@ func TestCodexStructuredEnvironmentRefusesUnsupportedSources(t *testing.T) {
 	if err := validateCodexEnv(servers[0].Transport); err == nil || !strings.Contains(err.Error(), "blocked") {
 		t.Fatal("structured names bypassed the runtime environment policy")
 	}
+}
+
+func TestCodexNonLocalEnvironmentSourceSkipsOnlyItsServer(t *testing.T) {
+	// codex-cli 0.162.0 accepts and lists remote-source and sourceless
+	// objects. Neither may block other servers or be rewritten as local names.
+	remoteTOML := `env_vars = [{ name = "EXAMPLE_REMOTE", source = "remote" }, { name = "EXAMPLE_UNSOURCED" }]`
+	remoteJSON := `[{"name":"EXAMPLE_REMOTE","source":"remote"},{"name":"EXAMPLE_UNSOURCED"}]`
+	wrapperArgs := `["mcp","proxy","--env","EXAMPLE_LOCAL","--","node"]`
+	for _, action := range []string{"install", "remove"} {
+		t.Run(action, func(t *testing.T) {
+			plainCommand, plainArgs := "node", `[]`
+			if action == "remove" {
+				plainCommand, plainArgs = pipelockBin, wrapperArgs
+			}
+			list := fmt.Sprintf(`[{"name":"plain","transport":{"type":"stdio","command":%q,"args":%s,"env_vars":["EXAMPLE_LOCAL"]}},`+
+				`{"name":"remote","transport":{"type":"stdio","command":"node","args":[],"env_vars":%s}}]`, plainCommand, plainArgs, remoteJSON)
+			bin, log := fakeCodex(t, list)
+			path := filepath.Join(os.Getenv("CODEX_HOME"), "config.toml")
+			seed := fmt.Sprintf("[mcp_servers.plain]\ncommand = %q\nargs = %s\n\n[mcp_servers.remote]\ncommand = \"node\"\nargs = []\n%s\n", plainCommand, plainArgs, remoteTOML)
+			if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			output, err := executeCodexRepair(t, bin, action)
+			if err != nil {
+				t.Fatalf("one server with a non-local source blocked %s: %v; %s", action, err, output)
+			}
+			invocations, err := os.ReadFile(filepath.Clean(log))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(invocations), "mcp add plain") {
+				t.Fatalf("plain server was not processed: %s", invocations)
+			}
+			if strings.Contains(string(invocations), "mcp remove remote") || strings.Contains(string(invocations), "mcp add remote") {
+				t.Fatalf("non-local server was mutated: %s", invocations)
+			}
+			if action == "install" && !strings.Contains(output, "skip remote ("+codexNonLocalEnvReason+")") {
+				t.Fatalf("non-local server skip was not reported: %s", output)
+			}
+			var document struct {
+				Servers map[string]struct {
+					Env     map[string]any `toml:"env"`
+					EnvVars []any          `toml:"env_vars"`
+				} `toml:"mcp_servers"`
+			}
+			if _, err := toml.DecodeFile(path, &document); err != nil {
+				t.Fatal(err)
+			}
+			if plain := document.Servers["plain"]; plain.Env != nil || !reflect.DeepEqual(plain.EnvVars, []any{"EXAMPLE_LOCAL"}) {
+				t.Fatalf("plain server names = %v", plain.EnvVars)
+			}
+			want := []any{map[string]any{"name": "EXAMPLE_REMOTE", "source": "remote"}, map[string]any{"name": "EXAMPLE_UNSOURCED"}}
+			if !reflect.DeepEqual(document.Servers["remote"].EnvVars, want) {
+				t.Fatalf("non-local declarations changed: %v", document.Servers["remote"].EnvVars)
+			}
+		})
+	}
+	t.Run("wrapped remove refusal names the server", func(t *testing.T) {
+		list := fmt.Sprintf(`[{"name":"remote","transport":{"type":"stdio","command":%q,"args":%s,"env_vars":%s}}]`, pipelockBin, wrapperArgs, remoteJSON)
+		bin, log := fakeCodex(t, list)
+		output, err := executeCodexRepair(t, bin, "remove")
+		if err == nil || !strings.Contains(err.Error(), `"remote"`) || !strings.Contains(err.Error(), codexNonLocalEnvReason) {
+			t.Fatalf("wrapped non-local server was not refused by name: %v; %s", err, output)
+		}
+		if _, statErr := os.Stat(log); !os.IsNotExist(statErr) {
+			t.Fatal("refused remove still invoked codex")
+		}
+	})
 }

@@ -73,6 +73,8 @@ type codexMCPTransport struct {
 	BearerTokenEnvVar string            `json:"bearer_token_env_var,omitempty"`
 	HTTPHeaders       json.RawMessage   `json:"http_headers,omitempty"`
 	EnvHTTPHeaders    json.RawMessage   `json:"env_http_headers,omitempty"`
+	// EnvVarsNonLocal marks an env_vars entry that is not a local name.
+	EnvVarsNonLocal bool `json:"-"`
 }
 
 // CodexCmd returns the `pipelock codex` command tree.
@@ -289,6 +291,9 @@ func unsupportedCodexInstallReason(server codexMCPServer) string {
 	if server.Transport.CWD != "" {
 		return "cwd cannot be preserved by codex mcp add"
 	}
+	if server.Transport.EnvVarsNonLocal {
+		return codexNonLocalEnvReason
+	}
 	if _, err := codexEnvKeys(server.Transport); err != nil {
 		return "unsafe env key cannot be passed through safely"
 	}
@@ -307,6 +312,9 @@ func unsupportedCodexRemoveReason(server codexMCPServer) string {
 	}
 	if server.Transport.CWD != "" {
 		return "cwd cannot be preserved by codex mcp add"
+	}
+	if server.Transport.EnvVarsNonLocal {
+		return codexNonLocalEnvReason
 	}
 	if _, err := codexEnvKeys(server.Transport); err != nil {
 		return "unsafe env key cannot be passed through safely"

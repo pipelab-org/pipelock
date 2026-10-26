@@ -20,21 +20,39 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 )
 
-// codexEnvNames normalizes both local whitelist forms from the Codex config
-// reference: strings and {name, source: "local"}. Remote sources must not be
-// turned into local inheritance by dropping their source declaration.
+// codexEnvNames holds both local whitelist forms from the Codex config
+// reference: strings and {name, source: "local"}.
 type codexEnvNames []string
 
-func (names *codexEnvNames) UnmarshalJSON(data []byte) error {
+// codexNonLocalEnvReason is reported for a server whose whitelist has any
+// other entry (remote source, missing source or unknown shape). The local
+// wrapper cannot honor those sources, so the server is left unchanged.
+const codexNonLocalEnvReason = `env_vars entries without source = "local" cannot be forwarded by the local wrapper; wrap or unwrap this server in config.toml manually`
+
+// UnmarshalJSON decodes env_vars per server. Remote sources must not be
+// turned into local inheritance by dropping their source declaration, and one
+// such server must not stop install or remove for the others.
+func (t *codexMCPTransport) UnmarshalJSON(data []byte) error {
+	type plain codexMCPTransport
+	var decoded struct {
+		plain
+		EnvVars json.RawMessage `json:"env_vars"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*t = codexMCPTransport(decoded.plain)
+	if len(decoded.EnvVars) == 0 || string(decoded.EnvVars) == "null" {
+		return nil
+	}
 	var entries []json.RawMessage
-	if err := json.Unmarshal(data, &entries); err != nil {
+	if err := json.Unmarshal(decoded.EnvVars, &entries); err != nil {
 		return errors.New("invalid Codex env_vars whitelist; repair config.toml before retrying")
 	}
-	var normalized codexEnvNames
 	for _, raw := range entries {
 		var name string
 		if err := json.Unmarshal(raw, &name); err == nil {
-			normalized = append(normalized, name)
+			t.EnvVars = append(t.EnvVars, name)
 			continue
 		}
 		var entry struct {
@@ -44,11 +62,11 @@ func (names *codexEnvNames) UnmarshalJSON(data []byte) error {
 		decoder := json.NewDecoder(bytes.NewReader(raw))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&entry); err != nil || entry.Source != "local" {
-			return errors.New("unsupported Codex env_vars entry; only names and source=local entries can use local forwarding; manage other sources in config.toml manually")
+			t.EnvVarsNonLocal = true
+			continue
 		}
-		normalized = append(normalized, entry.Name)
+		t.EnvVars = append(t.EnvVars, entry.Name)
 	}
-	*names = normalized
 	return nil
 }
 
