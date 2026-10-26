@@ -128,8 +128,8 @@ func (h *heldRotation) startArriving(t *testing.T) chan error {
 		// Tickets complete in append order, so the pending one is waited first.
 		h.unblock()
 		_ = h.pending.Wait()
-		<-h.rotating
-		t.Fatalf("a write arriving during the rotation finished before it: %v", err)
+		rotationErr := <-h.rotating
+		t.Fatalf("a write arriving during the rotation finished before it: %v (rotation: %v)", err, rotationErr)
 	case <-time.After(30 * time.Second):
 		t.Fatal("a write arriving during the rotation neither waited nor finished")
 	}

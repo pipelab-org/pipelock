@@ -1269,8 +1269,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         ):
             self.assertNotIn(consumer_write, names)
 
-        self.assertIn("actions/upload-artifact@043fb46d", self.workflow)
-        self.assertIn("actions/download-artifact@3e5f45b", self.workflow)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", self.workflow)
+        self.assertIn("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", self.workflow)
 
         # These two were positional (`build["steps"][-1]`, `promote["steps"][3]`).
         # A positional index starts passing for the wrong reason the moment a

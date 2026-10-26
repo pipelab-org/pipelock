@@ -270,8 +270,8 @@ func (r Result) WriteReport(w io.Writer) {
 	for _, skill := range r.Skills {
 		_, _ = fmt.Fprintf(bw, "%s inventory: %d capabilities, %d referenced file(s)\n",
 			skill.ID, len(skill.Capabilities), len(skill.ReferencedFiles))
-		for _, cap := range skill.Capabilities {
-			_, _ = fmt.Fprintf(bw, "  %s: %d evidence item(s)\n", cap.Kind, len(cap.Evidence))
+		for _, capability := range skill.Capabilities {
+			_, _ = fmt.Fprintf(bw, "  %s: %d evidence item(s)\n", capability.Kind, len(capability.Evidence))
 		}
 	}
 	for _, finding := range r.Findings {

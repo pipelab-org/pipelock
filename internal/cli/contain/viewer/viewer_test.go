@@ -41,6 +41,13 @@ func testViewer(t *testing.T) *Viewer {
 	return v
 }
 
+func waitViewerDone(t *testing.T, done <-chan error) {
+	t.Helper()
+	if err := <-done; err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("viewer shutdown: %v", err)
+	}
+}
+
 func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 	for _, tc := range []struct {
 		name, want string
@@ -127,7 +134,7 @@ func TestViewerModesAndLease(t *testing.T) {
 				}
 			}
 			_ = operator.Close()
-			<-done
+			waitViewerDone(t, done)
 		})
 	}
 }
@@ -147,10 +154,10 @@ func TestViewerBusyAndRelease(t *testing.T) {
 	}
 	_ = peer.Close()
 	_ = first.Close()
-	<-firstDone
+	waitViewerDone(t, firstDone)
 	third, _, thirdDone := startViewer(t, v, "control")
 	_ = third.Close()
-	<-thirdDone
+	waitViewerDone(t, thirdDone)
 }
 
 func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
@@ -175,12 +182,12 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 		t.Fatal("expired controller retained input authority")
 	}
 	_ = first.Close()
-	<-firstDone
+	waitViewerDone(t, firstDone)
 	if !v.controls(replacement) {
 		t.Fatal("old controller exit revoked replacement")
 	}
 	_ = second.Close()
-	<-secondDone
+	waitViewerDone(t, secondDone)
 }
 
 func TestExpiredControlLeaseCannotRenew(t *testing.T) {
@@ -206,7 +213,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 		}
 	}
 	_ = first.Close()
-	<-firstDone
+	waitViewerDone(t, firstDone)
 }
 
 func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
@@ -241,7 +248,7 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 	v.cfg.PeerUID = func(net.Conn) (uint32, error) { return 42, nil }
 	operator, _, done := startViewer(t, v, "view")
 	_ = operator.Close()
-	<-done
+	waitViewerDone(t, done)
 }
 
 func TestViewerCap(t *testing.T) {
@@ -260,7 +267,7 @@ func TestViewerCap(t *testing.T) {
 	}
 	_ = peer.Close()
 	_ = first.Close()
-	<-firstDone
+	waitViewerDone(t, firstDone)
 }
 
 func TestViewerCancellation(t *testing.T) {
@@ -330,7 +337,7 @@ func TestViewerFilterDisplayMessagesAndInput(t *testing.T) {
 				}
 			}
 			_ = operator.Close()
-			<-done
+			waitViewerDone(t, done)
 		})
 	}
 }
@@ -380,7 +387,7 @@ func TestViewerLeaseRenewsWhileConnected(t *testing.T) {
 		t.Fatalf("renewed control input = %v: %v", got, err)
 	}
 	_ = operator.Close()
-	<-done
+	waitViewerDone(t, done)
 }
 
 func TestViewerDeniesRFBConnectionFailures(t *testing.T) {
