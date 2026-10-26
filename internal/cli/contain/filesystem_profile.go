@@ -634,49 +634,71 @@ func loadProbeConfig(env *probeEnv) (*config.Config, error) {
 }
 
 func configuredSecretPaths(cfg *config.Config, configDir string) (required, optional []string) {
-	if cfg == nil {
-		return nil, nil
-	}
-	if p := strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath); p != "" {
-		required = append(required, p)
-	}
-	if p := strings.TrimSpace(cfg.MediationEnvelope.SigningKeyPath); p != "" {
-		required = append(required, p)
-	}
-	add := func(p string) {
-		if strings.TrimSpace(p) != "" {
-			optional = append(optional, strings.TrimSpace(p))
+	for _, secret := range configuredSecrets(cfg, configDir) {
+		if secret.required {
+			required = append(required, secret.path)
+		} else {
+			optional = append(optional, secret.path)
 		}
 	}
-	add(cfg.FlightRecorder.Dir)
-	add(cfg.Learn.CaptureDir)
-	add(cfg.BehavioralBaseline.ProfileDir)
-	add(cfg.LearnLock.StoreDir)
-	add(cfg.Rules.RulesDir)
+	return required, optional
+}
+
+// configuredSecret is one path hidden from the agent. evidence marks the
+// recorder and audit-log directories, which the operator may read; every other
+// entry is private material that must also stay out of the operator evidence ACL.
+type configuredSecret struct {
+	field, path        string
+	required, evidence bool
+}
+
+func configuredSecrets(cfg *config.Config, configDir string) []configuredSecret {
+	if cfg == nil {
+		return nil
+	}
+	var secrets []configuredSecret
+	if p := strings.TrimSpace(cfg.FlightRecorder.SigningKeyPath); p != "" {
+		secrets = append(secrets, configuredSecret{field: "flight_recorder.signing_key_path", path: p, required: true})
+	}
+	if p := strings.TrimSpace(cfg.MediationEnvelope.SigningKeyPath); p != "" {
+		secrets = append(secrets, configuredSecret{field: "mediation_envelope.signing_key_path", path: p, required: true})
+	}
+	add := func(field, p string) {
+		if strings.TrimSpace(p) != "" {
+			secrets = append(secrets, configuredSecret{field: field, path: strings.TrimSpace(p)})
+		}
+	}
+	if p := strings.TrimSpace(cfg.FlightRecorder.Dir); p != "" {
+		secrets = append(secrets, configuredSecret{field: "flight_recorder.dir", path: p, evidence: true})
+	}
+	add("learn.capture_dir", cfg.Learn.CaptureDir)
+	add("behavioral_baseline.profile_dir", cfg.BehavioralBaseline.ProfileDir)
+	add("learn_lock.store_dir", cfg.LearnLock.StoreDir)
+	add("rules.rules_dir", cfg.Rules.RulesDir)
 	if rest, ok := strings.CutPrefix(strings.TrimSpace(cfg.Learn.Privacy.SaltSource), "file:"); ok {
-		add(rest)
+		add("learn.privacy.salt_source", rest)
 	}
 	if file := strings.TrimSpace(cfg.Logging.File); file != "" {
-		add(path.Dir(file))
+		secrets = append(secrets, configuredSecret{field: "logging.file", path: path.Dir(file), evidence: true})
 	}
 	if dir := strings.TrimSpace(cfg.MCPToolPolicy.QuarantineDir); strings.HasPrefix(dir, "/") {
-		add(dir)
+		add("mcp_tool_policy.quarantine_dir", dir)
 	}
 	// Private material outside the default configDir/tls hide. Public
 	// verification material (CA certificate, client certificate, server CA,
 	// posture proof, tools.list) stays readable.
-	add(absoluteConfiguredPath(configDir, cfg.TLSInterception.CAKeyPath))
-	add(absoluteConfiguredPath(configDir, cfg.LicenseFile))
-	add(absoluteConfiguredPath(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath))
-	add(absoluteConfiguredPath(configDir, cfg.DLP.SecretsFile))
-	add(absoluteConfiguredPath(configDir, cfg.LearnLock.RosterPath))
-	add(absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.ManifestPath))
-	add(absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.Keystore))
-	add(absoluteConfiguredPath(configDir, cfg.Conductor.ClientKeyPath))
-	add(absoluteConfiguredPath(configDir, cfg.Conductor.EnrollmentTokenPath))
-	add(absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueKeyring))
-	add(absoluteConfiguredPath(configDir, cfg.Conductor.TrustRosterPath))
-	add(absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueDir))
+	add("tls_interception.ca_key", absoluteConfiguredPath(configDir, cfg.TLSInterception.CAKeyPath))
+	add("license_file", absoluteConfiguredPath(configDir, cfg.LicenseFile))
+	add("evidence_provenance.commitment_keyring_path", absoluteConfiguredPath(configDir, cfg.EvidenceProvenance.CommitmentKeyringPath))
+	add("dlp.secrets_file", absoluteConfiguredPath(configDir, cfg.DLP.SecretsFile))
+	add("learn_lock.roster_path", absoluteConfiguredPath(configDir, cfg.LearnLock.RosterPath))
+	add("mcp_binary_integrity.manifest_path", absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.ManifestPath))
+	add("mcp_binary_integrity.keystore", absoluteConfiguredPath(configDir, cfg.MCPBinaryIntegrity.Keystore))
+	add("conductor.client_key_path", absoluteConfiguredPath(configDir, cfg.Conductor.ClientKeyPath))
+	add("conductor.enrollment_token_path", absoluteConfiguredPath(configDir, cfg.Conductor.EnrollmentTokenPath))
+	add("conductor.durable_audit_queue_keyring", absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueKeyring))
+	add("conductor.trust_roster_path", absoluteConfiguredPath(configDir, cfg.Conductor.TrustRosterPath))
+	add("conductor.durable_audit_queue_dir", absoluteConfiguredPath(configDir, cfg.Conductor.DurableAuditQueueDir))
 	var dictionaries []string
 	for _, dict := range cfg.Redaction.Dictionaries {
 		if p := absoluteConfiguredPath(configDir, dict.EntriesFile); p != "" {
@@ -684,8 +706,10 @@ func configuredSecretPaths(cfg *config.Config, configDir string) (required, opti
 		}
 	}
 	sort.Strings(dictionaries)
-	optional = append(optional, dictionaries...)
-	return required, optional
+	for _, p := range dictionaries {
+		add("redaction.dictionaries.entries_file", p)
+	}
+	return secrets
 }
 
 // absoluteConfiguredPath keeps an absolute secret path and resolves a relative

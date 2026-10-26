@@ -134,11 +134,7 @@ func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath st
 		}
 		// Recursive evidence ACLs also grant read access to existing files on
 		// reinstall. Keep private state out even when its initial mode is 0600.
-		for _, evidenceDir := range env.evidenceACLDirs() {
-			evidenceRoot := filepath.Join(root, filepath.Base(evidenceDir))
-			if !pathWithin(evidenceRoot, resolved) {
-				continue
-			}
+		if evidenceDir := evidenceDirContaining(env, root, resolved); evidenceDir != "" {
 			allowed := p.recorder
 			switch p.field {
 			case "flight_recorder.anchor.local_log", "dashboard_snapshot.path":
@@ -151,7 +147,54 @@ func requireContainWritePaths(env *installEnv, cfg *config.Config, configPath st
 			}
 		}
 	}
+	return requirePrivateMaterialOutsideEvidence(env, cfg, configPath, dryRun)
+}
+
+// requirePrivateMaterialOutsideEvidence keeps keys, tokens, and other private
+// material the service only reads out of the operator evidence ACL. Such paths
+// may live outside the data directory; only residence in logs or recorder is
+// refused. The inventory is the same one that hides private paths from the agent.
+func requirePrivateMaterialOutsideEvidence(env *installEnv, cfg *config.Config, configPath string, dryRun bool) error {
+	root, err := resolveContainWritePath(env, env.dataDir)
+	if err != nil {
+		root = filepath.Clean(env.dataDir)
+	}
+	for _, secret := range configuredSecrets(cfg, filepath.Dir(managedPipelockConfigPath(env))) {
+		if secret.evidence {
+			continue
+		}
+		path := secret.path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(string(os.PathSeparator), path)
+		}
+		resolved, err := resolveContainWritePath(env, path)
+		if err != nil {
+			// Unresolvable material is judged by its lexical location. That
+			// still refuses a path written inside an evidence directory.
+			resolved = filepath.Clean(path)
+			if dryRun && errors.Is(err, os.ErrPermission) && evidenceDirContaining(env, root, resolved) == "" {
+				_, _ = fmt.Fprintf(env.out, "  [DEFERRED] %s: cannot resolve %q without privilege; the privileged install must re-check that it stays outside the evidence directories.\n", secret.field, secret.path)
+				continue
+			}
+		}
+		if evidenceDir := evidenceDirContaining(env, root, resolved); evidenceDir != "" {
+			return fmt.Errorf("contain install config preflight failed for %s: %s %q resolves inside operator-readable evidence directory %s; move this private material outside %s and %s and set %s to the new location, then rerun contain install; refusing install", configPath, secret.field, secret.path, evidenceDir, env.logsDir(), env.recorderDir(), secret.field)
+		}
+	}
 	return nil
+}
+
+// evidenceDirContaining names the evidence directory that receives the
+// recursive operator ACL and contains resolved, or returns "". root is the
+// resolved data directory; the configured spelling is also checked so a
+// lexical fallback path under a symlinked data directory still matches.
+func evidenceDirContaining(env *installEnv, root, resolved string) string {
+	for _, evidenceDir := range env.evidenceACLDirs() {
+		if pathWithin(filepath.Join(root, filepath.Base(evidenceDir)), resolved) || pathWithin(evidenceDir, resolved) {
+			return evidenceDir
+		}
+	}
+	return ""
 }
 
 // resolveContainWritePath resolves existing ancestors while allowing a missing
