@@ -1917,9 +1917,17 @@ func RunHTTPListenerProxy(
 					}
 					closeContractIntent("tool_header_contract_unavailable")
 					denialAudit = mcpListenerInspectionDenialAudit()
+					// Discovery errors can quote upstream bytes, such as a malformed
+					// chunked trailer, and this reply is not scanned. The cause goes
+					// to the operator log only; the client gets Pipelock's own text.
+					_, _ = fmt.Fprintf(safeLogW, "pipelock: cannot establish tool header contract for %q: %q\n", frame.RoutingName, contractErr.Error())
+					clientErr := errors.New("pipelock: cannot establish tool header contract")
+					if reason := discoveryClientReason(contractErr); reason != "" {
+						clientErr = fmt.Errorf("%w: %s", clientErr, reason)
+					}
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusServiceUnavailable)
-					_, _ = w.Write(upstreamErrorResponse(frame.ID, fmt.Errorf("pipelock: cannot establish tool header contract: %w", contractErr)))
+					_, _ = w.Write(upstreamErrorResponse(frame.ID, clientErr))
 					return
 				}
 				releaseContract = sync.OnceFunc(releaseContract)

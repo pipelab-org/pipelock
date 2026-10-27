@@ -441,7 +441,7 @@ func RunHTTPProxy(
 						// live upstream gate above. The hold wrote a defer receipt,
 						// not an intent, so an outcome under its ID would read as
 						// "outcome without matching intent" to completeness checks.
-						_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused deferred call %s: %v\n", deferredReq.DeferID, headerContractErr)
+						_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused deferred call %s: %q\n", deferredReq.DeferID, headerContractErr.Error())
 						res.FinalDecision = config.ActionBlock
 						res.ResolutionSource = deferred.SourceUpstreamContract
 						res.Reason = "tool_header_contract_unavailable"
@@ -645,7 +645,7 @@ func RunHTTPProxy(
 
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
-			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %v\n", headerErr)
+			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
 			// Notifications are never tracked: close their intent from the input
 			// decision, as the upstream gate above does.
 			if isRPCNotification(frame.ID) {

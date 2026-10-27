@@ -82,6 +82,12 @@ func observeMCPResponseTaint(opts MCPProxyOpts, promptHit bool) {
 }
 
 func observeMCPResponseFindings(opts MCPProxyOpts, kinds []session.HostileFindingKind) {
+	// Private header-contract discovery reads a tool list the agent never
+	// receives, so it is not exposure. Scanning, refusals, audit and adaptive
+	// signals still run; only the session's exposure history is left alone.
+	if opts.toolContractDiscovery {
+		return
+	}
 	taintCfg := opts.taintCfg()
 	if taintCfg == nil || !taintCfg.Enabled {
 		return
