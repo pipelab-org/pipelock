@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"unicode"
 
@@ -299,6 +300,51 @@ func TestCommandWordFoldParity(t *testing.T) {
 		}
 		if got := foldString(string(r)); got != string(least) {
 			t.Fatalf("fold %U: %q", r, got)
+		}
+	}
+}
+
+func TestPatternCachesReuseRecompiledPattern(t *testing.T) {
+	const pattern = `cache_reload_fixture\s+--flag`
+	for range 3 {
+		re := regexp.MustCompile(pattern)
+		leadingWords(re)
+		pairLiterals(re)
+	}
+	for name, cache := range map[string]*sync.Map{"leading": &leadingWordsCache, "literal": &pairLiteralCache} {
+		count := 0
+		cache.Range(func(key, _ any) bool {
+			switch k := key.(type) {
+			case string:
+				if k == pattern {
+					count++
+				}
+			case *regexp.Regexp:
+				if k.String() == pattern {
+					count++
+				}
+			}
+			return true
+		})
+		if count != 1 {
+			t.Errorf("%s cache retained %d entries for identical source, want 1", name, count)
+		}
+	}
+}
+
+func TestPairFoldMatchesDirectRegex(t *testing.T) {
+	patterns := []string{`(?i)\bk\s+s`, `(?i)example.*--flag`, `^a b$`, `(?s).*`, `\x{FFFD}`, `(?i)σ`}
+	tokens := []string{"", "a", "b", "k", "K", "ſ", "s", "example", "--flag", "Σ", "ς", string([]byte{0xff}), "a b"}
+	for _, source := range patterns {
+		re := regexp.MustCompile(source)
+		for _, a := range tokens {
+			for _, c := range tokens {
+				for _, folds := range []map[string]string{nil, {a: foldString(a)}, {a: foldString(a), c: foldString(c)}} {
+					if got, want := matchPairWithFold(re, a, c, folds), re.MatchString(a+" "+c); got != want {
+						t.Fatalf("%q pair %q %q: got %v want %v", source, a, c, got, want)
+					}
+				}
+			}
 		}
 	}
 }

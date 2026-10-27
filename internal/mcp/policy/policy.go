@@ -1350,7 +1350,7 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 		return Verdict{}
 	}
 
-	var allRules []string
+	var allRules, allNotes, allIncomplete []string
 	strictest := ""
 	redirectProfile := ""
 	var resolutionPolicy config.DeferResolutionPolicy
@@ -1359,6 +1359,10 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 		v := pc.checkSingle(elem)
 		if v.Matched {
 			allRules = append(allRules, v.Rules...)
+			allNotes = appendUniqueNotes(allNotes, v.Notes)
+			for _, rule := range v.IncompleteRules {
+				allIncomplete = appendUniqueRule(allIncomplete, rule)
+			}
 			prev := strictest
 			strictest = StricterAction(strictest, v.Action)
 			// Track redirect profile from the verdict that set the effective action.
@@ -1387,6 +1391,8 @@ func (pc *Config) checkBatch(line []byte) Verdict {
 		Matched:          true,
 		Action:           strictest,
 		Rules:            allRules,
+		Notes:            allNotes,
+		IncompleteRules:  allIncomplete,
 		RedirectProfile:  redirectProfile,
 		ResolutionPolicy: resolutionPolicy,
 	}

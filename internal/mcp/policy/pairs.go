@@ -412,6 +412,25 @@ func matchPatternWithFold(pat *regexp.Regexp, text string, folds map[string]stri
 	return pat.MatchString(text)
 }
 
+// matchPairWithFold reuses token folds while preserving the joined regex input.
+func matchPairWithFold(pat *regexp.Regexp, a, c string, folds map[string]string) bool {
+	if lits, ok := pairLiterals(pat); ok {
+		folded := cachedFold(a, folds) + " " + cachedFold(c, folds)
+		if !slices.ContainsFunc(lits, func(l pairLiteral) bool { return strings.Contains(folded, l.text) }) {
+			return false
+		}
+	}
+	return pat.MatchString(a + " " + c)
+}
+
+// cachedFold also handles tokens introduced by command normalization.
+func cachedFold(text string, folds map[string]string) string {
+	if folded, ok := folds[text]; ok {
+		return folded
+	}
+	return foldString(text)
+}
+
 // sameArgView compares every input to matchArgView, including the provenance
 // that decides whether command input can be considered known.
 func sameArgView(a, b argView) bool {
@@ -722,8 +741,8 @@ func isCommandWord(t string, words []string) bool {
 	})
 }
 
-// leadingWordsCache holds leadingWordsBounded results by compiled pattern.
-var leadingWordsCache sync.Map // *regexp.Regexp -> leadWordsResult
+// leadingWordsCache holds leadingWordsBounded results by pattern source.
+var leadingWordsCache sync.Map // string -> leadWordsResult
 
 // leadWordsResult is a leadingWordsBounded result.
 type leadWordsResult struct {
@@ -748,7 +767,7 @@ func leadingWords(pat *regexp.Regexp) []string {
 // of which can start with something other than a literal gets nil words and
 // is not over.
 func leadingWordsBounded(pat *regexp.Regexp) (words []string, over bool) {
-	if cached, hit := leadingWordsCache.Load(pat); hit {
+	if cached, hit := leadingWordsCache.Load(pat.String()); hit {
 		r := cached.(leadWordsResult)
 		return r.words, r.over
 	}
@@ -773,7 +792,7 @@ func leadingWordsBounded(pat *regexp.Regexp) (words []string, over bool) {
 			words, over = nil, true
 		}
 	}
-	leadingWordsCache.Store(pat, leadWordsResult{words, over})
+	leadingWordsCache.Store(pat.String(), leadWordsResult{words, over})
 	return words, over
 }
 
@@ -923,7 +942,7 @@ func matchCommand(pat *regexp.Regexp, tokens []string, joined string, blank, exh
 	if exhaustive {
 		for i, a := range tokens {
 			for j, c := range tokens {
-				if i != j && matchPatternWithFold(pat, a+" "+c, b.folds) {
+				if i != j && matchPairWithFold(pat, a, c, b.folds) {
 					return true, false
 				}
 			}
@@ -989,13 +1008,13 @@ type pairBudget struct {
 	folds  map[string]string
 }
 
-// try checks s unless the budget is spent; more is false once it is.
-func (b *pairBudget) try(s string) (found, more bool) {
+// tryPair checks a pair unless the budget is spent; more is false once it is.
+func (b *pairBudget) tryPair(a, c string) (found, more bool) {
 	if b.checks >= maxPairChecks {
 		return false, false
 	}
 	b.checks++
-	return matchPatternWithFold(b.pat, s, b.folds), true
+	return matchPairWithFold(b.pat, a, c, b.folds), true
 }
 
 // matchBoundedPairs is the pairwise view of an argument list longer than
@@ -1058,11 +1077,11 @@ func literalPairs(b *pairBudget, tokens []string, lits []pairLiteral) (found, co
 			if i == j || (has[j] && done[j]) {
 				continue
 			}
-			f, more := b.try(a + " " + c)
+			f, more := b.tryPair(a, c)
 			if f || !more {
 				return f, more
 			}
-			if f, more = b.try(c + " " + a); f || !more {
+			if f, more = b.tryPair(c, a); f || !more {
 				return f, more
 			}
 		}
@@ -1080,7 +1099,7 @@ func anchoredPairs(b *pairBudget, tokens []string) (found, complete bool) {
 			if i == j {
 				continue
 			}
-			f, more := b.try(a + " " + c)
+			f, more := b.tryPair(a, c)
 			if f || !more {
 				return f, more && !dropped
 			}
@@ -1088,11 +1107,11 @@ func anchoredPairs(b *pairBudget, tokens []string) (found, complete bool) {
 	}
 	for _, a := range anchors {
 		for _, c := range others {
-			f, more := b.try(a + " " + c)
+			f, more := b.tryPair(a, c)
 			if f || !more {
 				return f, more && !dropped
 			}
-			if f, more = b.try(c + " " + a); f || !more {
+			if f, more = b.tryPair(c, a); f || !more {
 				return f, more && !dropped
 			}
 		}
@@ -1151,8 +1170,8 @@ func splitPairTokens(tokens []string) (anchors, others []string, dropped bool) {
 	return anchors, others, false
 }
 
-// pairLiteralCache holds pairLiterals results by compiled pattern.
-var pairLiteralCache sync.Map // *regexp.Regexp -> pairLiteralSet
+// pairLiteralCache holds pairLiterals results by pattern source.
+var pairLiteralCache sync.Map // string -> pairLiteralSet
 
 type pairLiteralSet struct {
 	lits []pairLiteral
@@ -1175,7 +1194,7 @@ type pairLiteral struct {
 // literal holds white space and so could span the space between the two
 // tokens of a pair.
 func pairLiterals(pat *regexp.Regexp) (lits []pairLiteral, ok bool) {
-	if cached, hit := pairLiteralCache.Load(pat); hit {
+	if cached, hit := pairLiteralCache.Load(pat.String()); hit {
 		set := cached.(pairLiteralSet)
 		return set.lits, set.ok
 	}
@@ -1188,7 +1207,7 @@ func pairLiterals(pat *regexp.Regexp) (lits []pairLiteral, ok bool) {
 			set = pairLiteralSet{}
 		}
 	}
-	pairLiteralCache.Store(pat, set)
+	pairLiteralCache.Store(pat.String(), set)
 	return set.lits, set.ok
 }
 

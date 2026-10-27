@@ -248,3 +248,24 @@ func TestNew_CarriesIncompleteAction(t *testing.T) {
 		}
 	}
 }
+
+func TestBatchPreservesIncompleteDetails(t *testing.T) {
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		t.Run(action, func(t *testing.T) {
+			pc := defaultConfigWithIncomplete(t, action)
+			single := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"find . -type f | xargs chmod 644"}}}`)
+			want := pc.CheckRequest(single)
+			if !want.Matched || len(want.IncompleteRules) == 0 || len(want.Notes) == 0 {
+				t.Fatalf("control lacks incomplete details: %+v", want)
+			}
+			batch := append([]byte("["), single...)
+			batch = append(batch, ',')
+			batch = append(batch, single...)
+			batch = append(batch, ']')
+			got := pc.CheckRequest(batch)
+			if got.Action != want.Action || !slices.Equal(got.IncompleteRules, want.IncompleteRules) || !slices.Equal(got.Notes, want.Notes) {
+				t.Fatalf("batch=%+v single=%+v", got, want)
+			}
+		})
+	}
+}
