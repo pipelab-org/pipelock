@@ -127,3 +127,13 @@ func TestHTTPClientPreserveSession(t *testing.T) {
 		})
 	}
 }
+
+// Once the shared budget is exhausted, every later read on any page fails.
+func TestBudgetResponseBodyStaysExhausted(t *testing.T) {
+	remaining := -1
+	body := &budgetResponseBody{body: io.NopCloser(strings.NewReader("more")), remaining: &remaining}
+	n, err := body.Read(make([]byte, 8))
+	if n != 0 || err == nil || !strings.Contains(err.Error(), "byte budget") {
+		t.Fatalf("read after exhaustion: n=%d err=%v", n, err)
+	}
+}

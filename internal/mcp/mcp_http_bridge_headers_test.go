@@ -1076,3 +1076,54 @@ func TestHTTPBridgeHeaderNegotiatedVersionLatch(t *testing.T) {
 		t.Fatalf("legacy bridge synthesized metadata: headers=%v err=%v", headers, err)
 	}
 }
+
+// A modern tools/list that times out must release the inventory lock, or the
+// next call's contract acquisition waits forever.
+func TestHTTPBridgeHeaderListTimeoutReleasesInventory(t *testing.T) {
+	var lists, calls atomic.Int32
+	up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, r *http.Request, f MCPFrame) {
+		if lists.Add(1) == 1 {
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+			return
+		}
+		discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+	}, func(w http.ResponseWriter, r *http.Request, f MCPFrame) {
+		calls.Add(1)
+		if r.Header.Get("Mcp-Param-Region") != "body" {
+			t.Errorf("call after list timeout lost its mirror: %v", r.Header)
+		}
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, f.ID)
+	})
+	opts := bridgeHeaderOpts(t)
+	opts.InputCfg = &InputScanConfig{ResponseTimeoutSeconds: 1}
+	input := currentWireBody(1, "tools/list", "") + "\n" + bridgeHeaderCall(`{"region":"body"}`)
+	var out, logs bytes.Buffer
+	done := make(chan error, 1)
+	go func() {
+		done <- RunHTTPProxy(t.Context(), strings.NewReader(input+"\n"), &out, &logs, up.URL, nil, opts)
+	}()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, transport.ErrResponseTimeout) {
+			t.Fatalf("bridge: %v; logs=%s", err, logs.String())
+		}
+	case <-time.After(testwait.Deadline(15 * time.Second)):
+		t.Fatalf("bridge stuck after list timeout; logs=%s", logs.String())
+	}
+	if lists.Load() != 2 || calls.Load() != 1 {
+		t.Fatalf("lists=%d calls=%d out=%s logs=%s", lists.Load(), calls.Load(), out.String(), logs.String())
+	}
+}
+
+func TestHTTPBridgeHeaderRefusesEmptyToolName(t *testing.T) {
+	opts := bridgeHeaderOpts(t)
+	bridge := &mcpBridgeHeaders{client: transport.NewHTTPClient("http://127.0.0.1:1", nil), state: &mcpListenerClientState{baseline: opts.ToolCfg.Baseline}, opts: opts, log: io.Discard}
+	_, err := bridge.prepare(t.Context(), []byte(currentWireBody(2, methodToolsCall, `"name":"","arguments":{}`)))
+	if err == nil || !strings.Contains(err.Error(), "routing name") {
+		t.Fatalf("empty tool name: err=%v", err)
+	}
+}
