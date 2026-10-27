@@ -56,17 +56,21 @@ func (b *mcpBridgeHeaders) negotiatedVersion() string {
 }
 
 func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header, error) {
+	frame := ParseMCPFrame(msg)
+	// Versions are compared lexically, so a malformed per-request value can
+	// sort on either side of the current revision (2026-99-99 above it,
+	// 2026-07-2 below it). The listener accepts only canonical YYYY-MM-DD, so
+	// refuse any malformed value before it selects the modern or legacy path.
+	if frame.ProtocolVersionPresent && !validMCPProtocolVersion([]string{frame.ProtocolVersion}) {
+		return nil, fmt.Errorf("invalid MCP protocol version")
+	}
 	version := b.version(msg)
 	if version < currentMCPVersion {
 		return nil, nil
 	}
 	if !validMCPProtocolVersion([]string{version}) {
-		// Lexical comparison admits malformed dates such as 2026-99-99; the
-		// listener accepts only canonical YYYY-MM-DD, so refuse them here
-		// rather than forward an unusable protocol header.
 		return nil, fmt.Errorf("invalid MCP protocol version")
 	}
-	frame := ParseMCPFrame(msg)
 	if frame.Method == "initialize" && b.negotiatedVersion() >= currentMCPVersion {
 		// This process already established its modern header contract. A
 		// second handshake would clear the transport's negotiated version,

@@ -1136,7 +1136,7 @@ func TestHTTPBridgeHeaderRefusesMalformedModernVersion(t *testing.T) {
 	}, func(http.ResponseWriter, *http.Request, MCPFrame) { t.Error("prepare must not execute calls") })
 	opts := bridgeHeaderOpts(t)
 	bridge := &mcpBridgeHeaders{client: transport.NewHTTPClient(up.URL, nil), state: &mcpListenerClientState{baseline: opts.ToolCfg.Baseline}, opts: opts, log: io.Discard}
-	for _, version := range []string{"2026-99-99", "2026-7-28", "2026-07-28T00:00:00Z"} {
+	for _, version := range []string{"2026-99-99", "2026-7-28", "2026-07-28T00:00:00Z", "2026-07-2", "2025-1-1", "garbage"} {
 		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"},"_meta":{"io.modelcontextprotocol/protocolVersion":%q}}}`, version)
 		if headers, err := bridge.prepare(t.Context(), []byte(body)); err == nil {
 			t.Fatalf("version %q forwarded with headers %v", version, headers)
@@ -1144,6 +1144,11 @@ func TestHTTPBridgeHeaderRefusesMalformedModernVersion(t *testing.T) {
 	}
 	if lists.Load() != 0 {
 		t.Fatalf("malformed versions reached discovery: lists=%d", lists.Load())
+	}
+	// A well-formed legacy per-request version keeps the legacy path.
+	legacy := []byte(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"},"_meta":{"io.modelcontextprotocol/protocolVersion":"2025-11-25"}}}`)
+	if headers, err := bridge.prepare(t.Context(), legacy); err != nil || headers != nil {
+		t.Fatalf("legacy version: headers=%v err=%v", headers, err)
 	}
 	// The canonical version still discovers and mirrors.
 	if headers, err := bridge.prepare(t.Context(), []byte(bridgeHeaderCall(`{"region":"body"}`))); err != nil || headers.Get("Mcp-Param-Region") != "body" {
