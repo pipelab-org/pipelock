@@ -1015,7 +1015,9 @@ func TestHTTPBridgeHeaderShutdownRelease(t *testing.T) {
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("bridge did not finish")
 			}
-			if unmirrored.Load() != 0 {
+			// The version latch keeps a late release mirrored, so only the call
+			// count shows whether shutdown stopped the send.
+			if calls.Load() != 0 || unmirrored.Load() != 0 {
 				t.Fatalf("calls=%d unmirrored=%d out=%s logs=%s", calls.Load(), unmirrored.Load(), out.String(), logs.String())
 			}
 			requireEvidenceNotBroken(t, "bridge", h)
