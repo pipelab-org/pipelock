@@ -152,7 +152,8 @@ func TestFlightRecorderRetentionFailureDoesNotBlockStartupOrHealth(t *testing.T)
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(2 * time.Second):
 			t.Fatal("server did not stop after cancellation")
 		}

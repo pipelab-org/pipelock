@@ -61,13 +61,13 @@ func TestReadEvidenceFileBounded_NonPositiveMaxUsesDefault(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	for _, max := range []int64{0, -1} {
-		got, err := ReadEvidenceFileBounded(path, max)
+	for _, limit := range []int64{0, -1} {
+		got, err := ReadEvidenceFileBounded(path, limit)
 		if err != nil {
-			t.Fatalf("ReadEvidenceFileBounded(max=%d): %v", max, err)
+			t.Fatalf("ReadEvidenceFileBounded(max=%d): %v", limit, err)
 		}
 		if string(got) != "small" {
-			t.Fatalf("max=%d content = %q, want %q", max, got, "small")
+			t.Fatalf("max=%d content = %q, want %q", limit, got, "small")
 		}
 	}
 }

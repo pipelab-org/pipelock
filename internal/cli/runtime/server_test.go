@@ -1519,7 +1519,8 @@ func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("Start did not return after Shutdown")
 		}
@@ -1558,7 +1559,8 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("Start did not return after Shutdown")
 		}
@@ -1630,7 +1632,8 @@ func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("Start did not return after Shutdown")
 		}
@@ -1671,7 +1674,8 @@ func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *t
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(5 * time.Second):
 			t.Fatal("Start did not return after Shutdown")
 		}

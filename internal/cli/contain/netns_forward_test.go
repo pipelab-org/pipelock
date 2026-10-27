@@ -81,7 +81,8 @@ func TestProxyOneNetnsConnForwardsBothDirections(t *testing.T) {
 
 	_ = agent.Close()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("forwarder did not return after the agent closed")
 	}

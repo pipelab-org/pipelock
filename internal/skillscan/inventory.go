@@ -74,8 +74,8 @@ func inventoryCapabilities(input skillInput, includeDeps bool) []Capability {
 
 func capabilitySummary(skill Skill) []string {
 	var summary []string
-	for _, cap := range skill.Capabilities {
-		summary = append(summary, string(cap.Kind))
+	for _, capability := range skill.Capabilities {
+		summary = append(summary, string(capability.Kind))
 	}
 	sort.Strings(summary)
 	return summary

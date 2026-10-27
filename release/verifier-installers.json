@@ -19,28 +19,28 @@
     {
       "language": "TypeScript",
       "package": "@pipelock/verifier-ts",
-      "version": "0.6.7",
+      "version": "0.6.8",
       "install_source": "npm",
       "artifact_digest": "pending publication",
       "publisher": {
         "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.6.7",
+        "source_ref": "verifier-v0.6.8",
         "source_commit": "pending publication"
       }
     },
     {
       "language": "Rust",
       "package": "pipelock-verifier-rs",
-      "version": "0.6.7",
+      "version": "0.6.8",
       "install_source": "crates.io",
       "artifact_digest": "pending publication",
       "publisher": {
         "repository": "pipelab-org/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
-        "source_ref": "verifier-v0.6.7",
+        "source_ref": "verifier-v0.6.8",
         "source_commit": "pending publication"
       }
     },

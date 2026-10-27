@@ -79,6 +79,23 @@ func TestWaitForParentHardening_DeniesEOF(t *testing.T) {
 	}
 }
 
+func TestWaitForParentHardening_DeniesTimeout(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create readiness pipe: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Close() })
+	t.Cleanup(func() { _ = writer.Close() })
+	t.Setenv(sandboxReadinessFDEnv, strconv.FormatUint(uint64(duplicateTestFD(t, reader)), 10))
+
+	// Keep the writer open without sending a release. The production deadline
+	// must refuse startup without waiting for the blocked read to finish.
+	err = waitForParentHardening()
+	if err == nil || err.Error() != "waiting for parent hardening: timed out" {
+		t.Fatalf("unreleased readiness wait = %v, want timeout", err)
+	}
+}
+
 func TestWaitForParentHardening_ValidatesAndConsumesRelease(t *testing.T) {
 	t.Run("no readiness descriptor", func(t *testing.T) {
 		t.Setenv(sandboxReadinessFDEnv, "")

@@ -487,7 +487,8 @@ func TestDashboardServe_InspectionConfigIgnoresUnreadableReferencedFile(t *testi
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not shut down after context cancel")
 	}

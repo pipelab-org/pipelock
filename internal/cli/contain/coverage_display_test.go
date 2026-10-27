@@ -1513,7 +1513,8 @@ func TestCovDispRunNetnsForwardLogsPerConnectionFailure(t *testing.T) {
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("forwarder did not stop after cancel")
 	}

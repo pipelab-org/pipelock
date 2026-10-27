@@ -173,7 +173,8 @@ logging:
 			defer shutdownCancel()
 			_ = s.Shutdown(shutdownCtx)
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				t.Logf("goroutine result: %v", err)
 			case <-shutdownCtx.Done():
 				stack := make([]byte, 1<<20)
 				t.Errorf("listener did not stop after cancellation\n%s", stack[:goruntime.Stack(stack, true)])
@@ -290,7 +291,8 @@ logging:
 			defer shutdownCancel()
 			_ = s.Shutdown(shutdownCtx)
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				t.Logf("goroutine result: %v", err)
 			case <-shutdownCtx.Done():
 				t.Error("listener did not stop after cancellation")
 			}
@@ -411,7 +413,8 @@ logging:
 			defer shutdownCancel()
 			_ = s.Shutdown(shutdownCtx)
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				t.Logf("goroutine result: %v", err)
 			case <-shutdownCtx.Done():
 				t.Error("listener did not stop after cancellation")
 			}
@@ -609,7 +612,8 @@ logging:
 		defer shutdownCancel()
 		_ = s.Shutdown(shutdownCtx)
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			t.Logf("goroutine result: %v", err)
 		case <-shutdownCtx.Done():
 			t.Error("listener did not stop after cancellation")
 		}

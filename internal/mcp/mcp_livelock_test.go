@@ -517,7 +517,7 @@ func TestMCPHTTPListenerLiveLock_ToolCallDenialReturnsStructuredError(t *testing
 	t.Cleanup(func() {
 		cancel()
 		_ = ln.Close()
-		<-done
+		t.Logf("goroutine result: %v", <-done)
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String(), strings.NewReader(mcpToolCall(mcpDeniedTool, "")))
@@ -795,7 +795,7 @@ func TestRunHTTPListenerProxyLiveLock_PerRequestUpstreamDenialReturnsStructuredE
 	t.Cleanup(func() {
 		cancel()
 		_ = ln.Close()
-		<-done
+		t.Logf("goroutine result: %v", <-done)
 	})
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+ln.Addr().String(), strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`))

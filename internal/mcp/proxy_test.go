@@ -4820,7 +4820,8 @@ func TestRunProxy_ResponseTimeoutTerminatesHungUpstream(t *testing.T) {
 	}()
 
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 		// Returned: the hung child was killed before cmd.Wait(). Good.
 	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("RunProxy hung after upstream response timeout (cmd.Wait blocked on a live child)")

@@ -36,8 +36,8 @@ func TestAppendLockContentionIsBounded(t *testing.T) {
 		}
 	case <-timer.C:
 		unlock()
-		<-done
-		t.Fatal("append lock waited without a bounded failure")
+		lockErr := <-done
+		t.Fatalf("append lock waited without a bounded failure: %v", lockErr)
 	}
 	release, err := acquireAppendLock(dir)
 	if err != nil {

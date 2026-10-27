@@ -93,7 +93,8 @@ func waitForParentHardening() error {
 		return fmt.Errorf("waiting for parent hardening: %w", err)
 	case <-timer.C:
 		_ = ready.Close()
-		<-readResult
+		// Closing an inherited blocking descriptor may not interrupt its read.
+		// Do not wait for it: both init callers exit on this timeout error.
 		return errors.New("waiting for parent hardening: timed out")
 	}
 }

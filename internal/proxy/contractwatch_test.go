@@ -146,7 +146,8 @@ func TestProxyContractWatcher_StartWiresWatcherAndShutdownStopsIt(t *testing.T) 
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(contractWatchTimeout):
 		t.Fatal("proxy did not stop")
 	}
