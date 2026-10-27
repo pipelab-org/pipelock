@@ -473,9 +473,12 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 		}
 		incomplete = incomplete || inc
 	}
-	// A single segment with the same tokens already received this check.
-	// The blanked variant above adds matches; it never removes the raw check.
-	if len(v.segments) != 1 || !slices.Equal(v.segments[0], v.tokens) {
+	// A single segment with the same tokens already received this check, and
+	// repeating it is only identical when blanking (see cleanCommandTokens)
+	// had nothing to replace. A token with ; | or & is read differently by
+	// the two checks, so that case keeps the raw one.
+	if len(v.segments) != 1 || !slices.Equal(v.segments[0], v.tokens) ||
+		slices.ContainsFunc(v.tokens, func(t string) bool { return strings.ContainsAny(t, ";|&") }) {
 		if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat, folds: v.folded}); m || inc {
 			return false, true
 		}

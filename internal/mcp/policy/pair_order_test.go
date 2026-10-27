@@ -233,6 +233,32 @@ func TestSameArgViewProvenance(t *testing.T) {
 	}
 }
 
+// TestSingleSegmentKeepsRawCheck pins that a command read as one segment is
+// still checked as raw text when blanking separators in its tokens would hide
+// a match: dropping the redirection leaves the pipe next to the pattern's
+// next word, which only the unblanked check sees.
+func TestSingleSegmentKeepsRawCheck(t *testing.T) {
+	re := regexp.MustCompile(`example\s+--flag\s+\|\s*consumer`)
+	for _, tc := range []struct {
+		name, command         string
+		wantMatch, wantIncomp bool
+	}{
+		{"direct match", "example --flag | consumer", true, false},
+		{"redirection between words", "example --flag 2>&1 | consumer", false, true},
+		{"redirection after pipe", "example --flag | consumer 2>&1", true, false},
+		{"unrelated pipeline", "example --other 2>&1 | consumer", false, false},
+		{"no separator token", "example --flag 2>&1", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			views := buildArgViews([]string{tc.command})
+			matched, incomplete := matchArgViews(re, views[:]...)
+			if matched != tc.wantMatch || incomplete != tc.wantIncomp {
+				t.Fatalf("matched=%v incomplete=%v, want matched=%v incomplete=%v", matched, incomplete, tc.wantMatch, tc.wantIncomp)
+			}
+		})
+	}
+}
+
 func BenchmarkPolicyArgumentMatching(b *testing.B) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: DefaultToolPolicyRules()})
 	for _, tc := range []struct{ name, text string }{
