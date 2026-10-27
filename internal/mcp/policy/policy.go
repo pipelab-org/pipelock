@@ -523,6 +523,9 @@ var pathSeparatorRunRe = regexp.MustCompile(`(^|[^:/])/(?:\.?/)+`)
 // `..` segments are left alone: the path rules match protected namespaces as
 // segments anywhere in the value, so a traversal spelling still matches.
 func collapsePathSeparators(s string) string {
+	if !strings.Contains(s, "/") {
+		return s
+	}
 	return pathSeparatorRunRe.ReplaceAllString(s, "${1}/")
 }
 
@@ -1504,6 +1507,11 @@ func decodeShellEscapes(s string) string {
 // Iterates until no further changes occur, bounded to prevent infinite loops
 // on pathological input.
 func resolveShellConstruction(s string) string {
+	// Every replacement consumes a dollar-prefixed expansion. Assignments
+	// alone are unchanged, even when their values contain shell punctuation.
+	if !strings.Contains(s, "$") {
+		return s
+	}
 	const maxIterations = 10
 	for range maxIterations {
 		prev := s

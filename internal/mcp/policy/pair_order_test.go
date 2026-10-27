@@ -7,7 +7,9 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -183,5 +185,94 @@ func TestDefaultRules_LongEverydayCommandsInBlockMode(t *testing.T) {
 				t.Fatalf("verdict %q %v, want %q", v.Action, v.Rules, tt.rule)
 			}
 		})
+	}
+}
+
+func TestMatchPatternParity(t *testing.T) {
+	patterns := []string{``, `a*b?`, `^alpha beta$`, `(?i)k.*s`, `(?:alpha|beta)+`, `a{0,3}`, `(?:alpha)?beta`, `[^a]+`, `(?s).*`, `(?i)\bks\b`}
+	for _, rule := range DefaultToolPolicyRules() {
+		patterns = append(patterns, rule.ArgPattern)
+	}
+	texts := []string{"", "alpha beta", "beta alpha", "ALPHA", "Kſ", "ks", "a\nb", "\xff", "echo hello", "git status", "find . -print0 | xargs -0 chmod 644"}
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		for _, text := range texts {
+			for _, input := range []string{text, strings.Repeat("a", 4096) + text, text + strings.Repeat("z", 4096)} {
+				if got, want := matchPatternWithFold(re, input, nil), re.MatchString(input); got != want {
+					t.Fatalf("pattern %q text %q: got %v want %v", pattern, text, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestSameArgViewProvenance(t *testing.T) {
+	base := argView{tokens: []string{"echo", "hello"}, joined: "echo hello", segments: [][]string{{"echo", "hello"}}}
+	if !sameArgView(base, base) {
+		t.Fatal("identical view differs")
+	}
+	changes := []func(*argView){
+		func(v *argView) { v.unsplit = true },
+		func(v *argView) { v.plain = true },
+		func(v *argView) { v.checkXargs = true },
+		func(v *argView) { v.inputKnown = "echo" },
+		func(v *argView) { v.joined = "different" },
+		func(v *argView) { v.tokens = []string{"different"} },
+		func(v *argView) { v.segments = nil },
+		func(v *argView) { v.segments = [][]string{{"echo"}, {"hello"}} },
+	}
+	for i, change := range changes {
+		other := base
+		change(&other)
+		if sameArgView(base, other) {
+			t.Errorf("difference %d was ignored", i)
+		}
+	}
+	if sameArgView(argView{}, argView{segments: [][]string{}}) {
+		t.Fatal("nil segments differ from empty segments")
+	}
+}
+
+func BenchmarkPolicyArgumentMatching(b *testing.B) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tc := range []struct{ name, text string }{
+		{"large_word", "echo " + strings.Repeat("a", 1<<20)},
+		{"script", strings.Repeat("echo hello world; ls -la /tmp | head -3\n", 50)},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			args := []string{tc.text}
+			if verdict := pc.CheckToolCall("bash", args); verdict.Matched {
+				b.Fatalf("benchmark control matched: %+v", verdict)
+			}
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tc.text)))
+			for b.Loop() {
+				_ = pc.CheckToolCall("bash", args)
+			}
+		})
+	}
+}
+
+func TestCommandWordFoldParity(t *testing.T) {
+	words := []string{foldString("alpha"), foldString("ks"), foldString("Σ")}
+	for _, text := range []string{"alpha", "/bin/ALPHA", "Kſ", "Σ", "ς", "σ", "", strings.Repeat("a", 4096)} {
+		want := slices.Contains(words, foldString(text))
+		if strings.HasPrefix(text, "/bin/") {
+			want = slices.Contains(words, foldString(strings.TrimPrefix(text, "/bin/")))
+		}
+		if got := isCommandWord(text, words); got != want {
+			t.Errorf("%q: got %v want %v", text, got, want)
+		}
+	}
+	for r := rune(0); r <= unicode.MaxASCII; r++ {
+		least := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			if f < least {
+				least = f
+			}
+		}
+		if got := foldString(string(r)); got != string(least) {
+			t.Fatalf("fold %U: %q", r, got)
+		}
 	}
 }

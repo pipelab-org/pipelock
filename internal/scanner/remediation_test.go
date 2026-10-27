@@ -796,7 +796,7 @@ func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
 		forbidAgent string
 	}{
 		{DecideInjectionLabel, "response_scanning", "response_scanning"},
-		{DecidePolicyLabel, "mcp_tool_policy", "mcp_tool_policy"},
+		{DecidePolicyLabel, "mcp_tool_policy.on_incomplete_check", "mcp_tool_policy"},
 		{DecideStructuralLabel, "could not be evaluated safely", "correct the action shape"},
 	}
 

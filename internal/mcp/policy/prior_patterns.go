@@ -74,19 +74,19 @@ func priorPatterns(pat *regexp.Regexp) []*regexp.Regexp {
 // priorMatch reports whether pat matches tokens as the argument check read
 // them before commands in one string were told apart: the joined list, each
 // token, and, up to maxPairwiseTokens tokens, every ordered pair.
-func priorMatch(pat *regexp.Regexp, tokens []string, joined string) bool {
-	if pat.MatchString(joined) {
+func priorMatch(pat *regexp.Regexp, tokens []string, joined string, folds map[string]string) bool {
+	if matchPatternWithFold(pat, joined, folds) {
 		return true
 	}
 	for _, t := range tokens {
-		if pat.MatchString(t) {
+		if matchPatternWithFold(pat, t, folds) {
 			return true
 		}
 	}
 	if len(tokens) <= maxPairwiseTokens {
 		for i, a := range tokens {
 			for j, b := range tokens {
-				if i != j && pat.MatchString(a+" "+b) {
+				if i != j && matchPatternWithFold(pat, a+" "+b, folds) {
 					return true
 				}
 			}

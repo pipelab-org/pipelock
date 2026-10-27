@@ -48,6 +48,7 @@ type argView struct {
 	plain      bool
 	inputKnown string // direct xargs utility whose input is proved on raw input
 	checkXargs bool
+	folded     map[string]string // request-local folds of original tokens and joined views
 }
 
 // literalArgTokens returns the submitted strings unmodified, each as one
@@ -87,6 +88,18 @@ func buildArgViews(args []string) [4]argView {
 	}
 	tokens, joined := literalArgTokens(args)
 	views[3] = argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true}
+	folded := make(map[string]string)
+	for i := range views {
+		for _, token := range views[i].tokens {
+			if _, ok := folded[token]; !ok {
+				folded[token] = foldString(token)
+			}
+		}
+		if _, ok := folded[views[i].joined]; !ok {
+			folded[views[i].joined] = foldString(views[i].joined)
+		}
+		views[i].folded = folded
+	}
 	return views
 }
 
@@ -350,7 +363,10 @@ func fileRefs(words []string) []string {
 // commands, or a revised pattern, can then turn a match into an incomplete
 // check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
-	for _, v := range views {
+	for i, v := range views {
+		if slices.ContainsFunc(views[:i], func(prev argView) bool { return sameArgView(prev, v) }) {
+			continue
+		}
 		m, inc := matchArgView(pat, v)
 		if m {
 			return true, false
@@ -364,13 +380,45 @@ func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bo
 		prior = append([]*regexp.Regexp{pat}, prior...)
 	}
 	for _, p := range prior {
-		for _, v := range views {
-			if priorMatch(p, v.tokens, v.joined) {
+		for i, v := range views {
+			if slices.ContainsFunc(views[:i], func(prev argView) bool {
+				return prev.joined == v.joined && slices.Equal(prev.tokens, v.tokens)
+			}) {
+				continue
+			}
+			if priorMatch(p, v.tokens, v.joined, v.folded) {
 				return true, false
 			}
 		}
 	}
 	return false, incomplete
+}
+
+// matchPattern uses the existing required-literal proof before the full regex.
+// Missing proof never suppresses a regex check. Word-edge constraints are not
+// needed here: substring presence is deliberately broader than a match.
+func matchPatternWithFold(pat *regexp.Regexp, text string, folds map[string]string) bool {
+	if lits, ok := pairLiterals(pat); ok {
+		folded, found := folds[text]
+		if !found {
+			folded = foldString(text)
+		}
+		if !slices.ContainsFunc(lits, func(l pairLiteral) bool {
+			return strings.Contains(folded, l.text)
+		}) {
+			return false
+		}
+	}
+	return pat.MatchString(text)
+}
+
+// sameArgView compares every input to matchArgView, including the provenance
+// that decides whether command input can be considered known.
+func sameArgView(a, b argView) bool {
+	return a.joined == b.joined && a.unsplit == b.unsplit && a.plain == b.plain &&
+		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs &&
+		(a.segments == nil) == (b.segments == nil) && slices.Equal(a.tokens, b.tokens) &&
+		slices.EqualFunc(a.segments, b.segments, slices.Equal[[]string])
 }
 
 // matchArgPattern checks if a regex pattern matches one view of the argument
@@ -399,7 +447,7 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 // before it covered every pair it needed.
 func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	for _, t := range v.tokens {
-		if pat.MatchString(t) {
+		if matchPatternWithFold(pat, t, v.folded) {
 			return true, false
 		}
 	}
@@ -409,7 +457,7 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 		(v.inputKnown == "" || !isCommandWord(v.inputKnown, leadingWords(pat)))
 	exhaustive := len(v.tokens) <= maxPairwiseTokens
 	if v.segments == nil {
-		m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat})
+		m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat, folds: v.folded})
 		if !m && v.unsplit && commandAfterParts(pat, [][]string{v.tokens}) {
 			// Commands in the string cannot be told apart, so one may
 			// hand the words before it to the other.
@@ -417,7 +465,7 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 		}
 		return m, inc || incomplete
 	}
-	b := &pairBudget{pat: pat}
+	b := &pairBudget{pat: pat, folds: v.folded}
 	for _, seg := range v.segments {
 		m, inc := matchCommand(pat, seg, strings.Join(seg, " "), true, exhaustive, b)
 		if m {
@@ -425,8 +473,12 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 		}
 		incomplete = incomplete || inc
 	}
-	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
-		return false, true
+	// A single segment with the same tokens already received this check.
+	// The blanked variant above adds matches; it never removes the raw check.
+	if len(v.segments) != 1 || !slices.Equal(v.segments[0], v.tokens) {
+		if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat, folds: v.folded}); m || inc {
+			return false, true
+		}
 	}
 	paths := v.segments
 	if v.plain {
@@ -508,13 +560,14 @@ var findRedefiners = []string{
 // one of findRedefiners.
 func mayRedefineFind(t, f string) bool {
 	w := handOffWord(t)
+	foldedWord := foldString(w)
 	switch {
 	case strings.Contains(f, foldString("path")):
 		return true
 	case strings.Contains(f, foldString("find")) && !isFindCommand(t):
 		return true
 	}
-	return slices.ContainsFunc(findRedefiners, func(r string) bool { return foldString(r) == foldString(w) })
+	return slices.ContainsFunc(findRedefiners, func(r string) bool { return foldString(r) == foldedWord })
 }
 
 // isFindWordUnsafe reports whether w is in findWordsUnsafe, case-folded.
@@ -660,8 +713,10 @@ func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
 // isCommandWord reports whether t, or its base name, is one of words
 // (case-folded, see foldString).
 func isCommandWord(t string, words []string) bool {
-	whole, base := foldString(t), foldString(path.Base(t))
-	return slices.Contains(words, whole) || slices.Contains(words, base)
+	base := path.Base(t)
+	return slices.ContainsFunc(words, func(w string) bool {
+		return strings.EqualFold(t, w) || strings.EqualFold(base, w)
+	})
 }
 
 // leadingWordsCache holds leadingWordsBounded results by compiled pattern.
@@ -853,19 +908,19 @@ func handOffWord(t string) string {
 // without redirections, then in pairs, every pair when exhaustive is set and
 // otherwise within b (see matchBoundedPairs).
 func matchCommand(pat *regexp.Regexp, tokens []string, joined string, blank, exhaustive bool, b *pairBudget) (matched, incomplete bool) {
-	if pat.MatchString(joined) {
+	if matchPatternWithFold(pat, joined, b.folds) {
 		return true, false
 	}
-	if cleaned, changed := cleanCommandTokens(tokens, blank); changed && pat.MatchString(strings.Join(cleaned, " ")) {
+	if cleaned, changed := cleanCommandTokens(tokens, blank); changed && matchPatternWithFold(pat, strings.Join(cleaned, " "), b.folds) {
 		return true, false
 	}
-	if here, ok := hereStringData(tokens); ok && pat.MatchString(strings.Join(here, " ")) {
+	if here, ok := hereStringData(tokens); ok && matchPatternWithFold(pat, strings.Join(here, " "), b.folds) {
 		return true, false
 	}
 	if exhaustive {
 		for i, a := range tokens {
 			for j, c := range tokens {
-				if i != j && pat.MatchString(a+" "+c) {
+				if i != j && matchPatternWithFold(pat, a+" "+c, b.folds) {
 					return true, false
 				}
 			}
@@ -928,6 +983,7 @@ func hereStringData(tokens []string) (out []string, ok bool) {
 type pairBudget struct {
 	pat    *regexp.Regexp
 	checks int
+	folds  map[string]string
 }
 
 // try checks s unless the budget is spent; more is false once it is.
@@ -936,7 +992,7 @@ func (b *pairBudget) try(s string) (found, more bool) {
 		return false, false
 	}
 	b.checks++
-	return b.pat.MatchString(s), true
+	return matchPatternWithFold(b.pat, s, b.folds), true
 }
 
 // matchBoundedPairs is the pairwise view of an argument list longer than
@@ -1340,6 +1396,14 @@ func shortestLen(lits []pairLiteral) int {
 // whenever a (?i) pattern could match that literal in the original.
 func foldString(s string) string {
 	return strings.Map(func(r rune) rune {
+		// ASCII letters have the uppercase rune as their least fold, even
+		// when their fold cycle also contains a non-ASCII rune (K and S).
+		if r < unicode.MaxASCII+1 {
+			if r >= 'a' && r <= 'z' {
+				return r - ('a' - 'A')
+			}
+			return r
+		}
 		least := r
 		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
 			if f < least {

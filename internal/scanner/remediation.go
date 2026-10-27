@@ -145,7 +145,7 @@ const (
 	tlsFailureOperatorKnob                 = "Correct the TLS handshake, certificate, or authority mismatch at the client/upstream and retry. These checks fail closed and have no per-request exemption; disabling TLS interception or SNI verification is a broad loss of visibility."
 
 	decideInjectionOperatorKnob  = "Prompt-injection scanning matched content in the action. Shell/file/tool Decide paths consult `response_scanning.enabled` and `response_scanning.action`; they call `ScanResponse` without the top-level `suppress:` list, so a suppression entry is inert here. MCP Decide input consults `mcp_input_scanning.enabled` and `mcp_input_scanning.action`."
-	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
+	decidePolicyOperatorKnob     = "Tool policy denied the action. For `incomplete_pair_check`, use a supported command form; `mcp_tool_policy.on_incomplete_check` controls this result, and changing it from block to warn permits commands whose arguments could not be fully checked. For a matched rule, inspect the matching `mcp_tool_policy.rules` entry."
 	decideStructuralOperatorKnob = "The action could not be evaluated safely (unknown event, malformed tool input, or uninspectable input). There is no allow-path knob for the structural failure; correct the action shape and retry."
 
 	ssrfOperatorKnob = "For an approved internal service, use `destination_grants` for its exact TCP host and port. Broader alternatives are top-level `trusted_domains` (hostname-based) or `ssrf.ip_allowlist` (IP-based). " +
