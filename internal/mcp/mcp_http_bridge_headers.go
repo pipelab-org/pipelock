@@ -60,6 +60,12 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 	if version < currentMCPVersion {
 		return nil, nil
 	}
+	if !validMCPProtocolVersion([]string{version}) {
+		// Lexical comparison admits malformed dates such as 2026-99-99; the
+		// listener accepts only canonical YYYY-MM-DD, so refuse them here
+		// rather than forward an unusable protocol header.
+		return nil, fmt.Errorf("invalid MCP protocol version")
+	}
 	frame := ParseMCPFrame(msg)
 	if frame.Method == "initialize" && b.negotiatedVersion() >= currentMCPVersion {
 		// This process already established its modern header contract. A

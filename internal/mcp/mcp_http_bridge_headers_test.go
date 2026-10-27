@@ -1127,3 +1127,26 @@ func TestHTTPBridgeHeaderRefusesEmptyToolName(t *testing.T) {
 		t.Fatalf("empty tool name: err=%v", err)
 	}
 }
+
+func TestHTTPBridgeHeaderRefusesMalformedModernVersion(t *testing.T) {
+	var lists atomic.Int32
+	up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, _ *http.Request, f MCPFrame) {
+		lists.Add(1)
+		discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+	}, func(http.ResponseWriter, *http.Request, MCPFrame) { t.Error("prepare must not execute calls") })
+	opts := bridgeHeaderOpts(t)
+	bridge := &mcpBridgeHeaders{client: transport.NewHTTPClient(up.URL, nil), state: &mcpListenerClientState{baseline: opts.ToolCfg.Baseline}, opts: opts, log: io.Discard}
+	for _, version := range []string{"2026-99-99", "2026-7-28", "2026-07-28T00:00:00Z"} {
+		body := fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"},"_meta":{"io.modelcontextprotocol/protocolVersion":%q}}}`, version)
+		if headers, err := bridge.prepare(t.Context(), []byte(body)); err == nil {
+			t.Fatalf("version %q forwarded with headers %v", version, headers)
+		}
+	}
+	if lists.Load() != 0 {
+		t.Fatalf("malformed versions reached discovery: lists=%d", lists.Load())
+	}
+	// The canonical version still discovers and mirrors.
+	if headers, err := bridge.prepare(t.Context(), []byte(bridgeHeaderCall(`{"region":"body"}`))); err != nil || headers.Get("Mcp-Param-Region") != "body" {
+		t.Fatalf("canonical version: headers=%v err=%v", headers, err)
+	}
+}
