@@ -106,18 +106,19 @@ func (s *Scanner) nativeOAuthAuthorization(ctx context.Context, target *url.URL,
 	if err != nil || !redirect.IsAbs() || redirect.Opaque != "" && redirect.Path == "" || redirect.User != nil || strings.Contains(rawRedirect, "#") || strings.Contains(rawRedirect, `\`) {
 		return nil
 	}
-	// RFC 8252 8.4 permits cleartext HTTP redirects only for loopback.
-	if redirect.Scheme == "http" && !literalOAuthLoopback(redirect) {
-		return nil
-	}
-	if redirect.Scheme == "https" {
-		if _, ok := urlDestination(redirect, redirect.Hostname()); !ok || redirect.Hostname() == "" {
-			return nil
-		}
-	}
+	// The server returns state to redirect_uri, including on an error redirect
+	// that needs no user (RFC 6749 4.1.2.1), and any client registered there
+	// can name a remote callback. A delivered redirect to a remote HTTPS
+	// callback becomes declared issuer evidence, so relieved values would reach
+	// that host. Only a callback that stays on this machine qualifies: a literal
+	// HTTP loopback (RFC 8252 7.3) or a private-use scheme, which RFC 8252 7.1
+	// requires to be a reverse-order domain name.
 	allowance := &oauthAuthorizationAllowance{state: q.Get("state"), nonce: q.Get("nonce")}
-	if literalOAuthLoopback(redirect) {
+	switch {
+	case literalOAuthLoopback(redirect):
 		allowance.redirect = redirect
+	case redirect.Scheme == "http" || redirect.Scheme == "https" || !strings.Contains(redirect.Scheme, "."):
+		return nil
 	}
 	return allowance
 }

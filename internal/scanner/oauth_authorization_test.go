@@ -234,7 +234,8 @@ func TestNativeOAuthRecognitionBoundaries(t *testing.T) {
 			q.Set("redirect_uri", "http://api.vendor.example/cb")
 			u.RawQuery = q.Encode()
 		}},
-		{name: "claimed HTTPS", allow: true, change: func(u *url.URL) {
+		// The server echoes state to a remote callback any client can register.
+		{name: "claimed HTTPS", change: func(u *url.URL) {
 			q := u.Query()
 			q.Set("redirect_uri", "https://app.vendor.example/callback")
 			u.RawQuery = q.Encode()
@@ -242,6 +243,17 @@ func TestNativeOAuthRecognitionBoundaries(t *testing.T) {
 		{name: "private-use scheme", allow: true, change: func(u *url.URL) {
 			q := u.Query()
 			q.Set("redirect_uri", "com.vendor.app:/callback")
+			u.RawQuery = q.Encode()
+		}},
+		// RFC 8252 7.1: a private-use scheme is a reverse-order domain name.
+		{name: "non-domain scheme", change: func(u *url.URL) {
+			q := u.Query()
+			q.Set("redirect_uri", "myapp:/callback")
+			u.RawQuery = q.Encode()
+		}},
+		{name: "network scheme", change: func(u *url.URL) {
+			q := u.Query()
+			q.Set("redirect_uri", "wss://app.vendor.example/callback")
 			u.RawQuery = q.Encode()
 		}},
 	}
@@ -265,12 +277,13 @@ func TestNativeOAuthRecognitionBoundaries(t *testing.T) {
 	if _, err := New(cfg); err == nil {
 		t.Fatal("scanner accepted unvalidated wildcard grant")
 	}
-	// Neither recognized callback format gets destination relief when the callback
-	// is a real remote destination, or a private-use URI rather than HTTP loopback.
-	for _, redirect := range []string{"https://app.vendor.example/cb", "com.vendor.app:/cb"} {
-		if got := s.Scan(ctx, oauthTestURL(redirect)); !got.Allowed {
-			t.Fatalf("supported redirect: %+v", got)
-		}
+	// A private-use callback stays on this machine; a remote HTTPS callback would
+	// receive the server's echo of state, so it keeps the ordinary entropy gate.
+	if got := s.Scan(ctx, oauthTestURL("com.vendor.app:/cb")); !got.Allowed {
+		t.Fatalf("private-use redirect: %+v", got)
+	}
+	if got := s.Scan(ctx, oauthTestURL("https://app.vendor.example/cb")); got.Allowed || got.Scanner != ScannerEntropy {
+		t.Fatalf("remote HTTPS redirect: %+v", got)
 	}
 }
 
