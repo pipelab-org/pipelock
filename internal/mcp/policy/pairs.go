@@ -577,8 +577,10 @@ func findKept(args []string) []string {
 		a := args[j]
 		w := handOffWord(a)
 		// A , before the expression is a starting point to GNU find, and so
-		// is a lone -.
-		if !expr && ((strings.HasPrefix(w, "-") && w != "-") || w == "!" || w == "(") {
+		// is a lone -, or a word with a glob character (* ? [) that the shell
+		// may expand to one.
+		option := strings.HasPrefix(w, "-") && w != "-" && !strings.ContainsAny(w, "*?[")
+		if !expr && (option || w == "!" || w == "(") {
 			expr = true
 		}
 		switch {

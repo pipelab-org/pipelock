@@ -57,6 +57,18 @@ var findStartRows = []verdictRow{
 	{"lone dash after an option", "find -L - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"double dash first", "find -- 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 
+	// A word that starts with - and has a glob character may expand to a
+	// lone -, so it is not where the expression starts either.
+	{"star word before a starting point", "find . -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"question word before a starting point", "find . -? 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"bracket word before a starting point", "find . -[a] 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word first", "find -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word after an option", "find -L -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word inside a dash word", "find . -a*b 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word as a test's value", "find . -name -* -perm 0777 | xargs chmod 644", "", ""},
+	{"star word after the expression started", "find . -name x -* 777 | xargs chmod -R", "", ""},
+	{"glob in a plain test value", "find . -name '*.x' -perm 0777 | xargs chmod 644", "", ""},
+
 	// A comment, a here-document or a line break in quotes keeps every
 	// find word in the check.
 	{"two lines", "find . -name x\nfind . -perm 0777 | xargs chmod 644", "", ""},
@@ -149,6 +161,12 @@ func TestFindPathsOnly_StartingPoints(t *testing.T) {
 		{"find . -type f , -perm 1", "find ."},
 		{"find . - 777 -type f", "find . - 777"},
 		{"find . -name - -perm 1", "find ."},
+		{"find . -* 777 -type f", "find . -* 777"},
+		{"find . -? 777 -type f", "find . -? 777"},
+		{"find . -[a] 777 -type f", "find . -[a] 777"},
+		{"find -L -* 777 -type f", "find -* 777"},
+		{"find . -name -* -perm 1", "find ."},
+		{"find . -* -perm 1 -name 777", "find . -*"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
