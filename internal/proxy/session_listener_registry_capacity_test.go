@@ -69,7 +69,9 @@ func startCapacityListener(t *testing.T, maxSessions int, principal bool, config
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("RunHTTPListenerProxy: %v", err)
+		}
 	})
 	return &capacityListener{t: t, addr: ln.Addr().String(), hits: hits, client: &http.Client{Timeout: 5 * time.Second}, principal: principal, logs: logs}, sm
 }
