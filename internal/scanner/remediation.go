@@ -174,7 +174,11 @@ const (
 	// alone, so this variant is selected by GuidanceForResult from the scan
 	// Reason. The path-entropy default lives in the table's ScannerEntropy entry.
 	queryEntropyOperatorKnob = "For a blocked query value at a stable endpoint path, add the exact scheme+host+path+param tuple to `fetch_proxy.monitoring.query_entropy_param_exclusions`; this skips only query-value entropy for that exact scheme+host+path+param. " +
-		"An exact tuple covers only that path, not future paths with new upload UUIDs or other changing segments. If the host legitimately carries opaque query keys or values across changing paths or many endpoints, use `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
+		"An exact tuple covers only that path, not future paths with new upload UUIDs or other changing segments. If the host legitimately carries opaque query keys or values across changing paths or many endpoints, use `fetch_proxy.monitoring.query_entropy_exclusions` as the broader host-wide fallback. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa. " +
+		nativeOAuthOperatorKnob
+	// nativeOAuthOperatorKnob is static: the blocked query key is chosen by the
+	// client, so it must not decide whether an operator is offered a grant.
+	nativeOAuthOperatorKnob     = "If this is `state` or `nonce` on a native OAuth authorization-code GET whose `redirect_uri` is a literal loopback or private-use callback, an exact `fetch_proxy.monitoring.oauth_authorization_endpoints` grant covers that request; it accepts the endpoint as a channel for opaque values."
 	queryEntropyKeyOperatorKnob = "A high-entropy query key is not covered by `fetch_proxy.monitoring.query_entropy_param_exclusions`, which skips only query-value entropy. " +
 		"If the host legitimately carries opaque query keys, add it to `fetch_proxy.monitoring.query_entropy_exclusions`; that skips query-key and query-value entropy for the whole host. Query entropy is SEPARATE from URL DLP — exempting a DLP pattern does NOT lift an entropy block, and vice versa."
 	queryEntropyOperatorBroader = "Raising `fetch_proxy.monitoring.entropy_threshold` lowers sensitivity globally for every destination — broader blast radius; prefer the narrowest applicable exclusion above."
@@ -951,7 +955,8 @@ func annotateNestedURLGuidance(g RemediationGuidance, label, reason, stripped st
 	if containsLowerASCII(stripped, nestedURLBudgetReason) {
 		return g
 	}
-	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."
+	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings." +
+		" For a literal loopback `redirect_uri` on a native OAuth authorization-code GET, an exact `fetch_proxy.monitoring.oauth_authorization_endpoints` grant is narrower than disabling nested URL scanning."
 	switch label {
 	case ScannerSSRF, ScannerCoreSSRF:
 		if !g.Immutable {
