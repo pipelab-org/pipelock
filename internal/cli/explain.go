@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -432,7 +433,15 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		return report, fmt.Errorf("create scanner: %w", err)
 	}
 	defer sc.Close()
-	result := sc.Scan(cmd.Context(), rawURL)
+	// A URL explanation models a fetch, which always dispatches GET. A native
+	// OAuth endpoint grant depends on that method, so say when it decided the
+	// verdict: any other method at this URL keeps the ordinary gates.
+	result := sc.Scan(scanner.WithOAuthAuthorizationMethod(cmd.Context(), http.MethodGet), rawURL)
+	if result.Allowed && len(cfg.FetchProxy.Monitoring.OAuthAuthorizationEndpoints) > 0 {
+		if other := sc.ScanPreflight(cmd.Context(), rawURL); !other.Allowed {
+			report.Notes = append(report.Notes, "Explained as GET: `fetch_proxy.monitoring.oauth_authorization_endpoints` admits this native OAuth authorization request only for GET; another method at this URL is refused by "+other.Scanner+".")
+		}
+	}
 
 	report.Allowed = result.Allowed
 	report.Scanner = result.Scanner
