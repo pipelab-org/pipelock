@@ -34,10 +34,10 @@ func TestDefaultRules_CommandAfterItsArguments(t *testing.T) {
 		{"mode not world writable", "echo 755 ./build | xargs chmod", ""},
 		{"no mode", "echo -R ./build | xargs chmod", ""},
 		{"no recursive flag", "echo 777 ./build | xargs chmod", ""},
-		{"parts after the command", "xargs chmod < list; echo -R 777", ""},
-		{"file not read back", "echo -R 777 /srv > /tmp/a; xargs chmod < /tmp/b", ""},
+		{"parts after the command", "xargs chmod < list; echo -R 777", incompletePairCheckRule},
+		{"file not read back", "echo -R 777 /srv > /tmp/a; xargs chmod < /tmp/b", incompletePairCheckRule},
 		{"no command word", "echo -R 777 /srv | xargs ls", ""},
-		{"plain xargs", "find . -name '*.sh' | xargs chmod +x", ""},
+		{"plain xargs", "find . -name '*.sh' | xargs chmod +x", incompletePairCheckRule},
 	}
 	for _, mode := range []string{config.ActionWarn, config.ActionBlock} {
 		pc := defaultConfigWithIncomplete(t, mode)

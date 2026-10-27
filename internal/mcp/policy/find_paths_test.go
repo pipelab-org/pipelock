@@ -9,6 +9,64 @@ import (
 	"testing"
 )
 
+func TestDefaultRules_XargsInputBoundary(t *testing.T) {
+	inc := incompletePairCheckRule
+	runVerdictRows(t, []verdictRow{
+		{"filename words", "find . -name 'x -R y' | xargs chmod 777", inc, rulePermissions},
+		{"filename not in command", "find . -type f | xargs chmod 777", inc, rulePermissions},
+		{"ordinary mode", "find /srv -type f | xargs chmod 644", inc, rulePermissions},
+		{"null names", "find . -type f -print0 | xargs -0 chmod 777", "", ""},
+		{"long null option", "/usr/bin/find ./mypath -name '*.txt' -print0 | /usr/bin/xargs --null chmod 644", "", ""},
+		{"missing null consumer", "find . -print0 | xargs chmod 777", inc, rulePermissions},
+		{"unproved producer framing", "find . -print | xargs -0 chmod 777", inc, rulePermissions},
+		{"action word is test argument", "find . -name -print0 | xargs -0 chmod 777", inc, rulePermissions},
+		{"file input", "find . -print0 | xargs -0 -a list chmod 777", inc, rulePermissions},
+		{"redirect input", "find . -print0 | xargs -0 chmod 777 < list", inc, rulePermissions},
+		{"delimiter override", "find . -print0 | xargs -0 -d '\\n' chmod 777", inc, rulePermissions},
+		{"replacement", "find . -print0 | xargs -I{} chmod 777 {}", inc, rulePermissions},
+		{"unknown option", "find . -print0 | xargs --unknown chmod 777", inc, rulePermissions},
+		{"other output", "find . -print0 -ls | xargs -0 chmod 777", inc, rulePermissions},
+		{"unknown producer", "grep -rl x . | xargs -0 chmod 777", inc, rulePermissions},
+		{"grouped consumer", "find . -print0 | { xargs chmod 777; }", inc, rulePermissions},
+		{"subshell consumer", "find . -print0 | (xargs chmod 777)", inc, rulePermissions},
+		{"no argument consumer", "find . -type f | chmod 777", "", ""},
+		{"literal producer", "echo 755 ./build | xargs chmod", "", ""},
+	})
+}
+
+func TestKnownXargsInput(t *testing.T) {
+	for _, command := range []string{
+		"", "echo x", "find . -print0", "| xargs chmod x", "find . -print0 | xargs",
+		"find . -print0 | cat | xargs -0 chmod", "find . -print0 | cat -0 chmod",
+		"find . -print0 | xargs -0", "find . -print0 | xargs -0 -a list chmod",
+		"find relative -print0 | xargs -0 chmod", "find . -print0 -print0 | xargs -0 chmod",
+		"find . -perm | xargs -0 chmod", "find . -type f | xargs -0 chmod",
+		"find . -name '-print0' | xargs -0 chmod", "find . -print | xargs -0 chmod",
+		"find . -print0 | xargs -0 ''", "find . -print0 | xargs -0 chmod < list",
+		"find $HOME -print0 | xargs -0 chmod", "find . -name *.txt -print0 | xargs -0 chmod",
+		"find . -name 'open -print0 | xargs -0 chmod", "find .\n-print0 | xargs -0 chmod",
+	} {
+		t.Run(command, func(t *testing.T) {
+			if got := knownXargsInput([]string{command}); got != "" {
+				t.Fatalf("unproved input exempted for %q", got)
+			}
+		})
+	}
+	for _, command := range []string{
+		"find . -print0 | xargs -0 chmod 644",
+		"find -L /srv -name '*.txt' -print0|xargs --null chmod 644",
+		"find -print0 | xargs -0 chmod 644",
+		"echo 755 /srv | xargs chmod",
+	} {
+		if got := knownXargsInput([]string{command}); got != "chmod" {
+			t.Errorf("%q: got %q, want chmod", command, got)
+		}
+	}
+	if got := knownXargsInput([]string{"find", ".", "-print0", "|", "xargs", "-0", "chmod"}); got != "" {
+		t.Fatalf("argument array exempted for %q", got)
+	}
+}
+
 // TestDefaultRules_FindPrintsOnlyPaths checks that the options and tests of
 // a find whose output is only path names are not taken as words it hands
 // on, and that every find that may print or run anything else, or may not
@@ -16,12 +74,12 @@ import (
 func TestDefaultRules_FindPrintsOnlyPaths(t *testing.T) {
 	inc := incompletePairCheckRule
 	runVerdictRows(t, []verdictRow{
-		{"perm test", "find /srv -type f -perm 0777 | xargs chmod 644", "", ""},
+		{"perm test", "find /srv -type f -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
 		{"perm test, print0", "find . -perm -777 -print0 | xargs -0 chmod 755", "", ""},
-		{"leading option", "find -L /srv -perm 0777 | xargs chmod 644", "", ""},
-		{"path test", "find /srv -path /srv/x -perm 0777 | xargs chmod 644", "", ""},
-		{"full path", "/usr/bin/find /srv -perm 777 -type f | xargs chmod 644", "", ""},
-		{"own flag, paths handed", "find /srv -perm 777 | xargs chmod -R", "", ""},
+		{"leading option", "find -L /srv -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+		{"path test", "find /srv -path /srv/x -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+		{"full path", "/usr/bin/find /srv -perm 777 -type f -print0 | xargs -0 chmod 644", "", ""},
+		{"own flag, paths handed", "find /srv -perm 777 -print0 | xargs -0 chmod -R", "", ""},
 
 		// Starting points are printed.
 		{"starting point", "find 777 -type f | xargs chmod -R", inc, rulePermissions},

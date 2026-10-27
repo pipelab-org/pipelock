@@ -41,10 +41,12 @@ const maxPairChecks = maxPairwiseTokens * (maxPairwiseTokens - 1)
 // unsplit is set when the arguments are one string that commandSegments
 // could not split, so commands in it cannot be told apart.
 type argView struct {
-	tokens   []string
-	joined   string
-	segments [][]string
-	unsplit  bool
+	tokens     []string
+	joined     string
+	segments   [][]string
+	unsplit    bool
+	inputKnown string // direct xargs utility whose input is proved on raw input
+	checkXargs bool
 }
 
 // literalArgTokens returns the submitted strings unmodified, each as one
@@ -57,6 +59,7 @@ func literalArgTokens(args []string) ([]string, string) {
 // (see CheckToolCallWithArgs).
 func buildArgViews(args []string) [4]argView {
 	segs := commandSegments(args)
+	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
 		fn  func(string) string
@@ -69,7 +72,7 @@ func buildArgViews(args []string) [4]argView {
 	var views [4]argView
 	for i, n := range norms {
 		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
-		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit}
+		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
 			views[i].segments = [][]string{tokens}
@@ -82,7 +85,7 @@ func buildArgViews(args []string) [4]argView {
 		}
 	}
 	tokens, joined := literalArgTokens(args)
-	views[3] = argView{tokens: tokens, joined: joined}
+	views[3] = argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true}
 	return views
 }
 
@@ -380,6 +383,10 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 			return true, false
 		}
 	}
+	// Input-derived arguments need not occur in the submitted command text.
+	// Only a raw, direct, path-preserving handoff can clear this uncertainty.
+	incomplete = v.checkXargs && unresolvedXargs(pat, v.tokens) &&
+		(v.inputKnown == "" || !isCommandWord(v.inputKnown, leadingWords(pat)))
 	exhaustive := len(v.tokens) <= maxPairwiseTokens
 	if v.segments == nil {
 		m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat})
@@ -388,7 +395,7 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 			// hand the words before it to the other.
 			return false, true
 		}
-		return m, inc
+		return m, inc || incomplete
 	}
 	b := &pairBudget{pat: pat}
 	for _, seg := range v.segments {

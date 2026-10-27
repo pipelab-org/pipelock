@@ -262,6 +262,10 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 //  3. Pairwise token combinations - catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
 func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
+	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true)
+}
+
+func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage, checkInput bool) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return Verdict{}
 	}
@@ -308,6 +312,11 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	// normalized spelling from narrowing what a pattern sees.
 	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
 	views := buildArgViews(matchArgs)
+	if !checkInput {
+		for i := range views {
+			views[i].checkXargs = false
+		}
+	}
 
 	var matchedRules, incompleteRules []string
 	strictest := ""
@@ -1222,7 +1231,10 @@ func (pc *Config) CheckToolCallJSON(toolName string, values, withKeys []string, 
 	if slices.Equal(values, withKeys) {
 		return v
 	}
-	return mergeVerdicts(v, pc.CheckToolCallWithArgs(toolName, withKeys, rawArgs))
+	// Keys are still scanned for rule matches, but they aren't runtime argv.
+	// Input provenance is assessed on values above; adding JSON keys must not
+	// turn a proved command string into an unknown argument array.
+	return mergeVerdicts(v, pc.checkToolCallWithArgs(toolName, withKeys, rawArgs, false))
 }
 
 // mergeVerdicts combines two verdicts for one call. The stricter action wins

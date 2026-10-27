@@ -42,12 +42,12 @@ var priorRuleTests = []struct {
 	{"zero-width, reset flag through a copy", zeroWidth("echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b"), ruleGit},
 	{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), ruleEncoded},
 	// Controls: the same shapes with nothing the rules name.
-	{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", ""},
+	{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", incompletePairCheckRule},
 	{"copied file to ls", "echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs ls < /tmp/b", ""},
-	{"moved file, no flag", "echo main > /tmp/a; mv /tmp/a /tmp/b; xargs git push origin < /tmp/b", ""},
-	{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", ""},
+	{"moved file, no flag", "echo main > /tmp/a; mv /tmp/a /tmp/b; xargs git push origin < /tmp/b", incompletePairCheckRule},
+	{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", incompletePairCheckRule},
 	{"delete then list", "rm old.tar && ls -la", ""},
-	{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), ""},
+	{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), incompletePairCheckRule},
 }
 
 // zeroWidth puts U+200B in place of every space.
@@ -75,8 +75,14 @@ func checkPriorVerdict(t *testing.T, v Verdict, rule string) {
 		}
 		return
 	}
+	if rule == incompletePairCheckRule {
+		if !v.Matched || !slices.Contains(v.Rules, rule) || len(v.IncompleteRules) == 0 {
+			t.Fatalf("missing incomplete verdict: %+v", v)
+		}
+		return
+	}
 	if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.Rules, rule) ||
-		slices.Contains(v.Rules, incompletePairCheckRule) {
+		slices.Contains(v.IncompleteRules, rule) {
 		t.Fatalf("verdict %v %q %v %v, want block by %q", v.Matched, v.Action, v.Rules, v.IncompleteRules, rule)
 	}
 }

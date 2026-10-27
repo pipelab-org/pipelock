@@ -124,8 +124,8 @@ func TestDefaultRules_LongCommandShapes(t *testing.T) {
 				if !v.Matched || !slices.Contains(v.Rules, tt.rule) {
 					t.Fatalf("verdict %v %q %v, want %q", v.Matched, v.Action, v.Rules, tt.rule)
 				}
-				if slices.Contains(v.Rules, incompletePairCheckRule) {
-					t.Fatalf("rules %v report an incomplete check", v.Rules)
+				if slices.Contains(v.IncompleteRules, tt.rule) {
+					t.Fatalf("matched rule %s is also incomplete: %v", tt.rule, v.IncompleteRules)
 				}
 			})
 		}

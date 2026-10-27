@@ -82,14 +82,14 @@ func TestDefaultRules_HandOffsTheSplitterCannotRead(t *testing.T) {
 		// Controls in order, unsplit.
 		{"in order, unsplit", `chmod -R 777 "$HOME"`, rulePermissions, ""},
 		// Benign twins: a part is missing, so no verdict and no flag.
-		{"mode not world writable, unsplit", `echo 755 $HOME | xargs \chmod`, "", ""},
-		{"no mode, subshell", "(echo -R ./build) | xargs chmod", "", ""},
+		{"mode not world writable, unsplit", `echo 755 $HOME | xargs \chmod`, inc, rulePermissions},
+		{"no mode, subshell", "(echo -R ./build) | xargs chmod", inc, rulePermissions},
 		{"no command word, unsplit", "echo -R 777 $HOME | xargs ls", "", ""},
-		{"copy not read back", "echo -R 777 /srv > /tmp/a; cp /tmp/a /tmp/b; xargs chmod < /tmp/c", "", ""},
-		{"other file copied", "echo -R 777 /srv > /tmp/a; cp /tmp/c /tmp/b; xargs chmod < /tmp/b", "", ""},
+		{"copy not read back", "echo -R 777 /srv > /tmp/a; cp /tmp/a /tmp/b; xargs chmod < /tmp/c", inc, rulePermissions},
+		{"other file copied", "echo -R 777 /srv > /tmp/a; cp /tmp/c /tmp/b; xargs chmod < /tmp/b", inc, rulePermissions},
 		{"own words, mode not world writable", "echo 755 /srv | xargs chmod -R", "", ""},
 		{"own words, no flag", "echo /srv | xargs chmod 777", "", ""},
-		{"here-string, no flag", "xargs chmod <<<'644 /srv'", "", ""},
+		{"here-string, no flag", "xargs chmod <<<'644 /srv'", inc, rulePermissions},
 		{"several values", "echo a b c $HOME | xargs ls -la", "", ""},
 	})
 }

@@ -173,3 +173,33 @@ func TestDecide_ToolPolicyLongArgumentLists(t *testing.T) {
 		}
 	}
 }
+
+func TestDecide_XargsInputBoundary(t *testing.T) {
+	for _, block := range []bool{false, true} {
+		for _, safe := range []bool{false, true} {
+			cfg, sc, _ := testSetup(t)
+			cfg.MCPToolPolicy.OnIncompleteCheck = config.ActionWarn
+			if block {
+				cfg.MCPToolPolicy.OnIncompleteCheck = config.ActionBlock
+			}
+			command := "find . -type f | xargs chmod 777"
+			if safe {
+				command = "find . -type f -print0 | xargs -0 chmod 777"
+			}
+			input := `{"command":` + strconv.Quote(command) + `}`
+			pc := policy.New(cfg.MCPToolPolicy)
+			for name, d := range map[string]Decision{
+				"mcp":  decideMCP(cfg, sc, pc, &MCPPayload{ToolName: "bash", ToolInput: input}),
+				"hook": decideToolUse(cfg, sc, pc, &ToolUsePayload{ToolName: "bash", ToolInput: input}),
+			} {
+				want := Allow
+				if block && !safe {
+					want = Deny
+				}
+				if d.Outcome != want || evidenceContainsPattern(d.Evidence, policy.IncompletePairCheckRule) == safe {
+					t.Fatalf("%s block=%v safe=%v: %+v", name, block, safe, d)
+				}
+			}
+		}
+	}
+}

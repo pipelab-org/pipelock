@@ -18,15 +18,15 @@ import (
 // what find runs.
 var findStartRows = []verdictRow{
 	// Allowed: the words are find's starting points and tests.
-	{"dot", "find . -type f -perm 0777 | xargs chmod 644", "", ""},
-	{"dot, one test", "find . -perm 0777 | xargs chmod 644", "", ""},
-	{"starting point naming path", "find ./mypath -perm 0777 | xargs chmod 644", "", ""},
-	{"dot and a dir", "find . /srv -perm 0777 | xargs chmod 644", "", ""},
-	{"name local", "find . -name local -perm 0777 | xargs chmod 644", "", ""},
-	{"wholename test", "find . -wholename ./a/path -perm 1 | xargs chmod 644", "", ""},
-	{"ipath test", "find /srv -ipath '*PATH*' -perm 0777 | xargs chmod 644", "", ""},
-	{"name find", "find . -name find -perm 0777 | xargs chmod 644", "", ""},
-	{"after another command", "cd /srv && find . -perm 0777 | xargs chmod 644", "", ""},
+	{"dot", "find . -type f -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"dot, one test", "find . -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"starting point naming path", "find ./mypath -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"dot and a dir", "find . /srv -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"name local", "find . -name local -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"wholename test", "find . -wholename ./a/path -perm 1 -print0 | xargs -0 chmod 644", "", ""},
+	{"ipath test", "find /srv -ipath '*PATH*' -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"name find", "find . -name find -perm 0777 -print0 | xargs -0 chmod 644", "", ""},
+	{"after another command", "cd /srv && find . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
 
 	// Still checked: the word is outside find's arguments.
 	{"dot sourced first", ". ./x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},

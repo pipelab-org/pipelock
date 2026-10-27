@@ -130,8 +130,8 @@ func TestPresets_OverBoundIsIncomplete(t *testing.T) {
 				t.Fatalf("verdict %q %v %v, want %s for %q with action %q",
 					v.Action, v.Rules, v.IncompleteRules, incompletePairCheckRule, name, pc.IncompleteAction)
 			}
-			if v := pc.CheckToolCall("bash", []string{"echo hi | xargs kilo 644"}); slices.Contains(v.IncompleteRules, name) {
-				t.Fatalf("nothing handed, got %v", v.IncompleteRules)
+			if v := pc.CheckToolCall("bash", []string{"echo hi | xargs kilo 644"}); !slices.Contains(v.IncompleteRules, name) {
+				t.Fatalf("unresolved command words must retain uncertainty, got %v", v.IncompleteRules)
 			}
 		})
 	}
