@@ -5,14 +5,17 @@ package mcp
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -225,6 +228,62 @@ func TestContractDiscoveryKeepsCauseForOperator(t *testing.T) {
 			reason := discoveryClientReason(err)
 			if reason == "" || !strings.Contains(err.Error(), reason+": ") || len(err.Error()) <= len(reason)+2 {
 				t.Fatalf("reason=%q error=%v", reason, err)
+			}
+		})
+	}
+}
+
+// Through the listener: the client gets the refusal alone, and the operator
+// log keeps the refusal with its quoted cause.
+func TestHTTPListener_ContractDiscoveryCauseStaysInLog(t *testing.T) {
+	for _, tc := range []struct{ mode, reason string }{
+		{"network", "upstream discovery request failed"},
+		{"broken encoding", "discovery response encoding cannot be inspected"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			var calls atomic.Int32
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				frame := ParseMCPFrame(body)
+				if frame.Method != "tools/list" {
+					calls.Add(1)
+					return
+				}
+				if tc.mode == "network" {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						_ = conn.Close()
+					}
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Content-Encoding", "gzip")
+				_, _ = io.WriteString(w, "broken")
+			}))
+			defer up.Close()
+			ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var logs syncBuffer
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() { done <- RunHTTPListenerProxy(ctx, ln, up.URL, &logs, paramContractOpts(t)) }()
+			t.Cleanup(func() {
+				cancel()
+				waitForListenerProxyStop(t, done)
+			})
+			baseURL := "http://" + ln.Addr().String()
+			waitForHTTPHealth(t, baseURL)
+			h := currentWireHeaders(methodToolsCall, "echo")
+			h.Set("Proxy-Authorization", headerStateBearer)
+			h.Set("Mcp-Param-Region", "body")
+			status, _, body := postWireContractRequest(t, baseURL, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{"region":"body"}`), h)
+			if status != http.StatusServiceUnavailable || calls.Load() != 0 || !strings.Contains(body, tc.reason) || strings.Contains(body, tc.reason+": ") {
+				t.Fatalf("status=%d calls=%d body=%s", status, calls.Load(), body)
+			}
+			if log := logs.String(); !strings.Contains(log, `cannot establish tool header contract for "echo"`) || !strings.Contains(log, tc.reason+": ") {
+				t.Fatalf("operator log lost the cause: %s", log)
 			}
 		})
 	}
