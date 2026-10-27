@@ -867,6 +867,10 @@ func newInterceptHandler(
 			ClientIP: ic.ClientIP, RequestID: ic.RequestID,
 			Agent: ic.Agent, Transport: "intercept", PolicyHash: ic.Config.CanonicalPolicyHash(),
 		})
+		interceptScanCtx = scanner.WithOAuthAuthorizationMethod(interceptScanCtx, r.Method)
+		if ic.Proxy != nil {
+			interceptScanCtx = scanner.WithOAuthAuthorizationPolicy(interceptScanCtx, ic.Proxy.CurrentConfig())
+		}
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&

@@ -508,6 +508,8 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	appendOAuthAuthorizationReloadWarnings(&warnings, old, updated)
+
 	if old.FetchProxy.Monitoring.ScanNestedURLsEnabled() && !updated.FetchProxy.Monitoring.ScanNestedURLsEnabled() {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "fetch_proxy.monitoring.scan_nested_urls",

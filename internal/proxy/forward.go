@@ -1113,6 +1113,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		Method: r.Method, URL: targetURL, ClientIP: clientIP,
 		RequestID: requestID, Agent: agent, Transport: "forward", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
+	fwdScanCtx = scanner.WithOAuthAuthorizationMethod(fwdScanCtx, r.Method)
 	r = r.WithContext(fwdScanCtx)
 	result := sc.Scan(fwdScanCtx, targetURL)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard); err != nil {

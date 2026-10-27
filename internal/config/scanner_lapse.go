@@ -36,6 +36,9 @@ func validateLapsingExpiryDate(field, value string, maximum time.Duration) error
 }
 
 func (c *Config) validateScannerExceptions() error {
+	if err := validateOAuthAuthorizationEndpoints(c); err != nil {
+		return err
+	}
 	if err := validatePathEntropyExclusions(c.FetchProxy.Monitoring.PathEntropyExclusions); err != nil {
 		return err
 	}
@@ -81,6 +84,7 @@ func (c *Config) LapseExpiredScannerExceptions(now time.Time) ([]Warning, error)
 	candidate.partitionScannerExceptions(now)
 	c.FetchProxy.Monitoring.PathEntropyExclusions = candidate.FetchProxy.Monitoring.PathEntropyExclusions
 	c.FetchProxy.Monitoring.QueryEntropyParamExclusions = candidate.FetchProxy.Monitoring.QueryEntropyParamExclusions
+	c.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = candidate.FetchProxy.Monitoring.OAuthAuthorizationEndpoints
 	c.RequestBodyScanning.ContentEntropyWarnRoutes = candidate.RequestBodyScanning.ContentEntropyWarnRoutes
 	c.RequestBodyScanning.SigV4CredentialRoutes = candidate.RequestBodyScanning.SigV4CredentialRoutes
 	c.RequestBodyScanning.ContentEntropyExclusions = candidate.RequestBodyScanning.ContentEntropyExclusions
@@ -125,6 +129,9 @@ func (c *Config) partitionScannerExceptions(now time.Time) {
 	}
 	m.QueryEntropyParamExclusions = partitionScannerExceptions(m.QueryEntropyParamExclusions, "fetch_proxy.monitoring.query_entropy_param_exclusions", func(e QueryEntropyParamExclusion) (string, string) {
 		return e.Expires, e.Scheme + "://" + e.Host + e.Path + "?" + e.Param
+	}, now, &warnings)
+	m.OAuthAuthorizationEndpoints = partitionScannerExceptions(m.OAuthAuthorizationEndpoints, "fetch_proxy.monitoring.oauth_authorization_endpoints", func(e OAuthAuthorizationEndpoint) (string, string) {
+		return e.Expires, "https://" + e.Host + e.Path
 	}, now, &warnings)
 	r := &c.RequestBodyScanning
 	r.ContentEntropyWarnRoutes = partitionScannerExceptions(r.ContentEntropyWarnRoutes, "request_body_scanning.content_entropy_warn_routes", func(e RequestBodyEntropyWarnRoute) (string, string) {

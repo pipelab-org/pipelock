@@ -1101,6 +1101,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 				redirectWarnCtx.Transport = TransportFetch
 			}
 			redirectScanCtx := scanner.WithDLPWarnContext(req.Context(), redirectWarnCtx)
+			redirectScanCtx = scanner.WithOAuthAuthorizationMethod(redirectScanCtx, req.Method)
 			// Forward redirects are returned to the client, so this admission
 			// must not spend a slot for an unissued request. The client's next
 			// request calls Scan and atomically consumes its own slot. Fetch
@@ -5484,6 +5485,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		Method: http.MethodGet, URL: targetURL, ClientIP: clientIP,
 		RequestID: requestID, Agent: agent, Transport: "fetch", PolicyHash: cfg.CanonicalPolicyHash(),
 	})
+	scanCtx = scanner.WithOAuthAuthorizationMethod(scanCtx, http.MethodGet)
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {

@@ -331,13 +331,14 @@ type Scanner struct {
 	// observe entries for a single immutable core response pattern. They are
 	// populated regardless of response_scanning.enabled, because the core
 	// floor they modify also runs regardless of it.
-	coreObserveExceptions  []config.CoreObserveException
-	subdomainExclusions    []string // domains excluded from subdomain entropy checks
-	queryExclusions        []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
-	queryParamExclusions   map[queryEntropyParamExclusionKey]string
-	pathEntropyExclusions  []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
-	scanNestedURLs         bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
-	nestedURLResolveBudget time.Duration          // shared deadline for all nested lookups in one request
+	coreObserveExceptions       []config.CoreObserveException
+	subdomainExclusions         []string // domains excluded from subdomain entropy checks
+	queryExclusions             []string // domains excluded from query parameter entropy checks (S3 pre-signed URLs, etc.)
+	queryParamExclusions        map[queryEntropyParamExclusionKey]string
+	oauthAuthorizationEndpoints []config.OAuthAuthorizationEndpoint
+	pathEntropyExclusions       []pathEntropyExclusion // host+path-prefix exemptions for the PATH entropy gate only
+	scanNestedURLs              bool                   // fetch_proxy.monitoring.scan_nested_urls; nil/true = enabled
+	nestedURLResolveBudget      time.Duration          // shared deadline for all nested lookups in one request
 	// pathEntropyExempt suppresses the path-entropy gate on paths the operator
 	// already governs with a request_policy route (explicit host + path
 	// constraints). A nil or disabled matcher keeps path entropy fully active.
@@ -539,6 +540,10 @@ func NewWithOptions(cfg *config.Config, opts Options) (*Scanner, error) {
 }
 
 func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudgetEntries int) (*Scanner, error) {
+	oauthEndpoints, err := config.NormalizeOAuthAuthorizationEndpoints(cfg.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)
+	if err != nil {
+		return nil, err
+	}
 	// Construction is an ingest boundary: this signature accepts any *Config
 	// and nothing here can tell whether it passed through config.Validate.
 	// Every production caller today does arrive validated, by loading a config
@@ -575,22 +580,23 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		now = time.Now
 	}
 	s := &Scanner{
-		now:                       now,
-		core:                      initCoreScanner(cfg),
-		allowlist:                 allowlist,
-		blocklist:                 cfg.FetchProxy.Monitoring.Blocklist,
-		entropyThreshold:          cfg.FetchProxy.Monitoring.EntropyThreshold,
-		subdomainEntropyThreshold: cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold,
-		entropyMinLen:             20,
-		maxURLLength:              cfg.FetchProxy.Monitoring.MaxURLLength,
-		subdomainExclusions:       cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
-		queryExclusions:           cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
-		queryParamExclusions:      buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
-		pathEntropyExclusions:     buildPathEntropyExclusions(effectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
-		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
-		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
-		pathEntropyExempt:         buildPathEntropyExempt(cfg),
-		destinationGrants:         grants,
+		now:                         now,
+		core:                        initCoreScanner(cfg),
+		allowlist:                   allowlist,
+		blocklist:                   cfg.FetchProxy.Monitoring.Blocklist,
+		entropyThreshold:            cfg.FetchProxy.Monitoring.EntropyThreshold,
+		subdomainEntropyThreshold:   cfg.FetchProxy.Monitoring.SubdomainEntropyThreshold,
+		entropyMinLen:               20,
+		maxURLLength:                cfg.FetchProxy.Monitoring.MaxURLLength,
+		subdomainExclusions:         cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions,
+		queryExclusions:             cfg.FetchProxy.Monitoring.QueryEntropyExclusions,
+		queryParamExclusions:        buildQueryEntropyParamExclusions(cfg.FetchProxy.Monitoring.QueryEntropyParamExclusions),
+		oauthAuthorizationEndpoints: oauthEndpoints,
+		pathEntropyExclusions:       buildPathEntropyExclusions(effectivePathEntropyExclusions(cfg.FetchProxy.Monitoring.PathEntropyExclusions)),
+		scanNestedURLs:              cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
+		nestedURLResolveBudget:      defaultNestedURLResolveBudget,
+		pathEntropyExempt:           buildPathEntropyExempt(cfg),
+		destinationGrants:           grants,
 	}
 
 	// Initialize rate limiter if enabled
@@ -1375,6 +1381,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (res
 		result.WarnMatches = dlpWarns
 		s.emitDLPWarns(ctx, dlpWarns)
 	}()
+	if allowance := s.nativeOAuthAuthorization(ctx, scanURL, now); allowance != nil {
+		ctx = context.WithValue(ctx, oauthAuthorizationAllowanceKey{}, allowance)
+	}
 	if result := s.checkEntropyWithContextAt(ctx, scanURL, now); !result.Allowed {
 		return result
 	}
@@ -1774,7 +1783,7 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
 		return Result{Allowed: true}
 	}
-	candidates := nestedURLCandidates(parsed.RawQuery, s.maxURLLength)
+	candidates := nestedURLCandidates(nativeOAuthNestedTarget(ctx, parsed).RawQuery, s.maxURLLength)
 	if len(candidates) == 0 {
 		return Result{Allowed: true}
 	}
@@ -4835,7 +4844,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			}
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
 				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
-					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) {
+					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) || nativeOAuthQueryAllowed(ctx, key, v) {
 					continue
 				}
 				return s.queryEntropyParamResult(key, finding)

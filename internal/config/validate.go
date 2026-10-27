@@ -1747,6 +1747,10 @@ func (c *Config) validateFetchProxy() error {
 		return err
 	}
 
+	if err := validateOAuthAuthorizationEndpoints(c); err != nil {
+		return err
+	}
+
 	// Validate global rate limits are non-negative
 	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
 		return fmt.Errorf("fetch_proxy.monitoring.max_requests_per_minute must be >= 0")
