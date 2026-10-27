@@ -279,10 +279,16 @@ func TestHTTPListener_ContractDiscoveryCauseStaysInLog(t *testing.T) {
 			h.Set("Proxy-Authorization", headerStateBearer)
 			h.Set("Mcp-Param-Region", "body")
 			status, _, body := postWireContractRequest(t, baseURL, currentWireBody(2, methodToolsCall, `"name":"echo","arguments":{"region":"body"}`), h)
-			if status != http.StatusServiceUnavailable || calls.Load() != 0 || !strings.Contains(body, tc.reason) || strings.Contains(body, tc.reason+": ") {
+			var response rpcError
+			if err := json.Unmarshal([]byte(body), &response); err != nil {
+				t.Fatalf("decode client response: %v body=%s", err, body)
+			}
+			wantMessage := "pipelock: upstream error: pipelock: cannot establish tool header contract: " + tc.reason
+			if status != http.StatusServiceUnavailable || calls.Load() != 0 || response.Error.Message != wantMessage {
 				t.Fatalf("status=%d calls=%d body=%s", status, calls.Load(), body)
 			}
-			if log := logs.String(); !strings.Contains(log, `cannot establish tool header contract for "echo"`) || !strings.Contains(log, tc.reason+": ") {
+			// %q quotes the cause, so the log line opens it with a quote.
+			if log := logs.String(); !strings.Contains(log, `cannot establish tool header contract for "echo": "`+tc.reason+": ") {
 				t.Fatalf("operator log lost the cause: %s", log)
 			}
 		})
