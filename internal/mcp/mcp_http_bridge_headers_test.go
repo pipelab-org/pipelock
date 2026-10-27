@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -563,7 +564,10 @@ func TestHTTPBridgeHeaderCancellation(t *testing.T) {
 	}
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("bridge: %v", err)
+		}
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("cancellation stuck")
 	}
