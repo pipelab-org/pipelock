@@ -185,6 +185,7 @@ func RunHTTPProxy(
 			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
+		defer opts.Store.Delete(invocationKey)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 

@@ -1995,7 +1995,29 @@ Replacing a file-backed listener bearer starts a new credential epoch on the nex
 
 For migration, older clients may continue returning a Pipelock-issued `Pipelock-Session-Token` after a legacy `initialize` exchange. That compatibility capability is isolated from principal-owned state, is never forwarded upstream, and is never issued for a `2026-07-28` request. New integrations must use authenticated principal state instead.
 
-The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new authenticated principal evicts legacy state first but never pressure-evicts another live principal's security history; if every slot belongs to a live principal, admission fails closed. Stateless listener configurations do not allocate persistent client state.
+The registry holds at most 4,096 client states. Idle principal and legacy compatibility states expire after 24 hours. At capacity, a new client can replace inactive legacy state only when it carries no protected enforcement state. Live principal history and legacy airlock, adaptive restrictions, and policy-relevant taint are protected from pressure eviction. If no state can be safely dropped, admission fails closed. Without a session store, legacy compatibility state keeps its existing least-recently-used eviction behavior. Stateless listener configurations do not allocate persistent client state.
+
+With a session store, unauthenticated legacy `Mcp-Session-Id` values and Pipelock-issued tokens can each hold a separate slot. An anonymous client can obtain many tokens, so `listener_require_state_token: true` does not limit capacity. Upstream MCP responses count as external content, so taint policy can retain those slots even without an injection finding. In `pipelock run`, the listener shares `session_profiling.max_sessions` with the HTTP proxy and can exhaust capacity for other transports. Standalone `pipelock mcp proxy --listen` uses a private store, so only the listener's own capacity is affected.
+
+Session store slots still free on `session_ttl_minutes` idle expiry (airlock exempt); listener registry slots free on the listener idle expiry (24 hours) or session end. A store refusal names `max_sessions`; a registry refusal for an unauthenticated legacy client names the fixed 4,096-client limit. A verified principal refused at the registry limit is reported as `session_binding` (layer `mcp_listener_session`, pattern `listener_principal_state_capacity`), not `data_budget`. Raising `max_sessions` does not raise the registry limit.
+
+For multi-client listeners, configure listener bearer authentication to bind one principal to one slot. A shared listener bearer identifies one shared trust domain; use distinct verified principals when callers need separate histories. Authentication does not reserve capacity for another transport. Admin reset, terminate and new-task remain unavailable for invocation-scoped listener keys.
+
+The capacity note is startup-only; reload does not emit it. It requires a session store and either stateful controls or token mode, with no configured bearer or principal authentication. A listener with a store but no stateful controls and no token mode creates no persistent client partitions and emits no note.
+
+| Session store | Stateful controls | Token mode | Bearer or principal auth | Startup capacity note |
+|---|---|---|---|---|
+| absent | enabled | disabled | absent | no |
+| present | disabled | disabled | absent | no |
+| present | enabled | disabled | absent | yes |
+| present | disabled | enabled | absent | yes |
+| present | enabled | enabled | absent | yes |
+| present | enabled | disabled | configured | no |
+| present | disabled | enabled | configured | no |
+
+The emitted note is:
+
+> pipelock: unauthenticated legacy MCP listener session IDs and Pipelock-issued tokens can each hold a session slot; retained sessions can exhaust listener capacity. In pipelock run, session_profiling.max_sessions is shared with other transports; standalone pipelock mcp proxy --listen uses its own store. Session store slots free on session_ttl_minutes idle expiry (airlock exempt); listener registry slots free on listener idle expiry (24h) or session end. Configure listener bearer authentication to bind one principal to one slot. listener_require_state_token does not limit capacity: one anonymous client can obtain many tokens. This note is startup-only; reload does not emit it.
 
 ## MCP WebSocket Listener
 
@@ -2042,7 +2064,11 @@ The adaptive `whoami` endpoint and session admin API require `session_profiling.
 
 `session_profiling.volume_spike_ratio` was removed because it had no enforcement behavior. Config files that still contain it are refused at load; remove the field.
 
-`max_sessions` fails closed. At the cap, Pipelock evicts the oldest session it can safely drop, and never one held in airlock. When no session can be dropped, the new request is refused with HTTP 503 and layer `session_capacity` instead of running without session state; proxy, MCP and Browser Shield admission all follow this rule.
+`max_sessions` fails closed. At the cap, Pipelock evicts the oldest session it can safely drop, and never one held in airlock, carrying an adaptive escalation or `block_all` restriction (global or destination-scoped), or carrying taint at a level used by taint policy (`external_untrusted` or higher). When no session can be dropped, the new request is refused with HTTP 503 and layer `session_capacity` instead of running without session state; proxy, MCP and Browser Shield admission all follow this rule.
+
+Capacity protection doesn't change `session_ttl_minutes`: a session idle beyond that limit can expire at the next cleanup, clearing its adaptive and taint history. Airlock sessions remain exempt from idle expiry. Committed MCP tool calls refresh activity unless the session-wide `block_all` latch is set; blocked retries don't keep that latch alive. Standalone MCP invocation records are removed when the invocation exits.
+
+Refusal has no fixed recovery deadline. Active tainted sessions can keep their state, and airlock timers can be disabled. Adaptive recovery uses its configured level timers; disabling `adaptive_enforcement` releases capacity held only by adaptive levels. Reset and terminate clear adaptive and airlock restrictions but preserve taint, so a tainted session keeps its slot; an identity session's new-task boundary (`POST /api/v1/sessions/{key}/task`) clears taint. MCP sessions reject admin reset and task boundaries, so end the invocation, use an applicable configured trust override for the refused action, or allow idle expiry where supported. A trust override doesn't release capacity while taint remains.
 
 ## Behavioral Baseline
 

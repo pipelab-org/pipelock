@@ -263,6 +263,11 @@ func (s *listenerStateBoundedStore) Delete(key string) {
 	s.deleted[key] = struct{}{}
 }
 
+func (s *listenerStateBoundedStore) EvictIfUnprotected(key string, _ session.Recorder) bool {
+	s.Delete(key)
+	return true
+}
+
 func listenerSetupState(t *testing.T, states *mcpListenerClientStates, n int) *mcpListenerClientState {
 	t.Helper()
 	token := fmt.Sprintf("listener-state-test-%d", n)

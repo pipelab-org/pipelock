@@ -1125,11 +1125,27 @@ func (s *SessionState) RecordBytes(n int64) {
 	s.bytesTotal += n
 }
 
+// RecordToolActivity refreshes activity for a committed MCP tool call. Listener
+// baselines stay request-local; this only updates the shared session's idle clock.
+func (s *SessionState) RecordToolActivity() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordToolActivityLocked()
+}
+
+func (s *SessionState) recordToolActivityLocked() {
+	// Match RecordRequest: blocked retries must not prevent idle recovery.
+	if !s.atBlockAll {
+		s.lastActivity = time.Now()
+	}
+}
+
 // RecordToolCall increments the session's tool call counter and tracks
 // unique tool names. Called by MCP proxy when a tool invocation completes.
 func (s *SessionState) RecordToolCall(toolName string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.recordToolActivityLocked()
 	s.toolCalls++
 	if s.uniqueTools == nil {
 		s.uniqueTools = make(map[string]struct{})
@@ -1392,6 +1408,10 @@ type SessionManager struct {
 	// warn again.
 	baselineWarningMu          sync.Mutex
 	baselineUnproducibleWarned map[string]struct{}
+
+	// beforeEvictRecheck lets tests change a candidate between selection and
+	// the locked recheck. Nil in production.
+	beforeEvictRecheck func(*SessionState)
 }
 
 // SessionManagerOptions configures optional SessionManager behavior.
@@ -1746,7 +1766,7 @@ func (sm *SessionManager) recordSessionBaseline(sess *SessionState) {
 
 // GetOrCreate returns the session for a key, creating if needed.
 // It evicts the oldest eligible session at capacity. A nil result refuses
-// admission: active quarantine must not be evicted or exceed MaxSessions.
+// admission: live enforcement state must not be evicted or exceed MaxSessions.
 // Callers must deny new work rather than treating nil as disabled profiling.
 func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 	sm.startMaintenance()
@@ -1927,9 +1947,9 @@ func (sm *SessionManager) AdaptiveSessionLevelCounts() map[string]float64 {
 	}
 
 	// Snapshot session pointers under the manager lock, then release it before
-	// taking individual session locks. Several lifecycle paths acquire these
-	// locks in the opposite order, so holding sm.mu here would risk a scrape
-	// deadlock. Removed sessions remain valid Go objects; a concurrent eviction
+	// taking individual session locks, keeping the scrape's manager lock hold
+	// short. The lock order is listener registry, store, session, then airlock.
+	// Removed sessions remain valid Go objects; a concurrent eviction
 	// may make one scrape briefly stale, but the next scrape reconciles from the
 	// current map and cannot go negative.
 	sm.mu.RLock()
@@ -2874,6 +2894,41 @@ func (a *storeAdapter) Delete(key string) {
 	a.sm.Delete(key)
 }
 
+// EvictIfUnprotected uses the same enforcement predicate as shared capacity
+// eviction. Listener state may retain a recorder after its clean store entry
+// was evicted, so inspect that recorder even when the map no longer holds it.
+func (a *storeAdapter) EvictIfUnprotected(key string, recorder session.Recorder) bool {
+	sess, ok := recorder.(*SessionState)
+	if !ok || sess == nil {
+		return false
+	}
+	sm := a.sm
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.key != key {
+		return false
+	}
+	current := sm.sessions[key]
+	if current != nil && current != sess {
+		// Never remove a replacement created by another owner of this key.
+		return false
+	}
+	adaptiveCfg := sm.adaptiveCfgPtr.Load()
+	if sess.hasCapacityProtectionLocked(adaptiveCfg != nil && adaptiveCfg.Enabled) {
+		return false
+	}
+	if current != nil {
+		delete(sm.sessions, key)
+		if sm.metrics != nil {
+			sm.metrics.RecordSessionEvicted()
+			sm.metrics.SetSessionsActive(float64(len(sm.sessions)))
+		}
+	}
+	return true
+}
+
 // AsStore returns a session.Store interface for this SessionManager.
 func (sm *SessionManager) AsStore() session.Store {
 	return &storeAdapter{sm: sm}
@@ -2897,47 +2952,91 @@ func (sm *SessionManager) Delete(key string) {
 	sm.mu.Unlock()
 }
 
-// evictOldest removes the session with the oldest lastActivity.
+// hasCapacityProtectionLocked reports whether dropping this session would
+// discard live enforcement. Idle expiry remains a separate session boundary.
+// Adaptive levels count only while adaptive enforcement is enabled: every
+// consumer ignores them otherwise, and the de-escalation sweep stops, so a
+// residual level would hold capacity that nothing enforces. Caller holds s.mu.
+func (s *SessionState) hasCapacityProtectionLocked(adaptiveEnabled bool) bool {
+	if s.hasActiveAirlockLocked() || s.atBlockAll || s.risk.HasPolicyTaint() {
+		return true
+	}
+	if adaptiveEnabled && s.escalationLevel > 0 {
+		return true
+	}
+	for _, st := range s.scopes {
+		if st.atBlockAll || (adaptiveEnabled && st.escalationLevel > 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// evictOldest removes the eligible session with the oldest lastActivity.
 // Must be called with sm.mu held for writing. Returns the evicted
 // session (if any) so the caller can record baseline metrics after
 // releasing the lock.
 func (sm *SessionManager) evictOldest() *SessionState {
-	var oldestKey string
-	var oldestTime time.Time
-	var oldestSess *SessionState
+	adaptiveCfg := sm.adaptiveCfgPtr.Load()
+	adaptiveEnabled := adaptiveCfg != nil && adaptiveCfg.Enabled
 
-	var oldestEscLevel int
+	// A candidate that turns protected before removal is skipped and the next
+	// oldest is tried, so one late signal cannot refuse admission while another
+	// session is still safe to drop. Each pass removes a session or skips a new
+	// key, so the loop ends within len(sm.sessions) passes.
+	var skipped map[string]struct{}
+	for {
+		var oldestKey string
+		var oldestTime time.Time
+		var oldestSess *SessionState
+		for key, sess := range sm.sessions {
+			if _, ok := skipped[key]; ok {
+				continue
+			}
+			sess.mu.Lock()
+			la := sess.lastActivity
+			protected := sess.hasCapacityProtectionLocked(adaptiveEnabled)
+			sess.mu.Unlock()
 
-	for key, sess := range sm.sessions {
-		sess.mu.Lock()
-		la := sess.lastActivity
-		escLevel := sess.escalationLevel
-		quarantined := sess.hasActiveAirlockLocked()
-		sess.mu.Unlock()
+			// Capacity pressure must not reset enforcement history.
+			if protected {
+				continue
+			}
 
-		// Skip quarantined sessions: evicting them would escape enforcement.
-		if quarantined {
-			continue
-		}
-
-		if oldestKey == "" || la.Before(oldestTime) {
-			oldestKey = key
-			oldestTime = la
-			oldestEscLevel = escLevel
-			oldestSess = sess
-		}
-	}
-
-	if oldestKey != "" {
-		if oldestEscLevel > 0 {
-			if sm.metrics != nil {
-				sm.metrics.SetAdaptiveSessionLevel(session.EscalationLabel(oldestEscLevel), -1)
+			if oldestKey == "" || la.Before(oldestTime) {
+				oldestKey = key
+				oldestTime = la
+				oldestSess = sess
 			}
 		}
-		delete(sm.sessions, oldestKey)
-		if sm.metrics != nil {
-			sm.metrics.RecordSessionEvicted()
+		if oldestKey == "" {
+			return nil
 		}
+		if sm.beforeEvictRecheck != nil {
+			sm.beforeEvictRecheck(oldestSess)
+		}
+		if sm.removeIfUnprotected(oldestKey, oldestSess, adaptiveEnabled) {
+			return oldestSess
+		}
+		if skipped == nil {
+			skipped = make(map[string]struct{})
+		}
+		skipped[oldestKey] = struct{}{}
 	}
-	return oldestSess
+}
+
+// removeIfUnprotected rechecks a capacity candidate under its session lock
+// and holds that lock through removal, so a signal cannot land in between.
+// Caller holds sm.mu for writing.
+func (sm *SessionManager) removeIfUnprotected(key string, sess *SessionState, adaptiveEnabled bool) bool {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.hasCapacityProtectionLocked(adaptiveEnabled) {
+		return false
+	}
+	delete(sm.sessions, key)
+	if sm.metrics != nil {
+		sm.metrics.RecordSessionEvicted()
+	}
+	return true
 }

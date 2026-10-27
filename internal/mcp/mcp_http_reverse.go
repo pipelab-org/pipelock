@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -231,6 +232,8 @@ func RunHTTPListenerProxy(
 		dropMCPDenial(startupAuditOpts, mcpStartupDenialAudit(mcpUpstreamGateDenialAudit(gate)), "startup")
 		return fmt.Errorf("contract upstream denied: %s", mcpContractBlockReason(gate))
 	}
+
+	logListenerCapacityNote(safeLogW, opts)
 
 	listenerClients := newMCPListenerClientStates(opts.Store)
 	listenerClients.resetAuthorityToolCfgFn = opts.toolCfg
@@ -647,7 +650,7 @@ func RunHTTPListenerProxy(
 		setupState := false
 		stateBound := false
 		principalBound := false
-		sessionCapacityDenied := false
+		var sessionCapacityErr error
 		setClientState := func(state *mcpListenerClientState) {
 			clientState = state
 			clientStateKey = state.key
@@ -674,11 +677,12 @@ func RunHTTPListenerProxy(
 		// keyed by client-controlled routing data; it goes to the unbound
 		// stateless path below instead.
 		if statefulControls && !requireStateToken && !stateBound && listenerPrincipal.key == "" {
-			if state := listenerClients.stateForLegacySession(r.Header.Get("Mcp-Session-Id")); state != nil {
+			if state, err := listenerClients.stateForLegacySessionWithCapacity(r.Header.Get("Mcp-Session-Id")); state != nil {
 				setClientState(state)
 				stateBound = true
 			} else {
-				sessionCapacityDenied = true
+				// A nil state always refuses, even if a future path omits the error.
+				sessionCapacityErr = cmp.Or(err, session.ErrCapacity)
 			}
 		}
 		if requireStateToken && !stateBound && listenerPrincipal.key == "" && listenerSessionToken != "" {
@@ -699,7 +703,7 @@ func RunHTTPListenerProxy(
 				clientStateKey = state.key
 				defer listenerClients.discardUnboundState(state)
 			} else {
-				sessionCapacityDenied = true
+				sessionCapacityErr = session.ErrCapacity
 			}
 			requestBaseOpts = listenerStatelessRequestOpts(requestBaseOpts)
 		}
@@ -765,16 +769,16 @@ func RunHTTPListenerProxy(
 			}
 			info.SetHeaders(w.Header())
 		}
-		if sessionCapacityDenied {
+		if sessionCapacityErr != nil {
 			emitListenerBlockDecision(mcpListenerBlockDecision{
 				reason: blockreason.DataBudget, headerSeverity: blockreason.SeverityCritical,
 				retry: blockreason.RetryTransient, layer: "session_capacity",
-				pattern: session.ErrCapacity.Error(), target: "mcp:listener-session",
+				pattern: sessionCapacityErr.Error(), target: "mcp:listener-session",
 				receiptSeverity: config.SeverityHigh,
 			})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = w.Write(upstreamErrorResponse(nil, session.ErrCapacity))
+			_, _ = w.Write(upstreamErrorResponse(nil, sessionCapacityErr))
 			return
 		}
 		rejectMissingListenerState := func(id json.RawMessage) {
@@ -1261,6 +1265,7 @@ func RunHTTPListenerProxy(
 
 			reqRec := clientState.recorder
 			baselineRec := newMCPRequestBaselineRecorder()
+			baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 			baselineOpts := requestBaseOpts
 			baselineOpts.BaselineRec = baselineRec
 			defer recordMCPBaselineSample(baselineOpts, nil)
@@ -1710,6 +1715,7 @@ func RunHTTPListenerProxy(
 		auditSessionKey := listenerStateAuditKey()
 		reqRec := clientState.recorder
 		baselineRec := newMCPRequestBaselineRecorder()
+		baselineRec.activityRecorder, _ = reqRec.(session.ToolCallActivityRecorder)
 		baselineOpts := requestBaseOpts
 		baselineOpts.BaselineRec = baselineRec
 		defer recordMCPBaselineSample(baselineOpts, nil)

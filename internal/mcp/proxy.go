@@ -1811,11 +1811,13 @@ func RunProxy(ctx context.Context, clientIn io.Reader, clientOut io.Writer, logW
 	// (adaptive enforcement disabled), so all downstream callers are nil-safe.
 	var rec session.Recorder
 	if opts.Store != nil {
-		rec = opts.Store.GetOrCreate(session.NextInvocationKey("mcp-stdio"))
+		invocationKey := session.NextInvocationKey("mcp-stdio")
+		rec = opts.Store.GetOrCreate(invocationKey)
 		if rec == nil {
 			dropMCPDenial(opts, mcpStartupDenialAudit(mcpListenerCapacityDenialAudit()), "startup")
 			return session.ErrCapacity
 		}
+		defer opts.Store.Delete(invocationKey)
 	}
 	defer recordMCPBaselineSample(opts, rec)
 

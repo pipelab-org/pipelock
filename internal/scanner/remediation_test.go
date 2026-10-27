@@ -964,7 +964,8 @@ func TestMCPProtocolHintOnlyForBatchRequests(t *testing.T) {
 		"MCP listener admission refused",
 		"MCP listener protocol refused",
 		"MCP listener state capacity exhausted",
-		"session capacity exhausted; release active quarantine or increase max_sessions",
+		"MCP listener client-registry capacity exhausted (4096 clients); wait for listener idle expiry (24h) or session end",
+		"session capacity exhausted; wait for session recovery or increase max_sessions",
 	} {
 		if hint := OperatorHintForResult(AuditMCPProtocol, reason); hint == "" || strings.Contains(hint, batchKnob) {
 			t.Errorf("reason %q has hint %q, want its own non-empty hint", reason, hint)
@@ -988,7 +989,8 @@ func TestMCPRemediationReasonPrerequisites(t *testing.T) {
 		{AuditMCPProtocol, "MCP listener admission refused", "listener_require_state_token", true},
 		{AuditMCPProtocol, "MCP listener protocol refused", "no scanner or policy setting relaxes protocol validation", true},
 		{AuditMCPProtocol, "MCP listener state capacity exhausted", "Retry after an existing state expires", true},
-		{AuditMCPProtocol, "session capacity exhausted; release active quarantine or increase max_sessions", "session_profiling.max_sessions", true},
+		{AuditMCPProtocol, "MCP listener client-registry capacity exhausted (4096 clients); wait for listener idle expiry (24h) or session end", "does not raise this registry limit", true},
+		{AuditMCPProtocol, "session capacity exhausted; wait for session recovery or increase max_sessions", "session_profiling.max_sessions", true},
 		{ScannerMCPToolScanning, "tools/list cannot be safely inspected: oversized inventory", "does not override this refusal", false},
 		{AuditToolScanning, "tools/list cannot be safely inspected: malformed inventory", "does not override this refusal", false},
 		{AuditResponseScan, "response scan parse error in MCP parameter header", "cannot make the header scannable", false},
