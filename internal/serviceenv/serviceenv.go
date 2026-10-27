@@ -58,6 +58,8 @@ type CheckOptions struct {
 	// ExpectedExecStart binds installer validation to the loaded managed command.
 	// Unset for standalone checks, which may validate a different candidate.
 	ExpectedExecStart []string
+	credential        *credentialSource
+	credentialUnset   []string
 }
 
 // ErrUnavailable identifies missing manager/identity privileges, not invalid config
@@ -98,11 +100,13 @@ type backend struct {
 }
 
 type snapshot struct {
-	Properties  map[string]string
-	Environment []string
-	Identity    identity
-	Files       map[string]string
-	Candidate   fileImage
+	Properties              map[string]string
+	Environment             []string
+	Identity                identity
+	Files                   map[string]string
+	Candidate               fileImage
+	Credential              *credentialSource
+	ManagerEnvironmentNames []string
 }
 
 func check(ctx context.Context, opts CheckOptions, b backend) error {
@@ -119,6 +123,8 @@ func check(ctx context.Context, opts CheckOptions, b backend) error {
 	if err != nil {
 		return err
 	}
+	opts.credential = before.Credential
+	opts.credentialUnset = before.ManagerEnvironmentNames
 	if err := b.execute(ctx, opts, before.Environment, before.Identity, before.Candidate.Data); err != nil {
 		if ctx.Err() != nil {
 			return errors.New("service configuration validation canceled")
@@ -189,11 +195,25 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 	if err != nil {
 		return s, err
 	}
+	readCandidate := b.readCandidate
+	if readCandidate == nil {
+		readCandidate = b.readFile
+	}
+	s.Candidate, err = readCandidate(opts.ConfigFile)
+	if err != nil {
+		return s, errors.New("cannot read stable regular candidate configuration")
+	}
 	values := make(map[string]string)
 	if err := applyAssignments(values, base); err != nil {
 		return s, err
 	}
 	s.Properties["manager"] = string(manager)
+	for _, assignment := range base {
+		name, _, _ := strings.Cut(assignment, "=")
+		s.ManagerEnvironmentNames = append(s.ManagerEnvironmentNames, name)
+	}
+	slices.Sort(s.ManagerEnvironmentNames)
+	s.ManagerEnvironmentNames = slices.Compact(s.ManagerEnvironmentNames)
 	if missing {
 		if opts.PlannedUser == "" {
 			return s, errors.New("first-install configuration validation requires the planned service identity")
@@ -221,15 +241,13 @@ func observe(ctx context.Context, opts CheckOptions, b backend) (snapshot, error
 			return s, errors.New("loaded pipelock.service does not match the prospective unit path")
 		}
 	}
+	if _, overridden := values["CREDENTIALS_DIRECTORY"]; overridden && s.Credential != nil {
+		return s, errors.New("explicit CREDENTIALS_DIRECTORY override is unsupported")
+	}
+	if err := requireCredential(s.Candidate.Data, s.Credential); err != nil {
+		return s, err
+	}
 	s.Environment = configurationEnvironment(values)
-	readCandidate := b.readCandidate
-	if readCandidate == nil {
-		readCandidate = b.readFile
-	}
-	s.Candidate, err = readCandidate(opts.ConfigFile)
-	if err != nil {
-		return s, errors.New("cannot read stable regular candidate configuration")
-	}
 	return s, nil
 }
 
@@ -314,6 +332,17 @@ func observeLoaded(ctx context.Context, opts CheckOptions, b backend, s *snapsho
 		switch property.name {
 		case "Environment", "EnvironmentFiles", "UnsetEnvironment", "User", "Group", "SupplementaryGroups", "SetLoginEnvironment":
 			continue
+		case "LoadCredential", "LoadCredentialEncrypted":
+			if string(value) == "[]" {
+				continue
+			}
+			if err := observeCredential(property.name, raw, b, s); err != nil {
+				return err
+			}
+			if version < 254 {
+				return errors.New("native credential validation requires systemd 254 or newer")
+			}
+			continue
 		case "DynamicUser":
 			if string(value) == "false" {
 				continue
@@ -326,6 +355,9 @@ func observeLoaded(ctx context.Context, opts CheckOptions, b backend, s *snapsho
 			if string(value) == "[]" {
 				continue
 			}
+		}
+		if property.name == "ExecStartPre" || property.name == "ExecCondition" {
+			return fmt.Errorf("service configuration validation does not support %s; credential-to-environment hooks must be migrated to kill_switch.api_token_file with a matching LoadCredentialEncrypted and no ExecStartPre or ExecCondition; see docs/guides/service-credentials.md", property.name)
 		}
 		return fmt.Errorf("service configuration validation does not support %s", property.name)
 	}
@@ -403,6 +435,9 @@ func observeLoaded(ctx context.Context, opts CheckOptions, b backend, s *snapsho
 	}
 	for _, unset := range unsets {
 		name, value, assignment := strings.Cut(unset, "=")
+		if s.Credential != nil && name == "CREDENTIALS_DIRECTORY" {
+			return errors.New("unsetting the native credential directory is unsupported")
+		}
 		if !validName(name) || strings.ContainsRune(value, 0) {
 			return errors.New("invalid service unset assignment")
 		}
@@ -450,11 +485,7 @@ func configurationEnvironment(values map[string]string) []string {
 	// This list is the actual config.Load/config.Validate/license verification
 	// input contract. HOME and PIPELOCK_HOME supply signing/CA default paths.
 	// Do not pass arbitrary service variables (e.g. LD_PRELOAD) into a checker.
-	keys := []string{
-		config.EnvKillSwitchAPIToken, config.EnvLicenseKey, config.EnvLicenseCRLFile,
-		config.EnvLicensePublicKey, config.EnvLicenseRequireIntermediate, config.EnvLicenseCRLMaxAge,
-		license.EnvLicenseIntermediateFile, "HOME", "PIPELOCK_HOME",
-	}
+	keys := configurationEnvironmentKeys()
 	out := make([]string, 0, len(keys))
 	for _, key := range keys {
 		if value, exists := values[key]; exists {
@@ -463,6 +494,14 @@ func configurationEnvironment(values map[string]string) []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+func configurationEnvironmentKeys() []string {
+	return []string{
+		config.EnvKillSwitchAPIToken, config.EnvLicenseKey, config.EnvLicenseCRLFile,
+		config.EnvLicensePublicKey, config.EnvLicenseRequireIntermediate, config.EnvLicenseCRLMaxAge,
+		license.EnvLicenseIntermediateFile, "HOME", "PIPELOCK_HOME",
+	}
 }
 
 func contentStamp(body []byte, metadata string) string {

@@ -74,6 +74,9 @@ Examples:
 			if err != nil {
 				return err
 			}
+			if err := cfg.ResolveRuntimeCredentials(); err != nil {
+				return err
+			}
 
 			// Resolve workspace: CLI flag > config > cwd.
 			if workspace == "" {

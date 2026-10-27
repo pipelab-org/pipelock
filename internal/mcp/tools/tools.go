@@ -815,10 +815,10 @@ func (tb *ToolBaseline) diffSummaryLocked(name, newDesc string, newParams []stri
 	if hasParams {
 		added, removed := diffStringSlices(prevParams, newParams)
 		if len(added) > 0 {
-			parts = append(parts, fmt.Sprintf("parameters added: %v", added))
+			parts = append(parts, fmt.Sprintf("parameters added: %q", added))
 		}
 		if len(removed) > 0 {
-			parts = append(parts, fmt.Sprintf("parameters removed: %v", removed))
+			parts = append(parts, fmt.Sprintf("parameters removed: %q", removed))
 		}
 	}
 

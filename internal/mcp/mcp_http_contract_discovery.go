@@ -20,6 +20,28 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/responseencoding"
 )
 
+// discoveryRefusalError is a discovery failure stated in Pipelock's own words. The
+// listener relays only these to its client: other causes, such as a transport
+// or parser error, can quote upstream bytes and stay in the operator log.
+type discoveryRefusalError string
+
+func (e discoveryRefusalError) Error() string { return string(e) }
+
+const errDiscoveryToolAbsent = discoveryRefusalError("tool absent from complete discovery inventory")
+
+// discoveryClientReason returns the part of a discovery failure that is safe to
+// show the listener's client, or "" when no part of it is Pipelock's own text.
+func discoveryClientReason(err error) string {
+	var refusal discoveryRefusalError
+	switch {
+	case errors.As(err, &refusal):
+		return string(refusal)
+	case errors.Is(err, tools.ErrBaselineCapacity):
+		return tools.ErrBaselineCapacity.Error()
+	}
+	return ""
+}
+
 // mcpReceiptLayerHeaderContract names the x-mcp-header contract check in a
 // blocked outcome receipt.
 const mcpReceiptLayerHeaderContract = "mcp_header_contract"
@@ -184,16 +206,16 @@ func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
 					commitErr = d.state.baseline.SetToolHeaderBindings(unknown)
 				}
 			}) {
-				return errors.New("discovery principal was revoked")
+				return discoveryRefusalError("discovery principal was revoked")
 			}
 			return commitErr
 		}
 		cursor = response.Result.NextCursor
 		if cursor == nil {
-			return errors.New("tool absent from complete discovery inventory")
+			return errDiscoveryToolAbsent
 		}
 		if cursors[*cursor] {
-			return errors.New("discovery inventory repeated a pagination cursor")
+			return discoveryRefusalError("discovery inventory repeated a pagination cursor")
 		}
 		cursors[*cursor] = true
 	}
@@ -257,20 +279,21 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		responseencoding.RequestIdentity(req.Header)
 		resp, err := d.client.Do(req)
 		if err != nil {
-			return nil, errors.New("upstream discovery request failed")
+			// The refusal is all the client sees; the cause stays for the log.
+			return nil, fmt.Errorf("%w: %w", discoveryRefusalError("upstream discovery request failed"), err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("upstream discovery returned HTTP %d", resp.StatusCode)
+			return nil, discoveryRefusalError(fmt.Sprintf("upstream discovery returned HTTP %d", resp.StatusCode))
 		}
 		resp.Body = newIdleTimeoutReader(resp.Body, upstreamIdleReadTimeout)
 		isSSE := transport.HasSingleSSEContentType(resp.Header)
 		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 			if isSSE {
-				return nil, errors.New("compressed discovery stream cannot be inspected")
+				return nil, discoveryRefusalError("compressed discovery stream cannot be inspected")
 			}
 			if err := responseencoding.DecodeResponse(resp); err != nil {
-				return nil, errors.New("discovery response encoding cannot be inspected")
+				return nil, fmt.Errorf("%w: %w", discoveryRefusalError("discovery response encoding cannot be inspected"), err)
 			}
 		}
 		// Charge decoded response bytes before framing removes SSE comments,
@@ -309,7 +332,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 			*remaining -= int(before - budget.N)
 		}
 		if *remaining < 0 {
-			return nil, errors.New("discovery inventory exceeds response byte budget")
+			return nil, discoveryRefusalError("discovery inventory exceeds response byte budget")
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read discovery response: %w", err)
@@ -330,7 +353,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		}
 		inspected := bytes.TrimSpace(buf.Bytes())
 		if json.Unmarshal(inspected, &response) != nil || len(response.Error) != 0 || tools.ClassifyToolsListResult(response.Result) != tools.ToolsListValid {
-			return nil, errors.New("discovery response was refused or is not a complete inspectable tools/list result")
+			return nil, discoveryRefusalError("discovery response was refused or is not a complete inspectable tools/list result")
 		}
 		return inspected, nil
 	}

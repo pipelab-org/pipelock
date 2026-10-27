@@ -35,6 +35,7 @@ func checkCmdWithServiceValidator(validate func(context.Context, serviceenv.Chec
 	var scanURL string
 	var service string
 	var requireBuildCompatibility bool
+	var resolveRuntimeCredentials bool
 
 	cmd := &cobra.Command{
 		Use:   "check",
@@ -70,7 +71,11 @@ Examples:
 			var cfg *config.Config
 			if configFile != "" {
 				var err error
-				cfg, err = config.Load(configFile)
+				if resolveRuntimeCredentials {
+					cfg, err = config.LoadForRuntime(configFile)
+				} else {
+					cfg, err = config.Load(configFile)
+				}
 				if err != nil {
 					cmd.PrintErrf("Config validation FAILED: %v\n", err)
 					return err
@@ -82,6 +87,9 @@ Examples:
 					}
 				}
 				cmd.Println("Config validation: OK")
+				if cfg.KillSwitch.APITokenFile != "" && !resolveRuntimeCredentials {
+					cmd.Println("  Runtime credential file not checked; use --service pipelock to validate it in the service environment")
+				}
 				cmd.Printf("  Mode:           %s\n", cfg.Mode)
 				cmd.Printf("  Listen:         %s\n", cfg.FetchProxy.Listen)
 				cmd.Printf("  API allowlist:  %d domains\n", len(cfg.APIAllowlist))
@@ -160,6 +168,8 @@ Examples:
 	cmd.Flags().StringVarP(&configFile, "config", "c", "", "config file path to validate")
 	cmd.Flags().StringVar(&scanURL, "url", "", "URL to scan through the configured scanners")
 	cmd.Flags().StringVar(&service, "service", "", "validate with the local system pipelock.service configuration environment and static identity (Linux)")
+	cmd.Flags().BoolVar(&resolveRuntimeCredentials, "resolve-runtime-credentials", false, "read runtime credential files in the validator environment")
+	_ = cmd.Flags().MarkHidden("resolve-runtime-credentials")
 	cmd.Flags().BoolVar(&requireBuildCompatibility, "require-build-compatibility", false, "require this build to enforce every configured capability")
 	_ = cmd.Flags().MarkHidden("require-build-compatibility")
 

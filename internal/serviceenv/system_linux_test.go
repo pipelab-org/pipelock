@@ -53,7 +53,11 @@ func TestMain(m *testing.M) {
 		if os.Getenv("CALLER_ONLY") != "" || os.Getenv("LD_PRELOAD") != "" || os.Getenv("GODEBUG") != "" {
 			os.Exit(31)
 		}
-		if _, err := config.Load("-"); err != nil {
+		load := config.Load
+		if slices.Contains(os.Args, "--resolve-runtime-credentials") {
+			load = config.LoadForRuntime
+		}
+		if _, err := load("-"); err != nil {
 			_, _ = fmt.Fprintln(os.Stdout, "secret-sentinel", err)
 			_, _ = fmt.Fprintln(os.Stderr, "secret-sentinel", err)
 			os.Exit(32)
@@ -441,5 +445,26 @@ func TestStableFileAccessFailureClassification(t *testing.T) {
 	}
 	if _, err := readStableFile(filepath.Join(parent, "child")); !errors.Is(err, errUnreadableFile) {
 		t.Fatal("OS open failure lost optional-file classification")
+	}
+}
+
+func TestExecuteValidatorTokenFile(t *testing.T) {
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "admin-token")
+	opts := CheckOptions{Binary: binary, ConfigFile: filepath.Join(dir, "config.yaml")}
+	candidate := []byte("kill_switch:\n  api_token_file: admin-token\n")
+	env := []string{config.EnvKillSwitchAPIToken + "=operator-token"}
+	if err := executeValidator(t.Context(), opts, env, currentIdentity(t), candidate); err == nil {
+		t.Fatal("service validator accepted a missing file despite env override")
+	}
+	if err := os.WriteFile(path, []byte("file-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executeValidator(t.Context(), opts, env, currentIdentity(t), candidate); err != nil {
+		t.Fatal(err)
 	}
 }

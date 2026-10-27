@@ -346,7 +346,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	var cfg *config.Config
 	var err error
 	if opts.ConfigFile != "" {
-		cfg, err = config.Load(opts.ConfigFile)
+		cfg, err = config.LoadForRuntime(opts.ConfigFile)
 		if err != nil {
 			return nil, fmt.Errorf("loading config: %w", err)
 		}

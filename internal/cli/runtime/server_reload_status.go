@@ -179,6 +179,11 @@ func sameRuntimeConfig(before, after *config.Config) bool {
 	if before == nil || after == nil {
 		return before == after
 	}
+	// Credentials are private runtime state, so the exported-field comparison
+	// below cannot detect a file-only rotation with unchanged YAML.
+	if before.EffectiveKillSwitchAPIToken() != after.EffectiveKillSwitchAPIToken() {
+		return false
+	}
 	left, right := reflect.ValueOf(before).Elem(), reflect.ValueOf(after).Elem()
 	for i := range left.NumField() {
 		if left.Type().Field(i).IsExported() && !reflect.DeepEqual(left.Field(i).Interface(), right.Field(i).Interface()) {

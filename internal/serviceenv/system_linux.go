@@ -8,6 +8,7 @@ package serviceenv
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -284,11 +286,22 @@ func executeValidator(ctx context.Context, opts CheckOptions, env []string, id i
 	if unix.Fstat(fd, &before) != nil || before.Mode&unix.S_IFMT != unix.S_IFREG || before.Mode&0o111 == 0 {
 		return errors.New("selected validator is not a regular executable")
 	}
+	if opts.credential != nil {
+		return (credentialValidation{opts: opts, env: env, id: id, candidate: candidate, binary: binary, before: before}).execute(ctx)
+	}
 	bounded, cancel := context.WithTimeout(ctx, cliutil.ServiceStartTimeout)
 	defer cancel()
 	// Linux /proc/self/fd and os/exec.ExtraFiles retain the opened executable
 	// across the credential change. argv[0] remains the selected binary's name.
 	cmd := exec.CommandContext(bounded, "/proc/self/fd/3", "check", "--config", "-")
+	// Older validators remain usable for configs without the new token source.
+	tokenFile, err := candidateTokenFile(candidate)
+	if err != nil {
+		return err
+	}
+	if tokenFile != "" {
+		cmd.Args = append(cmd.Args, "--resolve-runtime-credentials")
+	}
 	cmd.Args[0] = opts.Binary
 	if opts.RequireBuildCompatibility {
 		cmd.Args = append(cmd.Args, "--require-build-compatibility")
@@ -310,4 +323,117 @@ func executeValidator(ctx context.Context, opts CheckOptions, env []string, id i
 		return errors.New("selected validator changed during execution")
 	}
 	return nil
+}
+
+// executeCredentialValidator asks PID 1 for a fresh credential, never borrowing
+// /run/credentials/pipelock.service from an earlier invocation. systemd-run(1)
+// --pipe carries the candidate through stdin; --setenv=NAME obtains values from
+// the helper environment so token values never enter command-line arguments.
+type credentialValidation struct {
+	opts      CheckOptions
+	env       []string
+	id        identity
+	candidate []byte
+	binary    *os.File
+	before    unix.Stat_t
+}
+
+func (v credentialValidation) execute(ctx context.Context) error {
+	if os.Geteuid() != 0 {
+		return ErrUnavailable
+	}
+	return v.run(ctx, func(cmd *exec.Cmd) error { return cmd.Run() }, func(ctx context.Context, unit string) {
+		_, _, _ = systemCommand(ctx, "/usr/bin/systemctl", "--system", "--no-ask-password", "stop", unit)
+	})
+}
+
+func (v credentialValidation) run(ctx context.Context, run func(*exec.Cmd) error, stop func(context.Context, string)) error {
+	args, err := credentialValidatorArgs(v.opts, v.env, v.id, v.binary.Fd())
+	if err != nil {
+		return err
+	}
+
+	bounded, cancel := context.WithTimeout(ctx, cliutil.ServiceStartTimeout)
+	defer cancel()
+	unit := "pipelock-config-check-" + strings.ToLower(rand.Text()) + ".service"
+	args = append([]string{"--unit=" + unit}, args...)
+	cmd := exec.CommandContext(bounded, "/usr/bin/systemd-run")
+	cmd.Args = append(cmd.Args, args...)
+	cmd.Env = append(cleanHelperEnvironment(), v.env...)
+	cmd.Stdin = bytes.NewReader(v.candidate)
+	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	cmd.WaitDelay = time.Second
+	// PID 1's runtime limit bounds the worker even if its client is killed. Also
+	// stop this uniquely named, session-owned unit after any client outcome.
+	err = run(cmd)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), commandBudget)
+	defer cleanupCancel()
+	stop(cleanupCtx, unit)
+	if err != nil {
+		return errors.New("fresh systemd credential validator failed; output withheld")
+	}
+	var after, named unix.Stat_t
+	if unix.Fstat(int(v.binary.Fd()), &after) != nil || unix.Lstat(v.opts.Binary, &named) != nil || fileMetadata(&v.before) != fileMetadata(&after) || fileMetadata(&after) != fileMetadata(&named) {
+		return errors.New("selected validator changed during credential validation")
+	}
+	return nil
+}
+
+func credentialValidatorArgs(opts CheckOptions, env []string, id identity, fd uintptr) ([]string, error) {
+	source := opts.credential
+	if source == nil || source.Property != "LoadCredential" && source.Property != "LoadCredentialEncrypted" || !staticCredentialPath(opts.Binary) || !staticCredentialPath(filepath.Dir(opts.ConfigFile)) || !staticCredentialPath(source.Path) {
+		return nil, errors.New("unsupported native credential validation paths")
+	}
+	groups := make([]string, len(id.Groups))
+	for i, gid := range id.Groups {
+		groups[i] = strconv.FormatUint(uint64(gid), 10)
+	}
+	// Bind the held executable inode before dropping identity. This keeps the
+	// existing validator pinning contract when PID 1 creates the process.
+	args := []string{
+		"--system", "--no-ask-password", "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec", "--expand-environment=no",
+		"--property=User=" + strconv.FormatUint(uint64(id.UID), 10),
+		"--property=Group=" + strconv.FormatUint(uint64(id.GID), 10),
+		"--property=SupplementaryGroups=" + strings.Join(groups, " "),
+		"--property=WorkingDirectory=" + filepath.Dir(opts.ConfigFile),
+		"--property=BindReadOnlyPaths=/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(fd), 10) + ":" + opts.Binary,
+		"--property=" + source.Property + "=" + source.Name + ":" + source.Path,
+		"--property=RuntimeMaxSec=" + cliutil.ServiceStartTimeout.String(), "--property=TimeoutStartSec=" + cliutil.ServiceStartTimeout.String(), "--property=TimeoutStopSec=1s", "--property=LimitCORE=0",
+	}
+	// Remove absent inputs rather than setting them empty: LookupEnv consumers
+	// distinguish those states. Keep observed values out of helper arguments.
+	observed := make(map[string]string)
+	for _, assignment := range env {
+		name, value, ok := strings.Cut(assignment, "=")
+		if !ok || !validName(name) {
+			return nil, errors.New("invalid validator environment")
+		}
+		observed[name] = value
+	}
+	var unset []string
+	for _, name := range opts.credentialUnset {
+		if !validName(name) || name == "CREDENTIALS_DIRECTORY" {
+			return nil, errors.New("unsupported manager credential environment")
+		}
+		if _, ok := observed[name]; !ok {
+			unset = append(unset, name)
+		}
+	}
+	for _, name := range configurationEnvironmentKeys() {
+		if _, ok := observed[name]; ok {
+			args = append(args, "--setenv="+name)
+		} else {
+			unset = append(unset, name)
+		}
+	}
+	slices.Sort(unset)
+	unset = slices.Compact(unset)
+	if len(unset) > 0 {
+		args = append(args, "--property=UnsetEnvironment="+strings.Join(unset, " "))
+	}
+	args = append(args, "--", opts.Binary, "check", "--config", "-", "--resolve-runtime-credentials")
+	if opts.RequireBuildCompatibility {
+		args = append(args, "--require-build-compatibility")
+	}
+	return args, nil
 }

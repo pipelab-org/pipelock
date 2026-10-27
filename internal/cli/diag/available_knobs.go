@@ -74,7 +74,9 @@ func availableUnconfiguredKnobs(cfg *config.Config) []string {
 func killSwitchConfigured(cfg *config.Config) bool {
 	return cfg.KillSwitch.Enabled ||
 		cfg.KillSwitch.SentinelFile != "" ||
-		cfg.EffectiveKillSwitchAPITokenConfigured()
+		cfg.EffectiveKillSwitchAPITokenConfigured() ||
+		// Operator-shell loads validate the reference without reading the file.
+		cfg.KillSwitch.APITokenFile != ""
 }
 
 func emitConfigured(cfg *config.Config) bool {

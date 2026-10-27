@@ -107,14 +107,19 @@ func resolveEndpoint(flags *rootFlags, deps resolverDeps) (endpoint, error) {
 		ep.URL = apiURL
 	}
 	if ep.Token == "" {
-		ep.Token = cfg.KillSwitch.APIToken
+		if cfg.KillSwitch.APITokenFile != "" {
+			if err := cfg.ResolveRuntimeCredentials(); err != nil {
+				return endpoint{}, fmt.Errorf("cannot read kill_switch.api_token_file: set --api-token or PIPELOCK_KILLSWITCH_API_TOKEN; use --api-url to select the admin API endpoint: %w", err)
+			}
+		}
+		ep.Token = cfg.EffectiveKillSwitchAPIToken()
 	}
 
 	if ep.URL == "" {
 		return endpoint{}, fmt.Errorf("no admin API URL: set --api-url, PIPELOCK_API_URL, or kill_switch.api_listen in %s", cfgPath)
 	}
 	if ep.Token == "" {
-		return endpoint{}, fmt.Errorf("no admin API token: set --api-token, PIPELOCK_KILLSWITCH_API_TOKEN, or kill_switch.api_token in %s", cfgPath)
+		return endpoint{}, fmt.Errorf("no admin API token: set --api-token, PIPELOCK_KILLSWITCH_API_TOKEN, or kill_switch.api_token or api_token_file in %s", cfgPath)
 	}
 
 	return normalizeEndpoint(ep), nil

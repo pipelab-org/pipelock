@@ -176,6 +176,17 @@ func TestAvailableUnconfiguredKnobsOmitsKillSwitchWhenAPITokenComesFromEnv(t *te
 	}
 }
 
+func TestAvailableUnconfiguredKnobsOmitsKillSwitchWhenAPITokenFileUnread(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "")
+
+	cfg := config.Defaults()
+	cfg.KillSwitch.APITokenFile = "$CREDENTIALS_DIRECTORY/admin-token"
+	got := availableUnconfiguredKnobs(cfg)
+	if containsString(got, "kill_switch") {
+		t.Fatalf("availableUnconfiguredKnobs = %v, want kill_switch omitted when api_token_file is configured", got)
+	}
+}
+
 func TestAvailableUnconfiguredKnobsKeepsAddressProtectionWhenOnlyAllowlistSet(t *testing.T) {
 	t.Parallel()
 
