@@ -74,7 +74,8 @@ func referenceAnnotateNestedURLGuidance(g RemediationGuidance, label, reason, st
 	if !strings.Contains(strings.ToLower(reason), "nested url in query parameter") {
 		return g
 	}
-	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings."
+	nestedKnob := " Nested query destinations are evaluated because `fetch_proxy.monitoring.scan_nested_urls` is enabled (nil/true). Set it false only for an endpoint whose contract legitimately carries private or blocklisted URLs in query strings." +
+		" For a literal loopback `redirect_uri` on a native OAuth authorization-code GET, an exact `fetch_proxy.monitoring.oauth_authorization_endpoints` grant is narrower than disabling nested URL scanning."
 	switch label {
 	case ScannerSSRF, ScannerCoreSSRF:
 		if !g.Immutable {

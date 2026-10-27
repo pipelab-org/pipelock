@@ -350,3 +350,35 @@ func TestNativeOAuthLivePolicyCannotAddToOldScanner(t *testing.T) {
 		t.Fatal("live policy expanded old scanner authority")
 	}
 }
+
+// An operator who hits either native OAuth block without a grant must be able
+// to find the grant from the block's own hint, not only the broader switches.
+func TestNativeOAuthBlockHintsNameGrant(t *testing.T) {
+	cfg := oauthTestConfig()
+	cfg.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	ctx := WithOAuthAuthorizationMethod(t.Context(), http.MethodGet)
+	parsed, err := url.Parse(oauthTestURL("http://127.0.0.1:49152/callback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	entropy := s.Scan(ctx, parsed.String())
+	q := parsed.Query()
+	q.Set("state", "csrf")
+	q.Del("nonce")
+	parsed.RawQuery = q.Encode()
+	callback := s.Scan(ctx, parsed.String())
+	for name, result := range map[string]Result{"state entropy": entropy, "loopback callback": callback} {
+		if result.Allowed {
+			t.Fatalf("%s: allowed without a grant", name)
+		}
+		if hint := OperatorHintForResult(result.Scanner, result.Reason); !strings.Contains(hint, "`fetch_proxy.monitoring.oauth_authorization_endpoints`") {
+			t.Errorf("%s (%s: %s): hint %q does not name the grant", name, result.Scanner, result.Reason, hint)
+		}
+	}
+	// The grant relieves only values, so a key block must not offer it.
+	if hint := OperatorHintForResult(ScannerEntropy, `high entropy query key "opaque" (4.50 > 4.00 threshold)`); strings.Contains(hint, "oauth_authorization_endpoints") {
+		t.Errorf("key hint offers an inert grant: %q", hint)
+	}
+}
