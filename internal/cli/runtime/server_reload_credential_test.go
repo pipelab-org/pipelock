@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 )
@@ -169,5 +170,37 @@ func TestGuardMissingNativeCredential(t *testing.T) {
 	}
 	if err := LaunchGuard(GuardLaunchOptions{Config: cfg, Command: []string{"not-launched"}}); err == nil || !strings.Contains(err.Error(), "CREDENTIALS_DIRECTORY") {
 		t.Fatalf("Guard did not reject missing credential before launch: %v", err)
+	}
+}
+
+func TestServerRejectedCredentialReloadAudited(t *testing.T) {
+	t.Setenv(config.EnvKillSwitchAPIToken, "")
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	s := &Server{logger: logger, opts: ServerOpts{ConfigFile: "policy.yaml"}}
+	tokenPath := filepath.Join(t.TempDir(), "admin-token")
+	if err := os.WriteFile(tokenPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	invalid := config.Defaults()
+	invalid.KillSwitch.APITokenFile = tokenPath
+	if err := s.Reload(invalid); err == nil {
+		t.Fatal("reload with an empty token file accepted")
+	}
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{configReloadAuditMethod, "policy.yaml", "rejected: invalid config reload", "api_token_file"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("audit log missing %q: %s", want, data)
+		}
+	}
+	if strings.Contains(string(data), tokenPath) {
+		t.Errorf("audit log exposes the token file path: %s", data)
 	}
 }

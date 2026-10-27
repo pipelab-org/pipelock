@@ -85,7 +85,9 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 	// owned config, including when the candidate is rejected later.
 	newCfg = newCfg.Clone()
 	if credentialErr := newCfg.ResolveRuntimeCredentials(); credentialErr != nil {
-		return fmt.Errorf("rejected: invalid config reload: %w", credentialErr)
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", credentialErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
 	}
 	if _, validationErr := newCfg.DestinationGrantSet(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
