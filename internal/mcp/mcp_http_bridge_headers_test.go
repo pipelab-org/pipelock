@@ -1022,3 +1022,51 @@ func TestHTTPBridgeHeaderShutdownRelease(t *testing.T) {
 		})
 	}
 }
+
+// Once the bridge negotiates a modern version it keeps it, whatever later
+// clears the transport's copy (a new handshake, the end of the session).
+// Losing it would turn later calls into legacy requests without metadata.
+func TestHTTPBridgeHeaderNegotiatedVersionLatch(t *testing.T) {
+	up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, _ *http.Request, f MCPFrame) {
+		discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+	}, func(http.ResponseWriter, *http.Request, MCPFrame) { t.Error("prepare must not execute calls") })
+	call := []byte(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"}}}`)
+	newBridge := func(initialize bool) *mcpBridgeHeaders {
+		client := transport.NewHTTPClient(up.URL, nil)
+		if initialize {
+			reader, err := client.SendMessage(t.Context(), fmt.Appendf(nil, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":%q,"capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`, currentMCPVersion))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reader.ReadMessage(); err != nil {
+				t.Fatal(err)
+			}
+			if closer, ok := reader.(io.Closer); ok {
+				_ = closer.Close()
+			}
+		}
+		opts := bridgeHeaderOpts(t)
+		return &mcpBridgeHeaders{client: client, state: &mcpListenerClientState{baseline: opts.ToolCfg.Baseline}, opts: opts, log: io.Discard}
+	}
+
+	bridge := newBridge(true)
+	if headers, err := bridge.prepare(t.Context(), call); err != nil || headers.Get("Mcp-Param-Region") != "body" {
+		t.Fatalf("modern call before reset: headers=%v err=%v", headers, err)
+	}
+	bridge.client.DeleteSession(io.Discard)
+	if got := bridge.client.ProtocolVersion(); got != "" {
+		t.Fatalf("transport version not cleared: %q", got)
+	}
+	headers, err := bridge.prepare(t.Context(), call)
+	if err != nil || headers.Get(listenerProtocolVersion) != currentMCPVersion || headers.Get(listenerMCPMethod) != methodToolsCall || headers.Get(listenerMCPName) != "echo" || headers.Get("Mcp-Param-Region") != "body" {
+		t.Fatalf("modern call after transport reset: headers=%v err=%v", headers, err)
+	}
+	if _, err := bridge.prepare(t.Context(), []byte(`{"jsonrpc":"2.0","id":3,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`)); err == nil {
+		t.Fatal("second initialize after modern negotiation was not refused")
+	}
+
+	// A bridge that never negotiated a modern version stays legacy.
+	if headers, err := newBridge(false).prepare(t.Context(), call); err != nil || headers != nil {
+		t.Fatalf("legacy bridge synthesized metadata: headers=%v err=%v", headers, err)
+	}
+}

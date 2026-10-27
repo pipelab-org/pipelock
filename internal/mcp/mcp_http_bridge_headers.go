@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
@@ -20,6 +21,13 @@ type mcpBridgeHeaders struct {
 	state  *mcpListenerClientState
 	opts   MCPProxyOpts
 	log    io.Writer
+
+	mu sync.Mutex
+	// negotiated keeps the first modern version the transport reports. The
+	// transport clears its copy on a new handshake and when the session ends,
+	// and an empty version would read as legacy and send no request metadata.
+	// Once modern, this bridge stays modern for its lifetime.
+	negotiated string
 }
 
 func (b *mcpBridgeHeaders) version(msg []byte) string {
@@ -31,7 +39,20 @@ func (b *mcpBridgeHeaders) version(msg []byte) string {
 	if version := ParseMCPFrame(msg).ProtocolVersion; version >= currentMCPVersion {
 		return version
 	}
-	return b.client.ProtocolVersion()
+	return b.negotiatedVersion()
+}
+
+func (b *mcpBridgeHeaders) negotiatedVersion() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	version := b.client.ProtocolVersion()
+	if version >= currentMCPVersion {
+		b.negotiated = version
+	}
+	if b.negotiated != "" {
+		return b.negotiated
+	}
+	return version
 }
 
 func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header, error) {
@@ -40,7 +61,7 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 		return nil, nil
 	}
 	frame := ParseMCPFrame(msg)
-	if frame.Method == "initialize" && b.client.ProtocolVersion() >= currentMCPVersion {
+	if frame.Method == "initialize" && b.negotiatedVersion() >= currentMCPVersion {
 		// This process already established its modern header contract. A
 		// second handshake would clear the transport's negotiated version,
 		// including while deferred calls can be released. Refuse it before
