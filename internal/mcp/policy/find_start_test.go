@@ -38,6 +38,49 @@ var findStartRows = []verdictRow{
 	{"find not first", "env find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"starting point printed", "find . 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
 	{"find as an argument", "find . -name a; cat find -perm 0777 -name -R | xargs chmod 777", incompletePairCheckRule, rulePermissions},
+
+	// & or | joined to a word still starts a command there.
+	{"& ends a find", "find . -name a& find . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"word after &", "find . -perm 1&x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"word after |", "find . -perm 1|x; find . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"word after & in a later find", "find . -perm 777 -name a&x | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A , before find's expression is one more starting point.
+	{"comma in the expression", "find . -type f , -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"comma before a starting point", "find . , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"comma first", "find , 777 -type f | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A lone - before find's expression is one more starting point.
+	{"lone dash as a test's value", "find . -name - -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"lone dash before a starting point", "find . - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"lone dash first", "find - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"lone dash after an option", "find -L - 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"double dash first", "find -- 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A word that starts with - and has a glob character may expand to a
+	// lone -, so it is not where the expression starts either.
+	{"star word before a starting point", "find . -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"question word before a starting point", "find . -? 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"bracket word before a starting point", "find . -[a] 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word first", "find -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word after an option", "find -L -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word inside a dash word", "find . -a*b 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"star word as a test's value", "find . -name -* -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"star word after the expression started", "find . -name x -* 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"glob in a plain test value", "find . -name '*.x' -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+
+	// A comment, a here-document or a line break in quotes keeps every
+	// find word in the check.
+	{"two lines", "find . -name x\nfind . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"comment after find", "find . -perm 777 | xargs chmod -R # note", incompletePairCheckRule, rulePermissions},
+	{"comment line before find", "# note\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"here-document before find", "cat <<E\nx\nE\nfind . -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+	{"line break in quotes", "find . -name 'a\nb' -perm 777 | xargs chmod -R", incompletePairCheckRule, rulePermissions},
+
+	// A find that is not where a command starts is a word like any other:
+	// read sets PATH here, which changes the find that runs next.
+	{"read into PATH", "read find PATH < p; find . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
+	{"read into another name", "read find x < p; find . -perm 0777 | xargs chmod 644", incompletePairCheckRule, rulePermissions},
 }
 
 // TestDefaultRules_FindStartingPoints checks findStartRows with the default
@@ -50,7 +93,18 @@ func TestDefaultRules_FindStartingPoints(t *testing.T) {
 // request under configs/strict.yaml: allowed rows pass, and checked rows are
 // blocked as incomplete.
 func TestStrictPreset_FindStartingPoints(t *testing.T) {
-	path, err := filepath.Abs(filepath.Join("..", "..", "..", "configs", "strict.yaml"))
+	runPresetFindRows(t, "strict.yaml")
+}
+
+// TestHostileModelPreset_FindStartingPoints checks findStartRows the same way
+// under configs/hostile-model.yaml.
+func TestHostileModelPreset_FindStartingPoints(t *testing.T) {
+	runPresetFindRows(t, "hostile-model.yaml")
+}
+
+func runPresetFindRows(t *testing.T, preset string) {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("..", "..", "..", "configs", preset))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +114,7 @@ func TestStrictPreset_FindStartingPoints(t *testing.T) {
 	}
 	pc := New(cfg.MCPToolPolicy)
 	if pc == nil {
-		t.Fatal("strict tool policy is disabled")
+		t.Fatalf("%s tool policy is disabled", preset)
 	}
 	for _, tt := range findStartRows {
 		t.Run(tt.name, func(t *testing.T) {
@@ -99,12 +153,60 @@ func TestFindPathsOnly_StartingPoints(t *testing.T) {
 		{"env PATH=/x find . -perm 1", "env PATH=/x find . -perm 1"},
 		{"ls -path ; find . -perm 1", "ls -path ; find . -perm 1"},
 		{"find . -perm 1 -ls;source x", "find . -perm 1 -ls;source x"},
+		{"find . -name a& find . -perm 1", "find . & find ."},
+		{"find . -perm 1&x ; find . -perm 1", "find . -perm 1&x ; find . -perm 1"},
+		{"find . -perm 1|x ; find . -perm 1", "find . -perm 1|x ; find . -perm 1"},
+		{"find . -name 'a;b' -perm 1", "find . -name 'a;b' -perm 1"},
+		{"find . , 777 -type f", "find . , 777"},
+		{"find . -type f , -perm 1", "find ."},
+		{"find . - 777 -type f", "find . - 777"},
+		{"find . -name - -perm 1", "find ."},
+		{"find . -* 777 -type f", "find . -* 777"},
+		{"find . -? 777 -type f", "find . -? 777"},
+		{"find . -[a] 777 -type f", "find . -[a] 777"},
+		{"find -L -* 777 -type f", "find -* 777"},
+		{"find . -name -* -perm 1", "find ."},
+		{"find . -* -perm 1 -name 777", "find . -*"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.cmd, func(t *testing.T) {
 			got := findPathsOnly([][]string{strings.Fields(tt.cmd)})
 			if want := [][]string{strings.Fields(tt.want)}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
 				t.Fatalf("findPathsOnly(%q) = %q, want %q", tt.cmd, got, want)
+			}
+		})
+	}
+}
+
+// TestSplitCommands_Plain checks which strings have their quotes read the way
+// the shell reads them.
+func TestSplitCommands_Plain(t *testing.T) {
+	tests := []struct {
+		cmd   string
+		plain bool
+	}{
+		{"find . -perm 1", true},
+		{"find . -name 'a b'; ls", true},
+		{"echo a#b", true},
+		{"echo '#'", true},
+		{"echo \"a # b\"", true},
+		{"ls\nfind .", true},
+		{"ls # note", false},
+		{"#note\nls", false},
+		{"ls;#note", false},
+		{"ls&#note", false},
+		{"cat <<E\nx\nE", false},
+		{"cat <<<x", false},
+		{"echo 'a\nb'", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			segs, plain := splitCommands([]string{tt.cmd})
+			if segs == nil {
+				t.Fatalf("splitCommands(%q) did not split", tt.cmd)
+			}
+			if plain != tt.plain {
+				t.Fatalf("splitCommands(%q) plain = %v, want %v", tt.cmd, plain, tt.plain)
 			}
 		})
 	}

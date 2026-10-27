@@ -45,6 +45,7 @@ type argView struct {
 	joined     string
 	segments   [][]string
 	unsplit    bool
+	plain      bool
 	inputKnown string // direct xargs utility whose input is proved on raw input
 	checkXargs bool
 }
@@ -58,7 +59,7 @@ func literalArgTokens(args []string) ([]string, string) {
 // buildArgViews returns the primary, alt, baseline, and literal views of args
 // (see CheckToolCallWithArgs).
 func buildArgViews(args []string) [4]argView {
-	segs := commandSegments(args)
+	segs, plain := splitCommands(args)
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
@@ -72,7 +73,7 @@ func buildArgViews(args []string) [4]argView {
 	var views [4]argView
 	for i, n := range norms {
 		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
-		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit, inputKnown: inputKnown, checkXargs: true}
+		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
 			views[i].segments = [][]string{tokens}
@@ -106,9 +107,21 @@ func buildArgViews(args []string) [4]argView {
 // rewrite, or when a quote is left open. Separate argument values are not
 // split, because a tool may run them without a shell.
 func commandSegments(args []string) []string {
+	segs, _ := splitCommands(args)
+	return segs
+}
+
+// splitCommands is commandSegments. plain reports that each quote it saw was
+// one the shell reads as a quote: the string has no comment (a # that starts
+// a word), no here-document (<<) and no line break inside quotes. A quote
+// character in a comment or a here-document is text to the shell, so the
+// lines after it may be commands that the quote tracking here took as
+// quoted.
+func splitCommands(args []string) (_ []string, plain bool) {
 	if len(args) != 1 || strings.ContainsAny(args[0], "$`\\(){}") {
-		return nil
+		return nil, false
 	}
+	plain = true
 	s := args[0]
 	type piece struct {
 		start, end int
@@ -127,6 +140,9 @@ func commandSegments(args []string) []string {
 			if c == quote {
 				quote = 0
 			}
+			if c == '\n' {
+				plain = false
+			}
 			continue
 		}
 		next := byte(0)
@@ -136,6 +152,10 @@ func commandSegments(args []string) []string {
 		switch {
 		case c == '\'' || c == '"':
 			quote = c
+		case c == '#' && (i == 0 || strings.IndexByte(" \t\n;|&", s[i-1]) >= 0):
+			plain = false
+		case c == '<' && next == '<':
+			plain = false
 		case c == ';' || c == '\n':
 			cut(i, 1, false)
 		case c == '&' && next == '&':
@@ -152,7 +172,7 @@ func commandSegments(args []string) []string {
 		}
 	}
 	if quote != 0 {
-		return nil
+		return nil, false
 	}
 	pieces = append(pieces, piece{start, len(s), afterPipe})
 
@@ -223,7 +243,7 @@ func commandSegments(args []string) []string {
 		at[r] = len(segs)
 		segs = append(segs, s[c.start:c.end])
 	}
-	return segs
+	return segs, plain
 }
 
 // shellWords splits a command into words with quote marks removed, so
@@ -408,7 +428,11 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	if m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat}); m || inc {
 		return false, true
 	}
-	if commandAfterParts(pat, findPathsOnly(v.segments)) {
+	paths := v.segments
+	if v.plain {
+		paths = findPathsOnly(v.segments)
+	}
+	if commandAfterParts(pat, paths) {
 		return false, true
 	}
 	return false, incomplete
@@ -437,13 +461,14 @@ func findPathsOnly(segs [][]string) [][]string {
 	for _, seg := range segs {
 		start, args := true, false
 		for _, t := range seg {
-			if strings.Contains(t, ">&") || strings.Contains(t, "&>") || strings.Contains(t, "|&") {
+			if strings.Contains(t, ">&") || strings.Contains(t, "&>") || strings.Contains(t, "|&") ||
+				strings.ContainsAny(strings.TrimRight(t, ";|&"), ";|&") {
 				return segs
 			}
 			switch {
 			case start && isFindCommand(t):
 				seen, args = true, true
-			case args && !strings.ContainsAny(strings.TrimRight(t, ";|&"), ";|&"):
+			case args:
 				// One of find's arguments.
 			default:
 				args = false
@@ -554,7 +579,11 @@ func findKept(args []string) []string {
 	for ; j < len(args); j++ {
 		a := args[j]
 		w := handOffWord(a)
-		if !expr && (strings.HasPrefix(w, "-") || w == "!" || w == "(" || w == ",") {
+		// A , before the expression is a starting point to GNU find, and so
+		// is a lone -, or a word with a glob character (* ? [) that the shell
+		// may expand to one.
+		option := strings.HasPrefix(w, "-") && w != "-" && !strings.ContainsAny(w, "*?[")
+		if !expr && (option || w == "!" || w == "(") {
 			expr = true
 		}
 		switch {

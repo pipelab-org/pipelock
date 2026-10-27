@@ -9,8 +9,8 @@ import "testing"
 // chmod.
 func TestHooks_FindPrintsOnlyPaths(t *testing.T) {
 	runHookRows(t, []hookRow{
-		{"perm test", "find /srv -type f -perm 0777 | xargs chmod 644", false, false, false, false},
-		{"leading option", "find -L /srv -perm 0777 | xargs chmod 644", false, false, false, false},
+		{"perm test", "find /srv -type f -perm 0777 -print0 | xargs -0 chmod 644", false, false, false, false},
+		{"leading option", "find -L /srv -perm 0777 -print0 | xargs -0 chmod 644", false, false, false, false},
 		{"starting point", "find 777 -type f | xargs chmod -R", false, true, true, true},
 		{"ls", "find /srv -perm 777 -ls | xargs chmod -R", false, true, true, true},
 		{"errors joined", "find /srv -perm 777 2>&1 | xargs chmod -R", false, true, true, true},
