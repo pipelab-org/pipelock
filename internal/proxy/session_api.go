@@ -909,22 +909,23 @@ type SessionDetail struct {
 // evidence (event excerpt) crossed the threshold, and when the next
 // automatic de-escalation will fire.
 type SessionExplanation struct {
-	Key                  string        `json:"key"`
-	Tier                 string        `json:"tier"`
-	Reason               string        `json:"reason"`
-	Trigger              string        `json:"trigger,omitempty"`
-	TriggerSource        string        `json:"trigger_source,omitempty"`
-	EnteredAt            time.Time     `json:"entered_at,omitempty"`
-	ElapsedInTier        time.Duration `json:"elapsed_in_tier_ns,omitempty"`
-	EscalationLevel      string        `json:"escalation_level"`
-	EscalationLevelInt   int           `json:"escalation_level_int"`
-	ThreatScore          float64       `json:"threat_score"`
-	EvidenceKind         string        `json:"evidence_kind,omitempty"`
-	EvidenceTarget       string        `json:"evidence_target,omitempty"`
-	EvidenceDetail       string        `json:"evidence_detail,omitempty"`
-	EvidenceAt           time.Time     `json:"evidence_at,omitempty"`
-	NextDeescalationTier string        `json:"next_deescalation_tier,omitempty"`
-	NextDeescalationAt   time.Time     `json:"next_deescalation_at,omitempty"`
+	FindingKinds         []session.HostileFindingKind `json:"finding_kinds,omitempty"`
+	Key                  string                       `json:"key"`
+	Tier                 string                       `json:"tier"`
+	Reason               string                       `json:"reason"`
+	Trigger              string                       `json:"trigger,omitempty"`
+	TriggerSource        string                       `json:"trigger_source,omitempty"`
+	EnteredAt            time.Time                    `json:"entered_at,omitempty"`
+	ElapsedInTier        time.Duration                `json:"elapsed_in_tier_ns,omitempty"`
+	EscalationLevel      string                       `json:"escalation_level"`
+	EscalationLevelInt   int                          `json:"escalation_level_int"`
+	ThreatScore          float64                      `json:"threat_score"`
+	EvidenceKind         string                       `json:"evidence_kind,omitempty"`
+	EvidenceTarget       string                       `json:"evidence_target,omitempty"`
+	EvidenceDetail       string                       `json:"evidence_detail,omitempty"`
+	EvidenceAt           time.Time                    `json:"evidence_at,omitempty"`
+	NextDeescalationTier string                       `json:"next_deescalation_tier,omitempty"`
+	NextDeescalationAt   time.Time                    `json:"next_deescalation_at,omitempty"`
 }
 
 // SessionTerminateResult is the response shape for POST
@@ -1563,6 +1564,7 @@ func buildExplanation(snap sessionAdminSnapshot, airlockCfg *config.Airlock) Ses
 
 	exp := SessionExplanation{
 		Key:                snap.Key,
+		FindingKinds:       snap.FindingKinds,
 		Tier:               tier,
 		EscalationLevel:    snap.EscalationLevel,
 		EscalationLevelInt: snap.EscalationLevelInt,

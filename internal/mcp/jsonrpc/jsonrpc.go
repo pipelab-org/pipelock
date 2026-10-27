@@ -124,9 +124,12 @@ type ToolFinding struct {
 //   - Finding:   Clean=false, Error empty, Matches and/or DLPMatches and/or
 //     ToolFindings and Action set.
 type ScanVerdict struct {
-	Line  int             `json:"line"`
-	ID    json.RawMessage `json:"id"`
-	Clean bool            `json:"clean"`
+	// TaintFindingKinds preserves causes behind synthetic response matches.
+	// Runtime metadata only; it does not extend scan output or signed receipts.
+	TaintFindingKinds []string        `json:"-"`
+	Line              int             `json:"line"`
+	ID                json.RawMessage `json:"id"`
+	Clean             bool            `json:"clean"`
 	// Scanned is stamped by the surface that emits the verdict, not by each
 	// ScanVerdict constructor. A new surface that marshals a verdict must set
 	// it, otherwise the scope is silently absent from operator-facing output.

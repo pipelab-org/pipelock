@@ -76,7 +76,8 @@ logging:
 		defer func() {
 			_ = s.Shutdown(context.Background())
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				t.Logf("goroutine result: %v", err)
 			case <-time.After(5 * time.Second):
 			}
 		}()

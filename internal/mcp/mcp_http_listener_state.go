@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,9 +48,15 @@ type mcpListenerClientState struct {
 	lastActive   time.Time
 	inFlight     atomic.Int64
 	commitMu     sync.Mutex
-	revoked      atomic.Bool
-	done         context.Context
-	cancel       context.CancelFunc
+	// Serialize inventories of every protocol version across upstream fetch,
+	// scan and delivery; modern calls share the read lock only while selecting
+	// and checking a contract, so a long call cannot stall a queued list.
+	contractMu  contractLock
+	discoveryMu sync.Mutex
+	discovery   *mcpContractDiscoveryFlight
+	revoked     atomic.Bool
+	done        context.Context
+	cancel      context.CancelFunc
 }
 
 // mcpListenerPrincipal is an authenticated security identity, not MCP routing
@@ -70,9 +77,10 @@ type mcpListenerPrincipal struct {
 // only after a successful initialize response.
 //
 // The registry retains at most maxMCPListenerClients client states. Legacy
-// states keep their compatibility LRU behavior. Principal states are never
-// pressure-evicted while live; idle states expire, and admission otherwise
-// fails closed at capacity so flooding cannot reset learned security history.
+// states with no active enforcement keep their compatibility LRU behavior.
+// Protected legacy states and live principal states are never pressure-evicted;
+// idle states expire, and admission otherwise fails closed at capacity so
+// flooding cannot reset learned security history.
 type mcpListenerClientStates struct {
 	authMu                  sync.Mutex
 	mu                      sync.Mutex
@@ -332,15 +340,21 @@ func (s *mcpListenerClientStates) stateForPrincipal(principal mcpListenerPrincip
 // session header. That is the production default: requiring a Pipelock
 // token is an opt-in (mcp_session_binding.listener_require_state_token).
 func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpListenerClientState {
+	state, _ := s.stateForLegacySessionWithCapacity(sessionID)
+	return state
+}
+
+// stateForLegacySessionWithCapacity preserves the rejecting limit for guidance.
+func (s *mcpListenerClientStates) stateForLegacySessionWithCapacity(sessionID string) (*mcpListenerClientState, error) {
 	if sessionID == "" {
-		return newMCPListenerTransientState()
+		return newMCPListenerTransientState(), nil
 	}
 	key := mcpListenerStateKey(sessionID)
 	s.mu.Lock()
 	if state := s.clients[key]; state != nil && !state.revoked.Load() {
 		s.touchLocked(state)
 		s.mu.Unlock()
-		return state
+		return state, nil
 	}
 	var removed []*mcpListenerClientState
 	if len(s.clients) >= maxMCPListenerClients {
@@ -353,7 +367,10 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 		if len(s.clients) >= maxMCPListenerClients {
 			s.mu.Unlock()
 			s.revokeRemoved(removed)
-			return newMCPListenerTransientState()
+			if s.store != nil {
+				return nil, errMCPListenerRegistryCapacity
+			}
+			return newMCPListenerTransientState(), nil
 		}
 	}
 	state := newMCPListenerClientState("", key)
@@ -363,14 +380,14 @@ func (s *mcpListenerClientStates) stateForLegacySession(sessionID string) *mcpLi
 			s.mu.Unlock()
 			s.revokeRemoved(removed)
 			state.revoke()
-			return nil
+			return nil, session.ErrCapacity
 		}
 	}
 	s.touchLocked(state)
 	s.clients[key] = state
 	s.mu.Unlock()
 	s.revokeRemoved(removed)
-	return state
+	return state, nil
 }
 
 func (s *mcpListenerClientStates) newSetupState() (*mcpListenerClientState, error) {
@@ -762,7 +779,14 @@ func (s *mcpListenerClientStates) purgeExpiredLegacyLocked() []*mcpListenerClien
 	return removed
 }
 
+// removeOldestLegacyLocked returns a state needing deferred revocation only
+// when no store is configured. Store-backed pressure eviction is completed here
+// under the registry and commit locks, so revokeRemoved must not delete it again.
 func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientState {
+	if s.store != nil {
+		s.evictUnprotectedLegacyLocked()
+		return nil
+	}
 	var oldestKey string
 	var oldest uint64
 	for key, state := range s.clients {
@@ -780,6 +804,50 @@ func (s *mcpListenerClientStates) removeOldestLegacyLocked() *mcpListenerClientS
 		return state
 	}
 	return nil
+}
+
+// evictUnprotectedLegacyLocked never waits for an active request or response
+// commit while holding the registry lock. The store linearizes its protection
+// check and deletion; commitMu prevents a response from acquiring protection
+// between that deletion and revocation. Request lookup holds s.mu but does not
+// reserve an in-flight request. A POST is counted only when requestContext runs
+// after its body is read, so lookup alone does not exclude pressure eviction.
+func (s *mcpListenerClientStates) evictUnprotectedLegacyLocked() {
+	evictor, ok := s.store.(session.CapacityEvictor)
+	if !ok {
+		return
+	}
+	candidates := make([]*mcpListenerClientState, 0, len(s.clients))
+	for _, state := range s.clients {
+		if !state.principal && state.inFlight.Load() == 0 {
+			candidates = append(candidates, state)
+		}
+	}
+	slices.SortFunc(candidates, func(a, b *mcpListenerClientState) int {
+		if a.lastAccessed < b.lastAccessed {
+			return -1
+		}
+		if a.lastAccessed > b.lastAccessed {
+			return 1
+		}
+		return 0
+	})
+	for _, state := range candidates {
+		if !state.commitMu.TryLock() {
+			continue
+		}
+		if state.inFlight.Load() != 0 || !evictor.EvictIfUnprotected(state.key, state.recorder) {
+			state.commitMu.Unlock()
+			continue
+		}
+		state.revoked.Store(true)
+		if state.cancel != nil {
+			state.cancel()
+		}
+		delete(s.clients, state.key)
+		state.commitMu.Unlock()
+		return
+	}
 }
 
 func (s *mcpListenerClientStates) revokeRemoved(states []*mcpListenerClientState) {

@@ -489,8 +489,8 @@ func TestFormattingHelpers(t *testing.T) {
 }
 
 func hasCapability(skill Skill, kind CapabilityKind) bool {
-	for _, cap := range skill.Capabilities {
-		if cap.Kind == kind {
+	for _, capability := range skill.Capabilities {
+		if capability.Kind == kind {
 			return true
 		}
 	}

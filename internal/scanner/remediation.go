@@ -613,10 +613,12 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			return RemediationGuidance{OperatorKnob: "The MCP listener refused the exchange. Check the client's Origin, Host, listener credential, HTTP method and Pipelock session token against the listener configuration, including `mcp_session_binding.listener_require_state_token`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener protocol refused":
 			return RemediationGuidance{OperatorKnob: "The MCP listener refused a malformed or inconsistent request. Correct the client's MCP headers, protocol version or JSON-RPC body; no scanner or policy setting relaxes protocol validation.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "MCP listener client-registry capacity exhausted (4096 clients); wait for listener idle expiry (24h) or session end":
+			return RemediationGuidance{OperatorKnob: "The MCP listener reached its fixed 4,096-client registry limit. Retained clients free a slot on listener idle expiry (24h) or session end; increasing `session_profiling.max_sessions` does not raise this registry limit. Configure authenticated principal state to bind one principal to one slot.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		case "MCP listener state capacity exhausted":
-			return RemediationGuidance{OperatorKnob: "Listener client state is at capacity. Retry after an existing state expires; when the session store is full, release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
-		case "session capacity exhausted; release active quarantine or increase max_sessions":
-			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted. Release active quarantine or increase `session_profiling.max_sessions`.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+			return RemediationGuidance{OperatorKnob: "Listener client state is at capacity. Retry after an existing state expires; when the session store is full, increase `session_profiling.max_sessions` or clear the restriction that keeps a session from being dropped.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
+		case "session capacity exhausted; wait for session recovery or increase max_sessions":
+			return RemediationGuidance{OperatorKnob: "Session capacity is exhausted and every retained session carries airlock, adaptive escalation, `block_all` or policy taint. Increase `session_profiling.max_sessions` or clear the restriction; reset and terminate keep taint, which a new task boundary clears.", Immutable: true, AgentReason: auditRuntimeAgentReason}, true
 		}
 	}
 	if (label == ScannerMCPToolScanning || label == AuditToolScanning) && strings.HasPrefix(reason, "tools/list cannot be safely inspected:") {

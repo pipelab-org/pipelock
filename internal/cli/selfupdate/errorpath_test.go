@@ -7,14 +7,38 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
+
+func newReleaseFetchErrorServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	var requests atomic.Int32
+	wantPath := fmt.Sprintf("/repos/%s/%s/releases/latest", repoOwner, repoName)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != wantPath {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	srv.Client().Timeout = 5 * time.Second
+	t.Cleanup(func() {
+		srv.Close()
+		if got := requests.Load(); got != 1 {
+			t.Errorf("release requests = %d, want 1", got)
+		}
+	})
+	return srv
+}
 
 func TestFetchRelease_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

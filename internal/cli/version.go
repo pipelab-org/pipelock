@@ -7,13 +7,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/release"
 )
 
 func versionCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Show version and build information",
-		Long: `Display Pipelock version, build date, commit hash, and Go version.
+		Long: `Display Pipelock version, build date, commit hash, Go version, and
+whether the embedded keyring supports release verification.
 
 The build metadata is injected via ldflags when building with "make build".
 When building with plain "go build", default values are shown.`,
@@ -23,6 +25,16 @@ When building with plain "go build", default values are shown.`,
 			cmd.Printf("  build date: %s\n", cliutil.BuildDate)
 			cmd.Printf("  git commit: %s\n", cliutil.GitCommit)
 			cmd.Printf("  go version: %s\n", cliutil.GoVersion)
+			// Allow an empty keyring for reporting; updates still require verification.
+			keyring, err := release.EmbeddedKeyringPreflight("", true)
+			switch {
+			case err != nil:
+				cmd.Println("  release verification: unavailable (invalid embedded keyring)")
+			case keyring.KeyCount == 0:
+				cmd.Println("  release verification: unavailable (no embedded keys)")
+			default:
+				cmd.Println("  release verification: available (embedded keyring)")
+			}
 		},
 	}
 }

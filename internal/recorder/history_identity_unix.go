@@ -24,6 +24,14 @@ func historyHandleIdentity(_ *os.File, info os.FileInfo) (string, error) {
 	return historyFileIdentity(EvidenceLocation{}, "", info)
 }
 
+func historyStableFileIdentity(_ EvidenceLocation, _ string, info os.FileInfo) (string, error) {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", errors.New("cannot identify evidence shard")
+	}
+	return fmt.Sprintf("%d:%d", stat.Dev, stat.Ino), nil
+}
+
 // EvidenceMetadataIdentity returns an opaque identity and change-time stamp
 // for an inventory entry. Reads do not change it; a local rewrite does.
 // This consistency check depends on the filesystem's metadata semantics.

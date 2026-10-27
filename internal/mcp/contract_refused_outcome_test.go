@@ -235,7 +235,7 @@ func TestRunHTTPListenerProxyLiveLock_PerRequestUpstreamDenialClosesIntent(t *te
 				stopped = true
 				cancel()
 				_ = ln.Close()
-				<-done
+				t.Logf("goroutine result: %v", <-done)
 			}
 			t.Cleanup(stop)
 
@@ -352,7 +352,7 @@ func TestRunHTTPListenerProxyLiveLock_BlockedOutcomeIsDurable(t *testing.T) {
 	}
 	cancel()
 	_ = ln.Close()
-	<-done
+	t.Logf("goroutine result: %v", <-done)
 	if !strings.Contains(logs.String(), "receipt emission failed") {
 		t.Fatalf("blocked outcome was not written durably; logs: %s", logs.String())
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
+	risksession "github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/termsafe"
 )
 
@@ -88,6 +89,9 @@ func renderDetail(w io.Writer, d proxy.SessionDetail) error {
 	}
 	fmt.Fprintf(buf, "  taint_level:      %s\n", defaultDash(d.TaintLevel))
 	fmt.Fprintf(buf, "  contaminated:     %t\n", d.Contaminated)
+	if cause := taintCause(d.TaintLevel, d.FindingKinds); cause != "" {
+		fmt.Fprintf(buf, "  taint_cause:      %s\n", cause)
+	}
 	if d.CurrentTaskID != "" {
 		fmt.Fprintf(buf, "  current_task_id:  %s\n", termsafe.Escape(d.CurrentTaskID))
 	}
@@ -122,6 +126,9 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	fmt.Fprintf(buf, "Session %s explanation\n", termsafe.Escape(e.Key))
 	fmt.Fprintf(buf, "  tier:                %s\n", defaultIfEmpty(e.Tier, "none"))
 	fmt.Fprintf(buf, "  reason:              %s\n", defaultDash(e.Reason))
+	if cause := taintCause("", e.FindingKinds); cause != "" {
+		fmt.Fprintf(buf, "  taint_cause:         %s\n", cause)
+	}
 	if e.Trigger != "" {
 		fmt.Fprintf(buf, "  trigger:             %s (source=%s)\n", termsafe.Escape(e.Trigger), defaultDash(e.TriggerSource))
 	}
@@ -161,6 +168,17 @@ func renderExplanation(w io.Writer, e proxy.SessionExplanation) error {
 	}
 	_, err := io.WriteString(w, buf.String())
 	return err
+}
+
+// taintCause names recorded hostile causes. A hostile taint level reported
+// without finding_kinds comes from a proxy that predates cause attribution, so
+// it is described as unrecorded rather than omitted.
+func taintCause(level string, kinds []risksession.HostileFindingKind) string {
+	risk := risksession.SessionRisk{FindingKinds: kinds}
+	if level == risksession.TaintExternalHostile.String() {
+		risk.Level = risksession.TaintExternalHostile
+	}
+	return risk.HostileCause()
 }
 
 // defaultDash returns s escaped for the terminal when non-empty, or "-" to

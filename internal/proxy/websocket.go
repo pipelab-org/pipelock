@@ -3035,17 +3035,33 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		return msg, false
 	}
 	if !r.scanText || !r.scanner.ResponseScanningEnabled() {
-		return msg, !r.observeUpstreamResponseTaint(false)
+		return msg, !r.observeUpstreamResponseFindings(nil)
 	}
 
 	// Exempt domains are still scanned for visibility but findings are pinned
 	// to warn with no adaptive scoring or action upgrade.
+	wc := scanner.DLPWarnContextFromCtx(ctx)
+	wc.Method = "WS"
+	if r.targetURL != "" {
+		wc.URL = r.targetURL
+	}
+	if r.clientIP != "" {
+		wc.ClientIP = r.clientIP
+	}
+	if r.requestID != "" {
+		wc.RequestID = r.requestID
+	}
+	if r.agent != "" {
+		wc.Agent = r.agent
+	}
+	wc.Transport = TransportWS
+	ctx = scanner.WithDLPWarnContext(ctx, wc)
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
 	if ctx.Err() != nil {
 		return nil, false
 	}
-	if !r.observeUpstreamResponseTaint(!scanResult.Clean && !scanResult.Failed()) {
+	if !r.observeUpstreamResponseFindings(upstreamResponseFindingKinds(scanResult)) {
 		return nil, true
 	}
 	recordSuppressedResponseScanExempts(r.proxy.metrics, scanResult.SuppressedMatches, TransportWS)
@@ -3193,7 +3209,15 @@ func (r *wsRelay) denySessionCapacity(direction string) {
 		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(r.requestID).CloseFramePayload())
 }
 
-func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
+func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) {
+	var kinds []session.HostileFindingKind
+	if promptHit {
+		kinds = []session.HostileFindingKind{session.FindingUnattributed}
+	}
+	r.observeUpstreamResponseFindings(kinds)
+}
+
+func (r *wsRelay) observeUpstreamResponseFindings(kinds []session.HostileFindingKind) bool {
 	if r.cfg == nil || !r.cfg.Taint.Enabled {
 		return true
 	}
@@ -3206,16 +3230,19 @@ func (r *wsRelay) observeUpstreamResponseTaint(promptHit bool) bool {
 		r.denySessionCapacity(audit.DirectionServerToClient)
 		return false
 	}
-	risk := rec.RiskSnapshot()
+	risk, taskID := rec.responseRiskSnapshot()
 	for _, source := range risk.Sources {
 		if source.URL != r.targetURL || source.Kind != "websocket_response" {
 			continue
 		}
-		if !promptHit || source.MatchReason == "prompt_injection_pattern" {
+		if len(kinds) == 0 || source.MatchReason == "prompt_injection_pattern" {
+			if len(kinds) > 0 {
+				rec.recordRetainedFindingKinds(taskID, kinds)
+			}
 			return true
 		}
 	}
-	observeHTTPResponseTaint(rec, r.cfg, r.targetURL, "application/websocket", "websocket_response", promptHit)
+	observeHTTPResponseFindings(rec, r.cfg, r.targetURL, "application/websocket", "websocket_response", kinds)
 	return true
 }
 
@@ -3507,7 +3534,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Complete message. Count and scan.
 		if opCode == ws.OpBinary {
-			if !r.observeUpstreamResponseTaint(false) {
+			if !r.observeUpstreamResponseFindings(nil) {
 				return bytesTransferred, textFrames, binaryFrames, true
 			}
 			actx := newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent})

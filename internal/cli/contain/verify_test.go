@@ -4137,6 +4137,9 @@ func allPassEnv(t *testing.T) *probeEnv {
 func defaultRunForAllPass(name string, args []string) (string, int, error) {
 	switch name {
 	case testSystemctl:
+		if containsArg(args, "--property=ActiveState,SubState,Type,NRestarts") {
+			return testForwarderReady, 0, nil
+		}
 		if containsArg(args, "is-enabled") {
 			return "enabled\n", 0, nil
 		}

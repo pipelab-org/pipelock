@@ -21,7 +21,7 @@ you have not set that token, the CLI will refuse to connect. See
 | `pipelock session explain <key> [--json]` | Why the session is where it is: trigger, evidence, destination scopes, next auto-recovery time |
 | `pipelock session reset <key> [--json]` | Clear adaptive score, destination-scoped airlock, and block_all without cutting connections |
 | `pipelock session release <key> [--to none\|soft]` | Set the session-wide airlock and every destination-scope airlock to a lower tier. Does not clear destination adaptive scores or block_all. |
-| `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state |
+| `pipelock session terminate <key>` | Destructive: reset enforcement state, cut in-flight connections, clear CEE state. Taint is kept; the session's task boundary clears it. |
 | `pipelock session recover <key> [--choice ...]` | Interactive workflow: inspect → explain → pick an action. Prefer reset when a destination scope is the blocker. |
 | `pipelock session deferred list [--json]` | Enumerate held (deferred) MCP actions awaiting an operator decision |
 | `pipelock session deferred approve <defer-id>` | Approve a held action (opens it only if its rule permits) |

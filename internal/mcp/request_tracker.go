@@ -208,6 +208,17 @@ func (t *RequestTracker) Seeded() bool {
 	return t.seeded
 }
 
+// HasPending reports whether any tracked request still awaits its response.
+// A nil tracker has nothing pending.
+func (t *RequestTracker) HasPending() bool {
+	if t == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.pending) > 0
+}
+
 // Strict reports whether response envelopes must carry an exact tracked ID.
 func (t *RequestTracker) Strict() bool {
 	return t != nil && t.strict

@@ -14,16 +14,17 @@ import (
 	anchorpkg "github.com/luckyPipewrench/pipelock/internal/anchor"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
 
 // Keep the old materialized extractor and BuildCheckpoint as the compatibility
 // oracle. The production implementation must not call either of them.
-func materializedAutoAnchorTestWalk(dir, sessionID string, consume func(receipt.Receipt) error) error {
+func materializedAutoAnchorTestWalk(dir, sessionID string, bound recorder.SessionHistoryPrefix, consume func(receipt.Receipt) error) error {
 	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
 	if err != nil {
 		return err
 	}
-	return walkAutoAnchorTestReceipts(receipts)(dir, sessionID, consume)
+	return walkAutoAnchorTestReceipts(receipts)(dir, sessionID, bound, consume)
 }
 
 func TestAutoAnchorStreamingCheckpointBytes(t *testing.T) {
@@ -73,7 +74,7 @@ func assertStreamingCheckpointOracle(t *testing.T, monitor *autoAnchorMonitor, h
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, prefix, err := monitor.buildCheckpoint(headKey, prefixCount)
+	got, prefix, err := monitor.buildCheckpoint(monitor.emitter(), prefixCount)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +102,7 @@ func TestAutoAnchorStreamingTamperedMiddle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := rig.monitor.buildCheckpoint(rig.emitter.SignerKeyHex(), 1); err != nil {
+	if _, _, err := rig.monitor.buildCheckpoint(rig.emitter, 1); err != nil {
 		t.Fatalf("positive control: %v", err)
 	}
 	receipts[len(receipts)/2].ActionRecord.Target = "https://api.vendor.example/changed"
@@ -114,7 +115,7 @@ func TestAutoAnchorStreamingTamperedMiddle(t *testing.T) {
 	}
 	assertAutoAnchorStats(t, rig.metrics, 1, 0, 1, "signature")
 	// Seed rebuild must reject a corrupt suffix even when the prefix matches.
-	if _, _, err := rig.monitor.buildCheckpoint(rig.emitter.SignerKeyHex(), 1); err == nil || !strings.Contains(err.Error(), "signature") {
+	if _, _, err := rig.monitor.buildCheckpoint(rig.emitter, 1); err == nil || !strings.Contains(err.Error(), "signature") {
 		t.Fatalf("seed walk accepted corrupt suffix: %v", err)
 	}
 }
@@ -133,14 +134,14 @@ func TestAutoAnchorStreamingMemoryBound(t *testing.T) {
 		emitAutoAnchorReceipt(t, rig.emitter, target)
 	}
 	productionWalk := rig.monitor.walkFn
-	measure := func(walk func(string, string, func(receipt.Receipt) error) error, prefix uint64) uint64 {
+	measure := func(walk func(string, string, recorder.SessionHistoryPrefix, func(receipt.Receipt) error) error, prefix uint64) uint64 {
 		runtime.GC()
 		var base runtime.MemStats
 		runtime.ReadMemStats(&base)
 		var peak uint64
 		count := 0
-		rig.monitor.walkFn = func(dir, sessionID string, consume func(receipt.Receipt) error) error {
-			return walk(dir, sessionID, func(r receipt.Receipt) error {
+		rig.monitor.walkFn = func(dir, sessionID string, bound recorder.SessionHistoryPrefix, consume func(receipt.Receipt) error) error {
+			return walk(dir, sessionID, bound, func(r receipt.Receipt) error {
 				count++
 				if count%512 == 0 || count == size+1 {
 					runtime.GC()
@@ -153,7 +154,7 @@ func TestAutoAnchorStreamingMemoryBound(t *testing.T) {
 				return consume(r)
 			})
 		}
-		checkpoint, _, err := rig.monitor.buildCheckpoint(rig.emitter.SignerKeyHex(), prefix)
+		checkpoint, _, err := rig.monitor.buildCheckpoint(rig.emitter, prefix)
 		if err != nil {
 			t.Fatal(err)
 		}

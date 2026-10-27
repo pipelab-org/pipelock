@@ -20,6 +20,8 @@ import (
 //   - Target: CONNECT tunnel host:port destinations
 //   - Resource: MCP tool names, config file paths, listen addresses
 type LogContext struct {
+	scanTransport   string
+	mcpServer       string
 	mcp             bool
 	mcpMarker       bool
 	mcpTransport    string
@@ -215,6 +217,17 @@ func (c LogContext) WithMCPRoute(transport, direction string) LogContext {
 	if c.mcp {
 		c.mcpTransport = transport
 		c.mcpDirection = direction
+	}
+	return c
+}
+
+// WithScanRoute adds transport and configured MCP server attribution to scanner
+// observations without changing the context's content-redaction policy.
+func (c LogContext) WithScanRoute(transport, server, agent string) LogContext {
+	c.scanTransport = transport
+	c.mcpServer = server
+	if c.agent == "" {
+		c.agent = agent
 	}
 	return c
 }

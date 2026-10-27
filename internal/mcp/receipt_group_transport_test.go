@@ -307,10 +307,11 @@ func TestMCPGroupedDeferAndRefusalFailureModes(t *testing.T) {
 			if tc.deferRun {
 				rec.SetSyncForTest(func(*os.File) error { return errors.New("sync failed") })
 				err := emitMCPToolReceipt(mcpToolReceiptOpts{
-					Group: opts.ReceiptGroup, Shard: shard, Log: &log,
+					ProxyOpts: opts,
+					Shard:     shard, Log: &log,
 					ActionID: shard.ActionID, Transport: opts.Transport,
 					ToolName: "fetch", Verdict: config.ActionAllow,
-					PolicyHash: mcpTestPolicyHash, DecisionPhase: receipt.DecisionPhaseResolution,
+					DecisionPhase:  receipt.DecisionPhaseResolution,
 					RequireReceipt: true, RequireReceipts: tc.required, Durable: true,
 				})
 				if !errors.Is(err, ErrReceiptRequired) {

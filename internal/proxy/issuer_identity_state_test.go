@@ -70,10 +70,10 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 			t.Fatal("enabled identity reload erased history")
 		}
 		live.mintServerID(key, origin, serverIDListed, time.Now())
-		if live.serverIDIssued(key, origin, serverIDListed) {
+		if live.serverIDIssued(key, origin, serverIDListed+":") {
 			t.Fatal("identity reload revived own tainted IDs")
 		}
-		if !live.serverIDIssued(peer, origin, serverIDListed) {
+		if !live.serverIDIssued(peer, origin, serverIDListed+":") {
 			t.Fatal("identity reload revoked bound peer")
 		}
 		for _, auth := range []envelope.ActorAuth{envelope.ActorAuthUnknown, envelope.ActorAuthSelfDeclared, envelope.ActorAuthMatched} {
@@ -97,12 +97,12 @@ func TestIssuerIDIdentityReload(t *testing.T) {
 		t.Fatal("re-enable reload failed")
 	}
 	fresh := p.issuerCookieRuntime.Load().query
-	if fresh == original || fresh.serverIDIssued(peer, origin, serverIDListed) {
+	if fresh == original || fresh.serverIDIssued(peer, origin, serverIDListed+":") {
 		t.Fatal("disabled evidence revived")
 	}
 	fresh.recordSent(key, origin, nil, nil, true, time.Now())
 	fresh.mintServerID(key, origin, serverIDListed, time.Now())
-	if !fresh.serverIDIssued(key, origin, serverIDListed) {
+	if !fresh.serverIDIssued(key, origin, serverIDListed+":") {
 		t.Fatal("explicit reset retained taint")
 	}
 }

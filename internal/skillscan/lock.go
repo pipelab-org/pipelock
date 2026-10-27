@@ -224,13 +224,13 @@ func driftFinding(severity Severity, skillID, message, path, pattern string) Fin
 
 func widenedCapabilities(current, baseline []string) []string {
 	have := map[string]struct{}{}
-	for _, cap := range baseline {
-		have[cap] = struct{}{}
+	for _, capability := range baseline {
+		have[capability] = struct{}{}
 	}
 	var widened []string
-	for _, cap := range current {
-		if _, ok := have[cap]; !ok {
-			widened = append(widened, cap)
+	for _, capability := range current {
+		if _, ok := have[capability]; !ok {
+			widened = append(widened, capability)
 		}
 	}
 	sort.Strings(widened)

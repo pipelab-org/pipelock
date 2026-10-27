@@ -147,6 +147,95 @@ type SessionHistoryShard struct {
 	Info os.FileInfo
 }
 
+// SessionHistoryPrefix bounds a live session at a writer-observed JSONL line
+// boundary. Later appends and shards are outside the observation. Callers must
+// authenticate the resulting head against their writer observation before
+// publishing a verdict or performing a durable side effect.
+type SessionHistoryPrefix struct {
+	File string
+	End  int64
+}
+
+// WalkSessionHistoryPrefix walks all entries through prefix, with the same
+// parsing and secure-open rules as WalkSessionHistory. Closed shards must stay
+// unchanged; the observed shard may grow, but may not shrink or be replaced.
+// Memory remains bounded by sessionHistoryWindow, independent of shard count.
+func WalkSessionHistoryPrefix(dir, sessionID string, prefix SessionHistoryPrefix, consume func(Entry) error) error {
+	location, err := ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	return WalkSessionHistoryPrefixResolved(location, sessionID, prefix, consume)
+}
+
+// WalkSessionHistoryPrefixResolved is WalkSessionHistoryPrefix at an already
+// resolved evidence location. Any error invalidates all delivered entries.
+func WalkSessionHistoryPrefixResolved(location EvidenceLocation, sessionID string, prefix SessionHistoryPrefix, consume func(Entry) error) error {
+	if err := validateHistorySessionID(sessionID); err != nil {
+		return err
+	}
+	parsed, seq, ok := evidencename.Parse(prefix.File)
+	if !ok || parsed != sessionID || prefix.File != filepath.Base(prefix.File) || prefix.End < 0 {
+		return fmt.Errorf("%w: invalid writer-observed session prefix", ErrEvidenceRefused)
+	}
+	if consume == nil {
+		return errors.New("entry consumer is required")
+	}
+	bound := historyPrefixBound{historyKey: historyKey{name: prefix.File, seq: seq}, end: prefix.End}
+	c := historyCursor{location: location, sessionID: sessionID, window: sessionHistoryWindow, prefix: &bound}
+	for {
+		shard, found, err := c.next()
+		if err != nil {
+			return prefixHistoryError(err)
+		}
+		if !found {
+			return prefixHistoryError(c.checkInventory())
+		}
+		if shard.Name == prefix.File {
+			err = walkHistoryPrefixShard(location, sessionID, prefix, consume)
+		} else {
+			err = walkHistoryShardEntries(location, shard.Name, sessionID, consume)
+		}
+		if err != nil {
+			if changed := c.checkInventory(); changed != nil {
+				return prefixHistoryError(changed)
+			}
+			return prefixHistoryError(err)
+		}
+	}
+}
+
+// A writer-owned prefix never legitimately shrinks or changes membership.
+// Keep transient I/O failures unavailable, but classify those changes as
+// refusals rather than downgrading them to environmental uncertainty.
+func prefixHistoryError(err error) error {
+	if errors.Is(err, ErrEvidenceChanged) || errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %w", ErrEvidenceRefused, err)
+	}
+	return err
+}
+
+func walkHistoryPrefixShard(location EvidenceLocation, sessionID string, prefix SessionHistoryPrefix, consume func(Entry) error) error {
+	file, before, err := openEvidenceLocationFile(location, prefix.File)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	if before.Size() < prefix.End {
+		return fmt.Errorf("%w: observed evidence file is shorter than its prefix", ErrEvidenceRefused)
+	}
+	err = walkHistoryEntries(io.NewSectionReader(file, 0, prefix.End), filepath.Join(location.Dir, prefix.File), sessionID, consume)
+	after, statErr := file.Stat()
+	if statErr != nil {
+		return statErr
+	}
+	// Both stats refer to the open handle; the cursor inventory checks identity.
+	if after.Size() < prefix.End {
+		return fmt.Errorf("%w: observed evidence file shrank", ErrEvidenceRefused)
+	}
+	return err
+}
+
 // WalkSessionHistory resolves dir and walks one session's complete history.
 // See WalkSessionHistoryResolved.
 func WalkSessionHistory(dir, sessionID string, consume func(Entry) error) error {
@@ -523,6 +612,11 @@ type historyKey struct {
 	seq  uint64
 }
 
+type historyPrefixBound struct {
+	historyKey
+	end int64
+}
+
 func (k historyKey) less(o historyKey) bool {
 	if k.seq != o.seq {
 		return k.seq < o.seq
@@ -541,6 +635,7 @@ type historyCursor struct {
 	after     *historyKey // greatest key fetched so far
 	started   bool
 	inventory *historyInventory
+	prefix    *historyPrefixBound
 }
 
 func (c *historyCursor) next() (SessionHistoryShard, bool, error) {
@@ -570,9 +665,9 @@ func (c *historyCursor) next() (SessionHistoryShard, bool, error) {
 // the new window is delivered, including a duplicate of the previous window's
 // last shard.
 func (c *historyCursor) fill() error {
-	keys, more, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, c.window)
+	keys, more, inventory, err := scanHistoryWindowBound(c.location, c.sessionID, c.after, c.window, c.prefix)
 	if err != nil {
-		if c.inventory != nil {
+		if c.inventory != nil && c.prefix == nil {
 			return fmt.Errorf("%w: reading evidence directory: %s", ErrEvidenceChanged, err.Error())
 		}
 		return fmt.Errorf("reading evidence directory: %w", err)
@@ -610,7 +705,11 @@ type historyInventory struct {
 }
 
 func (s *historyInventory) add(name string, info os.FileInfo, identity string) {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", name, identity, info.Size(), info.Mode(), info.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z"))))
+	s.addMetadata(fmt.Sprintf("%s\x00%s\x00%d\x00%d\x00%s", name, identity, info.Size(), info.Mode(), info.ModTime().UTC().Format("2006-01-02T15:04:05.999999999Z")))
+}
+
+func (s *historyInventory) addMetadata(metadata string) {
+	h := sha256.Sum256([]byte(metadata))
 	carry := uint16(0)
 	for i := len(h) - 1; i >= 0; i-- {
 		n := uint16(s.digest[i]) + uint16(h[i]) + carry
@@ -632,8 +731,11 @@ func (c *historyCursor) acceptInventory(inventory historyInventory) error {
 }
 
 func (c *historyCursor) checkInventory() error {
-	_, _, inventory, err := scanHistoryWindow(c.location, c.sessionID, c.after, 1)
+	_, _, inventory, err := scanHistoryWindowBound(c.location, c.sessionID, c.after, 1, c.prefix)
 	if err != nil {
+		if c.prefix != nil {
+			return err
+		}
 		return fmt.Errorf("%w: rechecking evidence directory: %s", ErrEvidenceChanged, err.Error())
 	}
 	return c.acceptInventory(inventory)
@@ -644,6 +746,10 @@ func (c *historyCursor) checkInventory() error {
 // Entries of other sessions, sidecars and unrelated files are skipped as they
 // are read and never retained.
 func scanHistoryWindow(location EvidenceLocation, sessionID string, after *historyKey, window int) ([]historyKey, bool, historyInventory, error) {
+	return scanHistoryWindowBound(location, sessionID, after, window, nil)
+}
+
+func scanHistoryWindowBound(location EvidenceLocation, sessionID string, after *historyKey, window int, prefix *historyPrefixBound) ([]historyKey, bool, historyInventory, error) {
 	var inventory historyInventory
 	directory, err := openEvidenceLocationDirectory(location)
 	if err != nil {
@@ -657,12 +763,17 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 	h := make(historyMaxHeap, 0, min(window, sessionHistoryDirBatch))
 	retained := make(map[string]bool)
 	more := false
+	foundPrefix := false
 	for {
 		batch, readErr := directory.ReadDir(sessionHistoryDirBatch)
 		for _, de := range batch {
 			name := de.Name()
 			parsed, seq, ok := evidencename.Parse(name)
 			if !ok || (sessionID != "" && parsed != sessionID) || name != filepath.Base(name) {
+				continue
+			}
+			k := historyKey{name: name, seq: seq}
+			if prefix != nil && k.seq > prefix.seq {
 				continue
 			}
 			info, err := de.Info()
@@ -672,12 +783,23 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 				}
 				return nil, false, inventory, err
 			}
-			identity, err := historyFileIdentity(location, name, info)
-			if err != nil {
-				return nil, false, inventory, err
+			if prefix != nil && name == prefix.name {
+				foundPrefix = true
+				if info.Size() < prefix.end {
+					return nil, false, inventory, fmt.Errorf("%w: observed evidence file is shorter than its prefix", ErrEvidenceRefused)
+				}
+				identity, err := historyStableFileIdentity(location, name, info)
+				if err != nil {
+					return nil, false, inventory, err
+				}
+				inventory.addMetadata(name + "\x00" + identity)
+			} else {
+				identity, err := historyFileIdentity(location, name, info)
+				if err != nil {
+					return nil, false, inventory, err
+				}
+				inventory.add(name, info, identity)
 			}
-			inventory.add(name, info, identity)
-			k := historyKey{name: name, seq: seq}
 			if sessionID == "" {
 				k = historyKey{name: parsed}
 				if retained[k.name] {
@@ -707,6 +829,9 @@ func scanHistoryWindow(location EvidenceLocation, sessionID string, after *histo
 		if readErr != nil {
 			return nil, false, inventory, readErr
 		}
+	}
+	if prefix != nil && !foundPrefix {
+		return nil, false, inventory, fmt.Errorf("%w: observed evidence file is missing", ErrEvidenceRefused)
 	}
 	keys := []historyKey(h)
 	slices.SortFunc(keys, func(a, b historyKey) int {

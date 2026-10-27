@@ -44,14 +44,17 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 	}
 	units := []string{containedNamespaceForwarderUnit}
 	proxyParent := filepath.Dir(containedDoorwaySocketPath)
-	expectedBinds := map[string]string{
-		containedNamespaceForwarderUnit: canonicalBind(proxyParent, proxyParent, "rbind"),
+	// Each namespace forwarder binds its doorway directory and the systemd
+	// notification socket its Type=notify readiness needs; nothing else.
+	notifyBind := canonicalBind(systemdNotifySocketPath, systemdNotifySocketPath, "rbind")
+	expectedBinds := map[string][]string{
+		containedNamespaceForwarderUnit: {canonicalBind(proxyParent, proxyParent, "rbind"), notifyBind},
 	}
 	for _, service := range services {
 		unit := loopbackForwarderUnitBase(service.Host, service.Port) + "-netns.service"
 		units = append(units, unit)
 		parent := filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port))
-		expectedBinds[unit] = canonicalBind(parent, parent, "rbind")
+		expectedBinds[unit] = []string{canonicalBind(parent, parent, "rbind"), notifyBind}
 	}
 	if env.configPath != "" {
 		cfg, loadErr := config.LoadForInspection(env.configPath)
@@ -80,7 +83,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 				return unknown("runtime doorway bind for "+unit+" could not be read", "restore access to systemctl and rerun `"+doctorCommandForPort(env.port)+"`")
 			}
 			binds, parseErr := parseSystemdBindShow(strings.TrimSpace(out))
-			if parseErr != nil || !sameBindList(binds, []string{expected}) {
+			if parseErr != nil || !sameBindList(binds, expected) {
 				return fail(classInfra, "managed unit "+unit+" lacks its runtime doorway bind", installRemedyForPort(env.port))
 			}
 		}

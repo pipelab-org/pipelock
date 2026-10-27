@@ -236,12 +236,14 @@ func (p *Producer) runAppliedStateHeartbeat() {
 				result <- p.appliedStateHeartbeat(ctx)
 			}()
 			select {
-			case <-result:
+			case err := <-result:
+				_ = err // heartbeat failures are best effort and retry next interval
 				cancel()
 			case <-ctx.Done():
 				cancel()
 				select {
-				case <-result:
+				case err := <-result:
+					_ = err // the timed-out heartbeat has finished
 					continue
 				case <-p.heartbeatContext.Done():
 					return

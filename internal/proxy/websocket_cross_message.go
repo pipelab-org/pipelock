@@ -128,7 +128,7 @@ func (r *wsRelay) enforceUpstreamCrossMessage(ctx context.Context, log *audit.Lo
 	if len(names) == 0 {
 		return false, false
 	}
-	if !r.observeUpstreamResponseTaint(true) {
+	if !r.observeUpstreamResponseFindings(responseScanFindingKinds(joined)) {
 		return true, true
 	}
 	r.proxy.metrics.RecordWSScanHit("injection")

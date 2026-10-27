@@ -161,6 +161,12 @@ func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
 	if out.Len() != 0 {
 		t.Fatalf("revoked state writer emitted %q", out.String())
 	}
+	if err := writer.writeDeniedMessage([]byte(`{"jsonrpc":"2.0","error":{"code":-32000}}`)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("revoked state denial = %v, want canceled", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("revoked state emitted a denial after revocation: %q", out.String())
+	}
 
 	writeErr := errors.New("delegated write failed")
 	active := newMCPListenerClientState("active-token", "active-key")
@@ -168,6 +174,9 @@ func TestMCPListenerTokenHelpers_EdgeCases(t *testing.T) {
 	writer = &listenerStateMessageWriter{state: active, writer: delegated}
 	if err := writer.WriteMessage([]byte(`{"jsonrpc":"2.0"}`)); !errors.Is(err, writeErr) {
 		t.Fatalf("delegated writer error = %v, want %v", err, writeErr)
+	}
+	if err := writer.writeDeniedMessage([]byte(`{"jsonrpc":"2.0","error":{"code":-32000}}`)); !errors.Is(err, writeErr) {
+		t.Fatalf("delegated denial error = %v, want %v", err, writeErr)
 	}
 }
 
@@ -252,6 +261,11 @@ func (s *listenerStateBoundedStore) Delete(key string) {
 		s.deleted = make(map[string]struct{})
 	}
 	s.deleted[key] = struct{}{}
+}
+
+func (s *listenerStateBoundedStore) EvictIfUnprotected(key string, _ session.Recorder) bool {
+	s.Delete(key)
+	return true
 }
 
 func listenerSetupState(t *testing.T, states *mcpListenerClientStates, n int) *mcpListenerClientState {

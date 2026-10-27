@@ -417,7 +417,9 @@ func TestLoader_Watch_FileReplacementTriggersReload(t *testing.T) {
 	go func() { done <- loader.Watch(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Watch on cancel: %v, want nil", err)
+		}
 	})
 	waitForLoaderReady(t, loader)
 
@@ -453,7 +455,9 @@ func TestLoader_Watch_DebounceCoalescesBurstAndSameHashIsNoop(t *testing.T) {
 	go func() { done <- loader.Watch(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Watch on cancel: %v, want nil", err)
+		}
 	})
 	waitForLoaderReady(t, loader)
 
@@ -552,7 +556,9 @@ func TestLoader_Watch_RejectedReloadKeepsWatcherAlive(t *testing.T) {
 	go func() { done <- loader.Watch(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Watch on cancel: %v, want nil", err)
+		}
 	})
 	waitForLoaderReady(t, loader)
 
@@ -619,7 +625,9 @@ func TestLoader_Watch_DebounceMaxWaitFlushesUnderSustainedWrites(t *testing.T) {
 		close(stop)
 		<-producerDone
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Watch on cancel: %v, want nil", err)
+		}
 	})
 	waitForLoaderReady(t, loader)
 
@@ -694,7 +702,9 @@ func TestLoader_Watch_RemoveEventTriggersReload(t *testing.T) {
 	go func() { done <- loader.Watch(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("Watch on cancel: %v, want nil", err)
+		}
 	})
 	waitForLoaderReady(t, loader)
 

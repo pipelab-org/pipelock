@@ -3258,10 +3258,17 @@ func nextCombination(indices []int, n int) bool {
 }
 
 // emitDLPWarns calls the instance warn hook for each warn match if set.
+// A request that did not bind a wording policy takes this scanner's, so the
+// warning names the policy of the scanner that made the match. A policy the
+// request already bound from its snapshot is kept.
 func (s *Scanner) emitDLPWarns(ctx context.Context, matches []WarnMatch) {
 	hook := s.getDLPWarnHook()
 	if len(matches) == 0 || hook == nil {
 		return
+	}
+	if wc := DLPWarnContextFromCtx(ctx); wc.PromptInjectionMode == "" {
+		wc.PromptInjectionMode = s.PromptInjectionMode()
+		ctx = WithDLPWarnContext(ctx, wc)
 	}
 	for _, m := range matches {
 		hook(ctx, m.PatternName, m.Severity)

@@ -126,7 +126,10 @@ func TestExtractHeaderBindings_DeepSiblingSchemaKeepsContract(t *testing.T) {
 }
 
 func TestExtractHeaderBindings_DeepUnreachableAnnotationStillRejected(t *testing.T) {
-	deep := nestSchema(`{"x-mcp-header":"Hidden"}`, maxToolHeaderSchemaDepth+8)
+	deep := `{"type":"string","x-mcp-header":"Hidden"}`
+	for range maxToolHeaderSchemaDepth + 8 {
+		deep = `{"not":` + deep + `}`
+	}
 	schema := `{"type":"object","properties":{"filter":{"anyOf":[` + deep + `]}}}`
 	if _, err := ExtractHeaderBindings(json.RawMessage(schema)); err == nil {
 		t.Fatal("annotation below a composition keyword must be rejected at any admitted depth")

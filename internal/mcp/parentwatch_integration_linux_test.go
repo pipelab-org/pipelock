@@ -379,7 +379,8 @@ func TestSessionExit_SandboxTreeIsReaped(t *testing.T) {
 
 	parentDied.Store(true)
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 		// Scaling the deadline is not enough on its own: whichever clock fires
 		// first decides which branch runs. If the governing context deadline
 		// expired, exec.CommandContext killed the command, RunProxyWithSandbox
@@ -445,7 +446,8 @@ func TestSessionExit_SandboxLiveSessionIsNotTornDown(t *testing.T) {
 	_ = clientIn.Close()
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(testwait.Deadline(20 * time.Second)):
 		// Report the operator log and the surviving processes. This assertion
 		// has failed on CI while passing on a development host, and a bare
@@ -502,7 +504,8 @@ func TestSessionExit_SandboxCancellationWithSurvivingPipeHolder(t *testing.T) {
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatalf("sandbox proxy did not stop after cancellation while a detached descendant held stdout; log: %q; surviving descendants: %s",
 			logBuf.String(), describeOwnDescendants())
@@ -571,7 +574,8 @@ func TestRunProxyWithSandbox_CancellationReapsEscapedStderrHolder(t *testing.T) 
 
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatalf("sandbox proxy did not stop after cancellation while an escaped descendant held stderr; holder pid=%d alive=%t; log: %q",
 			holderPID, processAlive(holderPID), logBuf.String())

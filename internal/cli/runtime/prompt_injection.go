@@ -18,10 +18,13 @@ func wirePromptInjectionAudit(sc *scanner.Scanner, logger *audit.Logger) {
 	if sc == nil || logger == nil {
 		return
 	}
-	sc.SetInjectionWarnHook(func(_ context.Context, names []string) {
-		// Scanner-only observations may have no transport attribution. Do not
-		// fabricate a URL or MCP identity, or retain the matched content.
-		logger.LogResponseScan(audit.LogContext{}, config.ActionWarn, len(names), names, nil)
+	sc.SetInjectionWarnHook(func(ctx context.Context, names []string) {
+		wc := scanner.DLPWarnContextFromCtx(ctx)
+		lctx, err := dlpWarnLogContext(wc)
+		if err != nil {
+			lctx = dlpWarnFallbackLogContext(wc)
+		}
+		logger.LogResponseScan(lctx.WithScanRoute(wc.Transport, wc.ServerName, wc.Agent), config.ActionWarn, len(names), names, nil)
 	})
 }
 
@@ -31,8 +34,22 @@ func wirePromptInjectionStderr(sc *scanner.Scanner, stderr io.Writer) {
 	if sc == nil || stderr == nil {
 		return
 	}
-	sc.SetInjectionWarnHook(func(_ context.Context, names []string) {
-		_, _ = fmt.Fprintf(stderr, "pipelock: warn-only prompt-injection wording match: %s\n", strings.Join(names, ", "))
+	sc.SetInjectionWarnHook(func(ctx context.Context, names []string) {
+		wc := scanner.DLPWarnContextFromCtx(ctx)
+		suffix := ""
+		if wc.Transport != "" {
+			suffix += fmt.Sprintf(" transport=%q", wc.Transport)
+		}
+		if wc.URL != "" {
+			suffix += fmt.Sprintf(" destination=%q", audit.RedactContentBearingURL(wc.URL))
+		}
+		if wc.ServerName != "" {
+			suffix += fmt.Sprintf(" mcp_server=%q", wc.ServerName)
+		}
+		if wc.Agent != "" {
+			suffix += fmt.Sprintf(" agent=%q", wc.Agent)
+		}
+		_, _ = fmt.Fprintf(stderr, "pipelock: warn-only prompt-injection wording match: %s%s\n", strings.Join(names, ", "), suffix)
 	})
 }
 

@@ -74,6 +74,7 @@ type configMigrationContext struct {
 	configDir    string
 	operatorHome string
 	artifacts    []migratedConfigArtifact
+	preview      bool // rewrite writable paths without creating migration artifacts
 }
 
 func migratePipelockConfigForContain(env *installEnv, configSource string, data []byte) ([]byte, []migratedConfigArtifact, error) {
@@ -161,25 +162,7 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, err
 	}
 
-	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateScalarDir(ctx, mapping, []string{"flight_recorder", "dir"}, filepath.Join(env.dataDir, "recorder")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateScalarDir(ctx, mapping, []string{"learn", "capture_dir"}, filepath.Join(env.dataDir, "captures", "local")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateScalarDir(ctx, mapping, []string{"behavioral_baseline", "profile_dir"}, filepath.Join(env.dataDir, "baselines")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateScalarDir(ctx, mapping, []string{"learn_lock", "store_dir"}, filepath.Join(env.dataDir, "contracts", "active")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateScalarDir(ctx, mapping, []string{"mcp_tool_policy", "quarantine_dir"}, filepath.Join(env.dataDir, "quarantine")); err != nil {
-		return nil, nil, err
-	}
-	if err := migrateLoggingFile(ctx, mapping); err != nil {
+	if err := migrateContainWritablePaths(ctx, mapping); err != nil {
 		return nil, nil, err
 	}
 	migrateRedirectProfiles(ctx, mapping)
@@ -189,6 +172,54 @@ func migratePipelockConfigForContain(env *installEnv, configSource string, data 
 		return nil, nil, err
 	}
 	return out, ctx.artifacts, nil
+}
+
+// previewContainWritablePaths applies the same path rewrites as migration before
+// install can create users, directories, keys, or staging files.
+func previewContainWritablePaths(env *installEnv, source string, data []byte) ([]byte, error) {
+	root, err := parseSingleYAMLDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	mapping := documentMapping(root)
+	if mapping == nil {
+		return nil, errors.New("pipelock config must be a YAML mapping")
+	}
+	home, err := operatorHomeDir(env)
+	if err != nil {
+		return nil, err
+	}
+	ctx := &configMigrationContext{env: env, configDir: filepath.Dir(source), operatorHome: home, preview: true}
+	if err := migrateContainWritablePaths(ctx, mapping); err != nil {
+		return nil, err
+	}
+	return encodeYAML(root)
+}
+
+func migrateContainWritablePaths(ctx *configMigrationContext, mapping *yaml.Node) error {
+	env := ctx.env
+	if err := migrateScalarDir(ctx, mapping, []string{"rules", "rules_dir"}, filepath.Join(env.dataDir, "rules")); err != nil {
+		return err
+	}
+	if err := migrateScalarDir(ctx, mapping, []string{"flight_recorder", "dir"}, filepath.Join(env.dataDir, "recorder")); err != nil {
+		return err
+	}
+	if err := migrateScalarDir(ctx, mapping, []string{"learn", "capture_dir"}, filepath.Join(env.dataDir, "captures", "local")); err != nil {
+		return err
+	}
+	if err := migrateScalarDir(ctx, mapping, []string{"behavioral_baseline", "profile_dir"}, filepath.Join(env.dataDir, "baselines")); err != nil {
+		return err
+	}
+	if err := migrateScalarDir(ctx, mapping, []string{"learn_lock", "store_dir"}, filepath.Join(env.dataDir, "contracts", "active")); err != nil {
+		return err
+	}
+	if err := migrateScalarDir(ctx, mapping, []string{"mcp_tool_policy", "quarantine_dir"}, filepath.Join(env.dataDir, "quarantine")); err != nil {
+		return err
+	}
+	if err := migrateLoggingFile(ctx, mapping); err != nil {
+		return err
+	}
+	return nil
 }
 
 func migrateFileSentryWatchPaths(ctx *configMigrationContext, root *yaml.Node) error {
@@ -754,8 +785,10 @@ func migrateScalarDir(ctx *configMigrationContext, root *yaml.Node, path []strin
 	if !ok {
 		return nil
 	}
-	if err := copyConfigDir(ctx, src, dest); err != nil {
-		return fmt.Errorf("migrate %s: %w", strings.Join(path, "."), err)
+	if !ctx.preview {
+		if err := copyConfigDir(ctx, src, dest); err != nil {
+			return fmt.Errorf("migrate %s: %w", strings.Join(path, "."), err)
+		}
 	}
 	n.Value = dest
 	return nil
@@ -850,8 +883,10 @@ func migrateLoggingFile(ctx *configMigrationContext, root *yaml.Node) error {
 		return nil
 	}
 	dest := filepath.Join(ctx.env.dataDir, "logs", "audit.log")
-	if err := ensureMigratedDir(ctx, filepath.Dir(dest), migrationDirMode(ctx.env, filepath.Dir(dest))); err != nil {
-		return err
+	if !ctx.preview {
+		if err := ensureMigratedDir(ctx, filepath.Dir(dest), migrationDirMode(ctx.env, filepath.Dir(dest))); err != nil {
+			return err
+		}
 	}
 	n.Value = dest
 	return nil

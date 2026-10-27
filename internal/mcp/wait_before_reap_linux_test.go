@@ -171,7 +171,8 @@ func TestWaitForCommandWithProcessGroup_CancellationAfterReapingUsesStableHandle
 		}
 		_ = cmd.Process.Kill()
 		select {
-		case <-done:
+		case err := <-done:
+			t.Logf("goroutine result: %v", err)
 		case <-time.After(testwait.Deadline(5 * time.Second)):
 		}
 	})

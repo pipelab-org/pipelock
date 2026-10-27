@@ -196,7 +196,7 @@ func keepAlive(t *testing.T, from, to net.Conn, timeout time.Duration) {
 		select {
 		case <-end:
 			_ = to.SetReadDeadline(time.Now()) // stop the reader goroutine
-			<-readErr
+			t.Logf("interrupted reader: %v", <-readErr)
 			_ = to.SetReadDeadline(time.Time{})
 			return
 		case err := <-readErr:

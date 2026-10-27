@@ -992,7 +992,7 @@ func TestAutoAnchorSeedRejectsUnbackedManualMarkerOutrankingAuto(t *testing.T) {
 	}
 
 	restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
-	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter.SignerKeyHex()); err != nil {
+	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter); err != nil {
 		t.Fatalf("seed with forged manual marker: %v", err)
 	}
 	if restarted.lastReceiptCount != anchored.ReceiptCount || restarted.lastFinalSeq != anchored.FinalSeq {
@@ -1156,7 +1156,7 @@ func TestReadAnchorStateForSessionFallsBackFromTornLatestPointer(t *testing.T) {
 		t.Fatal("emitter health snapshot unavailable")
 	}
 	restarted := newAutoAnchorMonitor(trig.recorder, trig.metrics, func() *receipt.Emitter { return trig.emitter }, func() *config.Config { return trig.cfg }, trig.logs)
-	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter.SignerKeyHex()); err != nil {
+	if err := restarted.seed(time.Now().UTC(), snapshot, trig.emitter); err != nil {
 		t.Fatalf("seed with torn-pointer fallback: %v", err)
 	}
 }
@@ -1652,7 +1652,9 @@ func TestAutoAnchorAttemptFailurePaths(t *testing.T) {
 		want    string
 	}{
 		{name: "extract", prepare: func(_ *testing.T, trig *autoAnchorTestRig) {
-			trig.monitor.walkFn = func(string, string, func(receipt.Receipt) error) error { return errors.New("torn tail") }
+			trig.monitor.walkFn = func(string, string, recorder.SessionHistoryPrefix, func(receipt.Receipt) error) error {
+				return errors.New("torn tail")
+			}
 		}, want: "extract live receipt chain"},
 		{name: "backend_config", prepare: func(_ *testing.T, trig *autoAnchorTestRig) {
 			trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) {
@@ -1677,7 +1679,7 @@ func TestAutoAnchorAttemptFailurePaths(t *testing.T) {
 			trig.monitor.seeded = true
 			trig.monitor.backendFn = func(config.FlightRecorderAnchor) (anchorpkg.Backend, error) { return &countingAnchorBackend{}, nil }
 		}, want: "write live anchor state"},
-		{name: "checkpoint_not_advanced", prepare: func(t *testing.T, trig *autoAnchorTestRig) {
+		{name: "checkpoint_head_mismatch", prepare: func(t *testing.T, trig *autoAnchorTestRig) {
 			receipts, err := receipt.ExtractReceiptsFromSessionDir(trig.recorder.Dir(), transcriptRootSessionID)
 			if err != nil {
 				t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
@@ -1687,7 +1689,7 @@ func TestAutoAnchorAttemptFailurePaths(t *testing.T) {
 			trig.monitor.lastFinalSeq = 0
 			trig.monitor.lastReceiptCount = 1
 			trig.monitor.walkFn = walkAutoAnchorTestReceipts(receipts[:1])
-		}, want: "did not advance"},
+		}, want: "writer-observed head"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1697,6 +1699,22 @@ func TestAutoAnchorAttemptFailurePaths(t *testing.T) {
 			trig.monitor.runPass()
 			assertAutoAnchorStats(t, trig.metrics, 1, 0, 1, tt.want)
 		})
+	}
+}
+
+func TestAutoAnchorRejectsUnadvancedCheckpoint(t *testing.T) {
+	trig := newAutoAnchorTestRig(t)
+	emitAutoAnchorReceipt(t, trig.emitter, "https://api.vendor.example/unadvanced")
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(trig.recorder.Dir(), transcriptRootSessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	trig.monitor.seeded = true
+	trig.monitor.hasLastAnchor = true
+	trig.monitor.lastReceiptCount = uint64(len(receipts))
+	err = trig.monitor.anchor(trig.cfg.FlightRecorder.Anchor, trig.emitter)
+	if err == nil || !strings.Contains(err.Error(), "did not advance beyond") {
+		t.Fatalf("anchor error = %v, want unadvanced-checkpoint refusal", err)
 	}
 }
 
@@ -1882,8 +1900,8 @@ func autoAnchorTrustedKeys(receipts []receipt.Receipt, currentSignerKey string) 
 	return trustedKeys, nil
 }
 
-func walkAutoAnchorTestReceipts(receipts []receipt.Receipt) func(string, string, func(receipt.Receipt) error) error {
-	return func(_, _ string, consume func(receipt.Receipt) error) error {
+func walkAutoAnchorTestReceipts(receipts []receipt.Receipt) func(string, string, recorder.SessionHistoryPrefix, func(receipt.Receipt) error) error {
+	return func(_, _ string, _ recorder.SessionHistoryPrefix, consume func(receipt.Receipt) error) error {
 		for _, r := range receipts {
 			if err := consume(r); err != nil {
 				return err

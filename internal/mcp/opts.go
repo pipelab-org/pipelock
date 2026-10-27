@@ -134,6 +134,13 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	denialTerminal *mcpDeferredTerminal
+	// Modern HTTP lists enforce structural contracts independently of drift trust.
+	validateToolHeaders bool
+	// Internal discovery inspects definitions without claiming client delivery.
+	toolContractDiscovery bool
+	// JSON listener scanning writes to a buffer. Defer inventory admission until
+	// the real downstream write succeeds; streaming transports commit directly.
+	toolInventoryDelivery func(commit, release func())
 	// OnResponseKeysValidated admits transport metadata only after message keys
 	// pass the shared guard. It must be set before response scanning starts.
 	OnResponseKeysValidated func()
@@ -564,6 +571,7 @@ func (o MCPProxyOpts) responseScanOptions() ResponseScanOptions {
 		auditResource = "mcp://response"
 	}
 	return ResponseScanOptions{
+		Context:        o.warnContext(),
 		Target:         o.responseTarget(),
 		Suppress:       o.responseSuppress(),
 		ActionOverride: o.responseActionOverride(),
@@ -667,10 +675,31 @@ func (o MCPProxyOpts) addressProtectionAgent() string {
 }
 
 func (o MCPProxyOpts) warnContext() context.Context {
-	if o.WarnContext != nil {
-		return o.WarnContext
+	ctx := o.WarnContext
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return context.Background()
+	wc := scanner.DLPWarnContextFromCtx(ctx)
+	wc.PromptInjectionMode = o.scanner().PromptInjectionMode()
+	if hash := o.receiptPolicyHash(); hash != "" {
+		wc.PolicyHash = hash
+	}
+	if wc.Transport == "" {
+		wc.Transport = o.Transport
+	}
+	if wc.Agent == "" {
+		wc.Agent = o.addressProtectionAgent()
+	}
+	if wc.ServerName == "" {
+		wc.ServerName = o.ServerName
+	}
+	if wc.Resource == "" {
+		wc.Resource = o.auditTarget()
+	}
+	if wc.Method == "" {
+		wc.Method = mcpWarnMethod
+	}
+	return scanner.WithDLPWarnContext(ctx, wc)
 }
 
 // snapshotScanPolicy pins the scanner and its receipt policy to the same
@@ -860,9 +889,19 @@ func (o MCPProxyOpts) v2ReceiptEmitter() *proxydecision.Emitter {
 }
 
 func (o MCPProxyOpts) emitReceiptDecision(d MCPDecision) ([]byte, error) {
+	return o.emitMCPReceiptDecision(d, true)
+}
+
+// emitAdmittedReceiptDecision preserves the tool pipeline's admission choice.
+// A missing choice must fail rather than assigning a new shard at emission.
+func (o MCPProxyOpts) emitAdmittedReceiptDecision(d MCPDecision) ([]byte, error) {
+	return o.emitMCPReceiptDecision(d, false)
+}
+
+func (o MCPProxyOpts) emitMCPReceiptDecision(d MCPDecision, admit bool) ([]byte, error) {
 	d.Receipt = o.withReceiptPolicyHash(d.Receipt)
 	if o.ReceiptGroup != nil {
-		if o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
+		if admit && o.ReceiptGroup.Shards != nil && d.Receipt.ActionID != "" && !d.Receipt.ShardSelected {
 			d.Receipt = o.ReceiptGroup.Shards.Admit(d.Receipt)
 		}
 		if o.requireReceipts() && d.Receipt.ActionID != "" {
@@ -895,6 +934,9 @@ func (o MCPProxyOpts) withReceiptPolicyHash(opts receipt.EmitOpts) receipt.EmitO
 }
 
 func (o MCPProxyOpts) deferManager() *deferred.Manager {
+	if o.toolContractDiscovery {
+		return nil
+	}
 	if o.DeferManagerFn != nil {
 		return o.DeferManagerFn()
 	}

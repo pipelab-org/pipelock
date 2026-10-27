@@ -672,7 +672,8 @@ func checkFileSentry(env *VerifyEnv) VerifyResult {
 		cancel()
 		_ = w.Close()
 		select {
-		case <-startErr:
+		case err := <-startErr:
+			_ = err // cancellation ends the probe; its result was checked above
 		case <-time.After(time.Second):
 		}
 	}()

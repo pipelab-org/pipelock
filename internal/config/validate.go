@@ -5323,6 +5323,9 @@ func (c *Config) validateFlightRecorder(warnings *[]Warning) error {
 		if c.FlightRecorder.SigningKeyPath == "" {
 			return errors.New("flight_recorder.receipt_chains greater than one requires flight_recorder.signing_key_path")
 		}
+		if !c.FlightRecorder.SignCheckpoints {
+			return errors.New("flight_recorder.receipt_chains greater than one requires flight_recorder.sign_checkpoints: true")
+		}
 		if c.FlightRecorder.AnchorConfigured() {
 			return errors.New("flight_recorder.receipt_chains greater than one cannot use single-chain auto-anchoring")
 		}

@@ -1374,12 +1374,7 @@ func (s *Server) cleanup() {
 		_ = s.recorder.Close()
 		s.recorder = nil
 	}
-	if s.conductorProducer != nil {
-		_ = s.conductorProducer.Close()
-		s.conductorProducer = nil
-	}
-	closeConductorAuditQueue(s.conductorAuditQueue)
-	s.conductorAuditQueue = nil
+	s.finishConductorAudit()
 	if s.captureWriter != nil {
 		_ = s.captureWriter.Close()
 		s.captureWriter = nil

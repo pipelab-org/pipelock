@@ -23,6 +23,76 @@ import (
 	"time"
 )
 
+func TestTransportDrain(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		statuses []int // one per request, in order
+		wantErr  bool
+		want     Stats
+	}{
+		{name: "accepted", statuses: []int{http.StatusAccepted, http.StatusAccepted}},
+		{name: "retry", statuses: []int{http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 2}},
+		{name: "all refused", statuses: []int{http.StatusUnprocessableEntity, http.StatusUnprocessableEntity}, wantErr: true, want: Stats{Dead: 2}},
+		{name: "refused head then accepted", statuses: []int{http.StatusUnprocessableEntity, http.StatusAccepted}, wantErr: true, want: Stats{Dead: 1}},
+		{name: "refused head then retry", statuses: []int{http.StatusUnprocessableEntity, http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 1, Dead: 1}},
+		{name: "accepted then retry", statuses: []int{http.StatusAccepted, http.StatusServiceUnavailable}, wantErr: true, want: Stats{Pending: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, priv, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			q := openTestQueue(t, Config{})
+			for _, id := range []string{"drain-first", "drain-second"} {
+				if _, err := q.Enqueue(signedTestBatch(t, id, priv)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var requests atomic.Int32
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.statuses[requests.Add(1)-1])
+			}))
+			defer srv.Close()
+			tr, err := NewTransport(TransportConfig{Queue: q, BaseURL: srv.URL, Client: srv.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := tr.Drain(t.Context()); (err != nil) != tc.wantErr {
+				t.Errorf("Drain error=%v, want error=%v", err, tc.wantErr)
+			}
+			assertStats(t, q, tc.want)
+			if got := int(requests.Load()); got != len(tc.statuses) {
+				t.Errorf("drain attempts=%d, want %d", got, len(tc.statuses))
+			}
+		})
+	}
+}
+
+func TestTransportDrainInvalidOrCancelled(t *testing.T) {
+	var nilTransport *Transport
+	if nilTransport.Drain(t.Context()) == nil {
+		t.Fatal("nil transport accepted")
+	}
+	tr := &Transport{}
+	var absentContext context.Context
+	if tr.Drain(absentContext) == nil {
+		t.Fatal("nil context accepted")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if !errors.Is(tr.Drain(ctx), context.Canceled) {
+		t.Fatal("cancelled drain must refuse before touching the queue")
+	}
+	q := openTestQueue(t, Config{})
+	if err := q.Close(); err != nil {
+		t.Fatal(err)
+	}
+	tr.queue = q
+	if tr.Drain(t.Context()) == nil {
+		t.Fatal("closed queue must not report a successful drain")
+	}
+}
+
 func TestTransportDeliverOnceSuccessAcksRecord(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -254,103 +324,110 @@ func TestTransportWireFormat_StableContract(t *testing.T) {
 // this, a stuck transport could hang pipelock shutdown indefinitely or make
 // restarts consume retry budget.
 func TestTransportRun_GracefulShutdown(t *testing.T) {
-	_, priv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatalf("GenerateKey() error = %v", err)
-	}
-	q := openTestQueue(t, Config{})
-	id, err := q.Enqueue(signedTestBatch(t, "batch-shutdown", priv))
-	if err != nil {
-		t.Fatalf("Enqueue() error = %v", err)
-	}
-	attempted := make(chan struct{})
-	releaseHandler := make(chan struct{})
-	var attemptedOnce sync.Once
-	var releaseOnce sync.Once
-	releaseServer := func() {
-		releaseOnce.Do(func() { close(releaseHandler) })
-	}
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		attemptedOnce.Do(func() { close(attempted) })
-		select {
-		case <-r.Context().Done():
-		case <-releaseHandler:
-		}
-	}))
-	defer func() {
-		releaseServer()
-		srv.Close()
-	}()
+	for _, tc := range []struct {
+		name string
+		run  func(*Transport, context.Context) error
+	}{{"run", (*Transport).Run}, {"drain", (*Transport).Drain}} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, priv, err := ed25519.GenerateKey(nil)
+			if err != nil {
+				t.Fatalf("GenerateKey() error = %v", err)
+			}
+			q := openTestQueue(t, Config{})
+			id, err := q.Enqueue(signedTestBatch(t, "batch-shutdown", priv))
+			if err != nil {
+				t.Fatalf("Enqueue() error = %v", err)
+			}
+			attempted := make(chan struct{})
+			releaseHandler := make(chan struct{})
+			var attemptedOnce sync.Once
+			var releaseOnce sync.Once
+			releaseServer := func() {
+				releaseOnce.Do(func() { close(releaseHandler) })
+			}
+			srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				attemptedOnce.Do(func() { close(attempted) })
+				select {
+				case <-r.Context().Done():
+				case <-releaseHandler:
+				}
+			}))
+			defer func() {
+				releaseServer()
+				srv.Close()
+			}()
 
-	tr, err := NewTransport(TransportConfig{
-		BaseURL:    srv.URL,
-		Client:     srv.Client(),
-		Queue:      q,
-		RetryDelay: 10 * time.Millisecond,
-		EmptyDelay: 10 * time.Millisecond,
-		// High ceiling so any accidental retry-loop-until-cancel path is
-		// exercised without the dead-letter escalation firing - this test
-		// asserts Dead == 0 and RetryCount == 0.
-		MaxDeliveryAttempts: 1_000_000,
-	})
-	if err != nil {
-		t.Fatalf("NewTransport() error = %v", err)
-	}
+			tr, err := NewTransport(TransportConfig{
+				BaseURL:    srv.URL,
+				Client:     srv.Client(),
+				Queue:      q,
+				RetryDelay: 10 * time.Millisecond,
+				EmptyDelay: 10 * time.Millisecond,
+				// High ceiling so any accidental retry-loop-until-cancel path is
+				// exercised without the dead-letter escalation firing - this test
+				// asserts Dead == 0 and RetryCount == 0.
+				MaxDeliveryAttempts: 1_000_000,
+			})
+			if err != nil {
+				t.Fatalf("NewTransport() error = %v", err)
+			}
 
-	ctx, cancel := context.WithCancel(t.Context())
-	var wg sync.WaitGroup
-	runErrCh := make(chan error, 1)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		runErrCh <- tr.Run(ctx)
-	}()
+			ctx, cancel := context.WithCancel(t.Context())
+			var wg sync.WaitGroup
+			runErrCh := make(chan error, 1)
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				runErrCh <- tc.run(tr, ctx)
+			}()
 
-	select {
-	case <-attempted:
-	case <-time.After(time.Second):
-		t.Fatal("transport did not attempt send within 1s")
-	}
-	cancel()
+			select {
+			case <-attempted:
+			case <-time.After(time.Second):
+				t.Fatal("transport did not attempt send within 1s")
+			}
+			cancel()
 
-	select {
-	case err := <-runErrCh:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("Run() = %v, want context.Canceled", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Run() did not return within 1s after context cancellation")
-	}
-	wg.Wait()
-	releaseServer()
+			select {
+			case err := <-runErrCh:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("Run() = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Run() did not return within 1s after context cancellation")
+			}
+			wg.Wait()
+			releaseServer()
 
-	// Record must still be present (retry kept it pending) or back in pending.
-	// Either way, no data loss on shutdown.
-	stats, err := q.Stats()
-	if err != nil {
-		t.Fatalf("Stats() error = %v", err)
-	}
-	if stats.Pending+stats.Inflight+stats.Dead != 1 {
-		t.Fatalf("total records = %d, want 1 (no loss on shutdown). stats=%+v", stats.Pending+stats.Inflight+stats.Dead, stats)
-	}
-	if stats.Dead != 0 {
-		t.Fatalf("dead=%d, want 0 (5xx is retry, not dead-letter)", stats.Dead)
-	}
-	var recordPath string
-	switch {
-	case stats.Pending == 1:
-		recordPath = filepath.Join(q.pendingDir, id)
-	case stats.Inflight == 1:
-		recordPath = filepath.Join(q.inflightDir, id)
-	default:
-		t.Fatalf("stats=%+v, want one pending or inflight record", stats)
-	}
-	record, err := q.readRecord(recordPath)
-	if err != nil {
-		t.Fatalf("readRecord(%s) error = %v", recordPath, err)
-	}
-	if record.RetryCount != 0 {
-		t.Fatalf("retry_count after cancellation = %d, want 0", record.RetryCount)
+			// Record must still be present (retry kept it pending) or back in pending.
+			// Either way, no data loss on shutdown.
+			stats, err := q.Stats()
+			if err != nil {
+				t.Fatalf("Stats() error = %v", err)
+			}
+			if stats.Pending+stats.Inflight+stats.Dead != 1 {
+				t.Fatalf("total records = %d, want 1 (no loss on shutdown). stats=%+v", stats.Pending+stats.Inflight+stats.Dead, stats)
+			}
+			if stats.Dead != 0 {
+				t.Fatalf("dead=%d, want 0 (5xx is retry, not dead-letter)", stats.Dead)
+			}
+			var recordPath string
+			switch {
+			case stats.Pending == 1:
+				recordPath = filepath.Join(q.pendingDir, id)
+			case stats.Inflight == 1:
+				recordPath = filepath.Join(q.inflightDir, id)
+			default:
+				t.Fatalf("stats=%+v, want one pending or inflight record", stats)
+			}
+			record, err := q.readRecord(recordPath)
+			if err != nil {
+				t.Fatalf("readRecord(%s) error = %v", recordPath, err)
+			}
+			if record.RetryCount != 0 {
+				t.Fatalf("retry_count after cancellation = %d, want 0", record.RetryCount)
+			}
+		})
 	}
 }
 

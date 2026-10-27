@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
@@ -117,7 +118,10 @@ WantedBy=sockets.target
 }
 
 // renderDeclaredLoopbackNamespaceForwarderUnit creates the in-namespace
-// listener for one declared service. It is a service because JoinsNamespaceOf=
+// listener for one declared service. Type=notify completes its start job only
+// after netns-forward binds (systemd.service(5)). The notification socket is
+// bound through the runtime mask; only the main process may notify.
+// It is a service because JoinsNamespaceOf=
 // places a unit's PROCESSES in the namespace, which is what is needed, and
 // which a socket unit's listener never gets.
 func renderDeclaredLoopbackNamespaceForwarderUnit(pipelockPath, agentUser string, service config.ContainmentLoopbackService) string {
@@ -131,11 +135,14 @@ After=%s.socket
 JoinsNamespaceOf=%s
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=%d
 User=%s
 Group=%s
 ExecStart=%s contain netns-forward --listen %s --target %s
 %s
+BindReadOnlyPaths=%s
 BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
@@ -148,11 +155,13 @@ Restart=on-failure
 WantedBy=multi-user.target
 `, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
 		base, base, containedNetworkNamespaceUnit,
+		int64(cliutil.ServiceStartTimeout/time.Second),
 		agentUser, agentUser, pipelockPath,
 		systemdListenAddress(service.Host, service.Port),
 		declaredLoopbackDoorwayPath(service.Host, service.Port),
 		strings.Join(runtimeSocketMountProperties(), "\n"),
-		filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port)))
+		filepath.Dir(declaredLoopbackDoorwayPath(service.Host, service.Port)),
+		systemdNotifySocketPath)
 }
 
 // renderDeclaredLoopbackForwarderUnit relays one declared service's host
@@ -227,7 +236,11 @@ const (
 	// systemd creates the doorway's dedicated parent directory. Binding that
 	// directory preserves replacement visibility while RemoveOnStop clears
 	// the socket itself. The agent unit does not receive this directory.
-	containedDoorwaySocketPath    = "/run/pipelock-agent-proxy/doorway.sock"
+	containedDoorwaySocketPath = "/run/pipelock-agent-proxy/doorway.sock"
+	// The system manager's NOTIFY_SOCKET. Namespace forwarders bind it
+	// read-only through their /run mask so Type=notify readiness can reach
+	// systemd; NotifyAccess=main limits who systemd accepts it from.
+	systemdNotifySocketPath       = "/run/systemd/notify"
 	legacyOwnedLoopbackInputChain = "pipelock_owned_loopback_input"
 	legacyOwnedLoopbackMark       = "0x504c4b01"
 	legacyOwnedLoopbackSlice      = "pipelock_contained.slice"
@@ -320,7 +333,8 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 		return statusFail, "loopback forwarder inventory does not match containment.loopback_services; run `pipelock contain reload-nft-rules`"
 	}
 
-	if socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services); socketStatus != statusPass {
+	socketStatus, socketDetail := probeManagedDoorwaySockets(ctx, env, services)
+	if socketStatus != statusPass {
 		return socketStatus, socketDetail
 	}
 	namespaceUnit := filepath.Base(env.networkNamespaceUnitPath)
@@ -370,7 +384,12 @@ func probeAgentNetworkNamespaceForServices(ctx context.Context, env *probeEnv, d
 	if publishedStatus != statusPass {
 		return publishedStatus, publishedDetail
 	}
-	return statusPass, boundaryDetail + "; " + processDetail + "; " + publishedDetail
+	detail := boundaryDetail + "; " + processDetail + "; " + publishedDetail
+	// A passing doorway result only adds detail for a legacy listener.
+	if socketDetail != doorwaysHealthyDetail {
+		detail += "; " + socketDetail
+	}
+	return statusPass, detail
 }
 
 func managedDoorwaySocketNames(proxySocketPath string, services []config.ContainmentLoopbackService) []string {
@@ -700,11 +719,14 @@ After=%s.socket
 JoinsNamespaceOf=%s
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=%d
 User=%s
 Group=%s
 ExecStart=%s contain netns-forward --listen 127.0.0.1:%d --target %s
 %s
+BindReadOnlyPaths=%s
 BindReadOnlyPaths=%s
 PrivateNetwork=true
 NoNewPrivileges=true
@@ -718,7 +740,8 @@ WantedBy=multi-user.target
 `, containedNetworkNamespaceUnit, containedNetworkNamespaceUnit,
 		containedProxyForwarderUnit, containedProxyForwarderUnit,
 		containedNetworkNamespaceUnit,
-		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), filepath.Dir(containedDoorwaySocketPath))
+		int64(cliutil.ServiceStartTimeout/time.Second),
+		agentUser, agentUser, pipelockPath, port, containedDoorwaySocketPath, strings.Join(runtimeSocketMountProperties(), "\n"), filepath.Dir(containedDoorwaySocketPath), systemdNotifySocketPath)
 }
 
 // renderContainedProxyForwarderUnit relays the host doorway to Pipelock's own
@@ -950,6 +973,10 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			warnUnavailableHostLoopbackServices(ctx, services, env.dialCtx, func(message string) {
 				_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
 			})
+			forwarderAddresses := map[string]string{containedNamespaceForwarderUnit: systemdListenAddress("127.0.0.1", env.proxyPort)}
+			for _, service := range services {
+				forwarderAddresses[loopbackForwarderUnitBase(service.Host, service.Port)+"-netns.service"] = systemdListenAddress(service.Host, service.Port)
+			}
 			oldInventory, err := readLoopbackForwarderInventory(env)
 			if err != nil {
 				return false, err
@@ -1187,7 +1214,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					continue
 				}
 				if err := runOrErr(ctx, env, "systemctl", "restart", unit); err != nil {
-					return true, fmt.Errorf("restart updated contained namespace forwarder %s: %w", unit, err)
+					return true, fmt.Errorf("restart updated contained namespace forwarder %s: %w", unit, namespaceForwarderStartError(unit, forwarderAddresses[unit], err))
 				}
 			}
 			for socket := range previousSockets {
@@ -1218,7 +1245,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			// no listener until the host reboots, which on a containment feature
 			// means the agent silently has no proxy.
 			if err := runOrErr(ctx, env, "systemctl", "enable", "--now", containedNamespaceForwarderUnit); err != nil {
-				return true, fmt.Errorf("enable contained namespace forwarder %s: %w", containedNamespaceForwarderUnit, err)
+				return true, fmt.Errorf("enable contained namespace forwarder %s: %w", containedNamespaceForwarderUnit, namespaceForwarderStartError(containedNamespaceForwarderUnit, forwarderAddresses[containedNamespaceForwarderUnit], err))
 			}
 			// Same for each declared loopback service: its in-namespace listener
 			// is a service, so enabling the socket alone leaves the agent with a
@@ -1226,7 +1253,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			for unit := range desiredUnits {
 				nsUnit := unit + "-netns.service"
 				if err := runOrErr(ctx, env, "systemctl", "enable", "--now", nsUnit); err != nil {
-					return true, fmt.Errorf("enable declared loopback namespace listener %s: %w", nsUnit, err)
+					return true, fmt.Errorf("enable declared loopback namespace listener %s: %w", nsUnit, namespaceForwarderStartError(nsUnit, forwarderAddresses[nsUnit], err))
 				}
 			}
 			// Retire the superseded cgroup anchor only after the private namespace
@@ -1494,4 +1521,10 @@ func isManagedLoopbackUnitSet(env *installEnv, unitDir, base string) bool {
 		found = true
 	}
 	return found
+}
+
+// namespaceForwarderStartError keeps startup failures on the install rollback
+// path and names the namespace-local bind rather than the host doorway.
+func namespaceForwarderStartError(unit, address string, err error) error {
+	return fmt.Errorf("listener %s did not become ready on %s inside the agent network namespace; check for an address/port collision there and inspect `journalctl -u %s`: %w", unit, address, unit, err)
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type coreConductorCloser struct {
@@ -97,5 +98,108 @@ func TestCoreConductorExpireLicensedRuntimeStopsRuntime(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "license expired") {
 		t.Fatalf("stderr = %q, want license expiry notice", stderr.String())
+	}
+}
+
+type shutdownAuditRunner struct{ drain func(context.Context) error }
+
+func (shutdownAuditRunner) Run(ctx context.Context) error     { return ctx.Err() }
+func (r shutdownAuditRunner) Drain(ctx context.Context) error { return r.drain(ctx) }
+
+func TestConductorShutdownDrainAdmission(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		started bool
+		revoked bool
+	}{
+		{name: "started", started: true},
+		{name: "construction"},
+		{name: "revoked", started: true, revoked: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			producer, queue := &coreConductorCloser{}, &coreConductorCloser{}
+			var out syncBuffer
+			s := &Server{opts: ServerOpts{Stderr: &out}, conductorProducer: producer, conductorAuditQueue: queue}
+			var called bool
+			s.conductorAudit = shutdownAuditRunner{drain: func(ctx context.Context) error {
+				called = true
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > serverShutdownTimeout || ctx.Err() != nil {
+					t.Errorf("drain needs a live bounded shutdown context: deadline=%v, err=%v", deadline, ctx.Err())
+				}
+				if producer.closes.Load() != 1 || queue.closes.Load() != 0 {
+					t.Error("drain must follow producer close and precede queue close")
+				}
+				return errors.New("test upload unavailable")
+			}}
+			if tc.started {
+				s.setConductorWait(func() {})
+			}
+			s.conductorDown.Store(tc.revoked)
+			s.finishConductorAudit()
+			s.finishConductorAudit()
+			if want := tc.started && !tc.revoked; called != want {
+				t.Errorf("drain called=%v, want %v", called, want)
+			}
+			if called && !out.contains("final conductor audit delivery incomplete") {
+				t.Error("failed final drain must report incomplete delivery")
+			}
+			if producer.closes.Load() != 1 || queue.closes.Load() != 1 {
+				t.Error("producer and queue must close exactly once")
+			}
+		})
+	}
+}
+
+func TestConductorShutdownDrainRevocationCancelsAndJoins(t *testing.T) {
+	started, cancelled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	queue := &coreConductorCloser{}
+	s := &Server{conductorAuditQueue: queue}
+	s.setConductorWait(func() {})
+	s.conductorAudit = shutdownAuditRunner{drain: func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		close(cancelled)
+		<-release
+		return ctx.Err()
+	}}
+	finished := make(chan struct{})
+	go func() {
+		s.finishConductorAudit()
+		close(finished)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("final drain did not start")
+	}
+	revoked := make(chan struct{})
+	go func() {
+		s.teardownConductor("test revoke during shutdown")
+		close(revoked)
+	}()
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("revocation did not cancel the final drain")
+	}
+	if queue.closes.Load() != 0 {
+		t.Error("queue closed before drain joined")
+	}
+	select {
+	case <-revoked:
+		t.Error("revocation returned before drain joined")
+	default:
+	}
+	close(release)
+	for _, done := range []<-chan struct{}{finished, revoked} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("shutdown or revocation did not join")
+		}
+	}
+	if queue.closes.Load() != 1 {
+		t.Fatal("queue must close exactly once after drain joins")
 	}
 }

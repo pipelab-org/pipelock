@@ -80,22 +80,25 @@ type TaintSourceRef struct {
 	Timestamp   time.Time  `json:"timestamp"`
 	ReceiptID   string     `json:"receipt_id,omitempty"`
 	MatchReason string     `json:"match_reason,omitempty"`
+	// FindingKinds is runtime-only: TaintSourceRef is embedded in signed v1 receipts.
+	FindingKinds []HostileFindingKind `json:"-"`
 }
 
 // SessionRisk is the taint-aware risk state attached to a live session.
 type SessionRisk struct {
-	Level            TaintLevel       `json:"level"`
-	Contaminated     bool             `json:"contaminated"`
-	LastExternalAt   time.Time        `json:"last_external_at,omitempty"`
-	LastExternalURL  string           `json:"last_external_url,omitempty"`
-	LastExternalKind string           `json:"last_external_kind,omitempty"`
-	TaintOriginAt    time.Time        `json:"taint_origin_at,omitempty"`
-	TaintOriginURL   string           `json:"taint_origin_url,omitempty"`
-	TaintOriginKind  string           `json:"taint_origin_kind,omitempty"`
-	PromptHit        bool             `json:"prompt_hit"`
-	MediaSeen        bool             `json:"media_seen"`
-	ApprovedUntil    time.Time        `json:"approved_until,omitempty"`
-	Sources          []TaintSourceRef `json:"sources,omitempty"`
+	Level            TaintLevel           `json:"level"`
+	Contaminated     bool                 `json:"contaminated"`
+	LastExternalAt   time.Time            `json:"last_external_at,omitempty"`
+	LastExternalURL  string               `json:"last_external_url,omitempty"`
+	LastExternalKind string               `json:"last_external_kind,omitempty"`
+	TaintOriginAt    time.Time            `json:"taint_origin_at,omitempty"`
+	TaintOriginURL   string               `json:"taint_origin_url,omitempty"`
+	TaintOriginKind  string               `json:"taint_origin_kind,omitempty"`
+	FindingKinds     []HostileFindingKind `json:"finding_kinds,omitempty"`
+	PromptHit        bool                 `json:"prompt_hit"`
+	MediaSeen        bool                 `json:"media_seen"`
+	ApprovedUntil    time.Time            `json:"approved_until,omitempty"`
+	Sources          []TaintSourceRef     `json:"sources,omitempty"`
 
 	// TaintOriginAmbiguous records that more than one distinct source is
 	// responsible for the session's escalating taint, so no single source may
@@ -107,8 +110,12 @@ type SessionRisk struct {
 
 // Snapshot returns a copy that is safe to hand to callers.
 func (sr SessionRisk) Snapshot() SessionRisk {
+	sr.FindingKinds = sr.HostileFindingKinds()
 	if len(sr.Sources) > 0 {
 		sr.Sources = append([]TaintSourceRef(nil), sr.Sources...)
+		for i := range sr.Sources {
+			sr.Sources[i].FindingKinds = MergeFindingKinds(sr.Sources[i].FindingKinds)
+		}
 	}
 	return sr
 }
@@ -119,7 +126,16 @@ func (sr *SessionRisk) Observe(observation RiskObservation) {
 		return
 	}
 
+	kinds := MergeFindingKinds(observation.FindingKinds)
+	if observation.PromptHit && len(kinds) == 0 {
+		kinds = []HostileFindingKind{FindingUnattributed}
+	}
+	observation.PromptHit = observation.PromptHit || len(kinds) > 0
+	// Source metadata can be inherited across an agent boundary. Only new
+	// observation evidence reasserts PromptHit; propagation keeps its old trigger.
+	sr.FindingKinds = MergeFindingKinds(sr.HostileFindingKinds(), kinds, observation.Source.FindingKinds)
 	source := observation.Source
+	source.FindingKinds = MergeFindingKinds(source.FindingKinds, kinds)
 	if source.Timestamp.IsZero() {
 		source.Timestamp = time.Now().UTC()
 	}
@@ -277,6 +293,12 @@ func taintLevelEscalates(level TaintLevel) bool {
 	return level >= TaintExternalUntrusted
 }
 
+// HasPolicyTaint reports whether the sticky level can affect taint policy.
+// Use the policy matrix's predicate rather than the diagnostic Contaminated flag.
+func (sr SessionRisk) HasPolicyTaint() bool {
+	return taintLevelEscalates(sr.Level)
+}
+
 // hasTaintOrigin reports whether a taint origin has been resolved for the
 // current sticky level. Any one field is sufficient, and all of them must be
 // consulted. An MCP tool result taints with a Kind and no URL, so keying on
@@ -310,6 +332,7 @@ func (sr SessionRisk) SecurityOriginKind() string {
 // RiskObservation describes a single taint observation flowing into a session.
 type RiskObservation struct {
 	Source        TaintSourceRef
+	FindingKinds  []HostileFindingKind `json:"finding_kinds,omitempty"`
 	MediaSeen     bool
 	PromptHit     bool
 	MaxSources    int

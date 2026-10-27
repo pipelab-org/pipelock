@@ -478,7 +478,8 @@ func TestServerRunListenerVerifiedLocalServiceFollowsRegistration(t *testing.T) 
 			defer shutdownCancel()
 			_ = s.Shutdown(shutdownCtx)
 			select {
-			case <-errCh:
+			case err := <-errCh:
+				t.Logf("goroutine result: %v", err)
 			case <-shutdownCtx.Done():
 				t.Error("listener did not stop after cancellation")
 			}

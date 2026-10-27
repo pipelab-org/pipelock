@@ -140,7 +140,8 @@ func TestSessionExit_HTTPForwardLiveSessionIsNotTornDown(t *testing.T) {
 
 	_ = clientIn.Close()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("HTTP bridge did not stop after its input closed")
 	}

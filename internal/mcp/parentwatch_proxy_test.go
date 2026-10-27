@@ -194,7 +194,8 @@ func TestRunProxy_LiveSessionIsNotTornDown(t *testing.T) {
 
 	// Well past many poll intervals and grace windows.
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 		t.Fatalf("RunProxy exited while its session was alive; log: %q", logBuf.String())
 	case <-time.After(500 * time.Millisecond):
 	}
@@ -207,7 +208,8 @@ func TestRunProxy_LiveSessionIsNotTornDown(t *testing.T) {
 	_ = clientIn.Close()
 	cancel()
 	select {
-	case <-done:
+	case err := <-done:
+		t.Logf("goroutine result: %v", err)
 	case <-time.After(20 * time.Second):
 		t.Fatal("RunProxy did not shut down after context cancellation")
 	}

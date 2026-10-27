@@ -163,26 +163,67 @@ func (t *Transport) Run(ctx context.Context) error {
 	}
 }
 
-func (t *Transport) DeliverOnce(ctx context.Context) error {
+// Drain delivers pending batches until the queue is empty or a delivery fails.
+// A terminally refused batch leaves the queue for the dead-letter directory, so
+// Drain moves on to the batch behind it: a stale or conflicting head must not
+// strand the fresh final batch. Retryable and storage failures stop the drain;
+// the batch stays pending for the next start. Call only after Run has joined
+// and the producer has closed. The caller owns the shutdown deadline; failure
+// keeps the normal retry/dead-letter semantics.
+func (t *Transport) Drain(ctx context.Context) error {
 	if t == nil {
 		return errors.New("auditbatcher: nil transport")
 	}
 	if ctx == nil {
 		return errors.New("auditbatcher: nil context")
 	}
+	var refused error
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		outcome, err := t.deliverOnce(ctx)
+		switch {
+		case errors.Is(err, ErrQueueEmpty):
+			return refused
+		case outcome == deliveryOutcomeDrop && err != nil:
+			if refused == nil {
+				refused = err
+			}
+		case err != nil:
+			return err
+		}
+	}
+}
+
+func (t *Transport) DeliverOnce(ctx context.Context) error {
+	_, err := t.deliverOnce(ctx)
+	return err
+}
+
+// deliverOnce reports the delivery outcome alongside the error so Drain can
+// tell a record that left the queue (success, drop) from one that is still
+// pending. The outcome is empty when the queue or its storage failed first.
+func (t *Transport) deliverOnce(ctx context.Context) (string, error) {
+	if t == nil {
+		return "", errors.New("auditbatcher: nil transport")
+	}
+	if ctx == nil {
+		return "", errors.New("auditbatcher: nil context")
+	}
 	lease, err := t.queue.Claim()
 	if err != nil {
 		if errors.Is(err, ErrQueueEmpty) {
 			t.recordQueue()
 		}
-		return err
+		return "", err
 	}
 
 	result := t.send(ctx, lease.Batch)
 	switch result.outcome {
 	case deliveryOutcomeSuccess:
 		if err := t.queue.Ack(lease.ID); err != nil {
-			return err
+			return "", err
 		}
 	case deliveryOutcomeRetry:
 		// The attempt that just failed is attempt number RetryCount+1. Once
@@ -195,7 +236,7 @@ func (t *Transport) DeliverOnce(ctx context.Context) error {
 		// so the record survives.
 		if ctx.Err() != nil {
 			if err := t.queue.Release(lease.ID); err != nil {
-				return err
+				return "", err
 			}
 			break
 		}
@@ -210,23 +251,23 @@ func (t *Transport) DeliverOnce(ctx context.Context) error {
 				err:     fmt.Errorf("auditbatcher: dropping batch after %d delivery attempts: %w", attempts, result.err),
 			}
 			if err := t.queue.Drop(lease.ID, result.reason); err != nil {
-				return err
+				return "", err
 			}
 			break
 		}
 		if err := t.queue.ReleaseWithRetry(lease.ID, result.reason); err != nil {
-			return err
+			return "", err
 		}
 	case deliveryOutcomeDrop:
 		if err := t.queue.Drop(lease.ID, result.reason); err != nil {
-			return err
+			return "", err
 		}
 	default:
-		return fmt.Errorf("auditbatcher: unknown delivery outcome %q", result.outcome)
+		return "", fmt.Errorf("auditbatcher: unknown delivery outcome %q", result.outcome)
 	}
 	t.recordDelivery(result.outcome, result.reason)
 	t.recordQueue()
-	return result.err
+	return result.outcome, result.err
 }
 
 func (t *Transport) send(ctx context.Context, batch Batch) deliveryResult {
