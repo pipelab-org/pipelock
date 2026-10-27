@@ -84,10 +84,10 @@ func TestHooks_HandOffsTheSplitterCannotRead(t *testing.T) {
 		{"copied file", "echo -R 777 /srv > /tmp/a; cp /tmp/a /tmp/b; xargs chmod < /tmp/b", false, true, true, true},
 		{"own flag, handed mode", "echo 777 /srv | xargs chmod -R", false, true, true, true},
 		{"here-string", "xargs chmod <<<'-R 777 /srv'", true, false, true, false},
-		// Benign twins.
-		{"escaped command, mode not world writable", `echo 755 /srv | xargs \chmod`, false, false, false, false},
-		{"copy not read back", "echo -R 777 /srv > /tmp/a; cp /tmp/a /tmp/b; xargs chmod < /tmp/c", false, false, false, false},
+		// Visible benign words do not clear input the checker cannot establish.
+		{"escaped command, mode not world writable", `echo 755 /srv | xargs \chmod`, false, true, true, true},
+		{"copy not read back", "echo -R 777 /srv > /tmp/a; cp /tmp/a /tmp/b; xargs chmod < /tmp/c", false, true, true, true},
 		{"own words, mode not world writable", "echo 755 /srv | xargs chmod -R", false, false, false, false},
-		{"here-string, no flag", "xargs chmod <<<'644 /srv'", false, false, false, false},
+		{"here-string, no flag", "xargs chmod <<<'644 /srv'", false, true, true, true},
 	})
 }

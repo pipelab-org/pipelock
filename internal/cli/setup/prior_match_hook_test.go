@@ -29,24 +29,25 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 		}},
 	}
 	tests := []struct {
-		name    string
-		command string
-		deny    bool
+		name       string
+		command    string
+		deny       bool
+		incomplete bool
 	}{
-		{"copied file to xargs <", "echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", true},
-		{"moved file to xargs -a", "echo -rf /srv/data > /tmp/a; mv /tmp/a /tmp/b; xargs -a /tmp/b rm", true},
-		{"moved file to xargs <", "echo -rf /srv/data > /tmp/a; mv /tmp/a /tmp/b; xargs rm < /tmp/b", true},
-		{"./a then a", "echo -rf /srv/data > ./a; xargs rm < a", true},
-		{"double slash", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp//a", true},
-		{"dot dot", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp/../tmp/a", true},
-		{"push flag through a copy", "echo --force > /tmp/f; cp /tmp/f /tmp/g; xargs git push origin main < /tmp/g", true},
-		{"reset flag through a copy", "echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", true},
-		{"zero-width, copied file to xargs <", zeroWidth("echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), true},
-		{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), true},
+		{"copied file to xargs <", "echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", true, true},
+		{"moved file to xargs -a", "echo -rf /srv/data > /tmp/a; mv /tmp/a /tmp/b; xargs -a /tmp/b rm", true, true},
+		{"moved file to xargs <", "echo -rf /srv/data > /tmp/a; mv /tmp/a /tmp/b; xargs rm < /tmp/b", true, true},
+		{"./a then a", "echo -rf /srv/data > ./a; xargs rm < a", true, true},
+		{"double slash", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp//a", true, true},
+		{"dot dot", "echo -rf /srv/data > /tmp/a; xargs rm < /tmp/../tmp/a", true, true},
+		{"push flag through a copy", "echo --force > /tmp/f; cp /tmp/f /tmp/g; xargs git push origin main < /tmp/g", true, false},
+		{"reset flag through a copy", "echo --hard > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", true, false},
+		{"zero-width, copied file to xargs <", zeroWidth("echo -rf /srv/data > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), true, true},
+		{"zero-width, decode written then piped to sh", zeroWidth("echo base64 -d x.b64 > /tmp/a; cat /tmp/a | sh"), true, false},
 		// Controls.
-		{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", false},
-		{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", false},
-		{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), false},
+		{"copied file, no flag", "echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b", false, true},
+		{"reset without the flag", "echo HEAD > /tmp/a; cp /tmp/a /tmp/b; xargs git reset < /tmp/b", false, true},
+		{"zero-width, copied file, no flag", zeroWidth("echo old > /tmp/a; cp /tmp/a /tmp/b; xargs rm < /tmp/b"), false, true},
 	}
 	for _, h := range hooks {
 		for _, tt := range tests {
@@ -63,8 +64,8 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 				if got := strings.Contains(out.String(), `"deny"`); got != tt.deny {
 					t.Fatalf("output %s: deny=%v, want %v", out.String(), got, tt.deny)
 				}
-				if strings.Contains(errOut.String(), "incomplete_pair_check") {
-					t.Fatalf("stderr %q: incomplete check reported", errOut.String())
+				if got := strings.Contains(errOut.String(), "incomplete_pair_check"); got != tt.incomplete {
+					t.Fatalf("stderr %q: incomplete=%v, want %v", errOut.String(), got, tt.incomplete)
 				}
 			})
 		}
