@@ -73,6 +73,15 @@ var spellingRows = []verdictRow{
 	{"nc crlf", "nc -C mail.example.com 25", "", ""},
 	{"nc scan", "nc -zv example.com 22", "", ""},
 	{"bash script", "bash -l -i script.sh", "", ""},
+
+	// A shell metacharacter ends a word without a space (POSIX XCU 2.3).
+	{"force then semicolon", "git push --force;", ruleGit, ""},
+	{"force into a pipe", "git push --force|cat", ruleGit, ""},
+	{"force in a subshell", "(git push --force)", ruleGit, ""},
+	{"force then redirect", "git push --force>/dev/null", ruleGit, ""},
+	{"force in background", "git push --force&", ruleGit, ""},
+	{"lease then semicolon", "git push --force-with-lease;", "", ""},
+	{"lease in a subshell", "(git push --force-with-lease)", "", ""},
 }
 
 // TestDefaultRules_MoreSpellings checks other spellings of covered commands.
