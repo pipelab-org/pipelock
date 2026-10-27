@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -154,6 +155,53 @@ func TestHTTPListener_ContractDiscoveryErrorStaysPrivate(t *testing.T) {
 			}
 			if absent := strings.Contains(body, errDiscoveryToolAbsent.Error()); absent != (mode == "absent") {
 				t.Fatalf("absent hint=%v body=%s", absent, body)
+			}
+		})
+	}
+}
+
+func TestContractDiscoveryQuotesDriftParameterLogs(t *testing.T) {
+	const marker = "pipelock: FORGED_AUDIT_SUCCESS"
+	const parameter = "region\n" + marker + "\x1b[31m"
+	plainSchema := `{"type":"object","properties":{"region":{"type":"string"}}}`
+	encodedParameter, err := json.Marshal(parameter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedSchema := fmt.Sprintf(`{"type":"object","properties":{"region":{"type":"string"},%s:{"type":"string"}}}`, encodedParameter)
+	for _, removed := range []bool{false, true} {
+		t.Run(strconv.FormatBool(removed), func(t *testing.T) {
+			before, after := plainSchema, changedSchema
+			if removed {
+				before, after = after, before
+			}
+			opts := paramContractOpts(t)
+			opts.ToolCfg.DetectDrift = true
+			tracker := NewStrictRequestTracker()
+			tracker.TrackRequest([]byte("1"), "tools/list")
+			initial := `{"jsonrpc":"2.0","id":1,"result":{"tools":` + headerStateDefs(before, "Echo input") + `}}`
+			var output, logs strings.Builder
+			if _, err := ForwardScanned(&transport.SingleMessageReader{Body: io.NopCloser(strings.NewReader(initial))}, transport.NewStdioWriter(&output), &logs, tracker, opts); err != nil {
+				t.Fatal(err)
+			}
+			logs.Reset()
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				discoveryList(w, ParseMCPFrame([]byte(`{"id":1}`)), headerStateDefs(after, "Echo input"), "")
+			}))
+			defer up.Close()
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/", nil)
+			req.Header = currentWireHeaders(methodToolsCall, "echo")
+			state := newMCPListenerClientState("", "one")
+			state.baseline = opts.ToolCfg.Baseline
+			if err := discoverMCPToolContract(mcpContractDiscoveryRequest{request: req, client: up.Client(), upstream: up.URL, opts: opts, state: state, log: &logs, tool: "echo"}); err == nil {
+				t.Fatal("structural drift should refuse discovery")
+			}
+			if !strings.Contains(logs.String(), marker) {
+				t.Fatalf("parameter drift was not logged: %q", logs.String())
+			}
+			if strings.Contains(logs.String(), "\n"+marker) || strings.Contains(logs.String(), "\x1b") {
+				t.Fatalf("upstream parameter injected control bytes into the log: %q", logs.String())
 			}
 		})
 	}
