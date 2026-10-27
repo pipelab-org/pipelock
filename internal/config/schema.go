@@ -1239,6 +1239,22 @@ type Monitoring struct {
 	// attacker-named target. nil = enabled. Set false only for an endpoint whose
 	// contract legitimately carries private or blocklisted URLs in query strings.
 	ScanNestedURLs *bool `yaml:"scan_nested_urls"`
+
+	// OAuthAuthorizationEndpoints explicitly grants native authorization-code GET
+	// requests state/nonce entropy and HTTP loopback redirect descriptor relief.
+	// Empty by default; discovery alone never installs a grant.
+	OAuthAuthorizationEndpoints []OAuthAuthorizationEndpoint `yaml:"oauth_authorization_endpoints,omitempty" json:"OAuthAuthorizationEndpoints,omitempty"`
+}
+
+// OAuthAuthorizationEndpoint is an operator-authorized exact HTTPS endpoint.
+// The grant accepts opaque client-generated state/nonce values at this endpoint;
+// it does not establish that those values contain only random data.
+type OAuthAuthorizationEndpoint struct {
+	Host    string `yaml:"host"`
+	Path    string `yaml:"path"`
+	Reason  string `yaml:"reason,omitempty"`
+	Owner   string `yaml:"owner,omitempty"`
+	Expires string `yaml:"expires,omitempty"`
 }
 
 // QueryEntropyParamExclusion is a narrow query-value entropy exemption for one

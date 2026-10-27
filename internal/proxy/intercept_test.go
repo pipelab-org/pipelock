@@ -865,6 +865,7 @@ type interceptRequestOptions struct {
 	// while routing the socket to a local TLS server. Empty values retain the
 	// historical httptest-server behavior.
 	TargetHost string
+	TargetPort string
 	UpstreamRT http.RoundTripper
 	Cache      *certgen.CertCache
 	Pool       *x509.CertPool
@@ -891,6 +892,9 @@ func interceptAndRequestWithRecorder(t *testing.T, opts interceptRequestOptions)
 	port := fmt.Sprintf("%d", opts.Upstream.Listener.Addr().(*net.TCPAddr).Port)
 	if opts.TargetHost != "" {
 		host = opts.TargetHost
+	}
+	if opts.TargetPort != "" {
+		port = opts.TargetPort
 	}
 	upstreamRT := opts.UpstreamRT
 	if upstreamRT == nil {

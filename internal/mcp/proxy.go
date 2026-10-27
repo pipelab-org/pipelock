@@ -514,7 +514,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if decision == "" {
 				return
 			}
-			if manager := opts.deferManager(); manager != nil {
+			if opts.toolInventoryResolution != nil && !opts.toolContractDiscovery {
+				opts.toolInventoryResolution(decision)
+			} else if manager := opts.deferManager(); manager != nil {
 				manager.ResolveToolInventory(captureSessionID(opts.Transport), decision)
 			}
 			toolInventoryResolved = true
@@ -553,7 +555,9 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			}
 			if len(added) > 0 {
 				decision = config.ActionBlock
-			} else if toolCfg.Baseline.HasBaseline() {
+			} else if toolCfg.Baseline.HasBaseline() && !toolCfg.HeaderContractsOnly {
+				// Structural collection never scanned these definitions, so it
+				// cannot be the affirmative inventory signal that releases a hold.
 				decision = config.ActionAllow
 			}
 			if !toolInventoryResolved {
@@ -599,9 +603,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			if toolResult.IsToolsList && provenanceCfg != nil && provenanceCfg.Enabled {
 				pv := VerifyToolsListProvenance(line, provenanceCfg)
 				if pv.Block {
-					if manager := opts.deferManager(); manager != nil {
-						manager.ResolveToolInventory(captureSessionID(opts.Transport), config.ActionBlock)
-					}
+					resolveToolInventory(config.ActionBlock)
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: tools/list provenance verification failed: %s\n", lineNum, pv.Error)
 					denialAudit = mcpProvenanceDenialAudit()
 					if m != nil {
@@ -815,7 +817,10 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		// Still scan the error field: injection could hide in non-tool fields.
 		var verdict jsonrpc.ScanVerdict
 		var baselineReceiptErr error
-		if isToolsList {
+		// Structural collection is not a dedicated content scan. Preserve the
+		// nil-tool-config full-response scanning contract (ScanResponseDispatch)
+		// rather than exempting tool descriptions that nobody has inspected.
+		if isToolsList && !toolCfg.HeaderContractsOnly {
 			verdict = scanToolsListNonToolFieldsContext(opts.warnContext(), line, sc, respScanOpts)
 		} else {
 			a2aOpts := opts.a2aResponseOpts(respScanOpts)

@@ -103,6 +103,7 @@ type mcpContractDiscoveryRequest struct {
 	state    *mcpListenerClientState
 	log      io.Writer
 	tool     string
+	bridge   *transport.HTTPClient
 }
 
 func discoverMCPToolContract(d mcpContractDiscoveryRequest) error {
@@ -219,51 +220,67 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		params["cursor"] = *cursor
 	}
 	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": params})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.upstream, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("build discovery request: %w", err)
-	}
-	for name, values := range d.opts.UpstreamHeaders {
-		req.Header[name] = append([]string(nil), values...)
-	}
-	forwardListenerUpstreamHeaders(req, d.request, false)
-	// Authentication is identical to the call; routing belongs to this list.
-	for name := range req.Header {
-		if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
-			req.Header.Del(name)
+	var reader transport.MessageReader
+	var budget *io.LimitedReader
+	if d.bridge != nil {
+		headers := http.Header{}
+		headers.Set(listenerMCPMethod, "tools/list")
+		headers.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
+		var err error
+		reader, err = d.bridge.SendMessageWithOptions(ctx, body, transport.HTTPMessageOptions{Headers: headers, ResponseByteBudget: remaining, PreserveSession: true})
+		if err != nil {
+			return nil, fmt.Errorf("upstream discovery request: %w", err)
 		}
-	}
-	req.Header.Del(listenerMCPName)
-	req.Header.Set(listenerMCPMethod, "tools/list")
-	req.Header.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	responseencoding.RequestIdentity(req.Header)
-	resp, err := d.client.Do(req)
-	if err != nil {
-		return nil, errors.New("upstream discovery request failed")
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("upstream discovery returned HTTP %d", resp.StatusCode)
-	}
-	resp.Body = newIdleTimeoutReader(resp.Body, upstreamIdleReadTimeout)
-	isSSE := transport.HasSingleSSEContentType(resp.Header)
-	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+		if closer, ok := reader.(io.Closer); ok {
+			defer func() { _ = closer.Close() }()
+		}
+	} else {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.upstream, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("build discovery request: %w", err)
+		}
+		for name, values := range d.opts.UpstreamHeaders {
+			req.Header[name] = append([]string(nil), values...)
+		}
+		forwardListenerUpstreamHeaders(req, d.request, false)
+		// Authentication is identical to the call; routing belongs to this list.
+		for name := range req.Header {
+			if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
+				req.Header.Del(name)
+			}
+		}
+		req.Header.Del(listenerMCPName)
+		req.Header.Set(listenerMCPMethod, "tools/list")
+		req.Header.Set(listenerProtocolVersion, d.request.Header.Get(listenerProtocolVersion))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		responseencoding.RequestIdentity(req.Header)
+		resp, err := d.client.Do(req)
+		if err != nil {
+			return nil, errors.New("upstream discovery request failed")
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("upstream discovery returned HTTP %d", resp.StatusCode)
+		}
+		resp.Body = newIdleTimeoutReader(resp.Body, upstreamIdleReadTimeout)
+		isSSE := transport.HasSingleSSEContentType(resp.Header)
+		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+			if isSSE {
+				return nil, errors.New("compressed discovery stream cannot be inspected")
+			}
+			if err := responseencoding.DecodeResponse(resp); err != nil {
+				return nil, errors.New("discovery response encoding cannot be inspected")
+			}
+		}
+		// Charge decoded response bytes before framing removes SSE comments,
+		// metadata and separators. One extra byte distinguishes exhaustion from
+		// a response that ends exactly at the remaining acquisition budget.
+		budget = &io.LimitedReader{R: resp.Body, N: int64(*remaining) + 1}
+		reader = &transport.SingleMessageReader{Body: io.NopCloser(budget)}
 		if isSSE {
-			return nil, errors.New("compressed discovery stream cannot be inspected")
+			reader = transport.NewSSEReader(budget)
 		}
-		if err := responseencoding.DecodeResponse(resp); err != nil {
-			return nil, errors.New("discovery response encoding cannot be inspected")
-		}
-	}
-	// Charge decoded response bytes before framing removes SSE comments,
-	// metadata and separators. One extra byte distinguishes exhaustion from
-	// a response that ends exactly at the remaining acquisition budget.
-	budget := &io.LimitedReader{R: resp.Body, N: int64(*remaining) + 1}
-	var reader transport.MessageReader = &transport.SingleMessageReader{Body: io.NopCloser(budget)}
-	if isSSE {
-		reader = transport.NewSSEReader(budget)
 	}
 	tracker := NewStrictRequestTracker()
 	tracker.TrackRequest(json.RawMessage("1"), "tools/list")
@@ -283,9 +300,14 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		opts.ToolCfgFn = nil
 	}
 	for {
-		before := budget.N
+		var before int64
+		if budget != nil {
+			before = budget.N
+		}
 		line, err := reader.ReadMessage()
-		*remaining -= int(before - budget.N)
+		if budget != nil {
+			*remaining -= int(before - budget.N)
+		}
 		if *remaining < 0 {
 			return nil, errors.New("discovery inventory exceeds response byte budget")
 		}

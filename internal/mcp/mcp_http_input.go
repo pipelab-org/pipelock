@@ -243,6 +243,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			result.Deferred.ShardIndex = receiptShard.ShardIndex
 			result.Deferred.ShardSelected = receiptShard.ShardSelected
 		}
+		// Only a required allow is written as an intent. A best-effort allow is a
+		// single-phase decision, and an outcome naming it reads as a broken chain
+		// ("outcome without matching intent") to the completeness verifier.
 		if requiredReceipt && result.Blocked == nil && receipt.NormalizeVerdict(emitVerdict) == config.ActionAllow {
 			outcomeReceipt := opts.withReceiptPolicyHash(receipt.EmitOpts{
 				ActionID:            emitActionID,
