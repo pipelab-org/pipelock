@@ -3,10 +3,7 @@
 
 package config
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 // NormalizeOAuthAuthorizationEndpoints applies the existing exact HTTPS endpoint
 // and expiring scanner-exception contract to native OAuth grants. It returns a
@@ -16,8 +13,8 @@ func NormalizeOAuthAuthorizationEndpoints(entries []OAuthAuthorizationEndpoint) 
 		return nil, nil
 	}
 	tuples := oauthAuthorizationTuples(entries)
-	if err := validateQueryEntropyParamExclusions(tuples); err != nil {
-		return nil, fmt.Errorf("oauth_authorization_endpoints: %w", err)
+	if err := validateQueryEntropyParamExclusionsAt(tuples, "fetch_proxy.monitoring.oauth_authorization_endpoints", false); err != nil {
+		return nil, err
 	}
 	out := make([]OAuthAuthorizationEndpoint, len(tuples))
 	for i, e := range tuples {

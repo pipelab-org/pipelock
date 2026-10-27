@@ -2168,9 +2168,15 @@ func validatePathEntropyExclusions(entries []PathEntropyExclusion) error {
 }
 
 func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) error {
+	return validateQueryEntropyParamExclusionsAt(entries, "fetch_proxy.monitoring.query_entropy_param_exclusions", true)
+}
+
+// validateQueryEntropyParamExclusionsAt names errors after the field the
+// operator wrote. withParam is false for a list whose entries carry no param.
+func validateQueryEntropyParamExclusionsAt(entries []QueryEntropyParamExclusion, fieldName string, withParam bool) error {
 	seen := make(map[string]struct{}, len(entries))
 	for i := range entries {
-		field := fmt.Sprintf("fetch_proxy.monitoring.query_entropy_param_exclusions[%d]", i)
+		field := fmt.Sprintf("%s[%d]", fieldName, i)
 		entry := &entries[i]
 
 		scheme := strings.TrimSpace(strings.ToLower(entry.Scheme))
@@ -2213,6 +2219,9 @@ func validateQueryEntropyParamExclusions(entries []QueryEntropyParamExclusion) e
 
 		tuple := strings.Join([]string{scheme, host, pathValue, param}, "\x00")
 		if _, ok := seen[tuple]; ok {
+			if !withParam {
+				return fmt.Errorf("%s duplicates normalized endpoint %s://%s%s", field, scheme, host, pathValue)
+			}
 			return fmt.Errorf("%s duplicates normalized query entropy parameter exclusion tuple %s://%s%s?%s", field, scheme, host, pathValue, param)
 		}
 		seen[tuple] = struct{}{}

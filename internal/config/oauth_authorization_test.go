@@ -146,6 +146,23 @@ func TestOAuthAuthorizationEndpointValidation(t *testing.T) {
 			}
 		})
 	}
+	// Errors name the field and entry the operator wrote, never the internal
+	// query entropy tuple the grant reuses for validation.
+	for _, tt := range []struct {
+		name    string
+		entries []OAuthAuthorizationEndpoint
+		want    string
+	}{
+		{"wildcard", []OAuthAuthorizationEndpoint{{Host: "*.vendor.example", Path: "/oauth/authorize"}}, "fetch_proxy.monitoring.oauth_authorization_endpoints[0].host"},
+		{"duplicate", []OAuthAuthorizationEndpoint{{Host: "auth.vendor.example", Path: "/oauth/authorize"}, {Host: "AUTH.vendor.example", Path: "/oauth/authorize"}}, "fetch_proxy.monitoring.oauth_authorization_endpoints[1] duplicates normalized endpoint https://auth.vendor.example/oauth/authorize"},
+	} {
+		t.Run("message "+tt.name, func(t *testing.T) {
+			_, err := NormalizeOAuthAuthorizationEndpoints(tt.entries)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || strings.Contains(err.Error(), "query_entropy_param_exclusions") || strings.Contains(err.Error(), "?state") {
+				t.Fatalf("error=%v, want it to contain %q only", err, tt.want)
+			}
+		})
+	}
 }
 
 func TestOAuthAuthorizationEndpointOrderAndIdentity(t *testing.T) {
