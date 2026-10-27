@@ -253,7 +253,24 @@ func TestHyphenatedAssetHashSubject(t *testing.T) {
 		{"font-a1b2c3d4.woff2", "font"},
 		{"module-a1b2c3d4.js.map", "module"},
 		{"bundle-a1b2c3d45.js", "bundle-a1b2c3d45.js"},
-		{"bundle-abcdefg1.js", "bundle-abcdefg1.js"},
+		{"bundle-abcdefg1.js", "bundle"},
+		{"bundle-Nr9Qw7Er.js", "bundle"},
+		{"bundle-_Q7R_x2B.js", "bundle"},
+		{"bundle-ABcd_9-x.js", "bundle"},
+		{"bundle-ABc_9-x-.js", "bundle"},
+		{"bundle-Nr9Qw7Er.css", "bundle"},
+		{"bundle-Nr9Qw7Er.mjs", "bundle"},
+		{"bundle-Nr9Qw7Er.woff2", "bundle"},
+		{"bundle-Nr9Qw7Er.js.map", "bundle"},
+		{"bundle-Nr9Qw7Er.map", "bundle"},
+		{"bundle-Nr9Qw7E.js", "bundle-Nr9Qw7E.js"},
+		{"bundle-Nr9Qw7Er9.js", "bundle-Nr9Qw7Er9.js"},
+		{"bundle-Nr9Qw7E+.js", "bundle-Nr9Qw7E+.js"},
+		{"bundle-Nr9Qw7Er.JS", "bundle-Nr9Qw7Er.JS"},
+		{"bundle-Nr9Qw7Er.txt", "bundle-Nr9Qw7Er.txt"},
+		{"bundle-Nr9Qw7Er.js.extra", "bundle-Nr9Qw7Er.js.extra"},
+		{"Nr9Qw7Er.js", "Nr9Qw7Er.js"},
+		{"-Nr9Qw7Er.js", "-Nr9Qw7Er.js"},
 		{"bundle-.js", "bundle-.js"},
 		{"bundle-a1b2c3d4.JS", "bundle-a1b2c3d4.JS"},
 		{"bundle-a1b2c3d4.js.extra", "bundle-a1b2c3d4.js.extra"},
@@ -271,17 +288,18 @@ func TestHyphenatedAssetHashSubject(t *testing.T) {
 
 func TestHyphenatedAssetHashURLScope(t *testing.T) {
 	s := newProtocolEntropyScanner(t)
-	const asset = "SetupOrConfirmTwoFactor-266d61f1.js"
+	const asset = "CloudConnectionLifecycleState-Nr9Qw7Er.js"
 	for _, tc := range []struct {
 		name, target string
 		allowed      bool
 	}{
 		{"asset", "https://app.vendor.example/assets/" + asset, true},
 		{"nested asset", "https://app.vendor.example/login?next=" + url.QueryEscape("https://cdn.vendor.example/assets/"+asset), true},
-		{"opaque stem", "https://app.vendor.example/assets/" + entropyTestMixed + "-266d61f1.js", false},
+		{"opaque stem", "https://app.vendor.example/assets/" + entropyTestMixed + "-Nr9Qw7Er.js", false},
+		{"earlier segment", "https://app.vendor.example/" + entropyTestMixed + "/" + asset, false},
 		{"appended segment", "https://app.vendor.example/assets/" + asset + "/" + entropyTestMixed, false},
 		{"opaque query", "https://app.vendor.example/assets/" + asset + "?data=" + entropyTestMixed, false},
-		{"nested opaque stem", "https://app.vendor.example/login?next=" + url.QueryEscape("https://cdn.vendor.example/assets/"+entropyTestMixed+"-266d61f1.js"), false},
+		{"nested opaque stem", "https://app.vendor.example/login?next=" + url.QueryEscape("https://cdn.vendor.example/assets/"+entropyTestMixed+"-Nr9Qw7Er.js"), false},
 		{"all hash", "https://app.vendor.example/assets/" + entropyTestMixed + ".js", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,10 +320,10 @@ func TestHyphenatedAssetHashKeepsDLPAndSSRF(t *testing.T) {
 	for _, tc := range []struct {
 		name, target, wantScanner string
 	}{
-		{"credential in stem", "https://cdn.vendor.example/assets/" + secret + "-266d61f1.js", ScannerCoreDLP},
-		{"credential in earlier segment", "https://cdn.vendor.example/" + secret + "/Chunk-266d61f1.js", ScannerCoreDLP},
-		{"metadata literal host", "http://169.254.169.254/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
-		{"private literal host", "http://10.0.0.5/assets/Chunk-266d61f1.js", ScannerCoreSSRF},
+		{"credential in stem", "https://cdn.vendor.example/assets/" + secret + "-Nr9Qw7Er.js", ScannerCoreDLP},
+		{"credential in earlier segment", "https://cdn.vendor.example/" + secret + "/Chunk-Nr9Qw7Er.js", ScannerCoreDLP},
+		{"metadata literal host", "http://169.254.169.254/assets/Chunk-Nr9Qw7Er.js", ScannerCoreSSRF},
+		{"private literal host", "http://10.0.0.5/assets/Chunk-Nr9Qw7Er.js", ScannerCoreSSRF},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := s.Scan(t.Context(), tc.target)
@@ -330,6 +348,8 @@ func TestHyphenatedAssetURLs(t *testing.T) {
 		"SetupGuideCompanySettingsIntroModal-d5049d95.js",
 		"withSetupExperienceProviders-d62a5893.js",
 		"useShowUserBookingSchedule-11276b4c.js",
+		"CloudConnectionLifecycleState-Nr9Qw7Er.js",
+		"ProviderSettingsPanel.logic-_UEYm5gG.js",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if entropy := payloadEntropy(name); entropy <= s.entropyThreshold {

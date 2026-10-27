@@ -32,7 +32,8 @@ const (
 	pkceS256ChallengeLen = 43
 
 	// maxAssetHashSlotLen is the longest trailing build-hash token trimmed from
-	// a static asset name before its path segment is scored.
+	// a static asset name before its path segment is scored. Rollup's default
+	// hash length is eight: src/utils/hashPlaceholders.ts, DEFAULT_HASH_SIZE.
 	maxAssetHashSlotLen = 8
 )
 
@@ -143,8 +144,9 @@ func isAssetHashSlot(token string) bool {
 // assetEntropySubject returns the part of a path segment the entropy gate
 // measures. For a static asset named <stem>.<hash>.<ext>, where <hash> is a
 // whole slot of at most eight characters, that is the stem alone. A hyphen
-// separator is also accepted for a bounded hexadecimal hash. Every other
-// segment, including an asset whose name is all hash, is measured whole.
+// separator is also accepted for a bounded hexadecimal hash or Rollup's default
+// eight-character URL-safe base64 hash. Every other segment, including an asset
+// whose name is all hash, is measured whole.
 func assetEntropySubject(segment string) string {
 	rest := segment
 	if trimmed, ok := strings.CutSuffix(rest, sourceMapExtension); ok {
@@ -164,6 +166,15 @@ func assetEntropySubject(segment string) string {
 	dot := strings.LastIndexByte(rest, '.')
 	if dot >= 0 && isAssetHashSlot(rest[dot+1:]) {
 		return rest[:dot]
+	}
+	// Rollup defaults to [name]-[hash].js and URL-safe base64 hashes:
+	// https://rollupjs.org/configuration-options/#output-chunkfilenames
+	// https://rollupjs.org/configuration-options/#output-hashcharacters
+	// Check the fixed-size suffix before the final delimiter: '-' is also
+	// part of the hash alphabet, including at the end of the hash.
+	separator := len(rest) - maxAssetHashSlotLen - 1
+	if separator > 0 && rest[separator] == '-' && isAssetHashSlot(rest[separator+1:]) {
+		return rest[:separator]
 	}
 	hyphen := strings.LastIndexByte(rest, '-')
 	if hyphen <= 0 || !isAssetHashSlot(rest[hyphen+1:]) {
