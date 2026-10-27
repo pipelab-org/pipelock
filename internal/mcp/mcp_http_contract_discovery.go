@@ -279,7 +279,8 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 		responseencoding.RequestIdentity(req.Header)
 		resp, err := d.client.Do(req)
 		if err != nil {
-			return nil, discoveryRefusalError("upstream discovery request failed")
+			// The refusal is all the client sees; the cause stays for the log.
+			return nil, fmt.Errorf("%w: %w", discoveryRefusalError("upstream discovery request failed"), err)
 		}
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusOK {
@@ -292,7 +293,7 @@ func (d mcpContractDiscoveryRequest) page(ctx context.Context, cursor *string, r
 				return nil, discoveryRefusalError("compressed discovery stream cannot be inspected")
 			}
 			if err := responseencoding.DecodeResponse(resp); err != nil {
-				return nil, discoveryRefusalError("discovery response encoding cannot be inspected")
+				return nil, fmt.Errorf("%w: %w", discoveryRefusalError("discovery response encoding cannot be inspected"), err)
 			}
 		}
 		// Charge decoded response bytes before framing removes SSE comments,

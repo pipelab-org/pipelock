@@ -206,3 +206,26 @@ func TestContractDiscoveryQuotesDriftParameterLogs(t *testing.T) {
 		})
 	}
 }
+
+// The client sees only the refusal; the operator log keeps the cause.
+func TestContractDiscoveryKeepsCauseForOperator(t *testing.T) {
+	for _, mode := range []string{"network", "broken encoding"} {
+		t.Run(mode, func(t *testing.T) {
+			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Encoding", "gzip")
+				_, _ = io.WriteString(w, "broken")
+			}))
+			defer up.Close()
+			if mode == "network" {
+				up.Close()
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/", nil)
+			req.Header = currentWireHeaders(methodToolsCall, "echo")
+			err := discoverMCPToolContract(mcpContractDiscoveryRequest{request: req, client: up.Client(), upstream: up.URL, opts: paramContractOpts(t), state: newMCPListenerClientState("", "one"), log: io.Discard, tool: "echo"})
+			reason := discoveryClientReason(err)
+			if reason == "" || !strings.Contains(err.Error(), reason+": ") || len(err.Error()) <= len(reason)+2 {
+				t.Fatalf("reason=%q error=%v", reason, err)
+			}
+		})
+	}
+}
