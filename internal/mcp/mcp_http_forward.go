@@ -665,7 +665,13 @@ func RunHTTPProxy(
 		unlockInventory := func() {}
 		if frame.Method == "tools/list" {
 			if lockErr := contractState.contractMu.Lock(ctx); lockErr != nil {
-				return lockErr
+				// Only cancellation fails this wait. Close the request's
+				// tracked outcome and leave through the shared shutdown path,
+				// which settles other pending outcomes and ends the session.
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: inventory lock not acquired: %v\n", lockErr)
+				emitTrackedIncompleteOutcome(safeLogW, tracker, frame.ID, "upstream_closed", fwdOpts)
+				lastScanErr = lockErr
+				break
 			}
 			var inventoryResolutions []string
 			fwdOpts.toolInventoryResolution = func(decision string) { inventoryResolutions = append(inventoryResolutions, decision) }

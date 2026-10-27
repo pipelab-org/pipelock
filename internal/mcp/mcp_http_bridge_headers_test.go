@@ -1155,3 +1155,99 @@ func TestHTTPBridgeHeaderRefusesMalformedModernVersion(t *testing.T) {
 		t.Fatalf("canonical version: headers=%v err=%v", headers, err)
 	}
 }
+
+// A tools/list waiting for the inventory lock when the bridge is cancelled must
+// still close its intent and leave through the shutdown path.
+func TestHTTPBridgeHeaderListLockCancelClosesIntent(t *testing.T) {
+	opts := bridgeHeaderOpts(t)
+	h := openReceiptHarness(t, &opts, true)
+	manager := newDeferKillManager(t)
+	opts.DeferManager = manager
+	policy := deferApprovalPolicy(config.DeferResolverProfile{})
+	policy.Rules[0].ToolPattern = regexp.MustCompile(`^echo$`)
+	policy.Rules[0].ResolutionPolicy.ResolverProfile = ""
+	opts.PolicyCfg = policy
+	discoveryEntered := make(chan struct{})
+	var lists atomic.Int32
+	up := bridgeHeaderUpstream(t, func(w http.ResponseWriter, r *http.Request, f MCPFrame) {
+		if lists.Add(1) == 1 {
+			close(discoveryEntered)
+			<-r.Context().Done()
+			return
+		}
+		discoveryList(w, f, headerStateDefs(bridgeHeaderSchema, "Echo input"), "")
+	}, func(w http.ResponseWriter, _ *http.Request, f MCPFrame) {
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, f.ID)
+	})
+	intents := func() int {
+		n := 0
+		for _, r := range readActionReceipts(t, h.dir) {
+			if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
+				n++
+			}
+		}
+		return n
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	inputR, inputW := io.Pipe()
+	defer func() { _ = inputR.Close() }()
+	var out, logs syncBuffer
+	done := make(chan error, 1)
+	go func() { done <- RunHTTPProxy(ctx, inputR, &out, &logs, up.URL, nil, opts) }()
+	if _, err := io.WriteString(inputW, `{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2026-07-28","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return strings.Contains(out.String(), `"id":0`) }, "initialize response")
+	if _, err := io.WriteString(inputW, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"region":"body"}}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	testwait.For(t, 5*time.Second, func() bool { return len(manager.Snapshot()) == 1 }, "held call")
+	// The release runs on the resolving goroutine and holds the inventory lock
+	// while its private discovery waits on the upstream.
+	deferID := manager.Snapshot()[0].DeferID
+	resolved := make(chan error, 1)
+	go func() { resolved <- manager.Resolve(deferID, config.ActionAllow, deferred.SourceApproval) }()
+	select {
+	case <-discoveryEntered:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatalf("discovery not entered; logs=%s", logs.String())
+	}
+	before := intents()
+	if _, err := io.WriteString(inputW, `{"jsonrpc":"2.0","id":5,"method":"tools/list","params":{}}`+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	// Its intent is written after the loop's cancellation check, so the list
+	// is on its way to the inventory lock.
+	testwait.For(t, 5*time.Second, func() bool { return intents() > before }, "tools/list intent")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatalf("bridge did not stop; logs=%s", logs.String())
+	}
+	_ = inputW.Close()
+	select {
+	case err := <-resolved:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(testwait.Deadline(10 * time.Second)):
+		t.Fatal("held release did not finish after cancellation")
+	}
+	if err := h.rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	open := map[string]bool{}
+	for _, r := range readActionReceipts(t, h.dir) {
+		switch r.ActionRecord.DecisionPhase {
+		case receipt.DecisionPhaseIntent:
+			open[r.ActionRecord.ActionID] = true
+		case receipt.DecisionPhaseOutcome:
+			delete(open, r.ActionRecord.ActionID)
+		}
+	}
+	if len(open) != 0 {
+		t.Fatalf("intents left without an outcome: %v; logs=%s", open, logs.String())
+	}
+}
