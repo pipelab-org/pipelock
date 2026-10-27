@@ -1220,13 +1220,18 @@ func TestHTTPBridgeHeaderListLockCancelClosesIntent(t *testing.T) {
 	// Its intent is written after the loop's cancellation check, so the list
 	// is on its way to the inventory lock.
 	testwait.For(t, 5*time.Second, func() bool { return intents() > before }, "tools/list intent")
+	// A real shutdown cancels the bridge and closes its stdin; a closable
+	// stdin is read without watching ctx.
 	cancel()
+	_ = inputW.Close()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("bridge: %v; logs=%s", err, logs.String())
+		}
 	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatalf("bridge did not stop; logs=%s", logs.String())
 	}
-	_ = inputW.Close()
 	select {
 	case err := <-resolved:
 		if err != nil {
