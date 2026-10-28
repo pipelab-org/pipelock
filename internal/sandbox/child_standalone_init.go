@@ -367,9 +367,8 @@ func RunStandaloneInit() {
 		// The bridge failure is the reported cause; the killed command's own exit
 		// status adds nothing. A failed kill is reported, because the command
 		// may then still be running after this process exits.
-		if err := stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone); errors.Is(err, errSandboxKillFailed) {
-			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: sandboxed command (pid %d) may still be running: %v\n", agentCmd.Process.Pid, err)
-		}
+		reportBridgeCleanupFailure(os.Stderr, agentCmd.Process.Pid,
+			stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone))
 		exitSandboxProcess(1)
 	}
 	err = agentErr
@@ -416,6 +415,15 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 // errSandboxKillFailed marks a kill that failed while the command may still
 // be running.
 var errSandboxKillFailed = errors.New("kill sandboxed command")
+
+// reportBridgeCleanupFailure reports a cleanup result only when the kill failed
+// and the command may outlive this process. Any other result is the expected
+// exit of a killed or already exited command and is not reported.
+func reportBridgeCleanupFailure(w io.Writer, pid int, err error) {
+	if errors.Is(err, errSandboxKillFailed) {
+		_, _ = fmt.Fprintf(w, "[sandbox] FATAL: sandboxed command (pid %d) may still be running: %v\n", pid, err)
+	}
+}
 
 // stopTargetAfterBridgeFailure retires the target thread after a fatal bridge
 // error. When the agent is still running it is killed and its result is taken

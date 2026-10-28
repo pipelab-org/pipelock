@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -171,5 +172,29 @@ func TestStopTargetAfterBridgeFailureDoesNotWaitWhenKillFails(t *testing.T) {
 	}
 	if !closed {
 		t.Fatal("target was not closed")
+	}
+}
+
+func TestReportBridgeCleanupFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "failed kill names the pid and error",
+			err:  fmt.Errorf("%w: %w", errSandboxKillFailed, errors.New("operation not permitted")),
+			want: "[sandbox] FATAL: sandboxed command (pid 4242) may still be running: kill sandboxed command: operation not permitted\n",
+		},
+		{name: "killed command is not reported", err: errKilledForTest},
+		{name: "already exited command is not reported", err: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out strings.Builder
+			reportBridgeCleanupFailure(&out, 4242, tc.err)
+			if got := out.String(); got != tc.want {
+				t.Fatalf("report = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
