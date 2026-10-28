@@ -346,8 +346,8 @@ func TestStepInstallNFTRulesUndoRestoresExpiryTimerState(t *testing.T) {
 				"disable --now " + filepath.Base(env.nftExpiryTimerPath),
 				"stop " + filepath.Base(env.nftExpiryServicePath),
 			} {
-				if !runnerCalled(runner, want) {
-					t.Fatalf("rollback did not run %q: %+v", want, runner.calls)
+				if got, wantStop := runnerCalled(runner, want), !tc.enabled && !tc.active; got != wantStop {
+					t.Fatalf("rollback ran %q = %v, want %v: %+v", want, got, wantStop, runner.calls)
 				}
 			}
 			timer := filepath.Base(env.nftExpiryTimerPath)

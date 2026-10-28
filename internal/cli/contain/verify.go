@@ -1793,17 +1793,24 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain), false
 	}
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
+		return statusFail, fmt.Sprintf(containmentHoleDetailPrefix+" chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
+	}
+	// nft(8): an accept is terminal for this chain. Any agent UID accept
+	// outside the canonical proxy/reply exceptions admits traffic before the
+	// drop, including conditional accepts. Definite holes precede stale marks
+	// and policy/read failures; jump/return semantics remain inconclusive.
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
+	}
+	if rule, ok := agentUIDConditionalAcceptBeforeDrop(lines, current, env.port); ok {
+		detail := containmentHoleDetailPrefix + " conditional agent UID accept bypasses managed catch-all DROP: " + rule
+		if _, problem, _ := declaredContainmentLoopbackServicesForVerify(env, env.port); problem != "" {
+			detail += "; " + problem
+		}
+		return statusFail, detail, false
 	}
 	if handles := legacyOwnedLoopbackMarkRuleHandles(out, current.agentUID); len(handles) > 0 {
 		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; %s", len(handles), legacyOwnedLoopbackMark, installRemedyForPort(env.port)), false
-	}
-	// Within a hooked chain that has the drop, a definite bypass outranks every
-	// missing canonical rule: reporting "proxy accept rule missing" for a chain
-	// that also admits all agent traffic would let the doctor downgrade the
-	// hole to an inconclusive result.
-	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
 	listenerData, listenerReadErr := env.readFile(env.configPath)
 	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
@@ -2604,7 +2611,8 @@ func lapsedLoopbackServicesProblem(configPath string, lapsed []config.LapsedCont
 // CONTAINMENT HOLE from an inconclusive structural result, so the prefix and
 // the formatted detail must not drift apart into independent literals.
 const (
-	containmentBypassDetailPrefix = "CONTAINMENT HOLE: agent UID accept rule"
+	containmentHoleDetailPrefix   = "CONTAINMENT HOLE:"
+	containmentBypassDetailPrefix = containmentHoleDetailPrefix + " agent UID accept rule"
 	containmentBypassDetailFormat = containmentBypassDetailPrefix + " bypasses managed catch-all DROP: %s"
 )
 
@@ -2622,6 +2630,69 @@ func agentUIDBareAcceptBeforeDrop(lines []string, agentUID int) (string, bool) {
 		return true
 	})
 	return offending, found
+}
+
+// agentUIDConditionalAcceptBeforeDrop recognizes direct accepts for the
+// agent UID using the expressions documented by lineHasDefiniteAgentAccept.
+// Other predicates and legacy marks keep their existing diagnostics.
+func agentUIDConditionalAcceptBeforeDrop(lines []string, uids containmentUIDs, port int) (string, bool) {
+	var offending string
+	found := chainLinesHaveLineBeforeAgentDrop(lines, uids.agentUID, func(line string) bool {
+		if !lineHasDefiniteAgentAccept(line, uids.agentUID, port) {
+			return false
+		}
+		offending = strings.TrimSpace(line)
+		return true
+	})
+	return offending, found
+}
+
+// lineHasDefiniteAgentAccept recognizes nft(8)'s literal destination and TCP
+// destination-port expressions followed by accept. Sets, other expressions,
+// and malformed literals remain with the general unexpected-verdict guard;
+// they are refused but their reachability has not been established here.
+func lineHasDefiniteAgentAccept(line string, agentUID, proxyPort int) bool {
+	fields := nftLineFields(line)
+	if len(fields) < 7 || !slices.Equal(fields[:3], []string{"meta", "skuid", strconv.Itoa(agentUID)}) {
+		return false
+	}
+	i := 3
+	destination := ""
+	if fields[i] == "ip" || fields[i] == "ip6" {
+		if len(fields) <= i+3 || fields[i+1] != "daddr" {
+			return false
+		}
+		destination = fields[i+2]
+		ip := net.ParseIP(destination)
+		if ip == nil {
+			parsed, network, err := net.ParseCIDR(destination)
+			if err != nil {
+				return false
+			}
+			// RFC 4632: a full-width prefix denotes exactly one address.
+			// Treat the proxy's /32 the same as its literal, so a narrower
+			// spelling never becomes a claimed direct-egress bypass.
+			if ones, bits := network.Mask.Size(); ones == bits {
+				destination = parsed.String()
+			}
+		}
+		if (fields[i] == "ip") == strings.Contains(destination, ":") {
+			return false
+		}
+		i += 3
+	}
+	port := 0
+	if len(fields) > i+3 && fields[i] == "tcp" && fields[i+1] == "dport" && isTCPPort(fields[i+2]) {
+		port, _ = strconv.Atoi(fields[i+2])
+		i += 3
+	} else if destination == "" {
+		return false
+	}
+	acceptAt := indexTokenAfter(fields, "accept", i)
+	if acceptAt < 0 || !fieldsAreNFTBookkeeping(fields[i:acceptAt]) || !nftRuleTailIsCommentOnly(fields[acceptAt+1:]) {
+		return false
+	}
+	return destination != "127.0.0.1" || port != proxyPort
 }
 
 func lineHasBareAgentUIDAccept(line string, agentUID int) bool {

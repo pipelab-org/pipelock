@@ -880,7 +880,7 @@ func TestProbeNFTContainment(t *testing.T) {
 			`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "unexpected verdict",
+			wantDetail: "CONTAINMENT HOLE",
 		},
 		{
 			name: "unscoped external accept before drop is fail open",
@@ -1012,7 +1012,7 @@ func TestProbeNFTContainment(t *testing.T) {
 	`,
 			code:       0,
 			wantStatus: statusFail,
-			wantDetail: "loopback allow",
+			wantDetail: "CONTAINMENT HOLE",
 		},
 		{
 			name: "stale agent uid",

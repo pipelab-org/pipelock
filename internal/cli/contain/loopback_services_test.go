@@ -1293,8 +1293,8 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 			return errors.New("forwarder failed")
 		}
 		err := reloadNFTRules(context.Background(), fx.env)
-		if err == nil || !strings.Contains(err.Error(), "nft boundary is current") {
-			t.Fatalf("reload error = %v, want post-rewrite forwarder reconciliation failure", err)
+		if err == nil || !strings.Contains(err.Error(), "namespace loopback forwarders failed to reconcile") {
+			t.Fatalf("reload error = %v, want forwarder reconciliation failure after nft rewrite", err)
 		}
 	})
 }

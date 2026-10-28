@@ -359,7 +359,7 @@ func TestNFTApplyReportsFailedEnableWithoutFileOrTableChange(t *testing.T) {
 				wantArgs := []string{"disable", filepath.Base(unit)}
 				if tc.failTimer {
 					unit = env.nftExpiryTimerPath
-					wantArgs = []string{"disable", "--now", filepath.Base(unit)}
+					wantArgs = []string{"disable", filepath.Base(unit)}
 				}
 				foundDisable := false
 				for _, call := range runner.calls[beforeUndo:] {

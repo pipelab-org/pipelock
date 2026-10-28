@@ -167,7 +167,7 @@ func reloadNFTRules(ctx context.Context, env *nftReloadEnv) error {
 	})
 }
 
-func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
+func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) (result error) {
 	persisted, err := env.readFile(env.rulesPath)
 	if err != nil {
 		return fmt.Errorf("read nft rules %s: %w", env.rulesPath, err)
@@ -186,22 +186,32 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		return fmt.Errorf("nft rules %s is missing the managed uid header (empty or corrupt persisted rules file); rerun `pipelock contain install` to restore it", env.rulesPath)
 	}
 
-	// The persisted nft file is not the source of truth for declared loopback
-	// services. Every reload snapshots the current managed config and reconciles
-	// the namespace socket forwarders, so removals and expirations take effect
-	// without another contain install.
-	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(env, header.proxyPort)
-	publishedServices := reconcileDeclaredContainmentPublishedServicesForReload(env, header.proxyPort)
+	// Snapshot the managed config once. All readers below see these same bytes
+	// and time, even if another process replaces the file during reconciliation.
+	data, readErr := env.readFile(env.configPath)
+	snapshot := *env
+	snapshot.readFile = func(string) ([]byte, error) { return data, readErr }
+	now := time.Now()
+	if env.now != nil {
+		now = env.now()
+	}
+	snapshot.now = func() time.Time { return now }
+	loopbackServices := reconcileDeclaredContainmentLoopbackServicesForReload(&snapshot, header.proxyPort)
+	publishedServices := reconcileDeclaredContainmentPublishedServicesForReload(&snapshot, header.proxyPort)
+	// Retire doorways even when config, persistence, observation or nft later
+	// fails. Each doorway kind is attempted independently. Reload callbacks
+	// never roll back a revocation into a live grant.
+	doorwayErr := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices)
+	defer func() { result = errors.Join(result, doorwayErr) }()
 	agentListener := ""
 	if env.configPath != "" {
-		listenerData, listenerReadErr := env.readFile(env.configPath)
-		if errors.Is(listenerReadErr, os.ErrNotExist) && strings.Contains(string(persisted), "pipelock_agent_listener_blocked") {
+		if errors.Is(readErr, os.ErrNotExist) && strings.Contains(string(persisted), "pipelock_agent_listener_blocked") {
 			return fmt.Errorf("managed listener config %s is missing; refusing to remove the existing listener guard", env.configPath)
 		}
-		if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
-			return fmt.Errorf("read managed listener config %s: %w", env.configPath, listenerReadErr)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return fmt.Errorf("read managed listener config %s: %w", env.configPath, readErr)
 		}
-		agentListener, err = agentListenerFromConfigBytes(listenerData)
+		agentListener, err = agentListenerFromConfigBytes(data)
 		if err != nil {
 			return fmt.Errorf("parse managed listener config: %w", err)
 		}
@@ -279,8 +289,8 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 	}
 	if !fileChanged && !legacyReceiverLive && liveManagedNFTBlockMatchesRules(out, string(rules), header.operatorUID, header.proxyUID, header.agentUID) {
-		if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
-			return err
+		if doorwayErr != nil {
+			return nil
 		}
 		if env.report != nil {
 			env.report(nftReloadOutcome(false, 0, false, false))
@@ -306,8 +316,8 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) error {
 		}
 		return restoreOnFailure(fmt.Errorf("reload nft managed chain exit=%d", code))
 	}
-	if err := reconcileNamespaceDoorways(ctx, env, header.proxyPort, loopbackServices, publishedServices); err != nil {
-		return fmt.Errorf("nft boundary is current but %w", err)
+	if doorwayErr != nil {
+		return nil
 	}
 	if env.report != nil {
 		env.report(nftReloadOutcome(fileChanged, len(managedHandles), out == "", true))

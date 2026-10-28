@@ -1666,6 +1666,7 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 		{
 			name: "rollback expiry timer disable",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				env.prevNFTExpiryTimerStateKnown = true
 				unit := filepath.Base(env.nftExpiryTimerPath)
 				runner.on(argvFor(testSystemctl, "disable", "--now", unit), "access denied", 1, nil)
 				return stepInstallNFTRules().undo(context.Background(), env)
@@ -1674,6 +1675,7 @@ func TestCleanupActions_PropagateSystemctlFailures(t *testing.T) {
 		{
 			name: "rollback expiry service stop",
 			run: func(env *installEnv, runner *fakeRunner) error {
+				env.prevNFTExpiryTimerStateKnown = true
 				unit := filepath.Base(env.nftExpiryServicePath)
 				runner.on(argvFor(testSystemctl, "stop", unit), "access denied", 1, nil)
 				return stepInstallNFTRules().undo(context.Background(), env)

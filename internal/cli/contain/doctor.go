@@ -166,7 +166,7 @@ func doctorChainStructureReader(base *probeEnv, env *doctorEnv) func(context.Con
 		switch {
 		case status == statusPass:
 			return pass("managed chain structure is as installed; enforcement is observed by the raw-egress check")
-		case status == statusFail && strings.Contains(detail, containmentBypassDetailPrefix):
+		case status == statusFail && strings.Contains(detail, containmentHoleDetailPrefix):
 			return fail(classInfra, detail, "remove the offending nftables rule and "+installRemedyForPort(env.port))
 		case status == statusFail && !readErr:
 			return unknownInfra("managed chain structure could not establish containment: "+detail, env.port)

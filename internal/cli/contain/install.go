@@ -2754,14 +2754,27 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 }
 
 func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
-	// Stop the timer before restoring its unit files so a scheduled expiry
-	// cannot race this rollback, then stop a service invocation already in
-	// flight. The prior timer state is restored below after daemon-reload.
-	if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
-		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryTimerPath), err)
+	if env.reconcileLockPath == "" {
+		return stepInstallNFTRulesUndoLocked(ctx, env)
 	}
-	if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(env.nftExpiryServicePath)); err != nil {
-		return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryServicePath), err)
+	lockFn := env.lockFn
+	if lockFn == nil {
+		lockFn = withContainmentReconcileLock
+	}
+	return lockFn(env.reconcileLockPath, func() error { return stepInstallNFTRulesUndoLocked(ctx, env) })
+}
+
+func stepInstallNFTRulesUndoLocked(ctx context.Context, env *installEnv) error {
+	// A previously enabled timer is the level-triggered recovery mechanism.
+	// Never disable/stop it for rollback: a kill cannot run a deferred enable.
+	// Serialize against its service via the same reconcile lock instead.
+	if env.prevNFTExpiryTimerStateKnown && !env.prevNFTExpiryTimerEnabled && !env.prevNFTExpiryTimerActive {
+		if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", filepath.Base(env.nftExpiryTimerPath)); err != nil {
+			return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryTimerPath), err)
+		}
+		if err := runSystemctlCleanupUnit(ctx, env, "stop", filepath.Base(env.nftExpiryServicePath)); err != nil {
+			return fmt.Errorf("stop %s for rollback: %w", filepath.Base(env.nftExpiryServicePath), err)
+		}
 	}
 	// Restore any previous live table captured during this install
 	// attempt before deleting the newly installed table. If no
@@ -2839,6 +2852,19 @@ func stepInstallNFTRulesUndo(ctx context.Context, env *installEnv) error {
 			args = append(args, timer)
 			if err := runOrErr(ctx, env, "systemctl", args...); err != nil {
 				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s enabled state: %w", timer, err))
+			} else if env.prevNFTExpiryTimerEnabledRuntime && env.nftTimerEnableAttempted {
+				// systemctl(1): --runtime writes /run instead of /etc;
+				// disable without --now removes persistent enablement without
+				// stopping the timer. Restore the runtime link FIRST, so an
+				// interruption cannot strand the timer without either link.
+				if err := runSystemctlCleanupUnit(ctx, env, "disable", timer); err != nil {
+					incomplete = errors.Join(incomplete, fmt.Errorf("remove persistent %s enablement: %w", timer, err))
+				}
+			}
+		} else if env.prevNFTExpiryTimerActive {
+			// Restore disabled-but-active without stopping periodic repair.
+			if err := runSystemctlCleanupUnit(ctx, env, "disable", timer); err != nil {
+				incomplete = errors.Join(incomplete, fmt.Errorf("restore %s disabled state: %w", timer, err))
 			}
 		}
 		if env.prevNFTExpiryTimerActive {
