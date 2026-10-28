@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"slices"
 	"strconv"
@@ -152,6 +153,26 @@ func planNFTReconciliation(policy nftReconcilePolicy, observation nftReconcileOb
 		p.conflicts = append(p.conflicts, fmt.Sprintf("existing nft chain inet %s %s is not attributable to Pipelock; preserve its rules and choose an unused managed chain with `pipelock contain install`", policy.table, policy.chain))
 	}
 	p.kernelChanged = legacy || !slices.Equal(got, managedNFTLinesFromRulesBody(policy.rules))
+	// Replacing the managed block appends it after preserved foreign rules.
+	// Use the existing listener-guard contract (chainLinesHaveAgentListenerGuard
+	// and acceptMayReachAgentListener) to refuse a move that would put an
+	// unowned accept ahead of that guard. An exact, already guarded state does
+	// not need a replacement and retains its current ordering.
+	for _, desired := range managedNFTLinesFromRulesBody(policy.rules) {
+		if !lineHasAgentListenerGuardForProxy(desired, policy.uids.proxyUID) {
+			continue
+		}
+		fields := nftLineFields(desired)
+		listener := net.JoinHostPort(fields[9], fields[12])
+		if !p.kernelChanged && chainLinesHaveAgentListenerGuard(strings.Split(observation.live, "\n"), listener, policy.uids.proxyUID) {
+			continue
+		}
+		for _, rule := range p.foreign {
+			if lineHasAnyToken(rule.line, "accept") && acceptMayReachAgentListener(nftLineFields(rule.line), fields[9], fields[12]) {
+				p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "preserving this unowned accept before the replacement block would bypass the managed listener guard"))
+			}
+		}
+	}
 	if !p.kernelChanged || p.err() != nil {
 		return p
 	}

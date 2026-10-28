@@ -1028,3 +1028,56 @@ func TestReconcileMissingChainPredictsReload(t *testing.T) {
 		t.Fatalf("predicted reload failed: %v", err)
 	}
 }
+
+func TestReconcileForeignAcceptPreservesListenerGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name, foreign           string
+		drift, before, conflict bool
+	}{
+		{"replacement overlaps", "meta skuid 12345 accept", true, false, true},
+		{"exact guarded state", "meta skuid 12345 accept", false, false, false},
+		{"existing overlap", "meta skuid 12345 accept", false, true, true},
+		{"conditional foreign port remains a conflict", "meta skuid 12345 tcp dport 8443 accept", true, false, true},
+		{"conditional foreign destination remains a conflict", "meta skuid 12345 ip daddr 192.0.2.1 accept", true, false, true},
+		{"conditional foreign state remains a conflict", "meta skuid 12345 ct state established accept", true, false, true},
+		{"foreign drop survives", "meta skuid 12345 drop", true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := reconcileTestPolicy()
+			policy.rules = renderNFTRulesWithServices(nftRuleOptions{OperatorUID: 1000, ProxyUID: 988, AgentUID: 987, ProxyPort: 8888, Table: policy.table, Chain: policy.chain, AgentListener: "127.0.0.1:8889"})
+			live := nftListingFromRulesBodyForTest(policy.rules, 20)
+			foreign := tc.foreign + " # handle 100"
+			if tc.before {
+				live = foreign + "\n" + live
+			} else {
+				live += "\n" + foreign
+			}
+			if !tc.before && !chainLinesHaveAgentListenerGuard(strings.Split(live, "\n"), "127.0.0.1:8889", 988) {
+				t.Fatal("positive control: original guard invalid")
+			}
+			if tc.drift {
+				live = strings.Replace(live, "tcp dport 8888 accept", "tcp dport 8890 accept", 1)
+			}
+			plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: policy.rules, live: live})
+			if (plan.err() != nil) != tc.conflict {
+				t.Fatalf("plan error=%v want conflict=%v", plan.err(), tc.conflict)
+			}
+			if tc.conflict {
+				if plan.script != "" || !strings.Contains(plan.err().Error(), "handle 100") {
+					t.Fatalf("conflict mutated or omitted handle: %+v", plan)
+				}
+				return
+			}
+			if !plan.kernelChanged {
+				return
+			}
+			applied, err := applyNFTScriptForTest(live, plan.script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(applied, foreign) || !chainLinesHaveAgentListenerGuard(strings.Split(applied, "\n"), "127.0.0.1:8889", 988) {
+				t.Fatal("reconciliation changed the foreign rule or weakened the listener guard")
+			}
+		})
+	}
+}
