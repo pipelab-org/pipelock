@@ -1369,7 +1369,7 @@ table inet pipelock_containment {
 				e.nftPersistUnitPath = unitPath
 				e.readFile = os.ReadFile
 				e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-					return goodNFTContainmentOutput, 0, nil
+					return nftListingForTest(renderNFTRules(1000, 988, 987, 8888, testTable, testChain)), 0, nil
 				}
 			})
 			gotStatus, gotDetail := probeNFTContainment(context.Background(), env)
@@ -1493,7 +1493,7 @@ func TestProbeNFTContainment_UsesInstalledOperatorUIDFromRulesFile(t *testing.T)
 		e.nftRulesPath = rulesPath
 		e.readFile = os.ReadFile
 		e.runCmd = func(_ context.Context, _ string, _ ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
+			return nftListingForTest(renderNFTRules(1000, 988, 987, 8888, testTable, testChain)), 0, nil
 		}
 	})
 
@@ -1630,7 +1630,7 @@ func TestProbeNFTContainment_RejectsContainmentUIDCollisions(t *testing.T) {
 		if gotStatus != statusFail {
 			t.Fatalf("status: got %q, want fail (detail=%q)", gotStatus, gotDetail)
 		}
-		if !strings.Contains(gotDetail, "operator uid 987 matches current pipelock-agent uid") {
+		if !strings.Contains(gotDetail, "keep the agent distinct from operator and proxy") {
 			t.Fatalf("detail: got %q, want operator-agent collision failure", gotDetail)
 		}
 	})
@@ -3779,7 +3779,7 @@ func TestRunVerify_NFTStructuralAndCounterCompositionFailsClosed(t *testing.T) {
 		ip daddr 192.0.2.1 meta skuid 987 counter packets %d bytes 840 log prefix "pipelock-contain class=not_routing_through_pipelock " drop
 	}
 }`,
-			wantExit: cliutil.ExitConfig,
+			wantExit: cliutil.ExitGeneral,
 		},
 		{
 			name: "canary intercepted before attributed counter",
@@ -4156,7 +4156,7 @@ func defaultRunForAllPass(name string, args []string) (string, int, error) {
 		}
 		return fmt.Sprintf("ActiveState=active\nSubState=running\nUser=pipelock-proxy\nType=simple\nMainPID=%d\nExecStart={ path=/usr/local/bin/pipelock ; argv[]=/usr/local/bin/pipelock run ; ignore_errors=no ; }\n", testServicePID), 0, nil
 	case testNFT:
-		return goodNFTContainmentOutput, 0, nil
+		return nftListingForTest(renderNFTRules(1000, 988, 987, 8888, testTable, testChain)), 0, nil
 	case testSudoCmd:
 		// The identity-switch probe must succeed before the signing-key read
 		// probe can distinguish an unreadable key from sudo's own exit 1.

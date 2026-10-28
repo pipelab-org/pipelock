@@ -97,7 +97,7 @@ func TestReloadNFTRulesKeepsUnexpiredSiblingOfExpiredLoopbackService(t *testing.
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if len(forwarded) != 1 || forwarded[0].Port != 9200 {
@@ -127,7 +127,7 @@ func TestReloadNFTRulesStillDropsEveryForwarderOnMalformedSibling(t *testing.T) 
 		return nil
 	}
 	fx.env.reconcileForwarders = forwarders
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if len(forwarded) != 0 {
@@ -266,6 +266,13 @@ func (f *fakeSystemd) run(_ context.Context, name string, args ...string) (strin
 	}
 	verb, units := args[0], args[1:]
 	switch verb {
+	case "show":
+		if len(args) == 4 && args[1] == "--property=ActiveState" && args[2] == "--value" {
+			if f.active[args[3]] {
+				return systemctlActive + "\n", 0, nil
+			}
+			return "inactive\n", 0, nil
+		}
 	case "is-enabled":
 		if f.enabled[units[0]] {
 			return systemctlEnabled + "\n", 0, nil

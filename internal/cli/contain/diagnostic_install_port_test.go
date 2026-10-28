@@ -27,7 +27,12 @@ func TestDoorwayInstallRemedyPreservesPort(t *testing.T) {
 				case "missing definition":
 					env.readFile = func(string) ([]byte, error) { return nil, os.ErrNotExist }
 				case "drifted definition":
-					env.readFile = func(string) ([]byte, error) { return []byte("drifted"), nil }
+					env.readFile = func(path string) ([]byte, error) {
+						if path == env.configPath {
+							return []byte("containment: {}\n"), nil
+						}
+						return []byte("drifted"), nil
+					}
 				case "missing socket", "missing relay", "missing forwarder", "invalid relay":
 					unit := testDoorwayProxySocket
 					switch condition {

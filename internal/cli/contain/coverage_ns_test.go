@@ -1551,7 +1551,7 @@ func TestCovNSDirectContainedProxyHealthConnectionFailure(t *testing.T) {
 // nft_reload.go
 // ---------------------------------------------------------------------------
 
-func TestCovNSReloadNFTRulesDetectsLiveLegacyReceiver(t *testing.T) {
+func TestCovNSReloadNFTRulesRejectsUnownedLegacyMark(t *testing.T) {
 	rules := renderNFTRules(1000, 967, 966, 8888, defaultNFTTable, defaultNFTChain)
 	liveOut := `meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept # handle 5`
 	var reported string
@@ -1579,18 +1579,14 @@ func TestCovNSReloadNFTRulesDetectsLiveLegacyReceiver(t *testing.T) {
 			}
 		},
 	})
-	if err != nil {
-		t.Fatalf("reloadNFTRules() error = %v", err)
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") {
+		t.Fatalf("unowned fragment error=%v", err)
 	}
-	if reported == "" {
-		t.Fatal("reloadNFTRules() did not report an outcome for the live-legacy-receiver reload")
+	if reported != "" {
+		t.Fatal("conflict reported success")
 	}
 }
 
-// TestCovNSLineHasLegacyOwnedLoopbackMarkRejectsTokenMismatch exercises the
-// "want" token loop's failure branch: every fixed-position check before it
-// passes, but one of the seven literal tokens in the middle of the line does
-// not match.
 func TestCovNSLineHasLegacyOwnedLoopbackMarkRejectsTokenMismatch(t *testing.T) {
 	valid := `meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new ct mark set 0x504c4b01 accept`
 	if !lineHasLegacyOwnedLoopbackMark(valid, 966) {

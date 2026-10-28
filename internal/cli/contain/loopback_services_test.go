@@ -380,10 +380,10 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 	second, next := managedBlockWithLoopbackServicePairs(next, []int{9200})
 	third, _ := managedBlockWithLoopbackServicePairs(next, []int{9200})
 	foreign := []string{
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 10`,
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 11`,
-		`meta skuid 966 oifname "tailscale0" ip saddr 100.64.0.1 tcp sport 8642 ct state established ct direction reply accept # handle 12`,
-		`meta skuid 966 ip daddr 127.0.0.1 tcp dport 9077 accept # handle 13`,
+		`meta skuid 12346 accept # handle 10`,
+		`meta skuid 12345 accept # handle 11`,
+		`meta skuid 12347 accept # handle 12`,
+		`meta skuid 12348 accept # handle 13`,
 	}
 	live := numericNftStateListing(strings.Join(append(foreign, legacy, first, second, third), "\n"))
 	var reports []string
@@ -443,7 +443,7 @@ func TestReloadNumericPairedMigrationConvergesAcrossRepeatedReloads(t *testing.T
 	}
 
 	for reload := 0; reload < 3; reload++ {
-		if err := reloadNFTRules(context.Background(), env); err != nil {
+		if err := reloadNFTForTest(t, context.Background(), env); err != nil {
 			t.Fatalf("reload %d: %v", reload+1, err)
 		}
 	}
@@ -846,7 +846,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 
 	t.Run("too few rules to even hold operator+proxy accepts", func(t *testing.T) {
 		rules := []nftRuleWithHandle{{line: "meta skuid 1000 accept", handle: 1}}
-		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -857,7 +857,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 		}
-		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -868,7 +868,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 967 accept", handle: 2},
 			{line: "meta skuid 966 counter drop", handle: 3},
 		}
-		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0", got)
 		}
 	})
@@ -880,7 +880,7 @@ func TestManagedNFTBlockLengthBoundaries(t *testing.T) {
 			{line: "meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept", handle: 3},
 			{line: `meta skuid 966 udp dport 53 counter packets 0 bytes 0 log prefix "pipelock-contain class=direct_dns_blocked " drop`, handle: 4},
 		}
-		if got, _ := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
+		if got := managedNFTBlockLength(rules, 0, 1000, 967, 966); got != 0 {
 			t.Fatalf("got %d, want 0 (tail incomplete)", got)
 		}
 	})
@@ -1026,7 +1026,7 @@ func newNFTReloadTestFixture(t *testing.T, live, configBody, persistedRules stri
 		readFile: func(path string) ([]byte, error) {
 			switch path {
 			case rulesPath:
-				return []byte(persistedRules), nil
+				return []byte(writes[rulesPath]), nil
 			case configPath:
 				return []byte(configBody), nil
 			default:
@@ -1069,7 +1069,7 @@ func newNFTReloadTestFixture(t *testing.T, live, configBody, persistedRules stri
 
 const nftReloadTestLiveWithOneService = `table inet pipelock_containment {
   chain output_filter { type filter hook output priority filter; policy accept;
-    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 10
+    meta skuid 12345 accept # handle 10
     meta skuid 1000 accept # handle 20
     meta skuid 967 accept # handle 21
     meta skuid 966 ip daddr 127.0.0.1 tcp dport 8888 accept # handle 22
@@ -1115,7 +1115,7 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if len(forwarded) != 1 || forwarded[0].Port != 9200 {
@@ -1131,11 +1131,8 @@ func TestReloadNFTRulesReconcilesAddedLoopbackService(t *testing.T) {
 
 func TestReloadNFTRulesPreservesInstalledProxyPortForForwarders(t *testing.T) {
 	const installedPort = 9432
-	installEnv := forwarderInstallEnv(installedPort)
-	if installEnv.proxyPort != installedPort {
-		t.Fatalf("forwarder install port = %d, want %d", installEnv.proxyPort, installedPort)
-	}
-	unit := renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", testAgentUser, installEnv.proxyPort)
+
+	unit := renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", testAgentUser, installedPort)
 	if !strings.Contains(unit, "--listen 127.0.0.1:9432 --target "+containedDoorwaySocketPath) {
 		t.Fatalf("forwarder install rendered wrong port: %s", unit)
 	}
@@ -1147,7 +1144,7 @@ func TestReloadNFTRulesPreservesInstalledProxyPortForForwarders(t *testing.T) {
 		rendered = renderContainedNamespaceForwarderUnit("/usr/local/bin/pipelock", testAgentUser, port)
 		return nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if !strings.Contains(rendered, "--listen 127.0.0.1:9432 --target "+containedDoorwaySocketPath) {
@@ -1172,7 +1169,7 @@ func TestReloadNFTRulesReconcilesRevokedLoopbackService(t *testing.T) {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	for _, handle := range []int{20, 21, 22, 23, 24, 25, 26, 27} {
@@ -1205,7 +1202,7 @@ func TestReloadNFTRulesReconcilesExpiredLoopbackService(t *testing.T) {
 		forwarded = append([]config.ContainmentLoopbackService(nil), services...)
 		return nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if strings.Contains(fx.appliedBody(), "dport 9200 accept") || strings.Contains(fx.appliedBody(), "sport 9200 ct state established ct direction reply accept") {
@@ -1235,7 +1232,7 @@ func TestReloadNFTRulesFailsClosedOnUnreadableManagedConfig(t *testing.T) {
 		}
 		return []byte(renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)), nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); !errors.Is(err, os.ErrPermission) {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); !errors.Is(err, os.ErrPermission) {
 		t.Fatalf("reloadNFTRules error = %v, want permission error", err)
 	}
 	if got, ok := fx.persisted(); !ok || got != basePersistedUnreadable {
@@ -1261,7 +1258,7 @@ func TestReloadNFTRulesWarnsOnAbsentManagedConfig(t *testing.T) {
 		}
 		return []byte(basePersisted), nil
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); err != nil {
 		t.Fatalf("reloadNFTRules: %v", err)
 	}
 	if len(fx.warnings) != 1 {
@@ -1281,7 +1278,7 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 		fx.env.reconcileForwarders = func(context.Context, int, []config.ContainmentLoopbackService) error {
 			return errors.New("forwarder failed")
 		}
-		err := reloadNFTRules(context.Background(), fx.env)
+		err := reloadNFTForTest(t, context.Background(), fx.env)
 		if err == nil || !strings.Contains(err.Error(), "namespace loopback forwarders failed to reconcile") {
 			t.Fatalf("reload error = %v, want no-op forwarder reconciliation failure", err)
 		}
@@ -1292,55 +1289,34 @@ func TestReloadNFTRulesReportsNamespaceForwarderFailures(t *testing.T) {
 		fx.env.reconcileForwarders = func(context.Context, int, []config.ContainmentLoopbackService) error {
 			return errors.New("forwarder failed")
 		}
-		err := reloadNFTRules(context.Background(), fx.env)
+		err := reloadNFTForTest(t, context.Background(), fx.env)
 		if err == nil || !strings.Contains(err.Error(), "namespace loopback forwarders failed to reconcile") {
 			t.Fatalf("reload error = %v, want forwarder reconciliation failure after nft rewrite", err)
 		}
 	})
 }
 
-func TestReloadNFTRulesLegacyReceiverQueryFailures(t *testing.T) {
+func TestReloadNFTRulesPreservesUnownedLegacyReceiver(t *testing.T) {
 	t.Parallel()
-	basePersisted := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain)
-	live := strings.Replace(nftReloadTestLiveWithNoService, "meta skuid 1000 accept", `ct mark set 0x504c4b01 socket cgroupv2 level 1 "pipelock_contained.slice" # handle 19
-    meta skuid 1000 accept`, 1)
-
-	t.Run("command error", func(t *testing.T) {
-		fx := newNFTReloadTestFixture(t, live, "mode: balanced\n", basePersisted)
-		err := reloadNFTRules(context.Background(), fx.env)
-		if err == nil || !strings.Contains(err.Error(), "list legacy owned loopback receiver chain") {
-			t.Fatalf("reload error = %v, want legacy receiver query error", err)
+	env, m := newReconcileModel("")
+	run := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if strings.Contains(strings.Join(args, " "), legacyOwnedLoopbackInputChain) {
+			t.Fatal("unowned receiver was queried or mutated")
 		}
-	})
-
-	t.Run("non-missing exit", func(t *testing.T) {
-		fx := newNFTReloadTestFixture(t, live, "mode: balanced\n", basePersisted)
-		originalRun := fx.env.runCmd
-		fx.env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
-			if strings.HasPrefix(strings.Join(args, " "), "-n list chain") {
-				return "permission denied", 1, nil
-			}
-			return originalRun(ctx, name, args...)
-		}
-		err := reloadNFTRules(context.Background(), fx.env)
-		if err == nil || !strings.Contains(err.Error(), "exit=1: permission denied") {
-			t.Fatalf("reload error = %v, want legacy receiver non-missing exit", err)
-		}
-	})
+		return run(ctx, name, args...)
+	}
+	if err := reloadNFTRules(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if m.applies != 1 {
+		t.Fatal("canonical output boundary was not applied")
+	}
 }
 
-// statefulFakeFS is a minimal path->bytes store for the HIGH-severity
-// crash-persistence proofs below: unlike nftReloadTestFixture's closures
-// (which always read back a FIXED initial value regardless of what writeFile
-// was told to store), this actually remembers what was last successfully
-// written, so a test can prove a FAILED write left the previous content in
-// place by reading it back afterward.
 type statefulFakeFS struct {
-	mu    sync.Mutex
-	files map[string][]byte
-	// failWriteOnce, if non-empty, makes the NEXT writeFile call to this
-	// exact path fail once (simulating a crash mid-write or a failed
-	// rename) without touching the stored content, then clears itself.
+	mu            sync.Mutex
+	files         map[string][]byte
 	failWriteOnce string
 	failWriteErr  error
 }
@@ -1413,13 +1389,16 @@ func TestReloadNFTRulesWriteFailureLeavesPreviousFileIntact(t *testing.T) {
 		readFile:          fs.readFile,
 		writeFile:         fs.writeFile,
 		removeFile:        fs.removeFile,
-		runCmd: func(context.Context, string, ...string) (string, int, error) {
+		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
+			if strings.HasPrefix(strings.Join(args, " "), "-n -a list") {
+				return "No such file or directory", 1, nil
+			}
 			t.Fatal("the kernel must never be touched when persisting the reconciled file failed first")
 			return "", 1, nil
 		},
 	}
 
-	err := reloadNFTRules(context.Background(), env)
+	err := reloadNFTForTest(t, context.Background(), env)
 	if err == nil {
 		t.Fatal("expected an error when persisting the reconciled rules file fails")
 	}
@@ -1432,66 +1411,25 @@ func TestReloadNFTRulesWriteFailureLeavesPreviousFileIntact(t *testing.T) {
 	}
 }
 
-// TestReloadNFTRulesKernelFailureRestoresPreviousFile is the HIGH-severity
-// crash-persistence proof, second half: the reconciled file is persisted
-// FIRST (so a crash right after can never corrupt it -- writeFileAtomic in
-// production always leaves either the old or the new content, never a
-// partial write), but if the KERNEL transaction that follows then fails,
-// reloadNFTRules restores the file to its PREVIOUS content rather than
-// leaving it claiming a state the kernel never reached.
-func TestReloadNFTRulesKernelFailureRestoresPreviousFile(t *testing.T) {
+// A failed client acknowledgement keeps desired policy durable for observation and retry.
+func TestReloadNFTRulesKernelFailureKeepsDesiredFileForRetry(t *testing.T) {
 	t.Parallel()
-	const rulesPath = "/managed/50-pipelock-containment.nft"
-	const configPath = "/etc/pipelock/pipelock.yaml"
-	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain) + "# stale revision\n"
-	fs := newStatefulFakeFS(map[string][]byte{
-		rulesPath:  []byte(oldRules),
-		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")),
-	})
-
-	env := &nftReloadEnv{
-		nftPath:           "nft",
-		rulesPath:         rulesPath,
-		configPath:        configPath,
-		reconcileLockPath: t.TempDir() + "/reconcile.lock",
-		table:             defaultNFTTable,
-		chain:             defaultNFTChain,
-		now:               func() time.Time { return time.Unix(1_800_000_000, 0) },
-		readFile:          fs.readFile,
-		writeFile:         fs.writeFile,
-		removeFile:        fs.removeFile,
-		runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
-			joined := strings.Join(args, " ")
-			switch {
-			case strings.HasPrefix(joined, "-n -a list chain"):
-				return "", 0, nil // no live chain yet: first-boot state
-			default:
-				// Every kernel-facing invocation (validate and apply) fails,
-				// simulating an nft rejection after the file was already
-				// persisted.
-				return "", 1, fmt.Errorf("simulated nft failure")
-			}
-		},
-	}
-
+	env, m := newReconcileModel("")
+	m.files[env.rulesPath] += "# stale revision\n"
+	m.fail = "apply"
 	err := reloadNFTRules(context.Background(), env)
-	if err == nil {
-		t.Fatal("expected an error when the kernel transaction fails")
+	if err == nil || !strings.Contains(err.Error(), "injected apply failure") {
+		t.Fatalf("apply error=%v", err)
 	}
-	got, readErr := fs.readFile(rulesPath)
-	if readErr != nil {
-		t.Fatalf("read back rules file: %v", readErr)
+	if m.files[env.rulesPath] != reconcileTestPolicy().rules {
+		t.Fatal("failed acknowledgement regressed durable desired policy")
 	}
-	if string(got) != oldRules {
-		t.Fatalf("rules file was not restored to its previous content after a failed kernel load:\ngot:\n%s\nwant:\n%s", got, oldRules)
+	m.fail = ""
+	if err := reloadNFTRules(context.Background(), env); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestReloadNFTRulesFailsClosedOnEmptyPersistedFile is the boot-reloader
-// half of the HIGH-severity fix: an empty or partial persisted rules file
-// (the exact state a crash mid-write used to be able to leave, before
-// atomic writes) makes reloadNFTRules error -- fail closed, load no
-// partial/zero-UID chain -- naming the recovery command.
 func TestReloadNFTRulesFailsClosedOnEmptyPersistedFile(t *testing.T) {
 	t.Parallel()
 	for name, content := range map[string]string{
@@ -1523,7 +1461,7 @@ func TestReloadNFTRulesFailsClosedOnEmptyPersistedFile(t *testing.T) {
 					return "", 1, nil
 				},
 			}
-			err := reloadNFTRules(context.Background(), env)
+			err := reloadNFTForTest(t, context.Background(), env)
 			if err == nil {
 				t.Fatal("expected an error for an empty/partial persisted rules file")
 			}
@@ -1595,7 +1533,7 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 			case strings.HasPrefix(joined, "-n -a list chain"):
 				kernelMu.Lock()
 				defer kernelMu.Unlock()
-				return kernelBody, 0, nil
+				return nftListingForTest(kernelBody), 0, nil
 			case strings.HasPrefix(joined, "-c -f "):
 				return "", 0, nil
 			case strings.HasPrefix(joined, "-f "):
@@ -1604,7 +1542,11 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 					return "", 1, err
 				}
 				kernelMu.Lock()
-				kernelBody = string(data)
+				kernelBody, err = applyNFTScriptForTest(kernelBody, string(data))
+				if err != nil {
+					kernelMu.Unlock()
+					return "", 1, err
+				}
 				kernelMu.Unlock()
 				return "", 0, nil
 			default:
@@ -1696,112 +1638,24 @@ func TestInstallReloadInterleavingConvergesOnLatestConfig(t *testing.T) {
 	}
 }
 
-// TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors regression-tests
-// nft_reload.go's restoreOnFailure: when the kernel transaction fails AND
-// the attempt to restore the previous content ALSO fails (e.g. the
-// filesystem went read-only between the two writes), the returned error
-// surfaces BOTH causes -- an operator must not see only "restore failed"
-// and lose the original kernel failure, or only the kernel failure while a
-// corrupted-in-a-new-way file silently persists. It also proves recovery:
-// the NEXT reload, once writes succeed again, converges the persisted file
-// and the live kernel chain to the same (fully reconciled) content.
-func TestReloadNFTRulesKernelFailureThenRestoreFailureJoinsBothErrors(t *testing.T) {
+func TestReloadNFTRulesKernelFailureThenObservationFailureJoinsBothErrors(t *testing.T) {
 	t.Parallel()
-	const rulesPath = "/managed/50-pipelock-containment.nft"
-	const configPath = "/etc/pipelock/pipelock.yaml"
-	oldRules := renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain) + "# stale revision\n"
-	fs := newStatefulFakeFS(map[string][]byte{
-		rulesPath:  []byte(oldRules),
-		configPath: []byte(nftReloadTestConfigWithService("2099-01-01T00:00:00Z")),
-	})
-
-	writeCount := 0
-	env := &nftReloadEnv{
-		nftPath:           "nft",
-		rulesPath:         rulesPath,
-		configPath:        configPath,
-		reconcileLockPath: filepath.Join(t.TempDir(), "reconcile.lock"),
-		table:             defaultNFTTable,
-		chain:             defaultNFTChain,
-		now:               func() time.Time { return time.Unix(1_800_000_000, 0) },
-		readFile:          fs.readFile,
-		removeFile:        fs.removeFile,
-		lockFn:            withContainmentReconcileLock,
-		writeFile: func(path string, data []byte, mode os.FileMode) error {
-			writeCount++
-			if writeCount == 2 {
-				// The SECOND write in this reload attempt is the
-				// restore-to-previous-content write (the first persisted
-				// the new reconciled body). Fail exactly that one to
-				// exercise restoreOnFailure's own write failure.
-				return fmt.Errorf("simulated read-only filesystem")
-			}
-			return fs.writeFile(path, data, mode)
-		},
-		runCmd: func(context.Context, string, ...string) (string, int, error) {
-			return "", 1, fmt.Errorf("simulated nft kernel failure")
-		},
-	}
-
+	env, m := newReconcileModel("")
+	m.files[env.rulesPath] += "# stale revision\n"
+	m.fail = "apply"
 	err := reloadNFTRules(context.Background(), env)
-	if err == nil {
-		t.Fatal("expected an error when both the kernel transaction and the restore write fail")
+	if err == nil || !strings.Contains(err.Error(), "injected apply failure") {
+		t.Fatalf("apply error=%v", err)
 	}
-	if !strings.Contains(err.Error(), "simulated nft kernel failure") {
-		t.Fatalf("error = %v, want it to include the original kernel failure", err)
+	if m.files[env.rulesPath] != reconcileTestPolicy().rules {
+		t.Fatal("failed acknowledgement regressed durable desired policy")
 	}
-	if !strings.Contains(err.Error(), "simulated read-only filesystem") {
-		t.Fatalf("error = %v, want it to include the restore-write failure", err)
-	}
-
-	// Recovery: once writes succeed again, the next reload converges the
-	// persisted file and the live kernel to the same reconciled content.
-	env.writeFile = fs.writeFile
-	var kernelBody string
-	env.runCmd = func(_ context.Context, _ string, args ...string) (string, int, error) {
-		joined := strings.Join(args, " ")
-		switch {
-		case strings.HasPrefix(joined, "-n -a list chain"):
-			return kernelBody, 0, nil
-		case strings.HasPrefix(joined, "-c -f "):
-			return "", 0, nil
-		case strings.HasPrefix(joined, "-f "):
-			data, readErr := fs.readFile(rulesPath + ".reload")
-			if readErr != nil {
-				return "", 1, readErr
-			}
-			kernelBody = string(data)
-			return "", 0, nil
-		default:
-			return "", 1, fmt.Errorf("unexpected nft invocation: %s", joined)
-		}
-	}
+	m.fail = ""
 	if err := reloadNFTRules(context.Background(), env); err != nil {
-		t.Fatalf("recovery reload: %v", err)
-	}
-	persisted, err := fs.readFile(rulesPath)
-	if err != nil {
-		t.Fatalf("read persisted rules: %v", err)
-	}
-	if string(persisted) != kernelBody {
-		t.Fatalf("persisted file and live kernel did not converge after recovery:\npersisted:\n%s\nkernel:\n%s", persisted, kernelBody)
-	}
-	if strings.Contains(string(persisted), "dport 9200 accept") {
-		t.Fatalf("recovered host rules must not carry the declared service:\n%s", persisted)
+		t.Fatal(err)
 	}
 }
 
-// TestStepInstallNFTRulesFirstInstallAbsentRulesDirWithRealLock is the
-// MEDIUM-severity reproduction: on a clean host (or an older install
-// without /etc/nftables.d), stepInstallNFTRulesApplyLocked acquires the
-// reconcile lock -- derived from the rules path, so it lives in the SAME
-// not-yet-existing directory -- BEFORE the callback that creates that
-// directory ever runs. With the REAL lock implementation (not a test
-// double that tolerates a missing parent), the lock's O_CREAT open fails
-// ENOENT and install never applies a single rule. The prescribed recovery
-// ("rerun install") would repeat the exact same failure, because install is
-// the thing that just failed. This test fails before the pre-lock
-// directory-creation fix, and must pass after it.
 func TestStepInstallNFTRulesFirstInstallAbsentRulesDirWithRealLock(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	// Confirm the premise: the rules directory genuinely does not exist yet.
@@ -1810,7 +1664,7 @@ func TestStepInstallNFTRulesFirstInstallAbsentRulesDirWithRealLock(t *testing.T)
 	}
 	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
 	env.lockFn = withContainmentReconcileLock
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -1834,7 +1688,7 @@ func TestStepInstallNFTRulesRefusesSymlinkedRulesDirAncestor(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
 	env.lockFn = withContainmentReconcileLock
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 	rulesParent := filepath.Dir(env.nftRulesPath) // .../etc/nftables.d
 	grandparent := filepath.Dir(rulesParent)      // .../etc
@@ -1894,7 +1748,7 @@ func TestStepInstallNFTRulesPreservesExistingRulesDirMode(t *testing.T) {
 		dir := filepath.Dir(env.nftRulesPath)
 		env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
 		env.lockFn = withContainmentReconcileLock
-		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 		s := stepInstallNFTRules()
 		if _, err := s.apply(context.Background(), env); err != nil {
@@ -1926,7 +1780,7 @@ func TestStepInstallNFTRulesPreservesExistingRulesDirMode(t *testing.T) {
 		}
 		env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
 		env.lockFn = withContainmentReconcileLock
-		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+		runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 		s := stepInstallNFTRules()
 		if _, err := s.apply(context.Background(), env); err != nil {
@@ -2135,10 +1989,10 @@ func TestProbeNFTContainmentPassesWithNoDeclarationAndCanonicalChain(t *testing.
 			if path == e.configPath {
 				return []byte("mode: balanced\n"), nil
 			}
-			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+			return []byte(renderNFTRules(1000, 988, 987, 8888, e.nftTable, e.nftChain)), nil
 		}
 		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
+			return nftListingForTest(renderNFTRules(1000, 988, 987, 8888, testTable, testChain)), 0, nil
 		}
 	})
 
@@ -2205,7 +2059,7 @@ func TestStepInstallNFTRulesKeepsHardenedDirModeWhenRulesChange(t *testing.T) {
 	dir := filepath.Dir(env.nftRulesPath)
 	env.reconcileLockPath = containmentReconcileLockPathFor(env.nftRulesPath)
 	env.lockFn = withContainmentReconcileLock
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 	s := stepInstallNFTRules()
 	if _, err := s.apply(context.Background(), env); err != nil {
@@ -2294,17 +2148,8 @@ func TestStepInstallNFTRulesUndoReportsAFailedTableDrop(t *testing.T) {
 	})
 }
 
-// TestReloadRemovesPartiallyPairedManagedBlock pins the recovery path for a
-// managed block whose pairs are incomplete: one declared service has its
-// forward allow but no reply. Neither the paired matcher nor the legacy
-// contiguous-forward matcher recognizes that shape on its own, and a block
-// nothing recognizes is a block nothing deletes. The forward allow for a
-// service the operator has since revoked would then stay in the chain while
-// reload appends the replacement block, so the revoked service stays
-// reachable. Partial states like this are reachable after an interrupted
-// transaction, so the reconciler has to recover from one rather than assume
-// it only ever sees blocks it wrote.
-func TestReloadRemovesPartiallyPairedManagedBlock(t *testing.T) {
+// Partial legacy pairs cannot establish ownership. Reload must report a conflict.
+func TestReloadRefusesPartiallyPairedLegacyBlock(t *testing.T) {
 	t.Parallel()
 
 	const revokedPort = 9300
@@ -2323,31 +2168,14 @@ func TestReloadRemovesPartiallyPairedManagedBlock(t *testing.T) {
 	}
 	live := numericNftStateListing(strings.Join(lines, "\n"))
 
-	handles := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-	if len(handles) == 0 {
-		t.Fatalf("a partially paired managed block was not recognized, so reload would delete nothing and leave the revoked service on port %d reachable\nlive:\n%s", revokedPort, live)
-	}
-	for _, want := range []int{handle + 5} {
-		found := false
-		for _, got := range handles {
-			if got == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("handle %d (the revoked service's orphaned forward allow) was not scheduled for deletion: %v", want, handles)
-		}
+	policy := nftReconcilePolicy{rules: renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain), table: defaultNFTTable, chain: defaultNFTChain, uids: nftRulesHeaderUIDs{operatorUID: loopbackTestOperatorUID, proxyUID: loopbackTestProxyUID, agentUID: loopbackTestAgentUID}}
+	plan := planNFTReconciliation(policy, nftReconcileObservation{live: live})
+	if plan.err() == nil || plan.script != "" {
+		t.Fatalf("partial block was adopted: %+v", plan)
 	}
 }
 
-// TestPartialBlockRecoveryLeavesUndeclaredReplyAlone is the safety half of
-// TestReloadRemovesPartiallyPairedManagedBlock. Recovering a partial block
-// must not become a licence to absorb any agent loopback reply that happens to
-// sit inside the block's span: an operator's hand-written reply rule for a
-// service the block never declared is theirs, and deleting it would break a
-// service they deliberately allowed while reporting a successful reconcile.
-func TestPartialBlockRecoveryLeavesUndeclaredReplyAlone(t *testing.T) {
+func TestLegacyConflictLeavesUndeclaredReplyAlone(t *testing.T) {
 	t.Parallel()
 
 	const undeclaredPort = 8789
@@ -2372,14 +2200,8 @@ func TestPartialBlockRecoveryLeavesUndeclaredReplyAlone(t *testing.T) {
 	}
 }
 
-// TestReloadRemovesManagedForwardAroundUndeclaredReply covers the case where a
-// partially paired block ALSO contains an operator reply rule the block never
-// declared. Recovery must delete the managed rules and leave that reply alone.
-// Treating the block as one contiguous span cannot do both: extending the span
-// deletes the operator's rule, and stopping at it abandons the managed rules,
-// which leaves a revoked service's forward allow reachable. Selecting managed
-// handles individually is what satisfies both.
-func TestReloadRemovesManagedForwardAroundUndeclaredReply(t *testing.T) {
+// A legacy forward mixed with an undeclared reply remains an untouched conflict.
+func TestReloadRefusesUnownedForwardAroundUndeclaredReply(t *testing.T) {
 	t.Parallel()
 
 	const revokedPort, undeclaredPort = 9300, 8789
@@ -2397,32 +2219,13 @@ func TestReloadRemovesManagedForwardAroundUndeclaredReply(t *testing.T) {
 	}
 	live := numericNftStateListing(strings.Join(lines, "\n"))
 
-	got := legacyManagedNFTRuleBlockHandles(live, loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID)
-	selected := map[int]bool{}
-	for _, handle := range got {
-		selected[handle] = true
-	}
-
-	if !selected[h+3] {
-		t.Fatalf("the revoked service's forward allow (handle %d) was not selected for deletion, so it survives reload and stays reachable: %v", h+3, got)
-	}
-	if selected[h+4] {
-		t.Fatalf("the operator's undeclared reply rule (handle %d) must never be deleted: %v", h+4, got)
-	}
-	for _, want := range []int{h, h + 1, h + 2, h + 5, h + 6, h + 7} {
-		if !selected[want] {
-			t.Fatalf("managed handle %d was not selected for deletion: %v", want, got)
-		}
+	policy := nftReconcilePolicy{rules: renderNFTRules(loopbackTestOperatorUID, loopbackTestProxyUID, loopbackTestAgentUID, loopbackTestProxyPort, defaultNFTTable, defaultNFTChain), table: defaultNFTTable, chain: defaultNFTChain, uids: nftRulesHeaderUIDs{operatorUID: loopbackTestOperatorUID, proxyUID: loopbackTestProxyUID, agentUID: loopbackTestAgentUID}}
+	plan := planNFTReconciliation(policy, nftReconcileObservation{live: live})
+	if plan.err() == nil || plan.script != "" {
+		t.Fatalf("partial block was adopted: %+v", plan)
 	}
 }
 
-// TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain pins the honesty
-// of the reload report for the case that changes the most while looking like it
-// changed nothing: a chain that carries only operator rules and no managed block.
-// Nothing is deleted and the persisted file already matches, so every signal the
-// reporter used to read says "no change" while the kernel gains the entire
-// managed block. An operator told their reconciliation did nothing has no reason
-// to check what it actually did.
 func TestReloadReportsInstallingManagedRulesIntoAForeignOnlyChain(t *testing.T) {
 	t.Parallel()
 

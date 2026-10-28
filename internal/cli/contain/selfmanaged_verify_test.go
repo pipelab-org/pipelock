@@ -13,7 +13,7 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 	t.Parallel()
 
 	const operatorUID, proxyUID, agentUID, proxyPort = 0, 0, 10001, 8888
-	canonical := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	canonical := nftListingForTest(renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain))
 	if err := validateSelfManagedNFTRules(canonical, operatorUID, proxyUID, agentUID, proxyPort); err != nil {
 		t.Fatalf("canonical rules rejected: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 		t.Fatalf("nft-style readback rejected: %v", err)
 	}
 
-	nonDefault := renderNFTRules(1000, 1001, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	nonDefault := nftListingForTest(renderNFTRules(1000, 1001, agentUID, proxyPort, defaultNFTTable, defaultNFTChain))
 	if err := validateSelfManagedNFTRules(nonDefault, 1000, 1001, agentUID, proxyPort); err != nil {
 		t.Fatalf("non-default operator/proxy UIDs rejected: %v", err)
 	}

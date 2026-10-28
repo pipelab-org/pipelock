@@ -17,14 +17,7 @@ import (
 // what this attempt changed, never deletes containment it did not create, and
 // reports an undo it could not finish instead of a clean rollback.
 
-const rollbackDriftedLiveChain = `table inet pipelock_containment {
-		chain output_filter {
-			meta oif "lo" accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 drop
-		}
-	}
-`
+var rollbackDriftedLiveChain = renderNFTRules(1000, 988, 987, 8889, defaultNFTTable, defaultNFTChain)
 
 func rollbackNFTFixture(t *testing.T, live string) (*installEnv, *fakeRunner, string) {
 	t.Helper()

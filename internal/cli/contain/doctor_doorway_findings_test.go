@@ -112,7 +112,12 @@ func TestDoorwayAggregationSeverityAndOrder(t *testing.T) {
 
 func TestDoorwayUnverifiedDefinitionsDoNotSuggestUnitCommands(t *testing.T) {
 	env := diagnosticDoorwayEnv(nil)
-	env.readFile = func(string) ([]byte, error) { return []byte("operator override"), nil }
+	env.readFile = func(path string) ([]byte, error) {
+		if path == env.configPath {
+			return []byte("containment: {}\n"), nil
+		}
+		return []byte("operator override"), nil
+	}
 	env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 		t.Fatal("unverified definitions reached runtime unit inspection")
 		return "", -1, os.ErrPermission

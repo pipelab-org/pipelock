@@ -1759,7 +1759,11 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 // rather than from a confirmed structural problem. contain verify treats both
 // as FAIL; doctor needs the distinction to report an unreadable chain as
 // inconclusive and a confirmed missing rule as FAIL.
-func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, string, bool) {
+func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (resultStatus, resultDetail string, unreadable bool) {
+	// Structural checks and remedy prediction share one file observation.
+	snapshot := *env
+	snapshot.readFile, _ = snapshotReconcileReads(env.readFile)
+	env = &snapshot
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("nft unavailable: %v", err), false
@@ -1770,7 +1774,18 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 			return statusSkip, "nft list chain requires root; rerun as root", false
 		}
 		if nftOutputConfirmsAbsent(out) {
-			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable), false
+			detail := fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable)
+			if env.nftRulesPath != "" {
+				current, identityErr := containmentUIDsFromProbeEnv(env)
+				if identityErr == nil {
+					_, remedy, predictionErr := predictNFTReconciliation(env, "", current)
+					if predictionErr != nil {
+						detail += "; " + predictionErr.Error()
+					}
+					detail += "; " + remedy
+				}
+			}
+			return statusFail, detail, false
 		}
 		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out)), true
 	}
@@ -1784,6 +1799,31 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 	if err != nil {
 		return statusFail, err.Error(), true
 	}
+	defer func() {
+		// A configured persistence path is the ownership authority. Older
+		// embedders without it retain structural verification only.
+		if env.nftRulesPath == "" || !nftChainLinesHaveManagedOutputBaseChain(lines) {
+			return
+		}
+		plan, remedy, predictionErr := predictNFTReconciliation(env, out, current)
+		if len(plan.conflicts) > 0 {
+			prefix := ""
+			if resultStatus != statusPass && resultDetail != "" {
+				prefix = resultDetail + "; "
+			}
+			resultStatus, unreadable = statusFail, false
+			resultDetail = prefix + predictionErr.Error() + "; rerun `" + verifyCommandForPort(env.port) + "` after resolving the conflict"
+			return
+		}
+		if predictionErr == nil && (plan.kernelChanged || plan.fileChanged) {
+			if resultStatus == statusPass {
+				resultStatus, resultDetail = statusFail, "managed nft rules differ from the reconciliation plan"
+			}
+			resultDetail += "; " + remedy
+		} else if predictionErr != nil && resultStatus == statusPass {
+			resultStatus, resultDetail = statusFail, predictionErr.Error()+"; "+remedy
+		}
+	}()
 	// The base-chain contract comes first. Without the output hook no rule in
 	// this chain is ever reached, so neither the catch-all drop nor a rule
 	// sitting before it means anything, and calling that a containment hole
@@ -2017,6 +2057,12 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 		}
 		if err := validatePort(proxyPort); err != nil {
 			return nftRulesHeaderUIDs{}, true, fmt.Errorf("managed proxy-port: %w", err)
+		}
+		// nft(8) meta skuid identifies a Unix UID. Retain the same identity
+		// separation as containmentUIDsFromProbeEnv: an agent must never be
+		// included in the operator/proxy allow rules, including after recovery.
+		if operatorUID < 0 || proxyUID < 0 || agentUID < 0 || operatorUID == agentUID || proxyUID == agentUID {
+			return nftRulesHeaderUIDs{}, true, errors.New("managed uid header must use nonnegative uids and keep the agent distinct from operator and proxy; contained agent must not be allow-listed")
 		}
 		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: proxyPort}, true, nil
 	}

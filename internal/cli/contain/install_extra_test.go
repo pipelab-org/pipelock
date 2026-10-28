@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1216,9 +1215,9 @@ func TestStepInstallNFTRules_UndoDropsTable(t *testing.T) {
 
 func TestStepInstallNFTRules_UndoDoesNotRestoreNewlyCreatedTable(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, nil)
-	runner.on(argvFor(testNFT, "-c", "-f", env.nftRulesPath), "", 0, nil)
-	runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "", 0, nil)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor(testNFT, "-c", "-f", managedChainReloadPath(env)), "", 0, nil)
+	runner.on(argvFor(testNFT, "-f", managedChainReloadPath(env)), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "daemon-reload"), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "enable", filepath.Base(env.nftPersistUnitPath)), "", 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "disabled\n", 1, nil)
@@ -1252,14 +1251,14 @@ func TestStepInstallNFTRules_UndoDoesNotRestoreNewlyCreatedTable(t *testing.T) {
 func TestStepInstallNFTRules_ValidationFailureSurfaces(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	// Force nft validate to fail.
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
-	runner.on(argvFor(testNFT, "-c", "-f", env.nftRulesPath), "syntax error", 1, nil)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor(testNFT, "-c", "-f", managedChainReloadPath(env)), "syntax error", 1, nil)
 	s := stepInstallNFTRules()
 	_, err := s.apply(context.Background(), env)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "validation failed") {
+	if !strings.Contains(err.Error(), "validate nft managed chain reload") {
 		t.Errorf("err: %v", err)
 	}
 }

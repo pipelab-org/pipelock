@@ -207,9 +207,9 @@ func TestStepInstallNFTRulesReportsNewFailurePaths(t *testing.T) {
 		{
 			name: "nft load",
 			mutate: func(env *installEnv, runner *fakeRunner) {
-				runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "load denied", 1, nil)
+				runner.on(argvFor(testNFT, "-f", managedChainReloadPath(env)), "load denied", 1, nil)
 			},
-			want: "nft load failed",
+			want: "reload nft managed chain",
 		},
 		{
 			name: "systemd daemon reload",
@@ -223,7 +223,7 @@ func TestStepInstallNFTRulesReportsNewFailurePaths(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
-			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 			tc.mutate(env, runner)
 
 			changed, err := stepInstallNFTRules().apply(context.Background(), env)
@@ -391,7 +391,7 @@ func TestStepInstallNFTRulesReconcilesStoppedExpiryTimerOnMatchingRerun(t *testi
 	timer := filepath.Base(env.nftExpiryTimerPath)
 	env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
 		if name == testNFT && strings.Join(args, " ") == "-n -a list chain inet "+defaultNFTTable+" "+defaultNFTChain {
-			return body, 0, nil
+			return nftListingForTest(body), 0, nil
 		}
 		if name != testSystemctl {
 			return "", 0, nil
@@ -806,7 +806,7 @@ func TestStepInstallNFTRulesRollsBackExpiryUnitsAfterEnableFailure(t *testing.T)
 	for _, failedUnit := range []string{"persistence", "timer"} {
 		t.Run(failedUnit, func(t *testing.T) {
 			env, runner, _ := newFakeEnv(t)
-			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "disabled\n", 1, nil)
 			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "disabled\n", 1, nil)
 			unit := env.nftPersistUnitPath
@@ -850,7 +850,7 @@ func TestStepInstallNFTRulesCapturesExpiryStateBeforePartialUnitWriteFailure(t *
 					t.Fatalf("seed %s: %v", path, err)
 				}
 			}
-			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "enabled\n", 0, nil)
 			runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftExpiryTimerPath)), "enabled\n", 0, nil)
 			runner.on(argvFor(testSystemctl, "is-active", filepath.Base(env.nftExpiryTimerPath)), "active\n", 0, nil)

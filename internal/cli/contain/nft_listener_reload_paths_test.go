@@ -30,7 +30,7 @@ func TestReloadNFTRulesKeepsExistingListenerGuardOnBadConfig(t *testing.T) {
 				}
 				return prior(path)
 			}
-			if err := reloadNFTRules(context.Background(), fx.env); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if err := reloadNFTForTest(t, context.Background(), fx.env); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("reload error = %v, want %q", err, tc.want)
 			}
 			if got, ok := fx.persisted(); !ok || got != persisted {
@@ -50,7 +50,7 @@ func TestReloadNFTRulesRejectsUnreadableConfigWithoutGuard(t *testing.T) {
 		}
 		return prior(path)
 	}
-	if err := reloadNFTRules(context.Background(), fx.env); !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "read managed listener config") {
+	if err := reloadNFTForTest(t, context.Background(), fx.env); !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "read managed listener config") {
 		t.Fatalf("reload error = %v, want wrapped config permission error", err)
 	}
 	if got, ok := fx.persisted(); !ok || got != persisted {

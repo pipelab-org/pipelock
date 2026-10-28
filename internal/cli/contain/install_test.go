@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -117,8 +118,40 @@ func (f *fakeRunner) run(_ context.Context, name string, args ...string) (string
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, fakeCall{name: name, args: append([]string(nil), args...)})
 	key := name + " " + strings.Join(args, " ")
-	if r, ok := f.responses[key]; ok {
+	if r, ok := f.responses[key]; ok && (r.err != nil || r.code != 0 || len(args) != 2 || args[0] != "-f") {
+		if filepath.Base(name) == testNFT && strings.HasPrefix(strings.Join(args, " "), "-n -a list chain ") {
+			return nftListingForTest(r.out), r.code, r.err
+		}
 		return r.out, r.code, r.err
+	}
+	if filepath.Base(name) == testNFT && len(args) == 2 && args[0] == "-f" {
+		data, err := os.ReadFile(args[1])
+		if err == nil && strings.Contains(string(data), "# Pipelock containment ruleset") && !strings.HasPrefix(string(data), "delete table") {
+			query := argvFor(name, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain)
+			before := f.responses[query]
+			live, applyErr := applyNFTScriptForTest(before.out, string(data))
+			if applyErr != nil {
+				return "", 1, applyErr
+			}
+			before.out, before.code, before.err = live, 0, nil
+			f.responses[query] = before
+		}
+	}
+	if name == testSystemctl && len(args) == 4 && args[0] == "show" && args[1] == "--property=ActiveState" && args[2] == "--value" {
+		unit := args[3]
+		for i := len(f.calls) - 2; i >= 0; i-- {
+			call := f.calls[i]
+			if call.name != testSystemctl || len(call.args) < 2 || call.args[len(call.args)-1] != unit {
+				continue
+			}
+			if call.args[0] == "stop" || (call.args[0] == "disable" && slices.Contains(call.args, "--now")) {
+				return "inactive\n", 0, nil
+			}
+			if call.args[0] == "start" || call.args[0] == "restart" || (call.args[0] == "enable" && slices.Contains(call.args, "--now")) {
+				return "active\n", 0, nil
+			}
+		}
+		return "inactive\n", 0, nil
 	}
 	if key == "id -u "+viewerUserName {
 		return "900\n", 0, nil
@@ -1897,14 +1930,7 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableDrifted(t *testing.T) {
 		t.Fatalf("write rules: %v", err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	drifted := `table inet pipelock_containment {
-		chain output_filter {
-			meta oif "lo" accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 drop
-		}
-	}
-`
+	drifted := strings.Replace(body, "tcp dport 8888 accept", "tcp dport 8889 accept", 1)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
 
 	s := stepInstallNFTRules()
@@ -1940,7 +1966,7 @@ func TestStepInstallNFTRulesNewTableFailureNeedsRollback(t *testing.T) {
 	}
 	loaded := false
 	for _, call := range runner.calls {
-		if call.name == testNFT && strings.Join(call.args, " ") == "-f "+env.nftRulesPath {
+		if filepath.Base(call.name) == testNFT && strings.Join(call.args, " ") == "-f "+managedChainReloadPath(env) {
 			loaded = true
 		}
 	}
@@ -1949,7 +1975,7 @@ func TestStepInstallNFTRulesNewTableFailureNeedsRollback(t *testing.T) {
 	}
 }
 
-func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T) {
+func TestStepInstallNFTRules_RefusesUnownedLoopbackMarks(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
@@ -1979,24 +2005,20 @@ func TestStepInstallNFTRules_MigratesReceiverlessOwnedLoopbackMarks(t *testing.T
 	}
 
 	applied, err := stepInstallNFTRules().apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") || applied {
+		t.Fatalf("unowned fragment apply=(%v,%v), want untouched conflict", applied, err)
 	}
-	if !applied {
-		t.Fatal("receiverless owned-loopback marks must trigger canonical rules reload")
-	}
-	for _, handle := range []int{70, 71} {
-		if !strings.Contains(reloadScript, "delete rule inet pipelock_containment output_filter handle "+itoa(handle)) {
-			t.Fatalf("reload script did not remove stale mark handle %d:\n%s", handle, reloadScript)
+	for _, call := range runner.calls {
+		if filepath.Base(call.name) == testNFT && len(call.args) > 0 && call.args[0] == "-f" {
+			t.Fatal("conflict applied nft rules")
 		}
 	}
-	if strings.Contains(reloadScript, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) {
-		t.Fatalf("receiverless migration attempted to delete an absent receiver chain:\n%s", reloadScript)
+	if reloadScript != "" {
+		t.Fatal("conflict wrote transaction")
 	}
-	assertManagedChainReload(t, runner, env)
 }
 
-func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.T) {
+func TestStepInstallNFTRules_RefusesUnownedUnhookedLookalike(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
@@ -2021,16 +2043,15 @@ func TestStepInstallNFTRules_ReloadsWhenLiveChainIsUnhookedLookalike(t *testing.
 `
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), lookalike, 0, nil)
 
-	s := stepInstallNFTRules()
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
+	applied, err := stepInstallNFTRules().apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") || applied {
+		t.Fatalf("unowned fragment apply=(%v,%v), want untouched conflict", applied, err)
 	}
-	if !applied {
-		t.Fatal("expected unhooked lookalike chain to trigger rules reload")
+	for _, call := range runner.calls {
+		if filepath.Base(call.name) == testNFT && len(call.args) > 0 && call.args[0] == "-f" {
+			t.Fatal("conflict applied nft rules")
+		}
 	}
-
-	assertManagedChainReload(t, runner, env)
 }
 
 func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T) {
@@ -2046,17 +2067,17 @@ func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollision(t *testing.T)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
-	if err == nil || !strings.Contains(err.Error(), "not attributable to Pipelock") {
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") {
 		t.Fatalf("apply error = %v, want unattributed collision refusal", err)
 	}
 	if applied {
 		t.Fatal("unattributed collision must not report an applied repair")
 	}
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+		if filepath.Base(c.name) == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			t.Fatalf("unattributed collision deleted nft chain: %v", runner.calls)
 		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
+		if filepath.Base(c.name) == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
 			t.Fatalf("unattributed collision loaded replacement rules: %v", runner.calls)
 		}
 	}
@@ -2084,23 +2105,23 @@ func TestStepInstallNFTRules_RefusesUnattributedLiveChainCollisionOnRerun(t *tes
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
-	if err == nil || !strings.Contains(err.Error(), "not attributable to Pipelock") {
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") {
 		t.Fatalf("apply error = %v, want unattributed collision refusal", err)
 	}
 	if applied {
 		t.Fatal("unattributed rerun collision must not report an applied repair")
 	}
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
+		if filepath.Base(c.name) == testNFT && strings.Join(c.args, " ") == "delete chain inet "+defaultNFTTable+" "+defaultNFTChain {
 			t.Fatalf("unattributed rerun collision deleted nft chain: %v", runner.calls)
 		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
+		if filepath.Base(c.name) == testNFT && len(c.args) == 2 && c.args[0] == "-f" && (c.args[1] == env.nftRulesPath || c.args[1] == managedChainReloadPath(env)) {
 			t.Fatalf("unattributed rerun collision loaded replacement rules: %v", runner.calls)
 		}
 	}
 }
 
-func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop(t *testing.T) {
+func TestStepInstallNFTRules_RefusesUnownedAcceptBeforeDrop(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	operatorUID, proxyUID, agentUID := 1000, 988, 987
 	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
@@ -2125,19 +2146,18 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasUnexpectedAcceptBeforeDrop
 `
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), failOpen, 0, nil)
 
-	s := stepInstallNFTRules()
-	applied, err := s.apply(context.Background(), env)
-	if err != nil {
-		t.Fatalf("apply: %v", err)
+	applied, err := stepInstallNFTRules().apply(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") || applied {
+		t.Fatalf("unowned fragment apply=(%v,%v), want untouched conflict", applied, err)
 	}
-	if !applied {
-		t.Fatal("expected fail-open live accept to trigger rules reload")
+	for _, call := range runner.calls {
+		if filepath.Base(call.name) == testNFT && len(call.args) > 0 && call.args[0] == "-f" {
+			t.Fatal("conflict applied nft rules")
+		}
 	}
-
-	assertManagedChainReload(t, runner, env)
 }
 
-func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *testing.T) {
+func TestStepInstallNFTRules_RefusesUnownedControlFlow(t *testing.T) {
 	tests := []struct {
 		name string
 		rule string
@@ -2189,16 +2209,15 @@ func TestStepInstallNFTRules_ReloadsWhenLoadedTableHasPreDropUnsafeVerdict(t *te
 `
 			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), failOpen, 0, nil)
 
-			s := stepInstallNFTRules()
-			applied, err := s.apply(context.Background(), env)
-			if err != nil {
-				t.Fatalf("apply: %v", err)
+			applied, err := stepInstallNFTRules().apply(context.Background(), env)
+			if err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") || applied {
+				t.Fatalf("unowned fragment apply=(%v,%v), want untouched conflict", applied, err)
 			}
-			if !applied {
-				t.Fatalf("expected pre-drop %s to trigger rules reload", tc.name)
+			for _, call := range runner.calls {
+				if filepath.Base(call.name) == testNFT && len(call.args) > 0 && call.args[0] == "-f" {
+					t.Fatal("conflict applied nft rules")
+				}
 			}
-
-			assertManagedChainReload(t, runner, env)
 		})
 	}
 }
@@ -2239,7 +2258,7 @@ func TestStepInstallNFTRules_RepairsMissingPersistenceUnitOnRerun(t *testing.T) 
 	if err := os.WriteFile(env.nftRulesPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write rules: %v", err)
 	}
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "table inet pipelock_containment {}", 0, nil)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), wrapNFTListingForTest(""), 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -2261,7 +2280,7 @@ func TestStepInstallNFTRules_RepairsMissingPersistenceUnitOnRerun(t *testing.T) 
 func TestStepInstallNFTRules_LoadsWhenAbsent(t *testing.T) {
 	env, runner, _ := newFakeEnv(t)
 	// nft validate + load + systemctl enable should all succeed by default.
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
 	if err != nil {
@@ -2277,10 +2296,10 @@ func TestStepInstallNFTRules_LoadsWhenAbsent(t *testing.T) {
 	// Verify the run sequence included validate then load.
 	var sawValidate, sawLoad bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && len(c.args) >= 2 && c.args[0] == "-c" && c.args[1] == "-f" {
+		if filepath.Base(c.name) == testNFT && len(c.args) >= 2 && c.args[0] == "-c" && c.args[1] == "-f" {
 			sawValidate = true
 		}
-		if c.name == testNFT && len(c.args) >= 1 && c.args[0] == "-f" && (len(c.args) < 2 || c.args[0] != "-c") {
+		if filepath.Base(c.name) == testNFT && len(c.args) >= 1 && c.args[0] == "-f" && (len(c.args) < 2 || c.args[0] != "-c") {
 			sawLoad = true
 		}
 	}
@@ -2297,7 +2316,7 @@ func TestStepInstallNFTRules_ReloadsLoadedChainWithValidatedScript(t *testing.T)
 	if err := os.WriteFile(env.nftRulesPath, []byte("old broad-loopback rules\n"), 0o600); err != nil {
 		t.Fatalf("write old rules: %v", err)
 	}
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "table inet pipelock_containment {}", 0, nil)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), wrapNFTListingForTest(""), 0, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -2320,7 +2339,7 @@ func TestStepInstallNFTRules_PersistsViaOwnedSystemdUnitAndRestores(t *testing.T
 	if err := os.WriteFile(env.nftPersistUnitPath, []byte(original), 0o600); err != nil {
 		t.Fatalf("write unit: %v", err)
 	}
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, fmt.Errorf("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 
 	s := stepInstallNFTRules()
 	applied, err := s.apply(context.Background(), env)
@@ -2360,13 +2379,7 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 	if err := os.WriteFile(env.nftRulesPath, []byte(staleRules), 0o600); err != nil {
 		t.Fatalf("write stale managed rules: %v", err)
 	}
-	previousTable := `table inet pipelock_containment {
-	chain output_filter {
-		meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-		meta skuid 987 drop
-	}
-}
-`
+	previousTable := renderNFTRules(1000, 988, 987, 8889, defaultNFTTable, defaultNFTChain)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), previousTable, 0, nil)
 	runner.on(argvFor(testNFT, "list", "table", "inet", defaultNFTTable), previousTable, 0, nil)
 	runner.on(argvFor(testSystemctl, "is-enabled", filepath.Base(env.nftPersistUnitPath)), "disabled\n", 1, nil)
@@ -2395,10 +2408,10 @@ func TestStepInstallNFTRules_UndoRestoresPreviousLiveTableAndServiceState(t *tes
 	}
 	var sawValidateRestore, sawRestore, sawDisable bool
 	for _, c := range runner.calls {
-		if c.name == testNFT && len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == restorePath {
+		if filepath.Base(c.name) == testNFT && len(c.args) == 3 && c.args[0] == "-c" && c.args[1] == "-f" && c.args[2] == restorePath {
 			sawValidateRestore = true
 		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
+		if filepath.Base(c.name) == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
 			sawRestore = true
 		}
 		if c.name == testSystemctl && strings.Join(c.args, " ") == "disable "+filepath.Base(env.nftPersistUnitPath) {
@@ -2434,10 +2447,10 @@ func TestStepInstallNFTRules_UndoValidatesCapturedRestoreBeforeDeletingLiveTable
 		t.Fatalf("undo error = %v, want restore validation failure", err)
 	}
 	for _, c := range runner.calls {
-		if c.name == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
+		if filepath.Base(c.name) == testNFT && strings.Join(c.args, " ") == "delete table inet "+defaultNFTTable {
 			t.Fatalf("rollback deleted live table before proving captured restore was loadable: %v", runner.calls)
 		}
-		if c.name == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
+		if filepath.Base(c.name) == testNFT && len(c.args) == 2 && c.args[0] == "-f" && c.args[1] == restorePath {
 			t.Fatalf("rollback applied restore after validation failed: %v", runner.calls)
 		}
 	}
@@ -2481,19 +2494,7 @@ func TestStepInstallNFTRules_ReloadDeletesOnlyManagedChain(t *testing.T) {
 		t.Fatalf("write rules: %v", err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	drifted := `table inet pipelock_containment {
-		chain output_filter {
-			type filter hook output priority filter; policy accept;
-			meta skuid 1000 accept
-			meta skuid 988 accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 udp dport 53 drop
-			meta skuid 987 tcp dport 53 drop
-			meta skuid 987 ip daddr 203.0.113.10 accept
-			meta skuid 987 drop
-		}
-	}
-`
+	drifted := strings.Replace(body, "tcp dport 8888 accept", "tcp dport 8889 accept", 1)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
 
 	s := stepInstallNFTRules()
@@ -2519,19 +2520,7 @@ func TestStepInstallNFTRules_ManagedChainReloadValidationFailureAbortsApply(t *t
 		t.Fatalf("write rules: %v", err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	drifted := `table inet pipelock_containment {
-		chain output_filter {
-			type filter hook output priority filter; policy accept;
-			meta skuid 1000 accept
-			meta skuid 988 accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 udp dport 53 drop
-			meta skuid 987 tcp dport 53 drop
-			meta skuid 987 accept
-			meta skuid 987 drop
-		}
-	}
-`
+	drifted := strings.Replace(body, "tcp dport 8888 accept", "tcp dport 8889 accept", 1)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
 	runner.on(argvFor(testNFT, "-c", "-f", managedChainReloadPath(env)), "syntax error", 1, nil)
 
@@ -2567,19 +2556,7 @@ func TestStepInstallNFTRules_ManagedChainReloadApplyFailureDoesNotDeleteSeparate
 		t.Fatalf("write rules: %v", err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	drifted := `table inet pipelock_containment {
-		chain output_filter {
-			type filter hook output priority filter; policy accept;
-			meta skuid 1000 accept
-			meta skuid 988 accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 udp dport 53 drop
-			meta skuid 987 tcp dport 53 drop
-			meta skuid 987 accept
-			meta skuid 987 drop
-		}
-	}
-`
+	drifted := strings.Replace(body, "tcp dport 8888 accept", "tcp dport 8889 accept", 1)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
 	runner.on(argvFor(testNFT, "-f", managedChainReloadPath(env)), "netlink apply failed", 1, nil)
 
@@ -2588,8 +2565,8 @@ func TestStepInstallNFTRules_ManagedChainReloadApplyFailureDoesNotDeleteSeparate
 	if err == nil || !strings.Contains(err.Error(), "reload nft managed chain") {
 		t.Fatalf("apply error = %v, want managed-chain reload apply failure", err)
 	}
-	if applied {
-		t.Fatal("failed managed-chain reload apply must not report applied")
+	if !applied {
+		t.Fatal("attempted reload must report possible kernel mutation")
 	}
 	var sawValidate bool
 	for _, c := range runner.calls {
@@ -2622,19 +2599,7 @@ func TestStepInstallNFTRules_ManagedChainReloadWriteFailureAbortsBeforeNFT(t *te
 		t.Fatalf("write rules: %v", err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	drifted := `table inet pipelock_containment {
-		chain output_filter {
-			type filter hook output priority filter; policy accept;
-			meta skuid 1000 accept
-			meta skuid 988 accept
-			meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept
-			meta skuid 987 udp dport 53 drop
-			meta skuid 987 tcp dport 53 drop
-			meta skuid 987 accept
-			meta skuid 987 drop
-		}
-	}
-`
+	drifted := strings.Replace(body, "tcp dport 8888 accept", "tcp dport 8889 accept", 1)
 	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), drifted, 0, nil)
 	originalWriteFile := env.writeFile
 	env.writeFile = func(path string, contents []byte, mode os.FileMode) error {

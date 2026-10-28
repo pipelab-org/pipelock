@@ -65,7 +65,7 @@ func TestStepInstallNFTRulesUnitFailureAfterRulesWriteRestoresRules(t *testing.T
 			}
 			// No table is loaded, and deleting an absent table fails on a
 			// real host.
-			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+			runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 			runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "Error: No such file or directory", 1, nil)
 
 			s := stepInstallNFTRules()
@@ -102,7 +102,7 @@ func TestStepInstallNFTRulesUndoStillDropsTableThisAttemptLoaded(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeNFTPersistUnitFixture(t, env)
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
 	runner.on(argvFor("systemctl", "daemon-reload"), "", 1, nil)
 	changed, err := stepInstallNFTRulesApply(context.Background(), env)
 	if err == nil || !changed {
@@ -129,12 +129,12 @@ func TestRunStepsFailedAtomicNFTLoadRestoresRulesFile(t *testing.T) {
 	if err := os.WriteFile(env.nftRulesPath, []byte(oldRules), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "", 1, errors.New("not loaded"))
-	runner.on(argvFor(testNFT, "-f", env.nftRulesPath), "atomic batch rejected", 1, nil)
+	runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", defaultNFTTable, defaultNFTChain), "No such file or directory", 1, nil)
+	runner.on(argvFor(testNFT, "-f", managedChainReloadPath(env)), "atomic batch rejected", 1, nil)
 	runner.on(argvFor(testNFT, "delete", "table", "inet", defaultNFTTable), "no such table", 1, nil)
 
 	_, err := runSteps(context.Background(), env, out, []step{stepInstallNFTRules()})
-	if err == nil || !strings.Contains(err.Error(), "nft load failed") {
+	if err == nil || !strings.Contains(err.Error(), "reload nft managed chain") {
 		t.Fatalf("runSteps error = %v, want failed nft batch", err)
 	}
 	if strings.Contains(err.Error(), "rollback incomplete") {
