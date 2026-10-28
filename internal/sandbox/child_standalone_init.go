@@ -340,6 +340,10 @@ func RunStandaloneInit() {
 		exitSandboxProcess(1)
 	}
 	defer target.Close()
+	// Start the only Wait before the guard transfer, so every failure path below
+	// shares one exit result and never waits for a command it could not kill.
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- agentCmd.Wait() }()
 	if guardEnvironmentReader != nil {
 		_ = guardEnvironmentReader.Close()
 		_ = guardStatus.Close()
@@ -349,14 +353,12 @@ func RunStandaloneInit() {
 		}
 		closeErr := guardEnvironmentWriter.Close()
 		if writeErr != nil || closeErr != nil {
-			_ = target.Signal(os.Kill)
-			_ = agentCmd.Wait()
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment transport: %v\n", errors.Join(writeErr, closeErr))
+			reportBridgeCleanupFailure(os.Stderr, agentCmd.Process.Pid,
+				stopTargetAfterBridgeFailure(false, target.Signal, target.Close, agentDone))
 			exitSandboxProcess(1)
 		}
 	}
-	agentDone := make(chan error, 1)
-	go func() { agentDone <- agentCmd.Wait() }()
 
 	agentErr, bridgeFailure, agentReaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
 	if bridgeFailure != nil {
@@ -426,7 +428,7 @@ func reportBridgeCleanupFailure(w io.Writer, pid int, err error) {
 }
 
 // stopTargetAfterBridgeFailure retires the target thread after a fatal bridge
-// error. When the agent is still running it is killed and its result is taken
+// or guard-transport error. When the agent is still running it is killed and its result is taken
 // from the existing Wait goroutine; Wait is never called a second time. When
 // waitStandaloneAgentAndBridge already consumed that single result (the agent
 // exited first and the bridge then failed), nothing is left to receive, so it

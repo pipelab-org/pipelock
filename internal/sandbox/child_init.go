@@ -290,6 +290,8 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 		case err := <-waitCh:
 			cancel()
 			bridge.Close()
+			// exitBridgeChild can call os.Exit, which skips deferred calls.
+			target.Close()
 			exitBridgeChild(err)
 			return
 		}
