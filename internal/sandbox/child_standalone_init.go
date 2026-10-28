@@ -361,8 +361,10 @@ func RunStandaloneInit() {
 	agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
 	if bridgeFailure != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeFailure)
-		// The parent observes this non-zero init exit and terminates the
-		// standalone process group, including this agent and its descendants.
+		// The parent only sends SIGTERM to the process group and does not wait,
+		// so a command that ignores SIGTERM could outlive the launch. Stop and
+		// reap it here, as the guard-transport failure path above does.
+		stopTargetAfterBridgeFailure(target.Signal, target.Close, agentDone)
 		exitSandboxProcess(1)
 	}
 	err = agentErr
@@ -411,6 +413,15 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 // terminal result before returning. This preserves a bridge failure that was
 // already in progress instead of allowing a select race to turn it into a
 // successful agent exit.
+// stopTargetAfterBridgeFailure kills the command, waits for the existing Wait
+// goroutine to reap it, then retires the target thread. It never calls Wait a
+// second time; agentDone is that goroutine's only result.
+func stopTargetAfterBridgeFailure(signal func(os.Signal) error, closeTarget func(), agentDone <-chan error) {
+	_ = signal(os.Kill)
+	<-agentDone
+	closeTarget()
+}
+
 func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error) {
 	select {
 	case bridgeFailure = <-bridgeErr:
