@@ -36,9 +36,9 @@ type runtimeMount struct {
 	options                  []string
 }
 
-// Mountinfo, rather than unit configuration alone, proves the restrictions
-// applied to this caller. PID 1 remains in the host mount namespace for contain
-// launches, so its filesystem identities distinguish a new tmpfs from host shm.
+// Mountinfo checks the restrictions visible to this caller. Comparing devices
+// against PID 1 detects sharing with mounts in the host mount namespace, but
+// cannot establish that the masks are exclusive to this namespace.
 func assertManagedRuntimeMounts(env netnsAssertEnv) error {
 	if err := checkManagedRuntimeMounts(env); err != nil {
 		return runtimeMountRefusal(err)
@@ -87,7 +87,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		path, _, _ := strings.Cut(property, ":")
 		mount, ok := self[path]
 		if !ok || mount.filesystem != "tmpfs" || mount.root != "/" {
-			return fmt.Errorf("%s must be a private tmpfs mount", path)
+			return fmt.Errorf("%s must be a tmpfs mount rooted at /", path)
 		}
 		hostMount, ok := host[path]
 		for parent := filepath.Dir(path); !ok; parent = filepath.Dir(parent) {
@@ -99,10 +99,10 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		if ok && mount.device != hostMount.device && hostDevices[mount.device] {
 			// The requested property is present, but something binds a host
 			// filesystem over it; adding the property again cannot help.
-			return unexpectedRuntimeExposure(path, path+" does not have a verified private filesystem identity: it is shared with a host mount")
+			return unexpectedRuntimeExposure(path, path+" is shared with a host mount")
 		}
 		if !ok || mount.device == hostMount.device {
-			return fmt.Errorf("%s does not have a verified private filesystem identity", path)
+			return fmt.Errorf("%s has no filesystem identity distinct from the host mount", path)
 		}
 		options := []string{"ro"}
 		if path == "/dev/shm" {
@@ -203,7 +203,7 @@ func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runti
 		return fmt.Errorf("%w: /run/user must be the requested read-only tmpfs mask with root /", errManagedRuntimeMask)
 	}
 	if hostRun, ok := host["/run"]; !ok || mount.device == hostRun.device {
-		return fmt.Errorf("%w: /run/user must have a private filesystem identity distinct from host /run", errManagedRuntimeMask)
+		return fmt.Errorf("%w: /run/user must have a filesystem identity distinct from host /run", errManagedRuntimeMask)
 	}
 	if hostDevices[mount.device] {
 		return fmt.Errorf("%w: /run/user is shared with a host mount, not a private mask", errManagedRuntimeMask)

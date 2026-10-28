@@ -171,9 +171,9 @@ func TestRuntimeMountEvidence(t *testing.T) {
 		{name: "valid"},
 		{name: "shadowed host mounts", mounts: "10 1 0:50 / /run rw - tmpfs tmpfs rw\n11 1 0:51 / /dev/shm rw - tmpfs tmpfs rw\n" + strings.ReplaceAll(strings.ReplaceAll(managedRuntimeMountFixture, "20 1", "20 10"), "21 1", "21 11")},
 		{name: "unordered shadow stack", mounts: strings.ReplaceAll(strings.ReplaceAll(managedRuntimeMountFixture, "20 1", "20 10"), "21 1", "21 11") + "11 1 0:51 / /dev/shm rw - tmpfs tmpfs rw\n10 1 0:50 / /run rw - tmpfs tmpfs rw\n"},
-		{name: "missing run", mounts: strings.Join(strings.Split(managedRuntimeMountFixture, "\n")[1:], "\n"), want: "private tmpfs"},
-		{name: "host run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200", "0:50", 1), want: "private filesystem identity"},
-		{name: "subtree run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200 /", "0:200 /subtree", 1), want: "private tmpfs"},
+		{name: "missing run", mounts: strings.Join(strings.Split(managedRuntimeMountFixture, "\n")[1:], "\n"), want: "tmpfs mount rooted at /"},
+		{name: "host run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200", "0:50", 1), want: "no filesystem identity distinct from the host mount"},
+		{name: "subtree run", mounts: strings.Replace(managedRuntimeMountFixture, "0:200 /", "0:200 /subtree", 1), want: "tmpfs mount rooted at /"},
 		{name: "readonly shm", mounts: strings.Replace(managedRuntimeMountFixture, "/dev/shm rw", "/dev/shm ro", 1), want: "lacks rw"},
 		{name: "executable shm", mounts: strings.Replace(managedRuntimeMountFixture, ",noexec", "", 1), want: "lacks noexec"},
 		{name: "writable identity", mounts: strings.Replace(managedRuntimeMountFixture, "agent-netns.id ro", "agent-netns.id rw", 1), want: "read-only bind"},
@@ -192,7 +192,7 @@ func TestRuntimeMountEvidence(t *testing.T) {
 				return managedRuntimeFixtureReadFile(path)
 			}
 		}},
-		{name: "host missing shm", want: "private filesystem identity", mutate: func(env *netnsAssertEnv) {
+		{name: "host missing shm", want: "no filesystem identity distinct from the host mount", mutate: func(env *netnsAssertEnv) {
 			env.readFile = func(path string) ([]byte, error) {
 				if path == "/proc/1/mountinfo" {
 					return []byte(strings.Split(hostRuntimeMountFixture, "\n")[0]), nil
