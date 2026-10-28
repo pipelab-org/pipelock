@@ -150,3 +150,26 @@ func TestStopTargetAfterBridgeFailureKillsWaitsThenCloses(t *testing.T) {
 		})
 	}
 }
+
+func TestStopTargetAfterBridgeFailureDoesNotWaitWhenKillFails(t *testing.T) {
+	errKillRefused := errors.New("operation not permitted")
+	agentDone := make(chan error, 1) // never receives: the command was not killed
+	closed := false
+	signal := func(os.Signal) error { return errKillRefused }
+
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- stopTargetAfterBridgeFailure(false, signal, func() { closed = true }, agentDone)
+	}()
+	select {
+	case err := <-stopped:
+		if !errors.Is(err, errKillRefused) {
+			t.Fatalf("result = %v, want the kill error", err)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("cleanup waited for a command it could not kill")
+	}
+	if !closed {
+		t.Fatal("target was not closed")
+	}
+}

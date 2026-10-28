@@ -415,13 +415,19 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 // from the existing Wait goroutine; Wait is never called a second time. When
 // waitStandaloneAgentAndBridge already consumed that single result (the agent
 // exited first and the bridge then failed), nothing is left to receive, so it
-// only closes the target.
+// only closes the target. If the kill itself fails for any reason other than
+// the command having already exited, the command may still be running and
+// nothing guarantees it will ever exit, so the helper returns that error
+// rather than waiting.
 func stopTargetAfterBridgeFailure(agentReaped bool, signal func(os.Signal) error, closeTarget func(), agentDone <-chan error) error {
 	if agentReaped {
 		closeTarget()
 		return nil
 	}
-	_ = signal(os.Kill)
+	if err := signal(os.Kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		closeTarget()
+		return fmt.Errorf("kill sandboxed command: %w", err)
+	}
 	err := <-agentDone
 	closeTarget()
 	return err
