@@ -1220,6 +1220,31 @@ func TestReconcileVerdictMapIsAVerdict(t *testing.T) {
 	}
 }
 
+// nft 1.1.7 prints the conditional drop with its address predicate before the
+// UID. That predicate cannot establish the unconditional traversal boundary.
+// queue flags bypass is valid in an inet filter output chain and can accept
+// the packet when no userspace listener is attached (nft(8), QUEUE STATEMENT).
+func TestConditionalDropDoesNotHideFollowingVerdict(t *testing.T) {
+	policy := reconcileTestPolicy()
+	owned := strings.Split(nftListingFromRulesBodyForTest(policy.rules, 20), "\n")
+	conditional := "ip daddr 192.0.2.1 meta skuid 987 drop # handle 100"
+	uids := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}
+	for _, verdict := range []string{"queue flags bypass to 1", "ip daddr vmap @vm", "meta skuid 987 accept"} {
+		t.Run(verdict, func(t *testing.T) {
+			lines := append(slices.Clone(owned[:len(owned)-1]), conditional, verdict+" # handle 101", owned[len(owned)-1])
+			if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, uids, 8888) {
+				t.Fatal("conditional drop hid a reachable verdict from verification")
+			}
+			if _, err := containmentDropCounterFromChainText(wrapNFTListingForTest(strings.Join(lines, "\n")), policy.chain, uids, 8888, "", false); err == nil {
+				t.Fatal("counter attribution accepted a chain with a reachable bypass")
+			}
+		})
+	}
+	if chainLinesHaveAgentCatchAllDrop([]string{conditional}, uids.agentUID) {
+		t.Fatal("conditional drop was reported as a catch-all")
+	}
+}
+
 func TestReconcileForeignAcceptPreservesListenerGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name, foreign           string

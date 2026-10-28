@@ -2823,42 +2823,33 @@ func isPositiveInteger(value string) bool {
 // terminalSkuidUIDVerdict extracts the UID from an exact skuid verdict rule.
 func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 	fields := nftLineFields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] != "skuid" {
-			continue
-		}
-		uid, err := strconv.Atoi(fields[i+1])
-		if err != nil {
-			continue
-		}
-		verdictAt := indexTokenAfter(fields, verdict, i+2)
-		if verdictAt != -1 && fieldsAreNFTBookkeeping(fields[i+2:verdictAt]) {
-			return uid, true
-		}
+	if len(fields) < 4 || fields[0] != "meta" || fields[1] != "skuid" {
+		return 0, false
 	}
-	return 0, false
+	uid, err := strconv.Atoi(fields[2])
+	return uid, err == nil && lineHasTerminalSkuidVerdict(line, uid, verdict)
 }
 
 // lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
+// nft(8) evaluates expressions in order. A predicate before skuid still limits
+// the verdict and must never establish an unconditional catch-all boundary.
 func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	fields := nftLineFields(line)
-	uidText := strconv.Itoa(uid)
-	skuidAt := indexSkuidUID(fields, uidText)
-	if skuidAt == -1 {
+	if len(fields) < 4 || !slices.Equal(fields[:3], []string{"meta", "skuid", strconv.Itoa(uid)}) {
 		return false
 	}
-	verdictAt := indexTokenAfter(fields, verdict, skuidAt+1)
+	verdictAt := indexTokenAfter(fields, verdict, 3)
 	if verdictAt == -1 {
 		return false
 	}
-	return fieldsAreNFTBookkeeping(fields[skuidAt+1 : verdictAt])
+	return fieldsAreNFTBookkeeping(fields[3:verdictAt]) && nftRuleTailIsCommentOnly(fields[verdictAt+1:])
 }
 
 // lineHasSkuidProtocolDPortVerdict matches the canonical UID/protocol/port rule.
 func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
 	fields := nftLineFields(line)
 	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
-	if skuidAt == -1 || skuidAt+3 >= len(fields) {
+	if skuidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" || skuidAt+3 >= len(fields) {
 		return false
 	}
 	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != strconv.Itoa(port) {
@@ -2868,7 +2859,7 @@ func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, por
 	if verdictAt == -1 {
 		return false
 	}
-	return fieldsAreNFTBookkeeping(fields[skuidAt+4 : verdictAt])
+	return fieldsAreNFTBookkeeping(fields[skuidAt+4:verdictAt]) && nftRuleTailIsCommentOnly(fields[verdictAt+1:])
 }
 
 func indexSkuidUID(fields []string, uidText string) int {
