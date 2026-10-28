@@ -14,16 +14,77 @@ import (
 )
 
 func TestBridgeLifecycle_PreservesReadyBridgeFailure(t *testing.T) {
+	// Both results are ready, so select takes either one first. Each iteration
+	// runs the same cleanup RunStandaloneInit runs, which must finish whichever
+	// side the wait consumed.
+	sawReaped, sawUnreaped := false, false
 	for range 10_000 {
 		bridgeErr := make(chan error, 1)
 		agentDone := make(chan error, 1)
 		bridgeErr <- errors.New("parent socket lost")
 		agentDone <- nil
 
-		agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, func() {})
+		agentErr, bridgeFailure, reaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, func() {})
 		if agentErr != nil || bridgeFailure == nil {
 			t.Fatalf("agent error = %v, bridge failure = %v; want nil agent error and bridge failure", agentErr, bridgeFailure)
 		}
+		if reaped {
+			sawReaped = true
+		} else {
+			sawUnreaped = true
+		}
+		runBridgeFailureCleanup(t, reaped, agentDone)
+	}
+	if !sawReaped || !sawUnreaped {
+		t.Fatalf("reaped orderings seen: reaped=%t unreaped=%t; want both", sawReaped, sawUnreaped)
+	}
+}
+
+func TestBridgeLifecycle_AgentFirstThenBridgeFailureCleansUp(t *testing.T) {
+	bridgeErr := make(chan error, 1)
+	agentDone := make(chan error, 1)
+	agentDone <- errKilledForTest
+
+	agentErr, bridgeFailure, reaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, func() {
+		bridgeErr <- errors.New("parent socket lost")
+	})
+	if !errors.Is(agentErr, errKilledForTest) || bridgeFailure == nil || !reaped {
+		t.Fatalf("agent error = %v, bridge failure = %v, reaped = %t; want agent result, bridge failure, reaped", agentErr, bridgeFailure, reaped)
+	}
+	runBridgeFailureCleanup(t, reaped, agentDone)
+}
+
+// runBridgeFailureCleanup runs stopTargetAfterBridgeFailure the way
+// RunStandaloneInit does. Its signal stub only produces a Wait result while one
+// is still owed: a reaped command has none, as in the real process.
+func runBridgeFailureCleanup(t *testing.T, reaped bool, agentDone chan error) {
+	t.Helper()
+	killed, closed := false, false
+	signal := func(os.Signal) error {
+		killed = true
+		if len(agentDone) == 0 && !reaped {
+			agentDone <- errKilledForTest
+		}
+		return os.ErrProcessDone
+	}
+	stopped := make(chan struct{})
+	go func() {
+		_ = stopTargetAfterBridgeFailure(reaped, signal, func() { closed = true }, agentDone)
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatalf("cleanup hung (reaped=%t): it waited for an agent result already consumed", reaped)
+	}
+	if !closed {
+		t.Fatal("target was not closed")
+	}
+	if killed == reaped {
+		t.Fatalf("killed = %t with reaped = %t; want a kill only for a command not yet reaped", killed, reaped)
+	}
+	if len(agentDone) != 0 {
+		t.Fatal("agentDone result was left unconsumed")
 	}
 }
 
@@ -33,12 +94,12 @@ func TestBridgeLifecycle_StopsBridgeAfterAgentExit(t *testing.T) {
 	agentDone <- nil
 	stopped := false
 
-	agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, func() {
+	agentErr, bridgeFailure, reaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, func() {
 		stopped = true
 		bridgeErr <- nil
 	})
-	if agentErr != nil || bridgeFailure != nil || !stopped {
-		t.Fatalf("agent error = %v, bridge failure = %v, stopped = %t; want clean stopped bridge", agentErr, bridgeFailure, stopped)
+	if agentErr != nil || bridgeFailure != nil || !stopped || !reaped {
+		t.Fatalf("agent error = %v, bridge failure = %v, stopped = %t, reaped = %t; want clean stopped bridge after reaping", agentErr, bridgeFailure, stopped, reaped)
 	}
 }
 
@@ -68,7 +129,7 @@ func TestStopTargetAfterBridgeFailureKillsWaitsThenCloses(t *testing.T) {
 
 			stopped := make(chan error, 1)
 			go func() {
-				stopped <- stopTargetAfterBridgeFailure(signal, closeTarget, agentDone)
+				stopped <- stopTargetAfterBridgeFailure(false, signal, closeTarget, agentDone)
 			}()
 			select {
 			case err := <-stopped:

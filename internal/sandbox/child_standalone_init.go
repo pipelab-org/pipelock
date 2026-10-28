@@ -358,7 +358,7 @@ func RunStandaloneInit() {
 	agentDone := make(chan error, 1)
 	go func() { agentDone <- agentCmd.Wait() }()
 
-	agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
+	agentErr, bridgeFailure, agentReaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
 	if bridgeFailure != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeFailure)
 		// The parent only sends SIGTERM to the process group and does not wait,
@@ -366,7 +366,7 @@ func RunStandaloneInit() {
 		// reap it here, as the guard-transport failure path above does.
 		// The bridge failure is the reported cause; the killed command's own exit
 		// status adds nothing.
-		_ = stopTargetAfterBridgeFailure(target.Signal, target.Close, agentDone)
+		_ = stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone)
 		exitSandboxProcess(1)
 	}
 	err = agentErr
@@ -410,10 +410,17 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 	return command, nil
 }
 
-// stopTargetAfterBridgeFailure kills the command, waits for the existing Wait
-// goroutine to reap it, then retires the target thread. It never calls Wait a
-// second time; agentDone is that goroutine's only result, which it returns.
-func stopTargetAfterBridgeFailure(signal func(os.Signal) error, closeTarget func(), agentDone <-chan error) error {
+// stopTargetAfterBridgeFailure retires the target thread after a fatal bridge
+// error. When the agent is still running it is killed and its result is taken
+// from the existing Wait goroutine; Wait is never called a second time. When
+// waitStandaloneAgentAndBridge already consumed that single result (the agent
+// exited first and the bridge then failed), nothing is left to receive, so it
+// only closes the target.
+func stopTargetAfterBridgeFailure(agentReaped bool, signal func(os.Signal) error, closeTarget func(), agentDone <-chan error) error {
+	if agentReaped {
+		closeTarget()
+		return nil
+	}
 	_ = signal(os.Kill)
 	err := <-agentDone
 	closeTarget()
@@ -424,18 +431,19 @@ func stopTargetAfterBridgeFailure(signal func(os.Signal) error, closeTarget func
 // When the agent exits first, it shuts the bridge down and consumes its
 // terminal result before returning. This preserves a bridge failure that was
 // already in progress instead of allowing a select race to turn it into a
-// successful agent exit.
-func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error) {
+// successful agent exit. agentReaped reports whether the single agentDone
+// result was consumed here.
+func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error, agentReaped bool) {
 	select {
 	case bridgeFailure = <-bridgeErr:
 		if bridgeFailure != nil {
-			return nil, bridgeFailure
+			return nil, bridgeFailure, false
 		}
 		// A clean bridge return is only possible during cancellation or Close.
 		// Wait for the command so its established exit behavior is preserved.
-		return <-agentDone, nil
+		return <-agentDone, nil, true
 	case agentErr = <-agentDone:
 		stopBridge()
-		return agentErr, <-bridgeErr
+		return agentErr, <-bridgeErr, true
 	}
 }
