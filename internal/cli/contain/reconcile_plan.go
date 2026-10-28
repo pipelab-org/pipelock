@@ -233,8 +233,11 @@ func completeLegacyNFTBlockLength(rules []nftRuleWithHandle, start int, uids nft
 	if i < len(rules) && lineHasAgentListenerGuardForProxy(rules[i].line, uids.proxyUID) {
 		i++
 	}
-	if i+2 >= len(rules) || !lineHasTerminalSkuidVerdict(rules[i].line, uids.operatorUID, "accept") ||
-		!lineHasTerminalSkuidVerdict(rules[i+1].line, uids.proxyUID, "accept") ||
+	// Previous renderers emitted bare UID accepts here. nft(8) evaluates every
+	// expression in a rule; extra predicates or side effects are foreign policy,
+	// even when an accept follows the expected UID. Never claim that policy.
+	if i+2 >= len(rules) || !slices.Equal(nftLineFields(rules[i].line), []string{"meta", "skuid", strconv.Itoa(uids.operatorUID), "accept"}) ||
+		!slices.Equal(nftLineFields(rules[i+1].line), []string{"meta", "skuid", strconv.Itoa(uids.proxyUID), "accept"}) ||
 		!lineHasAgentLoopbackAllowAnyPortAnyHost(rules[i+2].line, uids.agentUID) {
 		return 0
 	}

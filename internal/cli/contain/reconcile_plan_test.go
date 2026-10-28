@@ -113,6 +113,9 @@ func TestReconcilePlanLegacyConflicts(t *testing.T) {
 		{"unknown owner version", strings.Replace(owned, "pipelock:contain:v1:", "pipelock:contain:v2:", 1), true},
 		{"duplicate handle", strings.Replace(owned, "# handle 101", "# handle 100", 1), true},
 		{"foreign ownership on legacy", strings.Replace(strings.Join(legacy, "\n"), "accept # handle 20", `accept comment "operator" # handle 20`, 1), true},
+		{"conditional operator is foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 1000 accept", "ip daddr 192.0.2.1 meta skuid 1000 accept", 1), true},
+		{"conditional proxy is foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 988 accept", "ip daddr 192.0.2.1 meta skuid 988 accept", 1), true},
+		{"operator side effects are foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 1000 accept", "meta skuid 1000 counter accept", 1), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
