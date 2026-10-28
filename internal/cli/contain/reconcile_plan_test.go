@@ -116,6 +116,7 @@ func TestReconcilePlanLegacyConflicts(t *testing.T) {
 		{"conditional operator is foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 1000 accept", "ip daddr 192.0.2.1 meta skuid 1000 accept", 1), true},
 		{"conditional proxy is foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 988 accept", "ip daddr 192.0.2.1 meta skuid 988 accept", 1), true},
 		{"operator side effects are foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 1000 accept", "meta skuid 1000 counter accept", 1), true},
+		{"proxy side effects are foreign", strings.Replace(strings.Join(legacy, "\n"), "meta skuid 988 accept", "meta skuid 988 counter accept", 1), true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -524,6 +525,32 @@ func TestReconcileLegacyIdentityCrashUsesBackup(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// After a completed migration the .bak header still names the retired
+// identity. It must not turn an unrelated rule for that UID into a conflict
+// on an enforcing marked chain, while a pending migration keeps the check.
+func TestReconcileRetiredBackupIdentityIsNotAmbiguous(t *testing.T) {
+	policy := reconcileTestPolicy()
+	retired := nftRulesHeaderUIDs{operatorUID: policy.uids.operatorUID, proxyUID: policy.uids.proxyUID, agentUID: 989}
+	foreign := `meta skuid 989 counter drop # handle 10`
+	marked := foreign + "\n" + nftListingFromRulesBodyForTest(policy.rules, 20)
+	policy.prior = []nftRulesHeaderUIDs{retired}
+	plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: policy.rules, live: marked})
+	if err := plan.err(); err != nil || plan.kernelChanged {
+		t.Fatalf("retired backup identity refused an enforcing chain: changed=%t err=%v", plan.kernelChanged, err)
+	}
+	legacyBody := renderNFTRules(retired.operatorUID, retired.proxyUID, retired.agentUID, 8888, policy.table, policy.chain)
+	for _, role := range nftManagedRoles {
+		legacyBody = strings.ReplaceAll(legacyBody, ` comment "pipelock:contain:v1:`+role+`"`, "")
+	}
+	pending := strings.Split(nftListingFromRulesBodyForTest(legacyBody, 20), "\n")
+	// Drop the proxy-loopback allow so the old block is incomplete.
+	pending = append(pending[:2], pending[3:]...)
+	plan = planNFTReconciliation(policy, nftReconcileObservation{persisted: policy.rules, live: strings.Join(pending, "\n")})
+	if plan.err() == nil || !strings.Contains(plan.err().Error(), "overlaps the managed boundary") {
+		t.Fatalf("pending migration lost the prior-identity ambiguity check: %v", plan.err())
 	}
 }
 

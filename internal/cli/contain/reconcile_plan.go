@@ -122,6 +122,15 @@ func planNFTReconciliation(policy nftReconcilePolicy, observation nftReconcileOb
 		managed[rule.handle] = true
 		got = append(got, canonicalManagedNFTLine(rule.line))
 	}
+	// Prior identities recognize a complete legacy block in any state. They
+	// widen the ambiguity check only while a migration is still pending, i.e.
+	// before any v1-marked rule is live. After a completed migration the
+	// retained .bak identity is retired, and judging unrelated rules against
+	// it would refuse an enforcing chain on every timer run.
+	ambiguityUIDs := []nftRulesHeaderUIDs{policy.uids}
+	if len(managed) == 0 {
+		ambiguityUIDs = append(ambiguityUIDs, policy.prior...)
+	}
 	legacy := false
 	for _, uids := range append([]nftRulesHeaderUIDs{policy.uids}, policy.prior...) {
 		for i := 0; i < len(rules); {
@@ -149,7 +158,7 @@ func planNFTReconciliation(policy nftReconcilePolicy, observation nftReconcileOb
 			case nftPacketDiversion(rule.line) && (p.kernelChanged || !seenAgentDrop):
 				p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "unowned rule diverts packets with dup, fwd, tproxy, or a nat statement that nft treats as an implicit accept"))
 			default:
-				for _, uids := range append([]nftRulesHeaderUIDs{policy.uids}, policy.prior...) {
+				for _, uids := range ambiguityUIDs {
 					if ambiguousNFTRule(rule.line, uids) {
 						p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "unowned rule overlaps the managed boundary but is not a complete ordered legacy block"))
 						break
