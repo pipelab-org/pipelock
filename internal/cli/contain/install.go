@@ -2675,10 +2675,8 @@ func stepInstallNFTRulesApply(ctx context.Context, env *installEnv) (bool, error
 	}
 	policy := nftReconcilePolicy{
 		rules: body, table: env.nftTableOrDefault(), chain: env.nftChainOrDefault(),
-		uids: nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: env.proxyPort},
-	}
-	if prior, ok, headerErr := parseNFTRulesHeaderUIDs(persisted); ok && headerErr == nil {
-		policy.prior = append(policy.prior, prior)
+		uids:  nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: env.proxyPort},
+		prior: priorNFTRulesHeaders(env.readFile, env.nftRulesPath, persisted),
 	}
 	live, code, listErr := env.runCmd(ctx, nftExecutable(env), "-n", "-a", "list", "chain", "inet", policy.table, policy.chain)
 	if listErr != nil {

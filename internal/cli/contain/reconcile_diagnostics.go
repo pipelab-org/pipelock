@@ -41,6 +41,7 @@ func predictNFTReconciliation(env *probeEnv, live string, current containmentUID
 	}
 	policy := nftReconcilePolicy{
 		uids: header, table: env.nftTable, chain: env.nftChain,
+		prior: priorNFTRulesHeaders(env.readFile, env.nftRulesPath, persisted),
 		rules: renderNFTRulesWithServices(nftRuleOptions{
 			OperatorUID: header.operatorUID, ProxyUID: header.proxyUID,
 			AgentUID: header.agentUID, ProxyPort: header.proxyPort, Table: env.nftTable, Chain: env.nftChain, AgentListener: listener,

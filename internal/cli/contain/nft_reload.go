@@ -222,7 +222,10 @@ func reloadNFTRulesLocked(ctx context.Context, env *nftReloadEnv) (result error)
 		AgentListener:    agentListener,
 	}))
 
-	policy := nftReconcilePolicy{rules: string(rules), uids: header, table: env.table, chain: env.chain}
+	policy := nftReconcilePolicy{
+		rules: string(rules), uids: header, table: env.table, chain: env.chain,
+		prior: priorNFTRulesHeaders(env.readFile, env.rulesPath, persisted),
+	}
 	out, code, err := env.runCmd(ctx, env.nftPath, "-n", "-a", "list", "chain", "inet", env.table, env.chain)
 	if err != nil {
 		return fmt.Errorf("list nft managed chain: %w", err)

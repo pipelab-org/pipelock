@@ -6,8 +6,28 @@ package contain
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
+
+// backupAndWrite preserves the previous rules in .bak before promoting a new
+// identity. A crash before nft apply leaves that previous legacy block live.
+// Headers only select candidate identities: nft(8) rule expressions must still
+// match a complete ordered previous-renderer block before deletion is allowed.
+// Missing or invalid backups confer no ownership and cannot block healthy runs.
+func priorNFTRulesHeaders(read func(string) ([]byte, error), path string, persisted []byte) []nftRulesHeaderUIDs {
+	bodies := [][]byte{persisted}
+	if backup, err := read(path + ".bak"); err == nil {
+		bodies = append(bodies, backup)
+	}
+	var prior []nftRulesHeaderUIDs
+	for _, body := range bodies {
+		if header, ok, err := parseNFTRulesHeaderUIDs(body); ok && err == nil && !slices.Contains(prior, header) {
+			prior = append(prior, header)
+		}
+	}
+	return prior
+}
 
 // Each observation retains a file's bytes and its read error. Unknown bytes
 // never count as equality with desired state. Executors retain their existing

@@ -474,6 +474,56 @@ func TestReconcileLegacyIdentityAndPositionBoundaries(t *testing.T) {
 	}
 }
 
+func TestReconcileLegacyIdentityCrashUsesBackup(t *testing.T) {
+	policy := reconcileTestPolicy()
+	oldBody := renderNFTRules(1000, 988, 986, 8888, policy.table, policy.chain)
+	for _, role := range nftManagedRoles {
+		oldBody = strings.ReplaceAll(oldBody, ` comment "pipelock:contain:v1:`+role+`"`, "")
+	}
+	live := nftListingFromRulesBodyForTest(oldBody, 20)
+	for _, consumer := range []string{"reload", "install", "prediction"} {
+		t.Run(consumer, func(t *testing.T) {
+			env, model := newReconcileModel(live)
+			// Crash after backupAndWrite promoted the new identity, before apply.
+			model.files[env.rulesPath+".bak"] = oldBody
+			switch consumer {
+			case "prediction":
+				probe := makeProbeEnv(t, func(p *probeEnv) {
+					p.nftRulesPath, p.configPath, p.readFile = env.rulesPath, env.configPath, env.readFile
+				})
+				current := containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}
+				plan, remedy, err := predictNFTReconciliation(probe, live, current)
+				if err != nil || remedy != nftReloadRemedy || !plan.kernelChanged || plan.removed != 6 {
+					t.Fatalf("backup recovery prediction: plan=%+v remedy=%s error=%v", plan, remedy, err)
+				}
+			case "install":
+				installed, runner, _ := newFakeEnv(t)
+				if err := os.MkdirAll(filepath.Dir(installed.nftRulesPath), 0o750); err != nil {
+					t.Fatal(err)
+				}
+				for path, body := range map[string]string{installed.nftRulesPath: policy.rules, installed.nftRulesPath + ".bak": oldBody} {
+					if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				runner.on(argvFor(testNFT, "-n", "-a", "list", "chain", "inet", policy.table, policy.chain), wrapNFTListingForTest(live), 0, nil)
+				if _, err := stepInstallNFTRules().apply(context.Background(), installed); err != nil {
+					t.Fatalf("install cannot recover changed identity: %v", err)
+				}
+			default:
+				for i := 0; i < 2; i++ {
+					if err := reloadNFTRules(context.Background(), env); err != nil {
+						t.Fatalf("timer/boot retry %d cannot recover changed identity: %v", i, err)
+					}
+				}
+				if model.applies != 1 || !lineHasManagedCatchAllDrop(nftRulesWithHandles(model.live)[5].line, policy.uids.agentUID) {
+					t.Fatalf("new identity not enforced exactly once: applies=%d live=%s", model.applies, model.live)
+				}
+			}
+		})
+	}
+}
+
 func TestReconcilePostObservationDetectsForeignMutation(t *testing.T) {
 	policy := reconcileTestPolicy()
 	foreign := `meta skuid 12345 counter packets 1 bytes 4 # handle 10`
