@@ -133,8 +133,8 @@ func TestStopTargetAfterBridgeFailureKillsWaitsThenCloses(t *testing.T) {
 			}()
 			select {
 			case err := <-stopped:
-				if !errors.Is(err, errKilledForTest) {
-					t.Fatalf("reaped result = %v, want the Wait goroutine's error", err)
+				if !errors.Is(err, errKilledForTest) || errors.Is(err, errSandboxKillFailed) {
+					t.Fatalf("reaped result = %v, want the Wait goroutine's error and no failed-kill report", err)
 				}
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("stopTargetAfterBridgeFailure did not return: the command was not killed and reaped")
@@ -163,8 +163,8 @@ func TestStopTargetAfterBridgeFailureDoesNotWaitWhenKillFails(t *testing.T) {
 	}()
 	select {
 	case err := <-stopped:
-		if !errors.Is(err, errKillRefused) {
-			t.Fatalf("result = %v, want the kill error", err)
+		if !errors.Is(err, errKillRefused) || !errors.Is(err, errSandboxKillFailed) {
+			t.Fatalf("result = %v, want the kill error marked as a failed kill", err)
 		}
 	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("cleanup waited for a command it could not kill")

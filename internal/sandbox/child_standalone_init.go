@@ -365,8 +365,11 @@ func RunStandaloneInit() {
 		// so a command that ignores SIGTERM could outlive the launch. Stop and
 		// reap it here, as the guard-transport failure path above does.
 		// The bridge failure is the reported cause; the killed command's own exit
-		// status adds nothing.
-		_ = stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone)
+		// status adds nothing. A failed kill is reported, because the command
+		// may then still be running after this process exits.
+		if err := stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone); errors.Is(err, errSandboxKillFailed) {
+			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: sandboxed command (pid %d) may still be running: %v\n", agentCmd.Process.Pid, err)
+		}
 		exitSandboxProcess(1)
 	}
 	err = agentErr
@@ -410,6 +413,10 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 	return command, nil
 }
 
+// errSandboxKillFailed marks a kill that failed while the command may still
+// be running.
+var errSandboxKillFailed = errors.New("kill sandboxed command")
+
 // stopTargetAfterBridgeFailure retires the target thread after a fatal bridge
 // error. When the agent is still running it is killed and its result is taken
 // from the existing Wait goroutine; Wait is never called a second time. When
@@ -426,7 +433,7 @@ func stopTargetAfterBridgeFailure(agentReaped bool, signal func(os.Signal) error
 	}
 	if err := signal(os.Kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		closeTarget()
-		return fmt.Errorf("kill sandboxed command: %w", err)
+		return fmt.Errorf("%w: %w", errSandboxKillFailed, err)
 	}
 	err := <-agentDone
 	closeTarget()
