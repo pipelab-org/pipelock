@@ -15,12 +15,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSandboxTargetSignals(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL} {
 		t.Run(sig.String(), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "/bin/sleep", "60")
 			target, err := startSandboxTarget(cmd, LayerStatus{Active: true, Version: 9})
@@ -113,7 +115,7 @@ func TestSandboxTargetContextCancellation(t *testing.T) {
 		if !errors.As(err, &exitErr) || exitErr.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
 			t.Fatalf("cancel result = %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		_ = target.Signal(os.Kill)
 		err := <-done
 		t.Fatalf("context cancellation did not kill target; cleanup wait: %v", err)
