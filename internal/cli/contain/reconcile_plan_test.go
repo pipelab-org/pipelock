@@ -1111,6 +1111,62 @@ func TestReconcileLiveDupConflictsAndVerifyFails(t *testing.T) {
 	}
 }
 
+// The rule texts are what nft 1.1.7 prints for these verdict maps in an inet
+// filter output chain. None has a bare accept token.
+func TestReconcileVerdictMapIsAVerdict(t *testing.T) {
+	policy := reconcileTestPolicy()
+	owned := nftListingFromRulesBodyForTest(policy.rules, 20)
+	drifted := strings.Replace(owned, "tcp dport 8888 accept", "tcp dport 8890 accept", 1)
+	maps := map[string]string{
+		"named map":        "ip daddr vmap @vm",
+		"inline elements":  "meta skuid 987 tcp dport vmap { 80 : accept, 443 : continue }",
+		"numgen selection": "meta skuid 987 numgen inc mod 2 vmap { 0 : accept, 1 : continue }",
+		"other uid":        "meta skuid 12345 ip daddr vmap @vm",
+	}
+	for name, rule := range maps {
+		foreign := rule + " # handle 7"
+		for _, tc := range []struct {
+			position, live string
+		}{
+			{"replacement must not promote a trailing map", drifted + "\n" + foreign},
+			{"map already ahead of the drop", foreign + "\n" + owned},
+		} {
+			t.Run(name+"/"+tc.position, func(t *testing.T) {
+				plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: policy.rules, live: tc.live})
+				if plan.err() == nil || plan.script != "" || !strings.Contains(plan.err().Error(), "handle 7") {
+					t.Fatalf("verdict map was not a conflict: err=%v script=%s", plan.err(), plan.script)
+				}
+			})
+		}
+		t.Run(name+"/verify fails a live map", func(t *testing.T) {
+			live := foreign + "\n" + owned
+			env, m := newReconcileModel(live)
+			if err := reloadNFTRules(context.Background(), env); err == nil || !strings.Contains(err.Error(), "handle 7") {
+				t.Fatalf("reload error=%v", err)
+			}
+			if m.live != live || m.applies != 0 {
+				t.Fatal("conflict mutated live state")
+			}
+			probe := makeProbeEnv(t, func(p *probeEnv) {
+				p.lookupUser = containTestLookup
+				p.nftRulesPath = env.rulesPath
+				p.configPath = env.configPath
+				p.readFile = env.readFile
+				p.runCmd = func(context.Context, string, ...string) (string, int, error) {
+					return wrapNFTListingForTest(live), 0, nil
+				}
+			})
+			if status, detail := probeNFTContainment(context.Background(), probe); status != statusFail {
+				t.Fatalf("verify=%s %s", status, detail)
+			}
+			lines := strings.Split(live, "\n")
+			if !chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines, containmentUIDs{operatorUID: 1000, operatorKnown: true, proxyUID: 988, agentUID: 987}, 8888) {
+				t.Fatal("structural verify scanner accepted a verdict map before the agent drop")
+			}
+		})
+	}
+}
+
 func TestReconcileForeignAcceptPreservesListenerGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name, foreign           string

@@ -2533,6 +2533,14 @@ func nftReplyDirection(value string) bool {
 	return value == "reply" || value == "1"
 }
 
+// nftVerdictTokens are the rule tokens that can end or redirect evaluation.
+// nft(8) VERDICT STATEMENT lists accept, drop, queue, return, jump and goto
+// (continue only resumes evaluation); REJECT STATEMENT is terminal. A verdict
+// map (vmap) picks one of those per element, so its accept is either hidden in
+// a named map the chain listing doesn't expand or printed with a trailing comma
+// ("accept,"). The token itself has to count as a verdict.
+var nftVerdictTokens = []string{"accept", "drop", "reject", "return", "jump", "goto", "queue", "vmap"}
+
 // chainLinesHaveUnsafeVerdictBeforeAgentDrop treats declarations as namespace
 // state only. They cannot authorize additional host nft accepts.
 func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int) bool {
@@ -2547,7 +2555,7 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		// used for attribution. An agent-owned loopback accept that is NOT the
 		// proxy port is exactly the stale or hand-inserted carve-out this check
 		// exists to catch.
-		if !lineHasAnyToken(line, "accept", "drop", "reject", "return", "jump", "goto", "queue") {
+		if !lineHasAnyToken(line, nftVerdictTokens...) {
 			return false
 		}
 		if uids.operatorKnown && lineHasTerminalSkuidVerdict(line, uids.operatorUID, "accept") {

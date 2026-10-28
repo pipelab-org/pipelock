@@ -282,7 +282,7 @@ func ambiguousNFTRule(line string, uids nftRulesHeaderUIDs) bool {
 	}
 	fields := nftLineFields(line)
 	if len(fields) >= 3 && fields[0] == "meta" && fields[1] == "skuid" && fields[2] == strconv.Itoa(uids.agentUID) &&
-		lineHasAnyToken(line, "accept", "drop", "reject", "return", "jump", "goto", "queue") {
+		lineHasAnyToken(line, nftVerdictTokens...) {
 		return true
 	}
 	return chainLinesHaveUnsafeVerdictBeforeAgentDrop([]string{line}, containmentUIDs{
