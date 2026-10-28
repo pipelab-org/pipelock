@@ -433,85 +433,87 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 		}
 	})
 
-	t.Run("wrapper forwards signal to command", func(t *testing.T) {
-		marker := filepath.Join(workspace, "signal-ready")
-		script := `trap 'exit 42' TERM; : > "$1"; while :; do :; done`
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
+		t.Run("wrapper forwards "+sig.String(), func(t *testing.T) {
+			marker := filepath.Join(workspace, "signal-ready-"+sig.String())
+			script := `trap 'exit 42' TERM INT; : > "$1"; while :; do :; done`
 
-		stderrFile, err := os.CreateTemp(t.TempDir(), "stderr-*")
-		if err != nil {
-			t.Fatalf("create stderr file: %v", err)
-		}
-		t.Cleanup(func() {
-			if err := stderrFile.Close(); err != nil {
-				t.Errorf("close stderr file: %v", err)
+			stderrFile, err := os.CreateTemp(t.TempDir(), "stderr-*")
+			if err != nil {
+				t.Fatalf("create stderr file: %v", err)
 			}
-		})
-
-		cmdCtx, cancelCmd := context.WithCancel(context.Background())
-		t.Cleanup(cancelCmd)
-		cmd := exec.CommandContext(cmdCtx, binary) // #nosec G204 -- controlled test binary.
-		cmd.Env = initChildEnvironment([]string{
-			initEnvKey + "=1",
-			childWorkspaceEnv + "=" + workspace,
-			childCommandEnv + "=/bin/sh\x1f-c\x1f" + script + "\x1fsh\x1f" + marker,
-			sandboxSocketEnv + "=" + socketPath,
-			childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
-		})
-		cmd.Stderr = stderrFile
-		cmd.SysProcAttr = initChildNamespaceAttributes()
-		if err := cmd.Start(); err != nil {
-			if errors.Is(err, syscall.EPERM) {
-				t.Skipf("user namespaces unavailable: %v", err)
-			}
-			t.Fatalf("start sandbox init child: %v", err)
-		}
-
-		readyTicker := time.NewTicker(10 * time.Millisecond)
-		defer readyTicker.Stop()
-		readyTimeout := time.NewTimer(5 * time.Second)
-		defer readyTimeout.Stop()
-	waitForReady:
-		for {
-			select {
-			case <-readyTicker.C:
-				if _, err := os.Stat(marker); err == nil {
-					break waitForReady
-				} else if os.IsNotExist(err) {
-					continue
-				} else {
-					_ = cmd.Process.Kill()
-					_ = cmd.Wait()
-					t.Fatalf("stat signal marker: %v", err)
+			t.Cleanup(func() {
+				if err := stderrFile.Close(); err != nil {
+					t.Errorf("close stderr file: %v", err)
 				}
-			case <-readyTimeout.C:
-				_ = cmd.Process.Kill()
+			})
+
+			cmdCtx, cancelCmd := context.WithCancel(context.Background())
+			t.Cleanup(cancelCmd)
+			cmd := exec.CommandContext(cmdCtx, binary) // #nosec G204 -- controlled test binary.
+			cmd.Env = initChildEnvironment([]string{
+				initEnvKey + "=1",
+				childWorkspaceEnv + "=" + workspace,
+				childCommandEnv + "=/bin/sh\x1f-c\x1f" + script + "\x1fsh\x1f" + marker,
+				sandboxSocketEnv + "=" + socketPath,
+				childPolicyEnv + "=" + instrumentedInitPolicy(t, workspace),
+			})
+			cmd.Stderr = stderrFile
+			cmd.SysProcAttr = initChildNamespaceAttributes()
+			if err := cmd.Start(); err != nil {
+				if errors.Is(err, syscall.EPERM) {
+					t.Skipf("user namespaces unavailable: %v", err)
+				}
+				t.Fatalf("start sandbox init child: %v", err)
+			}
+
+			readyTicker := time.NewTicker(10 * time.Millisecond)
+			defer readyTicker.Stop()
+			readyTimeout := time.NewTimer(5 * time.Second)
+			defer readyTimeout.Stop()
+		waitForReady:
+			for {
+				select {
+				case <-readyTicker.C:
+					if _, err := os.Stat(marker); err == nil {
+						break waitForReady
+					} else if os.IsNotExist(err) {
+						continue
+					} else {
+						_ = killProcessGroup(cmd.Process.Pid)
+						_ = cmd.Wait()
+						t.Fatalf("stat signal marker: %v", err)
+					}
+				case <-readyTimeout.C:
+					_ = killProcessGroup(cmd.Process.Pid)
+					_ = cmd.Wait()
+					data, _ := os.ReadFile(stderrFile.Name())
+					t.Fatalf("command did not become ready\nstderr: %s", data)
+				}
+			}
+
+			if err := cmd.Process.Signal(sig); err != nil {
+				_ = killProcessGroup(cmd.Process.Pid)
 				_ = cmd.Wait()
-				data, _ := os.ReadFile(stderrFile.Name())
-				t.Fatalf("command did not become ready\nstderr: %s", data)
+				t.Fatalf("signal sandbox init child: %v", err)
 			}
-		}
 
-		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			t.Fatalf("signal sandbox init child: %v", err)
-		}
-
-		waitDone := make(chan error, 1)
-		go func() {
-			waitDone <- cmd.Wait()
-		}()
-		select {
-		case err := <-waitDone:
-			var exitErr *exec.ExitError
-			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 42 {
-				data, _ := os.ReadFile(stderrFile.Name())
-				t.Fatalf("wrapper exit = %v, want code 42\nstderr: %s", err, data)
+			waitDone := make(chan error, 1)
+			go func() {
+				waitDone <- cmd.Wait()
+			}()
+			select {
+			case err := <-waitDone:
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 42 {
+					data, _ := os.ReadFile(stderrFile.Name())
+					t.Fatalf("wrapper exit = %v, want code 42\nstderr: %s", err, data)
+				}
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				_ = killProcessGroup(cmd.Process.Pid)
+				err := <-waitDone
+				t.Fatalf("sandbox init child did not exit after %v; wait error: %v", sig, err)
 			}
-		case <-time.After(testwait.Deadline(5 * time.Second)):
-			_ = cmd.Process.Kill()
-			err := <-waitDone
-			t.Fatalf("sandbox init child did not exit after SIGTERM; wait error: %v", err)
-		}
-	})
+		})
+	}
 }

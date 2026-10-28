@@ -5,10 +5,8 @@
 
 package sandbox
 
-import "os/exec"
-
-func startSandboxTarget(cmd *exec.Cmd, filesystem LayerStatus) error {
-	return cmd.Start()
+func restrictSandboxTarget(_ LayerStatus) error {
+	return nil
 }
 
 func restrictTargetUnixSockets() error {

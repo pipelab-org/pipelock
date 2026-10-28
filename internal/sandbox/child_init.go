@@ -264,12 +264,15 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 	childCmd.Env = env
 	childCmd.Dir = workspace
 
-	if err := startSandboxTarget(childCmd, filesystem); err != nil {
+	target, err := startSandboxTarget(childCmd, filesystem)
+	if err != nil {
 		cancel()
 		bridge.Close()
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
 	}
+
+	defer target.Close()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -280,7 +283,9 @@ func runInitWithBridge(command, env []string, workspace, socketPath string, sigC
 		select {
 		case sig := <-sigCh:
 			if sig != nil && childCmd.Process != nil {
-				_ = childCmd.Process.Signal(sig)
+				if err := target.Signal(sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
+					_, _ = fmt.Fprintf(os.Stderr, "[sandbox] forward signal: %v\n", err)
+				}
 			}
 		case err := <-waitCh:
 			cancel()

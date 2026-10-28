@@ -329,7 +329,8 @@ func RunStandaloneInit() {
 		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader, guardStatus}
 	}
 
-	if err := startSandboxTarget(agentCmd, llStatus); err != nil {
+	target, err := startSandboxTarget(agentCmd, llStatus)
+	if err != nil {
 		if guardEnvironmentReader != nil {
 			_ = guardEnvironmentReader.Close()
 			_ = guardEnvironmentWriter.Close()
@@ -338,6 +339,7 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
 	}
+	defer target.Close()
 	if guardEnvironmentReader != nil {
 		_ = guardEnvironmentReader.Close()
 		_ = guardStatus.Close()
@@ -347,7 +349,7 @@ func RunStandaloneInit() {
 		}
 		closeErr := guardEnvironmentWriter.Close()
 		if writeErr != nil || closeErr != nil {
-			_ = agentCmd.Process.Kill()
+			_ = target.Signal(os.Kill)
 			_ = agentCmd.Wait()
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment transport: %v\n", errors.Join(writeErr, closeErr))
 			exitSandboxProcess(1)

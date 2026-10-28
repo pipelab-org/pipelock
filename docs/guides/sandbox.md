@@ -31,6 +31,8 @@ Unix socket access is restricted separately from filesystem reads and writes. On
 
 The fallback notice appears on the launch outcome line, including `FULL`: full means the three required layers applied, but these Unix socket restrictions still limit runtime features. Python 3.14 and newer multiprocessing with the `forkserver` start method and Node `child_process.fork` with IPC require Landlock ABI 9 or newer; the fallback can refuse the forkserver or leave Node IPC waiting. Ordinary Node subprocess spawn with piped stdio and Tokio signal handling retain their connected socketpairs.
 
+The sandbox forwards MCP termination signals and standalone command cancellation from the OS thread that launched the command. This preserves signal delivery on ABI 6 and 7, where different Go threads can enter distinct Landlock domains even with identical rules. The command retains its filesystem and IPC restrictions.
+
 Landlock is mandatory for the normal Linux sandbox. A host that cannot apply it refuses the launch because the process would otherwise retain access to host files the sandbox claims to fence off. Use host-level `pipelock contain` when that is the deployment boundary available on an older kernel.
 
 On `linux/arm64` below Landlock ABI 9, a strict launch reports the missing Unix socket isolation requirement. ABI 9 does not remove the separate strict-mode seccomp requirement.
