@@ -469,7 +469,7 @@ func TestIntegration_MCPInitBridgePropagatesSignals(t *testing.T) {
 
 			readyTicker := time.NewTicker(10 * time.Millisecond)
 			defer readyTicker.Stop()
-			readyTimeout := time.NewTimer(5 * time.Second)
+			readyTimeout := time.NewTimer(testwait.Deadline(5 * time.Second))
 			defer readyTimeout.Stop()
 		waitForReady:
 			for {
