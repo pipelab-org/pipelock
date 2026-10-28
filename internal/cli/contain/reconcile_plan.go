@@ -137,22 +137,33 @@ func planNFTReconciliation(policy nftReconcilePolicy, observation nftReconcileOb
 			i += length
 		}
 	}
+	// kernelChanged is known before foreign classification because a replacement
+	// appends the managed block after every preserved foreign rule. A statement
+	// that is dead after today's agent drop becomes live in that order.
+	p.kernelChanged = legacy || !slices.Equal(got, managedNFTLinesFromRulesBody(policy.rules))
+	seenAgentDrop := false
 	for _, rule := range rules {
-		if managed[rule.handle] {
-			continue
-		}
-		p.foreign = append(p.foreign, rule)
-		for _, uids := range append([]nftRulesHeaderUIDs{policy.uids}, policy.prior...) {
-			if ambiguousNFTRule(rule.line, uids) {
-				p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "unowned rule overlaps the managed boundary but is not a complete ordered legacy block"))
-				break
+		if !managed[rule.handle] {
+			p.foreign = append(p.foreign, rule)
+			switch {
+			case nftPacketDiversion(rule.line) && (p.kernelChanged || !seenAgentDrop):
+				p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "unowned rule diverts packets with dup, fwd, tproxy, or a nat statement that nft treats as an implicit accept"))
+			default:
+				for _, uids := range append([]nftRulesHeaderUIDs{policy.uids}, policy.prior...) {
+					if ambiguousNFTRule(rule.line, uids) {
+						p.conflicts = append(p.conflicts, nftRuleConflict(policy, rule, "unowned rule overlaps the managed boundary but is not a complete ordered legacy block"))
+						break
+					}
+				}
 			}
+		}
+		if lineHasManagedCatchAllDrop(rule.line, policy.uids.agentUID) || lineHasTerminalSkuidVerdict(rule.line, policy.uids.agentUID, "drop") {
+			seenAgentDrop = true
 		}
 	}
 	if len(rules) > 0 && len(managed) == 0 && len(p.conflicts) == 0 {
 		p.conflicts = append(p.conflicts, fmt.Sprintf("existing nft chain inet %s %s is not attributable to Pipelock; preserve its rules and choose an unused managed chain with `pipelock contain install`", policy.table, policy.chain))
 	}
-	p.kernelChanged = legacy || !slices.Equal(got, managedNFTLinesFromRulesBody(policy.rules))
 	// Replacing the managed block appends it after preserved foreign rules.
 	// Use the existing listener-guard contract (chainLinesHaveAgentListenerGuard
 	// and acceptMayReachAgentListener) to refuse a move that would put an
@@ -186,6 +197,18 @@ func planNFTReconciliation(policy nftReconcilePolicy, observation nftReconcileOb
 	script.WriteString(policy.rules)
 	p.script = script.String()
 	return p
+}
+
+// nft(8) DUP STATEMENT copies a packet to another destination. FWD STATEMENT
+// and TPROXY STATEMENT redirect it. The verdict section says redirect, dnat,
+// snat, and masquerade internally issue an accept verdict, so a scan for the
+// accept token does not see them. synproxy's implicit drop is not a bypass.
+var nftPacketDiversionStatements = []string{
+	"dup", "fwd", "tproxy", "redirect", "dnat", "snat", "masquerade",
+}
+
+func nftPacketDiversion(line string) bool {
+	return lineHasAnyToken(line, nftPacketDiversionStatements...)
 }
 
 func nftRuleOwnership(line string) (string, bool) {

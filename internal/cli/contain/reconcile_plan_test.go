@@ -1029,6 +1029,88 @@ func TestReconcileMissingChainPredictsReload(t *testing.T) {
 	}
 }
 
+func TestReconcilePacketDiversionDoesNotMoveAheadOfDrop(t *testing.T) {
+	policy := reconcileTestPolicy()
+	owned := nftListingFromRulesBodyForTest(policy.rules, 20)
+	drifted := strings.Replace(owned, "tcp dport 8888 accept", "tcp dport 8890 accept", 1)
+	legacy := strings.Split(owned, "\n")
+	for i, line := range legacy {
+		fields := nftLineFields(line)
+		legacy[i] = strings.Join(fields[:len(fields)-2], " ") + " # handle " + itoa(20+i)
+	}
+	trailingDup := "dup to 192.0.2.1 device \"eth0\" # handle 7"
+	tests := []struct {
+		name, live string
+		conflict   bool
+	}{
+		{"exact owned keeps a dead trailing dup", owned + "\n" + trailingDup, false},
+		{"drift must not promote a trailing dup", drifted + "\n" + trailingDup, true},
+		{"dup already ahead of the drop", trailingDup + "\n" + owned, true},
+		{"legacy migration must not promote a trailing dup", strings.Join(legacy, "\n") + "\n" + trailingDup, true},
+		{"redirect is an implicit accept", drifted + "\nredirect to :53 # handle 7", true},
+		{"dnat is an implicit accept", drifted + "\ndnat to 192.0.2.1 # handle 7", true},
+		{"snat is an implicit accept", drifted + "\nsnat to 192.0.2.1 # handle 7", true},
+		{"masquerade is an implicit accept", drifted + "\nmasquerade # handle 7", true},
+		{"tproxy diverts to a local socket", drifted + "\ntproxy to :53 # handle 7", true},
+		{"fwd diverts the packet", drifted + "\nfwd to \"eth0\" # handle 7", true},
+		{"quoted dup inside a foreign drop is not a diversion", drifted + "\nmeta skuid 12345 log prefix \"dup to 192.0.2.1 \" drop # handle 7", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planNFTReconciliation(policy, nftReconcileObservation{persisted: policy.rules, live: tc.live})
+			if (plan.err() != nil) != tc.conflict {
+				t.Fatalf("plan error=%v want conflict=%v script=%s", plan.err(), tc.conflict, plan.script)
+			}
+			if tc.conflict {
+				if plan.script != "" || !strings.Contains(plan.err().Error(), "handle 7") || !strings.Contains(plan.err().Error(), "nft delete rule") {
+					t.Fatalf("imprecise conflict: %+v", plan)
+				}
+				return
+			}
+			if strings.Contains(plan.script, "handle 7\n") {
+				t.Fatal("foreign rule selected for deletion")
+			}
+			if !plan.kernelChanged {
+				return
+			}
+			applied, err := applyNFTScriptForTest(tc.live, plan.script)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(applied, "# handle 7") {
+				t.Fatalf("foreign rule dropped:\n%s", applied)
+			}
+			if err := checkNFTReconciliationResult(policy, plan, applied); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestReconcileLiveDupConflictsAndVerifyFails(t *testing.T) {
+	policy := reconcileTestPolicy()
+	live := "dup to 192.0.2.1 device \"eth0\" # handle 7\n" + nftListingFromRulesBodyForTest(policy.rules, 20)
+	env, m := newReconcileModel(live)
+	if err := reloadNFTRules(context.Background(), env); err == nil || !strings.Contains(err.Error(), "handle 7") {
+		t.Fatalf("live dup reload error=%v", err)
+	}
+	if m.live != live || m.applies != 0 {
+		t.Fatal("conflict mutated live state")
+	}
+	probe := makeProbeEnv(t, func(p *probeEnv) {
+		p.lookupUser = containTestLookup
+		p.nftRulesPath = env.rulesPath
+		p.configPath = env.configPath
+		p.readFile = env.readFile
+		p.runCmd = func(context.Context, string, ...string) (string, int, error) {
+			return wrapNFTListingForTest(live), 0, nil
+		}
+	})
+	if status, detail := probeNFTContainment(context.Background(), probe); status != statusFail || !strings.Contains(detail, "handle 7") {
+		t.Fatalf("verify=%s %s", status, detail)
+	}
+}
+
 func TestReconcileForeignAcceptPreservesListenerGuard(t *testing.T) {
 	for _, tc := range []struct {
 		name, foreign           string
