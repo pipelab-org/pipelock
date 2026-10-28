@@ -329,7 +329,8 @@ func RunStandaloneInit() {
 		agentCmd.ExtraFiles = []*os.File{guardEnvironmentReader, guardStatus}
 	}
 
-	if err := startSandboxTarget(agentCmd, llStatus); err != nil {
+	target, err := startSandboxTarget(agentCmd, llStatus)
+	if err != nil {
 		if guardEnvironmentReader != nil {
 			_ = guardEnvironmentReader.Close()
 			_ = guardEnvironmentWriter.Close()
@@ -338,6 +339,11 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] command error: %v\n", err)
 		exitSandboxProcess(1)
 	}
+	defer target.Close()
+	// Start the only Wait before the guard transfer, so every failure path below
+	// shares one exit result and never waits for a command it could not kill.
+	agentDone := make(chan error, 1)
+	go func() { agentDone <- agentCmd.Wait() }()
 	if guardEnvironmentReader != nil {
 		_ = guardEnvironmentReader.Close()
 		_ = guardStatus.Close()
@@ -347,20 +353,24 @@ func RunStandaloneInit() {
 		}
 		closeErr := guardEnvironmentWriter.Close()
 		if writeErr != nil || closeErr != nil {
-			_ = agentCmd.Process.Kill()
-			_ = agentCmd.Wait()
 			_, _ = fmt.Fprintf(os.Stderr, "[sandbox] guard environment transport: %v\n", errors.Join(writeErr, closeErr))
+			reportBridgeCleanupFailure(os.Stderr, agentCmd.Process.Pid,
+				stopTargetAfterBridgeFailure(false, target.Signal, target.Close, agentDone))
 			exitSandboxProcess(1)
 		}
 	}
-	agentDone := make(chan error, 1)
-	go func() { agentDone <- agentCmd.Wait() }()
 
-	agentErr, bridgeFailure := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
+	agentErr, bridgeFailure, agentReaped := waitStandaloneAgentAndBridge(agentDone, bridgeErr, bridge.Close)
 	if bridgeFailure != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] FATAL: bridge proxy: %v\n", bridgeFailure)
-		// The parent observes this non-zero init exit and terminates the
-		// standalone process group, including this agent and its descendants.
+		// The parent only sends SIGTERM to the process group and does not wait,
+		// so a command that ignores SIGTERM could outlive the launch. Stop and
+		// reap it here, as the guard-transport failure path above does.
+		// The bridge failure is the reported cause; the killed command's own exit
+		// status adds nothing. A failed kill is reported, because the command
+		// may then still be running after this process exits.
+		reportBridgeCleanupFailure(os.Stderr, agentCmd.Process.Pid,
+			stopTargetAfterBridgeFailure(agentReaped, target.Signal, target.Close, agentDone))
 		exitSandboxProcess(1)
 	}
 	err = agentErr
@@ -404,22 +414,59 @@ func decodeStandaloneCommand(encoded, legacy string) ([]string, error) {
 	return command, nil
 }
 
+// errSandboxKillFailed marks a kill that failed while the command may still
+// be running.
+var errSandboxKillFailed = errors.New("kill sandboxed command")
+
+// reportBridgeCleanupFailure reports a cleanup result only when the kill failed
+// and the command may outlive this process. Any other result is the expected
+// exit of a killed or already exited command and is not reported.
+func reportBridgeCleanupFailure(w io.Writer, pid int, err error) {
+	if errors.Is(err, errSandboxKillFailed) {
+		_, _ = fmt.Fprintf(w, "[sandbox] FATAL: sandboxed command (pid %d) may still be running: %v\n", pid, err)
+	}
+}
+
+// stopTargetAfterBridgeFailure retires the target thread after a fatal bridge
+// or guard-transport error. When the agent is still running it is killed and its result is taken
+// from the existing Wait goroutine; Wait is never called a second time. When
+// waitStandaloneAgentAndBridge already consumed that single result (the agent
+// exited first and the bridge then failed), nothing is left to receive, so it
+// only closes the target. If the kill itself fails for any reason other than
+// the command having already exited, the command may still be running and
+// nothing guarantees it will ever exit, so the helper returns that error
+// rather than waiting.
+func stopTargetAfterBridgeFailure(agentReaped bool, signal func(os.Signal) error, closeTarget func(), agentDone <-chan error) error {
+	if agentReaped {
+		closeTarget()
+		return nil
+	}
+	if err := signal(os.Kill); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		closeTarget()
+		return fmt.Errorf("%w: %w", errSandboxKillFailed, err)
+	}
+	err := <-agentDone
+	closeTarget()
+	return err
+}
+
 // waitStandaloneAgentAndBridge waits for the agent and its required bridge.
 // When the agent exits first, it shuts the bridge down and consumes its
 // terminal result before returning. This preserves a bridge failure that was
 // already in progress instead of allowing a select race to turn it into a
-// successful agent exit.
-func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error) {
+// successful agent exit. agentReaped reports whether the single agentDone
+// result was consumed here.
+func waitStandaloneAgentAndBridge(agentDone, bridgeErr <-chan error, stopBridge func()) (agentErr, bridgeFailure error, agentReaped bool) {
 	select {
 	case bridgeFailure = <-bridgeErr:
 		if bridgeFailure != nil {
-			return nil, bridgeFailure
+			return nil, bridgeFailure, false
 		}
 		// A clean bridge return is only possible during cancellation or Close.
 		// Wait for the command so its established exit behavior is preserved.
-		return <-agentDone, nil
+		return <-agentDone, nil, true
 	case agentErr = <-agentDone:
 		stopBridge()
-		return agentErr, <-bridgeErr
+		return agentErr, <-bridgeErr, true
 	}
 }

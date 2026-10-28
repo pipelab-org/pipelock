@@ -7,33 +7,18 @@ package sandbox
 
 import (
 	"fmt"
-	"os/exec"
-	"runtime"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
 
-// startSandboxTarget preserves Unix socket access in the trusted bridge on
-// kernels without pathname socket mediation. The target inherits a stricter
-// filter from the exact thread which forks it. That thread is retired when
-// the goroutine exits; it must never return to the runtime's worker pool.
-func startSandboxTarget(cmd *exec.Cmd, filesystem LayerStatus) error {
+// restrictSandboxTarget adds the workload-only socket filter on kernels that
+// cannot mediate pathname sockets. The caller owns a dedicated pinned thread.
+func restrictSandboxTarget(filesystem LayerStatus) error {
 	if filesystem.Active && filesystem.Version >= 9 {
-		return cmd.Start()
+		return nil
 	}
-	done := make(chan error, 1)
-	go func() {
-		runtime.LockOSThread()
-		// Deliberately no UnlockOSThread: this permanently restricted thread
-		// must not later execute bridge work.
-		if err := restrictTargetUnixSockets(); err != nil {
-			done <- err
-			return
-		}
-		done <- cmd.Start()
-	}()
-	return <-done
+	return restrictTargetUnixSockets()
 }
 
 // restrictTargetUnixSockets installs a thread-local, inherited filter. Its
