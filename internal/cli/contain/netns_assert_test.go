@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -413,5 +414,91 @@ func TestRunInHostNetworkNamespaceFailsForUnprivilegedCaller(t *testing.T) {
 	}
 	if err := runInHostNetworkNamespace(context.Background(), io.Discard, io.Discard, []string{"version"}); err == nil {
 		t.Fatal("expected the host-namespace re-exec to fail for an unprivileged caller")
+	}
+}
+
+func TestRuntimeMountRefusalRemediesMatchDocs(t *testing.T) {
+	hostRun := defaultNetnsAssertEnv()
+	hostRun.readFile = func(path string) ([]byte, error) {
+		if path == "/proc/self/mountinfo" {
+			return []byte(strings.Replace(managedRuntimeMountFixture, "0:200", "0:50", 1)), nil
+		}
+		return managedRuntimeFixtureReadFile(path)
+	}
+	hostRun.readDir = managedRuntimeFixtureReadDir
+
+	other := defaultNetnsAssertEnv()
+	other.unitProperties = nil
+	other.readFile = func(path string) ([]byte, error) {
+		if path == "/proc/self/mountinfo" {
+			return []byte(managedRuntimeMountFixture), nil
+		}
+		return []byte(hostRuntimeMountFixture + "12 1 0:200 / /srv/run rw - tmpfs tmpfs rw\n"), nil
+	}
+	other.readDir = managedRuntimeFixtureReadDir
+
+	userMask := defaultNetnsAssertEnv()
+	userMask.unitProperties = []string{protectHomeTmpfsProperty}
+	mounts := managedRuntimeMountFixture + "24 20 0:50 / /run/user ro,nodev - tmpfs tmpfs rw\n"
+	tree := fstest.MapFS{
+		"pipelock-contain/agent-netns.id": &fstest.MapFile{Mode: 0o600},
+		"user":                            &fstest.MapFile{Mode: os.ModeDir | 0o755},
+	}
+	userMask.readFile = func(path string) ([]byte, error) {
+		if path == "/proc/self/mountinfo" {
+			return []byte(mounts), nil
+		}
+		return []byte(hostRuntimeMountFixture), nil
+	}
+	userMask.readDir = func(path string) ([]os.DirEntry, error) {
+		if path == "/run" {
+			return tree.ReadDir(".")
+		}
+		return tree.ReadDir(strings.TrimPrefix(path, "/run/"))
+	}
+
+	const limit = "The check detects a device that also appears in PID 1's mount table. It misses sharing visible only in another mount namespace, and a bind whose source was unmounted after binding."
+	remedies := []struct {
+		name, want string
+		env        netnsAssertEnv
+	}{
+		{name: "same host device", want: "add TemporaryFileSystem=/run:ro", env: hostRun},
+		{name: "other host device", want: "remove the extra bind", env: other},
+		{name: "run user host device", want: "retain the managed ProtectHome=tmpfs profile, remove conflicting unit overrides or binds at this path", env: userMask},
+	}
+	for _, tc := range remedies {
+		t.Run(tc.name, func(t *testing.T) {
+			err := assertManagedRuntimeMounts(tc.env)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("refusal = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	docRemedies := []string{
+		"refused with a remedy to remove the extra bind",
+		"refused with a remedy to add the runtime mount properties",
+		"refused with a remedy to retain the managed ProtectHome=tmpfs profile and remove conflicting unit overrides or binds at that path",
+		limit,
+	}
+	doc, err := os.ReadFile(filepath.Clean("../../../docs/contain-cli.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range docRemedies {
+		if !strings.Contains(string(doc), want) {
+			t.Errorf("docs/contain-cli.md missing %q", want)
+		}
+	}
+	if strings.Contains(string(doc), "remove the shared bind") || strings.Contains(string(doc), "verified private") || strings.Contains(string(doc), "private tmpfs") {
+		t.Fatal("docs/contain-cli.md still overclaims runtime-mask privacy or collapses the refusal remedies")
+	}
+	for _, path := range []string{"../../../AGENTS.md", "../../../docs/security/capability-manifest.json"} {
+		body, err := os.ReadFile(filepath.Clean(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), limit) {
+			t.Errorf("%s missing the runtime-mount limit", path)
+		}
 	}
 }
