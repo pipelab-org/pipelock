@@ -42,6 +42,8 @@ func TestBridgeLifecycle_StopsBridgeAfterAgentExit(t *testing.T) {
 	}
 }
 
+var errKilledForTest = errors.New("signal: killed")
+
 func TestStopTargetAfterBridgeFailureKillsWaitsThenCloses(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -59,18 +61,20 @@ func TestStopTargetAfterBridgeFailureKillsWaitsThenCloses(t *testing.T) {
 					t.Fatalf("signal = %v, want kill", sig)
 				}
 				order = append(order, "kill")
-				agentDone <- errors.New("signal: killed")
+				agentDone <- errKilledForTest
 				return tc.signalErr
 			}
 			closeTarget := func() { order = append(order, "close") }
 
-			stopped := make(chan struct{})
+			stopped := make(chan error, 1)
 			go func() {
-				stopTargetAfterBridgeFailure(signal, closeTarget, agentDone)
-				close(stopped)
+				stopped <- stopTargetAfterBridgeFailure(signal, closeTarget, agentDone)
 			}()
 			select {
-			case <-stopped:
+			case err := <-stopped:
+				if !errors.Is(err, errKilledForTest) {
+					t.Fatalf("reaped result = %v, want the Wait goroutine's error", err)
+				}
 			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Fatal("stopTargetAfterBridgeFailure did not return: the command was not killed and reaped")
 			}
