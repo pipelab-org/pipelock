@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -35,10 +36,27 @@ func revokeKnownLoopbackDoorways(ctx context.Context, env *installEnv) error {
 	return errors.Join(errors.Join(errs...), closeLoopbackDoorways(ctx, env, plan.closeDoorways))
 }
 
+// doorwayRevocationCommandTimeout bounds one revocation systemctl call.
+// Doorway units set no TimeoutStopSec, so systemd-system.conf(5)'s stock
+// DefaultTimeoutStopSec=90s applies, and systemd.kill(5) waits that long after
+// SIGTERM and again after SIGKILL. A host may override the default to infinity,
+// which is why the caller keeps its own bound. A variable so tests can shorten it.
+var doorwayRevocationCommandTimeout = 2 * 90 * time.Second
+
+// revocationCommandContext detaches revocation from a canceled caller, because
+// exec.CommandContext would otherwise kill each systemctl call, while keeping a
+// fixed deadline so one hung call cannot stall the rest of the revocation.
+func revocationCommandContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), doorwayRevocationCommandTimeout)
+}
+
+func runRevocationSystemctl(ctx context.Context, env *installEnv, args ...string) error {
+	cmdCtx, cancel := revocationCommandContext(ctx)
+	defer cancel()
+	return runSystemctlCleanupUnit(cmdCtx, env, args...)
+}
+
 func closeLoopbackDoorways(ctx context.Context, env *installEnv, units []string) error {
-	// Revocation must finish even when the operation that triggered it was
-	// canceled; exec.CommandContext would otherwise kill each systemctl call.
-	ctx = context.WithoutCancel(ctx)
 	var errs []error
 	for _, unit := range units {
 		for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
@@ -46,7 +64,7 @@ func closeLoopbackDoorways(ctx context.Context, env *installEnv, units []string)
 			if suffix == ".service" {
 				args = []string{"stop", unit + suffix}
 			}
-			if err := runSystemctlCleanupUnit(ctx, env, args...); err != nil {
+			if err := runRevocationSystemctl(ctx, env, args...); err != nil {
 				errs = append(errs, fmt.Errorf("revoke loopback doorway %s%s: %w", unit, suffix, err))
 			}
 		}
@@ -83,8 +101,6 @@ func observePublishedDoorways(env *installEnv, inv publishedServiceRecordSet) ([
 }
 
 func closePublishedDoorways(ctx context.Context, env *installEnv, units []string) error {
-	// See closeLoopbackDoorways: revocation outlives a canceled caller.
-	ctx = context.WithoutCancel(ctx)
 	var errs []error
 	// Close every listener before stopping any relay. systemd.socket(5):
 	// stopping a socket alone doesn't terminate an already activated service.
@@ -97,7 +113,7 @@ func closePublishedDoorways(ctx context.Context, env *installEnv, units []string
 			if socket {
 				args = []string{"disable", "--now", unit}
 			}
-			if err := runSystemctlCleanupUnit(ctx, env, args...); err != nil {
+			if err := runRevocationSystemctl(ctx, env, args...); err != nil {
 				errs = append(errs, fmt.Errorf("revoke published doorway %s: %w", unit, err))
 			}
 		}
@@ -178,7 +194,9 @@ func observeClosedLoopbackDoorways(ctx context.Context, env *installEnv, units [
 func observeRevokedDoorways(ctx context.Context, env *installEnv, units []string) error {
 	var errs []error
 	for _, unit := range units {
-		out, code, err := env.runCmd(ctx, "systemctl", "show", "--property=ActiveState", "--value", unit)
+		cmdCtx, cancel := revocationCommandContext(ctx)
+		out, code, err := env.runCmd(cmdCtx, "systemctl", "show", "--property=ActiveState", "--value", unit)
+		cancel()
 		if err != nil {
 			errs = append(errs, fmt.Errorf("observe revoked doorway %s: %w", unit, err))
 			continue

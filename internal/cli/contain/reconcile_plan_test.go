@@ -589,6 +589,45 @@ func TestDoorwayRevocationOutlivesCanceledCaller(t *testing.T) {
 	}
 }
 
+// One hung systemctl call must not stall revocation: each call is bounded,
+// a timeout is reported as a revocation failure, and later units still run.
+func TestDoorwayRevocationBoundsHungCommands(t *testing.T) {
+	previous := doorwayRevocationCommandTimeout
+	doorwayRevocationCommandTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { doorwayRevocationCommandTimeout = previous })
+	for _, tc := range []struct {
+		name  string
+		close func(context.Context, *installEnv, []string) error
+		units []string
+	}{
+		{"loopback", closeLoopbackDoorways, []string{"pipelock-loopback-a", "pipelock-loopback-b"}},
+		{"published", closePublishedDoorways, []string{"pipelock-publish-a.socket", "pipelock-publish-b.socket"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			env := &installEnv{runCmd: func(ctx context.Context, _ string, _ ...string) (string, int, error) {
+				calls++
+				<-ctx.Done()
+				return "", 1, ctx.Err()
+			}}
+			done := make(chan error, 1)
+			go func() { done <- tc.close(context.Background(), env, tc.units) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("hung revocation error=%v", err)
+				}
+			case <-time.After(testwait.Deadline(10 * time.Second)):
+				t.Fatal("revocation did not bound a hung systemctl call")
+			}
+			// Every unit is still attempted and observed after the first hang.
+			if want := 2 * len(tc.units); calls < want {
+				t.Fatalf("calls=%d, want at least %d", calls, want)
+			}
+		})
+	}
+}
+
 func TestReconcilePostObservationDetectsForeignMutation(t *testing.T) {
 	policy := reconcileTestPolicy()
 	foreign := `meta skuid 12345 counter packets 1 bytes 4 # handle 10`
