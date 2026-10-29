@@ -38,6 +38,8 @@ type Config struct {
 type lease struct {
 	conn    net.Conn
 	expires time.Time
+	started time.Time
+	id      uint64
 }
 
 type Viewer struct {
@@ -45,6 +47,8 @@ type Viewer struct {
 	mu      sync.Mutex
 	lease   lease
 	viewers int
+	// Diagnostic IDs are local to this Viewer, not operator or browser identities.
+	nextLeaseID uint64
 }
 
 func New(cfg Config) (*Viewer, error) {
@@ -89,6 +93,7 @@ func (v *Viewer) Serve(ctx context.Context, client net.Conn, mode string) error 
 		_, _ = io.WriteString(client, "denied\n")
 		return errors.New("viewer: invalid mode")
 	}
+	var expired, reserved lease
 	v.mu.Lock()
 	if v.viewers >= v.cfg.MaxViewers {
 		v.mu.Unlock()
@@ -96,25 +101,44 @@ func (v *Viewer) Serve(ctx context.Context, client net.Conn, mode string) error 
 		return errors.New("viewer: viewer cap reached")
 	}
 	if mode == "control" && v.lease.conn != nil && !v.cfg.Now().Before(v.lease.expires) {
+		expired = v.lease
 		v.lease = lease{}
 	}
 	if mode == "control" && v.lease.conn != nil {
+		held, viewers := v.lease, v.viewers
 		v.mu.Unlock()
+		v.logLease("busy", held, viewers)
 		_, _ = io.WriteString(client, "busy\n")
 		return errors.New("viewer: control busy")
 	}
 	v.viewers++
 	if mode == "control" {
-		v.lease = lease{client, v.cfg.Now().Add(leaseLifetime)}
+		now := v.cfg.Now()
+		v.nextLeaseID++
+		v.lease = lease{conn: client, expires: now.Add(leaseLifetime), started: now, id: v.nextLeaseID}
+		reserved = v.lease
 	}
+	viewers := v.viewers
 	v.mu.Unlock()
+	if expired.conn != nil {
+		v.logLease("expired", expired, viewers)
+	}
+	if reserved.conn != nil {
+		v.logLease("reserved", reserved, viewers)
+	}
 	defer func() {
+		var released lease
 		v.mu.Lock()
 		v.viewers--
 		if v.lease.conn == client {
+			released = v.lease
 			v.lease = lease{}
 		}
+		remaining := v.viewers
 		v.mu.Unlock()
+		if released.conn != nil {
+			v.logLease("released", released, remaining)
+		}
 	}()
 
 	upstream, err := v.cfg.Dial()
@@ -215,16 +239,34 @@ func (v *Viewer) renewLease(stop <-chan struct{}, client net.Conn) {
 		case <-stop:
 			return
 		case <-ticker.C:
+			var expired lease
 			v.mu.Lock()
 			if v.lease.conn == client {
 				now := v.cfg.Now()
 				if now.Before(v.lease.expires) {
 					v.lease.expires = now.Add(leaseLifetime)
 				} else {
+					expired = v.lease
 					v.lease = lease{}
 				}
 			}
+			viewers := v.viewers
 			v.mu.Unlock()
+			if expired.conn != nil {
+				v.logLease("expired", expired, viewers)
+			}
 		}
 	}
+}
+
+// logLease uses only service-owned metadata. Never include RFB content, socket
+// addresses or operator identities. Call after unlocking: handlers may block or
+// inspect the Viewer. A reservation does not prove the RFB handshake succeeded.
+func (v *Viewer) logLease(event string, held lease, viewers int) {
+	age := v.cfg.Now().Sub(held.started)
+	if age < 0 {
+		age = 0
+	}
+	v.cfg.Logger.Info("viewer control lease", "event", event,
+		"lease_id", held.id, "age_ms", age.Milliseconds(), "viewers", viewers)
 }

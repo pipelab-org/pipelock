@@ -773,6 +773,19 @@ Flags:
 | `--socket` | `$XDG_RUNTIME_DIR/pipelock-contain-view.sock` | Local Unix socket for the VNC client to connect to. Required if `XDG_RUNTIME_DIR` is unset. |
 | `--control` | false | Allow keyboard and pointer control through the relay; without it, the connection is view-only. |
 
+The viewer service (the `pipelock-contain-viewer` systemd unit, not this client
+command) logs control-lease reservations, busy refusals, releases and expiry to
+its own journal as `viewer control lease` records with `event` set to
+`reserved`, `busy`, `released` or `expired`. Each record includes `lease_id`,
+`age_ms` (the lease's age when the event is logged; for `busy`, the age of the
+holder that blocked the request) and the `viewers` count after the event.
+IDs identify lease reservations within one viewer process; they reset when that
+process restarts and do not identify users or browser tabs. A `reserved` event
+precedes the RFB connection checks and does not prove a successful handshake.
+Events contain no screen content, clipboard data or socket addresses. They are
+service diagnostics, not signed action receipts. Age alone does not establish
+that a connection is stale or authorize disconnecting it.
+
 ## `pipelock contain reload-nft-rules`
 
 A hidden, root-only command (omitted from `--help`) that reconciles the managed loopback and published-service nftables units and namespace socket forwarders from the current config, without re-running the full `install`. It exists for automation that needs to pick up a `containment.loopback_services` or `containment.published_services` change deliberately, rather than through a general reinstall.

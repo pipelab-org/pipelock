@@ -5,15 +5,83 @@ package viewer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type leaseLogWriter struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+	v    *Viewer
+}
+
+func (w *leaseLogWriter) Write(p []byte) (int, error) {
+	// Reentrant handlers must not deadlock the viewer's state mutex.
+	if w.v.controls(nil) {
+		return 0, errors.New("nil connection has control")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.Write(p)
+}
+
+func captureLeaseLogs(v *Viewer) *leaseLogWriter {
+	w := &leaseLogWriter{v: v}
+	v.cfg.Logger = slog.New(slog.NewJSONHandler(w, nil))
+	return w
+}
+
+func (w *leaseLogWriter) records(t *testing.T) []map[string]any {
+	t.Helper()
+	w.mu.Lock()
+	raw := append([]byte(nil), w.data.Bytes()...)
+	w.mu.Unlock()
+	var records []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		// Only fixed messages and scalar service metadata may reach this sink.
+		if len(record) != 7 || record["msg"] != "viewer control lease" {
+			t.Fatalf("unexpected diagnostic fields: %v", record)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+type leaseLogExpectation struct {
+	event            string
+	id, age, viewers float64
+}
+
+func checkLeaseLogs(t *testing.T, logs *leaseLogWriter, want []leaseLogExpectation) {
+	t.Helper()
+	records := logs.records(t)
+	if len(records) != len(want) {
+		t.Fatalf("lease records = %v, want %v", records, want)
+	}
+	for i, expected := range want {
+		r := records[i]
+		if r["event"] != expected.event || r["lease_id"] != expected.id || r["age_ms"] != expected.age || r["viewers"] != expected.viewers {
+			t.Errorf("lease record %d = %v, want %+v", i, r, expected)
+		}
+	}
+}
 
 func startViewer(t *testing.T, v *Viewer, mode string) (net.Conn, net.Conn, <-chan error) {
 	t.Helper()
@@ -81,6 +149,9 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := testViewer(t)
+			now := time.Now()
+			v.cfg.Now = func() time.Time { return now }
+			logs := captureLeaseLogs(v)
 			v.cfg.Dial = tc.dial
 			if tc.peer != nil {
 				v.cfg.PeerUID = tc.peer
@@ -88,7 +159,7 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 			client, operator := net.Pipe()
 			defer func() { _ = operator.Close() }()
 			done := make(chan error, 1)
-			go func() { done <- v.Serve(context.Background(), client, "view") }()
+			go func() { done <- v.Serve(context.Background(), client, "control") }()
 			line, err := bufio.NewReader(operator).ReadString('\n')
 			if err != nil || line != "denied\n" {
 				t.Fatalf("response = %q, %v", line, err)
@@ -96,6 +167,9 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 			if err := <-done; err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("serve = %v, want %q", err, tc.want)
 			}
+			checkLeaseLogs(t, logs, []leaseLogExpectation{
+				{"reserved", 1, 0, 1}, {"released", 1, 0, 0},
+			})
 		})
 	}
 }
@@ -141,7 +215,21 @@ func TestViewerModesAndLease(t *testing.T) {
 
 func TestViewerBusyAndRelease(t *testing.T) {
 	v := testViewer(t)
-	first, _, firstDone := startViewer(t, v, "control")
+	var seconds atomic.Int64
+	base := time.Now()
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
+	first, server, firstDone := startViewer(t, v, "control")
+	// Screen bytes must be relayed without appearing in lease diagnostics.
+	payload := "private-display-bytes"
+	go func() { _, _ = server.Write([]byte(payload)) }()
+	got := make([]byte, len(payload))
+	_ = first.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(first, got); err != nil || string(got) != payload {
+		t.Fatalf("display relay = %q: %v", got, err)
+	}
+	_ = first.SetReadDeadline(time.Time{})
+	seconds.Store(5)
 	second, peer := net.Pipe()
 	result := make(chan error, 1)
 	go func() { result <- v.Serve(context.Background(), second, "control") }()
@@ -156,8 +244,16 @@ func TestViewerBusyAndRelease(t *testing.T) {
 	_ = first.Close()
 	waitViewerDone(t, firstDone)
 	third, _, thirdDone := startViewer(t, v, "control")
+	seconds.Store(-1) // A diagnostic clock regression never produces a negative age.
 	_ = third.Close()
 	waitViewerDone(t, thirdDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1},
+		{"busy", 1, 5000, 1},
+		{"released", 1, 5000, 0},
+		{"reserved", 2, 0, 1},
+		{"released", 2, 0, 0},
+	})
 }
 
 func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
@@ -166,6 +262,7 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	v := testViewer(t)
 	v.cfg.LeaseRenewInterval = time.Hour
 	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
 	first, _, firstDone := startViewer(t, v, "control")
 	v.mu.Lock()
 	previous := v.lease.conn
@@ -188,6 +285,12 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	}
 	_ = second.Close()
 	waitViewerDone(t, secondDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1},
+		{"expired", 1, 31000, 2},
+		{"reserved", 2, 0, 2},
+		{"released", 2, 0, 0},
+	})
 }
 
 func TestExpiredControlLeaseCannotRenew(t *testing.T) {
@@ -196,6 +299,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 	v := testViewer(t)
 	v.cfg.LeaseRenewInterval = time.Millisecond
 	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
 	first, _, firstDone := startViewer(t, v, "control")
 	seconds.Store(31)
 	deadline := time.After(time.Second)
@@ -203,7 +307,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 		v.mu.Lock()
 		cleared := v.lease.conn == nil
 		v.mu.Unlock()
-		if cleared {
+		if cleared && len(logs.records(t)) == 2 {
 			break
 		}
 		select {
@@ -214,6 +318,9 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 	}
 	_ = first.Close()
 	waitViewerDone(t, firstDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1}, {"expired", 1, 31000, 1},
+	})
 }
 
 func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
