@@ -866,7 +866,9 @@ func TestReconcileDefaultDoorwayAdapterUsesListenerSnapshot(t *testing.T) {
 	installed, runner, _ := newFakeEnv(t)
 	env, m := newReconcileModel(nftListingFromRulesBodyForTest(reconcileTestPolicy().rules, 20))
 	configureNFTReloadDoorways(env, func(io.Writer) *installEnv { return installed })
-	m.files[env.configPath] = "containment:\n  agent_listener: 127.0.0.1:8889\n  loopback_services:\n    - host: 127.0.0.1\n      port: 9200\n      owner: operator\n      reason: local service\n      expires_at: '2099-01-01T00:00:00Z'\n"
+	// The declaration only needs to be unexpired when reload reads it.
+	expires := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	m.files[env.configPath] = fmt.Sprintf("containment:\n  agent_listener: 127.0.0.1:8889\n  loopback_services:\n    - host: 127.0.0.1\n      port: 9200\n      owner: operator\n      reason: local service\n      expires_at: '%s'\n", expires)
 	if err := reloadNFTRules(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
