@@ -1643,14 +1643,22 @@ func TestReloadNFTRulesKernelFailureThenObservationFailureJoinsBothErrors(t *tes
 	env, m := newReconcileModel("")
 	m.files[env.rulesPath] += "# stale revision\n"
 	m.fail = "apply"
+	run := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if m.applies > 0 && strings.HasPrefix(strings.Join(args, " "), "-n -a list chain") {
+			return "", 1, errors.New("injected observation failure")
+		}
+		return run(ctx, name, args...)
+	}
 	err := reloadNFTRules(context.Background(), env)
-	if err == nil || !strings.Contains(err.Error(), "injected apply failure") {
+	if err == nil || !strings.Contains(err.Error(), "injected apply failure") || !strings.Contains(err.Error(), "post-apply nft observation") {
 		t.Fatalf("apply error=%v", err)
 	}
 	if m.files[env.rulesPath] != reconcileTestPolicy().rules {
 		t.Fatal("failed acknowledgement regressed durable desired policy")
 	}
 	m.fail = ""
+	env.runCmd = run
 	if err := reloadNFTRules(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}

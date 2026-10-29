@@ -9,6 +9,8 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -75,9 +77,25 @@ func validateSelfManagedNFTRules(out string, operatorUID, proxyUID, agentUID, pr
 	}
 	plan := planNFTReconciliation(policy, nftReconcileObservation{live: out})
 	if !nftTableDumpDeclaresExpectedTable(out, defaultNFTTable) ||
-		plan.err() != nil || plan.kernelChanged {
+		plan.err() != nil || (plan.kernelChanged && !liveNFTMatchesPreviousRenderer(out, policy.rules)) {
 		return fmt.Errorf("live containment nft chain does not match the canonical owner-match boundary for operator uid %d, proxy uid %d, agent uid %d, and proxy port %d",
 			operatorUID, proxyUID, agentUID, proxyPort)
 	}
 	return nil
+}
+
+// A self-managed host renders its own rules, so after an upgrade it can still
+// carry the previous renderer's output: the current rules without ownership
+// comments. Accept only that exact block, in order, with nothing else in the
+// chain; any other difference is drift.
+func liveNFTMatchesPreviousRenderer(out, rules string) bool {
+	for _, role := range nftManagedRoles {
+		rules = strings.ReplaceAll(rules, ` comment "`+nftOwnershipPrefix+`v1:`+role+`"`, "")
+	}
+	live := nftRulesWithHandles(out)
+	got := make([]string, 0, len(live))
+	for _, rule := range live {
+		got = append(got, canonicalManagedNFTLine(rule.line))
+	}
+	return slices.Equal(got, managedNFTLinesFromRulesBody(rules))
 }

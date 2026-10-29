@@ -47,6 +47,35 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 			t.Fatal("TCP-only catch-all accepted")
 		}
 	})
+	t.Run("previous renderer output", func(t *testing.T) {
+		t.Parallel()
+		previous := canonical
+		for _, role := range nftManagedRoles {
+			previous = strings.ReplaceAll(previous, ` comment "pipelock:contain:v1:`+role+`"`, "")
+		}
+		if previous == canonical {
+			t.Fatal("fixture carries no ownership comments")
+		}
+		if err := validateSelfManagedNFTRules(previous, operatorUID, proxyUID, agentUID, proxyPort); err != nil {
+			t.Fatalf("previous renderer output rejected: %v", err)
+		}
+		weakened := strings.Replace(previous,
+			"meta skuid 10001 counter log prefix \"pipelock-contain class=not_routing_through_pipelock \" drop",
+			"meta skuid 10001 meta l4proto tcp counter drop", 1)
+		if err := validateSelfManagedNFTRules(weakened, operatorUID, proxyUID, agentUID, proxyPort); err == nil {
+			t.Fatal("weakened previous renderer output accepted")
+		}
+		lines := strings.Split(previous, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "meta skuid") {
+				lines = append(lines[:i+1], lines[i:]...)
+				break
+			}
+		}
+		if err := validateSelfManagedNFTRules(strings.Join(lines, "\n"), operatorUID, proxyUID, agentUID, proxyPort); err == nil {
+			t.Fatal("previous renderer output with a duplicated rule accepted")
+		}
+	})
 	t.Run("IPv4-only table", func(t *testing.T) {
 		t.Parallel()
 		weakened := strings.Replace(canonical, "table inet ", "table ip ", 1)

@@ -554,6 +554,39 @@ func TestReconcileRetiredBackupIdentityIsNotAmbiguous(t *testing.T) {
 	}
 }
 
+// systemctl cleanup runs through exec.CommandContext, which kills the command
+// once its context is canceled. Revocation must still complete when the
+// operation that triggered it was canceled.
+func TestDoorwayRevocationOutlivesCanceledCaller(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		close func(context.Context, *installEnv, []string) error
+		unit  string
+	}{
+		{"loopback", closeLoopbackDoorways, "pipelock-loopback-127-0-0-1-9200"},
+		{"published", closePublishedDoorways, "pipelock-publish-example.socket"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			env := &installEnv{runCmd: func(ctx context.Context, _ string, args ...string) (string, int, error) {
+				if ctx.Err() != nil {
+					return "", 1, ctx.Err()
+				}
+				calls++
+				if args[0] == "show" {
+					return "inactive\n", 0, nil
+				}
+				return "", 0, nil
+			}}
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			if err := tc.close(ctx, env, []string{tc.unit}); err != nil || calls == 0 {
+				t.Fatalf("revocation after cancel: calls=%d err=%v", calls, err)
+			}
+		})
+	}
+}
+
 func TestReconcilePostObservationDetectsForeignMutation(t *testing.T) {
 	policy := reconcileTestPolicy()
 	foreign := `meta skuid 12345 counter packets 1 bytes 4 # handle 10`

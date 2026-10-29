@@ -36,6 +36,9 @@ func revokeKnownLoopbackDoorways(ctx context.Context, env *installEnv) error {
 }
 
 func closeLoopbackDoorways(ctx context.Context, env *installEnv, units []string) error {
+	// Revocation must finish even when the operation that triggered it was
+	// canceled; exec.CommandContext would otherwise kill each systemctl call.
+	ctx = context.WithoutCancel(ctx)
 	var errs []error
 	for _, unit := range units {
 		for _, suffix := range []string{"-netns.service", ".socket", ".service"} {
@@ -80,6 +83,8 @@ func observePublishedDoorways(env *installEnv, inv publishedServiceRecordSet) ([
 }
 
 func closePublishedDoorways(ctx context.Context, env *installEnv, units []string) error {
+	// See closeLoopbackDoorways: revocation outlives a canceled caller.
+	ctx = context.WithoutCancel(ctx)
 	var errs []error
 	// Close every listener before stopping any relay. systemd.socket(5):
 	// stopping a socket alone doesn't terminate an already activated service.
