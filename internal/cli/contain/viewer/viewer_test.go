@@ -56,7 +56,7 @@ func (w *leaseLogWriter) records(t *testing.T) []map[string]any {
 			t.Fatal(err)
 		}
 		// Only fixed messages and scalar service metadata may reach this sink.
-		if len(record) != 7 || record["msg"] != "viewer control lease" {
+		if len(record) != 8 || record["msg"] != "viewer control lease" {
 			t.Fatalf("unexpected diagnostic fields: %v", record)
 		}
 		records = append(records, record)
@@ -77,7 +77,7 @@ func checkLeaseLogs(t *testing.T, logs *leaseLogWriter, want []leaseLogExpectati
 	}
 	for i, expected := range want {
 		r := records[i]
-		if r["event"] != expected.event || r["lease_id"] != expected.id || r["age_ms"] != expected.age || r["viewers"] != expected.viewers {
+		if r["event"] != expected.event || r["lease_id"] != expected.id || r["event_seq"] != float64(i+1) || r["age_ms"] != expected.age || r["viewers"] != expected.viewers {
 			t.Errorf("lease record %d = %v, want %+v", i, r, expected)
 		}
 	}
@@ -256,6 +256,81 @@ func TestViewerBusyAndRelease(t *testing.T) {
 	})
 }
 
+type delayedReservationHandler struct {
+	slog.Handler
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (h *delayedReservationHandler) Handle(ctx context.Context, record slog.Record) error {
+	reserved := false
+	record.Attrs(func(a slog.Attr) bool {
+		reserved = reserved || (a.Key == "event" && a.Value.String() == "reserved")
+		return true
+	})
+	if reserved {
+		close(h.entered)
+		<-h.resume
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
+func TestLeaseEventSequenceSurvivesConcurrentLogging(t *testing.T) {
+	v := testViewer(t)
+	base := time.Now()
+	var seconds atomic.Int64
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
+	handler := &delayedReservationHandler{Handler: v.cfg.Logger.Handler(), entered: make(chan struct{}), resume: make(chan struct{})}
+	v.cfg.Logger = slog.New(handler)
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(handler.resume) }) })
+	client, operator := net.Pipe()
+	upstream, server := net.Pipe()
+	t.Cleanup(func() { _ = operator.Close(); _ = server.Close() })
+	v.cfg.Dial = func() (net.Conn, error) { return upstream, nil }
+	done := make(chan error, 1)
+	go func() { done <- v.Serve(context.Background(), client, "control") }()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("reservation did not reach logger")
+	}
+	seconds.Store(5)
+	second, peer := net.Pipe()
+	t.Cleanup(func() { _ = second.Close(); _ = peer.Close() })
+	busyDone := make(chan error, 1)
+	go func() { busyDone <- v.Serve(context.Background(), second, "control") }()
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if line, err := bufio.NewReader(peer).ReadString('\n'); err != nil || line != "busy\n" {
+		t.Fatalf("busy response = %q, %v", line, err)
+	}
+	if err := <-busyDone; err == nil {
+		t.Fatal("concurrent controller accepted")
+	}
+	unblock.Do(func() { close(handler.resume) })
+	_ = operator.SetReadDeadline(time.Now().Add(time.Second))
+	if line, err := bufio.NewReader(operator).ReadString('\n'); err != nil || line != "ok\n" {
+		t.Fatalf("control response = %q, %v", line, err)
+	}
+	_ = operator.Close()
+	waitViewerDone(t, done)
+	records := logs.records(t)
+	if len(records) != 3 {
+		t.Fatalf("records = %v", records)
+	}
+	for i, want := range []struct {
+		event    string
+		sequence float64
+		age      float64
+		viewers  float64
+	}{{"busy", 2, 5000, 1}, {"reserved", 1, 0, 1}, {"released", 3, 5000, 0}} {
+		if records[i]["event"] != want.event || records[i]["event_seq"] != want.sequence || records[i]["lease_id"] != float64(1) || records[i]["age_ms"] != want.age || records[i]["viewers"] != want.viewers {
+			t.Errorf("record %d = %v, want %v", i, records[i], want)
+		}
+	}
+}
+
 func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	var seconds atomic.Int64
 	base := time.Now()
@@ -287,7 +362,7 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	waitViewerDone(t, secondDone)
 	checkLeaseLogs(t, logs, []leaseLogExpectation{
 		{"reserved", 1, 0, 1},
-		{"expired", 1, 31000, 2},
+		{"expired", 1, 31000, 1},
 		{"reserved", 2, 0, 2},
 		{"released", 2, 0, 0},
 	})

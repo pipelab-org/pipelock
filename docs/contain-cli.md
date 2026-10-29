@@ -777,8 +777,11 @@ The viewer service (the `pipelock-contain-viewer` systemd unit, not this client
 command) logs control-lease reservations, busy refusals, releases and expiry to
 its own journal as `viewer control lease` records with `event` set to
 `reserved`, `busy`, `released` or `expired`. Each record includes `lease_id`,
-`age_ms` (the lease's age when the event is logged; for `busy`, the age of the
+`age_ms` (the lease's age at the transition; for `busy`, the age of the
 holder that blocked the request) and the `viewers` count after the event.
+The process-local `event_seq` records transition order; concurrent log handlers
+can emit records in a different order. Age and viewer count are captured with
+the sequence under the state lock, before handing the record to the logger.
 IDs identify lease reservations within one viewer process; they reset when that
 process restarts and do not identify users or browser tabs. A `reserved` event
 precedes the RFB connection checks and does not prove a successful handshake.
