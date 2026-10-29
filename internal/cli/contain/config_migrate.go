@@ -318,7 +318,7 @@ func containmentMetricsExposureFromMapping(root *yaml.Node) (*config.Containment
 // parseContainmentLoopbackServicesFromConfigBytes parses and validates
 // containment.loopback_services out of raw managed-config YAML bytes and
 // returns the EFFECTIVE set: expired entries are dropped, never returned. It
-// is the single source both contain install (declaredContainmentLoopbackServices,
+// is the single source both contain install (declaredContainmentLoopbackServicesWithLapsed,
 // which fails install closed on any error) and the boot/operator nft
 // reconciler (which instead falls back to zero declared services on any
 // error, logging why) call, so both consumers agree on exactly what counts

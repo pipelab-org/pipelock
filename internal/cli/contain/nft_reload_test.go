@@ -433,10 +433,10 @@ func TestLegacyManagedRuleMatchersRejectNearMisses(t *testing.T) {
 	if lineHasManagedCatchAllDrop(`meta skuid 966 ip daddr 192.0.2.1 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop`, 966) {
 		t.Fatal("destination-specific rule matched catch-all managed rule")
 	}
-	if !lineHasSkuidProtocolDPortVerdict(`meta skuid 966 udp dport 53 counter drop`, 966, "udp", 53, "drop") {
+	if !lineHasSkuidDNSDrop(`meta skuid 966 udp dport 53 counter drop`, 966, "udp") {
 		t.Fatal("exact DNS drop not recognized")
 	}
-	if lineHasSkuidProtocolDPortVerdict(`ip daddr 192.0.2.1 meta skuid 966 udp dport 53 drop`, 966, "udp", 53, "drop") {
+	if lineHasSkuidDNSDrop(`ip daddr 192.0.2.1 meta skuid 966 udp dport 53 drop`, 966, "udp") {
 		t.Fatal("destination-limited DNS rule matched unconditional DNS drop")
 	}
 	if fieldsHaveNFTCounterLogDrop([]string{"counter", "log", "prefix", `"pipelock-contain class=direct_dns_blocked "`, "accept"}, nftLogPrefix(EgressClassDirectDNS)+" ") {

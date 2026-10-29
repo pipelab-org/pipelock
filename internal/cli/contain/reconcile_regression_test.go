@@ -208,7 +208,8 @@ func TestReloadBrokenConfigStopsInstalledExpiredDoorway(t *testing.T) {
 				t.Fatal("established relay survived revocation")
 			}
 			select {
-			case <-done:
+			case relayErr := <-done:
+				_ = relayErr // revocation cancels the relay; only its exit is asserted
 			case <-time.After(5 * time.Second):
 				t.Fatal("revoked relay did not exit")
 			}

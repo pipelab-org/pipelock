@@ -2480,7 +2480,7 @@ func agentLoopbackAllowHostPort(line string, agentUID int, requireLoopbackInterf
 
 func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
-		return lineHasSkuidProtocolDPortVerdict(line, agentUID, protocol, 53, "drop")
+		return lineHasSkuidDNSDrop(line, agentUID, protocol)
 	})
 }
 
@@ -2573,8 +2573,8 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
 			return false
 		}
-		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||
-			lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "tcp", 53, "drop") {
+		if lineHasSkuidDNSDrop(line, uids.agentUID, "udp") ||
+			lineHasSkuidDNSDrop(line, uids.agentUID, "tcp") {
 			return false
 		}
 		for _, verdict := range []string{"accept", "drop", "reject"} {
@@ -2845,17 +2845,18 @@ func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	return fieldsAreNFTBookkeeping(fields[3:verdictAt]) && nftRuleTailIsCommentOnly(fields[verdictAt+1:])
 }
 
-// lineHasSkuidProtocolDPortVerdict matches the canonical UID/protocol/port rule.
-func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
+// lineHasSkuidDNSDrop matches the canonical UID/protocol drop rule for DNS,
+// destination port 53 (RFC 1035 section 4.2).
+func lineHasSkuidDNSDrop(line string, uid int, protocol string) bool {
 	fields := nftLineFields(line)
 	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
 	if skuidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" || skuidAt+3 >= len(fields) {
 		return false
 	}
-	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != strconv.Itoa(port) {
+	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != "53" {
 		return false
 	}
-	verdictAt := indexTokenAfter(fields, verdict, skuidAt+4)
+	verdictAt := indexTokenAfter(fields, "drop", skuidAt+4)
 	if verdictAt == -1 {
 		return false
 	}

@@ -1847,22 +1847,12 @@ func managedPipelockConfigPath(env *installEnv) string {
 	return filepath.Join(env.configDir, "pipelock.yaml")
 }
 
-// declaredContainmentLoopbackServices reads the already-promoted managed
-// config's containment.loopback_services, the outbound-exception sibling of
-// containment.metrics_exposure, so contain install can render namespace-bound
-// socket forwarders. A missing managed config (a first install ordering issue this
-// function is never reached at, or a test env with no staged config) is
-// treated as no declared exceptions rather than a hard error, matching the
-// pre-existing behavior of installs that never declared any loopback
-// service. Any other read/parse/validation failure fails install closed:
-// contain install must never load an nft ruleset it cannot account for.
-func declaredContainmentLoopbackServices(env *installEnv, proxyPort int) ([]config.ContainmentLoopbackService, error) {
-	declared, _, err := declaredContainmentLoopbackServicesWithLapsed(env, proxyPort)
-	return declared, err
-}
-
-// declaredContainmentLoopbackServicesWithLapsed is
-// declaredContainmentLoopbackServices plus the expired entries it dropped. An
+// declaredContainmentLoopbackServicesWithLapsed reads the already-promoted
+// managed config's containment.loopback_services, the outbound-exception
+// sibling of containment.metrics_exposure, so namespace-bound socket
+// forwarders can be rendered. A missing managed config is treated as no
+// declared exceptions; any other read/parse/validation failure fails closed.
+// It also returns the expired entries it dropped. An
 // expired entry is a lapsed grant: install proceeds without it, so the
 // operator can re-run install to retire its doorway, while a malformed,
 // duplicate, or proxy-port entry still fails install closed.

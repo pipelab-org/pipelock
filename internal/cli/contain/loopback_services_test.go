@@ -643,7 +643,7 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 
 	t.Run("missing managed config is no declared exceptions", func(t *testing.T) {
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}
-		declared, err := declaredContainmentLoopbackServices(env, 8888)
+		declared, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888)
 		if err != nil || declared != nil {
 			t.Fatalf("got (%v, %v), want (nil, nil)", declared, err)
 		}
@@ -651,7 +651,7 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 
 	t.Run("permission error fails install closed", func(t *testing.T) {
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return nil, os.ErrPermission }}
-		if _, err := declaredContainmentLoopbackServices(env, 8888); err == nil {
+		if _, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888); err == nil {
 			t.Fatal("expected an error for an unreadable managed config")
 		}
 	})
@@ -659,7 +659,7 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 	t.Run("invalid declared entry fails install closed", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 10.20.0.20\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return []byte(body), nil }}
-		if _, err := declaredContainmentLoopbackServices(env, 8888); err == nil {
+		if _, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888); err == nil {
 			t.Fatal("expected an error for a non-loopback declared host")
 		}
 	})
@@ -667,7 +667,7 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 	t.Run("valid managed config decodes", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n"
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return []byte(body), nil }}
-		declared, err := declaredContainmentLoopbackServices(env, 8888)
+		declared, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -678,14 +678,14 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 
 	t.Run("malformed yaml fails install closed", func(t *testing.T) {
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return []byte("containment: [\n"), nil }}
-		if _, err := declaredContainmentLoopbackServices(env, 8888); err == nil {
+		if _, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888); err == nil {
 			t.Fatal("expected an error for malformed YAML")
 		}
 	})
 
 	t.Run("non-mapping document fails install closed", func(t *testing.T) {
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return []byte("- just\n- a\n- list\n"), nil }}
-		if _, err := declaredContainmentLoopbackServices(env, 8888); err == nil {
+		if _, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888); err == nil {
 			t.Fatal("expected an error for a non-mapping document")
 		}
 	})
@@ -693,7 +693,7 @@ func TestDeclaredContainmentLoopbackServices(t *testing.T) {
 	t.Run("unknown field in declared entry fails install closed", func(t *testing.T) {
 		body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"2099-01-01T00:00:00Z\"\n    unknown_field: nope\n"
 		env := &installEnv{configDir: "/etc/pipelock", readFile: func(string) ([]byte, error) { return []byte(body), nil }}
-		if _, err := declaredContainmentLoopbackServices(env, 8888); err == nil {
+		if _, _, err := declaredContainmentLoopbackServicesWithLapsed(env, 8888); err == nil {
 			t.Fatal("expected an error for an unknown field in a declared entry")
 		}
 	})
