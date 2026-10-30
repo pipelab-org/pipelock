@@ -1457,13 +1457,32 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		}
 	})
 
-	t.Run("truncated_view_still_shows_legacy_record", func(t *testing.T) {
+	t.Run("truncated_legacy_allow_is_not_final", func(t *testing.T) {
+		// A phase-less allow can still gain a linked response finding beyond
+		// the bounded view, so it is shown as incomplete, not as final.
 		dir := t.TempDir()
 		legacy := buildDashboardChain(t, priv, 2)
 		writeReceiptsToDir(t, dir, legacy)
-		exp, found, err := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1}).ReceiptDetail(testSessionID, legacy[0].ActionRecord.ActionID)
-		if err != nil || !found || exp.Verdict.Detail != "allow" {
-			t.Fatalf("truncated legacy lookup: verdict=%q found=%v err=%v", exp.Verdict.Detail, found, err)
+		model := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1})
+		detail, found, err := model.ReceiptActionDetail(testSessionID, legacy[0].ActionRecord.ActionID)
+		if err != nil || !found || !detail.Incomplete || detail.Headline.Verdict.Detail != "allow" {
+			t.Fatalf("truncated legacy detail: verdict=%q incomplete=%v found=%v err=%v", detail.Headline.Verdict.Detail, detail.Incomplete, found, err)
+		}
+		if _, found, err := model.ReceiptDetail(testSessionID, legacy[0].ActionRecord.ActionID); found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			t.Fatalf("lone truncated legacy explanation presented as final: found=%v err=%v", found, err)
+		}
+	})
+
+	t.Run("truncated_block_is_final", func(t *testing.T) {
+		dir := t.TempDir()
+		chain := signSteps(t, []step{
+			{"", "block", "response_scan", "response finding"},
+			{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=403 bytes=16 reason=response_scan"},
+		})
+		writeReceiptsToDir(t, dir, chain)
+		detail, found, err := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1}).ReceiptActionDetail(testSessionID, chain[0].ActionRecord.ActionID)
+		if err != nil || !found || detail.Incomplete || detail.Headline.Verdict.Detail != "block" {
+			t.Fatalf("truncated block detail: verdict=%q incomplete=%v found=%v err=%v", detail.Headline.Verdict.Detail, detail.Incomplete, found, err)
 		}
 	})
 }

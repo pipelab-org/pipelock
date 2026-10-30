@@ -22,7 +22,7 @@ EXPECTED = [
         "upstream failure",
         "outcome",
         "warn",
-        "status=502 bytes=0 reason=fetch_failed delivered_bytes=120",
+        "status=502 bytes=unknown reason=fetch_failed delivered_bytes=120",
     ),
     (
         "partial delivery",
@@ -34,7 +34,7 @@ EXPECTED = [
         "denied response",
         "outcome",
         "block",
-        "status=403 bytes=0 reason=compressed_response delivered_bytes=7",
+        "status=403 bytes=unknown reason=compressed_response delivered_bytes=7",
     ),
 ]
 

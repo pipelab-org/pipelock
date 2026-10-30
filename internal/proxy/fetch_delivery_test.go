@@ -73,11 +73,16 @@ func TestFetchDeliveryOutcome(t *testing.T) {
 					continue
 				}
 				outcomes++
-				captured := 0
-				if tc.origin == "text" || tc.origin == "truncated" {
-					captured = len("ordinary content")
+				// bytes= is the upstream body size, unknown when the fetch
+				// ended before the body was read.
+				captured := "unknown"
+				switch tc.origin {
+				case "text", "truncated":
+					captured = strconv.Itoa(len("ordinary content"))
+				case "empty":
+					captured = "0"
 				}
-				want := "status=" + strconv.Itoa(tc.status) + " bytes=" + strconv.Itoa(captured) + " reason=" + tc.reason + " delivered_bytes=" + strconv.Itoa(rec.Body.Len())
+				want := "status=" + strconv.Itoa(tc.status) + " bytes=" + captured + " reason=" + tc.reason + " delivered_bytes=" + strconv.Itoa(rec.Body.Len())
 				if ar.Verdict != tc.verdict || ar.Pattern != want {
 					t.Errorf("outcome verdict=%s pattern=%q want=%s %q", ar.Verdict, ar.Pattern, tc.verdict, want)
 				}

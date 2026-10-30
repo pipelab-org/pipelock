@@ -26,9 +26,9 @@ func TestProxyDeliveryOutcomeFixtures(t *testing.T) {
 		{"legacy completion", "outcome", "allow", "status=200 bytes=16 reason=complete"},
 		{"admission without outcome", "intent", "allow", ""},
 		{"delivered representation", "outcome", "allow", "status=200 bytes=16 reason=complete delivered_bytes=130"},
-		{"upstream failure", "outcome", "warn", "status=502 bytes=0 reason=fetch_failed delivered_bytes=120"},
+		{"upstream failure", "outcome", "warn", "status=502 bytes=unknown reason=fetch_failed delivered_bytes=120"},
 		{"partial delivery", "outcome", "warn", "status=200 bytes=16 reason=delivery_error delivered_bytes=7"},
-		{"denied response", "outcome", "block", "status=403 bytes=0 reason=compressed_response delivered_bytes=7"},
+		{"denied response", "outcome", "block", "status=403 bytes=unknown reason=compressed_response delivered_bytes=7"},
 	}
 	pub, priv := testKeyPair(t)
 	if *update {

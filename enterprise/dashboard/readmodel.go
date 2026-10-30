@@ -304,16 +304,12 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 		return ReceiptActionDetail{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
 	var matched []*receipt.Receipt
-	awaiting, terminal, linked := false, false, false
 	for i := range receipts {
 		r := &receipts[i]
 		if !receiptBelongsToAction(r, actionID) {
 			continue
 		}
 		matched = append(matched, r)
-		awaiting = awaiting || awaitsTerminalPhase(r)
-		terminal = terminal || terminalReceiptPhase(r)
-		linked = linked || r.ActionRecord.ParentActionID == actionID
 	}
 	if len(matched) == 0 {
 		if truncated {
@@ -324,12 +320,12 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 	headline := headlineReceipt(matched)
 	sort.SliceStable(matched, func(i, j int) bool { return receiptChainLess(matched[i], matched[j]) })
 	detail := ReceiptActionDetail{Headline: evidenceview.ExplainReceipt(*headline)}
-	// A terminal phase does not close the record set: a corrective resolution
-	// or a WebSocket session-close block can follow it. A truncated view of a
-	// phased action, or a linked record whose parent may be unread, is marked
-	// incomplete unless it already shows a block. Standalone legacy records
-	// without a phase keep their single-record behavior.
-	detail.Incomplete = truncated && (awaiting || terminal || linked) && headline.ActionRecord.Verdict != config.ActionBlock
+	// No record closes an action's set: a corrective resolution, a WebSocket
+	// session-close block or a response finding linked through ParentActionID
+	// can follow any record, phased or not. A truncated view is therefore
+	// incomplete unless it already shows a block, which nothing later can make
+	// less of a denial.
+	detail.Incomplete = truncated && headline.ActionRecord.Verdict != config.ActionBlock
 	for _, r := range matched {
 		detail.Records = append(detail.Records, evidenceview.ExplainReceipt(*r))
 	}
@@ -533,16 +529,5 @@ func receiptVerdictRank(verdict string) int {
 		return 0
 	default:
 		return 1
-	}
-}
-
-// awaitsTerminalPhase reports whether r opens a phase pair whose terminal
-// record could follow it.
-func awaitsTerminalPhase(r *receipt.Receipt) bool {
-	switch r.ActionRecord.DecisionPhase {
-	case receipt.DecisionPhaseIntent, receipt.DecisionPhaseDefer:
-		return true
-	default:
-		return false
 	}
 }

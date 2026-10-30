@@ -6392,7 +6392,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	outcomeStatus := "unknown"
 	outcomeReason := "incomplete"
 	// Count decoded source bytes before shield rewriting or text extraction.
-	capturedBytes := int64(0)
+	// -1 signs bytes=unknown on paths that end before the body is read.
+	capturedBytes := int64(-1)
 	delivery := &fetchDeliveryWriter{ResponseWriter: w}
 	w = delivery
 	defer func() {
