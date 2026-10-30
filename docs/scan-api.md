@@ -229,6 +229,7 @@ Partial canary, environment-secret and file-secret disclosures can produce DLP f
 | `invalid_input` | 400 | no | Missing required field, field too large, or invalid URL. |
 | `scan_deadline_exceeded` | 503 | yes | Scan timed out (default 5s). |
 | `request_canceled` | 500 | no | Client disconnected mid-scan. |
+| `assessment_incomplete` | 500 | no | The wording scanner failed for a reason other than cancellation or timeout. The response includes `assessment` with status `incomplete`. |
 | `internal_error` | 500 | no | Unexpected failure. |
 
 ## HTTP status codes

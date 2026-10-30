@@ -53,6 +53,9 @@ func TestInjectionAssessmentAPI(t *testing.T) {
 				req.Header.Set("Authorization", "Bearer "+testToken)
 				w := httptest.NewRecorder()
 				h.ServeHTTP(w, req)
+				if !strings.Contains(w.Body.String(), `"assessment":`) {
+					t.Fatalf("response omitted the assessment key: %s", w.Body.String())
+				}
 				var result Response
 				if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 					t.Fatal(err)

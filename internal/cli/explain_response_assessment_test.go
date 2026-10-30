@@ -59,6 +59,9 @@ func TestExplainResponseAssessment(t *testing.T) {
 					t.Fatalf("exit = %d, want %d: %s", got, tt.exit, output.String())
 				}
 				if jsonOutput {
+					if !strings.Contains(output.String(), `"assessment":`) {
+						t.Fatalf("JSON omitted the assessment key: %s", output.String())
+					}
 					var decoded responseExplainReport
 					if err := json.Unmarshal(output.Bytes(), &decoded); err != nil {
 						t.Fatal(err)
