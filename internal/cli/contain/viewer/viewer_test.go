@@ -56,7 +56,13 @@ func (w *leaseLogWriter) records(t *testing.T) []map[string]any {
 			t.Fatal(err)
 		}
 		// Only fixed messages and scalar service metadata may reach this sink.
-		if len(record) != 8 || record["msg"] != "viewer control lease" {
+		fields := 8
+		if record["msg"] == "viewer connection refused" {
+			fields = 6
+		} else if record["msg"] != "viewer control lease" {
+			t.Fatalf("unexpected diagnostic message: %v", record)
+		}
+		if len(record) != fields {
 			t.Fatalf("unexpected diagnostic fields: %v", record)
 		}
 		records = append(records, record)
@@ -434,22 +440,42 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 }
 
 func TestViewerCap(t *testing.T) {
-	v := testViewer(t)
-	v.cfg.MaxViewers = 1
-	first, _, firstDone := startViewer(t, v, "view")
-	second, peer := net.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- v.Serve(context.Background(), second, "view") }()
-	line, err := bufio.NewReader(peer).ReadString('\n')
-	if err != nil || line != "denied\n" {
-		t.Fatalf("cap response = %q: %v", line, err)
+	for _, mode := range []string{"view", "control"} {
+		t.Run(mode, func(t *testing.T) {
+			v := testViewer(t)
+			v.cfg.MaxViewers = 1
+			logs := captureLeaseLogs(v)
+			first, _, firstDone := startViewer(t, v, "view")
+			second, peer := net.Pipe()
+			t.Cleanup(func() { _ = second.Close(); _ = peer.Close() })
+			_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+			done := make(chan error, 1)
+			go func() { done <- v.Serve(context.Background(), second, mode) }()
+			line, err := bufio.NewReader(peer).ReadString('\n')
+			if err != nil || line != "denied\n" {
+				t.Fatalf("cap response = %q: %v", line, err)
+			}
+			if err := <-done; err == nil || !strings.Contains(err.Error(), "viewer cap") {
+				t.Fatalf("cap reason = %v", err)
+			}
+			records := logs.records(t)
+			if len(records) != 1 {
+				t.Fatalf("cap records = %v, want one refusal", records)
+			}
+			r := records[0]
+			if r["msg"] != "viewer connection refused" || r["reason"] != "viewer_cap" || r["viewers"] != float64(1) || r["max_viewers"] != float64(1) {
+				t.Fatalf("cap record = %v", r)
+			}
+			_ = first.Close()
+			waitViewerDone(t, firstDone)
+			reconnected, _, reconnectedDone := startViewer(t, v, "view")
+			_ = reconnected.Close()
+			waitViewerDone(t, reconnectedDone)
+			if got := len(logs.records(t)); got != 1 {
+				t.Fatalf("records after reconnect = %d, want one refusal", got)
+			}
+		})
 	}
-	if err := <-done; err == nil || !strings.Contains(err.Error(), "viewer cap") {
-		t.Fatalf("cap reason = %v", err)
-	}
-	_ = peer.Close()
-	_ = first.Close()
-	waitViewerDone(t, firstDone)
 }
 
 func TestViewerCancellation(t *testing.T) {
