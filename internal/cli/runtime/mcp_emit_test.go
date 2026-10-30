@@ -259,7 +259,7 @@ emit:
 				t.Error("run MCP listener did not stop")
 			}
 		}()
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, webhook, upstream); err != nil {
 			return err
 		}
 		body := postTokenlessListenerToolCall(t, mcpAddr, 1)
