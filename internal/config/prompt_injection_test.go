@@ -35,6 +35,10 @@ func TestPromptInjectionDetectionConfig(t *testing.T) {
 			if (cfg.PromptInjectionNotice() != "") != (tt.mode != ActionBlock) {
 				t.Fatal("coverage disclosure does not match effective policy")
 			}
+			// Disabled wording earns no clean-request recovery; warn-only still does.
+			if strings.Contains(cfg.PromptInjectionNotice(), "adaptive levels recover by time only") != (tt.mode == ActionAllow) {
+				t.Fatalf("adaptive recovery disclosure mismatch for mode %q: %s", tt.mode, cfg.PromptInjectionNotice())
+			}
 			base, err := LoadBytes([]byte("{}"))
 			if err != nil {
 				t.Fatal(err)
