@@ -1010,7 +1010,7 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		}
 		ar.ChainSeq, ar.ChainPrevHash, ar.Timestamp = 1, prev, base.Add(time.Second)
 		ar.DecisionPhase, ar.Verdict, ar.Layer = second, secondVerdict, "outcome"
-		ar.Pattern = "status=200 bytes=7 reason=delivery_error captured_bytes=16"
+		ar.Pattern = "status=200 bytes=16 reason=delivery_error delivered_bytes=7"
 		tail, err := receipt.Sign(ar, priv)
 		if err != nil {
 			t.Fatalf("Sign(tail): %v", err)
@@ -1061,6 +1061,59 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		_, found, err := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1}).ReceiptDetail(testSessionID, pair[0].ActionRecord.ActionID)
 		if found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
 			t.Fatalf("truncated intent lookup: found=%v err=%v", found, err)
+		}
+	})
+
+	t.Run("allow_outcome_does_not_hide_warn_intent", func(t *testing.T) {
+		dir := t.TempDir()
+		ar := validDashboardAction(0, receipt.GenesisHash, base)
+		ar.DecisionPhase, ar.Verdict, ar.Layer, ar.Pattern = receipt.DecisionPhaseIntent, "warn", "dlp_header", "header finding"
+		pair := signPair(t, receipt.DecisionPhaseIntent, receipt.DecisionPhaseOutcome, "allow")
+		head, err := receipt.Sign(ar, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair[0] = head
+		writeReceiptsToDir(t, dir, pair)
+		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, head.ActionRecord.ActionID)
+		if err != nil || !found {
+			t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+		}
+		if exp.Verdict.Detail != "warn" || exp.Pattern.Detail != "header finding" {
+			t.Fatalf("selected verdict=%q pattern=%q, want the warn intent", exp.Verdict.Detail, exp.Pattern.Detail)
+		}
+	})
+
+	t.Run("allow_outcome_does_not_hide_block_record", func(t *testing.T) {
+		dir := t.TempDir()
+		intent := validDashboardAction(0, receipt.GenesisHash, base)
+		intent.DecisionPhase = receipt.DecisionPhaseIntent
+		var chain []receipt.Receipt
+		prev := receipt.GenesisHash
+		for i, step := range []struct{ phase, verdict, layer, pattern string }{
+			{receipt.DecisionPhaseIntent, "allow", "allowlist", "api.vendor.example"},
+			{"", "block", "response_scan", "response finding"},
+			{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=403 bytes=0 reason=response_incomplete"},
+		} {
+			ar := intent
+			ar.ChainSeq, ar.ChainPrevHash, ar.Timestamp = uint64(i), prev, base.Add(time.Duration(i)*time.Second)
+			ar.DecisionPhase, ar.Verdict, ar.Layer, ar.Pattern = step.phase, step.verdict, step.layer, step.pattern
+			r, err := receipt.Sign(ar, priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prev, err = receipt.ReceiptHash(r); err != nil {
+				t.Fatal(err)
+			}
+			chain = append(chain, r)
+		}
+		writeReceiptsToDir(t, dir, chain)
+		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, intent.ActionID)
+		if err != nil || !found {
+			t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+		}
+		if exp.Verdict.Detail != "block" || exp.Pattern.Detail != "response finding" {
+			t.Fatalf("selected verdict=%q pattern=%q, want the block record", exp.Verdict.Detail, exp.Pattern.Detail)
 		}
 	})
 

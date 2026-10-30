@@ -20,17 +20,20 @@ func TestProxyDeliveryOutcomeFixtures(t *testing.T) {
 		Name    string          `json:"name"`
 		Receipt receipt.Receipt `json:"receipt"`
 	}
+	// Expected observations are fixed here, not read back from the fixture,
+	// so a validly re-signed fixture with changed outcome fields fails.
+	want := []struct{ name, phase, verdict, pattern string }{
+		{"legacy completion", "outcome", "allow", "status=200 bytes=16 reason=complete"},
+		{"admission without outcome", "intent", "allow", ""},
+		{"delivered representation", "outcome", "allow", "status=200 bytes=16 reason=complete delivered_bytes=130"},
+		{"upstream failure", "outcome", "warn", "status=502 bytes=0 reason=fetch_failed delivered_bytes=120"},
+		{"partial delivery", "outcome", "warn", "status=200 bytes=16 reason=delivery_error delivered_bytes=7"},
+		{"denied response", "outcome", "block", "status=403 bytes=0 reason=compressed_response delivered_bytes=7"},
+	}
 	pub, priv := testKeyPair(t)
 	if *update {
 		var vectors []vector
-		for _, tc := range []struct{ name, phase, verdict, pattern string }{
-			{"legacy completion", "outcome", "allow", "status=200 bytes=16 reason=complete"},
-			{"admission without outcome", "intent", "allow", ""},
-			{"delivered representation", "outcome", "allow", "status=200 bytes=130 reason=complete captured_bytes=16"},
-			{"upstream failure", "outcome", "warn", "status=502 bytes=120 reason=fetch_failed captured_bytes=0"},
-			{"partial delivery", "outcome", "warn", "status=200 bytes=7 reason=delivery_error captured_bytes=16"},
-			{"denied response", "outcome", "block", "status=403 bytes=7 reason=compressed_response captured_bytes=0"},
-		} {
+		for _, tc := range want {
 			ar := fixedActionRecord(0, receipt.GenesisHash)
 			ar.Transport, ar.Method = "fetch", "GET"
 			ar.DecisionPhase, ar.Verdict, ar.Pattern = tc.phase, tc.verdict, tc.pattern
@@ -53,17 +56,20 @@ func TestProxyDeliveryOutcomeFixtures(t *testing.T) {
 	if err := json.Unmarshal(b, &vectors); err != nil {
 		t.Fatal(err)
 	}
-	if len(vectors) != 6 {
-		t.Fatalf("vectors=%d", len(vectors))
+	if len(vectors) != len(want) {
+		t.Fatalf("vectors=%d want=%d", len(vectors), len(want))
 	}
-	for _, v := range vectors {
+	for i, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
+			ar := v.Receipt.ActionRecord
+			if exp := want[i]; v.Name != exp.name || ar.DecisionPhase != exp.phase || ar.Verdict != exp.verdict || ar.Pattern != exp.pattern {
+				t.Fatalf("vector %d = %q %s/%s %q, want %q %s/%s %q", i, v.Name, ar.DecisionPhase, ar.Verdict, ar.Pattern, exp.name, exp.phase, exp.verdict, exp.pattern)
+			}
 			if err := receipt.VerifyWithKey(v.Receipt, hex.EncodeToString(pub)); err != nil {
 				t.Fatal(err)
 			}
 			// The dashboard uses this production projection of the observation.
 			e := evidenceview.ExplainReceipt(v.Receipt)
-			ar := v.Receipt.ActionRecord
 			if e.Verdict.Detail != ar.Verdict || e.DecisionPhase.Detail != ar.DecisionPhase || ar.Pattern != "" && e.Pattern.Detail != ar.Pattern {
 				t.Fatalf("dashboard projection lost outcome: %+v", e)
 			}

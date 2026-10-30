@@ -279,20 +279,26 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
 	// An intent and its outcome (or a defer and its resolution) share one
-	// action ID. The terminal record carries what actually happened, so it
-	// wins over the admission record; among equals the later record wins.
+	// action ID, and a block found after admission may add a phase-less
+	// record. Some outcome emitters record allow whatever the admission
+	// decided, so the most severe verdict wins first: an allow outcome must
+	// not hide a warn or block finding. Among equal verdicts the terminal
+	// record wins, then the later record.
 	var selected *receipt.Receipt
+	awaiting, terminal := false, false
 	for i := range receipts {
 		r := &receipts[i]
 		if r.ActionRecord.ActionID != actionID {
 			continue
 		}
-		if selected == nil || terminalReceiptPhase(r) || !terminalReceiptPhase(selected) {
+		awaiting = awaiting || awaitsTerminalPhase(r)
+		terminal = terminal || terminalReceiptPhase(r)
+		if selected == nil || preferReceiptDetail(r, selected) {
 			selected = r
 		}
 	}
 	if selected != nil {
-		if truncated && awaitsTerminalPhase(selected) {
+		if truncated && awaiting && !terminal && selected.ActionRecord.Verdict != config.ActionBlock {
 			// The terminal record may lie beyond the bounded view; showing the
 			// admission record alone could present a failed action as allowed.
 			// Legacy records without a phase have no later record to wait for.
@@ -416,6 +422,28 @@ func terminalReceiptPhase(r *receipt.Receipt) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// preferReceiptDetail reports whether candidate should replace current as
+// the record shown for one action.
+func preferReceiptDetail(candidate, current *receipt.Receipt) bool {
+	if a, b := receiptVerdictRank(candidate.ActionRecord.Verdict), receiptVerdictRank(current.ActionRecord.Verdict); a != b {
+		return a > b
+	}
+	return terminalReceiptPhase(candidate) || !terminalReceiptPhase(current)
+}
+
+// receiptVerdictRank orders verdicts by how much they say about the action:
+// block, then any other non-allow verdict, then allow.
+func receiptVerdictRank(verdict string) int {
+	switch verdict {
+	case config.ActionBlock:
+		return 2
+	case config.ActionAllow, "":
+		return 0
+	default:
+		return 1
 	}
 }
 

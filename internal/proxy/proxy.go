@@ -6412,7 +6412,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		}
 		opts := fetchAllowReceipt
 		opts.Verdict = verdict
-		pattern := receiptOutcomePattern(outcomeStatus, delivery.bytes, outcomeReason) + " captured_bytes=" + strconv.FormatInt(capturedBytes, 10)
+		// bytes= keeps its existing meaning, the upstream body size. The size
+		// written to the client is a separate key so receipt consumers that
+		// read bytes= see the same unit before and after this field existed.
+		pattern := receiptOutcomePattern(outcomeStatus, capturedBytes, outcomeReason) + " delivered_bytes=" + strconv.FormatInt(delivery.bytes, 10)
 		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
 	}()
 

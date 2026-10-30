@@ -139,6 +139,12 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 					if resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ResponseIncomplete) || !strings.Contains(string(body), "Range") || !strings.Contains(string(body), "complete resource") {
 						t.Fatalf("missing range diagnosis/remedy: headers=%v body=%s", resp.Header, body)
 					}
+					if transport == "reverse" {
+						var block ReverseProxyBlockResponse
+						if err := json.Unmarshal(body, &block); err != nil || !block.Blocked || !strings.Contains(block.BlockReason, "complete resource") {
+							t.Fatalf("reverse range denial is not a block response: err=%v body=%s", err, body)
+						}
+					}
 					return
 				}
 				// The handler records headers before responding, so a request

@@ -851,11 +851,15 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	if unsupportedInspectionRange(r) {
 		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "browser_cache", unsupportedRangeMessage)
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "browser_cache")
+		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		emitReverseReceipt(receipt.EmitOpts{
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: string(blockreason.ResponseIncomplete),
 			Transport: TransportReverse, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
 		})
-		writeUnsupportedRange(w, requestID)
+		// Reverse clients decode denials as ReverseProxyBlockResponse JSON.
+		writeReverseProxyBlock(w, http.StatusForbidden,
+			blockInfoFor(blockreason.ResponseIncomplete, "browser_cache").WithRequestID(requestID),
+			unsupportedRangeMessage)
 		return
 	}
 

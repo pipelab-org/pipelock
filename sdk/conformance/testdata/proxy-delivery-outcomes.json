@@ -85,11 +85,11 @@
         "transport": "fetch",
         "method": "GET",
         "layer": "outcome",
-        "pattern": "status=200 bytes=130 reason=complete captured_bytes=16",
+        "pattern": "status=200 bytes=16 reason=complete delivered_bytes=130",
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:8b1db10bef231d180f4936525fe3102a785101a08d5e4b4bec75c979811ca459991a8f0b5cab1ba87387903bdd5081ce820355045e21146e6a2c624ed9fe620d",
+      "signature": "ed25519:77d86ab5792b87d4513b333172a3fefe8990dc1d3ce687cd26823fd83b7af169b9871625c4d9b7790fec414510ad8cb3946011a0c646c219ae8ee738c6b22a0c",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -117,11 +117,11 @@
         "transport": "fetch",
         "method": "GET",
         "layer": "outcome",
-        "pattern": "status=502 bytes=120 reason=fetch_failed captured_bytes=0",
+        "pattern": "status=502 bytes=0 reason=fetch_failed delivered_bytes=120",
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:dfda62887734847001e2be4104f756914fbf6de3b8c5ed656a654355baa4674dbb62a376c1a1d80cbfeb70b7de0ea873eeeb40c39439227dfb79f43f60302a04",
+      "signature": "ed25519:63fab1079c88adb99c7cbe7cec60a783077b86dc7d25a142da7cdc0e4e47e00969bbf51c261a1ad6d3cd23a69d1698d6559d3884fc7f84d695eebc43ce879a0f",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -149,11 +149,11 @@
         "transport": "fetch",
         "method": "GET",
         "layer": "outcome",
-        "pattern": "status=200 bytes=7 reason=delivery_error captured_bytes=16",
+        "pattern": "status=200 bytes=16 reason=delivery_error delivered_bytes=7",
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:22484ba4651faec732af4f0bb6efc3ff7cc7729da01155136b51e152eadc132c35db66195c712a60bcb9f1c5b49635c467f1d1d804822f7cbd7ca6646d182c0a",
+      "signature": "ed25519:5a2c71c2ec2d9b0dcc58b9dec444e8f9bf56087b5620112766804317c308a2a0b4d5919e1d5bbf29f52e1468dcee561d10e2edfc602751a0bb935c1fd7d2bd07",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -181,11 +181,11 @@
         "transport": "fetch",
         "method": "GET",
         "layer": "outcome",
-        "pattern": "status=403 bytes=7 reason=compressed_response captured_bytes=0",
+        "pattern": "status=403 bytes=0 reason=compressed_response delivered_bytes=7",
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:c042b9e3e5c8a2f892bf00903a922442b259cc19da6db8020e4da397d57e3acf170940a4a9d1096bc9bd39a400a1d040f957118f47b53be1a31ba3b936c8b10c",
+      "signature": "ed25519:ed9d1f3952e4f044408e8d7ffd34937d3b514d54d70fa1183dd2d59b6a8bd504ea2dcd296532befead910107faf8267be2111a8870fc05728c8adb634ed40c01",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   }

@@ -77,7 +77,7 @@ func TestFetchDeliveryOutcome(t *testing.T) {
 				if tc.origin == "text" || tc.origin == "truncated" {
 					captured = len("ordinary content")
 				}
-				want := "status=" + strconv.Itoa(tc.status) + " bytes=" + strconv.Itoa(rec.Body.Len()) + " reason=" + tc.reason + " captured_bytes=" + strconv.Itoa(captured)
+				want := "status=" + strconv.Itoa(tc.status) + " bytes=" + strconv.Itoa(captured) + " reason=" + tc.reason + " delivered_bytes=" + strconv.Itoa(rec.Body.Len())
 				if ar.Verdict != tc.verdict || ar.Pattern != want {
 					t.Errorf("outcome verdict=%s pattern=%q want=%s %q", ar.Verdict, ar.Pattern, tc.verdict, want)
 				}
