@@ -19,7 +19,6 @@ import (
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/luckyPipewrench/pipelock/internal/destination"
-	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 )
 
 // ErrOptions is deliberately independent of endpoint or credential values.
@@ -119,17 +118,26 @@ func checkedDial(lookup func(context.Context, string) ([]net.IPAddr, error), dia
 				return nil, errors.New("checker destination refused")
 			}
 		}
-		// Only checked addresses are dialed, in resolver order, under the one
-		// call deadline, using the proxy's shared bounded fallback so a name
-		// with many unreachable records cannot multiply attempts. No request
-		// bytes are sent before a connection exists.
-		addrs := make([]string, 0, len(ips))
+		// Every checked address is dialed in resolver order under the one
+		// call deadline. The deadline is total, so more records cannot add
+		// time; an attempt cap would only cut off a reachable address. No
+		// attempt starts after the deadline, and no request bytes are sent
+		// before a connection exists.
+		var lastErr error
 		for _, ip := range ips {
-			addrs = append(addrs, net.JoinHostPort(ip.IP.String(), port))
+			if err := ctx.Err(); err != nil {
+				if lastErr == nil {
+					lastErr = err
+				}
+				break
+			}
+			conn, dialErr := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
 		}
-		return dialfallback.Dial(ctx, addrs, func(ctx context.Context, addr string) (net.Conn, error) {
-			return dial(ctx, network, addr)
-		})
+		return nil, lastErr
 	}
 }
 
