@@ -275,4 +275,28 @@ func TestSelfTest(t *testing.T) {
 	if err = SelfTest(ctx, fake, testPolicy(), benign, suspicious); !errors.As(err, &failure) {
 		t.Fatal(err)
 	}
+
+	// Every incomplete known answer fails, including a truncated reason and a
+	// returned response that omits completeness.
+	for name, answer := range map[string]func(state State) Assessment{
+		"truncated_reason": func(state State) Assessment {
+			return Assessment{State: state, Status: StatusAssessed, Reason: ReasonTruncated}
+		},
+		"response_without_completeness": func(state State) Assessment {
+			return Assessment{State: state, Status: StatusAssessed, Response: &Response{}}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			incomplete := checkerFunc(func(_ context.Context, i Item, _ Policy) Assessment {
+				if i.ID == suspicious.ID {
+					return answer(StateFinding)
+				}
+				return answer(StateBenign)
+			})
+			var got *HealthError
+			if err := SelfTest(t.Context(), incomplete, testPolicy(), benign, suspicious); !errors.As(err, &got) || got.Probe != Benign {
+				t.Fatalf("%s: %v", name, err)
+			}
+		})
+	}
 }
