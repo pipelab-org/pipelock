@@ -12,6 +12,21 @@ import unittest
 
 
 SCRIPT = pathlib.Path(__file__).with_name("check-test-stability.sh")
+ANALYZER = pathlib.Path(__file__).with_name("teststability") / "main.go"
+
+RETRY_FATAL = """package example
+
+func TestReload(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			t.Fatalf("run exited: %v", err)
+		case <-ready:
+		}
+		return nil
+	})
+}
+"""
 
 
 class StabilityTests(unittest.TestCase):
@@ -34,11 +49,15 @@ class StabilityTests(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
 
-    def run_gate(self):
+    def run_gate(self, timeout=10):
         return subprocess.run(
             ["bash", "scripts/check-test-stability.sh"],
-            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=10,
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=timeout,
         )
+
+    def add_analyzer(self):
+        self.write("go.mod", "module example\n\ngo 1.26\n")
+        self.write("scripts/teststability/main.go", ANALYZER.read_text(encoding="utf-8"))
 
     def test_clean_new_root_and_root_level_file(self):
         self.write("new component/clean_test.go", "package example\n")
@@ -109,6 +128,51 @@ class StabilityTests(unittest.TestCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn("new component/clean_test.go:1:", result.stderr)
+
+    @unittest.skipUnless(shutil.which("go"), "go toolchain not on PATH")
+    def test_retry_callback_that_cannot_retry(self):
+        self.add_analyzer()
+        self.write("internal/reload_test.go", RETRY_FATAL)
+        result = self.run_gate(timeout=300)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("internal/reload_test.go:7:", result.stderr)
+        self.assertIn("testport.WithRetry callbacks must return run errors", result.stderr)
+
+        fixed = RETRY_FATAL.replace('t.Fatalf("run exited: %v", err)', "return err")
+        self.write("internal/reload_test.go", fixed)
+        result = self.run_gate(timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("go"), "go toolchain not on PATH")
+    def test_retry_finding_allowlist(self):
+        self.add_analyzer()
+        self.write("internal/reload_test.go", RETRY_FATAL)
+        self.write(
+            "scripts/test-stability-allowlist.txt",
+            'internal/reload_test.go:7:\t\t\tt.Fatalf("run exited: %v", err)\n',
+        )
+        result = self.run_gate(timeout=300)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(shutil.which("go"), "go toolchain not on PATH")
+    def test_retry_analyzer_parse_error_is_error(self):
+        self.add_analyzer()
+        self.write("internal/broken_test.go", "package example\nfunc (\n")
+        result = self.run_gate(timeout=300)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn("port retry analyzer exited with 2", result.stderr)
+
+    def test_retry_analyzer_without_go_is_error(self):
+        self.add_analyzer()
+        tools = self.root / "bin"
+        tools.mkdir()
+        for tool in ("bash", "git", "dirname", "mktemp", "rm", "cat", "grep"):
+            (tools / tool).symlink_to(shutil.which(tool))
+        self.env["PATH"] = str(tools)
+        self.write("internal/clean_test.go", "package example\n")
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 127, result.stderr)
+        self.assertIn("go is not on PATH", result.stderr)
 
     def test_discovery_failure_is_error(self):
         shutil.rmtree(self.root / ".git")
