@@ -109,11 +109,22 @@ func TestInjectionAssessmentDocParity(t *testing.T) {
 		if !ok {
 			return true
 		}
-		typ, ok := spec.Type.(*ast.Ident)
-		if !ok || typ.Name != "AssessmentStatus" {
-			return true
-		}
+		typ, typed := spec.Type.(*ast.Ident)
+		typed = typed && typ.Name == "AssessmentStatus"
 		for _, value := range spec.Values {
+			// Accept both `X AssessmentStatus = "x"` and `X = AssessmentStatus("x")`.
+			if call, ok := value.(*ast.CallExpr); ok && !typed {
+				fn, ok := call.Fun.(*ast.Ident)
+				if !ok || fn.Name != "AssessmentStatus" {
+					continue
+				}
+				if len(call.Args) != 1 {
+					t.Fatal("assessment status conversion must take one literal")
+				}
+				value = call.Args[0]
+			} else if !typed {
+				continue
+			}
 			lit, ok := value.(*ast.BasicLit)
 			if !ok {
 				t.Fatal("assessment status must be a literal")
@@ -157,6 +168,27 @@ func TestInjectionAssessmentDocParity(t *testing.T) {
 			}
 		})
 	}
+	t.Run("cli/explain.md prose", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "..", "docs", "cli", "explain.md")))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, sentence, found := strings.Cut(string(data), "Status is `")
+		if !found {
+			t.Fatal("missing status sentence")
+		}
+		sentence, _, _ = strings.Cut("`"+sentence, ".")
+		var actual []string
+		for i, part := range strings.Split(sentence, "`") {
+			if i%2 == 1 {
+				actual = append(actual, part)
+			}
+		}
+		sort.Strings(actual)
+		if !reflect.DeepEqual(actual, expected) {
+			t.Fatalf("prose statuses=%v, source=%v", actual, expected)
+		}
+	})
 }
 
 func TestInjectionRecoveryDecodedStatus(t *testing.T) {
