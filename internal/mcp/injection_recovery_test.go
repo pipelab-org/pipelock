@@ -246,3 +246,53 @@ func TestInjectionRecoveryMCPBlankViews(t *testing.T) {
 		}
 	}
 }
+
+// A custom pattern can match an otherwise blank view. Delivery in warn mode
+// doesn't make that view empty evidence for adaptive recovery.
+func TestInjectionRecoveryMCPBlankViewFindings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: config.ActionWarn}
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "blank atom", Regex: `^\s*$`}}
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	blank := sc.ScanResponse(t.Context(), " \n\t")
+	if len(blank.WarnedMatches) == 0 {
+		t.Fatal("blank pattern did not run")
+	}
+	for _, method := range []string{methodToolsCall, "custom"} {
+		request := makeRequest(1, method, map[string]any{"name": "search", "arguments": map[string]string{"q": "weather report", "cursor": " \n\t"}})
+		for _, consumer := range []string{"stdio_input", "http_input", "raw_forward"} {
+			t.Run(method+"/"+consumer, func(t *testing.T) {
+				rec := &mockRecorder{}
+				var out, log bytes.Buffer
+				opts := MCPProxyOpts{Scanner: sc, Rec: rec, AdaptiveCfg: adaptiveCfgEnabled()}
+				switch consumer {
+				case "stdio_input":
+					ForwardScannedInput(transport.NewStdioReader(strings.NewReader(request+"\n")), transport.NewStdioWriter(&out), &log, config.ActionBlock, config.ActionBlock, make(chan BlockedRequest, 2), nil, nil, opts)
+					if out.Len() == 0 {
+						t.Fatal("warning refused delivery")
+					}
+				case "http_input":
+					opts.InputCfg = newHTTPInputCfg(config.ActionBlock)
+					_ = scanHTTPInput([]byte(request), &log, "test-session", "test-session", opts)
+				case "raw_forward":
+					legacy := strings.Replace(request, `"jsonrpc":"2.0"`, `"jsonrpc":"1.0"`, 1)
+					v := scanRequestForAgent(t.Context(), []byte(legacy), sc, config.ActionBlock, config.ActionForward, "")
+					if !v.Clean || v.Assessment.IsBenign() {
+						t.Fatalf("raw verdict=%+v", v)
+					}
+				}
+				if rec.cleans != 0 {
+					t.Fatalf("warning earned %d clean calls", rec.cleans)
+				}
+			})
+		}
+	}
+	for _, views := range [][]string{{"ordinary response", " "}, {" ", "ordinary response"}} {
+		r, _, _ := scanResponseViewsWithCards(t.Context(), sc, ResponseScanOptions{}, views, nil)
+		if !r.Clean || r.Assessment.IsBenign() || r.RecoveryAssessment().IsBenign() || len(r.WarnedMatches) == 0 {
+			t.Fatalf("response verdict=%+v", r)
+		}
+	}
+}

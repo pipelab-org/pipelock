@@ -683,10 +683,11 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 }
 
 // mergeInputViewAssessment folds one extracted string into the request's
-// assessment. A blank string holds no wording, so it neither adds nor removes
-// coverage of the request text that was already assessed as a whole.
+// assessment. A blank view with no assessment neither adds nor removes coverage.
+// A configured pattern can still match blank text; retain that finding even
+// when warn policy permits delivery.
 func mergeInputViewAssessment(aggregate scanner.ResponseScanResult, view string, viewResult scanner.ResponseScanResult) scanner.InjectionAssessment {
-	if viewResult.Clean && strings.TrimSpace(view) == "" {
+	if viewResult.Clean && viewResult.Assessment.Status == scanner.AssessmentNotAssessed && strings.TrimSpace(view) == "" {
 		return aggregate.RecoveryAssessment()
 	}
 	return aggregate.RecoveryAssessment().Merge(viewResult.RecoveryAssessment())

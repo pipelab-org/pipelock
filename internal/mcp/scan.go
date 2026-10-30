@@ -442,7 +442,7 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 			return viewResult, nil, nil
 		}
 		switch {
-		case viewResult.Clean && strings.TrimSpace(view) == "":
+		case viewResult.Clean && viewResult.Assessment.Status == scanner.AssessmentNotAssessed && strings.TrimSpace(view) == "":
 			// A blank view holds no wording; it neither adds nor removes coverage.
 		case firstView:
 			result.Assessment = viewResult.RecoveryAssessment()

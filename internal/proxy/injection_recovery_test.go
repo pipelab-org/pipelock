@@ -224,3 +224,49 @@ func TestInjectionRecoveryFetchBlankHiddenContent(t *testing.T) {
 		})
 	}
 }
+
+func TestInjectionRecoveryFetchBlankHiddenFindings(t *testing.T) {
+	for _, mode := range []string{config.ActionWarn, "suppressed"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := airlockAdmissionConfig(t, config.AirlockTierNone)
+			cfg.Airlock.Enabled = false
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "blank atom", Regex: `^\s*$`}}
+			if mode == config.ActionWarn {
+				cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Action: config.ActionWarn}
+			} else {
+				cfg.Suppress = []config.SuppressEntry{{Rule: "blank atom", Path: "*"}}
+			}
+			para := "<p>Ordinary documentation paragraph about configuring a reverse proxy with sensible defaults and logging. It explains the options in plain words for operators.</p>"
+			page := "<html><head><title>Docs</title></head><body><!-- --> <article>" + para + para + "</article></body></html>"
+			_, p, target := newReverseParityHarness(t, cfg, func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write([]byte(page))
+			})
+			sc := scanner.MustNew(cfg)
+			defer sc.Close()
+			scan := scanFetchResponse(t.Context(), sc, cfg, deriveFetchResponse([]byte(page), "text/html", target), target.String())
+			if scan.hidden == nil || len(scan.hidden.WarnedMatches)+len(scan.hidden.SuppressedMatches) == 0 {
+				t.Fatal("blank pattern did not run")
+			}
+			if scan.result.RecoveryAssessment().IsBenign() {
+				t.Error("hidden finding became benign")
+			}
+			sess := p.sessionMgrPtr.Load().GetOrCreate(airlockAdmissionClient)
+			scope := adaptiveScopeForHost(target.Hostname())
+			sess.RecordScopedSignal(scope, session.SignalNearMiss, 100)
+			before := sess.ScopedThreatScore(scope)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/fetch?url="+url.QueryEscape(target.String()), nil)
+			req.RemoteAddr = airlockAdmissionClient + ":12345"
+			w := httptest.NewRecorder()
+			p.handleFetch(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			if after := sess.ScopedThreatScore(scope); after != before {
+				t.Fatalf("hidden finding decayed score: %.1f -> %.1f", before, after)
+			}
+		})
+	}
+}
