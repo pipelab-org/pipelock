@@ -9,8 +9,12 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"os"
+	"regexp"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 func wireRequest(item Item) Request {
@@ -131,6 +135,36 @@ func TestScoreAndFindings(t *testing.T) {
 		if validResult(r, item, p.Scale) {
 			t.Fatal("nonfinite accepted")
 		}
+	}
+}
+
+// TestDocsExamples keeps the documented request and response examples valid
+// under the strict decoder and the same validation the client applies.
+func TestDocsExamples(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/checker-protocol.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocks := regexp.MustCompile("(?s)```json\n(.*?)```").FindAllSubmatch(doc, -1)
+	if len(blocks) < 2 {
+		t.Fatalf("json examples = %d, want request and response", len(blocks))
+	}
+	var req Request
+	if err := jsonscan.DecodeStrict(blocks[0][1], &req); err != nil || req.Version != Version {
+		t.Fatalf("request example: %v", err)
+	}
+	var item Item
+	if err := jsonscan.DecodeStrict(req.Item, &item); err != nil || item.Kind != KindText || !validItem(item) {
+		t.Fatalf("item example invalid: %v", err)
+	}
+	var response Response
+	if err := jsonscan.DecodeStrict(blocks[1][1], &response); err != nil {
+		t.Fatalf("response example: %v", err)
+	}
+	scale := &Scale{Name: "example-risk", CalibrationID: "example-calibration/v1", Min: 0, Max: 1}
+	if response.RequestID != req.ID || response.ItemID != item.ID || response.InputBinding != req.InputBinding ||
+		!validCompleteness(response.Completeness) || !validResult(response, item, scale) {
+		t.Fatalf("response example invalid: %+v", response)
 	}
 }
 
