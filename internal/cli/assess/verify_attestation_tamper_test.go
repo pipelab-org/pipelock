@@ -305,3 +305,42 @@ func TestAssessVerifyAttestationRejectsMalformedPayload(t *testing.T) {
 		})
 	}
 }
+
+func TestAssessVerifyRejectsNoncanonicalSignedFieldNames(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, from, to string
+	}{
+		{"manifest alias", "manifest.json", `"status":`, `"Status":`},
+		{"manifest duplicate", "manifest.json", `"status":`, `"status": "failed", "status":`},
+		{"attestation alias", "attestation.json", `"run_id":`, `"Run_id":`},
+		{"attestation collision", "attestation.json", `"run_id":`, `"run_id": "other", "RUN_ID":`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir, keystoreDir, agent := setupFinalizedRunWithAttestation(t)
+			priv, err := signing.NewKeystore(keystoreDir).LoadPrivateKey(agent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(runDir, tc.file)
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), tc.from) {
+				t.Fatalf("fixture lacks %s", tc.from)
+			}
+			if err := os.WriteFile(path, []byte(strings.Replace(string(data), tc.from, tc.to, 1)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			signAndSave(t, path, priv)
+			verify := runAssessVerify
+			if tc.file == "attestation.json" {
+				resealManifest(t, runDir, priv)
+				verify = runAssessVerifyAttestation
+			}
+			if code, err := verify(runDir, agent, keystoreDir); code != verifyExitTamperedArtifact || err == nil {
+				t.Fatalf("verify = (%d, %v), want tampered-artifact rejection", code, err)
+			}
+		})
+	}
+}
