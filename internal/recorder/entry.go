@@ -452,6 +452,9 @@ func VerifyCheckpoints(entries []Entry, pubKey ed25519.PublicKey) error {
 		}
 
 		var cpDetail CheckpointDetail
+		if err := jsonscan.RejectNonCanonicalFields(detailJSON, &cpDetail); err != nil {
+			return fmt.Errorf("entry seq %d: checkpoint detail fields: %w", e.Sequence, err)
+		}
 		if err := json.Unmarshal(detailJSON, &cpDetail); err != nil {
 			return fmt.Errorf("entry seq %d: unmarshaling checkpoint detail: %w", e.Sequence, err)
 		}
@@ -669,9 +672,6 @@ func ParseEntryLine(line []byte) (Entry, error) {
 	if len(trimmed) == 0 {
 		return Entry{}, errors.New("empty recorder entry")
 	}
-	if err := jsonscan.RejectDuplicateKeys(trimmed); err != nil {
-		return Entry{}, err
-	}
 	var raw struct {
 		Version          int             `json:"v"`
 		Sequence         uint64          `json:"seq"`
@@ -688,6 +688,9 @@ func ParseEntryLine(line []byte) (Entry, error) {
 		RawRef           string          `json:"raw_ref,omitempty"`
 		PrevHash         string          `json:"prev_hash"`
 		Hash             string          `json:"hash"`
+	}
+	if err := jsonscan.RejectNonCanonicalFields(trimmed, &raw); err != nil {
+		return Entry{}, err
 	}
 	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		return Entry{}, err
@@ -721,6 +724,20 @@ func ParseEntryLine(line []byte) (Entry, error) {
 		Hash:             raw.Hash,
 	}
 	if raw.Detail != nil {
+		// Raw detail preserves application map keys. Known signed details have
+		// a typed schema whose member spellings must survive every consumer.
+		var detailSchema any
+		switch raw.Type {
+		case "checkpoint":
+			detailSchema = new(CheckpointDetail)
+		case decisionEntryType:
+			detailSchema = new(DecisionRecord)
+		}
+		if detailSchema != nil {
+			if err := jsonscan.RejectNonCanonicalFields(raw.Detail, detailSchema); err != nil {
+				return Entry{}, fmt.Errorf("parsing %s detail fields: %w", raw.Type, err)
+			}
+		}
 		e.RawDetail = append(json.RawMessage(nil), raw.Detail...)
 		var detail any
 		if err := json.Unmarshal(raw.Detail, &detail); err != nil {
