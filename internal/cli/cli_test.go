@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -55,20 +56,46 @@ func (b *cliTestBuffer) String() string {
 	return b.buf.String()
 }
 
-func waitForCLIOutput(t *testing.T, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc, want string) {
-	t.Helper()
-	testwait.For(t, 5*time.Second, func() bool {
+// The helpers below that watch errCh return errors instead of calling
+// t.Fatal. They run inside testport.WithRetry closures after the health gate,
+// where a run that lost its port to another listener exits with "address
+// already in use"; only a returned error lets WithRetry retry on a fresh port.
+
+// waitForCLIOutputResult polls buf for want until the run exits or the
+// deadline elapses.
+func waitForCLIOutputResult(buf *cliTestBuffer, errCh <-chan error, want string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
+	defer cancel()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
 		if buf.contains(want) {
-			return true
+			return nil
 		}
 		select {
 		case cmdErr := <-errCh:
-			cancel()
-			t.Fatalf("run exited before output %q: %v\nstderr:\n%s", want, cmdErr, buf.String())
-		default:
+			return runExitedError(fmt.Sprintf("before output %q", want), cmdErr, buf)
+		case <-ctx.Done():
+			if buf.contains(want) {
+				return nil
+			}
+			return fmt.Errorf("timed out waiting for CLI output %q\nstderr:\n%s", want, buf.String())
+		case <-ticker.C:
 		}
-		return false
-	}, "CLI output %q\nstderr:\n%s", want, buf.String())
+	}
+}
+
+// runExitedError reports an early run exit, keeping cmdErr wrapped so
+// testport.IsBindCollision still sees a bind collision.
+func runExitedError(when string, cmdErr error, buf *cliTestBuffer) error {
+	dump := ""
+	if buf != nil {
+		dump = "\nstderr:\n" + buf.String()
+	}
+	if cmdErr == nil {
+		return fmt.Errorf("run exited %s%s", when, dump)
+	}
+	return fmt.Errorf("run exited %s: %w%s", when, cmdErr, dump)
 }
 
 // reloadWaitBackstop is a generous safety deadline for waitForReloadCycle. It is
@@ -97,31 +124,20 @@ func installReloadWaiter(t *testing.T) <-chan struct{} {
 	return ch
 }
 
-// awaitReloadCycle blocks until one config reload cycle completes, the run
-// command exits, or the backstop elapses. Use when the post-reload assertion is
-// an HTTP effect rather than a stderr message.
-func awaitReloadCycle(t *testing.T, reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error, cancel context.CancelFunc) {
-	t.Helper()
-	if err := awaitReloadCycleResult(reloaded, buf, errCh); err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-}
-
+// awaitReloadCycleResult blocks until one config reload cycle completes, the
+// run command exits, or the backstop elapses. Use when the post-reload
+// assertion is an HTTP effect rather than a stderr message.
 func awaitReloadCycleResult(reloaded <-chan struct{}, buf *cliTestBuffer, errCh <-chan error) error {
-	dump := ""
-	if buf != nil {
-		dump = "\nstderr:\n" + buf.String()
-	}
 	select {
 	case <-reloaded:
 		return nil
 	case cmdErr := <-errCh:
-		if cmdErr == nil {
-			return fmt.Errorf("run exited before reload completed%s", dump)
-		}
-		return fmt.Errorf("run exited before reload completed: %w%s", cmdErr, dump)
+		return runExitedError("before reload completed", cmdErr, buf)
 	case <-time.After(reloadWaitBackstop):
+		dump := ""
+		if buf != nil {
+			dump = "\nstderr:\n" + buf.String()
+		}
 		return fmt.Errorf("timed out waiting for config reload cycle%s", dump)
 	}
 }
@@ -136,23 +152,6 @@ func requireCLIOutputAfterReloadResult(reloaded <-chan struct{}, buf *cliTestBuf
 	return nil
 }
 
-func waitForRunHTTP(
-	t *testing.T,
-	ctx context.Context,
-	client *http.Client,
-	errCh <-chan error,
-	cancel context.CancelFunc,
-	url string,
-	check func(*http.Response) bool,
-	label string,
-) {
-	t.Helper()
-	if err := waitForRunHTTPResult(ctx, client, errCh, url, check, label); err != nil {
-		cancel()
-		t.Fatalf("run did not become ready: %v", err)
-	}
-}
-
 func waitForRunHTTPResult(
 	ctx context.Context,
 	client *http.Client,
@@ -162,26 +161,6 @@ func waitForRunHTTPResult(
 	label string,
 ) error {
 	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, url, check, "%s", label)
-}
-
-func waitForRunHTTPWithin(
-	t *testing.T,
-	timeout time.Duration,
-	ctx context.Context,
-	client *http.Client,
-	errCh <-chan error,
-	cancel context.CancelFunc,
-	url string,
-	check func(*http.Response) bool,
-	format string,
-	args ...any,
-) {
-	t.Helper()
-	err := waitForRunHTTPWithinResult(timeout, ctx, client, errCh, url, check, format, args...)
-	if err != nil {
-		cancel()
-		t.Fatalf("run did not become ready: %v", err)
-	}
 }
 
 func waitForRunHTTPWithinResult(
@@ -198,26 +177,6 @@ func waitForRunHTTPWithinResult(
 		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 		return req
 	}, client, check, format, args...)
-}
-
-func waitForRunRequestWithin(
-	t *testing.T,
-	ctx context.Context,
-	timeout time.Duration,
-	errCh <-chan error,
-	cancel context.CancelFunc,
-	newReq func(context.Context) *http.Request,
-	client *http.Client,
-	check func(*http.Response) bool,
-	format string,
-	args ...any,
-) {
-	t.Helper()
-	err := waitForRunRequestWithinResult(ctx, timeout, errCh, newReq, client, check, format, args...)
-	if err != nil {
-		cancel()
-		t.Fatalf("run did not become ready: %v", err)
-	}
 }
 
 func waitForRunRequestWithinResult(
@@ -1415,11 +1374,14 @@ fetch_proxy:
 			t.Fatal(err)
 		}
 
-		waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
-		}, "strict mode after hot reload")
+		}, "strict mode after hot reload"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -1526,12 +1488,18 @@ response_scanning:
 		// failure threshold under the heavy -race CI job. Once the cycle has
 		// run, the new config is live, so the health check below confirms the
 		// effect immediately rather than polling against a wall-clock deadline.
-		awaitReloadCycle(t, reloaded, stderr, errCh, cancel)
-		waitForRunHTTPWithin(t, reloadWaitBackstop, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		if err := awaitReloadCycleResult(reloaded, stderr, errCh); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForRunHTTPWithinResult(reloadWaitBackstop, ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeAudit
-		}, "%s", "audit ask-mode config after hot reload")
+		}, "%s", "audit ask-mode config after hot reload"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -1682,6 +1650,174 @@ forward_proxy:
 	})
 }
 
+// TestRunCmd_ReloadPostHealthBindCollisionRetries reproduces the order behind
+// a reload-test flake: another listener on the chosen port answers the health
+// gate, then the run exits with "address already in use". The reload wait must
+// return that error so testport.WithRetry reruns the attempt on a fresh port.
+// The first attempt starts the run only after the gate has passed, which pins
+// that order instead of leaving it to scheduling.
+func TestRunCmd_ReloadPostHealthBindCollisionRetries(t *testing.T) {
+	attempts := 0
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		attempts++
+		addr := addrs[0]
+		collide := attempts == 1
+
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		if collide {
+			ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", addr)
+			if err != nil {
+				return err
+			}
+			other := &http.Server{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(http.StatusOK)
+				}),
+				ReadHeaderTimeout: time.Second,
+			}
+			go func() { _ = other.Serve(ln) }()
+			defer func() { _ = other.Close() }()
+		}
+
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "test.yaml")
+		cfgContent := fmt.Sprintf(`version: 1
+mode: balanced
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+		if err := os.WriteFile(cfgPath, []byte(cfgContent), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		stderr := &cliTestBuffer{}
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(stderr)
+
+		errCh := make(chan error, 1)
+		start := func() {
+			go func() {
+				errCh <- cmd.Execute()
+			}()
+		}
+		if !collide {
+			start()
+		}
+
+		client := &http.Client{Timeout: time.Second}
+		healthURL := "http://" + addr + "/health"
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "proxy health"); err != nil {
+			cancel()
+			return err
+		}
+		if collide {
+			start()
+		}
+
+		reloaded := installReloadWaiter(t)
+		updatedCfg := fmt.Sprintf(`version: 1
+mode: strict
+api_allowlist:
+  - "api.example.com"
+fetch_proxy:
+  listen: "%s"
+  timeout_seconds: 5
+`, addr)
+		if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := awaitReloadCycleResult(reloaded, stderr, errCh); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForRunHTTPWithinResult(reloadWaitBackstop, ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+			var health map[string]any
+			_ = json.NewDecoder(resp.Body).Decode(&health)
+			return health["mode"] == config.ModeStrict
+		}, "%s", "strict mode after hot reload"); err != nil {
+			cancel()
+			return err
+		}
+
+		cancel()
+		select {
+		case cmdErr := <-errCh:
+			if cmdErr != nil {
+				return fmt.Errorf("unexpected error: %w", cmdErr)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("run did not shut down")
+		}
+		return nil
+	})
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2: the post-health collision must be retried once", attempts)
+	}
+}
+
+// TestRunExitWaitErrorsKeepCollisionClass checks that the errCh wait helpers
+// keep a bind collision retryable and leave any other run exit fatal.
+func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	_, bindErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", ln.Addr().String())
+	if !errors.Is(bindErr, syscall.EADDRINUSE) {
+		t.Fatalf("second bind error = %v, want EADDRINUSE", bindErr)
+	}
+	collision := fmt.Errorf("fetch_proxy.listen bind %s: %w", ln.Addr(), bindErr)
+
+	waits := []struct {
+		name string
+		wait func(errCh <-chan error) error
+	}{
+		{"reload cycle", func(errCh <-chan error) error {
+			return awaitReloadCycleResult(make(chan struct{}), &cliTestBuffer{}, errCh)
+		}},
+		{"cli output", func(errCh <-chan error) error {
+			return waitForCLIOutputResult(&cliTestBuffer{}, errCh, "never printed")
+		}},
+	}
+	exits := []struct {
+		name      string
+		cmdErr    error
+		retryable bool
+	}{
+		{"bind collision", collision, true},
+		{"other failure", errors.New("config validation failed"), false},
+		{"clean exit", nil, false},
+	}
+	for _, w := range waits {
+		for _, e := range exits {
+			t.Run(w.name+"/"+e.name, func(t *testing.T) {
+				errCh := make(chan error, 1)
+				errCh <- e.cmdErr
+				got := w.wait(errCh)
+				if got == nil {
+					t.Fatal("wait returned nil after the run exited")
+				}
+				if testport.IsBindCollision(got) != e.retryable {
+					t.Fatalf("IsBindCollision(%v) = %v, want %v", got, !e.retryable, e.retryable)
+				}
+				if e.retryable && !errors.Is(got, syscall.EADDRINUSE) {
+					t.Fatalf("wait error %v lost the wrapped EADDRINUSE", got)
+				}
+			})
+		}
+	}
+}
+
 // TestRunCmd_ReloadRejectsForwardProxyEnable verifies that enabling forward_proxy
 // via hot reload is rejected and the proxy keeps it disabled.
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
@@ -1754,12 +1890,16 @@ logging:
 		// Gate on the reload-cycle-complete signal so fsnotify delivery latency
 		// is not the failure threshold; the short poll below then only covers
 		// audit-log file flush, which is fast.
-		awaitReloadCycle(t, reloaded, nil, errCh, cancel)
+		if err := awaitReloadCycleResult(reloaded, nil, errCh); err != nil {
+			cancel()
+			return err
+		}
+		var runErr error
 		testwait.For(t, reloadWaitBackstop, func() bool {
 			select {
 			case cmdErr := <-errCh:
-				cancel()
-				t.Fatalf("run exited before rejected reload log: %v", cmdErr)
+				runErr = runExitedError("before rejected reload log", cmdErr, nil)
+				return true
 			default:
 			}
 			logBytes, err := os.ReadFile(filepath.Clean(logPath))
@@ -1768,12 +1908,19 @@ logging:
 			}
 			return strings.Contains(string(logBytes), "forward proxy cannot be enabled via reload")
 		}, "rejected forward proxy reload log")
+		if runErr != nil {
+			cancel()
+			return runErr
+		}
 
-		waitForRunHTTP(t, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["forward_proxy_enabled"] == false
-		}, "forward proxy remains disabled after rejected reload")
+		}, "forward proxy remains disabled after rejected reload"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -1898,12 +2045,18 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 
 		// Verify MCP listener health endpoint.
 		mcpHealthURL := "http://" + mcpAddr + "/health"
-		waitForRunHTTP(t, ctx, client, errCh, cancel, mcpHealthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, errCh, mcpHealthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
-		}, "MCP listener health")
+		}, "MCP listener health"); err != nil {
+			cancel()
+			return err
+		}
 
 		// Verify banner mentions MCP.
-		waitForCLIOutput(t, errBuf, errCh, cancel, "MCP:")
+		if err := waitForCLIOutputResult(errBuf, errCh, "MCP:"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -2017,12 +2170,18 @@ fetch_proxy:
 			t.Fatal(err)
 		}
 
-		awaitReloadCycle(t, reloaded, stderr, errCh, cancel)
-		waitForRunHTTPWithin(t, reloadWaitBackstop, ctx, client, errCh, cancel, healthURL, func(resp *http.Response) bool {
+		if err := awaitReloadCycleResult(reloaded, stderr, errCh); err != nil {
+			cancel()
+			return err
+		}
+		if err := waitForRunHTTPWithinResult(reloadWaitBackstop, ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
-		}, "%s", "strict mode after hot reload")
+		}, "%s", "strict mode after hot reload"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -2100,11 +2259,24 @@ fetch_proxy:
 		statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 		statusReq.Header.Set("Authorization", "Bearer reload-token")
 		resp, err := client.Do(statusReq)
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+		if err != nil || resp.StatusCode != http.StatusServiceUnavailable {
+			// If the run already exited (for example it lost its port to the
+			// listener that answered the health gate), return that error so
+			// WithRetry can classify it.
+			select {
+			case cmdErr := <-errCh:
+				cancel()
+				return runExitedError("before kill switch status check", cmdErr, nil)
+			default:
+			}
+		}
 		if err != nil {
 			cancel()
 			t.Fatalf("kill switch status request failed before reload: %v", err)
 		}
-		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusServiceUnavailable {
 			t.Fatalf("expected 503 before reload, got %d", resp.StatusCode)
 		}
@@ -2124,7 +2296,7 @@ kill_switch:
 		}
 
 		lastReloadWrite := time.Now()
-		waitForRunRequestWithin(t, ctx, 15*time.Second, errCh, cancel, func(reqCtx context.Context) *http.Request {
+		if err := waitForRunRequestWithinResult(ctx, 15*time.Second, errCh, func(reqCtx context.Context) *http.Request {
 			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, statusURL, nil)
 			req.Header.Set("Authorization", "Bearer reload-token")
 			return req
@@ -2143,7 +2315,10 @@ kill_switch:
 				lastReloadWrite = time.Now()
 			}
 			return false
-		}, "kill switch API token after strict-mode reload")
+		}, "kill switch API token after strict-mode reload"); err != nil {
+			cancel()
+			return err
+		}
 
 		cancel()
 		select {
@@ -2598,7 +2773,10 @@ websocket_proxy:
 			return err
 		}
 
-		waitForCLIOutput(t, stderr, errCh, cancel, "WebSocket proxy enabled")
+		if err := waitForCLIOutputResult(stderr, errCh, "WebSocket proxy enabled"); err != nil {
+			cancel()
+			return err
+		}
 		if !stderr.contains("WebSocket proxy enabled") {
 			t.Errorf("expected WS banner, got:\n%s", stderr.String())
 		}
