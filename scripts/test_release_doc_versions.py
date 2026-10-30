@@ -427,6 +427,33 @@ class ReleaseSurfaceRegistryTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         _canonical_stats(self.root)
 
+    def test_shipped_registry_leaves_renovate_owned_pins_alone(self) -> None:
+        # Renovate rewrites action and toolchain pins in workflows and action.yml
+        # weekly and cannot edit this registry, so inventorying them would fail
+        # every dependency PR. Only the workflow that carries a product version
+        # is scanned.
+        registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
+        roots = registry["scan"]["roots"]
+        self.assertNotIn(".github/workflows", roots)
+        self.assertNotIn("action.yml", roots)
+        self.assertIn(".github/workflows/reusable-scan.yml", roots)
+        stray = [entry["id"] for entry in registry["surfaces"]
+                 if (entry["path"].startswith(".github/workflows/") and entry["path"] != ".github/workflows/reusable-scan.yml")
+                 or entry["path"] == "action.yml"]
+        self.assertEqual(stray, [])
+
+    def test_shipped_exclusions_do_not_hide_documentation_directories(self) -> None:
+        registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
+        self.registry["scan"]["exclude"] = registry["scan"]["exclude"]
+        self.save()
+        for relative in ("docs/guides/tests/a.md", "docs/testdata/a.md", "docs/dist/a.md", "docs/node_modules/a.md"):
+            with self.subTest(relative=relative):
+                path = self.root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("Release package v3.5.0\n")
+                self.assertTrue(any(f"{relative}:1: unregistered" in issue for issue in check_inventory(self.root)))
+                path.unlink()
+
     def test_workflow_binary_version_is_bound_to_its_own_step(self) -> None:
         docs = (ROOT / "scripts/docs-check.sh").read_text()
         start = docs.index("check_pipelock_workflow_version()")

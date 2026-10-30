@@ -42,8 +42,7 @@
       "sdk/verifiers",
       "benchmark",
       "release",
-      "action.yml",
-      ".github/workflows",
+      ".github/workflows/reusable-scan.yml",
       ".goreleaser.yaml"
     ],
     "suffixes": [
@@ -61,27 +60,27 @@
         "reason": "The inventory contains expected values and regexes, not consumer-facing pins."
       },
       {
-        "glob": "*/testdata/*",
+        "glob": "sdk/verifiers/*/testdata/*",
         "reason": "Protocol/conformance fixtures are immutable test inputs, not release instructions."
       },
       {
-        "glob": "*/tests/*",
+        "glob": "sdk/verifiers/*/tests/*",
         "reason": "Verifier regression fixtures and test definitions are not public release claims."
       },
       {
-        "glob": "*/node_modules/*",
+        "glob": "sdk/verifiers/*/node_modules/*",
         "reason": "Installed third-party dependencies are not project-owned publication surfaces."
       },
       {
-        "glob": "*/dist/*",
+        "glob": "sdk/verifiers/*/dist/*",
         "reason": "Generated verifier output; the source package metadata is checked directly."
       },
       {
-        "glob": "*/target/*",
+        "glob": "sdk/verifiers/*/target/*",
         "reason": "Generated Cargo output; the source package metadata is checked directly."
       },
       {
-        "glob": "*/package-lock.json",
+        "glob": "sdk/verifiers/*/package-lock.json",
         "reason": "Dependency pins are independent; both root package versions are checked directly below."
       },
       {
@@ -101,7 +100,7 @@
         "reason": "Dependency lock versions are independent; the verifier package version is checked directly below."
       }
     ],
-    "discovery_contract": "SemVer-shaped tokens and the public count/percentage phrases recognized by release_doc_versions.py must be registered in these roots. This is bounded lexical discovery, not arbitrary natural-language claim verification. Source code, configuration defaults, schema versions, asset geometry and raw benchmark tables are outside lexical discovery; historical benchmark files are content-pinned below. CHANGELOG history is retained; its newest numbered heading is checked directly."
+    "discovery_contract": "SemVer-shaped tokens and the public count/percentage phrases recognized by release_doc_versions.py must be registered in these roots. This is bounded lexical discovery, not arbitrary natural-language claim verification. Source code, configuration defaults, schema versions, asset geometry and raw benchmark tables are outside lexical discovery; historical benchmark files are content-pinned below. CHANGELOG history is retained; its newest numbered heading is checked directly. Third-party action, toolchain and dependency pins in workflows and action.yml are owned by Renovate and are not release numbers of this product; only workflow files that carry a product version (reusable-scan.yml) are scanned."
   },
   "surfaces": [
     {
@@ -1642,429 +1641,6 @@
       "format": "version"
     },
     {
-      "id": "action.yml-1",
-      "path": "action.yml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 1,
-      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci-shard-drift.yaml-1",
-      "path": ".github/workflows/ci-shard-drift.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-1",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 5,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-2",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.15\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.15.0",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-3",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?5\\.0\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "5.0.1",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-4",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.20\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "3.20.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-5",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.26\\.10)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.26.10",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-6",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.26\\.3)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.26.3",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-ci.yaml-7",
-      "path": ".github/workflows/ci.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.1\\.4)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.1.4",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-continuous-gauntlet.yaml-1",
-      "path": ".github/workflows/continuous-gauntlet.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.1.0",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-continuous-gauntlet.yaml-2",
-      "path": ".github/workflows/continuous-gauntlet.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.14\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.14.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-continuous-gauntlet.yaml-3",
-      "path": ".github/workflows/continuous-gauntlet.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.26\\.10)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.26.10",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-continuous-gauntlet.yaml-4",
-      "path": ".github/workflows/continuous-gauntlet.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-dependency-review.yaml-1",
-      "path": ".github/workflows/dependency-review.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?5\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "5.0.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-example-verification.yaml-1",
-      "path": ".github/workflows/example-verification.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.1.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-hardening-report.yaml-1",
-      "path": ".github/workflows/hardening-report.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.15\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.15.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-1",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.1\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "0.1.1",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-2",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.1.0",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-3",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-4",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.95\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.95.0",
-      "count": 6,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-5",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?11\\.5\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "11.5.1",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-6",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?8\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "8.0.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-publish-verifiers.yaml-7",
-      "path": ".github/workflows/publish-verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.0\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.0.5",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-1",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "0.2.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-2",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3\\-beta\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.2.3-beta.1",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-3",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.26\\.10)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.26.10",
-      "count": 6,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-4",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.27\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.27.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-5",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.29\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.29.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-6",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.1.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-7",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-8",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.95\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.95.0",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-9",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "4.6.0",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-10",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.4\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "4.4.1",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-11",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "4.4.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-12",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.6\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.6.5",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-13",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.15\\.4)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.15.4",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-14",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.10\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.10.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-15",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.21\\.9)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "0.21.9",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-16",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.50\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.50.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-17",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.2\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "4.2.2",
-      "count": 13,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-18",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "4.1.0",
-      "count": 7,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-19",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?5\\.0\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "5.0.1",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-20",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.21\\.3)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "3.21.3",
-      "count": 3,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-21",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-22",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?8\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "8.0.2",
-      "count": 4,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-23",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "3.1.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-release.yaml-24",
-      "path": ".github/workflows/release.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "3.4.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
       "id": ".github-workflows-reusable-scan.yml-1",
       "path": ".github/workflows/reusable-scan.yml",
       "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
@@ -2080,60 +1656,6 @@
       "expected": "source:product",
       "count": 4,
       "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-scorecard.yaml-1",
-      "path": ".github/workflows/scorecard.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.5\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "2.5.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-scorecard.yaml-2",
-      "path": ".github/workflows/scorecard.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.2)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.2",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-verifiers.yaml-1",
-      "path": ".github/workflows/verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.1.0",
-      "count": 5,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-verifiers.yaml-2",
-      "path": ".github/workflows/verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.95\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.95.0",
-      "count": 11,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-verifiers.yaml-3",
-      "path": ".github/workflows/verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.9\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "1.9.0",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
-      "id": ".github-workflows-verifiers.yaml-4",
-      "path": ".github/workflows/verifiers.yaml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.0",
-      "count": 2,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
       "format": "version"
     },
     {
@@ -2167,14 +1689,6 @@
       "expected": "stats:DLP patterns",
       "count": 1,
       "reason": "Published default-count table or diagnostic; follows TestCanonicalStats."
-    },
-    {
-      "id": "action.yml-dynamic-version",
-      "path": "action.yml",
-      "pattern": "version:\\n(?:[^\\n]*\\n)*?    default: \\'(?P<value>[^\\'\\n]+)\\'",
-      "expected": "latest",
-      "count": 1,
-      "reason": "The action resolves the published release dynamically when no version input is supplied; examples must pass an explicit current version."
     },
     {
       "id": ".goreleaser.yaml-dynamic-version",

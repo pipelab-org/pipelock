@@ -275,8 +275,16 @@ if printf '%s\n' "$image_refs" | grep -E ':@sha256:|@@|: *"[^"]*:" *$|:" *$' >/d
 fi
 
 # Digest-pinned examples must render repository@sha256:..., not a tag.
+# The repository is the chart's own default (release.yaml re-stamps that single
+# line with the releasing namespace at package time), so an example that
+# overrides image.repository, or a second namespace, fails here.
+default_repository="$(awk '/^image:/ { in_image = 1; next } in_image && /^  repository:/ { print $2; exit }' "$chart/values.yaml")"
+if ! printf '%s' "$default_repository" | grep -qE '^ghcr\.io/[a-z0-9-]+/pipelock$'; then
+  echo "charts/pipelock/values.yaml image.repository is not a ghcr.io/<owner>/pipelock default: '$default_repository'" >&2
+  exit 1
+fi
 for name in values-enterprise-conductor values-enterprise-follower; do
-  if ! grep -qE -- 'image: "ghcr\.io/(luckypipewrench|pipelab-org)/pipelock@sha256:' "$render_dir/$name.yaml"; then
+  if ! grep -qF -- "image: \"${default_repository}@sha256:" "$render_dir/$name.yaml"; then
     echo "$name should render a digest-pinned image (repository@sha256:...)" >&2
     grep -- 'image:' "$render_dir/$name.yaml" >&2
     exit 1
