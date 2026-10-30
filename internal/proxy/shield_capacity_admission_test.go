@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -118,6 +119,10 @@ func testShieldResponseRequiresSignalCapacity(t *testing.T, maxBytes int) {
 						wantBytes = -1
 					}
 					wantOutcome := receiptOutcomePattern("503", wantBytes, sessionCapacityLayer)
+					if transport == TransportFetch {
+						// Fetch also records the size it wrote to the client.
+						wantOutcome += " delivered_bytes=" + strconv.Itoa(w.Body.Len())
+					}
 					for _, got := range extractReceiptsFromDir(t, receiptDir) {
 						if got.ActionRecord.Layer == receiptOutcomeLayer {
 							outcomeRecorded = true

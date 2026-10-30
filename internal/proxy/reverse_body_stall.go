@@ -17,8 +17,10 @@ import (
 // timeout, and the response-header timeout ends once headers arrive, so an
 // upstream that sends headers and then stops would otherwise hold a handler
 // and its connection for as long as it likes while the response is buffered
-// for scanning. Each read that returns data restarts the window; when it
-// expires the request context is canceled, which ends the pending read.
+// for scanning. The window runs only while a read waits on the upstream, so
+// time the consumer spends scanning or writing downstream is never counted
+// as an upstream stall; when it expires the request context is canceled,
+// which ends the pending read.
 //
 // Protocol upgrades and server-sent event streams are exempt: both are
 // long-lived by design and may be idle between messages.
@@ -60,12 +62,10 @@ func (t *upstreamBodyStallTransport) RoundTrip(req *http.Request) (*http.Respons
 		out.Body = &trailerMergingBody{ReadCloser: &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, src: resp, dst: out}
 		return out, nil
 	}
-	out.Body = &trailerMergingBody{ReadCloser: &stallBoundBody{
-		ReadCloser: resp.Body,
-		cancel:     cancel,
-		timer:      time.AfterFunc(t.stall, cancel),
-		stall:      t.stall,
-	}, src: resp, dst: out}
+	body := &stallBoundBody{ReadCloser: resp.Body, cancel: cancel, stall: t.stall}
+	body.timer = time.AfterFunc(t.stall, body.expire)
+	body.timer.Stop()
+	out.Body = &trailerMergingBody{ReadCloser: body, src: resp, dst: out}
 	return out, nil
 }
 
@@ -132,22 +132,46 @@ func (b *cancelOnCloseRW) Close() error {
 	return err
 }
 
-// stallBoundBody cancels the upstream request when no byte arrives within
-// stall of the previous one.
+// stallBoundBody cancels the upstream request when a single read waits
+// longer than stall for the upstream. The timer is armed only for the
+// duration of each read.
 type stallBoundBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
 	timer  *time.Timer
 	stall  time.Duration
 	once   sync.Once
+
+	// Stop does not wait for an AfterFunc callback that has already started,
+	// so a callback from an earlier read can run during a later one. expire
+	// cancels only while a read is armed and that read has waited the full
+	// window.
+	mu      sync.Mutex
+	armed   bool
+	armedAt time.Time
 }
 
 func (b *stallBoundBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	b.armed, b.armedAt = true, time.Now()
+	b.mu.Unlock()
+	b.timer.Reset(b.stall)
 	n, err := b.ReadCloser.Read(p)
-	if n > 0 && err == nil {
-		b.timer.Reset(b.stall)
-	}
+	b.mu.Lock()
+	b.armed = false
+	b.mu.Unlock()
+	b.timer.Stop()
 	return n, err
+}
+
+// expire is the stall timer callback.
+func (b *stallBoundBody) expire() {
+	b.mu.Lock()
+	stalled := b.armed && time.Since(b.armedAt) >= b.stall
+	b.mu.Unlock()
+	if stalled {
+		b.cancel()
+	}
 }
 
 func (b *stallBoundBody) Close() error {
