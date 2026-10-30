@@ -318,6 +318,13 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		}
 	}
 
+	// One command string usually reaches the credential checks unchanged, and
+	// its views are the ones just built.
+	credentialViews := candidateViews{}
+	if len(matchArgs) == 1 {
+		credentialViews[matchArgs[0]] = views
+	}
+
 	var matchedRules, incompleteRules []string
 	strictest := ""
 	redirectProfile := ""
@@ -376,11 +383,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
+		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
 			argPatternMatched, pairIncomplete = matched, false
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations); handled {
+			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
 				argPatternMatched, pairIncomplete = matched, false
 			}
 		}
@@ -405,6 +412,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		}
 		if !structuralMatched {
 			continue
+		}
+		if pairIncomplete {
+			incompleteRules = append(incompleteRules, rule.Name)
 		}
 
 		matchedRule := rule.Name
@@ -491,6 +501,14 @@ func appendUniqueRule(rules []string, rule string) []string {
 // confusable remapping before Unicode normalization; pass nil to use only the
 // baseline confusable map from normalize.ForMatching.
 func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
+	tokens, _ := normalizeArgTokensUnexpanded(argStrings, normFn, preNorm)
+	tokens = normalizeCommandOptions(tokens)
+	return tokens, strings.Join(tokens, " ")
+}
+
+// normalizeArgTokensUnexpanded retains the normalized spelling that configured
+// rules consumed before command-option expansion was added.
+func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
 	var tokens []string
 	for _, s := range argStrings {
 		if preNorm != nil {
