@@ -441,10 +441,13 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		if viewResult.Failed() {
 			return viewResult, nil, nil
 		}
-		if firstView {
+		switch {
+		case viewResult.Clean && strings.TrimSpace(view) == "":
+			// A blank view holds no wording; it neither adds nor removes coverage.
+		case firstView:
 			result.Assessment = viewResult.RecoveryAssessment()
 			firstView = false
-		} else {
+		default:
 			result.Assessment = result.Assessment.Merge(viewResult.RecoveryAssessment())
 		}
 		result.WarnedMatches = appendUniqueResponseViewMatches(result.WarnedMatches, viewResult.WarnedMatches)

@@ -411,7 +411,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		if injResult.Clean {
 			for _, s := range strs {
 				r := sc.ScanResponse(ctx, s)
-				assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+				assessment := mergeInputViewAssessment(injResult, s, r)
 				injResult.Assessment = assessment
 				if !r.Clean {
 					injResult = r
@@ -531,7 +531,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	if injResult.Clean {
 		for _, s := range strs {
 			r := sc.ScanResponse(ctx, s)
-			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {
 				injResult = r
@@ -646,7 +646,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	if injResult.Clean {
 		for _, s := range strs {
 			r := sc.ScanResponse(ctx, s)
-			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+			assessment := mergeInputViewAssessment(injResult, s, r)
 			injResult.Assessment = assessment
 			if !r.Clean {
 				injResult = r
@@ -680,6 +680,16 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 		Matches: dlpMatches,
 		Inject:  injMatches,
 	}
+}
+
+// mergeInputViewAssessment folds one extracted string into the request's
+// assessment. A blank string holds no wording, so it neither adds nor removes
+// coverage of the request text that was already assessed as a whole.
+func mergeInputViewAssessment(aggregate scanner.ResponseScanResult, view string, viewResult scanner.ResponseScanResult) scanner.InjectionAssessment {
+	if viewResult.Clean && strings.TrimSpace(view) == "" {
+		return aggregate.RecoveryAssessment()
+	}
+	return aggregate.RecoveryAssessment().Merge(viewResult.RecoveryAssessment())
 }
 
 // scanRequestBatch scans a JSON-RPC 2.0 batch request (array of requests).
