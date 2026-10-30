@@ -278,12 +278,21 @@ func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup
 type ReceiptActionDetail struct {
 	Headline evidenceview.DecisionExplanation
 	Records  []evidenceview.DecisionExplanation
+	// Incomplete reports that the bounded evidence view ended while a later
+	// record of this action could still exist, so the headline verdict may
+	// not be final. A block headline is never incomplete: nothing later can
+	// make a denied action less denied.
+	Incomplete bool
 }
 
 // ReceiptDetail loads one receipt by session ID and globally unique action ID,
 // returning the headline DecisionExplanation. The CALLER redacts per RBAC.
 func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.DecisionExplanation, bool, error) {
 	detail, found, err := m.ReceiptActionDetail(sessionID, actionID)
+	if err == nil && detail.Incomplete {
+		// A lone explanation has nowhere to say it may not be final.
+		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s outcome may lie beyond the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
+	}
 	return detail.Headline, found, err
 }
 
@@ -312,14 +321,13 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 		return ReceiptActionDetail{}, false, nil
 	}
 	headline := headlineReceipt(matched)
-	if truncated && awaiting && !terminal && headline.ActionRecord.Verdict != config.ActionBlock {
-		// The terminal record may lie beyond the bounded view; showing the
-		// admission record alone could present a failed action as allowed.
-		// Legacy records without a phase have no later record to wait for.
-		return ReceiptActionDetail{}, false, fmt.Errorf("%w: receipt %s outcome may lie beyond the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
-	}
 	sort.SliceStable(matched, func(i, j int) bool { return receiptChainLess(matched[i], matched[j]) })
 	detail := ReceiptActionDetail{Headline: evidenceview.ExplainReceipt(*headline)}
+	// A terminal phase does not close the record set: a corrective resolution
+	// or a WebSocket session-close block can follow it. A truncated view of a
+	// phased action is therefore marked incomplete unless it already shows a
+	// block. Legacy records without a phase keep their single-record behavior.
+	detail.Incomplete = truncated && (awaiting || terminal) && headline.ActionRecord.Verdict != config.ActionBlock
 	for _, r := range matched {
 		detail.Records = append(detail.Records, evidenceview.ExplainReceipt(*r))
 	}
@@ -493,6 +501,7 @@ func headlineLess(a, b *receipt.Receipt) bool {
 }
 
 // receiptChainLess orders records by chain position, then time, then action ID.
+// Signed receipt identity breaks ties between conflicting records at one position.
 func receiptChainLess(a, b *receipt.Receipt) bool {
 	ar, br := a.ActionRecord, b.ActionRecord
 	if ar.ChainSeq != br.ChainSeq {
@@ -504,7 +513,13 @@ func receiptChainLess(a, b *receipt.Receipt) bool {
 	if ar.ActionID != br.ActionID {
 		return ar.ActionID < br.ActionID
 	}
-	return ar.DecisionPhase < br.DecisionPhase
+	if ar.DecisionPhase != br.DecisionPhase {
+		return ar.DecisionPhase < br.DecisionPhase
+	}
+	if a.SignerKey != b.SignerKey {
+		return a.SignerKey < b.SignerKey
+	}
+	return a.Signature < b.Signature
 }
 
 // receiptVerdictRank orders verdicts by how much they say about the action:

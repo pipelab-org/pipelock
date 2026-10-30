@@ -1269,6 +1269,106 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		}
 	})
 
+	t.Run("truncated_terminal_prefix_does_not_hide_later_block", func(t *testing.T) {
+		deferred := signDeferPair(t, "allow")
+		correction := deferred[1].ActionRecord
+		correction.ActionID = receipt.NewActionID()
+		correction.ChainSeq = 2
+		correction.Timestamp = base.Add(2 * time.Second)
+		correction.Verdict = "block"
+		correction.Pattern = "release could not be journaled"
+		var err error
+		correction.ChainPrevHash, err = receipt.ReceiptHash(deferred[1])
+		if err != nil {
+			t.Fatal(err)
+		}
+		last, err := receipt.Sign(correction, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deferred = append(deferred, last)
+		websocket := signSteps(t, []step{
+			{receipt.DecisionPhaseIntent, "allow", "allowlist", "api.vendor.example"},
+			{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=1008 bytes=0 reason=policy_blocked"},
+			{"", "block", "session_close", ""},
+		})
+		for _, tc := range []struct {
+			name  string
+			chain []receipt.Receipt
+		}{
+			{"corrective_resolution", deferred},
+			{"websocket_session_close", websocket},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				dir := t.TempDir()
+				writeReceiptsToDir(t, dir, tc.chain)
+				actionID := tc.chain[0].ActionRecord.ActionID
+				full, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptActionDetail(testSessionID, actionID)
+				if err != nil || !found || full.Headline.Verdict.Detail != "block" || len(full.Records) != 3 {
+					t.Fatalf("complete view: verdict=%s records=%d found=%v err=%v", full.Headline.Verdict.Detail, len(full.Records), found, err)
+				}
+				limitedModel := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 2})
+				limited, found, err := limitedModel.ReceiptActionDetail(testSessionID, actionID)
+				if err != nil || !found || !limited.Incomplete {
+					t.Fatalf("truncated view not marked incomplete: verdict=%s records=%d incomplete=%v found=%v err=%v", limited.Headline.Verdict.Detail, len(limited.Records), limited.Incomplete, found, err)
+				}
+				if _, found, err := limitedModel.ReceiptDetail(testSessionID, actionID); found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+					t.Fatalf("lone truncated explanation presented as final: found=%v err=%v", found, err)
+				}
+				handler := New(Options{
+					TrustedOuterAuth: true, TrustedOuterAuthBoundary: "test-fixture: fake outer auth boundary",
+					ReceiptDir: dir, ReceiptReadLimit: 2, HasFeature: allowAgentsFeature,
+				})
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), http.MethodGet,
+					"/session/"+testSessionID+"/receipt/"+actionID, nil))
+				body := rec.Body.String()
+				if rec.Code != http.StatusOK || strings.Contains(body, `verdict-banner verdict-allow`) || !strings.Contains(body, "may not be final") {
+					t.Fatalf("truncated page: status=%d body=%s", rec.Code, body)
+				}
+			})
+		}
+	})
+
+	t.Run("same_position_records_have_stable_order", func(t *testing.T) {
+		ar := validDashboardAction(0, receipt.GenesisHash, base)
+		ar.DecisionPhase, ar.Verdict = receipt.DecisionPhaseIntent, "warn"
+		var set []receipt.Receipt
+		for i, pattern := range []string{"first finding", "second finding", "third finding"} {
+			ar.Pattern = pattern
+			key := priv
+			if i == 2 {
+				_, key = generateDashboardKey(t)
+			}
+			r, err := receipt.Sign(ar, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			set = append(set, r)
+		}
+		var want ReceiptActionDetail
+		for i, order := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+			dir := t.TempDir()
+			writeReceiptsToDir(t, dir, []receipt.Receipt{set[order[0]], set[order[1]], set[order[2]]})
+			got, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptActionDetail(testSessionID, ar.ActionID)
+			if err != nil || !found || len(got.Records) != 3 {
+				t.Fatalf("same-position lookup: records=%d found=%v err=%v", len(got.Records), found, err)
+			}
+			if i == 0 {
+				want = got
+				continue
+			}
+			if got.Headline.Pattern.Detail != want.Headline.Pattern.Detail {
+				t.Fatalf("file order changed headline: %q vs %q", got.Headline.Pattern.Detail, want.Headline.Pattern.Detail)
+			}
+			for i := range got.Records {
+				if got.Records[i].Pattern.Detail != want.Records[i].Pattern.Detail {
+					t.Fatalf("file order changed row %d", i)
+				}
+			}
+		}
+	})
+
 	t.Run("unrelated_resolution_does_not_join", func(t *testing.T) {
 		dir := t.TempDir()
 		pair := signDeferPair(t, "allow")

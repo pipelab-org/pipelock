@@ -946,7 +946,10 @@ type investigatorPageData struct {
 	Seq         string
 	Explanation evidenceview.DecisionExplanation
 	// Records lists every record of the action in chain order.
-	Records    []evidenceview.DecisionExplanation
+	Records []evidenceview.DecisionExplanation
+	// Incomplete marks a bounded view in which a later record of the action
+	// may be missing, so the verdict shown may not be final.
+	Incomplete bool
 	RawAllowed bool
 }
 
@@ -1273,6 +1276,7 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 		Seq:         explanation.ChainSeq.Detail,
 		Explanation: explanation,
 		Records:     records,
+		Incomplete:  detail.Incomplete,
 		RawAllowed:  raw,
 	}
 	var buf bytes.Buffer
