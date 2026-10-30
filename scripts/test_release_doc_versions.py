@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -430,17 +431,42 @@ class ReleaseSurfaceRegistryTests(unittest.TestCase):
     def test_shipped_registry_leaves_renovate_owned_pins_alone(self) -> None:
         # Renovate rewrites action and toolchain pins in workflows and action.yml
         # weekly and cannot edit this registry, so inventorying them would fail
-        # every dependency PR. Only the workflow that carries a product version
-        # is scanned.
+        # every dependency PR. Product references in the reusable workflow are
+        # registered separately from third-party action pins.
         registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
         roots = registry["scan"]["roots"]
         self.assertNotIn(".github/workflows", roots)
         self.assertNotIn("action.yml", roots)
-        self.assertIn(".github/workflows/reusable-scan.yml", roots)
+        self.assertNotIn(".github/workflows/reusable-scan.yml", roots)
         stray = [entry["id"] for entry in registry["surfaces"]
                  if (entry["path"].startswith(".github/workflows/") and entry["path"] != ".github/workflows/reusable-scan.yml")
                  or entry["path"] == "action.yml"]
         self.assertEqual(stray, [])
+
+    def test_reusable_workflow_dependency_bump_preserves_product_checks(self) -> None:
+        registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
+        relative = ".github/workflows/reusable-scan.yml"
+        workflow = self.root / relative
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        original = (ROOT / relative).read_text(encoding="utf-8")
+        self.registry["surfaces"].extend(entry for entry in registry["surfaces"] if entry["path"] == relative)
+        current = str(yaml.load((ROOT / "charts/pipelock/Chart.yaml").read_text(), Loader=WorkflowLoader)["appVersion"])
+        (self.root / "release/version.txt").write_text(current)
+        for path in (self.root / "README.md", self.root / "docs/guides/health.md"):
+            path.write_text(path.read_text().replace("3.6.0", current))
+        self.save()
+        bumped, count = re.subn(r"(uses: actions/checkout@[^\n]+# v)[0-9.]+", r"\g<1>99.98.97", original)
+        self.assertEqual(count, 1)
+        workflow.write_text(bumped)
+        self.assertEqual(check_inventory(self.root), [])
+        for line in original.splitlines():
+            if current not in line:
+                continue
+            for invalid in ("3.5.0", current + ".1"):
+                with self.subTest(line=line, invalid=invalid):
+                    workflow.write_text(bumped.replace(line, line.replace(current, invalid)))
+                    issues = check_inventory(self.root)
+                    self.assertTrue(any(relative in issue for issue in issues), issues)
 
     def test_shipped_exclusions_do_not_hide_documentation_directories(self) -> None:
         registry = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))

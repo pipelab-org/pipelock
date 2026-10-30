@@ -42,7 +42,6 @@
       "sdk/verifiers",
       "benchmark",
       "release",
-      ".github/workflows/reusable-scan.yml",
       ".goreleaser.yaml"
     ],
     "suffixes": [
@@ -100,7 +99,7 @@
         "reason": "Dependency lock versions are independent; the verifier package version is checked directly below."
       }
     ],
-    "discovery_contract": "SemVer-shaped tokens and the public count/percentage phrases recognized by release_doc_versions.py must be registered in these roots. This is bounded lexical discovery, not arbitrary natural-language claim verification. Source code, configuration defaults, schema versions, asset geometry and raw benchmark tables are outside lexical discovery; historical benchmark files are content-pinned below. CHANGELOG history is retained; its newest numbered heading is checked directly. Third-party action, toolchain and dependency pins in workflows and action.yml are owned by Renovate and are not release numbers of this product; only workflow files that carry a product version (reusable-scan.yml) are scanned."
+    "discovery_contract": "SemVer-shaped tokens and the public count/percentage phrases recognized by release_doc_versions.py must be registered in these roots. This is bounded lexical discovery, not arbitrary natural-language claim verification. Source code, configuration defaults, schema versions, asset geometry and raw benchmark tables are outside lexical discovery; historical benchmark files are content-pinned below. CHANGELOG history is retained; its newest numbered heading is checked directly. Third-party action, toolchain and dependency pins in workflows and action.yml are owned by Renovate and are not release numbers of this product; workflow and action product installation pins are checked by the product-version recognizers, and reusable-scan.yml product examples are registered with contextual selectors."
   },
   "surfaces": [
     {
@@ -1641,18 +1640,9 @@
       "format": "version"
     },
     {
-      "id": ".github-workflows-reusable-scan.yml-1",
-      "path": ".github/workflows/reusable-scan.yml",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?7\\.0\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "7.0.1",
-      "count": 1,
-      "reason": "Independent build-tool, action, corpus or release-workflow example version; not the Pipelock product version.",
-      "format": "version"
-    },
-    {
       "id": ".github-workflows-reusable-scan.yml-2",
       "path": ".github/workflows/reusable-scan.yml",
-      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "pattern": "(?:pipelock(?:/[^@\\s]+)?@(?:[0-9a-fA-F]{40}\\s+#\\s*)?|pipelock-version:\\s*['\"]?|Pipelock version \\(e\\.g\\., \")(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
       "expected": "source:product",
       "count": 4,
       "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
