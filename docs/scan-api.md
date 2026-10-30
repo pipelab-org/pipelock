@@ -142,11 +142,11 @@ Request `status: "completed"` means the endpoint finished evaluating the request
 | `benign` | The basic checker completed its configured wording checks without a finding. |
 | `partial` | Only the built-in core wording patterns ran because `response_scanning.enabled` is `false`, and they found nothing. This is not a benign result. |
 | `finding` | Wording matched, including warn-only, observed or suppressed matches. Delivery follows the existing policy; a finding alone does not imply denial. |
-| `incomplete` | Assessment could not finish, including cancellation, timeout or uninspectable tool arguments. This is not a benign result or an injection detection. |
+| `incomplete` | Wording assessment could not finish, including cancellation, timeout or tool arguments too deeply nested for wording extraction. This is not a benign result or an injection detection. |
 
 Only `benign` means wording was checked and nothing matched. Later releases may add statuses, so treat any status you don't recognize as not benign.
 
-Cancellation and timeout that end the scan retain `status: "error"` and their existing HTTP error codes. Cancellation during cross-request fragment inspection is different: it returns HTTP 200 with a completed `decision: "deny"` and a `CEE-scan-cancelled` finding, and `assessment` still describes the wording scan, which finished before that step. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Uninspectable tool arguments retain their existing completed denial and finding, with assessment marked incomplete. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
+Cancellation and timeout that end the scan retain `status: "error"` and their existing HTTP error codes. Cancellation during cross-request fragment inspection is different: it returns HTTP 200 with a completed `decision: "deny"` and a `CEE-scan-cancelled` finding, and `assessment` still describes the wording scan, which finished before that step. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Tool arguments too deeply nested for wording extraction retain their existing completed denial and finding, with assessment marked incomplete. A DLP numeric inspection limit also denies the request, but leaves the wording assessment unchanged. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
 
 ### Finding object
 
