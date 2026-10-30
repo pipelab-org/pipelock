@@ -28,7 +28,13 @@ func SelfTest(ctx context.Context, c Checker, policy Policy, benign, suspicious 
 		{suspicious, StateFinding, Suspicious},
 	} {
 		result := c.Check(ctx, probe.item, policy)
-		if result.State != probe.want || result.Status != StatusAssessed || ctx.Err() != nil {
+		// A known answer must cover the whole probe: a finding on partial
+		// input is still a finding, but it does not prove the checker reads
+		// complete items.
+		complete := probe.item.Completeness != nil && probe.item.Completeness.Status == Complete &&
+			result.Reason != ReasonTruncated &&
+			(result.Response == nil || (result.Response.Completeness != nil && result.Response.Completeness.Status == Complete))
+		if result.State != probe.want || result.Status != StatusAssessed || !complete || ctx.Err() != nil {
 			return &HealthError{Probe: probe.classification, Assessment: result}
 		}
 	}

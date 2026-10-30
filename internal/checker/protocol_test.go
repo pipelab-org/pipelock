@@ -212,6 +212,30 @@ func TestSelfTest(t *testing.T) {
 	if err := SelfTest(t.Context(), client, testPolicy(), benign, suspicious); err != nil {
 		t.Fatal(err)
 	}
+	// A checker that only covers part of the known-bad probe fails, even
+	// though its partial suspicious answer still decodes as a finding.
+	partialSuspicious := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		var req Request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			return
+		}
+		response := testResponse(req)
+		if response.ItemID == suspicious.ID {
+			response.Classification = Suspicious
+			response.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	var partialFailure *HealthError
+	if err := SelfTest(t.Context(), partialSuspicious, testPolicy(), benign, suspicious); !errors.As(err, &partialFailure) || partialFailure.Probe != Suspicious || partialFailure.Assessment.State != StateFinding {
+		t.Fatalf("partial suspicious probe: %v", err)
+	}
+	partialProbe := suspicious
+	partialProbe.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
+	if err := SelfTest(t.Context(), client, testPolicy(), benign, partialProbe); !errors.As(err, &partialFailure) || partialFailure.Probe != Suspicious {
+		t.Fatalf("partial probe item: %v", err)
+	}
 	alwaysBenign := clientFor(t, goodHandler(t))
 	err := SelfTest(t.Context(), alwaysBenign, testPolicy(), benign, suspicious)
 	var failure *HealthError
