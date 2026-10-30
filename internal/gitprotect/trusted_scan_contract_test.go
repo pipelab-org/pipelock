@@ -331,7 +331,8 @@ func TestTrustedScanBuildsItsOwnScanner(t *testing.T) {
 	steps := securityScanSteps(t)
 
 	for _, step := range steps {
-		if strings.Contains(step.Uses, "luckyPipewrench/pipelock@") {
+		// The repository moved organisations; either owner installs a release.
+		if strings.Contains(step.Uses, "luckyPipewrench/pipelock@") || strings.Contains(step.Uses, "pipelab-org/pipelock@") {
 			t.Errorf("the scan job installs a published Pipelock release via %q; build from origin/main so the gate is never behind its own fixes", step.Uses)
 		}
 		if step.Run != "" && strings.Contains(step.Run, "releases/latest") {

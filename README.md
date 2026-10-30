@@ -588,7 +588,7 @@ The commit below pins the action source; its `action.yml` is identical to the on
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+- uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
   with:
     version: '3.7.0'
     scan-diff: 'true'
