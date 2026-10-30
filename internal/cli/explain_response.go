@@ -40,15 +40,16 @@ var errExplainResponseBlocked = errors.New("response blocked")
 // deliberately fingerprints, not attacker-controlled text: explain output is
 // commonly copied into terminals, logs, and agent-visible incident channels.
 type responseExplainReport struct {
-	ConfigFile string                 `json:"config_file"`
-	Mode       string                 `json:"mode"`
-	Version    string                 `json:"version"`
-	Allowed    bool                   `json:"allowed"`
-	Action     string                 `json:"action"`
-	BodySHA256 string                 `json:"body_sha256"`
-	Matches    []responseExplainMatch `json:"matches,omitempty"`
-	Error      string                 `json:"error,omitempty"`
-	Notes      []string               `json:"notes,omitempty"`
+	Assessment scanner.InjectionAssessment `json:"assessment"`
+	ConfigFile string                      `json:"config_file"`
+	Mode       string                      `json:"mode"`
+	Version    string                      `json:"version"`
+	Allowed    bool                        `json:"allowed"`
+	Action     string                      `json:"action"`
+	BodySHA256 string                      `json:"body_sha256"`
+	Matches    []responseExplainMatch      `json:"matches,omitempty"`
+	Error      string                      `json:"error,omitempty"`
+	Notes      []string                    `json:"notes,omitempty"`
 }
 
 // responseExplainMatch identifies the exact scanner view and byte range that
@@ -96,6 +97,7 @@ Example:
 				if errors.Is(err, errExplainResponseTooLarge) {
 					report := newResponseExplainReport(cfg, cfgLabel, nil)
 					report.Allowed = false
+					report.Assessment.Status = scanner.AssessmentIncomplete
 					report.Error = fmt.Sprintf("response body exceeds explain read cap of %d bytes", limit)
 					return emitResponseExplainReport(cmd, report, jsonOutput, errExplainResponseTooLarge)
 				}
@@ -115,6 +117,7 @@ Example:
 
 func newResponseExplainReport(cfg *config.Config, cfgLabel string, body []byte) responseExplainReport {
 	report := responseExplainReport{
+		Assessment: scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentNotAssessed},
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
 		Version:    cliutil.Version,
@@ -164,6 +167,7 @@ func buildResponseExplainReport(ctx context.Context, cfg *config.Config, cfgLabe
 	}
 	defer sc.Close()
 	result := sc.ScanResponseBodyWithSuppress(ctx, body, "", nil)
+	report.Assessment = result.Assessment
 	// Runtime intercept/forward/reverse consult Scanner.ResponseAction(), not
 	// the raw YAML field. When response_scanning.enabled is false, that method
 	// returns block for core-floor hits even if the file still says warn.
@@ -375,6 +379,9 @@ func printResponseExplainReport(w io.Writer, report responseExplainReport) error
 		return err
 	}
 	if _, err := fmt.Fprintf(w, "Action: %s\nBody SHA-256: %s\n", report.Action, report.BodySHA256); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "Wording assessment: %s (%s)\n", report.Assessment.Status, report.Assessment.Checker); err != nil {
 		return err
 	}
 	for _, match := range report.Matches {
