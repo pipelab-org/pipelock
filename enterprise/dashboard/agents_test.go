@@ -1192,6 +1192,78 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		}
 	}
 
+	t.Run("linked_response_findings_are_not_hidden_by_allow_outcome", func(t *testing.T) {
+		for _, transport := range []string{"fetch", "forward", "reverse"} {
+			for _, verdict := range []string{"warn", "strip"} {
+				t.Run(transport+"/"+verdict, func(t *testing.T) {
+					chain := signSteps(t, []step{
+						{receipt.DecisionPhaseIntent, "allow", "allowlist", "admitted"},
+						{"", verdict, "response_scan", "response finding"},
+						{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=200 bytes=16 reason=complete"},
+					})
+					actionID := chain[0].ActionRecord.ActionID
+					prev := receipt.GenesisHash
+					for i := range chain {
+						ar := chain[i].ActionRecord
+						ar.Transport, ar.ChainPrevHash = transport, prev
+						if i == 1 {
+							// Response producers attach findings to the request
+							// under a fresh action ID, without a decision phase.
+							ar.ActionID, ar.ParentActionID = receipt.NewActionID(), actionID
+						}
+						var err error
+						chain[i], err = receipt.Sign(ar, priv)
+						if err != nil {
+							t.Fatal(err)
+						}
+						prev, err = receipt.ReceiptHash(chain[i])
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					dir := t.TempDir()
+					writeReceiptsToDir(t, dir, chain)
+					detail, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptActionDetail(testSessionID, actionID)
+					if err != nil || !found || detail.Headline.Verdict.Detail != verdict || len(detail.Records) != 3 {
+						t.Fatalf("linked response finding hidden: verdict=%s records=%d found=%v err=%v", detail.Headline.Verdict.Detail, len(detail.Records), found, err)
+					}
+					unrelated := chain[1].ActionRecord
+					unrelated.ParentActionID = receipt.NewActionID()
+					other, err := receipt.Sign(unrelated, priv)
+					if err != nil {
+						t.Fatal(err)
+					}
+					unrelatedDir := t.TempDir()
+					otherHash, err := receipt.ReceiptHash(other)
+					if err != nil {
+						t.Fatal(err)
+					}
+					tailRecord := chain[2].ActionRecord
+					tailRecord.ChainPrevHash = otherHash
+					tail, err := receipt.Sign(tailRecord, priv)
+					if err != nil {
+						t.Fatal(err)
+					}
+					writeReceiptsToDir(t, unrelatedDir, []receipt.Receipt{chain[0], other, tail})
+					separate, found, err := NewReadModel(Options{ReceiptDir: unrelatedDir}).ReceiptActionDetail(testSessionID, actionID)
+					if err != nil || !found || separate.Headline.Verdict.Detail != "allow" || len(separate.Records) != 2 {
+						t.Fatalf("unrelated response finding joined: verdict=%s records=%d found=%v err=%v", separate.Headline.Verdict.Detail, len(separate.Records), found, err)
+					}
+					reorderedDir := t.TempDir()
+					writeReceiptsToDir(t, reorderedDir, []receipt.Receipt{chain[1], chain[0], chain[2]})
+					limitedModel := NewReadModel(Options{ReceiptDir: reorderedDir, ReceiptReadLimit: 1})
+					limited, found, err := limitedModel.ReceiptActionDetail(testSessionID, actionID)
+					if err != nil || !found || !limited.Incomplete || len(limited.Records) != 1 {
+						t.Fatalf("linked-only prefix: incomplete=%v records=%d found=%v err=%v", limited.Incomplete, len(limited.Records), found, err)
+					}
+					if _, found, err := limitedModel.ReceiptDetail(testSessionID, actionID); found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+						t.Fatalf("linked-only explanation presented as final: found=%v err=%v", found, err)
+					}
+				})
+			}
+		}
+	})
+
 	// The MCP resolution emitter writes the resolution under a fresh action
 	// ID and links it to the deferred call through ParentActionID and DeferID.
 	signDeferPair := func(t *testing.T, resolutionVerdict string) []receipt.Receipt {

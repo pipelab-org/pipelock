@@ -304,7 +304,7 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 		return ReceiptActionDetail{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
 	var matched []*receipt.Receipt
-	awaiting, terminal := false, false
+	awaiting, terminal, linked := false, false, false
 	for i := range receipts {
 		r := &receipts[i]
 		if !receiptBelongsToAction(r, actionID) {
@@ -313,6 +313,7 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 		matched = append(matched, r)
 		awaiting = awaiting || awaitsTerminalPhase(r)
 		terminal = terminal || terminalReceiptPhase(r)
+		linked = linked || r.ActionRecord.ParentActionID == actionID
 	}
 	if len(matched) == 0 {
 		if truncated {
@@ -325,9 +326,10 @@ func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActi
 	detail := ReceiptActionDetail{Headline: evidenceview.ExplainReceipt(*headline)}
 	// A terminal phase does not close the record set: a corrective resolution
 	// or a WebSocket session-close block can follow it. A truncated view of a
-	// phased action is therefore marked incomplete unless it already shows a
-	// block. Legacy records without a phase keep their single-record behavior.
-	detail.Incomplete = truncated && (awaiting || terminal) && headline.ActionRecord.Verdict != config.ActionBlock
+	// phased action, or a linked record whose parent may be unread, is marked
+	// incomplete unless it already shows a block. Standalone legacy records
+	// without a phase keep their single-record behavior.
+	detail.Incomplete = truncated && (awaiting || terminal || linked) && headline.ActionRecord.Verdict != config.ActionBlock
 	for _, r := range matched {
 		detail.Records = append(detail.Records, evidenceview.ExplainReceipt(*r))
 	}
@@ -447,13 +449,12 @@ func terminalReceiptPhase(r *receipt.Receipt) bool {
 	}
 }
 
-// receiptBelongsToAction reports whether r records the action actionID. A
-// deferred call's resolution is written under its own action ID and names the
-// deferred call through ParentActionID, so it joins the defer it settles.
+// receiptBelongsToAction includes records linked directly to the action.
+// Resolutions and response findings use their own action IDs and name the
+// affected action through ParentActionID, including phase-less findings.
 func receiptBelongsToAction(r *receipt.Receipt, actionID string) bool {
 	ar := r.ActionRecord
-	return ar.ActionID == actionID ||
-		(ar.DecisionPhase == receipt.DecisionPhaseResolution && ar.ParentActionID == actionID)
+	return ar.ActionID == actionID || (ar.ParentActionID != "" && ar.ParentActionID == actionID)
 }
 
 // headlineReceipt picks the record that heads an action's detail page. It
