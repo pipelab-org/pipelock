@@ -267,7 +267,10 @@ func TestOptions(t *testing.T) {
 		{Endpoint: "https://localhost", UnixSocket: "/runner.sock"},
 		{Endpoint: "http://api.vendor.example", UnixSocket: "/runner.sock"},
 	} {
-		if _, err := NewClient(opts); !errors.Is(err, ErrOptions) || strings.Contains(err.Error(), "secret") {
+		// The error is exactly the generic sentinel, so no endpoint,
+		// credential or header value can appear in it.
+		_, err := NewClient(opts)
+		if !errors.Is(err, ErrOptions) || err.Error() != ErrOptions.Error() {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
