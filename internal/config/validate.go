@@ -610,6 +610,9 @@ func (c *Config) CopyMCPCompatibilityWarningsFrom(src *Config) {
 // callers can surface every advisory emitted before the failing validator.
 func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	warnings := c.MCPCompatibilityWarnings()
+	if err := c.validateFiniteNumbers(); err != nil {
+		return warnings, err
+	}
 	if err := c.validateIntegerDurationBounds(); err != nil {
 		return warnings, err
 	}

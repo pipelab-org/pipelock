@@ -140,6 +140,11 @@ func loadBytes(data []byte, sourceName, configDir string, opts loadOptions) (*Co
 	} else if !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing config %s: %w", sourceName, err)
 	}
+	// Check before defaults or license gating can replace or remove invalid
+	// values, including values in disabled features and named agent profiles.
+	if err := cfg.validateFiniteNumbers(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
 	// Reject reserved but unenforced limits before license gating can strip an
 	// unlicensed named profile. Security-invalid configuration must never become
 	// valid merely because another stage removes the profile first.
