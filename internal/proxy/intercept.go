@@ -2009,6 +2009,16 @@ func newInterceptHandler(
 		// forwarding. Without the identity strip, an attacker-supplied
 		// value bleeds to the destination even though pipelock's own
 		// policy decision already bound the actor.
+		if unsupportedInspectionRange(r) {
+			ic.Logger.LogBlocked(actx, "browser_cache", unsupportedRangeMessage)
+			ic.Metrics.RecordTLSRequestBlocked("browser_cache")
+			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: string(blockreason.ResponseIncomplete),
+				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+			}))
+			writeUnsupportedRange(w, ic.RequestID)
+			return
+		}
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
 		applyFullResponsePolicy(r.Header, nil)

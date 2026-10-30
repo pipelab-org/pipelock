@@ -6,6 +6,7 @@ package proxy
 import (
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 )
@@ -44,4 +45,30 @@ func writeFullResponseBlock(w http.ResponseWriter, requestID string) {
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 	_ = resp.Body.Close()
+}
+
+const unsupportedRangeMessage = "Range requests for partial representations are not supported through inspection; request the complete resource without Range or restart from byte zero with Range: bytes=0-"
+
+// unsupportedInspectionRange refuses partial-representation intent before any
+// origin transfer. RFC 9110 sections 14.1.2 and 14.2 define bytes=0- as the
+// complete representation and require Range to be ignored on non-GET methods.
+// If-Range cannot authorize a slice without an approved complete representation.
+func unsupportedInspectionRange(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+	values := r.Header.Values("Range")
+	if len(values) == 1 && strings.TrimSpace(values[0]) == "bytes=0-" {
+		return false
+	}
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func writeUnsupportedRange(w http.ResponseWriter, requestID string) {
+	writeBlockedError(w, blockInfoFor(blockreason.ResponseIncomplete, "browser_cache").WithRequestID(requestID), unsupportedRangeMessage, http.StatusForbidden)
 }

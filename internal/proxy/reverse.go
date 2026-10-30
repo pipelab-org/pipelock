@@ -848,6 +848,17 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	// bound agent.
 	r = r.WithContext(withCorrelation(context.WithValue(r.Context(), ctxKeyAgentAuth, agentAuth), correlation))
 	targetURL := reverseTargetURL(rp.upstream, r)
+	if unsupportedInspectionRange(r) {
+		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), "browser_cache", unsupportedRangeMessage)
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "browser_cache")
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: string(blockreason.ResponseIncomplete),
+			Transport: TransportReverse, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		writeUnsupportedRange(w, requestID)
+		return
+	}
+
 	// Bound identities ignore request labels, as bound defaults do. Only
 	// rejected self-declared identities produce a reserved-name collision.
 	if envelope.NormalizeActorAuth(agentAuth) != envelope.ActorAuthBound {

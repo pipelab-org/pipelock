@@ -30,10 +30,17 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 			unexpected304 bool
 			method        string
 			status        int
+			early         bool
 		}{
-			{name: "stale conditional range", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART full representation", method: http.MethodGet, status: http.StatusOK},
-			{name: "bare range", headers: http.Header{"Range": {"bytes=0-3"}}, body: "PART full representation", method: http.MethodGet, status: http.StatusOK},
-			{name: "range full scan", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART hidden_instruction", method: http.MethodGet, status: http.StatusForbidden},
+			{name: "stale conditional range", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART full representation", method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "bare range", headers: http.Header{"Range": {"bytes=0-3"}}, body: "PART full representation", method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "range full scan", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART hidden_instruction", method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "open resume", headers: http.Header{"Range": {"bytes=18-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "multi range", headers: http.Header{"Range": {"bytes=0-1,18-19"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "empty first range", headers: http.Header{"Range": {"", "bytes=18-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "zero suffix", headers: http.Header{"Range": {"bytes=-0"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "zero length resource range", headers: http.Header{"Range": {"bytes=0-"}}, method: http.MethodGet, status: http.StatusOK},
+			{name: "full initial range", headers: http.Header{"Range": {"bytes=0-"}, "If-Range": {`"stale"`}}, body: "full representation", method: http.MethodGet, status: http.StatusOK},
 			{name: "conditional full scan", headers: http.Header{"If-None-Match": {`"origin"`}, "If-Modified-Since": {"Wed, 01 Oct 2025 12:00:00 GMT"}}, body: "full representation", method: http.MethodGet, status: http.StatusOK},
 			{name: "conditional scan block", headers: http.Header{"If-None-Match": {`"origin"`}}, body: "hidden_instruction", method: http.MethodGet, status: http.StatusForbidden},
 			{name: "unexpected not modified", unexpected304: true, method: http.MethodGet, status: http.StatusForbidden},
@@ -116,6 +123,17 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 				}
 				if resp.StatusCode != tc.status {
 					t.Errorf("status=%d body=%q, want %d", resp.StatusCode, body, tc.status)
+				}
+				if tc.early {
+					select {
+					case <-seen:
+						t.Fatal("unsupported range reached origin")
+					default:
+					}
+					if resp.Header.Get(blockreason.HeaderReason) != string(blockreason.ResponseIncomplete) || !strings.Contains(string(body), "Range") || !strings.Contains(string(body), "complete resource") {
+						t.Fatalf("missing range diagnosis/remedy: headers=%v body=%s", resp.Header, body)
+					}
+					return
 				}
 				upstreamHeaders := <-seen
 				for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
@@ -240,17 +258,16 @@ func TestFullResponsePolicyConditionalSiblings(t *testing.T) {
 			wantStatus  int
 			wantIfMatch bool
 		}{
-			{name: "if-match kept and full body scanned", method: http.MethodGet, headers: http.Header{"If-Match": {`"other"`}, "Range": {"bytes=0-3"}}, mode: "if-match-412", wantStatus: http.StatusForbidden, wantIfMatch: true},
-			{name: "if-unmodified-since kept", method: http.MethodGet, headers: http.Header{"If-Unmodified-Since": {"Wed, 01 Oct 2025 12:00:00 GMT"}, "Range": {"bytes=0-3"}}, mode: "full-marker", wantStatus: http.StatusForbidden},
-			{name: "multi range stripped", method: http.MethodGet, headers: http.Header{"Range": {"bytes=0-1", "bytes=2-3"}}, mode: "full-ok", wantStatus: http.StatusOK},
+			{name: "if-match kept and full body scanned", method: http.MethodGet, headers: http.Header{"If-Match": {`"other"`}}, mode: "if-match-412", wantStatus: http.StatusForbidden, wantIfMatch: true},
+			{name: "if-unmodified-since kept", method: http.MethodGet, headers: http.Header{"If-Unmodified-Since": {"Wed, 01 Oct 2025 12:00:00 GMT"}}, mode: "full-marker", wantStatus: http.StatusForbidden},
 			{name: "post range stripped", method: http.MethodPost, headers: http.Header{"Range": {"bytes=0-3"}}, mode: "full-ok", wantStatus: http.StatusOK},
 			{name: "head still ok", method: http.MethodHead, headers: http.Header{"If-None-Match": {`"origin"`}, "Range": {"bytes=0-3"}}, mode: "full-ok", wantStatus: http.StatusOK},
-			{name: "hostile 206 clean slice", method: http.MethodGet, headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, mode: "always-206-clean", wantStatus: http.StatusForbidden},
-			{name: "hostile 206 marker slice", method: http.MethodGet, headers: http.Header{"Range": {"bytes=0-3"}}, mode: "always-206-marker", wantStatus: http.StatusForbidden},
+			{name: "hostile 206 clean slice", method: http.MethodGet, mode: "always-206-clean", wantStatus: http.StatusForbidden},
+			{name: "hostile 206 marker slice", method: http.MethodGet, mode: "always-206-marker", wantStatus: http.StatusForbidden},
 			{name: "412 marker body", method: http.MethodGet, headers: http.Header{"If-Match": {`"nope"`}}, mode: "412-marker", wantStatus: http.StatusForbidden, wantIfMatch: true},
-			{name: "416 marker body", method: http.MethodGet, headers: http.Header{"Range": {"bytes=0-3"}}, mode: "416-marker", wantStatus: http.StatusForbidden},
+			{name: "416 marker body", method: http.MethodGet, mode: "416-marker", wantStatus: http.StatusForbidden},
 			{name: "gzip marker", method: http.MethodGet, headers: http.Header{"Accept-Encoding": {"gzip"}, "If-None-Match": {`"origin"`}}, mode: "gzip-marker", wantStatus: http.StatusForbidden},
-			{name: "gzip partial", method: http.MethodGet, headers: http.Header{"Range": {"bytes=0-3"}}, mode: "gzip-206", wantStatus: http.StatusForbidden},
+			{name: "gzip partial", method: http.MethodGet, mode: "gzip-206", wantStatus: http.StatusForbidden},
 			{name: "if-match still 304", method: http.MethodGet, headers: http.Header{"If-Match": {`"origin"`}}, mode: "304-if-match", wantStatus: http.StatusForbidden, wantIfMatch: true},
 			{name: "304 with body", method: http.MethodGet, headers: nil, mode: "304-body", wantStatus: http.StatusForbidden},
 			{name: "vary on full", method: http.MethodGet, headers: nil, mode: "vary-ok", wantStatus: http.StatusOK},
