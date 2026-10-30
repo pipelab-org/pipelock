@@ -143,6 +143,8 @@ Request `status: "completed"` means the endpoint finished evaluating the request
 | `finding` | Wording matched, including warn-only, observed or suppressed matches. Delivery follows the existing policy; a finding alone does not imply denial. |
 | `incomplete` | Assessment could not finish, including cancellation, timeout or uninspectable tool arguments. This is not a benign result or an injection detection. |
 
+Only `benign` means wording was checked and nothing matched. Later releases may add statuses, so treat any status you don't recognize as not benign.
+
 Cancellation and timeout retain `status: "error"` and their existing HTTP error codes. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Uninspectable tool arguments retain their existing completed denial and finding, with assessment marked incomplete. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
 
 ### Finding object
