@@ -278,10 +278,27 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 	if err != nil {
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
-	for _, r := range receipts {
-		if r.ActionRecord.ActionID == actionID {
-			return evidenceview.ExplainReceipt(r), true, nil
+	// An intent and its outcome (or a defer and its resolution) share one
+	// action ID. The terminal record carries what actually happened, so it
+	// wins over the admission record; among equals the later record wins.
+	var selected *receipt.Receipt
+	for i := range receipts {
+		r := &receipts[i]
+		if r.ActionRecord.ActionID != actionID {
+			continue
 		}
+		if selected == nil || terminalReceiptPhase(r) || !terminalReceiptPhase(selected) {
+			selected = r
+		}
+	}
+	if selected != nil {
+		if truncated && awaitsTerminalPhase(selected) {
+			// The terminal record may lie beyond the bounded view; showing the
+			// admission record alone could present a failed action as allowed.
+			// Legacy records without a phase have no later record to wait for.
+			return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s outcome may lie beyond the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
+		}
+		return evidenceview.ExplainReceipt(*selected), true, nil
 	}
 	if truncated {
 		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s was not found in the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
@@ -389,4 +406,26 @@ func applyFilter(sessions []SessionSummary, f FilterSpec) []SessionSummary {
 		filtered = append(filtered, s)
 	}
 	return filtered
+}
+
+// terminalReceiptPhase reports whether r records the final phase of its
+// action: an outcome after an intent, or a resolution after a defer.
+func terminalReceiptPhase(r *receipt.Receipt) bool {
+	switch r.ActionRecord.DecisionPhase {
+	case receipt.DecisionPhaseOutcome, receipt.DecisionPhaseResolution:
+		return true
+	default:
+		return false
+	}
+}
+
+// awaitsTerminalPhase reports whether r opens a phase pair whose terminal
+// record could follow it.
+func awaitsTerminalPhase(r *receipt.Receipt) bool {
+	switch r.ActionRecord.DecisionPhase {
+	case receipt.DecisionPhaseIntent, receipt.DecisionPhaseDefer:
+		return true
+	default:
+		return false
+	}
 }

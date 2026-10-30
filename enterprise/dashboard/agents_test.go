@@ -990,3 +990,87 @@ func TestApplyFilter_AgentSubstringCaseInsensitive(t *testing.T) {
 		})
 	}
 }
+
+func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
+	t.Parallel()
+
+	_, priv := generateDashboardKey(t)
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	signPair := func(t *testing.T, first, second string, secondVerdict string) []receipt.Receipt {
+		t.Helper()
+		ar := validDashboardAction(0, receipt.GenesisHash, base)
+		ar.DecisionPhase = first
+		head, err := receipt.Sign(ar, priv)
+		if err != nil {
+			t.Fatalf("Sign(head): %v", err)
+		}
+		prev, err := receipt.ReceiptHash(head)
+		if err != nil {
+			t.Fatalf("ReceiptHash: %v", err)
+		}
+		ar.ChainSeq, ar.ChainPrevHash, ar.Timestamp = 1, prev, base.Add(time.Second)
+		ar.DecisionPhase, ar.Verdict, ar.Layer = second, secondVerdict, "outcome"
+		ar.Pattern = "status=200 bytes=7 reason=delivery_error captured_bytes=16"
+		tail, err := receipt.Sign(ar, priv)
+		if err != nil {
+			t.Fatalf("Sign(tail): %v", err)
+		}
+		return []receipt.Receipt{head, tail}
+	}
+
+	for _, tc := range []struct {
+		name          string
+		first, second string
+		reversed      bool
+	}{
+		{name: "outcome_after_intent", first: receipt.DecisionPhaseIntent, second: receipt.DecisionPhaseOutcome},
+		{name: "resolution_after_defer", first: receipt.DecisionPhaseDefer, second: receipt.DecisionPhaseResolution},
+		{name: "outcome_recorded_before_intent", first: receipt.DecisionPhaseIntent, second: receipt.DecisionPhaseOutcome, reversed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			pair := signPair(t, tc.first, tc.second, "warn")
+			if tc.reversed {
+				pair[0], pair[1] = pair[1], pair[0]
+			}
+			writeReceiptsToDir(t, dir, pair)
+			exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, pair[0].ActionRecord.ActionID)
+			if err != nil || !found {
+				t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+			}
+			if exp.DecisionPhase.Detail != tc.second || exp.Verdict.Detail != "warn" {
+				t.Fatalf("selected phase=%q verdict=%q, want %s/warn", exp.DecisionPhase.Detail, exp.Verdict.Detail, tc.second)
+			}
+		})
+	}
+
+	t.Run("intent_only_is_shown", func(t *testing.T) {
+		dir := t.TempDir()
+		pair := signPair(t, receipt.DecisionPhaseIntent, receipt.DecisionPhaseOutcome, "warn")
+		writeReceiptsToDir(t, dir, pair[:1])
+		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, pair[0].ActionRecord.ActionID)
+		if err != nil || !found || exp.DecisionPhase.Detail != receipt.DecisionPhaseIntent {
+			t.Fatalf("intent-only lookup: phase=%q found=%v err=%v", exp.DecisionPhase.Detail, found, err)
+		}
+	})
+
+	t.Run("truncated_view_does_not_present_intent_as_final", func(t *testing.T) {
+		dir := t.TempDir()
+		pair := signPair(t, receipt.DecisionPhaseIntent, receipt.DecisionPhaseOutcome, "warn")
+		writeReceiptsToDir(t, dir, pair)
+		_, found, err := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1}).ReceiptDetail(testSessionID, pair[0].ActionRecord.ActionID)
+		if found || !errors.Is(err, recorder.ErrEvidenceReadLimitExceeded) {
+			t.Fatalf("truncated intent lookup: found=%v err=%v", found, err)
+		}
+	})
+
+	t.Run("truncated_view_still_shows_legacy_record", func(t *testing.T) {
+		dir := t.TempDir()
+		legacy := buildDashboardChain(t, priv, 2)
+		writeReceiptsToDir(t, dir, legacy)
+		exp, found, err := NewReadModel(Options{ReceiptDir: dir, ReceiptReadLimit: 1}).ReceiptDetail(testSessionID, legacy[0].ActionRecord.ActionID)
+		if err != nil || !found || exp.Verdict.Detail != "allow" {
+			t.Fatalf("truncated legacy lookup: verdict=%q found=%v err=%v", exp.Verdict.Detail, found, err)
+		}
+	})
+}
