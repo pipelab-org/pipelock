@@ -160,7 +160,7 @@ func waitForRunHTTPResult(
 	check func(*http.Response) bool,
 	label string,
 ) error {
-	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, url, check, "%s", label)
+	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, url, check, label)
 }
 
 func waitForRunHTTPWithinResult(
@@ -170,13 +170,12 @@ func waitForRunHTTPWithinResult(
 	errCh <-chan error,
 	url string,
 	check func(*http.Response) bool,
-	format string,
-	args ...any,
+	label string,
 ) error {
 	return waitForRunRequestWithinResult(ctx, timeout, errCh, func(reqCtx context.Context) *http.Request {
 		req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 		return req
-	}, client, check, format, args...)
+	}, client, check, "%s", label)
 }
 
 func waitForRunRequestWithinResult(
@@ -1496,7 +1495,7 @@ response_scanning:
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeAudit
-		}, "%s", "audit ask-mode config after hot reload"); err != nil {
+		}, "audit ask-mode config after hot reload"); err != nil {
 			cancel()
 			return err
 		}
@@ -1743,7 +1742,7 @@ fetch_proxy:
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
-		}, "%s", "strict mode after hot reload"); err != nil {
+		}, "strict mode after hot reload"); err != nil {
 			cancel()
 			return err
 		}
@@ -2178,7 +2177,7 @@ fetch_proxy:
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
-		}, "%s", "strict mode after hot reload"); err != nil {
+		}, "strict mode after hot reload"); err != nil {
 			cancel()
 			return err
 		}
