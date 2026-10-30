@@ -313,11 +313,15 @@ func (h *Handler) scanPromptInjection(ctx context.Context, cfg *config.Config, s
 	if err := ctx.Err(); err != nil {
 		return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 	}
+	if result.Failed() {
+		return h.injectionErrorResponse(req.Kind, result.Assessment), http.StatusInternalServerError
+	}
 
 	resp := Response{
-		Status: StatusCompleted,
-		Kind:   req.Kind,
-		ScanID: generateScanID(),
+		Status:     StatusCompleted,
+		Kind:       req.Kind,
+		ScanID:     generateScanID(),
+		Assessment: &result.Assessment,
 	}
 	if result.Clean {
 		resp.Decision = DecisionAllow
@@ -353,10 +357,14 @@ func (h *Handler) scanToolCall(
 	}
 
 	resp := Response{
-		Status:   StatusCompleted,
-		Decision: DecisionAllow,
-		Kind:     req.Kind,
-		ScanID:   generateScanID(),
+		Status:     StatusCompleted,
+		Decision:   DecisionAllow,
+		Kind:       req.Kind,
+		ScanID:     generateScanID(),
+		Assessment: &scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentNotAssessed},
+	}
+	if sc.PromptInjectionMode() == config.ActionAllow {
+		resp.Assessment.Status = scanner.AssessmentOff
 	}
 
 	// Stage 1: Key+value extraction from arguments.
@@ -371,6 +379,7 @@ func (h *Handler) scanToolCall(
 		var valuesTruncated bool
 		policyArgs, valuesTruncated = policy.ArgValues(json.RawMessage(req.Input.Arguments))
 		if extracted.Truncated || valuesTruncated {
+			resp.Assessment.Status = scanner.AssessmentIncomplete
 			resp.Decision = DecisionDeny
 			resp.Findings = append(resp.Findings, Finding{
 				Scanner:  "tool_call",
@@ -430,6 +439,10 @@ func (h *Handler) scanToolCall(
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
+		if injResult.Failed() {
+			return h.injectionErrorResponse(req.Kind, injResult.Assessment), http.StatusInternalServerError
+		}
+		resp.Assessment = &injResult.Assessment
 		if !injResult.Clean {
 			resp.Decision = DecisionDeny
 		}
@@ -505,13 +518,26 @@ func (h *Handler) contextErrorResponse(kind string, err error) Response {
 		message = "Request canceled by client"
 	}
 
-	return Response{
+	resp := Response{
 		Status:        StatusError,
 		Kind:          kind,
 		ScanID:        generateScanID(),
 		EngineVersion: h.version,
 		Errors:        []APIError{{Code: code, Message: message, Retryable: retryable}},
 	}
+	if kind == KindPromptInjection || kind == KindToolCall {
+		resp.Assessment = &scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentIncomplete}
+	}
+	return resp
+}
+
+// injectionErrorResponse never exposes internal scan errors or calls incomplete
+// assessment a content detection. The delivery decision remains fail-closed.
+func (h *Handler) injectionErrorResponse(kind string, assessment scanner.InjectionAssessment) Response {
+	resp := errorResponse(kind, "assessment_incomplete", "Wording assessment did not complete", false)
+	resp.EngineVersion = h.version
+	resp.Assessment = &assessment
+	return resp
 }
 
 // contextErrorStatus maps context errors to HTTP status codes.

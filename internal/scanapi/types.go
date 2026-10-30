@@ -6,6 +6,8 @@ package scanapi
 import (
 	"crypto/rand"
 	"encoding/hex"
+
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // scanIDBytes is the number of random bytes used for scan ID generation.
@@ -71,11 +73,14 @@ type RequestOptions struct {
 
 // Response is the JSON envelope for all scan results and errors.
 type Response struct {
-	Status    string `json:"status"`
-	Decision  string `json:"decision,omitempty"`
-	Kind      string `json:"kind"`
-	ScanID    string `json:"scan_id"`
-	RequestID string `json:"request_id,omitempty"`
+	// Assessment describes wording coverage independently of request completion
+	// and the decision, which can also reflect DLP and tool-policy controls.
+	Assessment *scanner.InjectionAssessment `json:"assessment,omitempty"`
+	Status     string                       `json:"status"`
+	Decision   string                       `json:"decision,omitempty"`
+	Kind       string                       `json:"kind"`
+	ScanID     string                       `json:"scan_id"`
+	RequestID  string                       `json:"request_id,omitempty"`
 	// SessionID echoes context.session_id, following the same post-scan-only
 	// copy timing as RequestID: present on completed responses (allow, warn,
 	// deny, timeout, cancel), absent on pre-scan errors (401, 405, 429, 503,

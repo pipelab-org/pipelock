@@ -127,8 +127,23 @@ The Scan API has no DNS-message body input. Its `dlp` kind scans text, so submit
 | `session_id` | string | Echoed from `context.session_id` on the same post-scan timing as `request_id`. Absent when the request omitted `session_id`, or on any pre-scan error. |
 | `duration_ms` | int | Wall-clock scan time in milliseconds. |
 | `engine_version` | string | Pipelock binary version. |
+| `assessment` | object | Wording-checker coverage for executed `prompt_injection` and `tool_call` scans, including cancellation and timeout. Contains `checker: "basic"` and a `status` described below. Other kinds and pre-scan errors omit it. |
 | `findings` | array | Present when `decision` is `warn` or `deny`. One entry per scanner match. |
 | `errors` | array | Present when `status` is `error`. |
+
+### Wording assessment
+
+Request `status: "completed"` means the endpoint finished evaluating the request. It does not prove wording was checked. Read `assessment.status` separately from `decision`, which also includes independent DLP and tool-policy outcomes.
+
+| Assessment status | Meaning |
+|---|---|
+| `off` | The operator disabled wording detection. No wording checker ran. |
+| `not_assessed` | No wording view was evaluated, such as a tool call with empty arguments. |
+| `benign` | The basic checker completed its configured wording checks without a finding. |
+| `finding` | Wording matched, including warn-only, observed or suppressed matches. Delivery follows the existing policy; a finding alone does not imply denial. |
+| `incomplete` | Assessment could not finish, including cancellation, timeout or uninspectable tool arguments. This is not a benign result or an injection detection. |
+
+Cancellation and timeout retain `status: "error"` and their existing HTTP error codes. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Uninspectable tool arguments retain their existing completed denial and finding, with assessment marked incomplete. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
 
 ### Finding object
 

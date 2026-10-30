@@ -27,8 +27,11 @@ import (
 
 // ResponseScanResult describes the outcome of scanning response content.
 type ResponseScanResult struct {
-	Clean   bool
-	Matches []ResponseMatch
+	// Clean describes the delivery verdict, not whether wording was assessed.
+	// Warn-only and disabled checks can both be Clean; consult Assessment.
+	Clean      bool
+	Matches    []ResponseMatch
+	Assessment InjectionAssessment `json:"assessment"`
 	// WarnedMatches retains wording findings withheld from enforcement by the
 	// global operator policy. Like ObservedCoreMatches, these are evidence,
 	// not enforcing matches and never injection-driven taint.
@@ -109,7 +112,8 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // bytes can contain accidental pattern-shaped sequences that have no prompt
 // semantics. Declared Content-Type is not consulted, so mislabeled textual
 // content still takes the ordinary scan path.
-func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
+	defer func() { s.setInjectionAssessment(&out, false) }()
 	return s.scanResponseBodyWithSuppress(ctx, body, suppressTarget, suppress, s.scanResponseBodyUncached)
 }
 
@@ -172,7 +176,8 @@ func (s *Scanner) scanResponseBodyWithSuppress(ctx context.Context, body []byte,
 	return result
 }
 
-func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) (out ResponseScanResult) {
+	defer func() { s.setInjectionAssessment(&out, false) }()
 	metadata, image, err := responseImageMetadata(body)
 	if !image {
 		if hasResponseImageSignature(body) {
@@ -560,6 +565,7 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 }
 
 func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
+	defer func() { s.setInjectionAssessment(&out, true) }()
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
