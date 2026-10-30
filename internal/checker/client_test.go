@@ -380,6 +380,18 @@ func TestCheckedDialFallback(t *testing.T) {
 	}
 	_ = conn.Close()
 
+	// A call canceled after one failed attempt makes no later attempt.
+	dialed = nil
+	stopCtx, stop := context.WithCancel(t.Context())
+	defer stop()
+	if _, err := checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return mixed, nil }, func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		stop()
+		return nil, errors.New("unreachable")
+	})(stopCtx, "tcp", "api.vendor.example:443"); err == nil || len(dialed) != 1 {
+		t.Fatalf("err=%v dialed=%v, want one attempt", err, dialed)
+	}
+
 	// A long record list stops at the shared attempt cap, so the name's owner
 	// cannot choose how many connections each check opens.
 	dialed = nil
