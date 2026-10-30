@@ -291,10 +291,10 @@ func TestSelfTest(t *testing.T) {
 				if i.ID == suspicious.ID {
 					return answer(StateFinding)
 				}
-				return answer(StateBenign)
+				return Assessment{State: StateBenign, Status: StatusAssessed}
 			})
 			var got *HealthError
-			if err := SelfTest(t.Context(), incomplete, testPolicy(), benign, suspicious); !errors.As(err, &got) || got.Probe != Benign {
+			if err := SelfTest(t.Context(), incomplete, testPolicy(), benign, suspicious); !errors.As(err, &got) || got.Probe != Suspicious {
 				t.Fatalf("%s: %v", name, err)
 			}
 		})
