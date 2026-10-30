@@ -6,15 +6,21 @@ package checkertest
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/checker"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // Item returns a fresh fixture, including a labelled decoded view and untrusted
@@ -59,14 +65,22 @@ func Response(req checker.Request) checker.Response {
 // The harness supplies the resolved Policy to each Check call.
 type Factory func(t *testing.T, endpoint string) checker.Checker
 
-// Run exercises success, typed failures, malformed wire replies, and local
-// disabled/unsupported behavior. It does not evaluate detection accuracy.
+// Run exercises success, typed failures, malformed wire replies, transport
+// refusals, and local disabled/unsupported behavior. Every request the
+// implementation sends is validated against the wire contract, and request IDs
+// must never repeat across the run. It does not evaluate detection accuracy.
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 	type testCase struct {
 		name   string
 		change func(*checker.Response)
 		raw    func(string) string
+		// serve replaces the protocol mock; target is a second server that
+		// fails the test if a redirect is ever followed to it.
+		serve  func(w http.ResponseWriter, r *http.Request, target string)
+		item   func(*checker.Item)
+		policy func(*checker.Policy)
+		noCall bool
 		want   checker.State
 		status checker.Status
 	}
@@ -154,30 +168,131 @@ func Run(t *testing.T, factory Factory) {
 			return strings.TrimSuffix(s, "}") + `,"score":{"value":` + value + `,"scale":"example-risk","calibration_id":"example-calibration/v1"}}`
 		}, want: checker.StateNotAssessed, status: checker.StatusInvalid})
 	}
+	for _, code := range []int{http.StatusFound, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		cases = append(cases, testCase{name: fmt.Sprintf("redirect_%d", code), serve: func(w http.ResponseWriter, r *http.Request, target string) {
+			http.Redirect(w, r, target, code)
+		}, want: checker.StateNotAssessed, status: checker.StatusNotChecked})
+	}
+	for _, code := range []int{http.StatusNoContent, http.StatusServiceUnavailable} {
+		cases = append(cases, testCase{name: fmt.Sprintf("http_%d", code), serve: func(w http.ResponseWriter, _ *http.Request, _ string) {
+			w.WriteHeader(code)
+		}, want: checker.StateNotAssessed, status: checker.StatusNotChecked})
+	}
+	cases = append(cases,
+		testCase{name: "oversized", serve: func(w http.ResponseWriter, _ *http.Request, _ string) {
+			_, _ = io.WriteString(w, strings.Repeat(" ", int(Policy().MaxResponseBytes)+1))
+		}, want: checker.StateNotAssessed, status: checker.StatusInvalid},
+		// An endless body must be cut off at the response budget, not read
+		// until the deadline: a client that buffers it reports a timeout.
+		testCase{name: "endless_body", serve: func(w http.ResponseWriter, r *http.Request, _ string) {
+			chunk := []byte(strings.Repeat(" ", 1024))
+			stop := time.After(10 * time.Second)
+			for {
+				select {
+				case <-r.Context().Done():
+					return
+				case <-stop:
+					return
+				default:
+				}
+				if _, err := w.Write(chunk); err != nil {
+					return
+				}
+			}
+		}, want: checker.StateNotAssessed, status: checker.StatusInvalid},
+		testCase{name: "off", policy: func(p *checker.Policy) { p.Mode = checker.ModeOff }, noCall: true, want: checker.StateOff},
+	)
+	for _, kind := range []checker.Kind{checker.KindAction, checker.KindImage, "unknown"} {
+		cases = append(cases, testCase{
+			name: "kind_" + string(kind), item: func(i *checker.Item) { i.Kind = kind },
+			noCall: true, want: checker.StateNotAssessed, status: checker.StatusNotChecked,
+		})
+	}
+	var ids sync.Map
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
+			target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				t.Error("redirect followed")
+			}))
+			defer target.Close()
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
-				if err := serveResponse(w, r, tc.change, tc.raw); err != nil {
+				if tc.serve != nil {
+					tc.serve(w, r, target.URL)
+					return
+				}
+				if err := serveResponse(w, r, &ids, tc.change, tc.raw); err != nil {
 					t.Error(err)
 				}
 			}))
 			defer srv.Close()
-			got := factory(t, srv.URL).Check(t.Context(), Item(), Policy())
+			item, policy := Item(), Policy()
+			if tc.item != nil {
+				tc.item(&item)
+			}
+			if tc.policy != nil {
+				tc.policy(&policy)
+			}
+			got := factory(t, srv.URL).Check(t.Context(), item, policy)
 			if got.State != tc.want || got.Status != tc.status {
 				t.Errorf("got state=%s status=%s reason=%s; want state=%s status=%s", got.State, got.Status, got.Reason, tc.want, tc.status)
 			}
-			if calls.Load() != 1 {
-				t.Errorf("requests = %d, want 1", calls.Load())
+			want := int32(1)
+			if tc.noCall {
+				want = 0
+			}
+			if calls.Load() != want {
+				t.Errorf("requests = %d, want %d", calls.Load(), want)
 			}
 		})
 	}
 }
 
-func serveResponse(w http.ResponseWriter, r *http.Request, change func(*checker.Response), raw func(string) string) error {
+// checkRequest enforces the request half of the wire contract, so a client
+// that computes the binding over different bytes, alters the item, reuses a
+// request ID or ignores the request budget fails before any reply is served.
+func checkRequest(r *http.Request, ids *sync.Map) (checker.Request, error) {
 	var req checker.Request
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	mediaType, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if r.Method != http.MethodPost || mediaType != "application/json" {
+		return req, errors.New("request is not a JSON POST")
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, Policy().MaxRequestBytes+1))
+	if err != nil {
+		return req, err
+	}
+	if int64(len(body)) > Policy().MaxRequestBytes {
+		return req, errors.New("request exceeds the policy request budget")
+	}
+	if err := jsonscan.DecodeStrict(body, &req); err != nil {
+		return req, fmt.Errorf("request schema: %w", err)
+	}
+	var item checker.Item
+	if err := jsonscan.DecodeStrict(req.Item, &item); err != nil {
+		return req, fmt.Errorf("item schema: %w", err)
+	}
+	switch {
+	case req.Version != checker.Version:
+		return req, errors.New("wrong request protocol_version")
+	case req.ID == "":
+		return req, errors.New("missing request_id")
+	case req.PolicyGeneration != Policy().Generation:
+		return req, errors.New("wrong policy_generation")
+	case req.InputBinding != checker.Binding(req.Item):
+		return req, errors.New("input_binding is not SHA-256 of the exact item bytes")
+	case !reflect.DeepEqual(item, Item()):
+		return req, errors.New("item changed in transit")
+	}
+	if _, seen := ids.LoadOrStore(req.ID, true); seen {
+		return req, errors.New("request_id reused")
+	}
+	return req, nil
+}
+
+func serveResponse(w http.ResponseWriter, r *http.Request, ids *sync.Map, change func(*checker.Response), raw func(string) string) error {
+	req, err := checkRequest(r, ids)
+	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return err
 	}
