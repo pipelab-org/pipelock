@@ -15,7 +15,8 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
-	"strings"
+
+	"golang.org/x/net/http/httpguts"
 
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
@@ -47,7 +48,9 @@ type Client struct {
 func NewClient(opts Options) (*Client, error) {
 	u, err := url.Parse(opts.Endpoint)
 	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery ||
-		u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(opts.Authorization, "\r\n") ||
+		// net/http refuses invalid header values on every send; reject them
+		// here so a bad credential setting is not reported as an outage.
+		u.Fragment != "" || u.Opaque != "" || !httpguts.ValidHeaderFieldValue(opts.Authorization) ||
 		(u.Scheme != "https" && u.Scheme != "http") {
 		return nil, ErrOptions
 	}
@@ -104,12 +107,28 @@ func checkedDial(lookup func(context.Context, string) ([]net.IPAddr, error), dia
 		if err != nil || len(ips) == 0 {
 			return nil, errors.New("checker resolution failed")
 		}
+		// The non-overridable floor covers metadata, link-local (including
+		// container credential endpoints), multicast and unspecified addresses
+		// in every embedded form. Any refused answer refuses the whole lookup.
 		for _, ip := range ips {
-			if ip.IP == nil || ip.Zone != "" || destination.IsCloudMetadataIP(ip.IP) || ip.IP.IsUnspecified() || ip.IP.IsMulticast() {
+			if ip.IP == nil || ip.Zone != "" || destination.IsNonOverridableSSRFTarget(ip.IP) {
 				return nil, errors.New("checker destination refused")
 			}
 		}
-		return dial(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+		// Only checked addresses are dialed, in resolver order, under the one
+		// call deadline. No request bytes are sent before a connection exists.
+		var lastErr error
+		for _, ip := range ips {
+			conn, dialErr := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			if dialErr == nil {
+				return conn, nil
+			}
+			lastErr = dialErr
+			if ctx.Err() != nil {
+				break
+			}
+		}
+		return nil, lastErr
 	}
 }
 

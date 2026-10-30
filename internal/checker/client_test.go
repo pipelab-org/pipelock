@@ -255,6 +255,9 @@ func TestOptions(t *testing.T) {
 		{Endpoint: "https://api.vendor.example?"},
 		{Endpoint: "https://api.vendor.example#fragment"},
 		{Endpoint: "https://api.vendor.example", Authorization: "bad\nheader"},
+		{Endpoint: "https://api.vendor.example", Authorization: "bad\x00header"},
+		{Endpoint: "https://api.vendor.example", Authorization: "bad\x7fheader"},
+		{Endpoint: "https://api.vendor.example", Authorization: "bad\x01header"},
 		{Endpoint: "http://127.0.0.1"},
 		{Endpoint: "http://localhost", AllowLoopbackHTTP: true},
 		{Endpoint: "http://api.vendor.example", AllowLoopbackHTTP: true},
@@ -287,6 +290,10 @@ func TestCheckedDial(t *testing.T) {
 		{name: "zone", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("::1"), Zone: "example"}}},
 		{name: "unspecified", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("0.0.0.0")}}},
 		{name: "multicast", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("224.0.0.1")}}},
+		{name: "container_credentials", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("169.254.170.2")}}},
+		{name: "link_local_v6", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("fe80::1")}}},
+		{name: "mapped_link_local", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("::ffff:169.254.170.2")}}},
+		{name: "nat64_metadata", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("64:ff9b::a9fe:a9fe")}}},
 		{name: "bound_ip", addr: "api.vendor.example:443", ips: []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}}, wantCall: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,6 +315,38 @@ func TestCheckedDial(t *testing.T) {
 				t.Fatalf("err=%v called=%v", err, called)
 			}
 		})
+	}
+}
+
+func TestCheckedDialFallback(t *testing.T) {
+	ips := []net.IPAddr{{IP: net.ParseIP("2001:db8::1")}, {IP: net.ParseIP("192.0.2.1")}}
+	lookups := 0
+	lookup := func(context.Context, string) ([]net.IPAddr, error) { lookups++; return ips, nil }
+	var dialed []string
+	server, client := net.Pipe()
+	defer func() { _ = server.Close() }()
+	dial := checkedDial(lookup, func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		if addr == "[2001:db8::1]:443" {
+			return nil, errors.New("unreachable")
+		}
+		return client, nil
+	})
+	conn, err := dial(t.Context(), "tcp", "api.vendor.example:443")
+	if err != nil || conn != client || lookups != 1 || strings.Join(dialed, ",") != "[2001:db8::1]:443,192.0.2.1:443" {
+		t.Fatalf("conn=%v err=%v lookups=%d dialed=%v", conn, err, lookups, dialed)
+	}
+	_ = conn.Close()
+
+	// An expired deadline stops the walk after the failed attempt.
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	dialed = nil
+	if _, err := checkedDial(lookup, func(context.Context, string, string) (net.Conn, error) {
+		dialed = append(dialed, "attempt")
+		return nil, errors.New("canceled")
+	})(ctx, "tcp", "api.vendor.example:443"); err == nil || len(dialed) != 1 {
+		t.Fatalf("err=%v attempts=%d", err, len(dialed))
 	}
 }
 
