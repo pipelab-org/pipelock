@@ -48,9 +48,15 @@ func TestURLLengthDefaultLoading(t *testing.T) {
 	if got := config.Defaults().FetchProxy.Monitoring.MaxURLLength; got != 8000 {
 		t.Fatalf("no-file limit = %d, want RFC 9110's 8000 octets", got)
 	}
-	for _, name := range []string{"balanced", "audit"} {
+	// The quickstart example documents itself as the balanced preset with
+	// listener and test-service overrides, so it must carry the same limit.
+	for name, path := range map[string]string{
+		"balanced":   filepath.Join("..", "..", "configs", "balanced.yaml"),
+		"audit":      filepath.Join("..", "..", "configs", "audit.yaml"),
+		"quickstart": filepath.Join("..", "..", "examples", "quickstart", "pipelock.yaml"),
+	} {
 		t.Run(name+" preset", func(t *testing.T) {
-			cfg, err := config.Load(filepath.Join("..", "..", "configs", name+".yaml"))
+			cfg, err := config.Load(path)
 			if err != nil {
 				t.Fatal(err)
 			}
