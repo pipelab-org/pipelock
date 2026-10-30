@@ -114,3 +114,35 @@ func TestInjectionAssessmentEvidence(t *testing.T) {
 		}
 	}
 }
+
+// With the configurable response layer disabled only the core floor runs, so a
+// clean result must not claim the full configured wording checks completed.
+func TestInjectionAssessmentCoreOnly(t *testing.T) {
+	for _, tt := range []struct {
+		name, text string
+		status     AssessmentStatus
+	}{
+		{"core_only_clean", "ordinary response", AssessmentPartial},
+		{"core_floor_match", "ignore all previous instructions", AssessmentFinding},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testConfig()
+			cfg.ResponseScanning.Enabled = false
+			sc := MustNew(cfg)
+			t.Cleanup(sc.Close)
+			for _, body := range []bool{false, true} {
+				for range 2 { // Also exercise cached raw-body results.
+					var result ResponseScanResult
+					if body {
+						result = sc.ScanResponseBodyWithSuppress(t.Context(), []byte(tt.text), "", nil)
+					} else {
+						result = sc.ScanResponse(t.Context(), tt.text)
+					}
+					if result.Assessment.Status != tt.status {
+						t.Fatalf("body=%v: status = %s, want %s (%+v)", body, result.Assessment.Status, tt.status, result)
+					}
+				}
+			}
+		})
+	}
+}

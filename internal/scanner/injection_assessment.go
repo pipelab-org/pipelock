@@ -15,6 +15,9 @@ const (
 	AssessmentOff AssessmentStatus = "off"
 	// AssessmentBenign means the basic checker completed without wording findings.
 	AssessmentBenign AssessmentStatus = "benign"
+	// AssessmentPartial means only the immutable core wording floor ran because
+	// the configurable response scanning layer is disabled; it is not benign.
+	AssessmentPartial AssessmentStatus = "partial"
 	// AssessmentFinding includes enforcing, warned, observed and suppressed findings.
 	AssessmentFinding AssessmentStatus = "finding"
 	// AssessmentIncomplete means inspection failed; it is not a content finding.
@@ -40,8 +43,12 @@ func (s *Scanner) setInjectionAssessment(result *ResponseScanResult, assessed bo
 		status = AssessmentOff
 	case len(result.Matches)+len(result.WarnedMatches)+len(result.ObservedCoreMatches)+len(result.SuppressedMatches) > 0:
 		status = AssessmentFinding
-	case assessed || result.Assessment.Status == AssessmentBenign || result.Assessment.Status == AssessmentFinding:
+	case assessed || result.Assessment.Status == AssessmentBenign || result.Assessment.Status == AssessmentFinding ||
+		result.Assessment.Status == AssessmentPartial:
 		status = AssessmentBenign
+		if !s.responseEnabled {
+			status = AssessmentPartial
+		}
 	}
 	result.Assessment = InjectionAssessment{Checker: InjectionCheckerBasic, Status: status}
 }

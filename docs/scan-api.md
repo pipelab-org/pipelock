@@ -140,6 +140,7 @@ Request `status: "completed"` means the endpoint finished evaluating the request
 | `off` | The operator disabled wording detection. No wording checker ran. |
 | `not_assessed` | No wording view was evaluated, such as a tool call with empty arguments. |
 | `benign` | The basic checker completed its configured wording checks without a finding. |
+| `partial` | Only the built-in core wording patterns ran because `response_scanning.enabled` is `false`, and they found nothing. This is not a benign result. |
 | `finding` | Wording matched, including warn-only, observed or suppressed matches. Delivery follows the existing policy; a finding alone does not imply denial. |
 | `incomplete` | Assessment could not finish, including cancellation, timeout or uninspectable tool arguments. This is not a benign result or an injection detection. |
 
