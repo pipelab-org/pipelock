@@ -77,7 +77,8 @@ This fragment is not a complete response. Wire reasons are `unavailable`, `timeo
 | Off | `off` | No invocation |
 | Complete assessed benign | `benign` | Selected checker assessed this complete item |
 | Complete assessed suspicious | `finding` | Caller applies its captured policy |
-| Abstention or partial input/result | `incomplete` | No complete benign conclusion |
+| Suspicious on partial input/result | `finding` | Detection kept; partial completeness stays on the response |
+| Abstention, or benign on partial input/result | `incomplete` | No complete benign conclusion |
 | Not checked, except truncated/partial | `not_assessed` | Assessment unavailable |
 | Invalid protocol response | `not_assessed`, status `invalid` | Never benign; no response exposed |
 | Truncated | `incomplete` | Coverage incomplete |

@@ -94,6 +94,11 @@ func Run(t *testing.T, factory Factory) {
 		{name: "partial", change: func(r *checker.Response) {
 			r.Completeness = &checker.Completeness{Status: checker.Partial, Reason: checker.ReasonTruncated}
 		}, want: checker.StateIncomplete, status: checker.StatusAssessed},
+		{name: "partial_suspicious", change: func(r *checker.Response) {
+			r.Classification = checker.Suspicious
+			r.Findings = []checker.Finding{{ReasonID: "instruction_override", PartIDs: []string{"view"}}}
+			r.Completeness = &checker.Completeness{Status: checker.Partial, Reason: checker.ReasonTruncated}
+		}, want: checker.StateFinding, status: checker.StatusAssessed},
 		{name: "score", change: func(r *checker.Response) {
 			v := 0.5
 			r.Score = &checker.Score{Value: &v, Scale: Policy().Scale.Name, CalibrationID: Policy().Scale.CalibrationID}

@@ -92,6 +92,28 @@ func TestResponseBindingsAndPartial(t *testing.T) {
 	if got := DecodeResponse(data, req, item, p); got.State != StateIncomplete {
 		t.Fatal(got)
 	}
+	// A detection on partial input stays a finding; only benign and abstaining
+	// conclusions are withheld as incomplete.
+	for classification, want := range map[Classification]State{
+		Suspicious: StateFinding,
+		Abstain:    StateIncomplete,
+		Benign:     StateIncomplete,
+	} {
+		resp := testResponse(req)
+		resp.Classification = classification
+		if classification == Suspicious {
+			resp.Findings = []Finding{{ReasonID: "instruction_override", PartIDs: []string{"part"}}}
+		}
+		resp.Completeness = &Completeness{Status: Partial, Reason: ReasonTruncated}
+		partialData, _ := json.Marshal(resp)
+		got := DecodeResponse(partialData, req, item, p)
+		if got.State != want {
+			t.Fatalf("partial %s: state %q, want %q", classification, got.State, want)
+		}
+		if got.Response == nil || got.Response.Completeness.Status != Partial {
+			t.Fatalf("partial %s: completeness not retained: %+v", classification, got)
+		}
+	}
 }
 
 func TestScoreAndFindings(t *testing.T) {

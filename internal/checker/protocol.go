@@ -339,7 +339,12 @@ func DecodeResponse(data []byte, req Request, item Item, policy Policy) Assessme
 			result.State = StateIncomplete
 		}
 	}
-	if item.Completeness.Status != Complete || response.Completeness.Status != Complete || response.Reason == ReasonTruncated {
+	// Partial coverage withholds any benign or abstaining conclusion, but a
+	// suspicious classification remains a finding: the attack was detected in
+	// what the checker did see, and downgrading it would discard that evidence.
+	// The partial completeness stays visible on the response.
+	partial := item.Completeness.Status != Complete || response.Completeness.Status != Complete || response.Reason == ReasonTruncated
+	if partial && result.State != StateFinding {
 		result.State = StateIncomplete
 	}
 	return result
