@@ -2129,7 +2129,14 @@ func newInterceptHandler(
 			r.Body = nil
 			r.GetBody = nil
 		}
-		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		// Reuse the reverse path's no-progress bound. A total-call deadline
+		// would newly sever progressing TLS downloads; SSE and upgrades retain
+		// the existing wrapper's long-lived transport semantics.
+		interceptUpstream := upstream
+		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
+			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
+		}
+		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
 			},
