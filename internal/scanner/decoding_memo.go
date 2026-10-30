@@ -8,6 +8,7 @@ import "github.com/luckyPipewrench/pipelock/internal/normalize"
 type decodingMemoKey struct {
 	text       string
 	includeURL bool
+	minPrefix  int
 }
 
 // decodingMemo shares immutable decoded and normalized views within one scan. It never
@@ -20,14 +21,22 @@ type decodingMemo struct {
 }
 
 func (m *decodingMemo) decode(text string, includeURL bool) []decodedResult {
+	return m.decodeMode(text, includeURL, 0)
+}
+
+func (m *decodingMemo) decodeKnownSecret(text string, minimum int) []decodedResult {
+	return m.decodeMode(text, true, minimum)
+}
+
+func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) []decodedResult {
 	if m == nil {
-		return decodeEncodingsFixpoint(text, includeURL)
+		return decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 	}
-	key := decodingMemoKey{text: text, includeURL: includeURL}
+	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix}
 	if decoded, ok := m.views[key]; ok {
 		return decoded
 	}
-	decoded := decodeEncodingsFixpoint(text, includeURL)
+	decoded := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 	if text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return decoded
 	}
