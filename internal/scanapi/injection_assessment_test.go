@@ -95,6 +95,20 @@ func TestInjectionAssessmentAPIEmptyToolArguments(t *testing.T) {
 	}
 }
 
+func TestInjectionAssessmentAPIEmptyToolArgumentsOff(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	disabled := false
+	cfg.PromptInjectionDetection = &config.PromptInjectionDetection{Enabled: &disabled}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
+	result, status := h.executeScan(t.Context(), &Request{Kind: KindToolCall, Input: Input{ToolName: "notes"}})
+	if status != http.StatusOK || result.Decision != DecisionAllow || result.Assessment == nil || result.Assessment.Status != scanner.AssessmentOff {
+		t.Fatalf("disabled wording with empty arguments did not report off: HTTP %d %+v", status, result)
+	}
+}
+
 func TestInjectionAssessmentAPIUninspectableArguments(t *testing.T) {
 	h := newTestHandler(t)
 	result, status := h.executeScan(t.Context(), &Request{
