@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -465,5 +466,67 @@ func TestPrepareExecutionRejectsMissingConfigAndProfile(t *testing.T) {
 	}
 	if _, err := PrepareExecution(cfg, "missing", t.TempDir(), "", "", os.Getuid()); err == nil {
 		t.Fatal("unknown execution profile was accepted")
+	}
+}
+
+// The runtime traceback header exposes the goroutine's thread-lock state
+// (runtime/traceback.go). Checking it avoids a probabilistic migration test:
+// Gosched alone cannot guarantee that an unlocked goroutine changes threads.
+func TestRunExecWithKeepsOuterThreadPinThroughReplacement(t *testing.T) {
+	t.Setenv(execWorkspaceEnv, t.TempDir())
+	t.Setenv(execTempDirEnv, t.TempDir())
+	t.Setenv(execPolicyHashEnv, "policy-hash")
+	t.Setenv(execBinaryEnv, "/usr/bin/true")
+	t.Setenv(execDeclarationEnv, `{}`)
+	t.Setenv(execProfileEnv, "")
+	pinned := func() bool {
+		var stack [1024]byte
+		n := runtime.Stack(stack[:], false)
+		header, _, _ := strings.Cut(string(stack[:n]), "\n")
+		return strings.Contains(header, "locked to thread")
+	}
+	// Calibrate the runtime observation before relying on a negative result.
+	if pinned() {
+		t.Fatal("test starts on an unexpectedly pinned goroutine")
+	}
+	runtime.LockOSThread()
+	observed := pinned()
+	runtime.UnlockOSThread()
+	if !observed || pinned() {
+		t.Fatal("runtime thread-pin observation failed calibration")
+	}
+	var appliedThread int
+	check := func(stage string) {
+		t.Helper()
+		if !pinned() {
+			t.Fatalf("outer thread pin missing at %s", stage)
+		}
+		runtime.Gosched()
+		if got := unix.Gettid(); got != appliedThread {
+			t.Fatalf("thread changed at %s: got %d, want %d", stage, got, appliedThread)
+		}
+	}
+	replaced := false
+	err := runExecWith([]string{"/usr/bin/true"}, nil,
+		func(*PreparedManifest) (EnforcementRecord, error) {
+			// Model ApplyForExec's nested pin and release. The caller's pin must
+			// survive this release through reporting and process replacement.
+			runtime.LockOSThread()
+			appliedThread = unix.Gettid()
+			runtime.UnlockOSThread()
+			check("apply return")
+			return EnforcementRecord{State: EnforcementEnforced, Mechanism: "landlock", Coverage: CoverageFull}, nil
+		},
+		func(string, []string, []string) error { check("replacement"); replaced = true; return nil },
+		func(ExecutionProof) error { check("report"); return nil },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replaced {
+		t.Fatal("replacement was not reached")
+	}
+	if pinned() {
+		t.Fatal("outer pin leaked after replacement returned")
 	}
 }

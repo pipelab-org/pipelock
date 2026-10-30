@@ -277,7 +277,7 @@ func TestCovPubRevokeErrors(t *testing.T) {
 		}
 		runner.on(argvFor("systemctl", "disable", "--now", "pipelock-published-viewer.socket"), "", 1, errors.New("dbus down"))
 		empty := []config.ContainmentPublishedService{}
-		if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "close revoked published endpoint") {
+		if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "revoke published doorway") {
 			t.Fatalf("err = %v, want disable failure", err)
 		}
 	})
@@ -289,7 +289,7 @@ func TestCovPubRevokeErrors(t *testing.T) {
 		}
 		runner.on(argvFor("systemctl", "stop", "pipelock-published-viewer.service"), "", 1, errors.New("dbus down"))
 		empty := []config.ContainmentPublishedService{}
-		if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "stop revoked published relay") {
+		if _, err := stepInstallPublishedServices(&empty).apply(context.Background(), env); err == nil || !strings.Contains(err.Error(), "revoke published doorway") {
 			t.Fatalf("err = %v, want stop failure", err)
 		}
 	})
@@ -735,60 +735,24 @@ func TestCovPubInstallPipelockBinaryQuiesceAndUndoErrors(t *testing.T) {
 	}
 }
 
-// TestCovPubReloadNFTManagedChainLegacyChainListErrors drives the two
-// failure branches around the legacy receiver-chain live query: the command
-// itself erroring, and a nonzero exit whose message is not the recognized
-// "chain absent" diagnostic.
-func TestCovPubReloadNFTManagedChainLegacyChainListErrors(t *testing.T) {
-	env, _, _ := newFakeEnv(t)
-	const operatorUID, proxyUID, agentUID = 1000, 988, 987
-	body := renderNFTRules(operatorUID, proxyUID, agentUID, env.proxyPort, defaultNFTTable, defaultNFTChain)
-
-	t.Run("legacy chain list command errors", func(t *testing.T) {
-		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-			if name != testNFT {
-				t.Fatalf("cmd = %s, want nft", name)
-			}
-			joined := strings.Join(args, " ")
-			switch {
-			case strings.HasPrefix(joined, "-n -a list chain"):
-				return "table inet pipelock_containment {\n  chain output_filter { }\n}", 0, nil
-			case strings.Contains(joined, legacyOwnedLoopbackInputChain):
-				return "", 1, errors.New("dbus down")
-			}
-			return "", 0, nil
+// A separate receiver chain is not owned merely because of its name.
+func TestCovPubReloadNFTManagedChainLeavesUnownedReceiver(t *testing.T) {
+	env, m := newReconcileModel("")
+	run := env.runCmd
+	env.runCmd = func(ctx context.Context, name string, args ...string) (string, int, error) {
+		if strings.Contains(strings.Join(args, " "), legacyOwnedLoopbackInputChain) {
+			t.Fatal("an unowned receiver was inspected for deletion")
 		}
-		err := reloadNFTManagedChain(context.Background(), env, body, operatorUID, proxyUID, agentUID)
-		if err == nil || !strings.Contains(err.Error(), "list legacy owned loopback receiver chain for reload") {
-			t.Fatalf("err = %v, want legacy chain list command failure", err)
-		}
-	})
-
-	t.Run("legacy chain list nonzero exit with unexpected message", func(t *testing.T) {
-		env.runCmd = func(_ context.Context, name string, args ...string) (string, int, error) {
-			joined := strings.Join(args, " ")
-			switch {
-			case strings.HasPrefix(joined, "-n -a list chain"):
-				return "table inet pipelock_containment {\n  chain output_filter { }\n}", 0, nil
-			case strings.Contains(joined, legacyOwnedLoopbackInputChain):
-				return "permission denied", 1, nil
-			}
-			return "", 0, nil
-		}
-		err := reloadNFTManagedChain(context.Background(), env, body, operatorUID, proxyUID, agentUID)
-		if err == nil || !strings.Contains(err.Error(), "list legacy owned loopback receiver chain exit=1") {
-			t.Fatalf("err = %v, want legacy chain list exit failure", err)
-		}
-	})
+		return run(ctx, name, args...)
+	}
+	if err := reloadNFTRules(context.Background(), env); err != nil {
+		t.Fatal(err)
+	}
+	if m.applies != 1 {
+		t.Fatal("managed rules were not applied")
+	}
 }
 
-// ---------------------------------------------------------------------------
-// doctor.go
-// ---------------------------------------------------------------------------
-
-// TestCovPubDoctorDoorwaySocketReader drives doctorDoorwaySocketReader
-// directly: an unhonorable declaration, a doorway socket that fails its
-// live probe, and the healthy pass.
 func TestCovPubDoctorDoorwaySocketReader(t *testing.T) {
 	body := "containment:\n  loopback_services:\n  - host: 127.0.0.1\n    port: 9200\n    owner: x\n    reason: y\n    expires_at: \"" +
 		futureExpiryForTest + "\"\n"

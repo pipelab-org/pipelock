@@ -335,7 +335,12 @@ func TestDoorwayDiagnosticsUnavailableAndDefinitions(t *testing.T) {
 		{"unreadable pathname", func(e *probeEnv) { e.lstat = func(string) (os.FileInfo, error) { return nil, os.ErrPermission } }, statusUnknown, "could not be read"},
 		{"no pathname reader", func(e *probeEnv) { e.lstat = nil }, statusUnknown, "unavailable"},
 		{"drifted definition", func(e *probeEnv) {
-			e.readFile = func(string) ([]byte, error) { return []byte("operator override"), nil }
+			e.readFile = func(path string) ([]byte, error) {
+				if path == e.configPath {
+					return []byte("containment: {}\n"), nil
+				}
+				return []byte("operator override"), nil
+			}
 		}, statusFail, "pipelock contain install"},
 		{"missing definition", func(e *probeEnv) { e.readFile = func(string) ([]byte, error) { return nil, os.ErrNotExist } }, statusFail, "pipelock contain install"},
 		{"arbitrary unit text", func(e *probeEnv) { e.proxyForwarderSocketPath = "/etc/systemd/system/untrusted;touch marker.socket" }, statusFail, "canonical"},

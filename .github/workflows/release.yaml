@@ -55,6 +55,17 @@ jobs:
           set -euo pipefail
           namespace="$(scripts/release-image-namespace.sh "$REPOSITORY")"
           echo "image_namespace=${namespace}" >> "$GITHUB_OUTPUT"
+      # The readiness gate's release-surface registry derives public figures
+      # from the runtime stats test (go test), so the preflight needs the same
+      # pinned toolchain as the other release jobs rather than whatever Go the
+      # runner image ships. Without it a tag fails here, after it is cut.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26.10'
+          check-latest: true
+          cache: false
+      - name: Verify Go version
+        run: test "$(go env GOVERSION)" = "go1.26.10"
       - name: Release-readiness gate
         # The gate asserts the release keyring secret is present BEFORE any build runs, so
         # it has to receive that secret. Without this mapping the check reads an empty value

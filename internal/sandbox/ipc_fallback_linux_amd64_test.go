@@ -83,7 +83,7 @@ console.log('Node spawn with piped stdio works');`
 	cmd := exec.CommandContext(t.Context(), node.ExecPath, "-e", probe) // #nosec G204 -- native Node identity is verified before launch; fixed probe.
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := startSandboxTarget(cmd, LayerStatus{Active: true, Version: 8}); err != nil {
+	if err := startSandboxTargetForTest(t, cmd, LayerStatus{Active: true, Version: 8}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
@@ -112,7 +112,7 @@ func TestTargetUnixSocketFallbackTokioRuntime(t *testing.T) {
 	}
 	var out bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &out
-	if err := startSandboxTarget(cmd, LayerStatus{Active: true, Version: 8}); err != nil {
+	if err := startSandboxTargetForTest(t, cmd, LayerStatus{Active: true, Version: 8}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cmd.Wait(); err != nil {
@@ -149,7 +149,7 @@ func TestTargetUnixSocketInstallationFailure(t *testing.T) {
 			t.Fatalf("filter installation did not fail closed: %v", err)
 		}
 		cmd := exec.CommandContext(t.Context(), "/usr/bin/true")
-		if err := startSandboxTarget(cmd, LayerStatus{Active: true, Version: 8}); !errors.Is(err, unix.EPERM) || cmd.Process != nil {
+		if err := startSandboxTargetForTest(t, cmd, LayerStatus{Active: true, Version: 8}); !errors.Is(err, unix.EPERM) || cmd.Process != nil {
 			t.Fatalf("target started without IPC filter: %v", err)
 		}
 		return // this helper process exits with its restrictive test filter
@@ -225,7 +225,7 @@ print("isolated")
 		var out bytes.Buffer
 		cmd := exec.CommandContext(t.Context(), python, "-c", probe, path, seqPath) // #nosec G204 -- fixed Python executable and in-process isolation probe
 		cmd.Stdout, cmd.Stderr = &out, &out
-		if err := startSandboxTarget(cmd, LayerStatus{Active: version > 0, Version: version}); err != nil {
+		if err := startSandboxTargetForTest(t, cmd, LayerStatus{Active: version > 0, Version: version}); err != nil {
 			if errors.Is(err, unix.ENOSYS) {
 				t.Skip("kernel has no seccomp syscall")
 			}
@@ -246,14 +246,24 @@ print("isolated")
 		_ = unix.Close(fd)
 	}
 	modern := exec.CommandContext(t.Context(), "/usr/bin/true")
-	if err := startSandboxTarget(modern, LayerStatus{Active: true, Version: 9}); err != nil {
+	if err := startSandboxTargetForTest(t, modern, LayerStatus{Active: true, Version: 9}); err != nil {
 		t.Fatal(err)
 	}
 	if err := modern.Wait(); err != nil {
 		t.Fatal(err)
 	}
 	cmd := exec.CommandContext(t.Context(), "/nonexistent/pipelock-test-command")
-	if err := startSandboxTarget(cmd, LayerStatus{Active: true, Version: 8}); err == nil {
+	if err := startSandboxTargetForTest(t, cmd, LayerStatus{Active: true, Version: 8}); err == nil {
 		t.Fatal("missing executable accepted")
 	}
+}
+
+func startSandboxTargetForTest(t *testing.T, cmd *exec.Cmd, filesystem LayerStatus) error {
+	t.Helper()
+	target, err := startSandboxTarget(cmd, filesystem)
+	if err != nil {
+		return err
+	}
+	t.Cleanup(target.Close)
+	return nil
 }

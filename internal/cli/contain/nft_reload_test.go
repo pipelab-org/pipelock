@@ -13,7 +13,7 @@ import (
 	"testing"
 )
 
-func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules(t *testing.T) {
+func TestRenderNFTManagedChainReloadScriptPreservesForeignRules(t *testing.T) {
 	t.Parallel()
 	const (
 		operatorUID = 1000
@@ -24,9 +24,9 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 	live := strings.Join([]string{
 		`table inet pipelock_containment {`,
 		`  chain output_filter { type filter hook output priority filter; policy accept;`,
-		`    meta skuid 966 oifname "tailscale0" ip saddr 100.100.47.101 tcp sport 8642 ct state established ct direction reply accept # handle 10`,
-		`    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept # handle 11`,
-		`    meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept # handle 12`,
+		`    meta skuid 12345 accept # handle 10`,
+		`    meta skuid 12345 accept # handle 11`,
+		`    meta skuid 12345 accept # handle 12`,
 		legacyManagedBlockWithHandles(20),
 		legacyManagedBlockWithHandles(30),
 		`  }`,
@@ -46,16 +46,15 @@ func TestRenderNFTManagedChainReloadScriptRemovesLegacyBlocksPreservesReplyRules
 			t.Fatalf("reload script removed foreign established-reply handle %d:\n%s", handle, script)
 		}
 	}
-	if strings.Contains(script, "delete table") || !strings.Contains(script, "flush chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) ||
-		!strings.Contains(script, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) {
-		t.Fatalf("reload script must remove only the obsolete receiver chain and preserve the shared table:\n%s", script)
+	if strings.Contains(script, "delete table") || strings.Contains(script, "delete chain") {
+		t.Fatalf("unowned chain was selected for deletion: %s", script)
 	}
 	if !strings.HasSuffix(script, body) {
 		t.Fatalf("reload script does not finish by loading one canonical ruleset:\n%s", script)
 	}
 }
 
-func TestReloadNFTManagedChainRemovesReceiverlessOwnedLoopbackMarks(t *testing.T) {
+func TestReloadNFTManagedChainRefusesUnownedLoopbackMarks(t *testing.T) {
 	const (
 		operatorUID = 1000
 		proxyUID    = 967
@@ -97,16 +96,11 @@ func TestReloadNFTManagedChainRemovesReceiverlessOwnedLoopbackMarks(t *testing.T
 		}
 	}
 
-	if err := reloadNFTManagedChain(context.Background(), env, body, operatorUID, proxyUID, agentUID); err != nil {
-		t.Fatalf("reload managed chain: %v", err)
+	if err := reloadNFTManagedChain(context.Background(), env, body, operatorUID, proxyUID, agentUID); err == nil || !strings.Contains(err.Error(), "nft reconciliation conflict") {
+		t.Fatalf("standalone legacy fragment error=%v", err)
 	}
-	for _, handle := range []int{70, 71} {
-		if !strings.Contains(script, "delete rule inet pipelock_containment output_filter handle "+itoa(handle)) {
-			t.Fatalf("reload script did not remove stale mark handle %d:\n%s", handle, script)
-		}
-	}
-	if strings.Contains(script, "delete chain inet pipelock_containment "+legacyOwnedLoopbackInputChain) || !strings.HasSuffix(script, body) {
-		t.Fatalf("receiverless migration did not retain one canonical ruleset:\n%s", script)
+	if script != "" {
+		t.Fatal("conflict wrote a transaction")
 	}
 }
 
@@ -172,13 +166,14 @@ func TestReloadNFTRulesReconcilesBeforeLoading(t *testing.T) {
 		},
 	}
 
-	if err := reloadNFTRules(context.Background(), env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), env); err != nil {
 		t.Fatalf("reload nft rules: %v", err)
 	}
 	if got, want := calls, []string{
 		"nft -n -a list chain inet pipelock_containment output_filter",
 		"nft -c -f /managed/50-pipelock-containment.nft.reload",
 		"nft -f /managed/50-pipelock-containment.nft.reload",
+		"nft -n -a list chain inet pipelock_containment output_filter",
 	}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("commands = %v, want %v", got, want)
 	}
@@ -237,7 +232,7 @@ func TestReloadNFTRulesAllowsFirstBootMissingChain(t *testing.T) {
 			}
 		},
 	}
-	if err := reloadNFTRules(context.Background(), env); err != nil {
+	if err := reloadNFTForTest(t, context.Background(), env); err != nil {
 		t.Fatalf("reload nft rules: %v", err)
 	}
 	if strings.Contains(reloadScript, "delete rule") {
@@ -295,7 +290,7 @@ func TestReloadNFTRulesCmdRunsAsRootOnly(t *testing.T) {
 			removeFile: func(string) error { return nil },
 			runCmd: func(_ context.Context, _ string, args ...string) (string, int, error) {
 				if strings.HasPrefix(strings.Join(args, " "), "-n -a list") {
-					return "No such file or directory", 1, nil
+					return nftListingFromRulesBodyForTest(rules, 20), 0, nil
 				}
 				return "", 0, nil
 			},
@@ -438,6 +433,12 @@ func TestLegacyManagedRuleMatchersRejectNearMisses(t *testing.T) {
 	if lineHasManagedCatchAllDrop(`meta skuid 966 ip daddr 192.0.2.1 counter packets 0 bytes 0 log prefix "pipelock-contain class=not_routing_through_pipelock " drop`, 966) {
 		t.Fatal("destination-specific rule matched catch-all managed rule")
 	}
+	if !lineHasSkuidDNSDrop(`meta skuid 966 udp dport 53 counter drop`, 966, "udp") {
+		t.Fatal("exact DNS drop not recognized")
+	}
+	if lineHasSkuidDNSDrop(`ip daddr 192.0.2.1 meta skuid 966 udp dport 53 drop`, 966, "udp") {
+		t.Fatal("destination-limited DNS rule matched unconditional DNS drop")
+	}
 	if fieldsHaveNFTCounterLogDrop([]string{"counter", "log", "prefix", `"pipelock-contain class=direct_dns_blocked "`, "accept"}, nftLogPrefix(EgressClassDirectDNS)+" ") {
 		t.Fatal("non-drop rule matched managed drop bookkeeping")
 	}
@@ -485,7 +486,7 @@ func TestReloadNFTRulesReportsCauseForEachFailingSeam(t *testing.T) {
 		env.readFile = func(string) ([]byte, error) {
 			return []byte("# operator=notanumber pipelock-proxy=967 pipelock-agent=966 proxy-port=8888\n"), nil
 		}
-		err := reloadNFTRules(context.Background(), env)
+		err := reloadNFTForTest(t, context.Background(), env)
 		if err == nil {
 			t.Fatal("error = nil, want a refusal for an unparseable managed header")
 		}
@@ -496,7 +497,7 @@ func TestReloadNFTRulesReportsCauseForEachFailingSeam(t *testing.T) {
 		env.runCmd = func(context.Context, string, ...string) (string, int, error) {
 			return "", -1, errors.New("nft binary missing")
 		}
-		err := reloadNFTRules(context.Background(), env)
+		err := reloadNFTForTest(t, context.Background(), env)
 		if err == nil || !strings.Contains(err.Error(), "list nft managed chain") {
 			t.Fatalf("error = %v, want the list invocation cause", err)
 		}
@@ -511,7 +512,7 @@ func TestReloadNFTRulesReportsCauseForEachFailingSeam(t *testing.T) {
 			}
 			return "", -1, errors.New("nft check crashed")
 		}
-		err := reloadNFTRules(context.Background(), env)
+		err := reloadNFTForTest(t, context.Background(), env)
 		if err == nil || !strings.Contains(err.Error(), "validate nft managed chain reload") {
 			t.Fatalf("error = %v, want the validation invocation cause", err)
 		}
@@ -530,7 +531,7 @@ func TestReloadNFTRulesReportsCauseForEachFailingSeam(t *testing.T) {
 				return "", -1, errors.New("nft apply crashed")
 			}
 		}
-		err := reloadNFTRules(context.Background(), env)
+		err := reloadNFTForTest(t, context.Background(), env)
 		if err == nil || !strings.Contains(err.Error(), "reload nft managed chain") {
 			t.Fatalf("error = %v, want the apply invocation cause", err)
 		}
@@ -591,8 +592,8 @@ func TestRenderNFTManagedChainReloadScriptMigratesLiveInterleavedOwnedLoopbackBl
 		proxyPort   = 8888
 	)
 	chainRules := []string{
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state established ct direction reply accept`,
-		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state established ct direction reply accept`,
+		`meta skuid 12345 accept`,
+		`meta skuid 12346 accept`,
 		`meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state new counter packets 16002 bytes 960120 comment "probe-exact"`,
 		`meta skuid 966 oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" counter packets 230998 bytes 66920070 comment "probe-cgroup"`,
 		`meta skuid 966 oifname "lo" counter packets 325521 bytes 80053096 comment "probe-uid-lo"`,
@@ -682,8 +683,8 @@ func TestRenderNFTManagedChainReloadScriptMigratesNumericLiveChain(t *testing.T)
 		`table inet pipelock_containment {`,
 		`        chain output_filter { # handle 1`,
 		`                type filter hook output priority 0; policy accept;`,
-		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 8789 ct state 0x2 ct direction 1 accept # handle 617`,
-		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 tcp sport 9119 ct state 0x2 ct direction 1 accept # handle 616`,
+		`                meta skuid 12345 accept # handle 617`,
+		`                meta skuid 12345 accept # handle 616`,
 		`                meta skuid 966 oifname "lo" ip daddr 127.0.0.1 socket cgroupv2 level 1 "pipelock_contained.slice" ct state 0x8 counter packets 16002 bytes 960120 comment "probe-exact" # handle 538`,
 		`                meta skuid 966 oifname "lo" socket cgroupv2 level 1 "pipelock_contained.slice" counter packets 230998 bytes 66920070 comment "probe-cgroup" # handle 537`,
 		`                meta skuid 966 oifname "lo" counter packets 325562 bytes 80069204 comment "probe-uid-lo" # handle 536`,

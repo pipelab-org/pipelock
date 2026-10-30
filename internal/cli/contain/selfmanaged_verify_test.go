@@ -13,7 +13,7 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 	t.Parallel()
 
 	const operatorUID, proxyUID, agentUID, proxyPort = 0, 0, 10001, 8888
-	canonical := renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	canonical := nftListingForTest(renderNFTRules(operatorUID, proxyUID, agentUID, proxyPort, defaultNFTTable, defaultNFTChain))
 	if err := validateSelfManagedNFTRules(canonical, operatorUID, proxyUID, agentUID, proxyPort); err != nil {
 		t.Fatalf("canonical rules rejected: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 		t.Fatalf("nft-style readback rejected: %v", err)
 	}
 
-	nonDefault := renderNFTRules(1000, 1001, agentUID, proxyPort, defaultNFTTable, defaultNFTChain)
+	nonDefault := nftListingForTest(renderNFTRules(1000, 1001, agentUID, proxyPort, defaultNFTTable, defaultNFTChain))
 	if err := validateSelfManagedNFTRules(nonDefault, 1000, 1001, agentUID, proxyPort); err != nil {
 		t.Fatalf("non-default operator/proxy UIDs rejected: %v", err)
 	}
@@ -45,6 +45,35 @@ func TestValidateSelfManagedNFTRules(t *testing.T) {
 			"meta skuid 10001 meta l4proto tcp counter drop", 1)
 		if err := validateSelfManagedNFTRules(weakened, operatorUID, proxyUID, agentUID, proxyPort); err == nil {
 			t.Fatal("TCP-only catch-all accepted")
+		}
+	})
+	t.Run("previous renderer output", func(t *testing.T) {
+		t.Parallel()
+		previous := canonical
+		for _, role := range nftManagedRoles {
+			previous = strings.ReplaceAll(previous, ` comment "pipelock:contain:v1:`+role+`"`, "")
+		}
+		if previous == canonical {
+			t.Fatal("fixture carries no ownership comments")
+		}
+		if err := validateSelfManagedNFTRules(previous, operatorUID, proxyUID, agentUID, proxyPort); err != nil {
+			t.Fatalf("previous renderer output rejected: %v", err)
+		}
+		weakened := strings.Replace(previous,
+			"meta skuid 10001 counter log prefix \"pipelock-contain class=not_routing_through_pipelock \" drop",
+			"meta skuid 10001 meta l4proto tcp counter drop", 1)
+		if err := validateSelfManagedNFTRules(weakened, operatorUID, proxyUID, agentUID, proxyPort); err == nil {
+			t.Fatal("weakened previous renderer output accepted")
+		}
+		lines := strings.Split(previous, "\n")
+		for i, line := range lines {
+			if strings.Contains(line, "meta skuid") {
+				lines = append(lines[:i+1], lines[i:]...)
+				break
+			}
+		}
+		if err := validateSelfManagedNFTRules(strings.Join(lines, "\n"), operatorUID, proxyUID, agentUID, proxyPort); err == nil {
+			t.Fatal("previous renderer output with a duplicated rule accepted")
 		}
 	})
 	t.Run("IPv4-only table", func(t *testing.T) {

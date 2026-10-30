@@ -202,24 +202,27 @@ func (p *compiledPattern) providerCandidateSpans(text string) [][2]int {
 
 // canonicalProviderCandidateSpans expands nested prefixes inside each greedy
 // provider-key match without rerunning the regex over the remaining text. All
-// three canonical bodies share the existing 20-byte opaque-suffix minimum.
+// three canonical bodies share the existing 20-character opaque-suffix minimum.
 func (p *compiledPattern) canonicalProviderCandidateSpans(text string) [][2]int {
 	outer := p.withoutLeftBoundary.FindAllStringIndex(text, -1)
 	spans := make([][2]int, 0, len(outer))
-	minimumLength := len(p.providerKeyPrefix) + 20
 	for _, loc := range outer {
 		spans = append(spans, [2]int{loc[0], loc[1]})
-		lower := strings.ToLower(text[loc[0]:loc[1]])
-		for searchFrom := 1; searchFrom < len(lower); {
-			relative := strings.Index(lower[searchFrom:], p.providerKeyPrefix)
-			if relative < 0 {
-				break
+		candidate := text[loc[0]:loc[1]]
+		// Find prefix coordinates in the source. Unicode case mapping can change
+		// byte widths even inside a case-insensitive ASCII letter expression.
+		remaining := utf8.RuneCountInString(candidate)
+		previousEnd := 0
+		for _, prefix := range p.providerPrefixRE.FindAllStringIndex(candidate, -1) {
+			remaining -= utf8.RuneCountInString(candidate[previousEnd:prefix[1]])
+			previousEnd = prefix[1]
+			if prefix[0] == 0 {
+				continue
 			}
-			start := searchFrom + relative
-			if len(lower)-start >= minimumLength {
-				spans = append(spans, [2]int{loc[0] + start, loc[1]})
+			// The canonical provider bodies require at least 20 suffix characters.
+			if remaining >= 20 {
+				spans = append(spans, [2]int{loc[0] + prefix[0], loc[1]})
 			}
-			searchFrom = start + 1
 		}
 	}
 	return spans

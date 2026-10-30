@@ -1,0 +1,1737 @@
+{
+  "schema_version": 1,
+  "description": "Release-number and public-figure inventory. Current instructions follow source versions. Historical measurements, compatibility boundaries, example data and independent dependencies retain their own values. Counts make additions and removals reviewable. Ordered specific rules precede general rules. Run python3 scripts/release_doc_versions.py .; pass vMAJOR.MINOR.PATCH at release preflight.",
+  "sources": {
+    "product": {
+      "path": "charts/pipelock/Chart.yaml",
+      "pattern": "^appVersion:\\s*\"?(?P<value>[^\"\\s]+)"
+    },
+    "verifier": {
+      "path": "sdk/verifiers/ts/package.json",
+      "json": [
+        "version"
+      ]
+    },
+    "python_reference": {
+      "path": "sdk/verifiers/python/pyproject.toml",
+      "toml": [
+        "project",
+        "version"
+      ]
+    },
+    "python_published": {
+      "path": "release/verifier-installers.json",
+      "json": [
+        "verifiers",
+        3,
+        "version"
+      ]
+    }
+  },
+  "scan": {
+    "roots": [
+      "README.md",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
+      "GOVERNANCE.md",
+      "SECURITY.md",
+      "docs",
+      "examples",
+      "charts/pipelock",
+      "sdk/verifiers",
+      "benchmark",
+      "release",
+      ".goreleaser.yaml"
+    ],
+    "suffixes": [
+      ".md",
+      ".yml",
+      ".yaml",
+      ".sh",
+      ".json",
+      ".toml",
+      ".env"
+    ],
+    "exclude": [
+      {
+        "glob": "release/surfaces.json",
+        "reason": "The inventory contains expected values and regexes, not consumer-facing pins."
+      },
+      {
+        "glob": "sdk/verifiers/*/testdata/*",
+        "reason": "Protocol/conformance fixtures are immutable test inputs, not release instructions."
+      },
+      {
+        "glob": "sdk/verifiers/*/tests/*",
+        "reason": "Verifier regression fixtures and test definitions are not public release claims."
+      },
+      {
+        "glob": "sdk/verifiers/*/node_modules/*",
+        "reason": "Installed third-party dependencies are not project-owned publication surfaces."
+      },
+      {
+        "glob": "sdk/verifiers/*/dist/*",
+        "reason": "Generated verifier output; the source package metadata is checked directly."
+      },
+      {
+        "glob": "sdk/verifiers/*/target/*",
+        "reason": "Generated Cargo output; the source package metadata is checked directly."
+      },
+      {
+        "glob": "sdk/verifiers/*/package-lock.json",
+        "reason": "Dependency pins are independent; both root package versions are checked directly below."
+      },
+      {
+        "glob": "sdk/verifiers/ts/package.json",
+        "reason": "Dependency versions are independent; the package version is checked directly below."
+      },
+      {
+        "glob": "sdk/verifiers/rust/Cargo.toml",
+        "reason": "Dependency versions are independent; the package version is checked directly below."
+      },
+      {
+        "glob": "sdk/verifiers/python/pyproject.toml",
+        "reason": "Dependency and Unicode versions are independent; the reference package version is checked directly below."
+      },
+      {
+        "glob": "sdk/verifiers/rust/Cargo.lock",
+        "reason": "Dependency lock versions are independent; the verifier package version is checked directly below."
+      }
+    ],
+    "discovery_contract": "SemVer-shaped tokens and the public count/percentage phrases recognized by release_doc_versions.py must be registered in these roots. This is bounded lexical discovery, not arbitrary natural-language claim verification. Source code, configuration defaults, schema versions, asset geometry and raw benchmark tables are outside lexical discovery; historical benchmark files are content-pinned below. CHANGELOG history is retained; its newest numbered heading is checked directly. Third-party action, toolchain and dependency pins in workflows and action.yml are owned by Renovate and are not release numbers of this product; workflow and action product installation pins are checked by the product-version recognizers, and reusable-scan.yml product examples are registered with contextual selectors."
+  },
+  "surfaces": [
+    {
+      "id": "docs-benchmarks.md-1",
+      "path": "docs/benchmarks.md",
+      "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
+      "expected": "405672d2b3b620348e4e9af461b755bc3cc799a452099891da44792f0a600960",
+      "count": 1,
+      "reason": "Dated measured workloads and frozen microbenchmark tables; retain the measured binary, figures and limits together. A new measurement requires a reviewed snapshot update, not a product-version substitution.",
+      "format": "sha256"
+    },
+    {
+      "id": "docs-performance.md-1",
+      "path": "docs/performance.md",
+      "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
+      "expected": "676e2b825eb808fcd9cc6df5c33d3c2d92682a69e10c65641be44066e09b2e15",
+      "count": 1,
+      "reason": "Dated measured workloads and frozen microbenchmark tables; retain the measured binary, figures and limits together. A new measurement requires a reviewed snapshot update, not a product-version substitution.",
+      "format": "sha256"
+    },
+    {
+      "id": "benchmark-gauntlet-baseline.json-1",
+      "path": "benchmark/gauntlet-baseline.json",
+      "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
+      "expected": "8e6ed84fef9c62d8e826d20f85c8ff87c4770aca1bb7093b7a516d18eb3538be",
+      "count": 1,
+      "reason": "Dated Gauntlet release identity, measured scores and exact accepted outcomes; independent of the next product release. The Gauntlet candidate gate consumes this contract.",
+      "format": "sha256"
+    },
+    {
+      "id": "benchmark-gauntlet-acceptance.json-1",
+      "path": "benchmark/gauntlet-acceptance.json",
+      "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
+      "expected": "fe19fe79ce7c3ac3f30a2515307cf8d0e3ca8d68826edf46e77619d55bd28ac5",
+      "count": 1,
+      "reason": "Dated Gauntlet release identity, measured scores and exact accepted outcomes; independent of the next product release. The Gauntlet candidate gate consumes this contract.",
+      "format": "sha256"
+    },
+    {
+      "id": "benchmark-gauntlet-release.env-1",
+      "path": "benchmark/gauntlet-release.env",
+      "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
+      "expected": "f62bce3830ae7783b83cf75188dc6cc4f7d349e877926eaea56e6175add16058",
+      "count": 1,
+      "reason": "Dated Gauntlet release identity, measured scores and exact accepted outcomes; independent of the next product release. The Gauntlet candidate gate consumes this contract.",
+      "format": "sha256"
+    },
+    {
+      "id": "CHANGELOG.md-1",
+      "path": "CHANGELOG.md",
+      "pattern": "\\A[\\s\\S]*?^## \\[(?P<value>\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\\]",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "The newest numbered release heading moves with the chart and release tag; older headings and Unreleased remain historical. Release preflight separately requires a dated heading."
+    },
+    {
+      "id": "README.md-1",
+      "path": "README.md",
+      "pattern": "The released (?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9])) binary",
+      "expected": "3.7.0",
+      "count": 1,
+      "reason": "The million-request measurement names the binary actually measured; it is not a current install instruction.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-ts-package.json-1",
+      "path": "sdk/verifiers/ts/package.json",
+      "pattern": "^  \"version\": \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-ts-package-lock.json-1",
+      "path": "sdk/verifiers/ts/package-lock.json",
+      "pattern": "^  \"version\": \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-ts-package-lock.json-2",
+      "path": "sdk/verifiers/ts/package-lock.json",
+      "pattern": "^    \"\": \\{\\n(?:(?!^    \\}).*\\n)*?      \"version\": \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-rust-Cargo.toml-1",
+      "path": "sdk/verifiers/rust/Cargo.toml",
+      "pattern": "^version = \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-rust-Cargo.lock-1",
+      "path": "sdk/verifiers/rust/Cargo.lock",
+      "pattern": "name = \"pipelock-verifier-rs\"\\nversion = \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-python-pyproject.toml-1",
+      "path": "sdk/verifiers/python/pyproject.toml",
+      "pattern": "^version = \"(?P<value>[^\"\\n]+)\"",
+      "expected": "source:python_reference",
+      "count": 1,
+      "reason": "Verifier packages have their own release versions; manifests, lock roots and installer publication refs must agree with their package source.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-1",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"TypeScript\"(?:(?!\"language\":)[\\s\\S])*?\"version\": \"(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent TypeScript package version.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-2",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"TypeScript\"(?:(?!\"language\":)[\\s\\S])*?\"source_ref\": \"verifier-(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent TypeScript package version.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-3",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"Rust\"(?:(?!\"language\":)[\\s\\S])*?\"version\": \"(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent Rust package version.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-4",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"Rust\"(?:(?!\"language\":)[\\s\\S])*?\"source_ref\": \"verifier-(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:verifier",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent Rust package version.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-5",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"Python\"(?:(?!\"language\":)[\\s\\S])*?\"version\": \"(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:python_published",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent Python package version.",
+      "format": "version"
+    },
+    {
+      "id": "release-verifier-installers.json-6",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"language\": \"Python\"(?:(?!\"language\":)[\\s\\S])*?\"source_ref\": \"(?P<value>v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)\"",
+      "expected": "source:python_published",
+      "count": 1,
+      "reason": "Installer version and publisher ref must match the independent Python package version.",
+      "format": "version"
+    },
+    {
+      "id": "README.md-2",
+      "path": "README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.102\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.102.0",
+      "count": 1,
+      "reason": "Minimum GitHub CLI version required by the documented upstream attestation-verifier advisory, independent of Pipelock.",
+      "format": "version"
+    },
+    {
+      "id": "README.md-3",
+      "path": "README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "README.md-4",
+      "path": "README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "README.md-5",
+      "path": "README.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 13,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "README.md-6",
+      "path": "README.md",
+      "pattern": "^\\-\\ \\*\\*DLP:\\*\\*\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "README.md-7",
+      "path": "README.md",
+      "pattern": "^\\-\\ \\*\\*Response\\ scanning:\\*\\*\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ prompt\\-injection\\ and\\ state/control\\ poisoning\\ patterns",
+      "expected": "stats:Response patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "README.md-8",
+      "path": "README.md",
+      "pattern": "^\\-\\ \\*\\*Tool\\ call\\ chains:\\*\\*\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ category\\-axis\\ patterns",
+      "expected": "stats:Chain patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "README.md-9",
+      "path": "README.md",
+      "pattern": "^The\\ released\\ 3\\.7\\.0\\ binary\\ completed\\ \\*\\*(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "1,000,000",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "README.md-10",
+      "path": "README.md",
+      "pattern": "^The\\ released\\ 3\\.7\\.0\\ binary\\ completed\\ \\*\\*1,000,000\\ requests\\ with\\ zero\\ missing\\ receipt\\ records\\*\\*,\\ and\\ its\\ eight\\-chain\\ signed\\ group\\ verified\\ `GROUP_VALID`\\.\\ It\\ sustained\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "333",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "README.md-11",
+      "path": "README.md",
+      "pattern": "^\\|\\ \\*\\*Config\\ Scoring\\*\\*\\ \\(v2\\.6\\)\\ \\|\\ `pipelock\\ audit\\ score\\ \\-\\-config\\ pipelock\\.yaml`\\ evaluates\\ security\\ posture\\ across\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ categories",
+      "expected": "23",
+      "count": 1,
+      "reason": "Published configuration-score category count, pinned by TestScoreConfig_Defaults in internal/cli/audit/audit_score_test.go; changes require a matching public-doc and inventory update."
+    },
+    {
+      "id": "README.md-12",
+      "path": "README.md",
+      "pattern": "^configs/\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ preset\\ config\\ files",
+      "expected": "stats:Preset files",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "README.md-13",
+      "path": "README.md",
+      "pattern": "^\\|\\ Coverage\\ gate\\ \\(codecov\\)\\ \\|\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "91",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "README.md-14",
+      "path": "README.md",
+      "pattern": "^\\|\\ Coverage\\ gate\\ \\(codecov\\)\\ \\|\\ 91%\\ Apache\\-2\\.0\\ core\\ project,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "95",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "AGENTS.md-1",
+      "path": "AGENTS.md",
+      "pattern": "^9\\.\\ DLP\\ \\((?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ credential\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "AGENTS.md-2",
+      "path": "AGENTS.md",
+      "pattern": "^\\-\\ Coverage\\ target\\ for\\ new\\ code:\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "95",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "CONTRIBUTING.md-1",
+      "path": "CONTRIBUTING.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?46\\.0\\.7)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "46.0.7",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "CONTRIBUTING.md-2",
+      "path": "CONTRIBUTING.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?47\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "47.0.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "CONTRIBUTING.md-3",
+      "path": "CONTRIBUTING.md",
+      "pattern": "^\\-\\ Target\\ \\*\\*(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "95",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "CONTRIBUTING.md-4",
+      "path": "CONTRIBUTING.md",
+      "pattern": "^\\-\\ Table\\-driven\\ tests\\ where\\ there\\ are\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ cases",
+      "expected": "3+",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "CONTRIBUTING.md-5",
+      "path": "CONTRIBUTING.md",
+      "pattern": "^configs/\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ preset\\ config\\ files",
+      "expected": "stats:Preset files",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-attacks-blocked.md-1",
+      "path": "docs/attacks-blocked.md",
+      "pattern": "^\\*\\*Why\\ it\\ works:\\*\\*\\ Chain\\ detection\\ watches\\ sequences\\ of\\ tool\\ calls\\ and\\ matches\\ against\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ attack\\ patterns",
+      "expected": "stats:Chain patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-bypass-resistance.md-1",
+      "path": "docs/bypass-resistance.md",
+      "pattern": "^\\|\\ Many\\ small\\ requests\\ \\|\\ 1\\ byte\\ per\\ request,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "1000",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-bypass-resistance.md-2",
+      "path": "docs/bypass-resistance.md",
+      "pattern": "^\\|\\ Basic\\ injection\\ \\|\\ \"Ignore\\ all\\ previous\\ instructions\"\\ \\|\\ Tested\\ \\|\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:Response patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-bypass-resistance.md-3",
+      "path": "docs/bypass-resistance.md",
+      "pattern": "^\\|\\ \\*\\*IPv6\\ bypass\\*\\*\\ \\|\\ If\\ `internal`\\ CIDR\\ list\\ doesn't\\ include\\ IPv6\\ ranges,\\ agents\\ could\\ reach\\ internal\\ services\\ via\\ IPv6\\.\\ Zone\\ IDs\\ \\(e\\.g\\.\\ `::(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "1",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-cli-discover.md-1",
+      "path": "docs/cli/discover.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.162\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.162.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-cli-discover.md-2",
+      "path": "docs/cli/discover.md",
+      "pattern": "^`pipelock\\ assess`\\ collects\\ discovery\\ directly\\ and\\ gives\\ each\\ unconfirmed\\ entry\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "50",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-cli-discover.md-3",
+      "path": "docs/cli/discover.md",
+      "pattern": "^`pipelock\\ assess`\\ collects\\ discovery\\ directly\\ and\\ gives\\ each\\ unconfirmed\\ entry\\ 50%\\ MCP\\ Protection\\ credit,\\ the\\ same\\ as\\ `unknown`,\\ instead\\ of\\ the\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "100",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-cli-init-sidecar.md-1",
+      "path": "docs/cli/init-sidecar.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.33\\.6)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.33.6",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-cli-update.md-1",
+      "path": "docs/cli/update.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.1.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-cli-update.md-2",
+      "path": "docs/cli/update.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.0.0",
+      "count": 4,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-cli-verify-receipt.md-1",
+      "path": "docs/cli/verify-receipt.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-cli-verify-receipt.md-2",
+      "path": "docs/cli/verify-receipt.md",
+      "pattern": "(?P<value>v?0\\.4\\.1)",
+      "expected": "source:python_published",
+      "count": 1,
+      "reason": "Operator instructions name the independently versioned verifier package.",
+      "format": "version"
+    },
+    {
+      "id": "docs-comparison.md-1",
+      "path": "docs/comparison.md",
+      "pattern": "^Docker\\ MCP\\ Gateway\\ aggregates\\ MCP\\ servers\\ and\\ provides\\ Docker\\-native\\ MCP\\ lifecycle\\ and\\ gatewaying\\.\\ Pipelock\\ provides\\ deep\\ content\\ inspection\\ \\((?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ DLP\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-comparison.md-2",
+      "path": "docs/comparison.md",
+      "pattern": "^Docker\\ MCP\\ Gateway\\ aggregates\\ MCP\\ servers\\ and\\ provides\\ Docker\\-native\\ MCP\\ lifecycle\\ and\\ gatewaying\\.\\ Pipelock\\ provides\\ deep\\ content\\ inspection\\ \\(65\\ DLP\\ patterns,\\ BIP\\-39\\ seed\\ phrase\\ detection,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ prompt\\-injection\\ and\\ state/control\\-poisoning\\ patterns",
+      "expected": "stats:Response patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-compliance-assess-mapping.md-1",
+      "path": "docs/compliance/assess-mapping.md",
+      "pattern": "^`pipelock\\ assess\\ run`\\ collects\\ MCP\\ discovery\\ directly;\\ assessment\\ scoring\\ doesn't\\ use\\ the\\ posture\\ capsule's\\ `strict`\\ or\\ `enterprise`\\ policy\\.\\ File\\-only\\ discovery\\ now\\ reports\\ wrappers\\ as\\ `unconfirmed`,\\ because\\ configuration\\ files\\ can't\\ establish\\ what\\ a\\ client\\ launched\\.\\ Previously\\ protected\\ entries\\ receive\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "50",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-assess-mapping.md-2",
+      "path": "docs/compliance/assess-mapping.md",
+      "pattern": "^`pipelock\\ assess\\ run`\\ collects\\ MCP\\ discovery\\ directly;\\ assessment\\ scoring\\ doesn't\\ use\\ the\\ posture\\ capsule's\\ `strict`\\ or\\ `enterprise`\\ policy\\.\\ File\\-only\\ discovery\\ now\\ reports\\ wrappers\\ as\\ `unconfirmed`,\\ because\\ configuration\\ files\\ can't\\ establish\\ what\\ a\\ client\\ launched\\.\\ Previously\\ protected\\ entries\\ receive\\ 50%\\ MCP\\ Protection\\ credit,\\ the\\ same\\ as\\ `unknown`,\\ instead\\ of\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "100",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-assess-mapping.md-3",
+      "path": "docs/compliance/assess-mapping.md",
+      "pattern": "^`pipelock\\ assess\\ run`\\ collects\\ MCP\\ discovery\\ directly;\\ assessment\\ scoring\\ doesn't\\ use\\ the\\ posture\\ capsule's\\ `strict`\\ or\\ `enterprise`\\ policy\\.\\ File\\-only\\ discovery\\ now\\ reports\\ wrappers\\ as\\ `unconfirmed`,\\ because\\ configuration\\ files\\ can't\\ establish\\ what\\ a\\ client\\ launched\\.\\ Previously\\ protected\\ entries\\ receive\\ 50%\\ MCP\\ Protection\\ credit,\\ the\\ same\\ as\\ `unknown`,\\ instead\\ of\\ 100%\\.\\ Unprotected\\ entries\\ receive\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "0",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-1",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.4.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-2",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "^\\|\\ \\*\\*Confidentiality\\ attacks\\*\\*\\ \\(Art\\.\\ 15\\(5\\)\\)\\ \\|\\ DLP\\ scanning\\ \\((?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ credential\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-3",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "^\\|\\ DLP\\ scanning\\ \\|\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ credential\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-4",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "^Penalties:\\ up\\ to\\ EUR\\ 35M\\ or\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "7",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-5",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "^Penalties:\\ up\\ to\\ EUR\\ 35M\\ or\\ 7%\\ global\\ turnover\\ \\(prohibited\\ practices\\),\\ EUR\\ 15M\\ or\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "3",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-eu-ai-act-mapping.md-6",
+      "path": "docs/compliance/eu-ai-act-mapping.md",
+      "pattern": "^Penalties:\\ up\\ to\\ EUR\\ 35M\\ or\\ 7%\\ global\\ turnover\\ \\(prohibited\\ practices\\),\\ EUR\\ 15M\\ or\\ 3%\\ \\(high\\-risk\\ system\\ violations\\),\\ EUR\\ 7\\.5M\\ or\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "1",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-compliance-nist-800-53.md-1",
+      "path": "docs/compliance/nist-800-53.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.4.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-compliance-owasp-mcp-top10.md-1",
+      "path": "docs/compliance/owasp-mcp-top10.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.4.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-configuration.md-1",
+      "path": "docs/configuration.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?4\\.1\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "4.1.1",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-configuration.md-2",
+      "path": "docs/configuration.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.3\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.3.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-configuration.md-3",
+      "path": "docs/configuration.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.4.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-configuration.md-4",
+      "path": "docs/configuration.md",
+      "pattern": "^\\|\\ `include_defaults`\\ \\|\\ `true`\\ \\|\\ Merge\\ your\\ patterns\\ with\\ the\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-configuration.md-5",
+      "path": "docs/configuration.md",
+      "pattern": "^\\-\\ \\*\\*Credit\\ Card\\ Number\\*\\*\\ \\(`validator:\\ luhn`\\)\\ \u2014\\ Visa,\\ Mastercard\\ \\(including\\ 2\\-series\\),\\ Amex,\\ Discover,\\ JCB\\.\\ Luhn\\ checksum\\ rejects\\ \\~(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "90",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-configuration.md-6",
+      "path": "docs/configuration.md",
+      "pattern": "^\\-\\ \\*\\*IBAN\\*\\*\\ \\(`validator:\\ mod97`\\)\\ \u2014\\ International\\ Bank\\ Account\\ Numbers\\.\\ Validates\\ ISO\\ 13616\\ country\\ codes\\ and\\ ISO\\ 7064\\ mod\\-97\\ checksum\\.\\ Rejects\\ \\~(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "99",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-configuration.md-7",
+      "path": "docs/configuration.md",
+      "pattern": "^Response\\ text\\ classification\\ uses\\ the\\ body\\ bytes,\\ not\\ the\\ declared\\ `Content\\-Type`:\\ a\\ body\\ is\\ treated\\ as\\ text\\ when\\ at\\ least\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "80",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-configuration.md-8",
+      "path": "docs/configuration.md",
+      "pattern": "^\\|\\ `include_defaults`\\ \\|\\ `true`\\ \\|\\ Merge\\ with\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:Response patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-configuration.md-9",
+      "path": "docs/configuration.md",
+      "pattern": "^\\*\\*Rate\\ limiting:\\*\\*\\ every\\ mutating\\ action\\ \\(`reset`,\\ `airlock`,\\ `task`,\\ `trust`,\\ `terminate`,\\ baseline\\ `ratify`,\\ baseline\\ `forget`\\)\\ and\\ every\\ detail\\ lookup\\ \\(`inspect`,\\ `explain`\\)\\ is\\ rate\\-limited\\ to\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "10",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-configuration.md-10",
+      "path": "docs/configuration.md",
+      "pattern": "^Ships\\ with\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:Chain patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-configuration.md-11",
+      "path": "docs/configuration.md",
+      "pattern": "^All\\ RFC\\ 1918,\\ RFC\\ 4193,\\ link\\-local,\\ loopback,\\ CGN\\ \\(Tailscale/Carrier\\-Grade\\ NAT\\),\\ multicast,\\ and\\ cloud\\ metadata\\ ranges\\ are\\ blocked\\ by\\ default\\.\\ IPv6\\ zone\\ IDs\\ \\(e\\.g\\.\\ `::(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "1",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-configuration.md-12",
+      "path": "docs/configuration.md",
+      "pattern": "^Score\\ a\\ pipelock\\ configuration\\ for\\ security\\ posture\\.\\ Evaluates\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ categories",
+      "expected": "23",
+      "count": 1,
+      "reason": "Published configuration-score category count, pinned by TestScoreConfig_Defaults in internal/cli/audit/audit_score_test.go; changes require a matching public-doc and inventory update."
+    },
+    {
+      "id": "docs-configuration.md-13",
+      "path": "docs/configuration.md",
+      "pattern": "^\\|\\ `protected_paths`\\ \\|\\ \\[\\]string\\ \\|\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ patterns",
+      "expected": "7",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-contain-cli.md-1",
+      "path": "docs/contain-cli.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-contain-cli.md-2",
+      "path": "docs/contain-cli.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-autogen.md-1",
+      "path": "docs/guides/autogen.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-claude-code.md-1",
+      "path": "docs/guides/claude-code.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-cline.md-1",
+      "path": "docs/guides/cline.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-codex.md-1",
+      "path": "docs/guides/codex.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-conductor-operator-runbook.md-1",
+      "path": "docs/guides/conductor-operator-runbook.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.7.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-conductor-production-runbook.md-1",
+      "path": "docs/guides/conductor-production-runbook.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.7.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-conductor-production-runbook.md-2",
+      "path": "docs/guides/conductor-production-runbook.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.9\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.9.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-crewai.md-1",
+      "path": "docs/guides/crewai.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.4\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.4.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-crewai.md-2",
+      "path": "docs/guides/crewai.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-crewai.md-3",
+      "path": "docs/guides/crewai.md",
+      "pattern": "^\\|\\ Credential\\ exposure\\ \\|\\ \"Use\\ trusted\\ servers\"\\ \\|\\ DLP\\ scanner\\ catches\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ credential\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-guides-deployment-recipes.md-1",
+      "path": "docs/guides/deployment-recipes.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?25\\.0\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "25.0.5",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-federation.md-1",
+      "path": "docs/guides/federation.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-filesystem-sentinel.md-1",
+      "path": "docs/guides/filesystem-sentinel.md",
+      "pattern": "^When\\ `scan_content`\\ is\\ true\\ \\(the\\ default\\),\\ file\\ sentry\\ reads\\ each\\ modified\\ file\\ and\\ runs\\ pipelock's\\ DLP\\ scanner\\ on\\ the\\ content\\.\\ The\\ same\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ credential\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-guides-flight-recorder.md-1",
+      "path": "docs/guides/flight-recorder.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.7.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-flight-recorder.md-2",
+      "path": "docs/guides/flight-recorder.md",
+      "pattern": "^Stopping\\ a\\ recording\\ proxy\\ takes\\ time\\.\\ On\\ SIGTERM,\\ Pipelock\\ stops\\ accepting\\ traffic,\\ drains\\ in\\-flight\\ receipts,\\ then\\ closes\\ the\\ receipt\\ group:\\ it\\ finishes\\ verifying\\ segments\\ the\\ background\\ worker\\ hasn't\\ reached\\ and\\ rehashes\\ the\\ run's\\ earlier\\ evidence\\ before\\ signing\\ the\\ close\\.\\ That\\ work\\ grows\\ with\\ recorded\\ history\\ and\\ shrinks\\ with\\ available\\ CPU\\.\\ In\\ one\\ development\\ measurement\\ with\\ 8\\ chains\\ and\\ required\\ receipts,\\ a\\ run\\ of\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "300,000",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-guides-google-adk.md-1",
+      "path": "docs/guides/google-adk.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-grok.md-1",
+      "path": "docs/guides/grok.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-health.md-1",
+      "path": "docs/guides/health.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-hermes.md-1",
+      "path": "docs/guides/hermes.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-jetbrains.md-1",
+      "path": "docs/guides/jetbrains.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-kubernetes-image-upgrades.md-1",
+      "path": "docs/guides/kubernetes-image-upgrades.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.7.1",
+      "count": 16,
+      "reason": "Version-specific verification evidence: v3.7.1 signer and immutable legacy image/chart namespace, plus documented older-release verification limits. Do not rewrite it as new release evidence.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-kubernetes-image-upgrades.md-2",
+      "path": "docs/guides/kubernetes-image-upgrades.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.102\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.102.0",
+      "count": 1,
+      "reason": "Minimum GitHub CLI version required by the documented upstream attestation-verifier advisory, independent of Pipelock.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-kubernetes-image-upgrades.md-3",
+      "path": "docs/guides/kubernetes-image-upgrades.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.7.0",
+      "count": 5,
+      "reason": "Version-specific verification evidence: v3.7.1 signer and immutable legacy image/chart namespace, plus documented older-release verification limits. Do not rewrite it as new release evidence.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-kubernetes-image-upgrades.md-4",
+      "path": "docs/guides/kubernetes-image-upgrades.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.5\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.5.0",
+      "count": 1,
+      "reason": "Version-specific verification evidence: v3.7.1 signer and immutable legacy image/chart namespace, plus documented older-release verification limits. Do not rewrite it as new release evidence.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-kubernetes-image-upgrades.md-5",
+      "path": "docs/guides/kubernetes-image-upgrades.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 3,
+      "reason": "Version-specific verification evidence: v3.7.1 signer and immutable legacy image/chart namespace, plus documented older-release verification limits. Do not rewrite it as new release evidence.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-langgraph.md-1",
+      "path": "docs/guides/langgraph.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.102\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.102.0",
+      "count": 1,
+      "reason": "Minimum GitHub CLI version required by the documented upstream attestation-verifier advisory, independent of Pipelock.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-langgraph.md-2",
+      "path": "docs/guides/langgraph.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 9,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-learn-and-lock.md-1",
+      "path": "docs/guides/learn-and-lock.md",
+      "pattern": "^\\-\\ \\*\\*Wilson\\ lower\\ bound\\ at\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "95",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-guides-learn-and-lock.md-2",
+      "path": "docs/guides/learn-and-lock.md",
+      "pattern": "^A\\ per\\-host\\ cardinality\\ cap\\ \\(default\\ 1000\\)\\ bounds\\ memory\\.\\ Tail\\ coverage\\ is\\ explicit:\\ when\\ the\\ `_other`\\ bucket\\ exceeds\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "5",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-guides-learn-and-lock.md-3",
+      "path": "docs/guides/learn-and-lock.md",
+      "pattern": "^\\-\\ \\*\\*Interactive\\ \\(`\\-\\-interactive`\\):\\*\\*\\ refuses\\ the\\ candidate\\ if\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "100",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-guides-mcp-inspector-front.md-1",
+      "path": "docs/guides/mcp-inspector-front.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.14\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.14.1",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-mediation-envelope.md-1",
+      "path": "docs/guides/mediation-envelope.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-openai-agents.md-1",
+      "path": "docs/guides/openai-agents.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-openclaw.md-1",
+      "path": "docs/guides/openclaw.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2026\\.1\\.28)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2026.1.28",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-openclaw.md-2",
+      "path": "docs/guides/openclaw.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2026\\.1\\.29)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2026.1.29",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-openclaw.md-3",
+      "path": "docs/guides/openclaw.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.102\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.102.0",
+      "count": 1,
+      "reason": "Minimum GitHub CLI version required by the documented upstream attestation-verifier advisory, independent of Pipelock.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-openclaw.md-4",
+      "path": "docs/guides/openclaw.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 8,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-opencode.md-1",
+      "path": "docs/guides/opencode.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-pi.md-1",
+      "path": "docs/guides/pi.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.85\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.85.1",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-posture-capsule.md-1",
+      "path": "docs/guides/posture-capsule.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.0\\.0\\-dev\\.unknown)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.0.0-dev.unknown",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-receipt-verification.md-1",
+      "path": "docs/guides/receipt-verification.md",
+      "pattern": "(?P<value>v?0\\.4\\.1)",
+      "expected": "source:python_published",
+      "count": 2,
+      "reason": "Operator instructions name the independently versioned verifier package.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-receipt-verification.md-2",
+      "path": "docs/guides/receipt-verification.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-receipt-verification.md-3",
+      "path": "docs/guides/receipt-verification.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.6\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.6.5",
+      "count": 2,
+      "reason": "Published verifier compatibility baseline, retained while the next source version is pending publication; see sdk/verifiers/PUBLISHING.md and the historical bindings in scripts/release-verifier-install-gate.sh.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-receipt-verification.md-4",
+      "path": "docs/guides/receipt-verification.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-receipt-verification.md-5",
+      "path": "docs/guides/receipt-verification.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.5\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.5.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-release-downloads.md-1",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3\\-beta\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3-beta.1",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-release-downloads.md-2",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3\\-beta\\.1\\-linux\\-x64\\.tar\\.gz)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3-beta.1-linux-x64.tar.gz",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-release-downloads.md-3",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.0.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-release-downloads.md-4",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-release-downloads.md-5",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3\\-linux\\-x64\\.tar\\.gz)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3-linux-x64.tar.gz",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-sse-streaming.md-1",
+      "path": "docs/guides/sse-streaming.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.3\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.3.0",
+      "count": 4,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-suppression.md-1",
+      "path": "docs/guides/suppression.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 5,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-t3-code.md-1",
+      "path": "docs/guides/t3-code.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.7.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-t3-code.md-2",
+      "path": "docs/guides/t3-code.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-t3-code.md-3",
+      "path": "docs/guides/t3-code.md",
+      "pattern": "^\\|\\ Upstream\\ HTTP\\ 400\\ after\\ initialization\\ \\|\\ Check\\ that\\ initialization\\ succeeded\\.\\ Pipelock\\ switches\\ to\\ the\\ negotiated\\ `MCP\\-Protocol\\-Version`\\ only\\ after\\ a\\ successful\\ initialize\\ result;\\ before\\ that,\\ and\\ on\\ builds\\ without\\ \\#(?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "1846,",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-guides-upgrading-to-3.7.md-1",
+      "path": "docs/guides/upgrading-to-3.7.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.7\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.7.0",
+      "count": 5,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-upgrading-to-3.7.md-2",
+      "path": "docs/guides/upgrading-to-3.7.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-upgrading-to-3.7.md-3",
+      "path": "docs/guides/upgrading-to-3.7.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.6\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.6.5",
+      "count": 1,
+      "reason": "Published verifier compatibility baseline, retained while the next source version is pending publication; see sdk/verifiers/PUBLISHING.md and the historical bindings in scripts/release-verifier-install-gate.sh.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-upgrading-to-3.7.md-4",
+      "path": "docs/guides/upgrading-to-3.7.md",
+      "pattern": "(?P<value>v?0\\.4\\.1)",
+      "expected": "source:python_published",
+      "count": 1,
+      "reason": "Operator instructions name the independently versioned verifier package.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-zed.md-1",
+      "path": "docs/guides/zed.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.6)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.6",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-guides-zed.md-2",
+      "path": "docs/guides/zed.md",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-mediation-envelope.md-1",
+      "path": "docs/mediation-envelope.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 7,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-metrics.md-1",
+      "path": "docs/metrics.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-observability-agent-threat-detection.md-1",
+      "path": "docs/observability/agent-threat-detection.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.5\\.0\\-dev)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.5.0-dev",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-owasp-agentic-top15-mapping.md-1",
+      "path": "docs/owasp-agentic-top15-mapping.md",
+      "pattern": "^\\-\\ \\*\\*DLP\\ scanning:\\*\\*\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-owasp-llm-top10-mapping.md-1",
+      "path": "docs/owasp-llm-top10-mapping.md",
+      "pattern": "^\\-\\ \\*\\*DLP\\ pattern\\ matching:\\*\\*\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ built\\-in\\ patterns",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Public default count; derived by the existing TestCanonicalStats contract."
+    },
+    {
+      "id": "docs-owasp-mapping.md-1",
+      "path": "docs/owasp-mapping.md",
+      "pattern": "^\\ \\ \\#\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ patterns",
+      "expected": "29",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "docs-policy-spec-v0.1.md-1",
+      "path": "docs/policy-spec-v0.1.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.1.0",
+      "count": 3,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-rules.md-1",
+      "path": "docs/rules.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2026\\.03\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2026.03.1",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-rules.md-2",
+      "path": "docs/rules.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.5\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.5.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-rules.md-3",
+      "path": "docs/rules.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2026\\.04\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2026.04.1",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-rules.md-4",
+      "path": "docs/rules.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-security-clock-skew-inventory.md-1",
+      "path": "docs/security/clock-skew-inventory.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.1.0",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-security-clock-skew-inventory.md-2",
+      "path": "docs/security/clock-skew-inventory.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.0.0",
+      "count": 4,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-specs-in-toto-agent-action-receipt-v0.1.md-1",
+      "path": "docs/specs/in-toto-agent-action-receipt-v0.1.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-specs-pipelock-conductor-audit-sink.md-1",
+      "path": "docs/specs/pipelock-conductor-audit-sink.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.1\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.1.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "docs-specs-pipelock-conductor-audit-sink.md-2",
+      "path": "docs/specs/pipelock-conductor-audit-sink.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-agent-threat-detection-README.md-1",
+      "path": "examples/agent-threat-detection/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-agent-threat-detection-otlp-log-record.json-1",
+      "path": "examples/agent-threat-detection/otlp-log-record.json",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.2\\.3)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.2.3",
+      "count": 2,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-ci-workflow-advanced.yaml-1",
+      "path": "examples/ci-workflow-advanced.yaml",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "examples-ci-workflow.yaml-1",
+      "path": "examples/ci-workflow.yaml",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "examples-demo-readme.sh-1",
+      "path": "examples/demo-readme.sh",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "examples-demo.sh-1",
+      "path": "examples/demo.sh",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 2,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "examples-learn-and-lock-verify.sh-1",
+      "path": "examples/learn-and-lock/verify.sh",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.0\\.1)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.0.1",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-playground-replay-secret-exfil-url-blocked-manifest.json-1",
+      "path": "examples/playground-replay/secret-exfil-url-blocked/manifest.json",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.7\\.0\\-dev)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "2.7.0-dev",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-prometheus-pipelock-alerts.yaml-1",
+      "path": "examples/prometheus/pipelock-alerts.yaml",
+      "pattern": "^\\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ \\ Pipelock\\ is\\ blocking\\ more\\ than\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ requests",
+      "expected": "10",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "examples-quickstart-README.md-1",
+      "path": "examples/quickstart/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?25\\.0\\.5)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "25.0.5",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "examples-quickstart-README.md-2",
+      "path": "examples/quickstart/README.md",
+      "pattern": "^Run\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ tests",
+      "expected": "5",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "examples-quickstart-docker-compose.yml-1",
+      "path": "examples/quickstart/docker-compose.yml",
+      "pattern": "^\\#\\ Verify\\ isolation\\ and\\ scanning\\ \\(runs\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ tests",
+      "expected": "5",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "examples-quickstart-verify.sh-1",
+      "path": "examples/quickstart/verify.sh",
+      "pattern": "^\\#\\ Pipelock\\ quickstart\\ verification:\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)\\ tests",
+      "expected": "5",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "examples-verifiable-shadow-rollout-shadow.md-1",
+      "path": "examples/verifiable-shadow-rollout/shadow.md",
+      "pattern": "^\\|\\ `rule\\-api`\\ \\|\\ 1\\ \\|\\ 1\\ \\|\\ 0\\ \\|\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
+      "expected": "100.00",
+      "count": 1,
+      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+    },
+    {
+      "id": "charts-pipelock-Chart.yaml-1",
+      "path": "charts/pipelock/Chart.yaml",
+      "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 3,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "charts-pipelock-README.md-1",
+      "path": "charts/pipelock/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.2.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-PUBLISHING.md-1",
+      "path": "sdk/verifiers/PUBLISHING.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "0.2.0",
+      "count": 3,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-python-README.md-1",
+      "path": "sdk/verifiers/python/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?15\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "15.0.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-python-README.md-2",
+      "path": "sdk/verifiers/python/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-rust-README.md-1",
+      "path": "sdk/verifiers/rust/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": "sdk-verifiers-ts-README.md-1",
+      "path": "sdk/verifiers/ts/README.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?3\\.6\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "3.6.0",
+      "count": 1,
+      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
+      "format": "version"
+    },
+    {
+      "id": ".github-workflows-reusable-scan.yml-2",
+      "path": ".github/workflows/reusable-scan.yml",
+      "pattern": "(?:pipelock(?:/[^@\\s]+)?@(?:[0-9a-fA-F]{40}\\s+#\\s*)?|pipelock-version:\\s*['\"]?|Pipelock version \\(e\\.g\\., \")(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
+      "expected": "source:product",
+      "count": 4,
+      "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
+      "format": "version"
+    },
+    {
+      "id": "docs-configuration.md-14",
+      "path": "docs/configuration.md",
+      "pattern": "\\| `patterns` \\| (?P<value>\\d+) built-in \\| Injection",
+      "expected": "stats:Response patterns",
+      "count": 1,
+      "reason": "Published default-count table or diagnostic; follows TestCanonicalStats."
+    },
+    {
+      "id": "docs-configuration.md-15",
+      "path": "docs/configuration.md",
+      "pattern": "\\| `patterns` \\| (?P<value>\\d+) built-in \\| DLP",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Published default-count table or diagnostic; follows TestCanonicalStats."
+    },
+    {
+      "id": "docs-false-positive-tuning.md-1",
+      "path": "docs/false-positive-tuning.md",
+      "pattern": "with the (?P<value>\\d+) configurable built-in defaults",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Published default-count table or diagnostic; follows TestCanonicalStats."
+    },
+    {
+      "id": "docs-guides-health.md-2",
+      "path": "docs/guides/health.md",
+      "pattern": "\"dlp_patterns\": (?P<value>\\d+)",
+      "expected": "stats:DLP patterns",
+      "count": 1,
+      "reason": "Published default-count table or diagnostic; follows TestCanonicalStats."
+    },
+    {
+      "id": ".goreleaser.yaml-dynamic-version",
+      "path": ".goreleaser.yaml",
+      "pattern": "cliutil.Version=(?P<value>\\{\\{\\.Version\\}\\})",
+      "expected": "{{.Version}}",
+      "count": 2,
+      "reason": "Both Go release binaries receive the tag-derived version from GoReleaser; the Go module linker path intentionally retains its existing module identity."
+    },
+    {
+      "id": "release-verifier-installers.json-dynamic-version",
+      "path": "release/verifier-installers.json",
+      "pattern": "\"Go\"[\\s\\S]*?\"version\": \"(?P<value>[^\"\\n]+)\"",
+      "expected": "candidate tag",
+      "count": 1,
+      "reason": "The Go verifier uses the product candidate tag; independent registry verifiers retain their own versions."
+    },
+    {
+      "id": "README.md-audit-score-budget",
+      "path": "README.md",
+      "pattern": "(?P<value>\\d+)-point budget",
+      "expected": "170",
+      "count": 1,
+      "reason": "Published configuration-score budget. The scoring contract is internal/cli/audit/audit_score.go and audit_score_v2.go; changes to that contract require a matching documentation and inventory update."
+    },
+    {
+      "id": "docs-configuration.md-audit-score-budget",
+      "path": "docs/configuration.md",
+      "pattern": "(?P<value>\\d+)-point budget",
+      "expected": "170",
+      "count": 1,
+      "reason": "Published configuration-score budget. The scoring contract is internal/cli/audit/audit_score.go and audit_score_v2.go; changes to that contract require a matching documentation and inventory update."
+    }
+  ],
+  "external": [
+    {
+      "id": "published-bench-score",
+      "owner": "pipelab-org/pipelab.org",
+      "url": "https://pipelab.org/gauntlet/results/",
+      "reason": "README links to the live result instead of copying a percentage. The site owns promoted public scores and corpus counts; benchmark/ stores a dated product-specific acceptance baseline, not a current score."
+    },
+    {
+      "id": "homepage-figures",
+      "owner": "pipelab-org/pipelab.org",
+      "url": "https://pipelab.org/",
+      "reason": "Homepage release versions, test counts and product figures live in the site repository and must be checked there."
+    }
+  ],
+  "not_copied": [
+    {
+      "id": "test-count",
+      "owner": "pipelab-org/pipelock",
+      "reason": "No frozen public test-count claim is present. CI owns executed counts; new numeric test-count phrases in the scan scope require registration."
+    }
+  ]
+}

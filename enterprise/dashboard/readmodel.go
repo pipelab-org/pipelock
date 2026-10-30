@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -271,22 +272,64 @@ func (m *ReadModel) Agent(id string, filter FilterSpec) (evidenceview.AgentGroup
 	return evidenceview.AgentGroup{}, false, nil
 }
 
+// ReceiptActionDetail is every record of one action: a headline chosen by a
+// fixed order, and all records in chain order so a finding and the delivery
+// outcome are both visible whichever one the headline is.
+type ReceiptActionDetail struct {
+	Headline evidenceview.DecisionExplanation
+	Records  []evidenceview.DecisionExplanation
+	// Incomplete reports that the bounded evidence view ended while a later
+	// record of this action could still exist, so the headline verdict may
+	// not be final. A block headline is never incomplete: nothing later can
+	// make a denied action less denied.
+	Incomplete bool
+}
+
 // ReceiptDetail loads one receipt by session ID and globally unique action ID,
-// returning a DecisionExplanation. The CALLER redacts per RBAC.
+// returning the headline DecisionExplanation. The CALLER redacts per RBAC.
 func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.DecisionExplanation, bool, error) {
+	detail, found, err := m.ReceiptActionDetail(sessionID, actionID)
+	if err == nil && detail.Incomplete {
+		// A lone explanation has nowhere to say it may not be final.
+		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s outcome may lie beyond the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
+	}
+	return detail.Headline, found, err
+}
+
+// ReceiptActionDetail loads every record of one action. The CALLER redacts
+// per RBAC, record by record.
+func (m *ReadModel) ReceiptActionDetail(sessionID, actionID string) (ReceiptActionDetail, bool, error) {
 	receipts, truncated, err := receipt.ExtractReceiptsFromSessionDirWithLimits(m.receiptDir, sessionID, m.receiptReadLimit, dashboardEvidenceDirectoryEntryLimit)
 	if err != nil {
-		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
+		return ReceiptActionDetail{}, false, fmt.Errorf("read session %s receipts: %w", sessionID, err)
 	}
-	for _, r := range receipts {
-		if r.ActionRecord.ActionID == actionID {
-			return evidenceview.ExplainReceipt(r), true, nil
+	var matched []*receipt.Receipt
+	for i := range receipts {
+		r := &receipts[i]
+		if !receiptBelongsToAction(r, actionID) {
+			continue
 		}
+		matched = append(matched, r)
 	}
-	if truncated {
-		return evidenceview.DecisionExplanation{}, false, fmt.Errorf("%w: receipt %s was not found in the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
+	if len(matched) == 0 {
+		if truncated {
+			return ReceiptActionDetail{}, false, fmt.Errorf("%w: receipt %s was not found in the bounded evidence view", recorder.ErrEvidenceReadLimitExceeded, actionID)
+		}
+		return ReceiptActionDetail{}, false, nil
 	}
-	return evidenceview.DecisionExplanation{}, false, nil
+	headline := headlineReceipt(matched)
+	sort.SliceStable(matched, func(i, j int) bool { return receiptChainLess(matched[i], matched[j]) })
+	detail := ReceiptActionDetail{Headline: evidenceview.ExplainReceipt(*headline)}
+	// No record closes an action's set: a corrective resolution, a WebSocket
+	// session-close block or a response finding linked through ParentActionID
+	// can follow any record, phased or not. A truncated view is therefore
+	// incomplete unless it already shows a block, which nothing later can make
+	// less of a denial.
+	detail.Incomplete = truncated && headline.ActionRecord.Verdict != config.ActionBlock
+	for _, r := range matched {
+		detail.Records = append(detail.Records, evidenceview.ExplainReceipt(*r))
+	}
+	return detail, true, nil
 }
 
 // ResolveFilter resolves a FilterSpec from query params, falling back to a
@@ -389,4 +432,102 @@ func applyFilter(sessions []SessionSummary, f FilterSpec) []SessionSummary {
 		filtered = append(filtered, s)
 	}
 	return filtered
+}
+
+// terminalReceiptPhase reports whether r records the final phase of its
+// action: an outcome after an intent, or a resolution after a defer.
+func terminalReceiptPhase(r *receipt.Receipt) bool {
+	switch r.ActionRecord.DecisionPhase {
+	case receipt.DecisionPhaseOutcome, receipt.DecisionPhaseResolution:
+		return true
+	default:
+		return false
+	}
+}
+
+// receiptBelongsToAction includes records linked directly to the action.
+// Resolutions and response findings use their own action IDs and name the
+// affected action through ParentActionID, including phase-less findings.
+func receiptBelongsToAction(r *receipt.Receipt, actionID string) bool {
+	ar := r.ActionRecord
+	return ar.ActionID == actionID || (ar.ParentActionID != "" && ar.ParentActionID == actionID)
+}
+
+// headlineReceipt picks the record that heads an action's detail page. It
+// is the maximum of one fixed key, so the choice never depends on file order.
+// A defer settled by a resolution in the set drops out first. Among the rest
+// the most severe verdict wins, then a terminal record, then chain order.
+// Outcome emitters on some transports record allow whatever the admission
+// decided, so severity comes before phase; the full record list on the page
+// keeps every other record visible.
+func headlineReceipt(records []*receipt.Receipt) *receipt.Receipt {
+	settled := make(map[string]bool)
+	for _, r := range records {
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseResolution {
+			settled[r.ActionRecord.ParentActionID] = true
+			settled[r.ActionRecord.ActionID] = true
+		}
+	}
+	var best *receipt.Receipt
+	for _, r := range records {
+		if r.ActionRecord.DecisionPhase == receipt.DecisionPhaseDefer && settled[r.ActionRecord.ActionID] {
+			continue
+		}
+		if best == nil || headlineLess(best, r) {
+			best = r
+		}
+	}
+	if best == nil {
+		// Only settled defers remain, which cannot happen while their
+		// resolutions are in the same set; fall back to chain order.
+		best = records[len(records)-1]
+	}
+	return best
+}
+
+// headlineLess orders candidate headline records; it is a strict total order
+// over distinct records.
+func headlineLess(a, b *receipt.Receipt) bool {
+	if ra, rb := receiptVerdictRank(a.ActionRecord.Verdict), receiptVerdictRank(b.ActionRecord.Verdict); ra != rb {
+		return ra < rb
+	}
+	if ta, tb := terminalReceiptPhase(a), terminalReceiptPhase(b); ta != tb {
+		return !ta
+	}
+	return receiptChainLess(a, b)
+}
+
+// receiptChainLess orders records by chain position, then time, then action ID.
+// Signed receipt identity breaks ties between conflicting records at one position.
+func receiptChainLess(a, b *receipt.Receipt) bool {
+	ar, br := a.ActionRecord, b.ActionRecord
+	if ar.ChainSeq != br.ChainSeq {
+		return ar.ChainSeq < br.ChainSeq
+	}
+	if !ar.Timestamp.Equal(br.Timestamp) {
+		return ar.Timestamp.Before(br.Timestamp)
+	}
+	if ar.ActionID != br.ActionID {
+		return ar.ActionID < br.ActionID
+	}
+	if ar.DecisionPhase != br.DecisionPhase {
+		return ar.DecisionPhase < br.DecisionPhase
+	}
+	if a.SignerKey != b.SignerKey {
+		return a.SignerKey < b.SignerKey
+	}
+	return a.Signature < b.Signature
+}
+
+// receiptVerdictRank orders verdicts by how much they say about the action:
+// block, then any other non-allow verdict, then allow.
+func receiptVerdictRank(verdict string) int {
+	switch verdict {
+	case config.ActionBlock:
+		return 2
+	case config.ActionAllow, "":
+		return 0
+	default:
+		return 1
+	}
 }

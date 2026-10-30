@@ -38,7 +38,8 @@ check_no_match() {
 
 check_pipelock_workflow_version() {
 	local workflow="$1"
-	if ! awk '
+	local expected_version="$2"
+	if ! awk -v expected_version="$expected_version" '
 		function finish_step() {
 			if (in_pipelock_step && !has_expected_version) {
 				exit 1
@@ -50,7 +51,7 @@ check_pipelock_workflow_version() {
 			has_expected_version = 0
 			in_with = 0
 		}
-		/^[[:space:]]{8}uses:[[:space:]]+luckyPipewrench\/pipelock@/ {
+		/^[[:space:]]{8}uses:[[:space:]]+(luckyPipewrench|pipelab-org)\/pipelock@/ {
 			in_pipelock_step = 1
 			found_pipelock_step = 1
 		}
@@ -61,8 +62,14 @@ check_pipelock_workflow_version() {
 		in_pipelock_step && in_with && /^[[:space:]]{8}[[:alnum:]_-]+:[[:space:]]*/ {
 			in_with = 0
 		}
-		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.7\.0'\''[[:space:]]*$/ {
-			has_expected_version = 1
+		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*/ {
+			value = $0
+			sub(/^[[:space:]]*version:[[:space:]]*/, "", value)
+			sub(/[[:space:]]*#.*/, "", value)
+			sub(/[[:space:]]*$/, "", value)
+			if (value == expected_version || value == "\"" expected_version "\"" || value == sprintf("%c%s%c", 39, expected_version, 39)) {
+				has_expected_version = 1
+			}
 		}
 		END {
 			finish_step()
@@ -71,7 +78,7 @@ check_pipelock_workflow_version() {
 			}
 		}
 	' "$workflow"; then
-		echo "docs-check: failed: $workflow does not pin version 3.7.0 in the Pipelock action with block" >&2
+		echo "docs-check: failed: $workflow does not pin version $expected_version in the Pipelock action with block" >&2
 		exit 1
 	fi
 }
@@ -211,10 +218,6 @@ check_no_match 'ca05ed06f360f5aac5518ab6ea2b11d729b70bee' 'v3.5 GitHub Action pi
 check_no_match '73e5d240f2ae02392c7de9c8858e9dee164396382c13e0ea95b4a497b2567965|0d54825d0ddf820edd9627cc08253ed838aebd43f7a62938505f6eae7955d714|68553cea16b32bdaa4251b65531c2e2ad9502ad9b4a9e4fa8e616ed69deaf5e0' 'v3.5 image index digest'
 check_no_match '"version": "v[0-9]+\.[0-9]+\.[0-9]+"' 'v-prefixed health-response version' docs/guides/health.md
 
-for workflow in examples/ci-workflow.yaml examples/ci-workflow-advanced.yaml; do
-	check_pipelock_workflow_version "$workflow"
-done
-
 for conductor_doc in \
 	docs/guides/conductor.md \
 	docs/guides/conductor-operator-runbook.md \
@@ -227,8 +230,12 @@ done
 echo "docs-check: checking example guide links"
 python3 "$repo_root/examples/check_guide_links.py"
 
-echo "docs-check: printing canonical local stats"
-make stats
+echo "docs-check: enforcing the release and public-number surface registry"
+current_version="$(python3 "$repo_root/scripts/release_doc_versions.py" "$repo_root" --print-product-version)"
+echo "docs-check: release registry OK (v$current_version)"
+for workflow in examples/ci-workflow.yaml examples/ci-workflow-advanced.yaml; do
+	check_pipelock_workflow_version "$workflow" "$current_version"
+done
 
 echo "docs-check: validating current claims and local Markdown links"
 go test -count=1 -run 'TestDocs(DeclareLiveStatsAndDefaults|LocalLinksResolve)$' ./internal/config/

@@ -588,7 +588,7 @@ The commit below pins the action source; its `action.yml` is identical to the on
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+- uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
   with:
     version: '3.7.0'
     scan-diff: 'true'
@@ -708,7 +708,7 @@ Full docs directory: [docs/](docs/)
 | [TLS Interception](docs/guides/tls-interception.md) | CONNECT-tunnel MITM: CA setup, body/header/response scanning, passthrough domains |
 | [Canary Tokens](docs/guides/canary-tokens.md) | Synthetic secrets that trip an alert the moment an agent tries to exfiltrate one |
 | [Detection Integration](docs/guides/detection-integration.md) | Feed Pipelock decisions and evidence into external detection / SIEM pipelines |
-| [Agent Review](docs/guides/agent-review.md) | Maintainer-triggered pull request review (`/review` or `/review deep` comment), run from `pipelab-org/agent-review` |
+| [Agent Review](docs/guides/agent-review.md) | Maintainer-triggered pull request review (`/review`, `/review deep`, `/review codex`, or `/review codex deep` comment), run from `pipelab-org/agent-review` |
 | [MCP Inspector Front](docs/guides/mcp-inspector-front.md) | Front MCP dev tools (Inspector, test servers) through Pipelock scanning |
 | [`pipelock demo`](docs/cli/demo.md) | Self-contained attack scenarios with signed, offline-verifiable receipts, no config or network needed |
 | [Badges](docs/badges.md) | Drop-in Markdown for the `scanned by pipelock` badge on downstream projects |

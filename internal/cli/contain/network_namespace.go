@@ -560,8 +560,8 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 }
 
 // processSystemdUnit returns the last component of a process's unified
-// cgroup path, e.g. "pipelock-agent-display.service" or "session-3.scope",
-// or "" when it cannot be read.
+// cgroup path after systemd cgroup-name unescaping, e.g.
+// "pipelock-agent-display.service" or "session-3.scope", or "" when unreadable.
 func processSystemdUnit(readFile func(string) ([]byte, error), cgroupPath string) string {
 	data, err := readFile(cgroupPath)
 	if err != nil {
@@ -569,7 +569,11 @@ func processSystemdUnit(readFile func(string) ([]byte, error), cgroupPath string
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if path, ok := strings.CutPrefix(strings.TrimSpace(line), "0::"); ok {
-			return filepath.Base(path)
+			// systemd v257 src/basic/cgroup-util.c:1555-1592 prefixes
+			// reserved cgroup names with one underscore (cg_escape), and
+			// cg_unescape removes exactly that prefix. Unit-name \xNN
+			// escapes remain literal; they are part of the unit identity.
+			return strings.TrimPrefix(filepath.Base(path), "_")
 		}
 	}
 	return ""
@@ -935,6 +939,10 @@ func stepInstallNetworkNamespace() step {
 }
 
 func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.ContainmentLoopbackService) step {
+	return stepInstallNetworkNamespacePolicy(serviceOverride, nil)
+}
+
+func stepInstallNetworkNamespacePolicy(serviceOverride *[]config.ContainmentLoopbackService, listenerOverride *string) step {
 	var previousSockets map[string]unitRuntimeState
 	var desiredUnits map[string]bool
 	var previousNamespace unitRuntimeState
@@ -953,7 +961,10 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 	return step{
 		name: "install-agent-network-namespace",
 		desc: "install the private agent network namespace and proxy socket forwarder",
-		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+		apply: func(ctx context.Context, env *installEnv) (changed bool, result error) {
+			observedEnv := *env
+			readObserved, observedFiles := snapshotReconcileReads(env.readFile)
+			observedEnv.readFile = readObserved
 			var services []config.ContainmentLoopbackService
 			if serviceOverride != nil {
 				services = append([]config.ContainmentLoopbackService(nil), (*serviceOverride)...)
@@ -962,13 +973,31 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					err    error
 					lapsed []config.LapsedContainmentGrant
 				)
-				services, lapsed, err = declaredContainmentLoopbackServicesWithLapsed(env, env.proxyPort)
+				services, lapsed, err = declaredContainmentLoopbackServicesWithLapsed(&observedEnv, env.proxyPort)
 				if err != nil {
-					return false, err
+					return false, errors.Join(err, revokeKnownLoopbackDoorways(ctx, env))
 				}
 				warnLapsedContainmentGrants(func(message string) {
 					_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
 				}, managedPipelockConfigPath(env), lapsed)
+			}
+			var agentListener string
+			if listenerOverride != nil {
+				agentListener = *listenerOverride
+			} else {
+				listenerData, _, readErr := observeInstallPolicy(&observedEnv)
+				if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+					return false, errors.Join(fmt.Errorf("read managed listener config: %w", readErr), revokeKnownLoopbackDoorways(ctx, env))
+				}
+				var listenerErr error
+				agentListener, listenerErr = agentListenerFromConfigBytes(listenerData)
+				if listenerErr != nil {
+					return false, errors.Join(fmt.Errorf("parse managed listener config: %w", listenerErr), revokeKnownLoopbackDoorways(ctx, env))
+				}
+			}
+			relayTarget := agentListener
+			if relayTarget == "" {
+				relayTarget = systemdListenAddress("127.0.0.1", env.proxyPort)
 			}
 			warnUnavailableHostLoopbackServices(ctx, services, env.dialCtx, func(message string) {
 				_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
@@ -977,10 +1006,21 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			for _, service := range services {
 				forwarderAddresses[loopbackForwarderUnitBase(service.Host, service.Port)+"-netns.service"] = systemdListenAddress(service.Host, service.Port)
 			}
-			oldInventory, err := readLoopbackForwarderInventory(env)
+			oldInventory, err := readLoopbackForwarderInventory(&observedEnv)
 			if err != nil {
-				return false, err
+				return false, errors.Join(err, revokeKnownLoopbackDoorways(ctx, env))
 			}
+			desiredBeforeWrite := map[string]bool{}
+			for _, service := range services {
+				desiredBeforeWrite[loopbackForwarderUnitBase(service.Host, service.Port)] = true
+			}
+			revokedBeforeWrite := staleLoopbackUnits(&observedEnv, filepath.Dir(env.proxyForwarderSocketPath), oldInventory, desiredBeforeWrite)
+			defer func() {
+				if result != nil {
+					result = errors.Join(result, closeLoopbackDoorways(ctx, env, revokedBeforeWrite))
+				}
+			}()
+
 			desiredInventory := desiredLoopbackForwarders(services)
 			inventoryBytes, err := json.MarshalIndent(desiredInventory, "", "  ")
 			if err != nil {
@@ -991,15 +1031,10 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				return false, fmt.Errorf("create loopback forwarder inventory directory: %w", err)
 			}
 
-			type managedFile struct {
-				path string
-				body string
-				mode os.FileMode
-			}
-			paths := []managedFile{
+			paths := []reconcileManagedFile{
 				{env.networkNamespaceUnitPath, renderContainedNetworkNamespaceUnit(), modeUnitFile},
 				{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName), modeUnitFile},
-				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(managedPipelockConfigPath(env), env.proxyPort)), modeUnitFile},
+				{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, relayTarget), modeUnitFile},
 				{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.proxyPort), modeUnitFile},
 				{env.loopbackForwarderInvPath, string(inventoryBytes), modeConfigSecret},
 			}
@@ -1009,9 +1044,9 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				unit := loopbackForwarderUnitBase(service.Host, service.Port)
 				desiredUnits[unit] = true
 				paths = append(paths,
-					managedFile{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service), modeUnitFile},
-					managedFile{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service), modeUnitFile},
-					managedFile{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service), modeUnitFile},
+					reconcileManagedFile{filepath.Join(unitDir, unit+".socket"), renderDeclaredLoopbackSocketUnit(env.agentUserName, service), modeUnitFile},
+					reconcileManagedFile{filepath.Join(unitDir, unit+".service"), renderDeclaredLoopbackForwarderUnit(env.pipelockTarget, env.proxyUserName, service), modeUnitFile},
+					reconcileManagedFile{filepath.Join(unitDir, unit+"-netns.service"), renderDeclaredLoopbackNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, service), modeUnitFile},
 				)
 			}
 			for _, item := range paths {
@@ -1019,10 +1054,14 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					return false, errors.New("contained network namespace unit path is not configured")
 				}
 			}
+			for _, item := range paths {
+				_, _ = readObserved(item.path)
+			}
+			filePlan := planNFTReconciliation(nftReconcilePolicy{files: paths}, nftReconcileObservation{files: observedFiles, doorways: revokedBeforeWrite})
 			// Establish ownership before replacing files. A familiar service
 			// name alone never authorizes stopping an operator's relay.
 			ownedRelays = make(map[string]bool)
-			if oldInventory.ProxyRelay || isLegacyManagedProxyRelay(env) {
+			if oldInventory.ProxyRelay || isLegacyManagedProxyRelay(&observedEnv) {
 				ownedRelays[filepath.Base(env.proxyForwarderServicePath)] = true
 			}
 			for _, record := range oldInventory.Services {
@@ -1032,7 +1071,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				if !strings.HasSuffix(item.path, ".service") {
 					continue
 				}
-				if body, readErr := env.readFile(item.path); readErr == nil && string(body) == item.body {
+				if observed := observedFiles[item.path]; observed.err == nil && string(observed.data) == item.body {
 					ownedRelays[filepath.Base(item.path)] = true
 				}
 			}
@@ -1076,7 +1115,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 			}
 			touched = nil
 			for _, item := range paths {
-				if existing, err := env.readFile(item.path); err == nil && string(existing) == item.body {
+				if !filePlan.writePaths[item.path] {
 					if err := env.chmod(item.path, item.mode); err != nil {
 						// Earlier items may already be written; report them.
 						return len(touched) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
@@ -1113,7 +1152,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				touched = append(touched, item.path)
 			}
 			staleRetired := false
-			for _, unit := range staleLoopbackUnits(env, unitDir, oldInventory, desiredUnits) {
+			for _, unit := range filePlan.closeDoorways {
 				staleRetired = true
 				// Stop the in-namespace listener before its host socket: it
 				// Requires= the socket, so leaving it enabled after the socket is
@@ -1281,7 +1320,7 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 					return true, fmt.Errorf("stat legacy owned-loopback anchor %s: %w", path, statErr)
 				}
 			}
-			changed := len(touched) > 0 || len(retired) > 0 || !previousNamespace.active
+			changed = len(touched) > 0 || len(retired) > 0 || !previousNamespace.active
 			for socket, state := range previousSockets {
 				if socket == proxySocket || desiredUnits[strings.TrimSuffix(socket, ".socket")] {
 					changed = changed || !state.enabled || !state.active
@@ -1291,6 +1330,12 @@ func stepInstallNetworkNamespaceWithServices(serviceOverride *[]config.Containme
 				if unit == containedNamespaceForwarderUnit || desiredUnits[strings.TrimSuffix(unit, "-netns.service")] {
 					changed = changed || !state.enabled || !state.active
 				}
+			}
+			if err := observeClosedLoopbackDoorways(ctx, env, filePlan.closeDoorways); err != nil {
+				return changed, err
+			}
+			if err := observeManagedFilePlan(env.readFile, paths); err != nil {
+				return changed, err
 			}
 			return changed, nil
 		},
@@ -1476,8 +1521,11 @@ func staleLoopbackUnits(env *installEnv, unitDir string, inventory loopbackForwa
 			}
 		}
 	}
-	sort.Strings(out)
-	return out
+	var desiredNames []string
+	for unit := range desired {
+		desiredNames = append(desiredNames, unit)
+	}
+	return planNFTReconciliation(nftReconcilePolicy{doorways: desiredNames}, nftReconcileObservation{doorways: out}).closeDoorways
 }
 
 // isManagedLoopbackUnitSet verifies directory-discovered units before cleanup.

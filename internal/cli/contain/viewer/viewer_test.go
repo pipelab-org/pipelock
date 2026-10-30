@@ -5,15 +5,89 @@ package viewer
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type leaseLogWriter struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+	v    *Viewer
+}
+
+func (w *leaseLogWriter) Write(p []byte) (int, error) {
+	// Reentrant handlers must not deadlock the viewer's state mutex.
+	if w.v.controls(nil) {
+		return 0, errors.New("nil connection has control")
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.data.Write(p)
+}
+
+func captureLeaseLogs(v *Viewer) *leaseLogWriter {
+	w := &leaseLogWriter{v: v}
+	v.cfg.Logger = slog.New(slog.NewJSONHandler(w, nil))
+	return w
+}
+
+func (w *leaseLogWriter) records(t *testing.T) []map[string]any {
+	t.Helper()
+	w.mu.Lock()
+	raw := append([]byte(nil), w.data.Bytes()...)
+	w.mu.Unlock()
+	var records []map[string]any
+	for _, line := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatal(err)
+		}
+		// Only fixed messages and scalar service metadata may reach this sink.
+		fields := 8
+		if record["msg"] == "viewer connection refused" {
+			fields = 6
+		} else if record["msg"] != "viewer control lease" {
+			t.Fatalf("unexpected diagnostic message: %v", record)
+		}
+		if len(record) != fields {
+			t.Fatalf("unexpected diagnostic fields: %v", record)
+		}
+		records = append(records, record)
+	}
+	return records
+}
+
+type leaseLogExpectation struct {
+	event            string
+	id, age, viewers float64
+}
+
+func checkLeaseLogs(t *testing.T, logs *leaseLogWriter, want []leaseLogExpectation) {
+	t.Helper()
+	records := logs.records(t)
+	if len(records) != len(want) {
+		t.Fatalf("lease records = %v, want %v", records, want)
+	}
+	for i, expected := range want {
+		r := records[i]
+		if r["event"] != expected.event || r["lease_id"] != expected.id || r["event_seq"] != float64(i+1) || r["age_ms"] != expected.age || r["viewers"] != expected.viewers {
+			t.Errorf("lease record %d = %v, want %+v", i, r, expected)
+		}
+	}
+}
 
 func startViewer(t *testing.T, v *Viewer, mode string) (net.Conn, net.Conn, <-chan error) {
 	t.Helper()
@@ -81,6 +155,9 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := testViewer(t)
+			now := time.Now()
+			v.cfg.Now = func() time.Time { return now }
+			logs := captureLeaseLogs(v)
 			v.cfg.Dial = tc.dial
 			if tc.peer != nil {
 				v.cfg.PeerUID = tc.peer
@@ -88,7 +165,7 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 			client, operator := net.Pipe()
 			defer func() { _ = operator.Close() }()
 			done := make(chan error, 1)
-			go func() { done <- v.Serve(context.Background(), client, "view") }()
+			go func() { done <- v.Serve(context.Background(), client, "control") }()
 			line, err := bufio.NewReader(operator).ReadString('\n')
 			if err != nil || line != "denied\n" {
 				t.Fatalf("response = %q, %v", line, err)
@@ -96,6 +173,9 @@ func TestViewerConfigurationAndUpstreamFailures(t *testing.T) {
 			if err := <-done; err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("serve = %v, want %q", err, tc.want)
 			}
+			checkLeaseLogs(t, logs, []leaseLogExpectation{
+				{"reserved", 1, 0, 1}, {"released", 1, 0, 0},
+			})
 		})
 	}
 }
@@ -141,7 +221,21 @@ func TestViewerModesAndLease(t *testing.T) {
 
 func TestViewerBusyAndRelease(t *testing.T) {
 	v := testViewer(t)
-	first, _, firstDone := startViewer(t, v, "control")
+	var seconds atomic.Int64
+	base := time.Now()
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
+	first, server, firstDone := startViewer(t, v, "control")
+	// Screen bytes must be relayed without appearing in lease diagnostics.
+	payload := "private-display-bytes"
+	go func() { _, _ = server.Write([]byte(payload)) }()
+	got := make([]byte, len(payload))
+	_ = first.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := io.ReadFull(first, got); err != nil || string(got) != payload {
+		t.Fatalf("display relay = %q: %v", got, err)
+	}
+	_ = first.SetReadDeadline(time.Time{})
+	seconds.Store(5)
 	second, peer := net.Pipe()
 	result := make(chan error, 1)
 	go func() { result <- v.Serve(context.Background(), second, "control") }()
@@ -156,8 +250,91 @@ func TestViewerBusyAndRelease(t *testing.T) {
 	_ = first.Close()
 	waitViewerDone(t, firstDone)
 	third, _, thirdDone := startViewer(t, v, "control")
+	seconds.Store(-1) // A diagnostic clock regression never produces a negative age.
 	_ = third.Close()
 	waitViewerDone(t, thirdDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1},
+		{"busy", 1, 5000, 1},
+		{"released", 1, 5000, 0},
+		{"reserved", 2, 0, 1},
+		{"released", 2, 0, 0},
+	})
+}
+
+type delayedReservationHandler struct {
+	slog.Handler
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (h *delayedReservationHandler) Handle(ctx context.Context, record slog.Record) error {
+	reserved := false
+	record.Attrs(func(a slog.Attr) bool {
+		reserved = reserved || (a.Key == "event" && a.Value.String() == "reserved")
+		return true
+	})
+	if reserved {
+		close(h.entered)
+		<-h.resume
+	}
+	return h.Handler.Handle(ctx, record)
+}
+
+func TestLeaseEventSequenceSurvivesConcurrentLogging(t *testing.T) {
+	v := testViewer(t)
+	base := time.Now()
+	var seconds atomic.Int64
+	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
+	handler := &delayedReservationHandler{Handler: v.cfg.Logger.Handler(), entered: make(chan struct{}), resume: make(chan struct{})}
+	v.cfg.Logger = slog.New(handler)
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(handler.resume) }) })
+	client, operator := net.Pipe()
+	upstream, server := net.Pipe()
+	t.Cleanup(func() { _ = operator.Close(); _ = server.Close() })
+	v.cfg.Dial = func() (net.Conn, error) { return upstream, nil }
+	done := make(chan error, 1)
+	go func() { done <- v.Serve(context.Background(), client, "control") }()
+	select {
+	case <-handler.entered:
+	case <-time.After(time.Second):
+		t.Fatal("reservation did not reach logger")
+	}
+	seconds.Store(5)
+	second, peer := net.Pipe()
+	t.Cleanup(func() { _ = second.Close(); _ = peer.Close() })
+	busyDone := make(chan error, 1)
+	go func() { busyDone <- v.Serve(context.Background(), second, "control") }()
+	_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+	if line, err := bufio.NewReader(peer).ReadString('\n'); err != nil || line != "busy\n" {
+		t.Fatalf("busy response = %q, %v", line, err)
+	}
+	if err := <-busyDone; err == nil {
+		t.Fatal("concurrent controller accepted")
+	}
+	unblock.Do(func() { close(handler.resume) })
+	_ = operator.SetReadDeadline(time.Now().Add(time.Second))
+	if line, err := bufio.NewReader(operator).ReadString('\n'); err != nil || line != "ok\n" {
+		t.Fatalf("control response = %q, %v", line, err)
+	}
+	_ = operator.Close()
+	waitViewerDone(t, done)
+	records := logs.records(t)
+	if len(records) != 3 {
+		t.Fatalf("records = %v", records)
+	}
+	for i, want := range []struct {
+		event    string
+		sequence float64
+		age      float64
+		viewers  float64
+	}{{"busy", 2, 5000, 1}, {"reserved", 1, 0, 1}, {"released", 3, 5000, 0}} {
+		if records[i]["event"] != want.event || records[i]["event_seq"] != want.sequence || records[i]["lease_id"] != float64(1) || records[i]["age_ms"] != want.age || records[i]["viewers"] != want.viewers {
+			t.Errorf("record %d = %v, want %v", i, records[i], want)
+		}
+	}
 }
 
 func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
@@ -166,6 +343,7 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	v := testViewer(t)
 	v.cfg.LeaseRenewInterval = time.Hour
 	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
 	first, _, firstDone := startViewer(t, v, "control")
 	v.mu.Lock()
 	previous := v.lease.conn
@@ -188,6 +366,12 @@ func TestExpiredControlLeaseAllowsTakeover(t *testing.T) {
 	}
 	_ = second.Close()
 	waitViewerDone(t, secondDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1},
+		{"expired", 1, 31000, 1},
+		{"reserved", 2, 0, 2},
+		{"released", 2, 0, 0},
+	})
 }
 
 func TestExpiredControlLeaseCannotRenew(t *testing.T) {
@@ -196,6 +380,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 	v := testViewer(t)
 	v.cfg.LeaseRenewInterval = time.Millisecond
 	v.cfg.Now = func() time.Time { return base.Add(time.Duration(seconds.Load()) * time.Second) }
+	logs := captureLeaseLogs(v)
 	first, _, firstDone := startViewer(t, v, "control")
 	seconds.Store(31)
 	deadline := time.After(time.Second)
@@ -203,7 +388,7 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 		v.mu.Lock()
 		cleared := v.lease.conn == nil
 		v.mu.Unlock()
-		if cleared {
+		if cleared && len(logs.records(t)) == 2 {
 			break
 		}
 		select {
@@ -214,6 +399,9 @@ func TestExpiredControlLeaseCannotRenew(t *testing.T) {
 	}
 	_ = first.Close()
 	waitViewerDone(t, firstDone)
+	checkLeaseLogs(t, logs, []leaseLogExpectation{
+		{"reserved", 1, 0, 1}, {"expired", 1, 31000, 1},
+	})
 }
 
 func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
@@ -252,22 +440,42 @@ func TestViewerRejectsModeAndWrongPeer(t *testing.T) {
 }
 
 func TestViewerCap(t *testing.T) {
-	v := testViewer(t)
-	v.cfg.MaxViewers = 1
-	first, _, firstDone := startViewer(t, v, "view")
-	second, peer := net.Pipe()
-	done := make(chan error, 1)
-	go func() { done <- v.Serve(context.Background(), second, "view") }()
-	line, err := bufio.NewReader(peer).ReadString('\n')
-	if err != nil || line != "denied\n" {
-		t.Fatalf("cap response = %q: %v", line, err)
+	for _, mode := range []string{"view", "control"} {
+		t.Run(mode, func(t *testing.T) {
+			v := testViewer(t)
+			v.cfg.MaxViewers = 1
+			logs := captureLeaseLogs(v)
+			first, _, firstDone := startViewer(t, v, "view")
+			second, peer := net.Pipe()
+			t.Cleanup(func() { _ = second.Close(); _ = peer.Close() })
+			_ = peer.SetReadDeadline(time.Now().Add(time.Second))
+			done := make(chan error, 1)
+			go func() { done <- v.Serve(context.Background(), second, mode) }()
+			line, err := bufio.NewReader(peer).ReadString('\n')
+			if err != nil || line != "denied\n" {
+				t.Fatalf("cap response = %q: %v", line, err)
+			}
+			if err := <-done; err == nil || !strings.Contains(err.Error(), "viewer cap") {
+				t.Fatalf("cap reason = %v", err)
+			}
+			records := logs.records(t)
+			if len(records) != 1 {
+				t.Fatalf("cap records = %v, want one refusal", records)
+			}
+			r := records[0]
+			if r["msg"] != "viewer connection refused" || r["reason"] != "viewer_cap" || r["viewers"] != float64(1) || r["max_viewers"] != float64(1) {
+				t.Fatalf("cap record = %v", r)
+			}
+			_ = first.Close()
+			waitViewerDone(t, firstDone)
+			reconnected, _, reconnectedDone := startViewer(t, v, "view")
+			_ = reconnected.Close()
+			waitViewerDone(t, reconnectedDone)
+			if got := len(logs.records(t)); got != 1 {
+				t.Fatalf("records after reconnect = %d, want one refusal", got)
+			}
+		})
 	}
-	if err := <-done; err == nil || !strings.Contains(err.Error(), "viewer cap") {
-		t.Fatalf("cap reason = %v", err)
-	}
-	_ = peer.Close()
-	_ = first.Close()
-	waitViewerDone(t, firstDone)
 }
 
 func TestViewerCancellation(t *testing.T) {

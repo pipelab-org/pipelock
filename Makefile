@@ -201,7 +201,7 @@ fuzz:
 stats: ## Print canonical stats
 	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'DLP patterns|Response patterns|Chain patterns|Preset files|Direct deps|PASS|FAIL|---'
 
-docs-check: ## Check public docs for known stale claims and print canonical stats
+docs-check: ## Check public docs, release surfaces and local links
 	@./scripts/docs-check.sh
 
 brand-assets: ## Regenerate canonical SVG brand assets

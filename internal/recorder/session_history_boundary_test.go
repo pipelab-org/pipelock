@@ -190,7 +190,7 @@ type displayBudgetCaller struct {
 // size contract, or the writer's rotation size.
 var allowedDisplayBudgetCallers = map[displayBudgetCaller]string{
 	// Dashboard and operator displays: a bounded page, refusing past the budget.
-	{"enterprise/dashboard/readmodel.go", "ReceiptDetail", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:          "dashboard read model",
+	{"enterprise/dashboard/readmodel.go", "ReceiptActionDetail", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:    "dashboard read model",
 	{"enterprise/dashboard/readmodel.go", "Session", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:                "dashboard read model",
 	{"enterprise/dashboard/readmodel.go", "Sessions", "receipt.ExtractReceiptsFromSessionDirWithLimits"}:               "dashboard read model",
 	{"enterprise/dashboard/readmodel.go", "Sessions", "recorder.ListSessionsBounded"}:                                  "dashboard read model",

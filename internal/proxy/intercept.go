@@ -2009,6 +2009,16 @@ func newInterceptHandler(
 		// forwarding. Without the identity strip, an attacker-supplied
 		// value bleeds to the destination even though pipelock's own
 		// policy decision already bound the actor.
+		if unsupportedInspectionRange(r) {
+			ic.Logger.LogBlocked(actx, "browser_cache", unsupportedRangeMessage)
+			ic.Metrics.RecordTLSRequestBlocked("browser_cache")
+			_ = interceptEmitReceipt(ic, withInterceptRedaction(receipt.EmitOpts{
+				ActionID: actionID, Verdict: config.ActionBlock, Layer: "browser_cache", Pattern: string(blockreason.ResponseIncomplete),
+				Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent,
+			}))
+			writeUnsupportedRange(w, ic.RequestID)
+			return
+		}
 		removeHopByHopHeaders(r.Header)
 		stripInternalIdentity(r)
 		applyFullResponsePolicy(r.Header, nil)
@@ -2119,7 +2129,14 @@ func newInterceptHandler(
 			r.Body = nil
 			r.GetBody = nil
 		}
-		resp, err := upstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
+		// Reuse the reverse path's no-progress bound. A total-call deadline
+		// would newly sever progressing TLS downloads; SSE and upgrades retain
+		// the existing wrapper's long-lived transport semantics.
+		interceptUpstream := upstream
+		if seconds := ic.Config.FetchProxy.TimeoutSeconds; seconds > 0 {
+			interceptUpstream = &upstreamBodyStallTransport{base: upstream, stall: time.Duration(seconds) * time.Second}
+		}
+		resp, err := interceptUpstream.RoundTrip(r.WithContext(httptrace.WithClientTrace(r.Context(), &httptrace.ClientTrace{
 			GotConn: func(httptrace.GotConnInfo) {
 				connAt.CompareAndSwap(0, int64(time.Since(base))+1)
 			},

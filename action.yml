@@ -70,7 +70,7 @@ runs:
           # Use GitHub API directly (no gh CLI dependency)
           VERSION=$(curl -fsSL --connect-timeout 10 --max-time 30 --retry 8 --retry-max-time 120 --retry-all-errors \
             -H "Authorization: token $GH_TOKEN" \
-            "https://api.github.com/repos/luckyPipewrench/pipelock/releases/latest" \
+            "https://api.github.com/repos/pipelab-org/pipelock/releases/latest" \
             | jq -r '.tag_name' | sed 's/^v//')
         fi
         VERSION="${VERSION#v}"
@@ -97,7 +97,7 @@ runs:
         esac
 
         ASSET="pipelock_${VERSION}_${GOOS}_${GOARCH}.tar.gz"
-        BASE_URL="https://github.com/luckyPipewrench/pipelock/releases/download/v${VERSION}"
+        BASE_URL="https://github.com/pipelab-org/pipelock/releases/download/v${VERSION}"
 
         # Download binary and checksums
         INSTALL_DIR="${RUNNER_TEMP:-/tmp}/pipelock-bin"

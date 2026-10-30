@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -1745,12 +1746,14 @@ func TestProxy_ReceiptEmission_PostFetchShieldOversize(t *testing.T) {
 		t.Fatalf("parse upstream URL: %v", err)
 	}
 	wantReason := shieldOversizeBlockReason(upstreamURL.Hostname(), len(body), cfg.BrowserShield.MaxShieldBytes)
-	wantOutcome := receiptOutcomePattern("403", int64(len(body)), "shield_oversize")
 
 	handler := p.buildHandler(p.buildMux())
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL+"/oversize", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
+	// bytes= is the upstream size; fetch adds the size it wrote to the client.
+	wantOutcome := receiptOutcomePattern("403", int64(len(body)), "shield_oversize") +
+		" delivered_bytes=" + strconv.Itoa(w.Body.Len())
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d body=%s", w.Code, w.Body.String())

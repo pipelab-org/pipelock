@@ -1759,7 +1759,11 @@ func probeNFTContainment(ctx context.Context, env *probeEnv) (string, string) {
 // rather than from a confirmed structural problem. contain verify treats both
 // as FAIL; doctor needs the distinction to report an unreadable chain as
 // inconclusive and a confirmed missing rule as FAIL.
-func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, string, bool) {
+func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (resultStatus, resultDetail string, unreadable bool) {
+	// Structural checks and remedy prediction share one file observation.
+	snapshot := *env
+	snapshot.readFile, _ = snapshotReconcileReads(env.readFile)
+	env = &snapshot
 	out, code, err := env.runCmd(ctx, probeNFTExecutable(env), "-n", "-a", "list", "chain", "inet", env.nftTable, env.nftChain)
 	if err != nil {
 		return statusSkip, fmt.Sprintf("nft unavailable: %v", err), false
@@ -1770,7 +1774,18 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 			return statusSkip, "nft list chain requires root; rerun as root", false
 		}
 		if nftOutputConfirmsAbsent(out) {
-			return statusFail, fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable), false
+			detail := fmt.Sprintf("chain %s missing or not loaded from table inet %s", env.nftChain, env.nftTable)
+			if env.nftRulesPath != "" {
+				current, identityErr := containmentUIDsFromProbeEnv(env)
+				if identityErr == nil {
+					_, remedy, predictionErr := predictNFTReconciliation(env, "", current)
+					if predictionErr != nil {
+						detail += "; " + predictionErr.Error()
+					}
+					detail += "; " + remedy
+				}
+			}
+			return statusFail, detail, false
 		}
 		return statusFail, fmt.Sprintf("nft exit=%d: %s", code, oneLine(out)), true
 	}
@@ -1784,6 +1799,31 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 	if err != nil {
 		return statusFail, err.Error(), true
 	}
+	defer func() {
+		// A configured persistence path is the ownership authority. Older
+		// embedders without it retain structural verification only.
+		if env.nftRulesPath == "" || !nftChainLinesHaveManagedOutputBaseChain(lines) {
+			return
+		}
+		plan, remedy, predictionErr := predictNFTReconciliation(env, out, current)
+		if len(plan.conflicts) > 0 {
+			prefix := ""
+			if resultStatus != statusPass && resultDetail != "" {
+				prefix = resultDetail + "; "
+			}
+			resultStatus, unreadable = statusFail, false
+			resultDetail = prefix + predictionErr.Error() + "; rerun `" + verifyCommandForPort(env.port) + "` after resolving the conflict"
+			return
+		}
+		if predictionErr == nil && (plan.kernelChanged || plan.fileChanged) {
+			if resultStatus == statusPass {
+				resultStatus, resultDetail = statusFail, "managed nft rules differ from the reconciliation plan"
+			}
+			resultDetail += "; " + remedy
+		} else if predictionErr != nil && resultStatus == statusPass {
+			resultStatus, resultDetail = statusFail, predictionErr.Error()+"; "+remedy
+		}
+	}()
 	// The base-chain contract comes first. Without the output hook no rule in
 	// this chain is ever reached, so neither the catch-all drop nor a rule
 	// sitting before it means anything, and calling that a containment hole
@@ -1793,17 +1833,24 @@ func probeNFTContainmentClassified(ctx context.Context, env *probeEnv) (string, 
 		return statusFail, fmt.Sprintf("chain %s is not the managed output base chain (want type filter hook output priority filter/0 policy accept)", env.nftChain), false
 	}
 	if !chainLinesHaveAgentCatchAllDrop(lines, current.agentUID) {
-		return statusFail, fmt.Sprintf("chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
+		return statusFail, fmt.Sprintf(containmentHoleDetailPrefix+" chain present but current agent uid %d catch-all skuid-drop rule missing", current.agentUID), false
+	}
+	// nft(8): an accept is terminal for this chain. Any agent UID accept
+	// outside the canonical proxy/reply exceptions admits traffic before the
+	// drop, including conditional accepts. Definite holes precede stale marks
+	// and policy/read failures; jump/return semantics remain inconclusive.
+	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
+		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
+	}
+	if rule, ok := agentUIDConditionalAcceptBeforeDrop(lines, current, env.port); ok {
+		detail := containmentHoleDetailPrefix + " conditional agent UID accept bypasses managed catch-all DROP: " + rule
+		if _, problem, _ := declaredContainmentLoopbackServicesForVerify(env, env.port); problem != "" {
+			detail += "; " + problem
+		}
+		return statusFail, detail, false
 	}
 	if handles := legacyOwnedLoopbackMarkRuleHandles(out, current.agentUID); len(handles) > 0 {
 		return statusFail, fmt.Sprintf("chain contains %d stale owned-loopback cgroup mark rule(s) using %s; %s", len(handles), legacyOwnedLoopbackMark, installRemedyForPort(env.port)), false
-	}
-	// Within a hooked chain that has the drop, a definite bypass outranks every
-	// missing canonical rule: reporting "proxy accept rule missing" for a chain
-	// that also admits all agent traffic would let the doctor downgrade the
-	// hole to an inconclusive result.
-	if rule, ok := agentUIDBareAcceptBeforeDrop(lines, current.agentUID); ok {
-		return statusFail, fmt.Sprintf(containmentBypassDetailFormat, rule), false
 	}
 	listenerData, listenerReadErr := env.readFile(env.configPath)
 	if listenerReadErr != nil && !errors.Is(listenerReadErr, os.ErrNotExist) {
@@ -2010,6 +2057,12 @@ func parseNFTRulesHeaderUIDs(data []byte) (nftRulesHeaderUIDs, bool, error) {
 		}
 		if err := validatePort(proxyPort); err != nil {
 			return nftRulesHeaderUIDs{}, true, fmt.Errorf("managed proxy-port: %w", err)
+		}
+		// nft(8) meta skuid identifies a Unix UID. Retain the same identity
+		// separation as containmentUIDsFromProbeEnv: an agent must never be
+		// included in the operator/proxy allow rules, including after recovery.
+		if operatorUID < 0 || proxyUID < 0 || agentUID < 0 || operatorUID == agentUID || proxyUID == agentUID {
+			return nftRulesHeaderUIDs{}, true, errors.New("managed uid header must use nonnegative uids and keep the agent distinct from operator and proxy; contained agent must not be allow-listed")
 		}
 		return nftRulesHeaderUIDs{operatorUID: operatorUID, proxyUID: proxyUID, agentUID: agentUID, proxyPort: proxyPort}, true, nil
 	}
@@ -2427,7 +2480,7 @@ func agentLoopbackAllowHostPort(line string, agentUID int, requireLoopbackInterf
 
 func chainLinesHaveAgentDNSDropBeforeCatchAll(lines []string, agentUID int, protocol string) bool {
 	return chainLinesHaveLineBeforeAgentDrop(lines, agentUID, func(line string) bool {
-		return lineHasSkuidProtocolDPortVerdict(line, agentUID, protocol, 53, "drop")
+		return lineHasSkuidDNSDrop(line, agentUID, protocol)
 	})
 }
 
@@ -2480,6 +2533,14 @@ func nftReplyDirection(value string) bool {
 	return value == "reply" || value == "1"
 }
 
+// nftVerdictTokens are the rule tokens that can end or redirect evaluation.
+// nft(8) VERDICT STATEMENT lists accept, drop, queue, return, jump and goto
+// (continue only resumes evaluation); REJECT STATEMENT is terminal. A verdict
+// map (vmap) picks one of those per element, so its accept is either hidden in
+// a named map the chain listing doesn't expand or printed with a trailing comma
+// ("accept,"). The token itself has to count as a verdict.
+var nftVerdictTokens = []string{"accept", "drop", "reject", "return", "jump", "goto", "queue", "vmap"}
+
 // chainLinesHaveUnsafeVerdictBeforeAgentDrop treats declarations as namespace
 // state only. They cannot authorize additional host nft accepts.
 func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containmentUIDs, proxyPort int) bool {
@@ -2494,7 +2555,7 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		// used for attribution. An agent-owned loopback accept that is NOT the
 		// proxy port is exactly the stale or hand-inserted carve-out this check
 		// exists to catch.
-		if !lineHasAnyToken(line, "accept", "drop", "reject", "return", "jump", "goto", "queue") {
+		if !lineHasAnyToken(line, nftVerdictTokens...) {
 			return false
 		}
 		if uids.operatorKnown && lineHasTerminalSkuidVerdict(line, uids.operatorUID, "accept") {
@@ -2512,8 +2573,8 @@ func chainLinesHaveUnsafeVerdictBeforeAgentDrop(lines []string, uids containment
 		if lineHasAgentEstablishedReplyAllow(line, uids.agentUID) {
 			return false
 		}
-		if lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "udp", 53, "drop") ||
-			lineHasSkuidProtocolDPortVerdict(line, uids.agentUID, "tcp", 53, "drop") {
+		if lineHasSkuidDNSDrop(line, uids.agentUID, "udp") ||
+			lineHasSkuidDNSDrop(line, uids.agentUID, "tcp") {
 			return false
 		}
 		for _, verdict := range []string{"accept", "drop", "reject"} {
@@ -2604,7 +2665,8 @@ func lapsedLoopbackServicesProblem(configPath string, lapsed []config.LapsedCont
 // CONTAINMENT HOLE from an inconclusive structural result, so the prefix and
 // the formatted detail must not drift apart into independent literals.
 const (
-	containmentBypassDetailPrefix = "CONTAINMENT HOLE: agent UID accept rule"
+	containmentHoleDetailPrefix   = "CONTAINMENT HOLE:"
+	containmentBypassDetailPrefix = containmentHoleDetailPrefix + " agent UID accept rule"
 	containmentBypassDetailFormat = containmentBypassDetailPrefix + " bypasses managed catch-all DROP: %s"
 )
 
@@ -2622,6 +2684,69 @@ func agentUIDBareAcceptBeforeDrop(lines []string, agentUID int) (string, bool) {
 		return true
 	})
 	return offending, found
+}
+
+// agentUIDConditionalAcceptBeforeDrop recognizes direct accepts for the
+// agent UID using the expressions documented by lineHasDefiniteAgentAccept.
+// Other predicates and legacy marks keep their existing diagnostics.
+func agentUIDConditionalAcceptBeforeDrop(lines []string, uids containmentUIDs, port int) (string, bool) {
+	var offending string
+	found := chainLinesHaveLineBeforeAgentDrop(lines, uids.agentUID, func(line string) bool {
+		if !lineHasDefiniteAgentAccept(line, uids.agentUID, port) {
+			return false
+		}
+		offending = strings.TrimSpace(line)
+		return true
+	})
+	return offending, found
+}
+
+// lineHasDefiniteAgentAccept recognizes nft(8)'s literal destination and TCP
+// destination-port expressions followed by accept. Sets, other expressions,
+// and malformed literals remain with the general unexpected-verdict guard;
+// they are refused but their reachability has not been established here.
+func lineHasDefiniteAgentAccept(line string, agentUID, proxyPort int) bool {
+	fields := nftLineFields(line)
+	if len(fields) < 7 || !slices.Equal(fields[:3], []string{"meta", "skuid", strconv.Itoa(agentUID)}) {
+		return false
+	}
+	i := 3
+	destination := ""
+	if fields[i] == "ip" || fields[i] == "ip6" {
+		if len(fields) <= i+3 || fields[i+1] != "daddr" {
+			return false
+		}
+		destination = fields[i+2]
+		ip := net.ParseIP(destination)
+		if ip == nil {
+			parsed, network, err := net.ParseCIDR(destination)
+			if err != nil {
+				return false
+			}
+			// RFC 4632: a full-width prefix denotes exactly one address.
+			// Treat the proxy's /32 the same as its literal, so a narrower
+			// spelling never becomes a claimed direct-egress bypass.
+			if ones, bits := network.Mask.Size(); ones == bits {
+				destination = parsed.String()
+			}
+		}
+		if (fields[i] == "ip") == strings.Contains(destination, ":") {
+			return false
+		}
+		i += 3
+	}
+	port := 0
+	if len(fields) > i+3 && fields[i] == "tcp" && fields[i+1] == "dport" && isTCPPort(fields[i+2]) {
+		port, _ = strconv.Atoi(fields[i+2])
+		i += 3
+	} else if destination == "" {
+		return false
+	}
+	acceptAt := indexTokenAfter(fields, "accept", i)
+	if acceptAt < 0 || !fieldsAreNFTBookkeeping(fields[i:acceptAt]) || !nftRuleTailIsCommentOnly(fields[acceptAt+1:]) {
+		return false
+	}
+	return destination != "127.0.0.1" || port != proxyPort
 }
 
 func lineHasBareAgentUIDAccept(line string, agentUID int) bool {
@@ -2698,52 +2823,44 @@ func isPositiveInteger(value string) bool {
 // terminalSkuidUIDVerdict extracts the UID from an exact skuid verdict rule.
 func terminalSkuidUIDVerdict(line, verdict string) (int, bool) {
 	fields := nftLineFields(line)
-	for i := 0; i+1 < len(fields); i++ {
-		if fields[i] != "skuid" {
-			continue
-		}
-		uid, err := strconv.Atoi(fields[i+1])
-		if err != nil {
-			continue
-		}
-		verdictAt := indexTokenAfter(fields, verdict, i+2)
-		if verdictAt != -1 && fieldsAreNFTBookkeeping(fields[i+2:verdictAt]) {
-			return uid, true
-		}
+	if len(fields) < 4 || fields[0] != "meta" || fields[1] != "skuid" {
+		return 0, false
 	}
-	return 0, false
+	uid, err := strconv.Atoi(fields[2])
+	return uid, err == nil && lineHasTerminalSkuidVerdict(line, uid, verdict)
 }
 
 // lineHasTerminalSkuidVerdict matches an exact UID with a terminal verdict.
+// nft(8) evaluates expressions in order. A predicate before skuid still limits
+// the verdict and must never establish an unconditional catch-all boundary.
 func lineHasTerminalSkuidVerdict(line string, uid int, verdict string) bool {
 	fields := nftLineFields(line)
-	uidText := strconv.Itoa(uid)
-	skuidAt := indexSkuidUID(fields, uidText)
-	if skuidAt == -1 {
+	if len(fields) < 4 || !slices.Equal(fields[:3], []string{"meta", "skuid", strconv.Itoa(uid)}) {
 		return false
 	}
-	verdictAt := indexTokenAfter(fields, verdict, skuidAt+1)
+	verdictAt := indexTokenAfter(fields, verdict, 3)
 	if verdictAt == -1 {
 		return false
 	}
-	return fieldsAreNFTBookkeeping(fields[skuidAt+1 : verdictAt])
+	return fieldsAreNFTBookkeeping(fields[3:verdictAt]) && nftRuleTailIsCommentOnly(fields[verdictAt+1:])
 }
 
-// lineHasSkuidProtocolDPortVerdict matches the canonical UID/protocol/port rule.
-func lineHasSkuidProtocolDPortVerdict(line string, uid int, protocol string, port int, verdict string) bool {
+// lineHasSkuidDNSDrop matches the canonical UID/protocol drop rule for DNS,
+// destination port 53 (RFC 1035 section 4.2).
+func lineHasSkuidDNSDrop(line string, uid int, protocol string) bool {
 	fields := nftLineFields(line)
 	skuidAt := indexSkuidUID(fields, strconv.Itoa(uid))
-	if skuidAt == -1 || skuidAt+3 >= len(fields) {
+	if skuidAt != 2 || fields[0] != "meta" || fields[1] != "skuid" || skuidAt+3 >= len(fields) {
 		return false
 	}
-	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != strconv.Itoa(port) {
+	if fields[skuidAt+1] != protocol || fields[skuidAt+2] != "dport" || fields[skuidAt+3] != "53" {
 		return false
 	}
-	verdictAt := indexTokenAfter(fields, verdict, skuidAt+4)
+	verdictAt := indexTokenAfter(fields, "drop", skuidAt+4)
 	if verdictAt == -1 {
 		return false
 	}
-	return fieldsAreNFTBookkeeping(fields[skuidAt+4 : verdictAt])
+	return fieldsAreNFTBookkeeping(fields[skuidAt+4:verdictAt]) && nftRuleTailIsCommentOnly(fields[verdictAt+1:])
 }
 
 func indexSkuidUID(fields []string, uidText string) int {

@@ -24,19 +24,30 @@ func TestInstallNFTRulesRejectsBadManagedListenerConfig(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env, _, _ := newFakeEnv(t)
+			writes := 0
+			priorWrite := env.writeFile
+			env.writeFile = func(path string, data []byte, mode os.FileMode) error {
+				if path == env.nftRulesPath {
+					writes++
+				}
+				return priorWrite(path, data, mode)
+			}
 			prior := env.readFile
 			configReads := 0
 			env.readFile = func(path string) ([]byte, error) {
 				if path == managedPipelockConfigPath(env) {
 					configReads++
-					if configReads == 1 {
-						return []byte("mode: balanced\n"), nil
-					}
 					return tc.body, tc.readErr
 				}
 				return prior(path)
 			}
 			applied, err := stepInstallNFTRulesApply(context.Background(), env)
+			if writes != 0 {
+				t.Fatalf("invalid listener config caused %d persisted-rules writes", writes)
+			}
+			if configReads != 1 {
+				t.Fatalf("config reads=%d, want one snapshot", configReads)
+			}
 			if applied || err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("apply = %v, %v; want refusal containing %q", applied, err, tc.want)
 			}

@@ -31,7 +31,7 @@ func (rootFileInfo) Sys() any           { return fakeFileSysWithUID(0) }
 
 func TestVerifySelfManagedNFTRulesWithDependencies(t *testing.T) {
 	t.Parallel()
-	canonical := renderNFTRules(1000, 1001, 10001, 8888, defaultNFTTable, defaultNFTChain)
+	canonical := nftListingForTest(renderNFTRules(1000, 1001, 10001, 8888, defaultNFTTable, defaultNFTChain))
 	statSecondPath := func(path string) (fs.FileInfo, error) {
 		if path == "/usr/sbin/nft" {
 			return nil, os.ErrNotExist

@@ -2192,6 +2192,16 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	// Strip the internal identity header AND the ?agent= query param before
 	// the request leaves pipelock. Either vector could otherwise bleed an
 	// attacker-supplied identity hint to the destination service.
+	if unsupportedInspectionRange(outReq) {
+		p.logger.LogBlocked(actx, "browser_cache", unsupportedRangeMessage)
+		p.metrics.RecordBlocked(r.URL.Hostname(), "browser_cache", time.Since(start), agentLabel)
+		emitForwardReceipt(withForwardRedaction(forwardBlockReceiptOpts(ForwardBlockReceiptInput{
+			ActionID: actionID, RequestID: requestID, Agent: agent, Method: r.Method, Target: targetURL,
+			Layer: "browser_cache", Pattern: string(blockreason.ResponseIncomplete), Taint: forwardTaint,
+		})))
+		writeUnsupportedRange(w, requestID)
+		return
+	}
 	stripInternalIdentity(outReq)
 	removeHopByHopHeaders(outReq.Header)
 	applyFullResponsePolicy(outReq.Header, nil)

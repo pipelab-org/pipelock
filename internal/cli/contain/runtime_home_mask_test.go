@@ -133,8 +133,8 @@ func TestRuntimePrivateMasksRejectHostSharedDevices(t *testing.T) {
 	// Each private mask is bound from another host tmpfs root: root /, tmpfs,
 	// a device distinct from the host mount at the same path, yet still shared.
 	for _, tc := range []struct{ name, hostExtra, want string }{
-		{name: "dev shm", hostExtra: "12 1 0:201 / /srv/shm rw - tmpfs tmpfs rw\n", want: "/dev/shm does not have a verified private filesystem identity"},
-		{name: "run", hostExtra: "12 1 0:200 / /srv/run rw - tmpfs tmpfs rw\n", want: "/run does not have a verified private filesystem identity"},
+		{name: "dev shm", hostExtra: "12 1 0:201 / /srv/shm rw - tmpfs tmpfs rw\n", want: "/dev/shm is shared with a host mount"},
+		{name: "run", hostExtra: "12 1 0:200 / /srv/run rw - tmpfs tmpfs rw\n", want: "/run is shared with a host mount"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := defaultNetnsAssertEnv()

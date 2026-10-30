@@ -141,8 +141,10 @@ type installEnv struct {
 	xvncPath          string
 	displayConfig     config.ContainmentDisplay
 	reconcileLockPath string
+	policySnapshot    *containmentPolicySnapshot
+	reconcileLockHeld bool // runInstallSteps owns this environment while the lock is held
 	// lockFn wraps the managed-config-snapshot -> kernel-apply -> persist
-	// critical section of the nft rules step in an exclusive lock, shared
+	// critical section of install (including rollback) in an exclusive lock, shared
 	// with `contain reload-nft-rules` (see withContainmentReconcileLock).
 	// Defaults to the real flock-based implementation; tests substitute a
 	// fake to deterministically exercise the install/reload interleaving.

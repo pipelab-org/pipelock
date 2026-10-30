@@ -43,6 +43,7 @@
     .verdict-allow { background: rgba(0,229,160,0.12); border: 1px solid rgba(0,229,160,0.3); color: var(--accent); }
     .verdict-block { background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); color: var(--danger); }
     .verdict-warn { background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3); color: var(--warn); }
+    .verdict-incomplete { background: rgba(245,158,11,0.12); border: 1px dashed rgba(245,158,11,0.6); color: var(--warn); }
     .verdict-defer { background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.3); color: var(--text-muted); }
     .field-grid {
       display: grid;
@@ -92,7 +93,14 @@
       </div>
     {{end}}
 
-    {{if .Explanation.Verdict.Present}}
+    {{if .Incomplete}}
+      <div class="callout" style="margin-bottom:18px">
+        <strong>Incomplete evidence</strong> — This session has more records than the bounded view reads, and a later record of this action may be missing. The verdict below may not be final.
+      </div>
+      {{if .Explanation.Verdict.Present}}
+      <div class="verdict-banner verdict-incomplete">{{.Explanation.Verdict.Detail}} · may not be final</div>
+      {{end}}
+    {{else if .Explanation.Verdict.Present}}
       <div class="verdict-banner verdict-{{.Explanation.Verdict.Detail}}">{{.Explanation.Verdict.Detail}}</div>
     {{end}}
 
@@ -110,6 +118,24 @@
       </div>
       {{end}}
     </div>
+
+    {{if gt (len .Records) 1}}
+    <h2>All records for this action</h2>
+    <table class="records-table">
+      <thead><tr><th>Seq</th><th>Phase</th><th>Verdict</th><th>Layer</th><th>Pattern</th></tr></thead>
+      <tbody>
+      {{range .Records}}
+      <tr>
+        <td class="mono">{{.ChainSeq.Detail}}</td>
+        <td>{{.DecisionPhase.Detail}}</td>
+        <td>{{.Verdict.Detail}}</td>
+        <td>{{.Layer.Detail}}</td>
+        <td class="mono">{{.Pattern.Detail}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
   </main>
 </body>
 </html>

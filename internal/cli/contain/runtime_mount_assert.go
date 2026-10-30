@@ -16,6 +16,7 @@ import (
 // systemd service code (v257 exec-invoke.c:3323, also v261:3933) uses
 // /run/systemd/incoming, despite systemd.exec(5) naming /run/host/incoming.
 const (
+	systemdCredentialsPath = "/run/credentials"
 	systemdIncomingPath    = "/run/systemd/incoming"
 	systemdPropagationRoot = "/systemd/propagate/"
 )
@@ -36,9 +37,9 @@ type runtimeMount struct {
 	options                  []string
 }
 
-// Mountinfo, rather than unit configuration alone, proves the restrictions
-// applied to this caller. PID 1 remains in the host mount namespace for contain
-// launches, so its filesystem identities distinguish a new tmpfs from host shm.
+// Mountinfo checks the restrictions visible to this caller. Comparing devices
+// against PID 1 detects sharing with mounts in the host mount namespace, but
+// cannot establish that the masks are exclusive to this namespace.
 func assertManagedRuntimeMounts(env netnsAssertEnv) error {
 	if err := checkManagedRuntimeMounts(env); err != nil {
 		return runtimeMountRefusal(err)
@@ -54,7 +55,7 @@ func runtimeMountRefusal(err error) error {
 		return fmt.Errorf("runtime socket isolation is not applied: %w; retain the managed ProtectHome=tmpfs profile, remove conflicting unit overrides or binds at this path, rerun `pipelock contain install` and restart the agent service", err)
 	}
 	if errors.Is(err, errUnexpectedRuntimeExposure) {
-		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind, unit drop-in or credential setting (for example LoadCredential creates /run/credentials) exposing this path, then restart the agent service", err)
+		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind or conflicting unit drop-in exposing this path; LoadCredential= and LoadCredentialEncrypted= are supported only with a verified root-owned, read-only /run/credentials/<this-unit> store beneath its private parent mask and a visible service identity in /proc/self/cgroup; retain the runtime masks, then restart the agent service", err)
 	}
 	return fmt.Errorf("runtime socket isolation is not applied: %w; add %s to the agent unit; update managed wrappers with `pipelock contain install` and restart the agent service", err, strings.Join(runtimeSocketProperties(), ", "))
 }
@@ -87,7 +88,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		path, _, _ := strings.Cut(property, ":")
 		mount, ok := self[path]
 		if !ok || mount.filesystem != "tmpfs" || mount.root != "/" {
-			return fmt.Errorf("%s must be a private tmpfs mount", path)
+			return fmt.Errorf("%s must be a tmpfs mount rooted at /", path)
 		}
 		hostMount, ok := host[path]
 		for parent := filepath.Dir(path); !ok; parent = filepath.Dir(parent) {
@@ -99,10 +100,10 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		if ok && mount.device != hostMount.device && hostDevices[mount.device] {
 			// The requested property is present, but something binds a host
 			// filesystem over it; adding the property again cannot help.
-			return unexpectedRuntimeExposure(path, path+" does not have a verified private filesystem identity: it is shared with a host mount")
+			return unexpectedRuntimeExposure(path, path+" is shared with a host mount")
 		}
 		if !ok || mount.device == hostMount.device {
-			return fmt.Errorf("%s does not have a verified private filesystem identity", path)
+			return fmt.Errorf("%s has no filesystem identity distinct from the host mount", path)
 		}
 		options := []string{"ro"}
 		if path == "/dev/shm" {
@@ -123,8 +124,17 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		return fmt.Errorf("%w: inspect isolated runtime directory /run: %w", errRuntimeMountEvidenceUnavailable, err)
 	}
 	// Enumerate the whole runtime tree, including mounts hidden by overmounts.
-	// Only the declared private masks, identity bind and propagation bind belong.
+	// Only declared masks, the identity bind and verified systemd mounts belong.
 	allowed := map[string]bool{containedNamespaceIdentityPath: true, systemdIncomingPath: true}
+	_, credentialsMounted := self[systemdCredentialsPath]
+	if credentialsMounted || slices.ContainsFunc(entries, func(entry os.DirEntry) bool { return entry.Name() == "credentials" }) {
+		path, err := checkSystemdCredentials(env, self, hostDevices)
+		if err != nil {
+			return err
+		}
+		allowed[systemdCredentialsPath] = true
+		allowed[path] = true
+	}
 	protectHome := slices.Contains(env.unitProperties, protectHomeTmpfsProperty)
 	if protectHome {
 		allowed["/run/user"] = true
@@ -150,6 +160,8 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
 		switch entry.Name() {
+		case "credentials":
+			// The parent mask and this unit's store were verified above.
 		case "pipelock-contain":
 			// The identity directory is checked below.
 		case "user":
@@ -203,7 +215,7 @@ func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runti
 		return fmt.Errorf("%w: /run/user must be the requested read-only tmpfs mask with root /", errManagedRuntimeMask)
 	}
 	if hostRun, ok := host["/run"]; !ok || mount.device == hostRun.device {
-		return fmt.Errorf("%w: /run/user must have a private filesystem identity distinct from host /run", errManagedRuntimeMask)
+		return fmt.Errorf("%w: /run/user must have a filesystem identity distinct from host /run", errManagedRuntimeMask)
 	}
 	if hostDevices[mount.device] {
 		return fmt.Errorf("%w: /run/user is shared with a host mount, not a private mask", errManagedRuntimeMask)

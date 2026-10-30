@@ -199,16 +199,16 @@ func (solValidator) CompareKey(normalized string) string {
 // ---------- BNB (Beacon Chain) ----------
 
 // BNB Beacon Chain uses bech32 with "bnb" HRP. BSC/BEP-20 uses 0x (covered by ETH).
-var bnbRegex = regexp.MustCompile(`\bbnb1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{38}\b`)
+var bnbRegex = regexp.MustCompile(`\b[bB][nN][bB]1[qpzry9x8gf2tvdw0s3jn54khce6mua7lQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L]{38}\b`)
 
 type bnbValidator struct{}
 
 func (bnbValidator) Detect(text string) []rawMatch {
-	lower := strings.ToLower(text)
-	locs := bnbRegex.FindAllStringIndex(lower, -1)
+	// Match the original spelling so offsets index the source.
+	locs := bnbRegex.FindAllStringIndex(text, -1)
 	matches := make([]rawMatch, 0, len(locs))
 	for _, loc := range locs {
-		matches = append(matches, rawMatch{text: lower[loc[0]:loc[1]], offset: loc[0]})
+		matches = append(matches, rawMatch{text: text[loc[0]:loc[1]], offset: loc[0]})
 	}
 	return matches
 }

@@ -1,4 +1,4 @@
-name: PR-Agent review
+name: Agentic review
 
 on:
   # Commands run on the default branch; inline replies have independent admission.
@@ -23,7 +23,7 @@ jobs:
       github.event.comment.user.type == 'User' &&
       github.event.comment.author_association == 'MEMBER' &&
       github.event.issue.pull_request &&
-      contains(fromJSON('["/review","/review deep"]'), github.event.comment.body)) ||
+      contains(fromJSON('["/review","/review deep","/review codex","/review codex deep"]'), github.event.comment.body)) ||
       (github.event_name == 'pull_request_review_comment' &&
       github.event.action == 'created' &&
       github.run_attempt == '1' &&
@@ -36,7 +36,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@e1c24523dc5613985d62288133e5cb5817c86779 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@ab90e119e78ea512e2c01789dacf4ade9eb38fa1 # main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}

@@ -427,6 +427,18 @@ class TestReleaseArtifacts(unittest.TestCase):
                 with mock.patch(__name__ + ".load_workflow", return_value=document):
                     self.test_tap_token_reaches_only_the_protected_publish_step()
 
+    def test_preflight_installs_the_pinned_go_before_the_readiness_gate(self) -> None:
+        # The gate's release-surface registry runs the runtime stats test, so a
+        # preflight without a toolchain step fails after the tag is cut.
+        steps = yaml.load(self.workflow, Loader=WorkflowLoader)["jobs"]["release-preflight"]["steps"]
+        gate = [i for i, step in enumerate(steps) if step.get("name") == "Release-readiness gate"]
+        setup = [i for i, step in enumerate(steps) if str(step.get("uses", "")).startswith("actions/setup-go@")]
+        self.assertEqual(len(gate), 1)
+        self.assertEqual(len(setup), 1)
+        self.assertLess(setup[0], gate[0])
+        self.assertEqual(steps[setup[0]]["with"]["go-version"], "1.26.10")
+        self.assertIn('"go1.26.10"', steps[setup[0] + 1]["run"])
+
     def test_image_namespace_follows_the_releasing_repository(self) -> None:
         parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
         jobs = parsed["jobs"]

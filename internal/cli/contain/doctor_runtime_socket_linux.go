@@ -88,7 +88,7 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 			}
 		}
 	}
-	return pass("managed contained-launch wrapper and configured namespace/display units specify runtime socket masks; live mounts are verified at launch")
+	return pass("managed contained-launch wrapper and configured namespace/display units specify runtime socket masks; live mounts are checked against the host mount table at launch")
 }
 
 func doctorContainedLaunchWrapperMatches(body []byte, wrapperDir string, env *doctorEnv) bool {

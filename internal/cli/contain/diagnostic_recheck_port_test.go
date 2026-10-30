@@ -246,11 +246,11 @@ func TestDiagnosticChainAttributionRemediesPreservePort(t *testing.T) {
 						if unreadable {
 							return "", 1, os.ErrPermission
 						}
-						return strings.ReplaceAll(strings.Replace(goodNFTContainmentOutput, "meta skuid 987 ip daddr", "ip daddr 192.0.2.0/24 accept\n\t\tmeta skuid 987 ip daddr", 1), "8888", strconv.Itoa(port)), 0, nil
+						return nftListingForTest(strings.ReplaceAll(strings.Replace(goodNFTContainmentOutput, "meta skuid 987 ip daddr", "ip daddr 192.0.2.0/24 accept\n\t\tmeta skuid 987 ip daddr", 1), "8888", strconv.Itoa(port))), 0, nil
 					}
 				})
 				got := doctorChainStructureReader(base, &doctorEnv{port: port, agentUserName: testAgentUser})(t.Context())
-				if got.status != statusUnknown || !strings.Contains(got.remediation, "`"+expectedDiagnosticVerifyCommand(port)+"`") {
+				if (unreadable && got.status != statusUnknown || !unreadable && got.status != statusFail) || !strings.Contains(got.remediation, "`"+expectedDiagnosticVerifyCommand(port)+"`") {
 					t.Fatalf("chain attribution = %+v", got)
 				}
 			})

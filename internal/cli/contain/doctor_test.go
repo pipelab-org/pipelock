@@ -401,15 +401,19 @@ func TestDoctorDropCounterReaderUsesLiveDoctorOverrides(t *testing.T) {
 }
 
 func TestDoctorChainStructureReader(t *testing.T) {
+	healthy := nftListingForTest(renderNFTRules(1000, 988, 987, 8888, defaultNFTTable, defaultNFTChain))
 	base := makeProbeEnv(t, func(e *probeEnv) {
 		e.operatorUser = testOperatorUser
 		e.lookupUser = containTestLookup
 		e.nftRulesPath = "rules.nft"
-		e.readFile = func(string) ([]byte, error) {
-			return []byte("# operator=1000 pipelock-proxy=988 pipelock-agent=987 proxy-port=8888\n"), nil
+		e.readFile = func(path string) ([]byte, error) {
+			if path == e.configPath {
+				return nil, os.ErrNotExist
+			}
+			return []byte(renderNFTRules(1000, 988, 987, 8888, e.nftTable, e.nftChain)), nil
 		}
 		e.runCmd = func(context.Context, string, ...string) (string, int, error) {
-			return goodNFTContainmentOutput, 0, nil
+			return healthy, 0, nil
 		}
 	})
 	doctor := &doctorEnv{port: defaultProxyPort, agentUserName: testAgentUser}
@@ -419,29 +423,29 @@ func TestDoctorChainStructureReader(t *testing.T) {
 	}
 
 	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
-		return strings.Replace(goodNFTContainmentOutput,
+		return nftListingForTest(strings.Replace(healthy,
 			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-			"meta skuid 987 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+			"meta skuid 987 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1)), 0, nil
 	}
 	if res := reader(context.Background()); res.status != statusFail || !strings.Contains(res.detail, "meta skuid 987 accept") {
 		t.Fatalf("bypass structure = (%q, %q)", res.status, res.detail)
 	}
 
 	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
-		return strings.Replace(goodNFTContainmentOutput,
+		return nftListingForTest(strings.Replace(healthy,
 			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-			"meta skuid 12345 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+			"meta skuid 12345 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1)), 0, nil
 	}
 	if res := reader(context.Background()); res.status != statusPass {
 		t.Fatalf("foreign UID accept structure = (%q, %q), want qualified pass: a rule for another UID cannot admit agent packets", res.status, res.detail)
 	}
 
 	base.runCmd = func(context.Context, string, ...string) (string, int, error) {
-		return strings.Replace(goodNFTContainmentOutput,
+		return nftListingForTest(strings.Replace(healthy,
 			"meta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept",
-			"ip daddr 10.0.0.0/8 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1), 0, nil
+			"ip daddr 10.0.0.0/8 accept\n\t\tmeta skuid 987 ip daddr 127.0.0.1 tcp dport 8888 accept", 1)), 0, nil
 	}
-	if res := reader(context.Background()); res.status != statusUnknown {
+	if res := reader(context.Background()); res.status != statusFail {
 		t.Fatalf("unscoped accept structure = (%q, %q), want unknown", res.status, res.detail)
 	}
 

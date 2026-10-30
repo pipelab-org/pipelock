@@ -127,8 +127,26 @@ The Scan API has no DNS-message body input. Its `dlp` kind scans text, so submit
 | `session_id` | string | Echoed from `context.session_id` on the same post-scan timing as `request_id`. Absent when the request omitted `session_id`, or on any pre-scan error. |
 | `duration_ms` | int | Wall-clock scan time in milliseconds. |
 | `engine_version` | string | Pipelock binary version. |
+| `assessment` | object | Wording-checker coverage for executed `prompt_injection` and `tool_call` scans, including cancellation and timeout. Contains `checker: "basic"` and a `status` described below. Other kinds and pre-scan errors omit it. |
 | `findings` | array | Present when `decision` is `warn` or `deny`. One entry per scanner match. |
 | `errors` | array | Present when `status` is `error`. |
+
+### Wording assessment
+
+Request `status: "completed"` means the endpoint finished evaluating the request. It does not prove wording was checked. Read `assessment.status` separately from `decision`, which also includes independent DLP and tool-policy outcomes.
+
+| Assessment status | Meaning |
+|---|---|
+| `off` | The operator disabled wording detection. No wording checker ran. |
+| `not_assessed` | No wording view was evaluated, such as a tool call with empty arguments. |
+| `benign` | The basic checker completed its configured wording checks without a finding. |
+| `partial` | Only the built-in core wording patterns ran because `response_scanning.enabled` is `false`, and they found nothing. This is not a benign result. |
+| `finding` | Wording matched, including warn-only, observed or suppressed matches. Delivery follows the existing policy; a finding alone does not imply denial. |
+| `incomplete` | Wording assessment could not finish, including cancellation, timeout or tool arguments too deeply nested for wording extraction. This is not a benign result or an injection detection. |
+
+Only `benign` means wording was checked and nothing matched. Later releases may add statuses, so treat any status you don't recognize as not benign.
+
+Cancellation and timeout that end the scan retain `status: "error"` and their existing HTTP error codes. Cancellation during cross-request fragment inspection is different: it returns HTTP 200 with a completed `decision: "deny"` and a `CEE-scan-cancelled` finding, and `assessment` still describes the wording scan, which finished before that step. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Tool arguments too deeply nested for wording extraction retain their existing completed denial and finding, with assessment marked incomplete. A DLP JSON number inspection limit, the depth or number budget described above, also denies the request but leaves the wording assessment unchanged. That depth budget can refuse nesting that wording extraction completes, so such a denial reports `DLP-Uninspectable JSON number` while `assessment` still reflects the completed wording check. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
 
 ### Finding object
 
@@ -212,6 +230,7 @@ Partial canary, environment-secret and file-secret disclosures can produce DLP f
 | `invalid_input` | 400 | no | Missing required field, field too large, or invalid URL. |
 | `scan_deadline_exceeded` | 503 | yes | Scan timed out (default 5s). |
 | `request_canceled` | 500 | no | Client disconnected mid-scan. |
+| `assessment_incomplete` | 500 | no | The wording scanner failed for a reason other than cancellation or timeout. The response includes `assessment` with status `incomplete`. |
 | `internal_error` | 500 | no | Unexpected failure. |
 
 ## HTTP status codes

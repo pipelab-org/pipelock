@@ -4,7 +4,9 @@
 package contain
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -73,9 +75,20 @@ func observeManagedDoorwayDefinitions(env *probeEnv, services []config.Containme
 		filepath.Base(env.namespaceForwarderServicePath) != containedNamespaceForwarderUnit {
 		return nil, fail(classInfra, "managed doorway unit paths are not canonical", installRemedyForPort(env.port))
 	}
+	data, readErr := env.readFile(env.configPath)
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return nil, fail(classInfra, "read managed listener config: "+readErr.Error(), installRemedyForPort(env.port))
+	}
+	target, err := agentListenerFromConfigBytes(data)
+	if err != nil {
+		return nil, fail(classInfra, "parse managed listener config: "+err.Error(), doorwayInspectionRemedy)
+	}
+	if target == "" {
+		target = systemdListenAddress("127.0.0.1", env.port)
+	}
 	definitions := map[string][]doorwayDefinition{containedProxyForwarderUnit + ".socket": {
 		{env.proxyForwarderSocketPath, renderContainedProxySocketUnit(env.agentUserName)},
-		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, containedRelayTarget(env.configPath, env.port))},
+		{env.proxyForwarderServicePath, renderContainedProxyForwarderUnitTo(env.pipelockTarget, env.proxyUserName, target)},
 		{env.namespaceForwarderServicePath, renderContainedNamespaceForwarderUnit(env.pipelockTarget, env.agentUserName, env.port)},
 	}}
 	doorways := []managedDoorway{{socket: containedProxyForwarderUnit + ".socket", relay: containedProxyForwarderUnit + ".service", forwarder: containedNamespaceForwarderUnit, path: containedDoorwaySocketPath, listen: systemdListenAddress("127.0.0.1", env.port)}}

@@ -309,14 +309,14 @@ func declaredContainmentPublishedServices(env *installEnv, proxyPort int) ([]con
 // declaredContainmentPublishedServicesWithLapsed also returns the expired
 // publications it dropped, so install proceeds and retires their doorways.
 func declaredContainmentPublishedServicesWithLapsed(env *installEnv, proxyPort int) ([]config.ContainmentPublishedService, []config.LapsedContainmentGrant, error) {
-	data, err := env.readFile(managedPipelockConfigPath(env))
+	data, now, err := observeInstallPolicy(env)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil, nil
 		}
 		return nil, nil, fmt.Errorf("read managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
-	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, time.Now())
+	declared, lapsed, err := parseContainmentPublishedServicesWithLapsed(data, proxyPort, now)
 	if err != nil {
 		return nil, nil, fmt.Errorf("managed config %s: %w", managedPipelockConfigPath(env), err)
 	}
@@ -355,7 +355,10 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 	return step{
 		name: "install-published-services",
 		desc: "publish declared contained-agent services to their operators",
-		apply: func(ctx context.Context, env *installEnv) (bool, error) {
+		apply: func(ctx context.Context, env *installEnv) (changed bool, result error) {
+			observedEnv := *env
+			readObserved, observedFiles := snapshotReconcileReads(env.readFile)
+			observedEnv.readFile = readObserved
 			var services []config.ContainmentPublishedService
 			if serviceOverride != nil {
 				services = append([]config.ContainmentPublishedService(nil), (*serviceOverride)...)
@@ -364,23 +367,40 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 					err    error
 					lapsed []config.LapsedContainmentGrant
 				)
-				services, lapsed, err = declaredContainmentPublishedServicesWithLapsed(env, env.proxyPort)
+				services, lapsed, err = declaredContainmentPublishedServicesWithLapsed(&observedEnv, env.proxyPort)
 				if err != nil {
-					return false, err
+					return false, errors.Join(err, revokeKnownPublishedDoorways(ctx, env))
 				}
 				warnLapsedContainmentGrants(func(message string) {
 					_, _ = fmt.Fprintln(env.errOut, "WARNING: "+message)
 				}, managedPipelockConfigPath(env), lapsed)
 			}
 			if err := checkPublishedOperators(env, services); err != nil {
-				return false, err
+				return false, errors.Join(err, revokeKnownPublishedDoorways(ctx, env))
 			}
-			old, err := readPublishedServiceRecords(env)
+			old, err := readPublishedServiceRecords(&observedEnv)
 			if err != nil {
-				return false, err
+				return false, errors.Join(err, revokeKnownPublishedDoorways(ctx, env))
 			}
+			var desiredBeforeWrite []string
+			observedUnits, observationErr := observePublishedDoorways(&observedEnv, old)
+			if observationErr != nil {
+				return false, errors.Join(observationErr, closePublishedDoorways(ctx, env, observedUnits))
+			}
+			for _, service := range services {
+				for _, file := range publishedServiceFiles(filepath.Dir(env.proxyForwarderSocketPath), env.pipelockTarget, env.proxyUserName, service) {
+					desiredBeforeWrite = append(desiredBeforeWrite, filepath.Base(file.path))
+				}
+			}
+			revokedBeforeWrite := planNFTReconciliation(nftReconcilePolicy{doorways: desiredBeforeWrite}, nftReconcileObservation{doorways: observedUnits}).closeDoorways
+			defer func() {
+				if result != nil {
+					result = errors.Join(result, closePublishedDoorways(ctx, env, revokedBeforeWrite))
+				}
+			}()
+
 			recordPath := publishedServiceRecordPath(env.loopbackForwarderInvPath)
-			if len(services) == 0 && len(old.Services) == 0 {
+			if len(services) == 0 && len(observedUnits) == 0 {
 				if _, statErr := env.stat(recordPath); errors.Is(statErr, os.ErrNotExist) {
 					// Nothing declared and nothing ever published: leave no
 					// file behind on hosts that never use the feature.
@@ -405,11 +425,18 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				}
 			}
 
+			var plannedFiles []reconcileManagedFile
+			for _, item := range files {
+				plannedFiles = append(plannedFiles, reconcileManagedFile{item.path, item.body, modeUnitFile})
+			}
+			plannedFiles = append(plannedFiles, reconcileManagedFile{recordPath, string(recordBytes), modeConfigSecret})
+			for _, item := range plannedFiles {
+				_, _ = readObserved(item.path)
+			}
+			filePlan := planNFTReconciliation(nftReconcilePolicy{files: plannedFiles, doorways: desiredBeforeWrite}, nftReconcileObservation{files: observedFiles, doorways: observedUnits})
 			previous = make(map[string]unitRuntimeState)
-			for _, record := range old.Services {
-				for _, unit := range publishedRecordUnitNames(record) {
-					previous[unit] = systemdUnitRuntimeState(ctx, env, unit)
-				}
+			for _, unit := range observedUnits {
+				previous[unit] = systemdUnitRuntimeState(ctx, env, unit)
 			}
 			for unit := range desired {
 				if _, ok := previous[unit]; !ok {
@@ -423,7 +450,7 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 				if item.path == recordPath {
 					mode = modeConfigSecret
 				}
-				if existing, readErr := env.readFile(item.path); readErr == nil && string(existing) == item.body {
+				if !filePlan.writePaths[item.path] {
 					if err := env.chmod(item.path, mode); err != nil {
 						return len(touched) > 0, fmt.Errorf("chmod %s: %w", item.path, err)
 					}
@@ -437,39 +464,25 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 			}
 			// Revoke before starting anything new: a removed or expired
 			// publication must be closed even if a later start fails.
-			for _, record := range old.Services {
-				for _, unit := range publishedRecordUnitNames(record) {
-					if desired[unit] {
-						continue
-					}
-					if strings.HasSuffix(unit, ".socket") {
-						if err := runSystemctlCleanupUnit(ctx, env, "disable", "--now", unit); err != nil {
-							return true, fmt.Errorf("close revoked published endpoint %s: %w", unit, err)
-						}
-					} else if err := runSystemctlCleanupUnit(ctx, env, "stop", unit); err != nil {
-						return true, fmt.Errorf("stop revoked published relay %s: %w", unit, err)
-					}
+			if err := closePublishedDoorways(ctx, env, filePlan.closeDoorways); err != nil {
+				return true, err
+			}
+			for _, unit := range filePlan.closeDoorways {
+				path := filepath.Join(unitDir, unit)
+				body, readErr := env.readFile(path)
+				if errors.Is(readErr, os.ErrNotExist) {
+					continue
 				}
-				for _, unit := range publishedRecordUnitNames(record) {
-					if desired[unit] {
-						continue
-					}
-					path := filepath.Join(unitDir, unit)
-					body, readErr := env.readFile(path)
-					if errors.Is(readErr, os.ErrNotExist) {
-						continue
-					}
-					if readErr != nil {
-						return true, fmt.Errorf("read revoked published unit %s: %w", path, readErr)
-					}
-					if err := restoreBackup(env, path); err != nil {
-						return true, fmt.Errorf("remove revoked published unit %s: %w", path, err)
-					}
-					retired[path] = body
+				if readErr != nil {
+					return true, fmt.Errorf("read revoked published unit %s: %w", path, readErr)
 				}
+				if err := restoreBackup(env, path); err != nil {
+					return true, fmt.Errorf("remove revoked published unit %s: %w", path, err)
+				}
+				retired[path] = body
 			}
 			// Keep revoked units recorded until every disable has completed.
-			if existing, readErr := env.readFile(recordPath); readErr == nil && bytes.Equal(existing, recordBytes) {
+			if !filePlan.writePaths[recordPath] {
 				if err := env.chmod(recordPath, modeConfigSecret); err != nil {
 					return true, fmt.Errorf("chmod published service records: %w", err)
 				}
@@ -502,11 +515,14 @@ func stepInstallPublishedServices(serviceOverride *[]config.ContainmentPublished
 					}
 				}
 			}
-			changed := len(touched) > 0 || len(retired) > 0
+			changed = len(touched) > 0 || len(retired) > 0
 			for unit := range desired {
 				if strings.HasSuffix(unit, ".socket") {
 					changed = changed || !previous[unit].enabled || !previous[unit].active
 				}
+			}
+			if err := observeManagedFilePlan(env.readFile, plannedFiles); err != nil {
+				return changed, err
 			}
 			return changed, nil
 		},
