@@ -110,6 +110,24 @@
       </div>
       {{end}}
     </div>
+
+    {{if gt (len .Records) 1}}
+    <h2>All records for this action</h2>
+    <table class="records-table">
+      <thead><tr><th>Seq</th><th>Phase</th><th>Verdict</th><th>Layer</th><th>Pattern</th></tr></thead>
+      <tbody>
+      {{range .Records}}
+      <tr>
+        <td class="mono">{{.ChainSeq.Detail}}</td>
+        <td>{{.DecisionPhase.Detail}}</td>
+        <td>{{.Verdict.Detail}}</td>
+        <td>{{.Layer.Detail}}</td>
+        <td class="mono">{{.Pattern.Detail}}</td>
+      </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
   </main>
 </body>
 </html>

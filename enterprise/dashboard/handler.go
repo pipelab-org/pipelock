@@ -945,7 +945,9 @@ type investigatorPageData struct {
 	SessionID   string
 	Seq         string
 	Explanation evidenceview.DecisionExplanation
-	RawAllowed  bool
+	// Records lists every record of the action in chain order.
+	Records    []evidenceview.DecisionExplanation
+	RawAllowed bool
 }
 
 func (d *dashboardHandler) handleAgents(w http.ResponseWriter, r *http.Request) {
@@ -1246,7 +1248,7 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 		return
 	}
 	actionID := parts[2]
-	explanation, found, err := d.model.ReceiptDetail(sessionID, actionID)
+	detail, found, err := d.model.ReceiptActionDetail(sessionID, actionID)
 	if err != nil {
 		http.Error(w, "could not read receipt detail", http.StatusInternalServerError)
 		return
@@ -1256,14 +1258,21 @@ func (d *dashboardHandler) handleSessionReceipt(w http.ResponseWriter, r *http.R
 		return
 	}
 	raw := rawAllowedFromContext(r)
+	explanation, records := detail.Headline, detail.Records
 	if !raw {
 		explanation = evidenceview.RedactExplanation(explanation)
+		redacted := make([]evidenceview.DecisionExplanation, len(records))
+		for i, rec := range records {
+			redacted[i] = evidenceview.RedactExplanation(rec)
+		}
+		records = redacted
 	}
 	data := investigatorPageData{
 		Nav:         navFromContext(r),
 		SessionID:   sessionID,
 		Seq:         explanation.ChainSeq.Detail,
 		Explanation: explanation,
+		Records:     records,
 		RawAllowed:  raw,
 	}
 	var buf bytes.Buffer
