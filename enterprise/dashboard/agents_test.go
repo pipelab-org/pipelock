@@ -1117,14 +1117,6 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 			},
 			wantPhase: receipt.DecisionPhaseIntent, wantVerdict: "warn",
 		},
-		{
-			name: "allow_resolution_replaces_defer",
-			steps: []step{
-				{receipt.DecisionPhaseDefer, "defer", "approval", "awaiting approval"},
-				{receipt.DecisionPhaseResolution, "allow", "approval", "approved"},
-			},
-			wantPhase: receipt.DecisionPhaseResolution, wantVerdict: "allow",
-		},
 	} {
 		for _, reversed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/reversed=%t", tc.name, reversed), func(t *testing.T) {
@@ -1145,6 +1137,69 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 			})
 		}
 	}
+
+	// The MCP resolution emitter writes the resolution under a fresh action
+	// ID and links it to the deferred call through ParentActionID and DeferID.
+	signDeferPair := func(t *testing.T, resolutionVerdict string) []receipt.Receipt {
+		t.Helper()
+		held := validDashboardAction(0, receipt.GenesisHash, base)
+		held.DecisionPhase, held.Verdict, held.Layer, held.Pattern, held.DeferID = receipt.DecisionPhaseDefer, "defer", "policy", "awaiting approval", "defer-1"
+		head, err := receipt.Sign(held, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prev, err := receipt.ReceiptHash(head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := validDashboardAction(1, prev, base.Add(time.Second))
+		res.DecisionPhase, res.Verdict, res.Layer, res.Pattern = receipt.DecisionPhaseResolution, resolutionVerdict, "authority", "approved"
+		res.ParentActionID, res.DeferID = held.ActionID, held.DeferID
+		if res.ActionID == held.ActionID {
+			t.Fatal("fixture must give the resolution its own action ID")
+		}
+		tail, err := receipt.Sign(res, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []receipt.Receipt{head, tail}
+	}
+	for _, verdict := range []string{"allow", "block"} {
+		for _, reversed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("linked_resolution_settles_defer/%s/reversed=%t", verdict, reversed), func(t *testing.T) {
+				dir := t.TempDir()
+				pair := signDeferPair(t, verdict)
+				deferID := pair[0].ActionRecord.ActionID
+				if reversed {
+					pair[0], pair[1] = pair[1], pair[0]
+				}
+				writeReceiptsToDir(t, dir, pair)
+				exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, deferID)
+				if err != nil || !found {
+					t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+				}
+				if exp.DecisionPhase.Detail != receipt.DecisionPhaseResolution || exp.Verdict.Detail != verdict {
+					t.Fatalf("selected %s/%s, want resolution/%s", exp.DecisionPhase.Detail, exp.Verdict.Detail, verdict)
+				}
+			})
+		}
+	}
+
+	t.Run("unrelated_resolution_does_not_join", func(t *testing.T) {
+		dir := t.TempDir()
+		pair := signDeferPair(t, "allow")
+		other := pair[1].ActionRecord
+		other.ParentActionID = receipt.NewActionID()
+		tail, err := receipt.Sign(other, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeReceiptsToDir(t, dir, []receipt.Receipt{pair[0], tail})
+		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, pair[0].ActionRecord.ActionID)
+		if err != nil || !found || exp.DecisionPhase.Detail != receipt.DecisionPhaseDefer {
+			t.Fatalf("unrelated resolution joined: phase=%q found=%v err=%v", exp.DecisionPhase.Detail, found, err)
+		}
+	})
 
 	t.Run("truncated_view_still_shows_legacy_record", func(t *testing.T) {
 		dir := t.TempDir()

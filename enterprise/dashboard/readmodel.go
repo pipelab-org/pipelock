@@ -287,7 +287,7 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 	awaiting, terminal := false, false
 	for i := range receipts {
 		r := &receipts[i]
-		if r.ActionRecord.ActionID != actionID {
+		if !receiptBelongsToAction(r, actionID) {
 			continue
 		}
 		awaiting = awaiting || awaitsTerminalPhase(r)
@@ -422,6 +422,15 @@ func terminalReceiptPhase(r *receipt.Receipt) bool {
 	default:
 		return false
 	}
+}
+
+// receiptBelongsToAction reports whether r records the action actionID. A
+// deferred call's resolution is written under its own action ID and names the
+// deferred call through ParentActionID, so it joins the defer it settles.
+func receiptBelongsToAction(r *receipt.Receipt, actionID string) bool {
+	ar := r.ActionRecord
+	return ar.ActionID == actionID ||
+		(ar.DecisionPhase == receipt.DecisionPhaseResolution && ar.ParentActionID == actionID)
 }
 
 // preferReceiptDetail reports whether candidate should replace current as
