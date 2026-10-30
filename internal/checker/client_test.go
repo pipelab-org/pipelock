@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 )
 
 func testItem() Item {
@@ -338,15 +340,28 @@ func TestCheckedDialFallback(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	// An expired deadline stops the walk after the failed attempt.
+	// An expired deadline makes no attempt and reports the context error.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	dialed = nil
 	if _, err := checkedDial(lookup, func(context.Context, string, string) (net.Conn, error) {
 		dialed = append(dialed, "attempt")
 		return nil, errors.New("canceled")
-	})(ctx, "tcp", "api.vendor.example:443"); err == nil || len(dialed) != 1 {
+	})(ctx, "tcp", "api.vendor.example:443"); !errors.Is(err, context.Canceled) || len(dialed) != 0 {
 		t.Fatalf("err=%v attempts=%d", err, len(dialed))
+	}
+
+	// A name with many unreachable records is bounded by the shared fallback cap.
+	many := make([]net.IPAddr, 0, 4)
+	for _, s := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4"} {
+		many = append(many, net.IPAddr{IP: net.ParseIP(s)})
+	}
+	dialed = nil
+	if _, err := checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return many, nil }, func(context.Context, string, string) (net.Conn, error) {
+		dialed = append(dialed, "attempt")
+		return nil, errors.New("unreachable")
+	})(t.Context(), "tcp", "api.vendor.example:443"); err == nil || len(dialed) != dialfallback.MaxAttempts {
+		t.Fatalf("err=%v attempts=%d, want %d", err, len(dialed), dialfallback.MaxAttempts)
 	}
 }
 
