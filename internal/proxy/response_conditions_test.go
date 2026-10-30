@@ -35,8 +35,14 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 			{name: "stale conditional range", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART full representation", method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "bare range", headers: http.Header{"Range": {"bytes=0-3"}}, body: "PART full representation", method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "range full scan", headers: http.Header{"Range": {"bytes=0-3"}, "If-Range": {`"stale"`}}, body: "PART hidden_instruction", method: http.MethodGet, status: http.StatusForbidden, early: true},
-			{name: "open resume", headers: http.Header{"Range": {"bytes=18-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "open resume restarts in full", headers: http.Header{"Range": {"bytes=18-"}}, body: "full representation", method: http.MethodGet, status: http.StatusOK},
+			{name: "conditional open resume restarts in full", headers: http.Header{"Range": {"bytes=18-"}, "If-Range": {`"origin"`}}, body: "full representation", method: http.MethodGet, status: http.StatusOK},
+			{name: "open resume full scan", headers: http.Header{"Range": {"bytes=18-"}}, body: "full hidden_instruction", method: http.MethodGet, status: http.StatusForbidden},
+			{name: "finite resume", headers: http.Header{"Range": {"bytes=18-23"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "suffix range", headers: http.Header{"Range": {"bytes=-6"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "multi range", headers: http.Header{"Range": {"bytes=0-1,18-19"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "multi open range", headers: http.Header{"Range": {"bytes=18-,20-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
+			{name: "repeated open range", headers: http.Header{"Range": {"bytes=18-", "bytes=18-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "empty first range", headers: http.Header{"Range": {"", "bytes=18-"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "zero suffix", headers: http.Header{"Range": {"bytes=-0"}}, method: http.MethodGet, status: http.StatusForbidden, early: true},
 			{name: "zero length resource range", headers: http.Header{"Range": {"bytes=0-"}}, method: http.MethodGet, status: http.StatusOK},
@@ -135,7 +141,14 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 					}
 					return
 				}
-				upstreamHeaders := <-seen
+				// The handler records headers before responding, so a request
+				// that reached the origin has already been recorded here.
+				var upstreamHeaders http.Header
+				select {
+				case upstreamHeaders = <-seen:
+				default:
+					t.Fatalf("request did not reach origin: status=%d body=%q", resp.StatusCode, body)
+				}
 				for _, name := range []string{"Range", "If-Range", "If-None-Match", "If-Modified-Since"} {
 					if got := upstreamHeaders.Get(name); got != "" {
 						t.Errorf("upstream %s=%q, want removed", name, got)
@@ -264,6 +277,7 @@ func TestFullResponsePolicyConditionalSiblings(t *testing.T) {
 			{name: "head still ok", method: http.MethodHead, headers: http.Header{"If-None-Match": {`"origin"`}, "Range": {"bytes=0-3"}}, mode: "full-ok", wantStatus: http.StatusOK},
 			{name: "hostile 206 clean slice", method: http.MethodGet, mode: "always-206-clean", wantStatus: http.StatusForbidden},
 			{name: "hostile 206 marker slice", method: http.MethodGet, mode: "always-206-marker", wantStatus: http.StatusForbidden},
+			{name: "hostile 206 to open resume", method: http.MethodGet, headers: http.Header{"Range": {"bytes=2-"}}, mode: "always-206-clean", wantStatus: http.StatusForbidden},
 			{name: "412 marker body", method: http.MethodGet, headers: http.Header{"If-Match": {`"nope"`}}, mode: "412-marker", wantStatus: http.StatusForbidden, wantIfMatch: true},
 			{name: "416 marker body", method: http.MethodGet, mode: "416-marker", wantStatus: http.StatusForbidden},
 			{name: "gzip marker", method: http.MethodGet, headers: http.Header{"Accept-Encoding": {"gzip"}, "If-None-Match": {`"origin"`}}, mode: "gzip-marker", wantStatus: http.StatusForbidden},
@@ -471,5 +485,33 @@ func TestReverseIncompleteResponseReceipts(t *testing.T) {
 			}
 			assertReverseIntentOutcomePair(t, records, "status=403", "reason="+pattern)
 		})
+	}
+}
+
+func TestOpenEndedByteRange(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  bool
+	}{
+		{"bytes=0-", true},
+		{"bytes=18-", true},
+		{" bytes=18- ", true},
+		{"BYTES=18-", true},
+		{"bytes=18-23", false},
+		{"bytes=-6", false},
+		{"bytes=-", false},
+		{"bytes=18-,20-", false},
+		{"bytes=0-1,18-", false},
+		{"bytes= 18-", false},
+		{"bytes=+18-", false},
+		{"bytes=1e3-", false},
+		{"bytes=١٨-", false},
+		{"items=18-", false},
+		{"bytes18-", false},
+		{"", false},
+	} {
+		if got := openEndedByteRange(tc.value); got != tc.want {
+			t.Errorf("openEndedByteRange(%q)=%v, want %v", tc.value, got, tc.want)
+		}
 	}
 }
