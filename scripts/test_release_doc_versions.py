@@ -3,15 +3,22 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
 
-from scripts.release_doc_versions import check
+from scripts.release_doc_versions import (
+    DISCOVER_VERSION, REGISTRY, _canonical_stats, check as check_inventory,
+    check_document_versions as check,
+)
 from scripts.yaml_contracts import WorkflowLoader
 
 
@@ -32,7 +39,28 @@ def write_tree(root: Path, *, current: str = CURRENT, health: str = '  "version"
     health_path = root / "docs" / "guides" / "health.md"
     health_path.parent.mkdir(parents=True, exist_ok=True)
     health_path.write_text(health, encoding="utf-8")
+    (root / "release").mkdir(exist_ok=True)
+    (root / "release/version.txt").write_text("3.6.0")
+    registry = minimal_registry()
+    registry["surfaces"] = [
+        {"id": path, "path": path, "pattern": r"(?P<value>" + DISCOVER_VERSION.pattern + r")",
+         "expected": "source:product", "format": "version", "count": count,
+         "reason": "Current operator instructions."}
+        for path, count in (("README.md", 6), ("docs/guides/health.md", 1))
+    ]
+    (root / REGISTRY).write_text(json.dumps(registry))
 
+
+
+def minimal_registry() -> dict:
+    return {
+        "schema_version": 1,
+        "sources": {"product": {"path": "release/version.txt", "pattern": r"^(?P<value>[^\n]+)$"}},
+        "scan": {"roots": ["README.md", "docs"], "suffixes": [".md"], "exclude": []},
+        "surfaces": [],
+        "external": [{"id": "site", "owner": "example/site", "url": "https://site.example/",
+                      "reason": "The site owns homepage numbers."}],
+    }
 
 class ReleaseDocVersionTests(unittest.TestCase):
     def test_repository_matches_chart_app_version(self) -> None:
@@ -41,7 +69,7 @@ class ReleaseDocVersionTests(unittest.TestCase):
             (ROOT / "charts/pipelock/Chart.yaml").read_text(encoding="utf-8"),
             Loader=WorkflowLoader,
         )
-        self.assertEqual(check(ROOT, f"v{chart['appVersion']}"), [])
+        self.assertEqual(check_inventory(ROOT, f"v{chart['appVersion']}"), [])
 
     def test_known_current_pins_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -245,6 +273,7 @@ class ReleaseDocVersionTests(unittest.TestCase):
             "gh release download --pattern=pipelock_3.5.0_linux_amd64.tar.gz v3.6.0",
             "gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --owner luckyPipewrench",
             "tar xzf pipelock_3.5.0_linux_amd64.tar.gz",
+            "tar xzf pipelock-verifier_3.5.0_linux_amd64.tar.gz",
             "image: ghcr.io/luckypipewrench/pipelock-init:3.5.0",
         )
         for source in commands:
@@ -268,6 +297,164 @@ class ReleaseDocVersionTests(unittest.TestCase):
             findings = check(root, "v3.6.0")
             self.assertTrue(any("missing required current-release surface: Helm" in finding for finding in findings), findings)
 
+class ReleaseSurfaceRegistryTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        write_tree(self.root)
+        self.registry = json.loads((self.root / REGISTRY).read_text())
+
+    def save(self) -> None:
+        (self.root / REGISTRY).write_text(json.dumps(self.registry))
+
+    def add_surface(self, *, text="Release package 3.6.0\n", pattern=None, expected="source:product", fmt="version") -> Path:
+        path = self.root / "docs/current.md"
+        path.write_text(text)
+        self.registry["surfaces"].append({
+            "id": "additional-release-surface", "path": "docs/current.md",
+            "pattern": pattern or r"Release package (?P<value>[^\s]+)",
+            "expected": expected, "count": 1, "reason": "Current package instructions.", "format": fmt,
+        })
+        self.save()
+        return path
+
+    def test_registered_drift_and_missing_surface_fail(self) -> None:
+        path = self.add_surface()
+        self.assertEqual(check_inventory(self.root), [])
+        path.write_text("Release package 3.5.0\n")
+        issues = check_inventory(self.root)
+        self.assertTrue(any("additional-release-surface has '3.5.0', expected '3.6.0'" in issue for issue in issues), issues)
+        path.write_text("Package instructions without a version\n")
+        self.assertTrue(any("matched 0 times, expected 1" in issue for issue in check_inventory(self.root)))
+        path.unlink()
+        self.assertTrue(any("unreadable" in issue for issue in check_inventory(self.root)))
+
+    def test_new_surface_requires_registration_even_when_current(self) -> None:
+        (self.root / "docs/new-install.md").write_text("Release package v3.6.0\n")
+        issues = check_inventory(self.root)
+        self.assertTrue(any("new-install.md:1: unregistered" in issue for issue in issues), issues)
+
+    def test_new_public_test_count_requires_registration(self) -> None:
+        (self.root / "docs/new-count.md").write_text("12,000 tests\n")
+        self.assertTrue(any("unregistered" in issue and "12,000" in issue for issue in check_inventory(self.root)))
+
+    def test_added_and_removed_occurrences_are_not_silent(self) -> None:
+        path = self.add_surface()
+        path.write_text(path.read_text() * 2)
+        self.assertTrue(any("matched 2 times, expected 1" in issue for issue in check_inventory(self.root)))
+
+    def test_source_driven_figure_tracks_stats_and_denies_drift(self) -> None:
+        path = self.add_surface(text="65 built-in patterns\n", pattern=r"(?P<value>\d+) built-in patterns", expected="stats:DLP patterns", fmt="number")
+        with mock.patch("scripts.release_doc_versions._canonical_stats", return_value={"stats:DLP patterns": "65"}):
+            self.assertEqual(check_inventory(self.root), [])
+            path.write_text("64 built-in patterns\n")
+            self.assertTrue(any("expected '65'" in issue for issue in check_inventory(self.root)))
+        path.write_text("66 built-in patterns\n")
+        with mock.patch("scripts.release_doc_versions._canonical_stats", return_value={"stats:DLP patterns": "66"}):
+            self.assertEqual(check_inventory(self.root), [])
+
+    def test_historical_snapshot_is_bound_to_its_numbers(self) -> None:
+        text = "Measured 1,000 requests on v3.5.0\n"
+        path = self.add_surface(text=text, pattern=r"\A(?P<value>[\s\S]+)\Z", expected=hashlib.sha256(text.encode()).hexdigest(), fmt="sha256")
+        self.assertEqual(check_inventory(self.root), [])
+        path.write_text(text.replace("1,000", "2,000"))
+        self.assertTrue(any("additional-release-surface has" in issue for issue in check_inventory(self.root)))
+
+    def test_source_versions_can_advance_without_changing_selectors(self) -> None:
+        path = self.add_surface()
+        for relative in ("README.md", "docs/guides/health.md", "docs/current.md", "release/version.txt"):
+            target = self.root / relative
+            target.write_text(target.read_text().replace("3.6.0", "4.0.0-beta.1"))
+        self.assertEqual(check_inventory(self.root), [])
+        self.assertEqual(check_inventory(self.root, "v4.0.0-beta.1"), [])
+        path.write_text("Release package 3.6.0\n")
+        self.assertTrue(check_inventory(self.root, "v4.0.0-beta.1"))
+
+    def test_registry_and_source_errors_fail_closed(self) -> None:
+        bad_registries = []
+        for key, value in (("schema_version", 2), ("sources", {}), ("surfaces", []), ("external", [])):
+            bad = copy.deepcopy(self.registry)
+            bad[key] = value
+            bad_registries.append(bad)
+        for key, value in (("pattern", "("), ("pattern", "no capture"), ("count", 0), ("count", True), ("expected", "source:missing"), ("reason", ""), ("path", "../outside.md")):
+            bad = copy.deepcopy(self.registry)
+            bad["surfaces"][0][key] = value
+            bad_registries.append(bad)
+        bad = copy.deepcopy(self.registry)
+        bad["surfaces"].append(bad["surfaces"][0])
+        bad_registries.append(bad)
+        bad = copy.deepcopy(self.registry)
+        bad["scan"]["roots"].append("absent")
+        bad_registries.append(bad)
+        bad = copy.deepcopy(self.registry)
+        bad["external"][0].pop("owner")
+        bad_registries.append(bad)
+        for bad in bad_registries:
+            with self.subTest(registry=bad):
+                (self.root / REGISTRY).write_text(json.dumps(bad))
+                self.assertTrue(any("invalid or unreadable" in issue for issue in check_inventory(self.root)))
+        for text in ('{', '{"schema_version":1,"schema_version":1}'):
+            (self.root / REGISTRY).write_text(text)
+            self.assertTrue(check_inventory(self.root))
+        self.save()
+        (self.root / "release/version.txt").write_text("invalid")
+        self.assertTrue(any("malformed version" in issue for issue in check_inventory(self.root)))
+        (self.root / REGISTRY).unlink()
+        self.assertTrue(check_inventory(self.root))
+
+    def test_independent_json_and_toml_versions_and_source_cardinality(self) -> None:
+        for kind, body in (("json", '{"package":{"version":"0.7.0"}}'), ("toml", '[package]\nversion="0.7.0"\n')):
+            with self.subTest(kind=kind):
+                (self.root / "release/package.txt").write_text(body)
+                self.registry["sources"]["independent"] = {"path": "release/package.txt", kind: ["package", "version"]}
+                path = self.add_surface(text="Release package 0.7.0\n", expected="source:independent")
+                self.assertEqual(check_inventory(self.root), [])
+                path.write_text("Release package 3.6.0\n")
+                self.assertTrue(any("expected '0.7.0'" in issue for issue in check_inventory(self.root)))
+                self.registry["surfaces"].pop()
+        self.registry["sources"]["product"]["pattern"] = "no match"
+        self.save()
+        self.assertTrue(any("exactly once" in issue for issue in check_inventory(self.root)))
+
+    def test_stats_requires_pass_and_each_canonical_metric(self) -> None:
+        output = "--- PASS: TestCanonicalStats (0.00s)\n" + "\n".join(f"{name}: 1" for name in ("DLP patterns", "Response patterns", "Chain patterns", "Preset files", "Direct deps"))
+        for status, text, succeeds in ((0, output, True), (1, output, False), (0, "PASS", False), (0, output.replace("Direct deps: 1", ""), False), (0, output + "\nDirect deps: 1", False)):
+            with self.subTest(status=status, output=text), mock.patch("scripts.release_doc_versions.subprocess.run", return_value=subprocess.CompletedProcess([], status, stdout=text, stderr="")):
+                if succeeds:
+                    self.assertEqual(_canonical_stats(self.root)["stats:DLP patterns"], "1")
+                else:
+                    with self.assertRaises(ValueError):
+                        _canonical_stats(self.root)
+
+    def test_workflow_binary_version_is_bound_to_its_own_step(self) -> None:
+        docs = (ROOT / "scripts/docs-check.sh").read_text()
+        start = docs.index("check_pipelock_workflow_version()")
+        function = docs[start:docs.index("check_conductor_serve_scope()", start)]
+        for owner in ("luckyPipewrench", "pipelab-org"):
+            for version, status in (("3.6.0", 0), ("3.5.0", 1), ("3 .6.0", 1)):
+                with self.subTest(owner=owner, version=version):
+                    path = self.root / "workflow.yaml"
+                    path.write_text("      - name: Scan\n        uses: " + owner + "/pipelock@main\n        with:\n          version: '" + version + "'\n      - run: echo 3.6.0\n")
+                    result = subprocess.run(["bash", "-c", function + '\ncheck_pipelock_workflow_version "$1" "$2"', "workflow-check", str(path), "3.6.0"], capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, status, result.stderr)
+
+    def test_doc_check_and_preflight_use_the_same_checker(self) -> None:
+        docs = (ROOT / "scripts/docs-check.sh").read_text()
+        preflight = (ROOT / "scripts/check-release-ready.sh").read_text()
+        self.assertIn('python3 "$repo_root/scripts/release_doc_versions.py" "$repo_root"', docs)
+        self.assertIn('python3 "$REPO_ROOT/scripts/release_doc_versions.py" "$REPO_ROOT" "$VERSION"', preflight)
+        self.assertIn('check_pipelock_workflow_version "$workflow" "$current_version"', docs)
+        self.assertNotIn("3\\.7\\.0", docs)
+
+    def test_both_current_and_historical_repository_names_remain_checked(self) -> None:
+        for owner in ("luckyPipewrench", "pipelab-org"):
+            with self.subTest(owner=owner):
+                current = CURRENT.replace("luckyPipewrench", owner).replace("luckypipewrench", owner.lower())
+                write_tree(self.root, current=current)
+                self.assertEqual(check(self.root, "v3.6.0"), [])
+                write_tree(self.root, current=current.replace("3.6.0", "3.5.0"))
+                self.assertTrue(check(self.root, "v3.6.0"))
 
 
 if __name__ == "__main__":

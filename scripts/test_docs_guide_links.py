@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.release_doc_versions import _load_registry, _source_values
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,11 +45,15 @@ class DocsGuideLinksTest(unittest.TestCase):
             (self.root / "docs" / name).write_text("", encoding="utf-8")
         for name in ("ci-workflow.yaml", "ci-workflow-advanced.yaml"):
             shutil.copyfile(ROOT / "examples" / name, self.root / "examples" / name)
-        # The gate's unrelated brand, stats and Go checks remain in the script.
+        # The gate's unrelated brand, release registry and Go checks remain in the script.
         # Stub their executables so this test exercises only the documentation path.
         (self.root / "scripts/render_brand.py").write_text("print('brand-check fixture')\n", encoding="utf-8")
         (self.root / "scripts/check_kill_switch_source_count.py").write_text("", encoding="utf-8")
-        for command in ("make", "go"):
+        self.current_version = _source_values(ROOT, _load_registry(ROOT), None)["product"]
+        (self.root / "scripts/release_doc_versions.py").write_text(
+            f"print({self.current_version!r})\n", encoding="utf-8",
+        )
+        for command in ("go",):
             path = self.bin / command
             path.write_text(f"#!/usr/bin/env bash\nprintf '%s\\n' '{command} fixture'\n", encoding="utf-8")
             path.chmod(0o700)
@@ -74,7 +80,7 @@ class DocsGuideLinksTest(unittest.TestCase):
         result = self.run_gate()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("example-guide-links: OK (1 guide/example relationships)", result.stdout)
-        for output in ("brand-check fixture", "make fixture", "go fixture", "docs-check: ok"):
+        for output in ("brand-check fixture", f"docs-check: release registry OK (v{self.current_version})", "go fixture", "docs-check: ok"):
             self.assertIn(output, result.stdout)
 
     def test_missing_backlink_fails(self):

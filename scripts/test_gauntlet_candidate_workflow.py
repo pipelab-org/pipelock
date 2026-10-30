@@ -76,7 +76,7 @@ class GauntletCandidateWorkflowTest(unittest.TestCase):
     def test_benchmark_checkout_is_immutable_and_verified(self):
         self.assertIn(f"AEB_REF: {EXPECTED_AEB_REF}", self.workflow)
         checkout = step_block(self.workflow, "Check out pinned Agent Egress Bench")
-        self.assertIn("repository: luckyPipewrench/agent-egress-bench", checkout)
+        self.assertIn("repository: pipelab-org/agent-egress-bench", checkout)
         self.assertIn("ref: ${{ env.AEB_REF }}", checkout)
         self.assertNotRegex(checkout, r"ref:\s+(main|master|v[0-9])")
         # The checkout needs full history for the tag resolution below to be possible.

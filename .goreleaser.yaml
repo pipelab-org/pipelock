@@ -176,7 +176,7 @@ brews:
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    homepage: "https://github.com/luckyPipewrench/pipelock"
+    homepage: "https://github.com/pipelab-org/pipelock"
     description: "Security firewall for AI agents"
     license: "Apache-2.0 AND Elastic-2.0"
     directory: Formula
