@@ -18,7 +18,7 @@ fetch_proxy:
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 2048
+    max_url_length: 8000 # RFC 9110 section 4.1 URI interoperability recommendation
     entropy_threshold: 4.5
     max_requests_per_minute: 0
     blocklist:

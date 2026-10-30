@@ -455,7 +455,8 @@ const (
 	// Re-bumped when GitHub package registries gained a compiled Basic
 	// audience, RubyGems gained Bearer, and the container-registry JWT
 	// gained a bearer audience for ghcr.io.
-	goldenHashDefaults = "57cf6ccb637f0070db5dd5f05ac563991a8758217d1107071b57ec0820dff92d"
+	// Re-bumped for the RFC 9110 section 4.1 default URI size (8000 octets).
+	goldenHashDefaults = "6038a97f76bc091b23dc0eaf51394a0bcad758ce5b6b1e7ffa707dfde7a77e32"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -1269,8 +1270,9 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// the GitLab native token headers in the default sensitive headers.
 		// the compiled Authorization-only Google credential audience policy and the
 		// JWT Token URL-query audience.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "e9b56ac324d2bfb7bfe7e7d642c206e2ee08e6a88646e09b57ef155960e9e4b3"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "568505b4feef4d0ab453316c46f31cf4848629dd536b9786d90ea8886e6d96f0"},
+		// They inherit the RFC 9110 default URI limit of 8000 octets.
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "12f51d19e8f04a354cc18cd70866a81977e5dd6d3a9ace9e041f5348846823eb"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "19727c57d8836daecc0d9a7f927581f20b094f42fd496c9adb9496af84f85781"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

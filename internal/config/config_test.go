@@ -3772,8 +3772,8 @@ func TestApplyDefaults_GitProtectionEnabledPreservesBranches(t *testing.T) {
 func TestApplyDefaults_MonitoringDefaults(t *testing.T) {
 	cfg := &Config{}
 	cfg.ApplyDefaults()
-	if cfg.FetchProxy.Monitoring.MaxURLLength != 2048 {
-		t.Errorf("expected default max URL length 2048, got %d", cfg.FetchProxy.Monitoring.MaxURLLength)
+	if cfg.FetchProxy.Monitoring.MaxURLLength != 8000 {
+		t.Errorf("expected default max URL length 8000, got %d", cfg.FetchProxy.Monitoring.MaxURLLength)
 	}
 	if cfg.FetchProxy.Monitoring.EntropyThreshold != 4.5 {
 		t.Errorf("expected default entropy threshold 4.5, got %f", cfg.FetchProxy.Monitoring.EntropyThreshold)

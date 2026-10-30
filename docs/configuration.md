@@ -141,7 +141,7 @@ fetch_proxy:
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 2048
+    max_url_length: 8000
     entropy_threshold: 4.5
     max_requests_per_minute: 60
     max_data_per_minute: 0        # bytes/min per domain (0 = disabled)
@@ -165,7 +165,7 @@ fetch_proxy:
 | `timeout_seconds` | `30` | HTTP request timeout |
 | `max_response_mb` | `10` | Max response body size |
 | `user_agent` | `Pipelock Fetch/1.0` | User-Agent header sent upstream |
-| `monitoring.max_url_length` | `2048` | URLs longer than this are blocked |
+| `monitoring.max_url_length` | `8000` | URLs longer than this octet limit are blocked before parsing; the default follows [RFC 9110 §4.1](https://www.rfc-editor.org/rfc/rfc9110.html#section-4.1). The entire admitted URL is scanned. Explicit smaller limits remain supported. |
 | `monitoring.entropy_threshold` | `4.5` | Shannon entropy threshold for path segments. A configured value must be greater than 0; omit the field to take the default. No upper bound is enforced. |
 | `monitoring.max_requests_per_minute` | `60` | Per-base-domain rate limit; every subdomain shares one budget. Per-agent override: `agents.<name>.rate_limit` (Pro), which replaces both ceilings |
 | `monitoring.max_data_per_minute` | `0` | Per-base-domain byte budget (0 = disabled); every subdomain shares one budget. Per-agent override: `agents.<name>.rate_limit` (Pro), which replaces both ceilings |
@@ -3028,7 +3028,7 @@ Key differences between presets:
 
 | Setting | Balanced | Strict | Claude Code |
 |---------|----------|--------|-------------|
-| Max URL Length | 2048 | 500 | 4096 |
+| Max URL Length | 8000 | 500 | 4096 |
 | Entropy Threshold | 4.5 | 3.5 | 5.0 |
 | Rate Limit | 60/min | 30/min | 120/min |
 | API Allowlist | LLM + comms | LLM + comms | LLM + dev tools |
