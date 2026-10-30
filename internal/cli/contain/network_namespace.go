@@ -560,8 +560,8 @@ func probeAgentProcessNamespaces(_ context.Context, env *probeEnv, agentNamespac
 }
 
 // processSystemdUnit returns the last component of a process's unified
-// cgroup path, e.g. "pipelock-agent-display.service" or "session-3.scope",
-// or "" when it cannot be read.
+// cgroup path after systemd cgroup-name unescaping, e.g.
+// "pipelock-agent-display.service" or "session-3.scope", or "" when unreadable.
 func processSystemdUnit(readFile func(string) ([]byte, error), cgroupPath string) string {
 	data, err := readFile(cgroupPath)
 	if err != nil {
@@ -569,7 +569,11 @@ func processSystemdUnit(readFile func(string) ([]byte, error), cgroupPath string
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if path, ok := strings.CutPrefix(strings.TrimSpace(line), "0::"); ok {
-			return filepath.Base(path)
+			// systemd v257 src/basic/cgroup-util.c:1555-1592 prefixes
+			// reserved cgroup names with one underscore (cg_escape), and
+			// cg_unescape removes exactly that prefix. Unit-name \xNN
+			// escapes remain literal; they are part of the unit identity.
+			return strings.TrimPrefix(filepath.Base(path), "_")
 		}
 	}
 	return ""

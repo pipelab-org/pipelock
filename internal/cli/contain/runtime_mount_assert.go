@@ -16,6 +16,7 @@ import (
 // systemd service code (v257 exec-invoke.c:3323, also v261:3933) uses
 // /run/systemd/incoming, despite systemd.exec(5) naming /run/host/incoming.
 const (
+	systemdCredentialsPath = "/run/credentials"
 	systemdIncomingPath    = "/run/systemd/incoming"
 	systemdPropagationRoot = "/systemd/propagate/"
 )
@@ -54,7 +55,7 @@ func runtimeMountRefusal(err error) error {
 		return fmt.Errorf("runtime socket isolation is not applied: %w; retain the managed ProtectHome=tmpfs profile, remove conflicting unit overrides or binds at this path, rerun `pipelock contain install` and restart the agent service", err)
 	}
 	if errors.Is(err, errUnexpectedRuntimeExposure) {
-		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind, unit drop-in or credential setting (for example LoadCredential creates /run/credentials) exposing this path, then restart the agent service", err)
+		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind or conflicting unit drop-in exposing this path; LoadCredential= and LoadCredentialEncrypted= are supported only with a verified root-owned, read-only /run/credentials/<this-unit> store beneath its private parent mask and a visible service identity in /proc/self/cgroup; retain the runtime masks, then restart the agent service", err)
 	}
 	return fmt.Errorf("runtime socket isolation is not applied: %w; add %s to the agent unit; update managed wrappers with `pipelock contain install` and restart the agent service", err, strings.Join(runtimeSocketProperties(), ", "))
 }
@@ -123,8 +124,17 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		return fmt.Errorf("%w: inspect isolated runtime directory /run: %w", errRuntimeMountEvidenceUnavailable, err)
 	}
 	// Enumerate the whole runtime tree, including mounts hidden by overmounts.
-	// Only the declared private masks, identity bind and propagation bind belong.
+	// Only declared masks, the identity bind and verified systemd mounts belong.
 	allowed := map[string]bool{containedNamespaceIdentityPath: true, systemdIncomingPath: true}
+	_, credentialsMounted := self[systemdCredentialsPath]
+	if credentialsMounted || slices.ContainsFunc(entries, func(entry os.DirEntry) bool { return entry.Name() == "credentials" }) {
+		path, err := checkSystemdCredentials(env, self, hostDevices)
+		if err != nil {
+			return err
+		}
+		allowed[systemdCredentialsPath] = true
+		allowed[path] = true
+	}
 	protectHome := slices.Contains(env.unitProperties, protectHomeTmpfsProperty)
 	if protectHome {
 		allowed["/run/user"] = true
@@ -150,6 +160,8 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
 		switch entry.Name() {
+		case "credentials":
+			// The parent mask and this unit's store were verified above.
 		case "pipelock-contain":
 			// The identity directory is checked below.
 		case "user":
