@@ -85,6 +85,22 @@ func TestInjectionAssessmentCombinedViews(t *testing.T) {
 	}
 }
 
+func TestInjectionAssessmentUTF16WithoutRawWording(t *testing.T) {
+	sc := MustNew(testConfig())
+	t.Cleanup(sc.Close)
+	for _, text := range []string{"OK", "你好世界"} {
+		for _, littleEndian := range []bool{false, true} {
+			body := encodeUTF16ResponseBody(text, littleEndian, true)
+			for range 2 {
+				result := sc.ScanResponseBodyWithSuppress(t.Context(), body, "", nil)
+				if !result.Clean || result.Failed() || result.Assessment.Status != AssessmentBenign {
+					t.Errorf("text=%q littleEndian=%v: decoded wording lost assessment: %+v", text, littleEndian, result)
+				}
+			}
+		}
+	}
+}
+
 func TestInjectionAssessmentEvidence(t *testing.T) {
 	sc := MustNew(testConfig())
 	t.Cleanup(sc.Close)

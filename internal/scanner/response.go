@@ -213,6 +213,10 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 					rawResult.StegoDensity = decodedResult.StegoDensity
 				}
 				rawResult.StegoDetected = decodedResult.StegoDetected || rawResult.StegoDetected
+				// The decoded wording was assessed even when the raw bytes
+				// contain no separate wording view. Retain that coverage while
+				// giving raw-view failures and findings their usual precedence.
+				s.setInjectionAssessment(&rawResult, true)
 				return rawResult
 			}
 			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
