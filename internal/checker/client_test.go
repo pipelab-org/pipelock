@@ -627,13 +627,23 @@ func TestSettleAfterCallKeepsOnlyFindings(t *testing.T) {
 	}
 }
 
-func TestResponseHeadersBoundedByPolicy(t *testing.T) {
-	policy := testPolicy()
-	client := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Padding", strings.Repeat("a", int(policy.MaxResponseBytes)*2))
+func TestResponseHeadersBoundedIndependentlyOfBody(t *testing.T) {
+	// Ordinary gateway headers larger than a small body budget still pass.
+	small := testPolicy()
+	small.MaxResponseBytes = 512
+	gateway := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Gateway-Trace", strings.Repeat("a", 2048))
 		goodHandler(t)(w, r)
 	})
-	got := client.Check(t.Context(), testItem(), policy)
+	if got := gateway.Check(t.Context(), testItem(), small); got.State != StateBenign {
+		t.Fatalf("ordinary headers with a small body budget = %+v, want benign", got)
+	}
+	// Headers beyond the standard library's header default are refused.
+	oversized := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Padding", strings.Repeat("a", http.DefaultMaxHeaderBytes+1))
+		goodHandler(t)(w, r)
+	})
+	got := oversized.Check(t.Context(), testItem(), testPolicy())
 	if got.State == StateBenign || got.Status != StatusNotChecked {
 		t.Fatalf("oversized response headers = %+v, want not_checked", got)
 	}

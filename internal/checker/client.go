@@ -250,9 +250,11 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	// deadline so it can reuse a late connection. This client forbids reuse:
 	// each call owns a transport whose dialer uses the original call context.
 	transport := c.http.Transport.(*http.Transport).Clone()
-	// Response headers count against the same policy budget as the body;
-	// net/http's default header allowance is far larger.
-	transport.MaxResponseHeaderBytes = policy.MaxResponseBytes
+	// Response headers get their own bound, independent of the body budget so
+	// a gateway's ordinary headers never fail a small-budget policy. The
+	// transport's default allowance is ten times the standard library's own
+	// header default, which is used here instead.
+	transport.MaxResponseHeaderBytes = http.DefaultMaxHeaderBytes
 	dial := transport.DialContext
 	transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 		conn, dialErr := dial(ctx, network, addr)
