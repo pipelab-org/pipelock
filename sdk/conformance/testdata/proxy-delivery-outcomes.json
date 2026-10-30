@@ -1,0 +1,192 @@
+[
+  {
+    "name": "legacy completion",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "decision_phase": "outcome",
+        "transport": "fetch",
+        "method": "GET",
+        "layer": "outcome",
+        "pattern": "status=200 bytes=16 reason=complete",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:254de9cf7b12f41499ea36e7082de1cf68a211fc39044811e5670d00fee7a46b24ffe50f3a2a2a376ba8345ec402dbb7f1196ddc23d0c8bff5d5d5dd69eea30b",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  },
+  {
+    "name": "admission without outcome",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "decision_phase": "intent",
+        "transport": "fetch",
+        "method": "GET",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:db6dedd282f225c1d88b749edbc1461dafb2eb689d53f4dc05a4dae5591f264b39cc93b5e9696f3607a30eee486ed25d7fc2bc7fbac20b8e8d819585b00aa805",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  },
+  {
+    "name": "delivered representation",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "allow",
+        "decision_phase": "outcome",
+        "transport": "fetch",
+        "method": "GET",
+        "layer": "outcome",
+        "pattern": "status=200 bytes=130 reason=complete captured_bytes=16",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:8b1db10bef231d180f4936525fe3102a785101a08d5e4b4bec75c979811ca459991a8f0b5cab1ba87387903bdd5081ce820355045e21146e6a2c624ed9fe620d",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  },
+  {
+    "name": "upstream failure",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "warn",
+        "decision_phase": "outcome",
+        "transport": "fetch",
+        "method": "GET",
+        "layer": "outcome",
+        "pattern": "status=502 bytes=120 reason=fetch_failed captured_bytes=0",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:dfda62887734847001e2be4104f756914fbf6de3b8c5ed656a654355baa4674dbb62a376c1a1d80cbfeb70b7de0ea873eeeb40c39439227dfb79f43f60302a04",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  },
+  {
+    "name": "partial delivery",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "warn",
+        "decision_phase": "outcome",
+        "transport": "fetch",
+        "method": "GET",
+        "layer": "outcome",
+        "pattern": "status=200 bytes=7 reason=delivery_error captured_bytes=16",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:22484ba4651faec732af4f0bb6efc3ff7cc7729da01155136b51e152eadc132c35db66195c712a60bcb9f1c5b49635c467f1d1d804822f7cbd7ca6646d182c0a",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  },
+  {
+    "name": "denied response",
+    "receipt": {
+      "version": 1,
+      "action_record": {
+        "version": 1,
+        "action_id": "conformance-00000",
+        "action_type": "write",
+        "timestamp": "2026-04-15T12:00:00Z",
+        "principal": "org:conformance-test",
+        "actor": "agent:conformance-runner",
+        "delegation_chain": [
+          "test-policy-v1",
+          "test-grant"
+        ],
+        "target": "https://api.example.com/conformance",
+        "side_effect_class": "external_write",
+        "reversibility": "compensatable",
+        "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "verdict": "block",
+        "decision_phase": "outcome",
+        "transport": "fetch",
+        "method": "GET",
+        "layer": "outcome",
+        "pattern": "status=403 bytes=7 reason=compressed_response captured_bytes=0",
+        "chain_prev_hash": "genesis",
+        "chain_seq": 0
+      },
+      "signature": "ed25519:c042b9e3e5c8a2f892bf00903a922442b259cc19da6db8020e4da397d57e3acf170940a4a9d1096bc9bd39a400a1d040f957118f47b53be1a31ba3b936c8b10c",
+      "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
+    }
+  }
+]

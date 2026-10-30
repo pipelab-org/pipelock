@@ -1729,13 +1729,17 @@ func receiptOutcomePattern(status string, bytesTransferred int64, reason string)
 }
 
 func (p *Proxy) emitOutcomeReceipt(cfg *config.Config, opts receipt.EmitOpts, status string, bytesTransferred int64, reason string) {
+	opts.Verdict = config.ActionAllow
+	p.emitOutcomeReceiptWithPattern(cfg, opts, receiptOutcomePattern(status, bytesTransferred, reason))
+}
+
+func (p *Proxy) emitOutcomeReceiptWithPattern(cfg *config.Config, opts receipt.EmitOpts, pattern string) {
 	if cfg == nil || !cfg.FlightRecorder.RequireReceipts {
 		return
 	}
 	opts.DecisionPhase = receipt.DecisionPhaseOutcome
-	opts.Verdict = config.ActionAllow
 	opts.Layer = receiptOutcomeLayer
-	opts.Pattern = receiptOutcomePattern(status, bytesTransferred, reason)
+	opts.Pattern = pattern
 	opts = withReceiptConfig(opts, cfg)
 	e := p.receiptEmitterPtr.Load()
 	if e == nil {
@@ -6386,10 +6390,30 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		blockreason.SetRecordedReceipt(w.Header(), fetchAllowReceipt.ActionID)
 	}
 	outcomeStatus := "unknown"
-	outcomeBytes := int64(-1)
 	outcomeReason := "incomplete"
+	// Count decoded source bytes before shield rewriting or text extraction.
+	capturedBytes := int64(0)
+	delivery := &fetchDeliveryWriter{ResponseWriter: w}
+	w = delivery
 	defer func() {
-		p.emitOutcomeReceipt(cfg, fetchAllowReceipt, outcomeStatus, outcomeBytes, outcomeReason)
+		verdict := config.ActionAllow
+		// A policy denial describes withheld upstream content, even if its
+		// diagnostic response could not be delivered. Other failures are
+		// observations, not claims of retrospective prevention.
+		denied := delivery.Header().Get(blockreason.HeaderReason) != ""
+		switch {
+		case denied:
+			verdict = config.ActionBlock
+		case delivery.err != nil:
+			verdict = config.ActionWarn
+			outcomeReason = "delivery_error"
+		case outcomeReason != "complete":
+			verdict = config.ActionWarn
+		}
+		opts := fetchAllowReceipt
+		opts.Verdict = verdict
+		pattern := receiptOutcomePattern(outcomeStatus, delivery.bytes, outcomeReason) + " captured_bytes=" + strconv.FormatInt(capturedBytes, 10)
+		p.emitOutcomeReceiptWithPattern(cfg, opts, pattern)
 	}()
 
 	responseencoding.RequestIdentity(req.Header)
@@ -6539,6 +6563,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		maxBytes = remaining
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1)) // +1 to detect truncation
+	capturedBytes = int64(len(body))
 	if err != nil {
 		log.LogError(actx, err)
 		writeJSON(w, http.StatusBadGateway, FetchResponse{
@@ -6606,7 +6631,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				BlockReason: reason,
 			})
 		outcomeStatus = strconv.Itoa(http.StatusTooManyRequests)
-		outcomeBytes = int64(len(body))
+
 		outcomeReason = "budget"
 		return
 	}
@@ -6627,7 +6652,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Use the final response origin (after redirects), not the original request
 	// URL. An exempt origin that 302s to a non-exempt host must still be shielded.
 	shieldHost := resp.Request.URL.Hostname()
-	shieldBodyBytes := int64(len(body))
 	shieldBlocked := p.blockShieldPartialResponse(resp, body, shieldHost, cfg, actx)
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
@@ -6655,7 +6679,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				BlockReason: reason,
 			})
 		outcomeStatus = strconv.Itoa(shieldBlocked.status)
-		outcomeBytes = shieldBodyBytes
+
 		outcomeReason = shieldBlocked.info.Layer
 		return
 	}
@@ -6694,7 +6718,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 				BlockReason: mediaVerdict.BlockReason,
 			})
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
-		outcomeBytes = int64(len(body))
+
 		outcomeReason = "media_policy"
 		return
 	}
@@ -6703,7 +6727,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if err := p.confirmResponseDecision(cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: actionID, Transport: TransportFetch, Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent}, selectedReceiptShard))); err != nil {
 				p.recordRequiredReceiptBlock(err, TransportFetch)
 				writeBlockedJSON(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), http.StatusForbidden, FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: receiptEmissionBlockReason})
-				outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+				outcomeStatus, outcomeReason = strconv.Itoa(http.StatusForbidden), receiptEmissionFailedLayer
 				return
 			}
 		}
@@ -6801,7 +6825,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			http.StatusForbidden,
 			FetchResponse{URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason})
 		outcomeStatus = strconv.Itoa(http.StatusForbidden)
-		outcomeBytes = int64(len(body))
+
 		outcomeReason = responseScanLayer
 		return
 	}
@@ -6885,7 +6909,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			}
 			p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
 			outcomeStatus = strconv.Itoa(outcomeCode)
-			outcomeBytes = int64(len(body))
+
 			outcomeReason = outcomeLayer
 			return
 		}
@@ -6929,7 +6953,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	shieldRewrite := shieldRewriteHeaderValue(shieldSummary)
 	setShieldRewriteHeader(w.Header(), shieldSummary)
-	writeJSON(w, http.StatusOK, FetchResponse{
+	writeErr := encodeJSON(w, http.StatusOK, FetchResponse{
 		URL:           displayURL,
 		Agent:         agent,
 		StatusCode:    resp.StatusCode,
@@ -6940,8 +6964,12 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		ShieldRewrite: shieldRewrite,
 	})
 	outcomeStatus = strconv.Itoa(resp.StatusCode)
-	outcomeBytes = int64(len(body))
+
 	outcomeReason = "complete"
+	if writeErr != nil {
+		log.LogError(actx, writeErr)
+		delivery.err = writeErr
+	}
 }
 
 func recordSuppressedResponseScanExempts(m *metrics.Metrics, matches []scanner.ResponseMatch, transport string) {
@@ -7424,9 +7452,7 @@ func (p *Proxy) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(data); err != nil {
+	if err := encodeJSON(w, status, data); err != nil {
 		// Best effort: header already sent, log to stderr
 		fmt.Fprintf(os.Stderr, "pipelock: writeJSON encode error: %v\n", err)
 	}
