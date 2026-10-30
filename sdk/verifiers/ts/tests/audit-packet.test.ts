@@ -95,7 +95,7 @@ async function writePacketWithEvidence(source: string, lines?: number): Promise<
   writeFileSync(path.join(dir, "evidence.jsonl"), evidence, { mode: 0o600 });
   const receipts = extractReceipts(path.join(dir, "evidence.jsonl"));
   const chain = await verifyChain(receipts, publicKey);
-  assert.equal(chain.valid, true, chain.error);
+  assert.equal(chain.valid, true, chain.error ?? "");
   const packet = basePacket();
   packet.summary!.receipt_count = chain.receipt_count;
   packet.summary!.totals = computeTotals(receipts);
@@ -532,7 +532,7 @@ async function packetOverRun(evidenceFile: string, key: string): Promise<string>
   writeFileSync(path.join(dir, "evidence.jsonl"), readFileSync(evidenceFile), { mode: 0o600 });
   const receipts = extractReceipts(path.join(dir, "evidence.jsonl"));
   const chain = await verifyChain(receipts, key);
-  assert.equal(chain.valid, true, chain.error);
+  assert.equal(chain.valid, true, chain.error ?? "");
   const packet = basePacket();
   packet.summary!.receipt_count = chain.receipt_count;
   packet.summary!.totals = computeTotals(receipts);

@@ -27,7 +27,7 @@ test("ext chain vector verifies with the Go root hash", async () => {
   const receipts = extractReceipts(extChain);
   assert.equal(receipts.length, 5);
   const result = await verifyChain(receipts, keyHex());
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.root_hash, extChainRootHash);
 });
 
@@ -99,7 +99,7 @@ test("interleaved evidence_receipt entries are skipped like the Go receipt-chain
     ]) {
       assert.equal(receipts.length, 5);
       const result = await verifyChain(receipts, keyHex());
-      assert.equal(result.valid, true, result.error);
+      assert.equal(result.valid, true, result.error ?? "");
       assert.equal(result.root_hash, extChainRootHash);
     }
 

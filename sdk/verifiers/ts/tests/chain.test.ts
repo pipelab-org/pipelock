@@ -82,7 +82,7 @@ test("legacy Go-generated chain verifies with pinned key", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;
   const result = await verifyChain(extractReceipts(validChain), key);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 5);
   assert.equal(result.final_seq, 4);
 });
@@ -91,7 +91,7 @@ test("g1 Go-generated chain verifies with pinned key", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;
   const result = await verifyChain(extractReceipts(g1ValidChain), key);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 5);
   assert.equal(result.final_seq, 4);
 });
@@ -101,7 +101,7 @@ test("g1 restart chain verifies with prior tail fields", async () => {
     .public_key_hex;
   const receipts = extractReceipts(g1RestartChain);
   const result = await verifyChain(receipts, key);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 5);
   assert.equal(result.final_seq, 4);
   const restartOpen = receipts[2]!.action_record!.session_control as Record<string, unknown>;
@@ -187,7 +187,7 @@ test("g1 ambiguous session_control fixture is rejected", async () => {
 
 test("g1 rotated close receipt_count valid fixture verifies", async () => {
   const result = await verifyChain(extractReceipts(g1RotatedCloseCountValid), trustedKeys());
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 6);
   assert.equal(result.final_seq, 2);
 });
@@ -204,7 +204,7 @@ test("g1 rotated chain verifies from one root plus the signed endorsement", asyn
       endorsements: [endorsement],
     },
   );
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
 });
 
 test("g1 twice-rotated chain verifies from one root plus both endorsements", async () => {
@@ -218,7 +218,7 @@ test("g1 twice-rotated chain verifies from one root plus both endorsements", asy
     sessionID: "conformance-session",
     endorsements,
   });
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 9);
 });
 
@@ -432,7 +432,7 @@ test("g1 empty run_nonce action after close fixture verifies", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;
   const result = await verifyChain(extractReceipts(g1EmptyRunNonceAfterClose), key);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
 });
 
 test("g1 heartbeat after close fixture is rejected", async () => {
@@ -469,7 +469,7 @@ test("g1 new session after close fixture verifies", async () => {
   const key = (JSON.parse(readFileSync(testKey, "utf8")) as { public_key_hex: string })
     .public_key_hex;
   const result = await verifyChain(extractReceipts(g1NewSessionAfterClose), key);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
 });
 
 test("g1 re-open closed run fixture is rejected", async () => {
@@ -705,7 +705,7 @@ test("mixed signer keys are rejected without pinned key", async () => {
 test("EvidenceReceipt v2 multi-receipt chain verifies with pinned key", async () => {
   const receipts = await buildEvidenceChain(2);
   const result = await verifyChain(receipts, v2GoldenPublicKey);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
   assert.equal(result.receipt_count, 2);
   assert.equal(result.final_seq, 1);
 });
@@ -714,7 +714,7 @@ test("EvidenceReceipt v2 valid 1-receipt chain after pop", async () => {
   const receipts = await buildEvidenceChain(2);
   receipts.pop();
   const result = await verifyChain(receipts, v2GoldenPublicKey);
-  assert.equal(result.valid, true, result.error);
+  assert.equal(result.valid, true, result.error ?? "");
 });
 
 test("EvidenceReceipt v2 tampered chain fails closed", async () => {

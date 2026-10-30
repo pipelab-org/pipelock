@@ -155,7 +155,7 @@ test("receipt command accepts a valid EvidenceReceipt v2 spanned proxy decision"
   const pathname = writeCanonicalV2Receipt(validSpannedV2, "valid-spanned");
   try {
     const report = await runReceipt(pathname, v2GoldenPublicKey);
-    assert.equal(report.valid, true, report.error);
+    assert.equal(report.valid, true, report.error ?? "");
     assert.equal(report.action_id, "01F8MECHZX3TBDSZ7XRADM79ZS");
     assert.equal(report.verdict, "block");
     assert.equal(report.transport, "forward");
@@ -170,7 +170,7 @@ test("receipt command accepts a valid EvidenceReceipt v2 plain proxy decision", 
   const pathname = writeCanonicalV2Receipt(validPlainV2, "valid-plain");
   try {
     const report = await runReceipt(pathname, v2GoldenPublicKey);
-    assert.equal(report.valid, true, report.error);
+    assert.equal(report.valid, true, report.error ?? "");
     assert.equal(report.policy_hash, v2GoldenPolicyHash);
   } finally {
     removeTempJSON(pathname);
