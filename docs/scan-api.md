@@ -145,7 +145,7 @@ Request `status: "completed"` means the endpoint finished evaluating the request
 
 Only `benign` means wording was checked and nothing matched. Later releases may add statuses, so treat any status you don't recognize as not benign.
 
-Cancellation and timeout retain `status: "error"` and their existing HTTP error codes. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Uninspectable tool arguments retain their existing completed denial and finding, with assessment marked incomplete. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
+Cancellation and timeout that end the scan retain `status: "error"` and their existing HTTP error codes. Cancellation during cross-request fragment inspection is different: it returns HTTP 200 with a completed `decision: "deny"` and a `CEE-scan-cancelled` finding, and `assessment` still describes the wording scan, which finished before that step. Other wording-scanner failures return HTTP 500 with `assessment_incomplete`. Uninspectable tool arguments retain their existing completed denial and finding, with assessment marked incomplete. Assessment metadata does not change signed receipt payloads or `INJ-` rule identifiers.
 
 ### Finding object
 
