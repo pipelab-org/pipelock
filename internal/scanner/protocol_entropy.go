@@ -223,13 +223,15 @@ func releaseFilenameEntropySubject(tag, segment string) string {
 // Package filename grammars are anchored and case-sensitive. Every expression
 // captures the version (including the package release) in group 2.
 var packageFilenameREs = []*regexp.Regexp{
-	// dpkg-name(1): package_version_architecture.package-type, without epoch.
+	// dpkg-name(1): package_version_architecture.package-type. A colon (epoch)
+	// never matches, which fails closed.
 	// https://man7.org/linux/man-pages/man1/dpkg-name.1.html
 	// Debian Policy 5.6.7 and 5.6.12 define package and version characters:
 	// https://www.debian.org/doc/debian-policy/ch-controlfields.html
 	// Require a digit first (Policy says "should"); a revision follows the
-	// last hyphen and is nonempty. Architecture components use lower-case
-	// alphanumerics, joined by hyphens (Debian Policy 11.1):
+	// last hyphen and is nonempty. Debian Policy 11.1 defers the architecture
+	// list to dpkg-architecture -L; every name it lists is lower-case
+	// alphanumerics joined by hyphens:
 	// https://www.debian.org/doc/debian-policy/ch-customized-programs.html#architecture-specification-strings
 	regexp.MustCompile(`^([a-z0-9][a-z0-9+.-]+)_([0-9][A-Za-z0-9.+~]*(?:-[A-Za-z0-9.+~-]*[A-Za-z0-9.+~])?)_([a-z0-9]+(?:-[a-z0-9]+)*)\.(?:deb|udeb)$`),
 	// RPM name-version-release.arch.rpm: the greedy name and hyphen-free
@@ -251,8 +253,9 @@ var packageFilenameREs = []*regexp.Regexp{
 }
 
 // packageFilenameEntropySubjects splits a recognized filename into its version
-// and the remaining bytes, preserving both surrounding separators. Neither
-// subject may be left unscored: a package version can contain arbitrary data.
+// and the remaining bytes, preserving both surrounding separators. Each subject
+// is scored exactly as its own path segment would be, including the
+// minimum-length floor; a package version can contain arbitrary data.
 func packageFilenameEntropySubjects(segment string) (remainder, version string, ok bool) {
 	for _, re := range packageFilenameREs {
 		match := re.FindStringSubmatchIndex(segment)

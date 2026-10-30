@@ -139,6 +139,8 @@ The host lists live in [`internal/config/dlp_patterns.go`](../internal/config/dl
 
 Path entropy and subdomain entropy are the most common false positive sources. APIs that use UUIDs, base64-encoded IDs, or hash-based URLs in their paths trigger entropy checks. Defaults already exempt common package/object hosts with hash-based routing paths: `files.pythonhosted.org`, `pypi.org`, and `objects.githubusercontent.com`.
 
+Debian `.deb`/`.udeb`, RPM and Alpine `.apk` filenames that follow their published naming grammar are scored with the version as a separate subject, so most package downloads need no exclusion; see [release downloads](guides/release-downloads.md#package-pool-filenames).
+
 For a path-entropy false positive, start with `path_entropy_exclusions` for the exact host and a stable publisher-specific path prefix. The entry defaults to HTTPS. A cleartext HTTP download needs an explicit `scheme: http`; that setting does not encrypt the request path, which remains visible on the network. Use separate entries only when both schemes are needed.
 
 <!-- path-entropy-exclusions-example:start -->
