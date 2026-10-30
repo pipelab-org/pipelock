@@ -119,7 +119,7 @@ func detectSpansInTokens(tokens []tokenSpan, minWords int, verifyChecksum bool) 
 // numbered or bulleted backups. Broadening this closes the "split words with a
 // glyph the tokenizer ignores" evasion class.
 //
-// The query delimiters ? & = and the escape character \ also separate, and so
+// The URL delimiters ? # & = and the escape character \ also separate, and so
 // does every seed boundary rune (see isSeedBoundary). BIP-39 English words are
 // lowercase a-z only, so splitting on punctuation can never cut a real word.
 // The separator set is a superset of the scanner's text-segment delimiters
@@ -136,7 +136,7 @@ func isSeedSeparator(r rune) bool {
 		return true
 	}
 	switch r {
-	case ',', '_', '/', '|', ';', ':', '•', '·', '?', '&', '=', '\\':
+	case ',', '_', '/', '|', ';', ':', '•', '·', '?', '#', '&', '=', '\\':
 		return true
 	default:
 		return isSeedBoundary(r)

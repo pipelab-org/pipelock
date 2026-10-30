@@ -1399,6 +1399,11 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
+			// URL serialization can escape a separator into path data. Split
+			// the decoded view too, as known-value URL scanning already does.
+			if decoded := IterativeDecode(text); decoded != text {
+				texts = append(texts, s.decodedKnownSecretViews(decoded, decodes)...)
+			}
 		}
 
 		hits := newKnownValueWindowHits(texts)
@@ -1580,8 +1585,9 @@ func isHexText(s string) bool {
 
 //pipelock:provenance-transform text_segment
 func isTextDLPEncodingDelimiter(r rune) bool {
+	// RFC 3986 section 3.5 uses '#' to introduce a URL fragment.
 	switch r {
-	case '/', '?', '&', '=', ' ', '\n', '\r', '\t',
+	case '/', '?', '#', '&', '=', ' ', '\n', '\r', '\t',
 		'"', '\'', '`', '{', '}', '[', ']', '(', ')', '<', '>',
 		':', ',', ';':
 		return true

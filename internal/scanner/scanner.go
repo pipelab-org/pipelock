@@ -2906,6 +2906,56 @@ func decodeEncodingsOnce(s string, includeURL bool, minPrefix int) []decodedResu
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
+// urlPathDecodeSegments returns the path segments tried by the encoded-value
+// decoders. A request target has no fragment component (RFC 9112 section
+// 3.2), so a raw '#' (RFC 3986 section 3.5) stays in the parsed path and is
+// forwarded. The pieces around it are added beside the whole segment: no
+// decoder alphabet contains '#', and keeping the whole segment preserves
+// every view the slash split already produced.
+func urlPathDecodeSegments(path string) []string {
+	segments := strings.Split(path, "/")
+	if decoded := IterativeDecode(path); decoded != path {
+		segments = append(segments, strings.Split(decoded, "/")...)
+	}
+	for _, segment := range segments {
+		if strings.Contains(segment, "#") {
+			segments = append(segments, strings.FieldsFunc(segment, func(r rune) bool { return r == '#' })...)
+		}
+	}
+	return segments
+}
+
+// urlFragmentDLPTargets keeps client-side URL content in the same DLP path
+// as other components before a destination can enter an audit record.
+// Labels describe the returned bytes. Pattern callers add their normalization
+// stage; seed detection indexes these raw or decoded views directly.
+func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
+	if parsed.Fragment == "" {
+		return nil
+	}
+	texts := []dlpTarget{{parsed.Fragment, "url_fragment", ""}}
+	if decoded := IterativeDecode(parsed.Fragment); decoded != parsed.Fragment {
+		texts = append(texts, dlpTarget{decoded, spanViewLabel("url_decoded", "url_fragment"), ""})
+	}
+	var targets []dlpTarget
+	for _, source := range texts {
+		targets = append(targets, source)
+		// Preserve the whole fragment alongside its independently encoded pieces.
+		segments := []string{source.text}
+		for _, segment := range strings.FieldsFunc(source.text, isTextDLPEncodingDelimiter) {
+			if segment != source.text {
+				segments = append(segments, segment)
+			}
+		}
+		for _, segment := range segments {
+			for _, decoded := range decodes.decode(segment, false) {
+				targets = append(targets, dlpTarget{decoded.text, spanViewLabel(decoded.encoding+"_decoded", source.viewLabel), ""})
+			}
+		}
+	}
+	return targets
+}
+
 func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMatch) {
 	var decodes decodingMemo
 	return s.checkDLPWithDecodes(parsed, &decodes)
@@ -2934,6 +2984,14 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	targets := []dlpTarget{
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
+	}
+	fragmentTargets := urlFragmentDLPTargets(parsed, decodes)
+	for _, target := range fragmentTargets {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+		if stripped := stripURLNoise(target.text); stripped != target.text {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), target.text})
+		}
 	}
 
 	// Also check decoded query keys and values individually.
@@ -2984,7 +3042,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range strings.Split(parsed.Path, "/") {
+	for _, segment := range urlPathDecodeSegments(parsed.Path) {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, false) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -3096,6 +3154,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		seedTargets := []dlpTarget{
 			{parsed.Path, "url_path", ""},
 		}
+		seedTargets = append(seedTargets, fragmentTargets...)
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
 			decoded := IterativeDecode(pair.value)
@@ -3126,7 +3185,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded", ""})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
-		for _, seg := range strings.Split(parsed.Path, "/") {
+		for _, seg := range urlPathDecodeSegments(parsed.Path) {
 			if len(seg) < 20 {
 				continue
 			}

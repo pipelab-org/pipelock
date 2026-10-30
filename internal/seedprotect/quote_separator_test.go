@@ -51,6 +51,7 @@ func TestDetect_QuoteAndMarkupSeparators(t *testing.T) {
 		{"markup tag", "<code>" + valid12 + "</code>", 12},
 		{"key=value", "seed=" + valid12 + "&x=1", 12},
 		{"question mark", "is this right?" + valid12 + "?", 12},
+		{"URL fragment", "#" + valid12 + "#", 12},
 		{"escaped JSON inside JSON", mustJSONString(t, string(obj)), 12},
 		{"curly double quotes", "“" + valid12 + "”", 12},
 		{"curly single quotes", "‘" + valid12 + "’", 12},
@@ -107,6 +108,7 @@ func TestDetect_QuotedBenignTextStaysClean(t *testing.T) {
 		{"quoted English prose", prose},
 		{"JSON English prose", string(jsonProse)},
 		{"contractions", "don't won't can't it's they're we've you'll I'd"},
+		{"ordinary URL fragment", "https://example.com/guide#ordinary"},
 		// Ten wordlist words plus the structural "name" key and "write_file"
 		// value form a checksum-valid 12-word mnemonic if a window may span
 		// JSON quotes. Quotes are phrase boundaries, so this stays clean.
