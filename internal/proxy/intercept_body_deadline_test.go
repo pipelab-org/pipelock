@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -266,5 +268,64 @@ func TestInterceptBodyReadPeerTransports(t *testing.T) {
 			}
 			t.Logf("%s retained its total-call timeout: status=%d", transport, status)
 		})
+	}
+}
+
+// The idle window measures upstream silence only. A client that pauses
+// reading longer than the window blocks the proxy's downstream writes while
+// the upstream stays ready; that pause must not be counted as an upstream
+// stall and sever the download.
+func TestInterceptBodyReadDownstreamPause(t *testing.T) {
+	const size = 24 << 20
+	chunk := bytes.Repeat([]byte("a"), 1<<20)
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Length", strconv.Itoa(size))
+		for i := 0; i < size/len(chunk); i++ {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+		}
+	}))
+	origin.StartTLS()
+	defer origin.Close()
+	upstreamRoots := x509.NewCertPool()
+	upstreamRoots.AddCert(origin.Certificate())
+	addr, roots, cleanup := setupForwardProxyWithTLS(t, func(cfg *config.Config) {
+		cfg.FetchProxy.TimeoutSeconds = 1
+		cfg.ForwardProxy.IdleTimeoutSeconds = 60
+		cfg.ForwardProxy.MaxTunnelSeconds = 60
+		cfg.ResponseScanning.Enabled = true
+		cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+	}, upstreamRoots)
+	defer cleanup()
+	proxyURL, err := url.Parse("http://" + addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL), TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12}}
+	defer tr.CloseIdleConnections()
+	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, origin.URL+"/large", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := (&http.Client{Transport: tr}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close() //nolint:errcheck // test response
+	first := make([]byte, 1024)
+	if _, err := io.ReadFull(resp.Body, first); err != nil {
+		t.Fatal(err)
+	}
+	// Pause well past the one-second window so the proxy's writes block.
+	pause := time.NewTimer(2500 * time.Millisecond)
+	defer pause.Stop()
+	<-pause.C
+	n, err := io.Copy(io.Discard, resp.Body)
+	if err != nil || n+int64(len(first)) != size {
+		t.Fatalf("download cut after a downstream pause: status=%d read=%d want=%d err=%v", resp.StatusCode, n+int64(len(first)), size, err)
 	}
 }

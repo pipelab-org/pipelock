@@ -17,8 +17,10 @@ import (
 // timeout, and the response-header timeout ends once headers arrive, so an
 // upstream that sends headers and then stops would otherwise hold a handler
 // and its connection for as long as it likes while the response is buffered
-// for scanning. Each read that returns data restarts the window; when it
-// expires the request context is canceled, which ends the pending read.
+// for scanning. The window runs only while a read waits on the upstream, so
+// time the consumer spends scanning or writing downstream is never counted
+// as an upstream stall; when it expires the request context is canceled,
+// which ends the pending read.
 //
 // Protocol upgrades and server-sent event streams are exempt: both are
 // long-lived by design and may be idle between messages.
@@ -60,10 +62,12 @@ func (t *upstreamBodyStallTransport) RoundTrip(req *http.Request) (*http.Respons
 		out.Body = &trailerMergingBody{ReadCloser: &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, src: resp, dst: out}
 		return out, nil
 	}
+	timer := time.AfterFunc(t.stall, cancel)
+	timer.Stop()
 	out.Body = &trailerMergingBody{ReadCloser: &stallBoundBody{
 		ReadCloser: resp.Body,
 		cancel:     cancel,
-		timer:      time.AfterFunc(t.stall, cancel),
+		timer:      timer,
 		stall:      t.stall,
 	}, src: resp, dst: out}
 	return out, nil
@@ -132,8 +136,9 @@ func (b *cancelOnCloseRW) Close() error {
 	return err
 }
 
-// stallBoundBody cancels the upstream request when no byte arrives within
-// stall of the previous one.
+// stallBoundBody cancels the upstream request when a single read waits
+// longer than stall for the upstream. The timer is armed only for the
+// duration of each read.
 type stallBoundBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
@@ -143,10 +148,9 @@ type stallBoundBody struct {
 }
 
 func (b *stallBoundBody) Read(p []byte) (int, error) {
+	b.timer.Reset(b.stall)
 	n, err := b.ReadCloser.Read(p)
-	if n > 0 && err == nil {
-		b.timer.Reset(b.stall)
-	}
+	b.timer.Stop()
 	return n, err
 }
 
