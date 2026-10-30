@@ -139,9 +139,15 @@ func checkedDial(lookup func(context.Context, string) ([]net.IPAddr, error), dia
 				}
 				break
 			}
+			// An attempt whose share reaches the call deadline uses the call
+			// context itself: a second timer for the same instant can fire
+			// first and report the attempt's expiry while the call still looks
+			// live, turning a call timeout into an unavailable result.
 			attemptCtx, cancel := ctx, context.CancelFunc(func() {})
 			if deadline, ok := ctx.Deadline(); ok {
-				attemptCtx, cancel = context.WithDeadline(ctx, attemptDeadline(time.Now(), deadline, len(candidates)-i))
+				if share := attemptDeadline(time.Now(), deadline, len(candidates)-i); share.Before(deadline) {
+					attemptCtx, cancel = context.WithDeadline(ctx, share)
+				}
 			}
 			conn, dialErr := dial(attemptCtx, network, net.JoinHostPort(ip.IP.String(), port))
 			cancel()

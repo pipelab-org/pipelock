@@ -424,6 +424,26 @@ func TestCheckedDialFallback(t *testing.T) {
 	}
 }
 
+// An attempt whose share reaches the call deadline must use the call context,
+// so its expiry is the call's own timeout rather than a second timer that can
+// fire first and turn a timeout into an unavailable result.
+func TestCheckedDialLastAttemptUsesCallContext(t *testing.T) {
+	callCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	var got context.Context
+	if _, err := checkedDial(func(context.Context, string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("192.0.2.1")}}, nil
+	}, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		got = ctx
+		return nil, errors.New("unreachable")
+	})(callCtx, "tcp", "api.vendor.example:443"); err == nil {
+		t.Fatal("expected dial failure")
+	}
+	if got != callCtx {
+		t.Fatal("final attempt received a separate deadline context instead of the call context")
+	}
+}
+
 func TestAttemptDeadline(t *testing.T) {
 	now := time.Unix(0, 0)
 	for _, tc := range []struct {
