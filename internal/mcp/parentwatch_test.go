@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -389,15 +390,22 @@ func TestWatchParentSession_StableParentNeverFires(t *testing.T) {
 	// availability: a live session must never be torn down. The parent
 	// never changes, so the watch must block until ctx cancels no matter
 	// how long it runs or how many times it polls.
+	//
+	// The poll count drives cancellation instead of a wall-clock budget,
+	// so a slow or heavily loaded runner cannot end the watch before it
+	// has polled enough. The long timeout is only a hang backstop.
+	const wantPolls = 20
 	var polls atomic.Int64
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(30*time.Second))
 	defer cancel()
 
 	died := watchParentSession(ctx, parentWatchOpts{
 		interval:  time.Millisecond,
 		startPPID: 4242,
 		getppid: func() int {
-			polls.Add(1)
+			if polls.Add(1) >= wantPolls {
+				cancel()
+			}
 			return 4242
 		},
 	})
@@ -405,8 +413,11 @@ func TestWatchParentSession_StableParentNeverFires(t *testing.T) {
 	if died {
 		t.Fatal("watchParentSession = true for a live parent; a healthy proxy would be killed mid-call")
 	}
-	if polls.Load() < 5 {
-		t.Fatalf("watcher polled %d times, expected repeated polling", polls.Load())
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("watch ended by %v after %d polls, want cancellation after %d polls", ctx.Err(), polls.Load(), wantPolls)
+	}
+	if got := polls.Load(); got < wantPolls {
+		t.Fatalf("watcher polled %d times, want at least %d", got, wantPolls)
 	}
 }
 
