@@ -382,6 +382,9 @@ func TestExplainResponseCmdOversizeFailsClosed(t *testing.T) {
 	if len(report.Matches) != 0 {
 		t.Fatalf("oversize carried matches: %+v", report.Matches)
 	}
+	if report.Assessment.Checker != scanner.InjectionCheckerBasic || report.Assessment.Status != scanner.AssessmentIncomplete {
+		t.Fatalf("oversize assessment = %+v, want basic/incomplete", report.Assessment)
+	}
 	if !errors.Is(execErr, errExplainResponseTooLarge) {
 		t.Fatalf("oversize sentinel = %v, want %v", execErr, errExplainResponseTooLarge)
 	}
