@@ -474,6 +474,19 @@ func TestInterleaveFamilies(t *testing.T) {
 	if want := "2001:db8::1,192.0.2.1,2001:db8::2,192.0.2.2,192.0.2.3"; strings.Join(got, ",") != want {
 		t.Fatalf("got %v, want %s", got, want)
 	}
+
+	// An IPv4-first answer starts with IPv4 and alternates while both remain.
+	v4First := make([]net.IPAddr, 0, 4)
+	for _, s := range []string{"192.0.2.1", "192.0.2.2", "2001:db8::1", "2001:db8::2"} {
+		v4First = append(v4First, net.IPAddr{IP: net.ParseIP(s)})
+	}
+	got = got[:0]
+	for _, ip := range interleaveFamilies(v4First) {
+		got = append(got, ip.IP.String())
+	}
+	if want := "192.0.2.1,2001:db8::1,192.0.2.2,2001:db8::2"; strings.Join(got, ",") != want {
+		t.Fatalf("IPv4-first: got %v, want %s", got, want)
+	}
 }
 
 func TestUnixSocket(t *testing.T) {
