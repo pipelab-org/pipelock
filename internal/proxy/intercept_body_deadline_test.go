@@ -67,7 +67,7 @@ func TestInterceptBodyReadDeadline(t *testing.T) {
 				}
 				t.Fatalf("upstream stall was not refused before client cancellation: %v", err)
 			}
-			defer resp.Body.Close() //nolint:errcheck // test response
+			defer func() { _ = resp.Body.Close() }()
 			b, err := io.ReadAll(resp.Body)
 			if err != nil {
 				t.Fatal(err)
@@ -176,7 +176,7 @@ func TestInterceptBodyReadProgress(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer resp.Body.Close() //nolint:errcheck // test response
+			defer func() { _ = resp.Body.Close() }()
 			body, err := io.ReadAll(resp.Body)
 			if err != nil || resp.StatusCode != http.StatusOK || string(body) != strings.Repeat("a", chunks) {
 				t.Fatalf("progressing body status=%d body=%q err=%v", resp.StatusCode, body, err)
@@ -248,7 +248,7 @@ func TestInterceptBodyReadPeerTransports(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				defer resp.Body.Close() //nolint:errcheck // test response
+				defer func() { _ = resp.Body.Close() }()
 				body, err = io.ReadAll(resp.Body)
 				if err != nil {
 					t.Fatal(err)
@@ -315,7 +315,7 @@ func TestInterceptBodyReadDownstreamPause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer resp.Body.Close() //nolint:errcheck // test response
+	defer func() { _ = resp.Body.Close() }()
 	first := make([]byte, 1024)
 	if _, err := io.ReadFull(resp.Body, first); err != nil {
 		t.Fatal(err)
