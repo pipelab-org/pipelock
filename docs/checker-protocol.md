@@ -83,7 +83,7 @@ This fragment is not a complete response. Wire reasons are `unavailable`, `timeo
 | Invalid protocol response | `not_assessed`, status `invalid` | Never benign; no response exposed |
 | Truncated | `incomplete` | Coverage incomplete |
 
-These names match the scanner assessment vocabulary without importing scanner code. The package grants no authorization and implements no enforcement. Integrations withhold required failed/incomplete assessments in block mode; warn mode may deliver only when independent controls allow, with degraded coverage visible. Failures are not attack detections. Every mode preserves independent DLP, destination, tool policy, containment, and permissions.
+These names match the scanner assessment vocabulary without importing scanner code. The package grants no authorization and implements no enforcement. In block mode, integrations withhold delivery of the content when a required assessment fails or is incomplete; warn mode may deliver only when independent controls allow, with degraded coverage visible. Failures are not attack detections. Every mode preserves independent DLP, destination, tool policy, containment, and permissions.
 
 ## Strictness, limits, and transport
 

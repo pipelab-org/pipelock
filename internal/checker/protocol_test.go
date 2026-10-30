@@ -76,7 +76,8 @@ func TestResponseBindingsAndPartial(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, i, policy := req, item, p
 			change(&r, &i, &policy)
-			if got := DecodeResponse(data, r, i, policy); got.Status != StatusInvalid {
+			got := DecodeResponse(data, r, i, policy)
+			if got.Status != StatusInvalid || got.State != StateNotAssessed || got.Response != nil {
 				t.Fatal(got)
 			}
 		})
