@@ -6,7 +6,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -15,7 +15,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "allow",
@@ -27,7 +27,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:254de9cf7b12f41499ea36e7082de1cf68a211fc39044811e5670d00fee7a46b24ffe50f3a2a2a376ba8345ec402dbb7f1196ddc23d0c8bff5d5d5dd69eea30b",
+      "signature": "ed25519:b2530b4fc31ff45d2bb61e662c3de2b3177a4038f11fc54ca082f71c7a04371b9990453d9ee0de65007a9fecc3234eb9d3d158a84bfeafed1dba05ecb0947102",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -38,7 +38,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -47,7 +47,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "allow",
@@ -57,7 +57,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:db6dedd282f225c1d88b749edbc1461dafb2eb689d53f4dc05a4dae5591f264b39cc93b5e9696f3607a30eee486ed25d7fc2bc7fbac20b8e8d819585b00aa805",
+      "signature": "ed25519:c3e78d6a6bebfca8474da0bab2ac7c192c88890339b30b45660944f3239df82847eefb9b3d79daa5b5ff524b01132bce1a317d578d622a7398d115e79aaa4e0d",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -68,7 +68,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -77,7 +77,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "allow",
@@ -89,7 +89,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:77d86ab5792b87d4513b333172a3fefe8990dc1d3ce687cd26823fd83b7af169b9871625c4d9b7790fec414510ad8cb3946011a0c646c219ae8ee738c6b22a0c",
+      "signature": "ed25519:f900748c485b77e7e469e080472259eb6bcf989e54d6d47adbb9fb1c062aca8f01c5b9d9979242342d8471a5a5cd6998469dc03e8a13e18f21a18e7c0b15740b",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -100,7 +100,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -109,7 +109,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "warn",
@@ -121,7 +121,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:63fab1079c88adb99c7cbe7cec60a783077b86dc7d25a142da7cdc0e4e47e00969bbf51c261a1ad6d3cd23a69d1698d6559d3884fc7f84d695eebc43ce879a0f",
+      "signature": "ed25519:4bd1de9fa47ec063cf18d2f71d19c3852cb0c56b35039c4b8490a0db7d1ed19d9b1ba710fddfe13a113e84908556fcebdbf343c7d9b050dafd1d701bf9d9790f",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -132,7 +132,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -141,7 +141,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "warn",
@@ -153,7 +153,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:5a2c71c2ec2d9b0dcc58b9dec444e8f9bf56087b5620112766804317c308a2a0b4d5919e1d5bbf29f52e1468dcee561d10e2edfc602751a0bb935c1fd7d2bd07",
+      "signature": "ed25519:3af8bc19f6a8963aa279170b3b33a68fd9a914f41a46187773bc6680dae575528b9d5d17841b68425dfc4be72501dc985ed7d1117ef4ce127846278ab1d9ba0e",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   },
@@ -164,7 +164,7 @@
       "action_record": {
         "version": 1,
         "action_id": "conformance-00000",
-        "action_type": "write",
+        "action_type": "read",
         "timestamp": "2026-04-15T12:00:00Z",
         "principal": "org:conformance-test",
         "actor": "agent:conformance-runner",
@@ -173,7 +173,7 @@
           "test-grant"
         ],
         "target": "https://api.example.com/conformance",
-        "side_effect_class": "external_write",
+        "side_effect_class": "external_read",
         "reversibility": "compensatable",
         "policy_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "verdict": "block",
@@ -185,7 +185,7 @@
         "chain_prev_hash": "genesis",
         "chain_seq": 0
       },
-      "signature": "ed25519:ed9d1f3952e4f044408e8d7ffd34937d3b514d54d70fa1183dd2d59b6a8bd504ea2dcd296532befead910107faf8267be2111a8870fc05728c8adb634ed40c01",
+      "signature": "ed25519:f110fe5ca3bf5b79446892300bdba26d9157148e4087b9e8b8bd949daa809bafad9bec9fd37ea96bb357186791724284cd24ab35a745a54da633964c079ac30f",
       "signer_key": "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678"
     }
   }

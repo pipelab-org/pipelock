@@ -281,9 +281,8 @@ func (m *ReadModel) ReceiptDetail(sessionID, actionID string) (evidenceview.Deci
 	// An intent and its outcome (or a defer and its resolution) share one
 	// action ID, and a block found after admission may add a phase-less
 	// record. Some outcome emitters record allow whatever the admission
-	// decided, so the most severe verdict wins first: an allow outcome must
-	// not hide a warn or block finding. Among equal verdicts the terminal
-	// record wins, then the later record.
+	// decided, so an outcome must not hide a warn or block finding.
+	// preferReceiptDetail holds the selection rule.
 	var selected *receipt.Receipt
 	awaiting, terminal := false, false
 	for i := range receipts {
@@ -426,12 +425,30 @@ func terminalReceiptPhase(r *receipt.Receipt) bool {
 }
 
 // preferReceiptDetail reports whether candidate should replace current as
-// the record shown for one action.
+// the record shown for one action. A resolution is the decision on its
+// defer, so it replaces the defer whatever either verdict says. An outcome
+// only describes delivery, so it replaces an admission or finding record
+// only when its verdict is strictly more severe, or when both allow.
 func preferReceiptDetail(candidate, current *receipt.Receipt) bool {
-	if a, b := receiptVerdictRank(candidate.ActionRecord.Verdict), receiptVerdictRank(current.ActionRecord.Verdict); a != b {
+	cPhase, curPhase := candidate.ActionRecord.DecisionPhase, current.ActionRecord.DecisionPhase
+	switch {
+	case cPhase == receipt.DecisionPhaseResolution && curPhase == receipt.DecisionPhaseDefer:
+		return true
+	case cPhase == receipt.DecisionPhaseDefer && curPhase == receipt.DecisionPhaseResolution:
+		return false
+	}
+	a, b := receiptVerdictRank(candidate.ActionRecord.Verdict), receiptVerdictRank(current.ActionRecord.Verdict)
+	if a != b {
 		return a > b
 	}
-	return terminalReceiptPhase(candidate) || !terminalReceiptPhase(current)
+	if a == 0 {
+		// Equal allows: the terminal record says how the action ended.
+		return terminalReceiptPhase(candidate) || !terminalReceiptPhase(current)
+	}
+	// Equal non-allow verdicts: keep the record that names the finding
+	// over an outcome observation; otherwise the later record wins.
+	cOutcome, curOutcome := cPhase == receipt.DecisionPhaseOutcome, curPhase == receipt.DecisionPhaseOutcome
+	return !cOutcome || curOutcome
 }
 
 // receiptVerdictRank orders verdicts by how much they say about the action:

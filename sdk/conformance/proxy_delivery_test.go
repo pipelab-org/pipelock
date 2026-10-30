@@ -36,6 +36,7 @@ func TestProxyDeliveryOutcomeFixtures(t *testing.T) {
 		for _, tc := range want {
 			ar := fixedActionRecord(0, receipt.GenesisHash)
 			ar.Transport, ar.Method = "fetch", "GET"
+			ar.ActionType, ar.SideEffectClass = receipt.ActionRead, receipt.SideEffectExternalRead
 			ar.DecisionPhase, ar.Verdict, ar.Pattern = tc.phase, tc.verdict, tc.pattern
 			if tc.phase == receipt.DecisionPhaseOutcome {
 				ar.Layer = "outcome"
@@ -62,7 +63,7 @@ func TestProxyDeliveryOutcomeFixtures(t *testing.T) {
 	for i, v := range vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			ar := v.Receipt.ActionRecord
-			if exp := want[i]; v.Name != exp.name || ar.DecisionPhase != exp.phase || ar.Verdict != exp.verdict || ar.Pattern != exp.pattern {
+			if exp := want[i]; v.Name != exp.name || ar.ActionType != receipt.ActionRead || ar.SideEffectClass != receipt.SideEffectExternalRead || ar.DecisionPhase != exp.phase || ar.Verdict != exp.verdict || ar.Pattern != exp.pattern {
 				t.Fatalf("vector %d = %q %s/%s %q, want %q %s/%s %q", i, v.Name, ar.DecisionPhase, ar.Verdict, ar.Pattern, exp.name, exp.phase, exp.verdict, exp.pattern)
 			}
 			if err := receipt.VerifyWithKey(v.Receipt, hex.EncodeToString(pub)); err != nil {

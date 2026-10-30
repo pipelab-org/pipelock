@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1064,40 +1065,16 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 		}
 	})
 
-	t.Run("allow_outcome_does_not_hide_warn_intent", func(t *testing.T) {
-		dir := t.TempDir()
-		ar := validDashboardAction(0, receipt.GenesisHash, base)
-		ar.DecisionPhase, ar.Verdict, ar.Layer, ar.Pattern = receipt.DecisionPhaseIntent, "warn", "dlp_header", "header finding"
-		pair := signPair(t, receipt.DecisionPhaseIntent, receipt.DecisionPhaseOutcome, "allow")
-		head, err := receipt.Sign(ar, priv)
-		if err != nil {
-			t.Fatal(err)
-		}
-		pair[0] = head
-		writeReceiptsToDir(t, dir, pair)
-		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, head.ActionRecord.ActionID)
-		if err != nil || !found {
-			t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
-		}
-		if exp.Verdict.Detail != "warn" || exp.Pattern.Detail != "header finding" {
-			t.Fatalf("selected verdict=%q pattern=%q, want the warn intent", exp.Verdict.Detail, exp.Pattern.Detail)
-		}
-	})
-
-	t.Run("allow_outcome_does_not_hide_block_record", func(t *testing.T) {
-		dir := t.TempDir()
-		intent := validDashboardAction(0, receipt.GenesisHash, base)
-		intent.DecisionPhase = receipt.DecisionPhaseIntent
+	type step struct{ phase, verdict, layer, pattern string }
+	signSteps := func(t *testing.T, steps []step) []receipt.Receipt {
+		t.Helper()
 		var chain []receipt.Receipt
 		prev := receipt.GenesisHash
-		for i, step := range []struct{ phase, verdict, layer, pattern string }{
-			{receipt.DecisionPhaseIntent, "allow", "allowlist", "api.vendor.example"},
-			{"", "block", "response_scan", "response finding"},
-			{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=403 bytes=0 reason=response_incomplete"},
-		} {
-			ar := intent
-			ar.ChainSeq, ar.ChainPrevHash, ar.Timestamp = uint64(i), prev, base.Add(time.Duration(i)*time.Second)
-			ar.DecisionPhase, ar.Verdict, ar.Layer, ar.Pattern = step.phase, step.verdict, step.layer, step.pattern
+		actionID := receipt.NewActionID()
+		for i, st := range steps {
+			ar := validDashboardAction(uint64(i), prev, base.Add(time.Duration(i)*time.Second))
+			ar.ActionID = actionID
+			ar.DecisionPhase, ar.Verdict, ar.Layer, ar.Pattern = st.phase, st.verdict, st.layer, st.pattern
 			r, err := receipt.Sign(ar, priv)
 			if err != nil {
 				t.Fatal(err)
@@ -1107,15 +1084,67 @@ func TestReadModel_ReceiptDetailPrefersTerminalPhase(t *testing.T) {
 			}
 			chain = append(chain, r)
 		}
-		writeReceiptsToDir(t, dir, chain)
-		exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, intent.ActionID)
-		if err != nil || !found {
-			t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+		return chain
+	}
+	for _, tc := range []struct {
+		name        string
+		steps       []step
+		wantPhase   string
+		wantVerdict string
+	}{
+		{
+			name: "allow_outcome_does_not_hide_warn_finding",
+			steps: []step{
+				{receipt.DecisionPhaseIntent, "warn", "dlp_header", "header finding"},
+				{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=200 bytes=16 reason=complete"},
+			},
+			wantPhase: receipt.DecisionPhaseIntent, wantVerdict: "warn",
+		},
+		{
+			name: "allow_outcome_does_not_hide_block_record",
+			steps: []step{
+				{receipt.DecisionPhaseIntent, "allow", "allowlist", "api.vendor.example"},
+				{"", "block", "response_scan", "response finding"},
+				{receipt.DecisionPhaseOutcome, "allow", "outcome", "status=403 bytes=0 reason=response_incomplete"},
+			},
+			wantPhase: "", wantVerdict: "block",
+		},
+		{
+			name: "warn_outcome_does_not_hide_warn_finding",
+			steps: []step{
+				{receipt.DecisionPhaseIntent, "warn", "dlp_header", "header finding"},
+				{receipt.DecisionPhaseOutcome, "warn", "outcome", "status=200 bytes=16 reason=delivery_error delivered_bytes=7"},
+			},
+			wantPhase: receipt.DecisionPhaseIntent, wantVerdict: "warn",
+		},
+		{
+			name: "allow_resolution_replaces_defer",
+			steps: []step{
+				{receipt.DecisionPhaseDefer, "defer", "approval", "awaiting approval"},
+				{receipt.DecisionPhaseResolution, "allow", "approval", "approved"},
+			},
+			wantPhase: receipt.DecisionPhaseResolution, wantVerdict: "allow",
+		},
+	} {
+		for _, reversed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reversed=%t", tc.name, reversed), func(t *testing.T) {
+				dir := t.TempDir()
+				chain := signSteps(t, tc.steps)
+				if reversed {
+					chain[0], chain[1] = chain[1], chain[0]
+				}
+				writeReceiptsToDir(t, dir, chain)
+				exp, found, err := NewReadModel(Options{ReceiptDir: dir}).ReceiptDetail(testSessionID, chain[0].ActionRecord.ActionID)
+				if err != nil || !found {
+					t.Fatalf("ReceiptDetail: found=%v err=%v", found, err)
+				}
+				// A phase-less record has no phase to compare.
+				if (tc.wantPhase != "" && exp.DecisionPhase.Detail != tc.wantPhase) || exp.Verdict.Detail != tc.wantVerdict {
+					t.Fatalf("selected %s/%s, want %s/%s", exp.DecisionPhase.Detail, exp.Verdict.Detail, tc.wantPhase, tc.wantVerdict)
+				}
+			})
 		}
-		if exp.Verdict.Detail != "block" || exp.Pattern.Detail != "response finding" {
-			t.Fatalf("selected verdict=%q pattern=%q, want the block record", exp.Verdict.Detail, exp.Pattern.Detail)
-		}
-	})
+	}
 
 	t.Run("truncated_view_still_shows_legacy_record", func(t *testing.T) {
 		dir := t.TempDir()
