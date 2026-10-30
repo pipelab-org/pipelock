@@ -15,10 +15,12 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/luckyPipewrench/pipelock/internal/destination"
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 )
 
 // ErrOptions is deliberately independent of endpoint or credential values.
@@ -118,20 +120,31 @@ func checkedDial(lookup func(context.Context, string) ([]net.IPAddr, error), dia
 				return nil, errors.New("checker destination refused")
 			}
 		}
-		// Every checked address is dialed in resolver order under the one
-		// call deadline. The deadline is total, so more records cannot add
-		// time; an attempt cap would only cut off a reachable address. No
-		// attempt starts after the deadline, and no request bytes are sent
-		// before a connection exists.
+		// Checked addresses are tried in RFC 8305 section 4 order (address
+		// families interleaved, starting with the resolver's first), bounded
+		// by the shared dialfallback.MaxAttempts so the name's owner cannot
+		// choose the attempt count. Each attempt gets a share of the remaining
+		// call deadline (attemptDeadline) so one silently dropping address
+		// cannot starve the rest. No attempt starts after the deadline, and
+		// no request bytes are sent before a connection exists.
+		candidates := interleaveFamilies(ips)
+		if len(candidates) > dialfallback.MaxAttempts {
+			candidates = candidates[:dialfallback.MaxAttempts]
+		}
 		var lastErr error
-		for _, ip := range ips {
+		for i, ip := range candidates {
 			if err := ctx.Err(); err != nil {
 				if lastErr == nil {
 					lastErr = err
 				}
 				break
 			}
-			conn, dialErr := dial(ctx, network, net.JoinHostPort(ip.IP.String(), port))
+			attemptCtx, cancel := ctx, context.CancelFunc(func() {})
+			if deadline, ok := ctx.Deadline(); ok {
+				attemptCtx, cancel = context.WithDeadline(ctx, attemptDeadline(time.Now(), deadline, len(candidates)-i))
+			}
+			conn, dialErr := dial(attemptCtx, network, net.JoinHostPort(ip.IP.String(), port))
+			cancel()
 			if dialErr == nil {
 				return conn, nil
 			}
@@ -139,6 +152,52 @@ func checkedDial(lookup func(context.Context, string) ([]net.IPAddr, error), dia
 		}
 		return nil, lastErr
 	}
+}
+
+// interleaveFamilies orders addresses as RFC 8305 section 4 describes with a
+// First Address Family Count of one: start with the family of the resolver's
+// first answer, then alternate families, keeping resolver order within each.
+// A name whose leading records are all one unreachable family still reaches
+// the other family within the attempt cap.
+func interleaveFamilies(ips []net.IPAddr) []net.IPAddr {
+	var v4, v6 []net.IPAddr
+	for _, ip := range ips {
+		if ip.IP.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
+	}
+	first, second := v6, v4
+	if ips[0].IP.To4() != nil {
+		first, second = v4, v6
+	}
+	out := make([]net.IPAddr, 0, len(ips))
+	for i := 0; i < len(first) || i < len(second); i++ {
+		if i < len(first) {
+			out = append(out, first[i])
+		}
+		if i < len(second) {
+			out = append(out, second[i])
+		}
+	}
+	return out
+}
+
+// attemptMinimum is the per-address floor Go's own multi-address dialer uses
+// (net/dial.go partialDeadline, saneMinimum).
+const attemptMinimum = 2 * time.Second
+
+// attemptDeadline mirrors net/dial.go partialDeadline: split the remaining
+// call time evenly across the remaining attempts, but give each at least
+// attemptMinimum, or all of the remaining time when less is left.
+func attemptDeadline(now, deadline time.Time, remaining int) time.Time {
+	timeRemaining := deadline.Sub(now)
+	timeout := timeRemaining / time.Duration(remaining)
+	if timeout < attemptMinimum {
+		timeout = min(attemptMinimum, timeRemaining)
+	}
+	return now.Add(timeout)
 }
 
 // Check takes a snapshot by serializing the item before sending it. The caller

@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/dialfallback"
 )
 
 func testItem() Item {
@@ -352,26 +354,94 @@ func TestCheckedDialFallback(t *testing.T) {
 		t.Fatalf("err=%v attempts=%d", err, len(dialed))
 	}
 
-	// A reachable address after several unreachable ones still connects: the
-	// call deadline bounds the walk, not an attempt count.
-	many := make([]net.IPAddr, 0, 4)
-	for _, s := range []string{"2001:db8::1", "2001:db8::2", "2001:db8::3", "192.0.2.4"} {
-		many = append(many, net.IPAddr{IP: net.ParseIP(s)})
+	addrs := func(ss ...string) []net.IPAddr {
+		out := make([]net.IPAddr, 0, len(ss))
+		for _, s := range ss {
+			out = append(out, net.IPAddr{IP: net.ParseIP(s)})
+		}
+		return out
 	}
+
+	// A reachable IPv4 address behind several unreachable IPv6 records is
+	// reached second, because families are interleaved before the cap.
 	dialed = nil
 	reachServer, reachClient := net.Pipe()
 	defer func() { _ = reachServer.Close() }()
-	conn, err = checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return many, nil }, func(_ context.Context, _, addr string) (net.Conn, error) {
+	mixed := addrs("2001:db8::1", "2001:db8::2", "2001:db8::3", "192.0.2.4")
+	conn, err = checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return mixed, nil }, func(_ context.Context, _, addr string) (net.Conn, error) {
 		dialed = append(dialed, addr)
 		if addr != "192.0.2.4:443" {
 			return nil, errors.New("unreachable")
 		}
 		return reachClient, nil
 	})(t.Context(), "tcp", "api.vendor.example:443")
-	if err != nil || conn != reachClient || len(dialed) != len(many) {
+	if err != nil || conn != reachClient || strings.Join(dialed, ",") != "[2001:db8::1]:443,192.0.2.4:443" {
 		t.Fatalf("conn=%v err=%v dialed=%v", conn, err, dialed)
 	}
 	_ = conn.Close()
+
+	// A long record list stops at the shared attempt cap, so the name's owner
+	// cannot choose how many connections each check opens.
+	dialed = nil
+	long := addrs("192.0.2.1", "192.0.2.2", "192.0.2.3", "192.0.2.4", "192.0.2.5", "192.0.2.6")
+	if _, err := checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return long, nil }, func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		return nil, errors.New("unreachable")
+	})(t.Context(), "tcp", "api.vendor.example:443"); err == nil || len(dialed) != dialfallback.MaxAttempts {
+		t.Fatalf("err=%v attempts=%d, want %d", err, len(dialed), dialfallback.MaxAttempts)
+	}
+
+	// Each attempt receives only a share of the call deadline, so a silently
+	// dropping first address cannot consume the whole call.
+	callCtx, callCancel := context.WithTimeout(t.Context(), 9*time.Second)
+	defer callCancel()
+	callDeadline, _ := callCtx.Deadline()
+	var attemptDeadlines []time.Time
+	if _, err := checkedDial(func(context.Context, string) ([]net.IPAddr, error) { return long, nil }, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		d, ok := ctx.Deadline()
+		if !ok {
+			t.Error("attempt has no deadline")
+		}
+		attemptDeadlines = append(attemptDeadlines, d)
+		return nil, errors.New("unreachable")
+	})(callCtx, "tcp", "api.vendor.example:443"); err == nil || len(attemptDeadlines) != dialfallback.MaxAttempts {
+		t.Fatalf("err=%v attempts=%d", err, len(attemptDeadlines))
+	}
+	if !attemptDeadlines[0].Before(callDeadline.Add(-5 * time.Second)) {
+		t.Fatalf("first attempt deadline %v not a share of call deadline %v", attemptDeadlines[0], callDeadline)
+	}
+}
+
+func TestAttemptDeadline(t *testing.T) {
+	now := time.Unix(0, 0)
+	for _, tc := range []struct {
+		remaining time.Duration
+		attempts  int
+		want      time.Duration
+	}{
+		{9 * time.Second, 3, 3 * time.Second},
+		{3 * time.Second, 3, 2 * time.Second},
+		{1 * time.Second, 3, 1 * time.Second},
+		{5 * time.Second, 1, 5 * time.Second},
+	} {
+		if got := attemptDeadline(now, now.Add(tc.remaining), tc.attempts).Sub(now); got != tc.want {
+			t.Errorf("remaining=%v attempts=%d: got %v, want %v", tc.remaining, tc.attempts, got, tc.want)
+		}
+	}
+}
+
+func TestInterleaveFamilies(t *testing.T) {
+	in := make([]net.IPAddr, 0, 5)
+	for _, s := range []string{"2001:db8::1", "2001:db8::2", "192.0.2.1", "192.0.2.2", "192.0.2.3"} {
+		in = append(in, net.IPAddr{IP: net.ParseIP(s)})
+	}
+	var got []string
+	for _, ip := range interleaveFamilies(in) {
+		got = append(got, ip.IP.String())
+	}
+	if want := "2001:db8::1,192.0.2.1,2001:db8::2,192.0.2.2,192.0.2.3"; strings.Join(got, ",") != want {
+		t.Fatalf("got %v, want %s", got, want)
+	}
 }
 
 func TestUnixSocket(t *testing.T) {
