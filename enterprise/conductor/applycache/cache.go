@@ -691,7 +691,7 @@ func readJSONFile(path string, maxBytes int, dst any) error {
 	if err != nil {
 		return fmt.Errorf("%w: read JSON record: %w", ErrInvalidActiveRecord, err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, dst); err != nil {
 		return fmt.Errorf("%w: decode JSON record: %w", ErrInvalidActiveRecord, err)
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(data)))

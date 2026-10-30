@@ -1193,7 +1193,7 @@ func isRekorUUID(uuid string) bool {
 }
 
 func decodeRekorEntry(data []byte) (rekorEntry, string, error) {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectDuplicateFields(data, new(rekorEntry)); err != nil {
 		return rekorEntry{}, "", err
 	}
 	var raw map[string]json.RawMessage
@@ -1210,6 +1210,9 @@ func decodeRekorEntry(data []byte) (rekorEntry, string, error) {
 		}
 		for uuid, entryData := range raw {
 			var entry rekorEntry
+			if err := jsonscan.RejectDuplicateFields(entryData, &entry); err != nil {
+				return rekorEntry{}, "", fmt.Errorf("parse rekor entry %q: %w", uuid, err)
+			}
 			if err := json.Unmarshal(entryData, &entry); err != nil {
 				return rekorEntry{}, "", fmt.Errorf("parse rekor entry %q: %w", uuid, err)
 			}

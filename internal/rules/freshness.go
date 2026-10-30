@@ -234,7 +234,7 @@ func readFreshnessStateFile(path, rulesDir, label string) (*FreshnessState, bool
 	}
 
 	var state FreshnessState
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &state); err != nil {
 		return nil, false, fmt.Errorf("parse %s: %w (fail-closed: run explicit reset)", label, err)
 	}
 	if err := json.Unmarshal(data, &state); err != nil {
@@ -349,7 +349,7 @@ func readFreshnessContext(rulesDir string) (bool, error) {
 		return false, fmt.Errorf("read freshness context: %w", err)
 	}
 	var ctx freshnessContext
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &ctx); err != nil {
 		return false, fmt.Errorf("parse freshness context: %w", err)
 	}
 	if err := json.Unmarshal(data, &ctx); err != nil {

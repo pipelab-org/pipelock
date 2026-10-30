@@ -357,7 +357,7 @@ func extractOrderData(data json.RawMessage) (*PolarOrder, error) {
 }
 
 func decodeVendorJSON(data []byte, out any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectDuplicateFields(data, out); err != nil {
 		return err
 	}
 	return json.Unmarshal(data, out)

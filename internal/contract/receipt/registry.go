@@ -47,7 +47,7 @@ func decodeStrict(raw json.RawMessage, target any) error {
 	if len(raw) == 0 || string(raw) == "null" {
 		return errors.New("empty or null payload")
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(raw, target); err != nil {
 		return fmt.Errorf("strict decode: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

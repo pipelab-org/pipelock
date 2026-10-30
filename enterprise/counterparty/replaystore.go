@@ -274,7 +274,7 @@ func (s *FileReplayStore) indexLine(raw []byte) error {
 }
 
 func parseReplayEntryLine(path string, raw []byte) (ReplayEntry, error) {
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(raw, new(ReplayEntry)); err != nil {
 		return ReplayEntry{}, fmt.Errorf("replay store %s is corrupt: %w", path, err)
 	}
 	var entry ReplayEntry
