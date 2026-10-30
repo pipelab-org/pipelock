@@ -328,7 +328,8 @@ func DecodeResponse(data []byte, req Request, item Item, policy Policy) Assessme
 	}
 	result := Assessment{Status: response.Status, Reason: response.Reason, Response: &response}
 	if response.Status == StatusNotChecked {
-		result.State = StateNotAssessed
+		// Same state the local failure path gives this reason.
+		result.State = failure(StatusNotChecked, response.Reason).State
 	} else {
 		switch response.Classification {
 		case Benign:
@@ -343,8 +344,10 @@ func DecodeResponse(data []byte, req Request, item Item, policy Policy) Assessme
 	// suspicious classification remains a finding: the attack was detected in
 	// what the checker did see, and downgrading it would discard that evidence.
 	// The partial completeness stays visible on the response.
+	// A not_checked reply keeps not_assessed, matching the same failure
+	// produced locally; only an assessed conclusion is relabelled.
 	partial := item.Completeness.Status != Complete || response.Completeness.Status != Complete || response.Reason == ReasonTruncated
-	if partial && result.State != StateFinding {
+	if partial && response.Status == StatusAssessed && result.State != StateFinding {
 		result.State = StateIncomplete
 	}
 	return result

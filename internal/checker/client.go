@@ -250,6 +250,9 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	// deadline so it can reuse a late connection. This client forbids reuse:
 	// each call owns a transport whose dialer uses the original call context.
 	transport := c.http.Transport.(*http.Transport).Clone()
+	// Response headers count against the same policy budget as the body;
+	// net/http's default header allowance is far larger.
+	transport.MaxResponseHeaderBytes = policy.MaxResponseBytes
 	dial := transport.DialContext
 	transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 		conn, dialErr := dial(ctx, network, addr)
@@ -278,14 +281,19 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	if err != nil {
 		return transportFailure(ctx)
 	}
-	if ctx.Err() != nil {
-		return transportFailure(ctx)
-	}
 	if int64(len(data)) > policy.MaxResponseBytes {
 		return failure(StatusInvalid, ReasonTooLarge)
 	}
-	result := DecodeResponse(data, req, item, policy)
-	if ctx.Err() != nil {
+	return settleAfterCall(ctx, DecodeResponse(data, req, item, policy))
+}
+
+// settleAfterCall applies the call's end state to a decoded result. A call
+// that ended while the body was read may have been cut short by the
+// cancellation close, so only a finding survives it: a validated suspicious
+// result is a detection in what the checker returned, while any other
+// conclusion from a cut-off exchange is not trusted.
+func settleAfterCall(ctx context.Context, result Assessment) Assessment {
+	if ctx.Err() != nil && result.State != StateFinding {
 		return transportFailure(ctx)
 	}
 	return result

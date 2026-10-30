@@ -93,6 +93,14 @@ func TestResponseBindingsAndPartial(t *testing.T) {
 	if got := DecodeResponse(data, req, item, p); got.State != StateIncomplete {
 		t.Fatal(got)
 	}
+	// A not_checked reply on a partial item keeps the state the local failure
+	// path gives the same reason, rather than being relabelled incomplete.
+	notChecked := testResponse(req)
+	notChecked.Status, notChecked.Classification, notChecked.Reason = StatusNotChecked, "", ReasonUnavailable
+	notCheckedData, _ := json.Marshal(notChecked)
+	if got := DecodeResponse(notCheckedData, req, item, p); got.State != StateNotAssessed || got.Status != StatusNotChecked {
+		t.Fatalf("partial item not_checked reply = %+v, want not_assessed", got)
+	}
 	// A detection on partial input stays a finding; only benign and abstaining
 	// conclusions are withheld as incomplete.
 	for classification, want := range map[Classification]State{

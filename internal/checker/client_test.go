@@ -595,3 +595,33 @@ func TestExactUTF8AndBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestSettleAfterCallKeepsOnlyFindings(t *testing.T) {
+	ended, cancel := context.WithCancel(t.Context())
+	cancel()
+	finding := Assessment{State: StateFinding, Status: StatusAssessed}
+	if got := settleAfterCall(ended, finding); got.State != StateFinding {
+		t.Fatalf("finding after cancellation = %+v, want finding kept", got)
+	}
+	for _, state := range []State{StateBenign, StateIncomplete, StateNotAssessed} {
+		got := settleAfterCall(ended, Assessment{State: state, Status: StatusAssessed})
+		if got.Status != StatusNotChecked || got.Reason != ReasonCanceled {
+			t.Fatalf("%s after cancellation = %+v, want not_checked/canceled", state, got)
+		}
+	}
+	if got := settleAfterCall(t.Context(), Assessment{State: StateBenign, Status: StatusAssessed}); got.State != StateBenign {
+		t.Fatalf("live call result changed: %+v", got)
+	}
+}
+
+func TestResponseHeadersBoundedByPolicy(t *testing.T) {
+	policy := testPolicy()
+	client := clientFor(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Padding", strings.Repeat("a", int(policy.MaxResponseBytes)*2))
+		goodHandler(t)(w, r)
+	})
+	got := client.Check(t.Context(), testItem(), policy)
+	if got.State == StateBenign || got.Status != StatusNotChecked {
+		t.Fatalf("oversized response headers = %+v, want not_checked", got)
+	}
+}
