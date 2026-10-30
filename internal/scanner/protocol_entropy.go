@@ -220,10 +220,55 @@ func releaseFilenameEntropySubject(tag, segment string) string {
 	return before + after
 }
 
-// pathEntropy scores every segment, allowing a repeated release version only in
-// the final filename and only from its immediate predecessor. Earlier segments
-// are still scored in full. The original score is checked first: deleting text
-// can raise Shannon entropy and must never introduce a new block.
+// Package filename grammars are anchored and case-sensitive. Every expression
+// captures the version (including the package release) in group 2.
+var packageFilenameREs = []*regexp.Regexp{
+	// dpkg-name(1): package_version_architecture.package-type, without epoch.
+	// https://man7.org/linux/man-pages/man1/dpkg-name.1.html
+	// Debian Policy 5.6.7 and 5.6.12 define package and version characters:
+	// https://www.debian.org/doc/debian-policy/ch-controlfields.html
+	// Require a digit first (Policy says "should"); a revision follows the
+	// last hyphen and is nonempty. Architecture components use lower-case
+	// alphanumerics, joined by hyphens (Debian Policy 11.1):
+	// https://www.debian.org/doc/debian-policy/ch-customized-programs.html#architecture-specification-strings
+	regexp.MustCompile(`^([a-z0-9][a-z0-9+.-]+)_([0-9][A-Za-z0-9.+~]*(?:-[A-Za-z0-9.+~-]*[A-Za-z0-9.+~])?)_([a-z0-9]+(?:-[a-z0-9]+)*)\.(?:deb|udeb)$`),
+	// RPM name-version-release.arch.rpm: the greedy name and hyphen-free
+	// version/release parse from the right. Name characters follow Fedora:
+	// https://docs.fedoraproject.org/en-US/packaging-guidelines/Naming/
+	// RPM's default _build_name_fmt defines the filename fields:
+	// https://github.com/rpm-software-management/rpm/blob/master/macros.in
+	// Version/release characters follow RPM's spec; require alphanumeric
+	// starts and an alphanumeric/underscore architecture as a strict subset:
+	// https://rpm.org/docs/latest/manual/spec.html
+	regexp.MustCompile(`^([A-Za-z0-9][A-Za-z0-9+._-]*)-([A-Za-z0-9][A-Za-z0-9._+~^]*-[A-Za-z0-9][A-Za-z0-9._+~^]*)\.([A-Za-z0-9_]+)\.rpm$`),
+	// Alpine pkgname-pkgver-rpkgrel.apk, with numeric pkgrel and the
+	// documented digit/dot/letter/suffix version grammar. Conservatively
+	// recognize only lower-case alphanumeric/hyphen package names:
+	// https://wiki.alpinelinux.org/wiki/APKBUILD_Reference#pkgname
+	// https://wiki.alpinelinux.org/wiki/APKBUILD_Reference#pkgver
+	// https://wiki.alpinelinux.org/wiki/APKBUILD_Reference#pkgrel
+	regexp.MustCompile(`^([a-z0-9][a-z0-9-]*)-([0-9]+(?:\.[0-9]+)*[a-z]?(?:_(?:alpha|beta|pre|rc|cvs|svn|git|hg|p)[0-9]*)*-r[0-9]+)\.apk$`),
+}
+
+// packageFilenameEntropySubjects splits a recognized filename into its version
+// and the remaining bytes, preserving both surrounding separators. Neither
+// subject may be left unscored: a package version can contain arbitrary data.
+func packageFilenameEntropySubjects(segment string) (remainder, version string, ok bool) {
+	for _, re := range packageFilenameREs {
+		match := re.FindStringSubmatchIndex(segment)
+		if match != nil {
+			start, end := match[4], match[5] // Capture group 2.
+			return segment[:start] + segment[end:], segment[start:end], true
+		}
+	}
+	return "", "", false
+}
+
+// pathEntropy scores every segment. Only the final filename may discount a
+// repeated release version from its immediate predecessor, or split a package
+// version into a separately scored subject. Earlier segments are scored in full.
+// The original score is checked first: splitting or deleting text can raise
+// Shannon entropy and must never introduce a new block.
 func (s *Scanner) pathEntropy(path string) (float64, bool) {
 	return s.pathEntropySkipping(path, nil)
 }
@@ -240,10 +285,21 @@ func (s *Scanner) pathEntropySkipping(path string, skip func(segment string) boo
 		if !blocked {
 			continue
 		}
-		if i > 0 && i == len(segments)-1 {
-			subject := releaseFilenameEntropySubject(segments[i-1], segment)
-			if subject != segment {
-				entropy, blocked = s.pathSegmentEntropy(subject)
+		if i == len(segments)-1 {
+			if i > 0 {
+				subject := releaseFilenameEntropySubject(segments[i-1], segment)
+				if subject != segment {
+					entropy, blocked = s.pathSegmentEntropy(subject)
+				}
+			}
+			if blocked {
+				if remainder, version, ok := packageFilenameEntropySubjects(segment); ok {
+					entropy, blocked = s.pathSegmentEntropy(remainder)
+					if versionEntropy, versionBlocked := s.pathSegmentEntropy(version); versionBlocked {
+						entropy = math.Max(entropy, versionEntropy)
+						blocked = true
+					}
+				}
 			}
 		}
 		if blocked {
