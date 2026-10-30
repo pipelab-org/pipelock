@@ -34,6 +34,39 @@ type InjectionAssessment struct {
 	Status  AssessmentStatus `json:"status"`
 }
 
+// IsBenign requires an explicit assessment from the selected checker. Empty,
+// unknown and partial statuses never authorize clean-request recovery.
+func (a InjectionAssessment) IsBenign() bool {
+	return a.Checker != "" && a.Status == AssessmentBenign
+}
+
+// Merge combines assessments of required views or items from one checker.
+// An absent assessment is not an identity element: it is missing evidence.
+// Callers initialize an aggregate from its first actual view.
+func (a InjectionAssessment) Merge(b InjectionAssessment) InjectionAssessment {
+	if a.Checker == "" || a.Checker != b.Checker {
+		return InjectionAssessment{Status: AssessmentNotAssessed}
+	}
+	for _, status := range []AssessmentStatus{AssessmentIncomplete, AssessmentFinding, AssessmentOff, AssessmentPartial} {
+		if a.Status == status || b.Status == status {
+			return InjectionAssessment{Checker: a.Checker, Status: status}
+		}
+	}
+	if a.IsBenign() && b.IsBenign() {
+		return a
+	}
+	return InjectionAssessment{Checker: a.Checker, Status: AssessmentNotAssessed}
+}
+
+// RecoveryAssessment excludes delivery-only success and retained findings,
+// including findings accepted by warn, suppression or observe policy.
+func (r ResponseScanResult) RecoveryAssessment() InjectionAssessment {
+	if !r.Clean || r.Failed() || len(r.Matches)+len(r.WarnedMatches)+len(r.SuppressedMatches)+len(r.ObservedCoreMatches) != 0 || r.StegoDetected {
+		return InjectionAssessment{Checker: r.Assessment.Checker, Status: AssessmentNotAssessed}
+	}
+	return r.Assessment
+}
+
 func (s *Scanner) setInjectionAssessment(result *ResponseScanResult, assessed bool) {
 	status := AssessmentNotAssessed
 	switch {

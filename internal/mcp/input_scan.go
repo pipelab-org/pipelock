@@ -410,7 +410,10 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// (e.g. base64-encoded phrases) that don't decode in the full blob.
 		if injResult.Clean {
 			for _, s := range strs {
-				if r := sc.ScanResponse(ctx, s); !r.Clean {
+				r := sc.ScanResponse(ctx, s)
+				assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+				injResult.Assessment = assessment
+				if !r.Clean {
 					injResult = r
 					break
 				}
@@ -432,7 +435,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		urlFindings := scanMCPResourceURI(ctx, rpc.Method, rpc.Params, sc)
 
 		if len(dlpResult.Matches) == 0 && injResult.Clean && len(addrFindings) == 0 && len(urlFindings) == 0 {
-			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
+			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true, Assessment: injResult.RecoveryAssessment()}
 		}
 		var dlpMatches []scanner.TextDLPMatch
 		var injMatches []scanner.ResponseMatch
@@ -527,7 +530,10 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// cleanly when concatenated with other fields.
 	if injResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanResponse(ctx, s); !r.Clean {
+			r := sc.ScanResponse(ctx, s)
+			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+			injResult.Assessment = assessment
+			if !r.Clean {
 				injResult = r
 				break
 			}
@@ -559,7 +565,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	urlFindings := scanMCPResourceURI(ctx, rpc.Method, rpc.Params, sc)
 
 	if len(dlpMatches) == 0 && len(injMatches) == 0 && len(addrFindings) == 0 && len(urlFindings) == 0 {
-		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
+		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true, Assessment: injResult.RecoveryAssessment()}
 	}
 
 	// Resolve the strictest action: DLP/injection use the MCP input action,
@@ -628,7 +634,10 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// fix as DLP above. \u0069gnore → "ignore" must be caught.
 	if injResult.Clean {
 		if unescaped := unescapeJSONUnicode(text); unescaped != text {
-			injResult = sc.ScanResponse(ctx, unescaped)
+			r := sc.ScanResponse(ctx, unescaped)
+			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+			injResult = r
+			injResult.Assessment = assessment
 		}
 	}
 
@@ -636,7 +645,10 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// (e.g. base64-encoded phrases) that don't decode in the full blob.
 	if injResult.Clean {
 		for _, s := range strs {
-			if r := sc.ScanResponse(ctx, s); !r.Clean {
+			r := sc.ScanResponse(ctx, s)
+			assessment := injResult.RecoveryAssessment().Merge(r.RecoveryAssessment())
+			injResult.Assessment = assessment
+			if !r.Clean {
 				injResult = r
 				break
 			}
@@ -658,7 +670,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	}
 
 	if len(dlpMatches) == 0 && len(injMatches) == 0 {
-		return InputVerdict{ID: recoveredID, Clean: true}
+		return InputVerdict{ID: recoveredID, Clean: true, Assessment: injResult.RecoveryAssessment()}
 	}
 
 	return InputVerdict{
@@ -684,6 +696,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 		return InputVerdict{Clean: true}
 	}
 
+	var assessment scanner.InjectionAssessment
 	var allDLP []scanner.TextDLPMatch
 	var allInj []scanner.ResponseMatch
 	var allURL []scanner.Result
@@ -693,8 +706,13 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 	var firstError string
 	var batchAction string // track strictest action across batch elements
 
-	for _, elem := range batch {
+	for i, elem := range batch {
 		v := scanRequestForAgent(ctx, elem, sc, action, onParseError, agentID)
+		if i == 0 {
+			assessment = v.Assessment
+		} else {
+			assessment = assessment.Merge(v.Assessment)
+		}
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}
@@ -727,7 +745,7 @@ func scanRequestBatch(ctx context.Context, line []byte, sc *scanner.Scanner, act
 			}
 			return InputVerdict{ID: firstID, Clean: false, Action: batchAction, Error: errText}
 		}
-		return InputVerdict{ID: firstID, Clean: true}
+		return InputVerdict{ID: firstID, Clean: true, Assessment: assessment}
 	}
 	if batchAction == "" {
 		batchAction = action

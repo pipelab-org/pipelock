@@ -3953,6 +3953,7 @@ func adaptiveBlockSignal(result scanner.Result, adaptiveCfg *config.AdaptiveEnfo
 }
 
 type adaptiveRecoveryContext struct {
+	assessment scanner.InjectionAssessment
 	sessionKey string
 	scope      string
 	reason     string
@@ -3963,7 +3964,7 @@ type adaptiveRecoveryContext struct {
 }
 
 func recordCleanForAdaptiveScope(rec session.Recorder, scope string, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
-	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled || !ctx.assessment.IsBenign() {
 		return
 	}
 	scope = normalizeAdaptiveScope(scope)
@@ -6926,6 +6927,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
+			assessment: scanned.result.RecoveryAssessment(),
 			sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
 			scope:      fetchScope,
 			reason:     adaptiveRecoveryClean,

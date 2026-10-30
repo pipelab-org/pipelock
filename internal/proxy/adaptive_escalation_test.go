@@ -2170,14 +2170,14 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 			scoreAfterDLP, sess.ThreatScore())
 	}
 
-	// Clean repeat request with deferClean=false - SHOULD decay. Use an
+	// URL-only success has no wording assessment and must not decay. Use an
 	// already-seen hostname so this test isolates rate-limit neutrality from
 	// adaptive domain-burst scoring.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
 		scanner.Result{Allowed: true},
 		cfg, logger, false)
-	if sess.ThreatScore() >= scoreAfterDLP {
-		t.Errorf("ThreatScore = %v, want < %v after clean request (decay should fire)",
+	if sess.ThreatScore() != scoreAfterDLP {
+		t.Errorf("ThreatScore = %v, want %v without a wording assessment",
 			sess.ThreatScore(), scoreAfterDLP)
 	}
 }

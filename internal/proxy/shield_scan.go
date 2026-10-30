@@ -154,6 +154,8 @@ func retainShieldScan(original *scanner.ResponseScanResult, current scanner.Resp
 	if current.Clean && !current.Failed() && !original.Clean {
 		current.TransformedContent = string(body)
 	}
+	current.Assessment = original.RecoveryAssessment().Merge(current.RecoveryAssessment())
+	current.WarnedMatches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.WarnedMatches...), current.WarnedMatches)
 	current.Clean = original.Clean && current.Clean
 	current.Matches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.Matches...), current.Matches)
 	current.SuppressedMatches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.SuppressedMatches...), current.SuppressedMatches)

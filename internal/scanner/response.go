@@ -216,7 +216,7 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 				// The decoded wording was assessed even when the raw bytes
 				// contain no separate wording view. Retain that coverage while
 				// giving raw-view failures and findings their usual precedence.
-				s.setInjectionAssessment(&rawResult, true)
+				s.retainDecodedAssessment(&rawResult, decodedResult.Assessment)
 				return rawResult
 			}
 			return s.scanOpaqueResponseText(ctx, body, suppressTarget, suppress)
@@ -240,6 +240,17 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 		result.TransformedContent = ""
 	}
 	return result
+}
+
+// retainDecodedAssessment carries completed decoded-view coverage without
+// inferring it from the delivery verdict. Raw failures/findings retain priority.
+func (s *Scanner) retainDecodedAssessment(raw *ResponseScanResult, decoded InjectionAssessment) {
+	assessed := decoded.Status == AssessmentBenign || decoded.Status == AssessmentFinding || decoded.Status == AssessmentPartial
+	if !assessed {
+		// A raw view cannot stand in for an unassessed decoded view.
+		raw.Assessment = InjectionAssessment{}
+	}
+	s.setInjectionAssessment(raw, assessed)
 }
 
 func (s *Scanner) scanTextualResponseBody(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
@@ -569,9 +580,9 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 }
 
 func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
-	defer func() { s.setInjectionAssessment(&out, true) }()
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
+	defer func() { s.setInjectionAssessment(&out, strings.TrimSpace(content) != "") }()
 	var suppressedMatches []ResponseMatch
 	var observedCoreMatches []ObservedCoreMatch
 	suppressedSeen := make(map[string]struct{})
