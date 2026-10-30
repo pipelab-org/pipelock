@@ -46,7 +46,7 @@ func checkSystemdCredentials(env netnsAssertEnv, mounts map[string]runtimeMount,
 		// their mask may set group read/search bits. Ownership-fallback stores are
 		// deliberately unsupported. The parent is systemd's mode=0755 mask.
 		if !known || uid != 0 || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o022 != 0 {
-			return "", unexpectedRuntimeExposure(dir, "credentials directories must be root-owned directories without group or other write permission")
+			return "", unexpectedRuntimeExposure(dir, "credentials directories must be root-owned directories without group or other write permission"+credentialOwnerHint(known, uid))
 		}
 	}
 	if err := checkRuntimeDirectoryEntry(env, systemdCredentialsPath, unit, true); err != nil {
@@ -64,8 +64,19 @@ func checkSystemdCredentials(env netnsAssertEnv, mounts map[string]runtimeMount,
 		}
 		uid, known := fileOwnerUID(info)
 		if !known || uid != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
-			return "", unexpectedRuntimeExposure(file, "credentials must be root-owned regular files without group or other write permission")
+			return "", unexpectedRuntimeExposure(file, "credentials must be root-owned regular files without group or other write permission"+credentialOwnerHint(known, uid))
 		}
 	}
 	return path, nil
+}
+
+// systemd v257 shared/mount-util.c:1657-1718 mounts the store as tmpfs with
+// noswap, else ramfs; exec-credential.c:846-864 then hands ownership to the
+// service user when ACLs are unsupported. Name that cause, since no unit
+// setting can make such a store root-owned.
+func credentialOwnerHint(known bool, uid uint32) string {
+	if !known || uid == 0 {
+		return ""
+	}
+	return "; systemd assigns the service user ownership when the credential filesystem lacks ACL support (ramfs, used when tmpfs rejects noswap), and that store is unsupported"
 }

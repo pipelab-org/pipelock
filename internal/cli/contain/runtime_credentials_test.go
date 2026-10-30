@@ -58,8 +58,8 @@ func credentialRuntimeFixture(unit, filesystem string) netnsAssertEnv {
 
 func TestRuntimeMountSystemdCredentials(t *testing.T) {
 	for _, tc := range []struct{ name, unit, filesystem, cgroupUnit string }{
-		{"LoadCredential", credentialTestUnit, "tmpfs", credentialTestUnit},
-		{"LoadCredentialEncrypted", credentialTestUnit, "ramfs", credentialTestUnit},
+		{"tmpfs store", credentialTestUnit, "tmpfs", credentialTestUnit},
+		{"root service ramfs store", credentialTestUnit, "ramfs", credentialTestUnit},
 		{"template instance", "agent-worker@one.service", "tmpfs", "agent-worker@one.service"},
 		{"escaped instance", `agent-worker@one\x2dtwo.service`, "tmpfs", `agent-worker@one\x2dtwo.service`},
 		{"leading underscore unit", "_agent-worker.service", "tmpfs", "__agent-worker.service"},
@@ -254,5 +254,59 @@ func TestRuntimeMountSystemdCredentialsRefusals(t *testing.T) {
 				t.Fatalf("credential refusal = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// The live layout systemd v262 builds for a non-root service on a kernel whose
+// tmpfs accepts noswap: the store is also mounted in PID 1's table (same
+// device), its mount options carry propagation fields, and the service-user
+// ACL mask shows as group read bits on root-owned 0500/0400 entries.
+func TestRuntimeMountSystemdCredentialsHostVisibleACLStore(t *testing.T) {
+	path := "/run/credentials/" + credentialTestUnit
+	env := credentialRuntimeFixture(credentialTestUnit, "tmpfs")
+	read := env.readFile
+	env.readFile = func(name string) ([]byte, error) {
+		data, err := read(name)
+		switch name {
+		case "/proc/self/mountinfo":
+			data = []byte(strings.ReplaceAll(string(data), "24 23 0:203 / "+path+" ro,nosuid,nodev,noexec - tmpfs tmpfs rw",
+				"24 23 0:203 / "+path+" ro,nosuid,nodev,noexec,relatime,nosymfollow shared:541 master:536 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700,noswap"))
+		case "/proc/1/mountinfo":
+			data = append(data, []byte("30 10 0:203 / "+path+" rw,nosuid,nodev,noexec,relatime,nosymfollow shared:536 - tmpfs none ro,size=1024k,nr_inodes=1024,mode=700,noswap\n")...)
+		}
+		return data, err
+	}
+	for _, table := range []string{"/proc/self/mountinfo", "/proc/1/mountinfo"} {
+		if data, _ := env.readFile(table); !strings.Contains(string(data), "0:203 / "+path) || !strings.Contains(string(data), "noswap") {
+			t.Fatalf("%s fixture lacks the live store shape:\n%s", table, data)
+		}
+	}
+	credentialStatOverride(&env, path, os.ModeDir|0o550, 0)
+	credentialStatOverride(&env, path+"/api-key", 0o440, 0)
+	if err := assertManagedRuntimeMounts(env); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// systemd's ownership fallback cannot be fixed by any unit setting, so the
+// refusal names it instead of only demanding root ownership.
+func TestRuntimeMountSystemdCredentialsOwnershipFallbackHint(t *testing.T) {
+	path := "/run/credentials/" + credentialTestUnit
+	for _, target := range []string{path, path + "/api-key"} {
+		env := credentialRuntimeFixture(credentialTestUnit, "ramfs")
+		mode := os.FileMode(0o400)
+		if target == path {
+			mode = os.ModeDir | 0o500
+		}
+		credentialStatOverride(&env, target, mode, 987)
+		err := assertManagedRuntimeMounts(env)
+		if err == nil || !strings.Contains(err.Error(), "lacks ACL support") {
+			t.Fatalf("%s: err = %v, want ownership fallback hint", target, err)
+		}
+	}
+	env := credentialRuntimeFixture(credentialTestUnit, "tmpfs")
+	credentialStatOverride(&env, path, os.ModeDir|0o570, 0)
+	if err := assertManagedRuntimeMounts(env); err == nil || strings.Contains(err.Error(), "lacks ACL support") {
+		t.Fatalf("root-owned writable store: err = %v, want refusal without ownership hint", err)
 	}
 }
