@@ -79,6 +79,9 @@ func NewClient(opts Options) (*Client, error) {
 				return nil, dialErr
 			}
 			if opts.VerifyPeer != nil {
+				// Peer checks that read the socket share the call's lifetime.
+				stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+				defer stop()
 				if peerErr := opts.VerifyPeer(conn); peerErr != nil {
 					_ = conn.Close()
 					return nil, errors.New("checker peer verification failed")
@@ -172,7 +175,24 @@ func (c *Client) Check(ctx context.Context, item Item, policy Policy) Assessment
 	if c.authorization != "" {
 		httpReq.Header.Set("Authorization", c.authorization)
 	}
-	resp, err := c.http.Do(httpReq)
+	// net/http detaches DialContext from the request's cancellation and
+	// deadline so it can reuse a late connection. This client forbids reuse:
+	// each call owns a transport whose dialer uses the original call context.
+	transport := c.http.Transport.(*http.Transport).Clone()
+	dial := transport.DialContext
+	transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+		conn, dialErr := dial(ctx, network, addr)
+		if dialErr == nil {
+			// TLS setup also uses net/http's detached context. Closing the
+			// connection bounds that phase as well as the HTTP exchange.
+			context.AfterFunc(ctx, func() { _ = conn.Close() })
+		}
+		return conn, dialErr
+	}
+	defer transport.CloseIdleConnections()
+	httpClient := *c.http
+	httpClient.Transport = transport
+	resp, err := httpClient.Do(httpReq)
 	if err != nil {
 		return transportFailure(ctx)
 	}
