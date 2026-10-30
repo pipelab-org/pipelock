@@ -83,6 +83,11 @@ func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Con
 	if surface.hidden != "" {
 		hidden := sc.ScanResponseWithSuppress(ctx, surface.hidden, target, cfg.Suppress)
 		scanned.hidden = &hidden
+		if hidden.Clean && strings.TrimSpace(surface.hidden) == "" {
+			// Blank hidden markup such as an empty comment holds no wording; it
+			// neither adds nor removes coverage of the visible content.
+			return scanned
+		}
 		visibleSuppressed := scanned.result.SuppressedMatches
 		scanned.result = retainShieldScan(&hidden, scanned.result, []byte(surface.content))
 		// Distinct hidden and visible surfaces each retain suppression counts.
