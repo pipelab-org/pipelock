@@ -62,14 +62,10 @@ func (t *upstreamBodyStallTransport) RoundTrip(req *http.Request) (*http.Respons
 		out.Body = &trailerMergingBody{ReadCloser: &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}, src: resp, dst: out}
 		return out, nil
 	}
-	timer := time.AfterFunc(t.stall, cancel)
-	timer.Stop()
-	out.Body = &trailerMergingBody{ReadCloser: &stallBoundBody{
-		ReadCloser: resp.Body,
-		cancel:     cancel,
-		timer:      timer,
-		stall:      t.stall,
-	}, src: resp, dst: out}
+	body := &stallBoundBody{ReadCloser: resp.Body, cancel: cancel, stall: t.stall}
+	body.timer = time.AfterFunc(t.stall, body.expire)
+	body.timer.Stop()
+	out.Body = &trailerMergingBody{ReadCloser: body, src: resp, dst: out}
 	return out, nil
 }
 
@@ -145,13 +141,37 @@ type stallBoundBody struct {
 	timer  *time.Timer
 	stall  time.Duration
 	once   sync.Once
+
+	// Stop does not wait for an AfterFunc callback that has already started,
+	// so a callback from an earlier read can run during a later one. expire
+	// cancels only while a read is armed and that read has waited the full
+	// window.
+	mu      sync.Mutex
+	armed   bool
+	armedAt time.Time
 }
 
 func (b *stallBoundBody) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	b.armed, b.armedAt = true, time.Now()
+	b.mu.Unlock()
 	b.timer.Reset(b.stall)
 	n, err := b.ReadCloser.Read(p)
+	b.mu.Lock()
+	b.armed = false
+	b.mu.Unlock()
 	b.timer.Stop()
 	return n, err
+}
+
+// expire is the stall timer callback.
+func (b *stallBoundBody) expire() {
+	b.mu.Lock()
+	stalled := b.armed && time.Since(b.armedAt) >= b.stall
+	b.mu.Unlock()
+	if stalled {
+		b.cancel()
+	}
 }
 
 func (b *stallBoundBody) Close() error {
