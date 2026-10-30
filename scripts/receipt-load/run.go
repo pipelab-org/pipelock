@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -90,12 +92,30 @@ func logSummary(mode string, res *result) {
 	p, i := res.Performance, res.Integrity
 	logf("%q: performance=%q integrity=%q %.0f req/s (window min/median %.0f/%.0f) p99 %.2f ms; missing=%d errors=%d unexpected=%d body_read_errors=%d",
 		mode, p.Verdict, i.Verdict, p.RequestsPerSecond, p.Windows.MinRPS, p.Windows.MedianRPS, p.Latency.P99MS, i.ReceiptMissing, p.Errors, p.Unexpected, p.BodyReadErrors)
+	if p.Unexpected > 0 || p.Errors > 0 || p.BodyReadErrors > 0 {
+		// The result file lives in the run directory, which CI does not keep;
+		// name the response classes here so a failed run says what answered.
+		logf("%q: performance: measured status counts %s", mode, formatStatusCounts(p.StatusCounts))
+	}
 	for _, reason := range p.Reasons {
 		logf("%q: performance: %q", mode, reason)
 	}
 	for _, reason := range i.Reasons {
 		logf("%q: integrity: %q", mode, reason)
 	}
+}
+
+// formatStatusCounts renders status counts in ascending status order, with 0
+// standing for transport errors.
+func formatStatusCounts(counts map[int]int) string {
+	if len(counts) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(counts))
+	for _, status := range slices.Sorted(maps.Keys(counts)) {
+		parts = append(parts, fmt.Sprintf("%d=%d", status, counts[status]))
+	}
+	return strings.Join(parts, " ")
 }
 
 // execute performs the run and fills res. Any error it returns is recorded by

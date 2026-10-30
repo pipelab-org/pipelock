@@ -186,3 +186,14 @@ func TestSummarizeCommandValidatesInput(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatStatusCounts(t *testing.T) {
+	t.Parallel()
+
+	if got := formatStatusCounts(nil); got != "none" {
+		t.Fatalf("empty counts = %q, want none", got)
+	}
+	if got := formatStatusCounts(map[int]int{503: 2, 0: 1, 200: 7}); got != "0=1 200=7 503=2" {
+		t.Fatalf("counts = %q", got)
+	}
+}
