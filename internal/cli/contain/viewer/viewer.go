@@ -104,7 +104,10 @@ func (v *Viewer) Serve(ctx context.Context, client net.Conn, mode string) error 
 	var expired, reserved leaseEvent
 	v.mu.Lock()
 	if v.viewers >= v.cfg.MaxViewers {
+		viewers := v.viewers
 		v.mu.Unlock()
+		v.cfg.Logger.Info("viewer connection refused", "reason", "viewer_cap",
+			"viewers", viewers, "max_viewers", v.cfg.MaxViewers)
 		_, _ = io.WriteString(client, "denied\n")
 		return errors.New("viewer: viewer cap reached")
 	}

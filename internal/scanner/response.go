@@ -828,28 +828,35 @@ func foldedHasSuffix(s, suffix string) bool {
 	return strings.HasSuffix(s, suffix) || strings.HasSuffix(s, normalize.FoldVowels(suffix))
 }
 
-func isDefensiveCredentialSolicitation(content string, match ResponseMatch) bool {
+// responseMatchBounds validates coordinates in the exact view that was matched.
+// Invalid metadata must retain the finding rather than suppress it.
+func responseMatchBounds(content string, match ResponseMatch) (int, int, bool) {
 	start := match.Position
-	if start < 0 || start > len(content) {
+	length := match.matchLength
+	if length == 0 {
+		length = len(match.MatchText)
+	}
+	if start < 0 || start > len(content) || length <= 0 || length > len(content)-start {
+		return 0, 0, false
+	}
+	return start, start + length, true
+}
+
+func isDefensiveCredentialSolicitation(content string, match ResponseMatch) bool {
+	start, end, ok := responseMatchBounds(content, match)
+	if !ok {
 		return false
-	}
-	end := start + match.matchLength
-	if match.matchLength == 0 {
-		end = start + len(match.MatchText)
-	}
-	if end < start || end > len(content) {
-		end = len(content)
 	}
 
-	lower := strings.ToLower(content)
-	if hasDefensiveSolicitationPivot(lower[start:end]) {
+	// Slice the source before length-changing case mapping.
+	if hasDefensiveSolicitationPivot(strings.ToLower(content[start:end])) {
 		return false
 	}
-	if hasSolicitationContinuation(lower[end:]) {
+	if hasSolicitationContinuation(strings.ToLower(content[end:])) {
 		return false
 	}
-	sentenceStart := strings.LastIndexAny(lower[:start], ".!?\n\r;:") + 1
-	prefix := strings.TrimSpace(lower[sentenceStart:start])
+	sentenceStart := strings.LastIndexAny(content[:start], ".!?\n\r;:") + 1
+	prefix := strings.TrimSpace(strings.ToLower(content[sentenceStart:start]))
 	if prefix == "" {
 		return false
 	}
@@ -961,14 +968,11 @@ var (
 // the match end, because the cue-first branch of the pattern ends on the noun.
 // A match with no recognizable noun is kept.
 func isCredentialTopicMention(content string, match ResponseMatch) bool {
-	start := match.Position
-	end := start + match.matchLength
-	if match.matchLength == 0 {
-		end = start + len(match.MatchText)
-	}
-	if start < 0 || end <= start || end > len(content) {
+	start, end, ok := responseMatchBounds(content, match)
+	if !ok {
 		return false
 	}
+
 	folded := foldCredentialTopicText(content)
 	nouns := credentialTopicNounRe.FindAllStringIndex(folded[start:end], -1)
 	if len(nouns) == 0 {

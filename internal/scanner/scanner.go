@@ -431,6 +431,7 @@ type compiledPattern struct {
 	re                  *regexp.Regexp
 	withoutLeftBoundary *regexp.Regexp
 	providerKeyPrefix   string
+	providerPrefixRE    *regexp.Regexp
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
 	genericCard         bool              // validator provenance, never a display-name exemption
@@ -654,6 +655,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			}
 		}
 		if cp.providerKeyPrefix != "" {
+			cp.providerPrefixRE = regexp.MustCompile("(?i)" + regexp.QuoteMeta(cp.providerKeyPrefix))
 			if !strings.HasPrefix(body, "(?i)") {
 				body = "(?i)" + body
 			}

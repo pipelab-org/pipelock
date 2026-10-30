@@ -802,6 +802,8 @@ Events contain no screen content, clipboard data or socket addresses. They are
 service diagnostics, not signed action receipts. Age alone does not establish
 that a connection is stale or authorize disconnecting it.
 
+The same service logs a connection-limit refusal as `viewer connection refused` with `reason=viewer_cap`, the `viewers` count at refusal and `max_viewers`. This limit applies to both view-only and controlling connections. These records contain no connection addresses or RFB content and are separate from control-lease events.
+
 ## `pipelock contain reload-nft-rules`
 
 A hidden, root-only command (omitted from `--help`) that reconciles the managed loopback and published-service nftables units and namespace socket forwarders from the current config, without re-running the full `install`. It exists for automation that needs to pick up a `containment.loopback_services` or `containment.published_services` change deliberately, rather than through a general reinstall.
