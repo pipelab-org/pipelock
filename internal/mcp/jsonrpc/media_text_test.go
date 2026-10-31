@@ -273,6 +273,26 @@ func TestScannerDeletesMatchesPipelines(t *testing.T) {
 	}
 }
 
+func TestAstralRunBreaksClassifyWithoutNormalizing(t *testing.T) {
+	// These decompose but sit outside the text ranges, so they reach the
+	// deletion check. A payload of them must not run the normalization
+	// pipelines once per rune.
+	runes := []rune{0x2F800, 0x1EE00, 0x1F200, 0x1D15E}
+	for _, r := range runes {
+		_ = classifyMediaRune(r)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, r := range runes {
+			if classifyMediaRune(r) != mediaRuneBreak {
+				t.Fatalf("U+%04X no longer ends a media text run", r)
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("classifying supplementary run breaks allocated %v times per run, want 0", allocs)
+	}
+}
+
 func TestMediaTextRangesHoldNoScannerDeletedScalar(t *testing.T) {
 	// classifyMediaRune tests text ranges before scannerDeletes. That order is
 	// equivalent to testing deletion first only while this holds.

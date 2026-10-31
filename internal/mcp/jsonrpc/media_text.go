@@ -99,7 +99,27 @@ func classifyMediaRune(r rune) mediaRuneClass {
 
 // scannerDeletes reports whether some scanner normalization removes r
 // entirely, for example a halfwidth sound mark that folds to a combining mark.
+// Supplementary-plane scalars are classified per rune at scan time, so they
+// read a set computed once instead of running the pipelines on each rune.
 func scannerDeletes(r rune) bool {
+	if r > 0xFFFF {
+		_, ok := astralScannerDeleted()[r]
+		return ok
+	}
+	return scannerDeletesComputed(r)
+}
+
+var astralScannerDeleted = sync.OnceValue(func() map[rune]struct{} {
+	deleted := make(map[rune]struct{})
+	for r := rune(0x10000); r <= unicode.MaxRune; r++ {
+		if scannerDeletesComputed(r) {
+			deleted[r] = struct{}{}
+		}
+	}
+	return deleted
+})
+
+func scannerDeletesComputed(r rune) bool {
 	// A scalar with no decomposition survives normalization unless it is
 	// invisible, a separator, mark, control or format character itself, so
 	// skip the full pipelines for the rest. TestScannerDeletesMatchesPipelines
