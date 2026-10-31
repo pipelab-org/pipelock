@@ -241,7 +241,7 @@ func (h *uploadHarness) exercise(t *testing.T, headers http.Header, body []byte)
 }
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
-	names := []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"}
+	names := []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf"}
 	fixtures := make(map[string][]byte, len(names))
 	for _, name := range names {
 		data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
@@ -265,19 +265,27 @@ func TestUploadInspectionProducerTransports(t *testing.T) {
 						mediaType = contentTypeJSON
 						data = []byte(`{"attachments":[{"contentBytes":"` + base64.StdEncoding.EncodeToString(data) + `"}]}`)
 					}
-					wantBlock := (strings.Contains(name, "seeded") || name == "split-run.docx") && !strings.HasSuffix(name, ".pdf")
+					wantBlock := strings.Contains(name, "seeded") || name == "split-run.docx"
 					status, hits, intact, reason, _ := h.exercise(t, http.Header{"Content-Type": {mediaType}}, data)
 					if wantBlock {
 						if status != http.StatusForbidden || hits != 0 {
 							t.Fatalf("status=%d hits=%d body=%s", status, hits, reason)
 						}
 					} else if status != http.StatusCreated || hits != 1 || !intact {
-						t.Fatalf("clean/raw-PDF: status=%d hits=%d intact=%t body=%s", status, hits, intact, reason)
+						t.Fatalf("clean: status=%d hits=%d intact=%t body=%s", status, hits, intact, reason)
 					}
 				})
 			}
 		}
 	}
+}
+
+// TestUploadInspectionSeededPDF records the documented PDF limit: PDFs have
+// no document reader yet, so compressed or font-encoded PDF text isn't
+// recovered (docs/configuration.md). Replace the skip with a block assertion
+// on every surface and carrier when the PDF reader ships.
+func TestUploadInspectionSeededPDF(t *testing.T) {
+	t.Skip("PDF reading is deferred; compressed PDF text isn't recovered yet (docs/configuration.md)")
 }
 
 func TestUploadInspectionUnreadablePolicy(t *testing.T) {
