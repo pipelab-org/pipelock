@@ -879,13 +879,13 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 			// DetectSpans. Replace invisibles with spaces FIRST to restore the
 			// boundaries. Mirrors scanCoreResponse's spaced pass. (Space-LIKE
 			// separators such as NBSP/en-dash survive ForMatching already; this
-			// covers the zero-width class they do not.)
-			spacedInput := normalize.ReplaceInvisibleWithSpace(candidateText)
-			if spacedInput == candidateText {
+			// covers the zero-width class they do not.) Compatibility folding can
+			// also produce an invisible separator, so the check covers both.
+			if !normalize.ContainsInvisible(candidateText) {
 				return
 			}
 			matching := normalize.ForMatching(candidateText)
-			spaced := normalize.ForMatching(spacedInput)
+			spaced := normalize.ForMatchingSpaced(candidateText)
 			if spaced != matching {
 				addSeedCandidate(seedCandidate{spaced, encoded, spanViewLabel("invisible_spaced", viewLabel)})
 			}

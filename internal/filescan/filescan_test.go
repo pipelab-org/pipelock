@@ -10,6 +10,12 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // zw builds a string containing the given codepoint. Test inputs are assembled
@@ -69,6 +75,10 @@ func TestScanText(t *testing.T) {
 		{
 			name: "mongolian vowel sep flagged (outside InvisibleRanges)", content: "a" + zw(0x180E) + "b",
 			wantCount: 1, wantFirst: "U+180E", wantCat: CategoryZeroWidth, wantSev: SeverityMed, wantLine: 1, wantCol: 2,
+		},
+		{
+			name: "halfwidth hangul filler flagged (folds into InvisibleRanges)", content: "a" + zw(0xFFA0) + "b",
+			wantCount: 1, wantFirst: "U+FFA0", wantCat: CategoryZeroWidth, wantSev: SeverityMed, wantLine: 1, wantCol: 2,
 		},
 		{
 			name: "C1 control flagged", content: "a" + zw(0x0085) + "b",
@@ -724,4 +734,27 @@ func blockDirAccess(t *testing.T, dir string) {
 	t.Cleanup(func() {
 		_ = os.Chmod(dir, 0o750) //nolint:gosec // cleanup only: RemoveAll needs the exec bit back
 	})
+}
+
+// TestSuspectsCoverInvisibleRanges derives the required set from the scanning
+// contract and Unicode compatibility data: every scalar pipelock strips, or that
+// NFKC folds into a stripped character, must be flagged in files at rest.
+func TestSuspectsCoverInvisibleRanges(t *testing.T) {
+	folded := 0
+	for r := rune(0); r <= utf8.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		required := unicode.Is(normalize.InvisibleRanges, r)
+		if !required && strings.ContainsFunc(norm.NFKC.String(string(r)), func(f rune) bool { return unicode.Is(normalize.InvisibleRanges, f) }) {
+			required = true
+			folded++
+		}
+		if _, ok := classifyRune(r); required && !ok {
+			t.Errorf("U+%04X is stripped by scanning but not flagged by file scanning", r)
+		}
+	}
+	if folded == 0 {
+		t.Fatal("no compatibility-folded invisible characters were derived")
+	}
 }

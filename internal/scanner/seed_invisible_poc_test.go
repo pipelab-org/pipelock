@@ -32,6 +32,7 @@ func TestScanTextForDLP_SeedZeroWidthSeparator(t *testing.T) {
 		{"U+200B", 0x200B},
 		{"U+1160", 0x1160},
 		{"U+3164", 0x3164},
+		{"U+FFA0", 0xFFA0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			payload := strings.ReplaceAll(testSeedPhrase12, " ", string(tc.sep))

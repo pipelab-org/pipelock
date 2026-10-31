@@ -1,0 +1,7 @@
+# Preserve producer bytes; the repository's testdata text rule normalizes CRLF.
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.odt binary
+*.ods binary
+*.pdf binary

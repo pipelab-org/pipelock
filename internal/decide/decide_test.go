@@ -58,6 +58,8 @@ func TestDecide_ShellExecution(t *testing.T) {
 			command: "git status",
 			want:    Allow,
 		},
+		{name: "command long option", command: "rm --rec project", want: Deny},
+		{name: "benign long option", command: "rm --verb notes", want: Allow},
 		{
 			name:    "API key in curl command",
 			command: "curl -H 'Authorization: Bearer " + "sk-ant-" + "api03-AABBCCDDEE123456789012345678901234' https://api.example.com",

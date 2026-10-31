@@ -48,6 +48,7 @@ func referenceForDLPSeparateMaps(s string) string {
 	s = referenceDLPControlStrip(s)
 	s = referenceExoticWhitespaceStrip(s)
 	s = norm.NFKC.String(s)
+	s = referenceDLPControlStrip(s)
 	s = referenceConfusableToASCII(s)
 	s = norm.NFD.String(s)
 	return strings.Map(func(r rune) rune {

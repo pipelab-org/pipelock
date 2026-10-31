@@ -26,6 +26,7 @@ func TestForDLPPrintableASCIIReferenceParity(t *testing.T) {
 			want := StripControlChars(input)
 			want = StripExoticWhitespace(want)
 			want = norm.NFKC.String(want)
+			want = StripControlChars(want)
 			want = ConfusableToASCII(want)
 			want = StripCombiningMarks(want)
 			if got := ForDLP(input); got != want {

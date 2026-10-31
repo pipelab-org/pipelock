@@ -10,14 +10,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
-	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // matchCredentialDestinations checks each scoped path and its expanded local
 // identities independently. Joining a public-key path to another identity must
 // not manufacture text after its .pub extension. Custom rules retain their
 // ordinary matching semantics.
-func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []string) (matched, handled bool) {
+func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []string, memo candidateViews) (matched, handled bool) {
 	if rule.Name != "Credential File Write" || rule.ArgPattern == nil || rule.ArgKey == nil || rule.ToolPattern == nil {
 		return false, false
 	}
@@ -26,7 +25,7 @@ func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []s
 		return false, false
 	}
 	for _, candidate := range candidates {
-		if pc.credentialCandidateMatches(rule, candidate) {
+		if pc.credentialCandidateMatches(rule, candidate, memo) {
 			return true, true
 		}
 	}
@@ -51,7 +50,7 @@ var shippedCredentialWriteRuleShapes = func() map[string]config.ToolPolicyRule {
 // Recognize only the two shipped argument patterns (the hostile preset adds
 // Kubernetes and Docker locations). A custom pattern, scoped rule, or patch rule
 // retains the ordinary matcher, even if it uses the same rule name.
-func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []string, raw json.RawMessage) (matched, handled bool) {
+func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []string, raw json.RawMessage, memo candidateViews) (matched, handled bool) {
 	if rule.Name != "Credential File Access" || rule.ArgPattern == nil || rule.ArgKey != nil || rule.ArgSource != "" {
 		return false, false
 	}
@@ -85,29 +84,37 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 	// on. Any key that names a protected path on its own keeps the block, so the
 	// exception can only narrow what the value alone would match.
 	for _, key := range pc.localPaths.expand(keys) {
-		if pc.credentialCandidateMatches(rule, key) {
+		if pc.credentialCandidateMatches(rule, key, memo) {
 			return true, true
 		}
 	}
 	for _, candidate := range pc.localPaths.expand(args) {
-		if pc.credentialCandidateMatches(rule, candidate) {
+		if pc.credentialCandidateMatches(rule, candidate, memo) {
 			return true, true
 		}
 	}
 	return false, true
 }
 
+// candidateViews holds the views of single candidate strings for one request.
+// Views depend only on the string, and each credential rule reads the same ones.
+type candidateViews map[string][]argView
+
 // credentialCandidateMatches runs every normalization view of one string.
-func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate string) bool {
-	single := []string{candidate}
-	tokens, joined := normalizeArgTokens(single, normalize.ForMatching, policyPreNormalize)
-	altTokens, altJoined := normalizeArgTokens(single, normalize.ForPolicy, policyPreNormalize)
-	baseTokens, baseJoined := normalizeArgTokens(single, normalize.ForMatching, nil)
-	rawTokens, rawJoined := literalArgTokens(single)
-	return matchArgPattern(rule.ArgPattern, tokens, joined) ||
-		matchArgPattern(rule.ArgPattern, altTokens, altJoined) ||
-		matchArgPattern(rule.ArgPattern, baseTokens, baseJoined) ||
-		matchArgPattern(rule.ArgPattern, rawTokens, rawJoined)
+func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate string, memo candidateViews) bool {
+	views, ok := memo[candidate]
+	if !ok {
+		views = buildArgViews([]string{candidate}, false, nil)
+		if memo != nil {
+			memo[candidate] = views
+		}
+	}
+	for _, v := range views {
+		if matchArgPattern(rule.ArgPattern, v.tokens, v.joined) {
+			return true
+		}
+	}
+	return false
 }
 
 // jsonObjectKeys returns every object key at any depth. ok is false when the
