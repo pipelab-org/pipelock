@@ -39,6 +39,13 @@ func TestIncompleteFileHoldGuidance(t *testing.T) {
 	if !ok || !strings.Contains(secret.OperatorKnob, "suppress:") || secret.AgentReason != secretAgentReason {
 		t.Fatalf("credential reason changed: %+v ok=%t", secret, ok)
 	}
+	combined := "request body contains secret: Stripe Key; " + reason
+	both, ok := GuidanceForResult(ScannerBodyDLP, combined)
+	if !ok || !strings.HasPrefix(both.AgentReason, secretAgentReason) || !strings.Contains(both.AgentReason, "could not be fully read") ||
+		!strings.Contains(both.OperatorKnob, "suppress:") || !strings.Contains(both.OperatorKnob, "request_body_scanning.action") ||
+		strings.Index(both.AgentReason, "secret/credential") > strings.Index(both.AgentReason, "fully read") {
+		t.Fatalf("combined guidance = %+v ok=%t", both, ok)
+	}
 	hint := OperatorHintForPatterns(ScannerBodyDLP, []string{reason})
 	if strings.Contains(hint, "suppress:") || !strings.Contains(hint, "request_body_scanning.action") {
 		t.Fatalf("pattern hint for a file reason = %q", hint)

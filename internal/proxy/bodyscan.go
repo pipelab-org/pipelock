@@ -1098,6 +1098,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		result.RedactionReport = redactReport
 		if result.FileInspectionIncomplete != "" && containsCoreFloorMatch(result.DLPMatches) {
 			result.Reason = ""
+		} else if result.FileInspectionIncomplete != "" && len(result.DLPMatches) > 0 {
+			// A non-core secret and an unread file share one free-text reason.
+			// The secret finding is first. Callers copy Reason into the receipt
+			// Pattern, so this needs no schema change.
+			result.Reason = fmt.Sprintf("request body contains secret: %s; %s", strings.Join(dlpMatchNames(result.DLPMatches), ", "), result.FileInspectionIncomplete)
 		}
 		if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)

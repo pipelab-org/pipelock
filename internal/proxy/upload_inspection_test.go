@@ -557,6 +557,58 @@ func TestUploadInspectionReasonAndFailClosed(t *testing.T) {
 	}
 }
 
+func TestUploadInspectionMixedSecretAndUnread(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	secret := "sk_live_" + strings.Repeat("a", 24)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	part, err := zw.Create("unknown.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(append([]byte{0xff, 0xfe}, []byte("token="+secret)...)); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, result := scanRequestBody(context.Background(), BodyScanRequest{Body: bytes.NewReader(buf.Bytes()), Scanner: sc, MaxBytes: 1 << 20, ContentType: "application/octet-stream", Action: config.ActionBlock})
+	secretAt := strings.Index(result.Reason, "Stripe Key")
+	unreadAt := strings.Index(result.Reason, "not fully read")
+	if result.Clean || secretAt < 0 || unreadAt < secretAt || !strings.Contains(result.Reason, "request body contains secret:") {
+		t.Fatalf("reason=%q", result.Reason)
+	}
+	rec := httptest.NewRecorder()
+	setBodyResultHint(rec, "body_dlp", result.Reason)
+	hint := rec.Header().Get("X-Pipelock-Hint")
+	if !strings.HasPrefix(hint, "Request blocked: the destination or content matched a secret/credential pattern.") ||
+		!strings.Contains(hint, "could not be fully read") || strings.Contains(hint, "governed by") ||
+		strings.Index(hint, "secret/credential") > strings.Index(hint, "fully read") {
+		t.Fatalf("hint=%q", hint)
+	}
+
+	core := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	buf.Reset()
+	zw = zip.NewWriter(&buf)
+	part, err = zw.Create("unknown.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(append([]byte{0xff, 0xfe}, []byte("id="+core)...)); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, result = scanRequestBody(context.Background(), BodyScanRequest{Body: bytes.NewReader(buf.Bytes()), Scanner: sc, MaxBytes: 1 << 20, ContentType: "application/octet-stream", Action: config.ActionBlock})
+	if result.Reason != "" || result.FileInspectionIncomplete == "" || len(result.DLPMatches) == 0 {
+		t.Fatalf("core floor reason=%q incomplete=%q matches=%d", result.Reason, result.FileInspectionIncomplete, len(result.DLPMatches))
+	}
+}
+
 func TestUploadInspectionMultipartBoundaries(t *testing.T) {
 	data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", "libreoffice-seeded.docx")))
 	if err != nil {

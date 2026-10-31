@@ -103,6 +103,16 @@ func IsUnreadBodyReason(reason string) bool {
 	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
 }
 
+// SecretAndUnreadAgentReason names a non-core secret finding and then an
+// unread upload. The reason is free text; an audience note may follow the
+// unread-file suffix, so the suffix is not required to be terminal.
+func SecretAndUnreadAgentReason(reason string) (string, bool) {
+	if !strings.HasPrefix(reason, "request body contains secret:") || !strings.Contains(reason, IncompleteFileGovernedSuffix) {
+		return "", false
+	}
+	return secretAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+}
+
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
 	bodyEntropyOperatorKnob    = "If the global `request_body_scanning.content_entropy_action` is `block`, an exact, expiring `content_entropy_warn_routes` entry can keep one HTTPS upload route visible without blocking it. With global `warn`, that route control is unavailable; use the existing warning or set the action to `block` when opaque traffic must stop. For a WebSocket-only endpoint, use `websocket_proxy.content_entropy_exclusions`."
@@ -619,7 +629,15 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	reason = stripNestedURLReasonPrefix(reason)
 	// An unread file is not a credential match. The published parse_error
 	// reason already covers input that could not be fully scanned, so this
-	// branch only replaces the operator and agent sentences.
+	// branch only replaces the operator and agent sentences. A reason that
+	// also names a secret keeps that finding first.
+	if agent, ok := SecretAndUnreadAgentReason(reason); ok {
+		file := incompleteFileHoldGuidance()
+		return RemediationGuidance{
+			OperatorKnob: "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret. " + file.OperatorKnob,
+			AgentReason:  agent,
+		}, true
+	}
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true
 	}
