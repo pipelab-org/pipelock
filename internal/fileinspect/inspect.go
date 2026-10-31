@@ -61,9 +61,14 @@ func Kind(data []byte) string {
 	// The canonical layout check then leaves either form not fully read.
 	case bytes.Contains(data[max(0, len(data)-endHeaderBytes-65535):], zipEndSignature), bytes.Contains(data, zipLocalSignature):
 		return "ZIP"
+	// A self-extracting module may also precede a RAR archive (the RAR
+	// technote's SFX block) or a 7z archive; 7-Zip and libarchive extract a
+	// 7-Zip SFX executable. These formats have no reader either way.
+	case bytes.Contains(data, sevenZipSignature):
+		return "7z"
+	case bytes.Contains(data, rar4Signature), bytes.Contains(data, rar5Signature):
+		return "RAR"
 	default:
-		// No tested 7z or RAR reader opened an archive behind a stub that is
-		// not an executable, so those formats are recognized at the start only.
 		return ""
 	}
 }

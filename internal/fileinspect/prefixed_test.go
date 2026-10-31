@@ -46,10 +46,17 @@ func TestKindPrefixedArchive(t *testing.T) {
 			t.Fatalf("Kind(%q) = %q", data, got)
 		}
 	}
-	// No tested 7z or RAR reader opens an archive behind a stub that is not an
-	// executable, so those signatures are recognized only at the start.
-	if got := Kind(append(bytes.Clone(stub), '7', 'z', 0xbc, 0xaf, 0x27, 0x1c)); got != "" {
-		t.Fatalf("prefixed 7z: Kind = %q", got)
+	// 7-Zip and libarchive extract a 7-Zip SFX executable: an ELF or PE stub
+	// followed by the archive. A RAR SFX module precedes a RAR archive.
+	elf := append([]byte("\x7fELF"), make([]byte, 4096)...)
+	for want, sig := range map[string][]byte{"7z": {'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}, "RAR": []byte("Rar!\x1a\x07\x01\x00")} {
+		data := append(bytes.Clone(elf), sig...)
+		if got := Kind(data); got != want {
+			t.Fatalf("prefixed %s: Kind = %q", want, got)
+		}
+		if r := Inspect(t.Context(), data, Limits{1 << 20, 64}); !r.Recognized || r.Complete {
+			t.Fatalf("prefixed %s: recognized=%t complete=%t", want, r.Recognized, r.Complete)
+		}
 	}
 }
 
