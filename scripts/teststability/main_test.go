@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -296,5 +297,29 @@ func TestA(t *testing.T) {
 	want := bad + ":6:\t\t\trequire.NoError(t, err)\n"
 	if stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+}
+
+// TestRetryShapes runs the analyzer over testdata/retry_shapes.go.txt and
+// checks that it reports exactly the lines marked "// want".
+func TestRetryShapes(t *testing.T) {
+	t.Parallel()
+
+	src, err := os.ReadFile(filepath.Join("testdata", "retry_shapes.go.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []int
+	for i, line := range strings.Split(string(src), "\n") {
+		if strings.HasSuffix(strings.TrimSpace(line), "// want") {
+			want = append(want, i+1)
+		}
+	}
+	if len(want) == 0 {
+		t.Fatal("fixture has no want markers")
+	}
+	got := findingLines(t, string(src))
+	if !slices.Equal(got, want) {
+		t.Fatalf("finding lines = %v, want %v", got, want)
 	}
 }
