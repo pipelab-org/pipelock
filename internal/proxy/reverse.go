@@ -1989,6 +1989,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	maxBytes := reverseRequestScanMaxBytes(cfg)
 
 	bodyReq := BodyScanRequest{
+		AuditMode:       !cfg.EnforceEnabled(),
 		Body:            r.Body,
 		Trailer:         r.Trailer,
 		Scheme:          rp.upstream.Scheme,
@@ -2177,6 +2178,11 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if signalScanner == "" {
 		signalScanner = layer
 	}
+	if unreadHoldOnly(result) {
+		layer = scanner.ScannerParser
+		bodyBlockReason = blockreason.ParseError
+		signalScanner = scanner.ScannerParser
+	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
@@ -2192,6 +2198,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
+		setBodyResultHint(w, layer, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
@@ -2213,13 +2220,16 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
+		setBodyResultHint(w, layer, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
 		return true, config.ActionBlock, nil, true
 	}
 
-	// Warn mode: re-wrap body and continue.
+	// Warn mode: re-wrap body and continue. The observation uses the same
+	// body-DLP event and counter as an inspection-limit warning.
+	recordIncompleteFileObservation(rp.metrics, rp.logger, actx, action, "", result)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	r.ContentLength = int64(len(bodyBytes))
 	bodyBytesCopy := bodyBytes
