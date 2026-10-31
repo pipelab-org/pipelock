@@ -99,3 +99,12 @@ func queryDLPSecurityViews(rawQuery string) []string {
 	}
 	return views
 }
+
+// relabelKnownSecretViews names the text a set of decoded views came from, so
+// a span's label identifies the string its offsets index.
+func relabelKnownSecretViews(views []spanTextView, source string) []spanTextView {
+	for i := range views {
+		views[i].viewLabel = spanViewLabel(ViewDLPNormalized, source, strings.TrimPrefix(views[i].viewLabel, ViewDLPNormalized+":"))
+	}
+	return views
+}

@@ -1401,8 +1401,14 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 			texts = s.decodedKnownSecretViews(text, decodes)
 			// URL serialization can escape a separator into path data. Split
 			// the decoded view too, as known-value URL scanning already does.
-			if decoded := IterativeDecode(text); decoded != text {
-				texts = append(texts, s.decodedKnownSecretViews(decoded, decodes)...)
+			decoded := IterativeDecode(text)
+			if decoded != text {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(decoded, decodes), "url_decoded")...)
+			}
+			// Form decoding turns an escaped '+' into a space; the RFC 3986
+			// view keeps it as data.
+			if percent := iterativePercentDecode(text); percent != text && percent != decoded {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, decodes), "percent_decoded")...)
 			}
 		}
 
@@ -1425,6 +1431,11 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 					m.Encoded = match.encoding
 					if m.Encoded == "" && phase == 1 {
 						m.Encoded = strings.TrimPrefix(viewLabel, ViewDLPNormalized+":")
+					}
+					// The view's source names where the text came from, not
+					// an encoding.
+					for _, source := range []string{"url_decoded:", "percent_decoded:"} {
+						m.Encoded = strings.TrimPrefix(m.Encoded, source)
 					}
 				}
 				m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")

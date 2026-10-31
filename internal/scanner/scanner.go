@@ -3568,6 +3568,13 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		if phase == 1 {
 			var decodes decodingMemo
 			texts = s.decodedKnownSecretViews(decodedURL, &decodes)
+			// Form decoding turns a '+' into a space, so a nested carrier
+			// whose encoding holds '+' as data decodes only from the raw or
+			// the RFC 3986 percent-decoded URL.
+			texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, &decodes), "control_stripped_url")...)
+			if percent := normalize.StripControlChars(iterativePercentDecode(fullURL)); percent != fullURL && percent != decodedURL {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, &decodes), "percent_decoded")...)
+			}
 		}
 
 		hits := newKnownValueWindowHits(texts)
