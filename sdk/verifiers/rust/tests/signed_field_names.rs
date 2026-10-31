@@ -18,6 +18,8 @@ fn signed_field_names_shared_parity() {
     .unwrap();
     for case in fixture["cases"].as_array().unwrap() {
         let file = fixtures.join(case["file"].as_str().unwrap());
+        // A missing fixture must fail here, not read as an expected rejection.
+        fs::read(&file).unwrap();
         let report = run_receipt(
             file.to_str().unwrap(),
             key["public_key_hex"].as_str().unwrap(),
@@ -30,5 +32,12 @@ fn signed_field_names_shared_parity() {
             "{:?}",
             report.error
         );
+        if !report.valid {
+            let want = case["error"]
+                .as_str()
+                .expect("negative case names no expected error");
+            let got = report.error.as_deref().unwrap_or_default();
+            assert!(got.contains(want), "error {got:?} lacks {want:?}");
+        }
     }
 }

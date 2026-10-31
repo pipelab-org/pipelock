@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -19,8 +20,9 @@ func TestSignedFieldNamesParity(t *testing.T) {
 	}
 	var fixture struct {
 		Cases []struct {
-			File  string
-			Valid bool
+			File  string `json:"file"`
+			Valid bool   `json:"valid"`
+			Error string `json:"error"`
 		}
 	}
 	if err := json.Unmarshal(raw, &fixture); err != nil {
@@ -48,6 +50,14 @@ func TestSignedFieldNamesParity(t *testing.T) {
 			}
 			if (err == nil) != tc.Valid {
 				t.Fatalf("valid=%v: %v", tc.Valid, err)
+			}
+			if !tc.Valid {
+				if tc.Error == "" {
+					t.Fatal("negative case names no expected error")
+				}
+				if !strings.Contains(err.Error(), tc.Error) {
+					t.Fatalf("error %q lacks %q", err, tc.Error)
+				}
 			}
 		})
 	}

@@ -6,7 +6,8 @@
     },
     {
       "file": "signed-field-alias.json",
-      "valid": false
+      "valid": false,
+      "error": "(case-insensitive)"
     }
   ]
 }

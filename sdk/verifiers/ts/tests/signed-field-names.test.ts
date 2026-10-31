@@ -12,10 +12,19 @@ test("signed field names match shared parity fixture", async () => {
     public_key_hex: string;
   };
   const fixture = JSON.parse(readFileSync(`${dir}/signed-field-names.json`, "utf8")) as {
-    cases: { file: string; valid: boolean }[];
+    cases: { file: string; valid: boolean; error?: string }[];
   };
   for (const entry of fixture.cases) {
+    // A missing fixture must fail here, not read as an expected rejection.
+    readFileSync(`${dir}/${entry.file}`);
     const report = await runReceipt(`${dir}/${entry.file}`, key.public_key_hex);
     assert.equal(report.valid, entry.valid, `${entry.file}: ${report.error ?? "no error"}`);
+    if (!entry.valid) {
+      assert.ok(entry.error, `${entry.file}: negative case names no expected error`);
+      assert.ok(
+        report.error?.includes(entry.error),
+        `${entry.file}: error ${JSON.stringify(report.error)} lacks ${JSON.stringify(entry.error)}`,
+      );
+    }
   }
 });
