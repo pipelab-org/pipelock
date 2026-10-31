@@ -657,7 +657,7 @@ func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMe
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
-	for _, seg := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
+	for _, seg := range textDLPSegments(text) {
 		if len(seg) < 10 {
 			continue
 		}
@@ -802,6 +802,13 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
+	for _, target := range urlFragmentDLPTargets(parsed, decodes) {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+		if stripped := stripURLNoise(target.text); stripped != target.text {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), target.text})
+		}
+	}
 
 	// Individual query keys and values (decoded + encoding variants).
 	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
@@ -855,13 +862,18 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	if rawPath == "" {
 		rawPath = parsed.EscapedPath()
 	}
-	decodedPath := IterativeDecode(rawPath)
-	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+	formPath, percentPath := urlComponentDecodes(rawPath)
+	for _, decoded := range []dlpTarget{
+		{formPath, dlpViewLabel("url_path_decoded"), ""},
+		{percentPath, dlpViewLabel(spanViewLabel("percent_decoded", "url_path")), ""},
+	} {
+		if decoded.text != "" && decoded.text != parsed.Path {
+			targets = append(targets, decoded)
+		}
 	}
 
 	// Path segment decoding (hex/base64/base32).
-	for _, segment := range strings.Split(parsed.Path, "/") {
+	for _, segment := range urlPathDecodeSegments(parsed.Path) {
 		if len(segment) >= 10 {
 			for _, d := range decodes.decode(segment, false) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})

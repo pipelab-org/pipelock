@@ -115,7 +115,7 @@ func TestScan_SeedPhraseQuotedInQuery(t *testing.T) {
 func TestSeedSeparatorCoversTextDLPDelimiters(t *testing.T) {
 	found := 0
 	for r := rune(0); r < 0x80; r++ {
-		if !isTextDLPEncodingDelimiter(r) {
+		if !isTextDLPEncodingDelimiter(r) && !isURLFragmentDelimiter(r) {
 			continue
 		}
 		found++
