@@ -336,9 +336,6 @@ func (pi *pkgInfo) isExitChannel(ch ast.Expr) bool {
 		name = x.Name
 	case *ast.SelectorExpr:
 		name = x.Sel.Name
-	case *ast.CallExpr:
-		// ctx.Done() and similar carry no error value.
-		return false
 	default:
 		return true
 	}

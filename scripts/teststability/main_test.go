@@ -59,6 +59,22 @@ func TestA(t *testing.T) {
 			want: []int{6},
 		},
 		{
+			name: "fatal on a function-returned run exit channel",
+			src: `package x
+func TestA(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		select {
+		case err := <-exitErrs():
+			t.Fatalf("exited: %v", err)
+		case <-ready:
+		}
+		return nil
+	})
+}
+`,
+			want: []int{6},
+		},
+		{
 			name: "returned run exit error",
 			src: `package x
 func TestA(t *testing.T) {
