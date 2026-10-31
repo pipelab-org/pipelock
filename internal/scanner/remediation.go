@@ -87,6 +87,89 @@ const (
 	DecideStructuralLabel = "decide"
 )
 
+// IncompleteFileGovernedSuffix is the terminal clause of an unread-upload
+// reason. Request-body inspection appends it. Guidance matches the whole
+// clause with HasSuffix so an earlier client-chosen substring cannot select it.
+const IncompleteFileGovernedSuffix = "governed by request_body_scanning.action=block with enforce=true (warn/audit retain delivery)"
+
+// UnscannedEncodingSuffix is the terminal clause of the reason for a request
+// body withheld because its Content-Encoding is not decoded. The client-chosen
+// encoding name is quoted earlier in the reason and can't supply this clause.
+const UnscannedEncodingSuffix = "compressed bodies cannot be scanned for secrets"
+
+// IsUnreadBodyReason reports a body Pipelock withheld because it could not read
+// it, not because a finding matched. Both share the parse_error block reason.
+func IsUnreadBodyReason(reason string) bool {
+	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
+}
+
+// Request-body reasons that name a finding before an unread upload. The
+// entropy prefixes are the two forms contententropy.Reason writes.
+const (
+	secretAndUnreadPrefix          = "request body contains secret:"
+	injectionAndUnreadPrefix       = "request body contains prompt injection:"
+	addressAndUnreadPrefix         = "address poisoning detected:"
+	entropyAndUnreadPrefix         = "high entropy request body content"
+	opaqueEntropyAndUnreadPrefix   = "opaque "
+	opaqueEntropyAndUnreadContains = " request body content ("
+)
+
+// findingAndUnread is the finding a request-body reason names before an
+// unread upload, with that finding's own operator and agent sentences.
+type findingAndUnread struct {
+	agent, knob string
+	immutable   bool
+}
+
+// guidance appends the unread-file sentences to the finding's own.
+func (f findingAndUnread) guidance() RemediationGuidance {
+	file := incompleteFileHoldGuidance()
+	return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason, Immutable: f.immutable}
+}
+
+// inspectionLimitBeforeUnread is a fixed JSON inspection limit named before an
+// unread upload. Suppression cannot lift the limit.
+func inspectionLimitBeforeUnread() findingAndUnread {
+	limit := jsonInspectionLimitGuidance()
+	return findingAndUnread{limit.AgentReason, "The reason names a JSON inspection limit and then an unread upload. " + limit.OperatorKnob, true}
+}
+
+func findingBeforeUnread(reason string) (findingAndUnread, bool) {
+	if !strings.Contains(reason, IncompleteFileGovernedSuffix) {
+		return findingAndUnread{}, false
+	}
+	switch {
+	case strings.HasPrefix(reason, secretAndUnreadPrefix):
+		// The pattern names end where the unread-upload clause begins. A
+		// fixed JSON inspection limit is not lifted by suppression.
+		names, _, _ := strings.Cut(strings.TrimPrefix(reason, secretAndUnreadPrefix+" "), "; ")
+		if jsonInspectionLimitInNames(names) {
+			return inspectionLimitBeforeUnread(), true
+		}
+		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret.", false}, true
+	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
+		return findingAndUnread{promptInjectionAgentReason, "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob, false}, true
+	case strings.HasPrefix(reason, addressAndUnreadPrefix):
+		return findingAndUnread{auditPolicyAgentReason, "The reason names an address-poisoning finding and then an unread upload. " + addressProtectionOperatorKnob, false}, true
+	case strings.HasPrefix(reason, entropyAndUnreadPrefix),
+		strings.HasPrefix(reason, opaqueEntropyAndUnreadPrefix) && strings.Contains(reason, opaqueEntropyAndUnreadContains):
+		return findingAndUnread{highEntropyAgentReason, "The reason names a high-entropy finding and then an unread upload. " + bodyEntropyOperatorKnob, false}, true
+	}
+	return findingAndUnread{}, false
+}
+
+// FindingAndUnreadAgentReason names a non-core secret, prompt-injection,
+// address-poisoning or high-entropy finding and then an unread upload. The
+// reason is free text; an audience note may follow the unread-file suffix, so
+// the suffix is not required to be terminal.
+func FindingAndUnreadAgentReason(reason string) (string, bool) {
+	f, ok := findingBeforeUnread(reason)
+	if !ok {
+		return "", false
+	}
+	return f.agent + " " + incompleteFileHoldGuidance().AgentReason, true
+}
+
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
 	bodyEntropyOperatorKnob    = "If the global `request_body_scanning.content_entropy_action` is `block`, an exact, expiring `content_entropy_warn_routes` entry can keep one HTTPS upload route visible without blocking it. With global `warn`, that route control is unavailable; use the existing warning or set the action to `block` when opaque traffic must stop. For a WebSocket-only endpoint, use `websocket_proxy.content_entropy_exclusions`."
@@ -481,6 +564,9 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 		}
 		structured = true
 		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
+			if _, combined := findingBeforeUnread(stripNestedURLReasonPrefix(reason)); combined {
+				return inspectionLimitBeforeUnread().guidance(), true
+			}
 			return jsonInspectionLimitGuidance(), true
 		}
 	}
@@ -558,7 +644,10 @@ func jsonInspectionLimitInNames(names string) bool {
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// Generic events retain only the emitted reason. Strip client-chosen query
 	// keys before recognizing the closed set of inspection-refusal formats.
-	if isJSONInspectionLimitReason(label, stripNestedURLReasonPrefix(reason)) {
+	// A reason that also names an unread upload is routed by
+	// findingBeforeUnread, whatever order its pattern names take.
+	stripped := stripNestedURLReasonPrefix(reason)
+	if _, combined := findingBeforeUnread(stripped); !combined && isJSONInspectionLimitReason(label, stripped) {
 		return jsonInspectionLimitGuidance(), true
 	}
 	return guidanceForResult(label, reason)
@@ -584,9 +673,36 @@ func hasQueryGrantValidityNote(reason string) bool {
 	return false
 }
 
+func incompleteFileHoldGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "The upload could not be fully read. `request_body_scanning.action` set to `block` with `enforce` true withholds it. `action` `warn`, or `enforce` false, delivers it and keeps the observation. `max_body_bytes` bounds expansion and does not lift an unread member, an OLE container, or encryption.",
+		AgentReason:  "Request blocked: the upload could not be fully read.",
+	}
+}
+
+func unscannedEncodingGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "The request body used a Content-Encoding Pipelock does not decode, so it was not scanned. It is withheld under every `request_body_scanning.action` and `enforce` setting because no finding decided it. Configure the client to send the body without Content-Encoding.",
+		AgentReason:  "Request blocked: the compressed request body could not be scanned. Send it without Content-Encoding.",
+	}
+}
+
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
+	// An unread file is not a credential match. The published parse_error
+	// reason already covers input that could not be fully scanned, so this
+	// branch only replaces the operator and agent sentences. A reason that
+	// also names a secret keeps that finding first.
+	if f, ok := findingBeforeUnread(reason); ok {
+		return f.guidance(), true
+	}
+	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
+		return incompleteFileHoldGuidance(), true
+	}
+	if strings.HasSuffix(reason, UnscannedEncodingSuffix) {
+		return unscannedEncodingGuidance(), true
+	}
 	if label == AuditContract && reason == "MCP contract evaluation failed" {
 		return RemediationGuidance{
 			OperatorKnob: "The live-lock contract could not be evaluated. Restore the active contract loader or correct the invalid contract state and retry; changing a rule's allow/block action does not repair an evaluation failure.",

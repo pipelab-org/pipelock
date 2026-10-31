@@ -267,7 +267,7 @@ func ValidateManifest(m Manifest) error {
 // unambiguous JSON and schema contract enforced during signature verification.
 func ParseManifest(data []byte) (Manifest, error) {
 	var manifest Manifest
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &manifest); err != nil {
 		return Manifest{}, fmt.Errorf("%w: %w", ErrReleaseManifest, err)
 	}
 	if err := json.Unmarshal(data, &manifest); err != nil {

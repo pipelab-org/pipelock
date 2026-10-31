@@ -4,6 +4,8 @@
 package jsonscan
 
 import (
+	"bytes"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -56,6 +58,38 @@ func BenchmarkStructFieldsCached(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		_ = cachedStructFields(cacheBenchType)
+	}
+}
+
+// BenchmarkUnknownKeysWideSchema measures folded lookups for keys that bind no
+// field, which reach boundField before the consuming decoder rejects them.
+func BenchmarkUnknownKeysWideSchema(b *testing.B) {
+	fields := make([]reflect.StructField, 64)
+	for i := range fields {
+		fields[i] = reflect.StructField{
+			Name: fmt.Sprintf("Field%02d", i),
+			Type: reflect.TypeFor[string](),
+			Tag:  reflect.StructTag(fmt.Sprintf(`json:"field_%02d"`, i)),
+		}
+	}
+	target := reflect.New(reflect.StructOf(fields)).Interface()
+	var doc bytes.Buffer
+	doc.WriteByte('{')
+	for i := range 4096 {
+		if i > 0 {
+			doc.WriteByte(',')
+		}
+		fmt.Fprintf(&doc, `"unknown_%04d":0`, i)
+	}
+	doc.WriteByte('}')
+	data := doc.Bytes()
+	if err := RejectDuplicateFieldsInValidatedJSON(data, target); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		_ = RejectDuplicateFieldsInValidatedJSON(data, target)
 	}
 }
 

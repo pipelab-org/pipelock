@@ -41,14 +41,21 @@ const maxPairChecks = maxPairwiseTokens * (maxPairwiseTokens - 1)
 // unsplit is set when the arguments are one string that commandSegments
 // could not split, so commands in it cannot be told apart.
 type argView struct {
-	tokens     []string
-	joined     string
-	segments   [][]string
-	unsplit    bool
-	plain      bool
-	inputKnown string // direct xargs utility whose input is proved on raw input
-	checkXargs bool
-	folded     map[string]string // request-local folds of original tokens and joined views
+	tokens      []string
+	joined      string
+	segments    [][]string
+	unsplit     bool
+	plain       bool
+	inputKnown  string // direct xargs utility whose input is proved on raw input
+	checkXargs  bool
+	interpreted bool              // added option view; cannot erase original uncertainty
+	folded      map[string]string // request-local folds of original tokens and joined views
+	// findPaths caches findPathsOnly(segments) for a plain view; it does not
+	// depend on the pattern. nil means not computed.
+	findPaths [][]string
+	// xargsFree proves no token can name xargs, so unresolvedXargs is false
+	// for every pattern. false means not proved.
+	xargsFree bool
 }
 
 // literalArgTokens returns the submitted strings unmodified, each as one
@@ -57,37 +64,92 @@ func literalArgTokens(args []string) ([]string, string) {
 	return args, strings.Join(args, " ")
 }
 
-// buildArgViews returns the primary, alt, baseline, and literal views of args
-// (see CheckToolCallWithArgs).
-func buildArgViews(args []string) [4]argView {
+// argViewNorms are the normalizations the rule views read arguments under:
+// a Unicode normalization function and an optional confusable pre-normalizer.
+var argViewNorms = []struct {
+	fn  func(string) string
+	pre *strings.Replacer
+}{
+	{normalize.ForMatching, policyPreNormalize},
+	{normalize.ForPolicy, policyPreNormalize},
+	{normalize.ForMatching, nil},
+}
+
+// buildArgViews retains the primary, alt, baseline, and literal views, and adds
+// command-option interpretations where they differ. Adding an interpretation
+// must not erase a spelling that an existing configured rule matches.
+//
+// gitTool reads args as the dedicated git tool's arguments (see
+// normalizeLineOptions). proof decides which builtin subcommands keep their own
+// reading (see gitProof); nil reads args themselves without a recorded shape.
+func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	segs, plain := splitCommands(args)
+	if proof == nil {
+		p := proveGitBuiltins(args, nil, gitTool)
+		proof = &p
+	}
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
-	norms := []struct {
-		fn  func(string) string
-		pre *strings.Replacer
-	}{
-		{normalize.ForMatching, policyPreNormalize},
-		{normalize.ForPolicy, policyPreNormalize},
-		{normalize.ForMatching, nil},
+	norms := argViewNorms
+	views := make([]argView, 0, 2*len(norms)+1)
+	// add keeps the first of identical views. matchArgViewSet skips a view the
+	// same as an earlier one, so dropping it here only saves the work of
+	// building and comparing it for every rule.
+	add := func(v argView) {
+		if slices.ContainsFunc(views, func(prev argView) bool { return sameArgView(prev, v) }) {
+			return
+		}
+		if v.plain && v.segments != nil {
+			v.findPaths = findPathsOnly(v.segments)
+		}
+		// unresolvedXargs needs a word whose base name is exactly xargs, and
+		// xargsBoundaries only inserts spaces, so such a word is a substring.
+		v.xargsFree = !slices.ContainsFunc(v.tokens, func(t string) bool { return strings.Contains(t, "xargs") })
+		views = append(views, v)
 	}
-	var views [4]argView
-	for i, n := range norms {
-		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
-		views[i] = argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
+	for _, n := range norms {
+		tokens, joined := normalizeArgTokensUnexpanded(args, n.fn, n.pre)
+		v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
-			views[i].segments = [][]string{tokens}
+			v.segments = [][]string{tokens}
 		case len(segs) > 1:
-			views[i].segments = make([][]string, 0, len(segs))
+			v.segments = make([][]string, 0, len(segs))
 			for _, seg := range segs {
-				t, _ := normalizeArgTokens([]string{seg}, n.fn, n.pre)
-				views[i].segments = append(views[i].segments, t)
+				t, _ := normalizeArgTokensUnexpanded([]string{seg}, n.fn, n.pre)
+				v.segments = append(v.segments, t)
 			}
+		}
+		// The interpretation is a function of the original tokens.
+		if slices.ContainsFunc(views, func(prev argView) bool { return !prev.interpreted && sameArgView(prev, v) }) {
+			continue
+		}
+		add(v)
+		expanded := v
+		var unknownGit bool
+		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool, proof)
+		expanded.joined = strings.Join(expanded.tokens, " ")
+		if v.segments != nil {
+			expanded.segments = make([][]string, 0, len(v.segments))
+			for _, seg := range v.segments {
+				if len(v.segments) == 1 {
+					// The only segment is the token list just interpreted.
+					expanded.segments = append(expanded.segments, expanded.tokens)
+				} else {
+					// A non-builtin Git subcommand anywhere on the line makes every
+					// command's destructive readings visible to the pairs it forms.
+					t, _, _ := normalizeOptions(seg, unknownGit, gitTool)
+					expanded.segments = append(expanded.segments, t)
+				}
+			}
+		}
+		if !sameArgView(v, expanded) {
+			expanded.interpreted = true
+			add(expanded)
 		}
 	}
 	tokens, joined := literalArgTokens(args)
-	views[3] = argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true}
+	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
 	folded := make(map[string]string)
 	for i := range views {
 		for _, token := range views[i].tokens {
@@ -354,8 +416,9 @@ func fileRefs(words []string) []string {
 	return out
 }
 
-// matchArgViews reports whether pat matches any view. When none matches,
-// incomplete reports whether a view's check could not rule a match out.
+// matchArgViews reports whether pat matches any view. An original match
+// resolves the check. A match found only in an added interpretation retains
+// any incomplete check from the original views.
 //
 // A view also matches when pat, or a pattern pat replaced (see
 // priorPatterns), matches it as the argument check read it before commands
@@ -363,11 +426,35 @@ func fileRefs(words []string) []string {
 // commands, or a revised pattern, can then turn a match into an incomplete
 // check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
+	memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
+	if !slices.ContainsFunc(views, func(v argView) bool { return v.interpreted }) {
+		return matchArgViewSet(pat, memo, views...)
+	}
+	var original, interpreted []argView
+	for _, v := range views {
+		if v.interpreted {
+			interpreted = append(interpreted, v)
+		} else {
+			original = append(original, v)
+		}
+	}
+	matched, incomplete = matchArgViewSet(pat, memo, original...)
+	if matched {
+		return true, false
+	}
+	// An added interpretation can find a rule, but it cannot clear the
+	// original check's on_incomplete_check action. In particular, finding a
+	// warn-only rule must not release an original incomplete block.
+	moreMatched, moreIncomplete := matchArgViewSet(pat, memo, interpreted...)
+	return moreMatched, incomplete || moreIncomplete
+}
+
+func matchArgViewSet(pat *regexp.Regexp, memo *afterPartsMemo, views ...argView) (matched, incomplete bool) {
 	for i, v := range views {
 		if slices.ContainsFunc(views[:i], func(prev argView) bool { return sameArgView(prev, v) }) {
 			continue
 		}
-		m, inc := matchArgView(pat, v)
+		m, inc := matchArgView(pat, v, memo)
 		if m {
 			return true, false
 		}
@@ -435,7 +522,7 @@ func cachedFold(text string, folds map[string]string) string {
 // that decides whether command input can be considered known.
 func sameArgView(a, b argView) bool {
 	return a.joined == b.joined && a.unsplit == b.unsplit && a.plain == b.plain &&
-		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs &&
+		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted &&
 		(a.segments == nil) == (b.segments == nil) && slices.Equal(a.tokens, b.tokens) &&
 		slices.EqualFunc(a.segments, b.segments, slices.Equal[[]string])
 }
@@ -464,7 +551,7 @@ func matchArgPattern(pat *regexp.Regexp, tokens []string, joined string) bool {
 // reported as a match, but as incomplete, so splitting never turns a match
 // into a clean result. incomplete also reports a bounded scan that stopped
 // before it covered every pair it needed.
-func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
+func matchArgView(pat *regexp.Regexp, v argView, memo *afterPartsMemo) (matched, incomplete bool) {
 	for _, t := range v.tokens {
 		if matchPatternWithFold(pat, t, v.folded) {
 			return true, false
@@ -472,12 +559,12 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 	}
 	// Input-derived arguments need not occur in the submitted command text.
 	// Only a raw, direct, path-preserving handoff can clear this uncertainty.
-	incomplete = v.checkXargs && unresolvedXargs(pat, v.tokens) &&
+	incomplete = v.checkXargs && !v.xargsFree && unresolvedXargs(pat, v.tokens) &&
 		(v.inputKnown == "" || !isCommandWord(v.inputKnown, leadingWords(pat)))
 	exhaustive := len(v.tokens) <= maxPairwiseTokens
 	if v.segments == nil {
 		m, inc := matchCommand(pat, v.tokens, v.joined, false, exhaustive, &pairBudget{pat: pat, folds: v.folded})
-		if !m && v.unsplit && commandAfterParts(pat, [][]string{v.tokens}) {
+		if !m && v.unsplit && commandAfterPartsShared(pat, [][]string{v.tokens}, memo) {
 			// Commands in the string cannot be told apart, so one may
 			// hand the words before it to the other.
 			return false, true
@@ -503,10 +590,13 @@ func matchArgView(pat *regexp.Regexp, v argView) (matched, incomplete bool) {
 		}
 	}
 	paths := v.segments
-	if v.plain {
+	switch {
+	case v.plain && v.findPaths != nil:
+		paths = v.findPaths
+	case v.plain:
 		paths = findPathsOnly(v.segments)
 	}
-	if commandAfterParts(pat, paths) {
+	if commandAfterPartsShared(pat, paths, memo) {
 		return false, true
 	}
 	return false, incomplete
@@ -691,11 +781,32 @@ func endsCommand(t string) bool {
 // worked out within the bounds of leadingWords, every word is taken as one,
 // and a command of more than maxPairwiseTokens words is reported as is.
 func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
+	return commandAfterPartsShared(pat, segs, nil)
+}
+
+// afterPartsMemo shares commandAfterParts results between the views of one
+// argument check, all for the same pattern. Views usually differ in a few words
+// (see buildArgViews), so the text checked before a command is often the same.
+type afterPartsMemo struct {
+	segs map[int]*afterPartsSeg // by command index, from the first view checked
+}
+
+// afterPartsSeg records, for one command, the words handed on and the result
+// of matching pat against a command word and the words before it, by position.
+type afterPartsSeg struct {
+	handed []string
+	before map[int]bool
+}
+
+// commandAfterPartsShared is commandAfterParts, reusing results recorded in
+// memo. A result is reused only at a position whose command word and every
+// word before it equal those recorded, so the text matched is the same.
+func commandAfterPartsShared(pat *regexp.Regexp, segs [][]string, memo *afterPartsMemo) bool {
 	words, over := leadingWordsBounded(pat)
 	if len(words) == 0 && !over {
 		return false
 	}
-	for _, seg := range segs {
+	for k, seg := range segs {
 		if over && len(seg) > maxPairwiseTokens {
 			return true
 		}
@@ -712,12 +823,50 @@ func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
 				at = at[:len(at)-1]
 			}
 		}
+		// before is always handed[:i] and at increases, so oneWordMatch for a
+		// command word only needs the words added since its last position.
+		type oneWordScan struct {
+			upto    int
+			matched bool
+		}
+		scans := make(map[string]*oneWordScan)
+		var prev, record *afterPartsSeg
+		same := 0 // handed[:same] equals prev.handed[:same]
+		if memo != nil && len(at) > 0 {
+			if prev = memo.segs[k]; prev != nil {
+				for same < len(handed) && same < len(prev.handed) && handed[same] == prev.handed[same] {
+					same++
+				}
+			} else {
+				record = &afterPartsSeg{handed: handed, before: make(map[int]bool, len(at))}
+				memo.segs[k] = record
+			}
+		}
 		for _, i := range at {
 			command, before := handed[i], handed[:i]
-			if oneWordMatch(pat, command, before) {
+			s := scans[command]
+			if s == nil {
+				s = &oneWordScan{}
+				scans[command] = s
+			}
+			if !s.matched {
+				s.matched = oneWordMatch(pat, command, handed[s.upto:i])
+				s.upto = i
+			}
+			if s.matched {
 				continue
 			}
-			if pat.MatchString(command + " " + strings.Join(before, " ")) {
+			matched, known := false, false
+			if prev != nil && i < same {
+				matched, known = prev.before[i]
+			}
+			if !known {
+				matched = pat.MatchString(command + " " + strings.Join(before, " "))
+			}
+			if record != nil {
+				record.before[i] = matched
+			}
+			if matched {
 				return true
 			}
 			if i+1 == len(handed) {

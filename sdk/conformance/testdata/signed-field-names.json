@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {
+      "file": "valid-single.json",
+      "valid": true
+    },
+    {
+      "file": "signed-field-alias.json",
+      "valid": false,
+      "error": "(case-insensitive)"
+    }
+  ]
+}

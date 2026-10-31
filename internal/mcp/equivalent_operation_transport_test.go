@@ -53,6 +53,7 @@ func TestEquivalentOperationPolicyTransportGateParity(t *testing.T) {
 		msg      string
 		wantRule string
 	}{
+		{name: "command long option", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bash","arguments":{"command":"rm --rec project"}}}`, wantRule: "Destructive File Delete"},
 		{name: "move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
 		{name: "namespaced move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mcp__filesystem__move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},
 		{name: "dotted move", msg: `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"filesystem.move_file","arguments":{"source":"/tmp/staged","destination":"/home/user/.bashrc"}}}`, wantRule: "Shell Profile Modification"},

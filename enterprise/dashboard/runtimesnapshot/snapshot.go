@@ -175,7 +175,7 @@ func Read(path string, maxAge time.Duration, now time.Time) (Envelope, Freshness
 	if len(data) > MaxFileBytes {
 		return Envelope{}, Freshness{}, fmt.Errorf("%w: exceeded %d bytes", ErrOversized, MaxFileBytes)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(Envelope)); err != nil {
 		return Envelope{}, Freshness{}, fmt.Errorf("%w: %w", ErrMalformed, err)
 	}
 

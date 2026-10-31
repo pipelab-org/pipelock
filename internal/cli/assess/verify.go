@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -111,6 +112,9 @@ func runAssessVerify(runDir, agent, keystoreDir string) (int, error) {
 
 	var manifest AssessManifest
 	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return 1, fmt.Errorf("parsing manifest: %w", err)
+	}
+	if err := jsonscan.RejectNonCanonicalFields(manifestBytes, &manifest); err != nil {
 		return 1, fmt.Errorf("parsing manifest: %w", err)
 	}
 
@@ -294,6 +298,9 @@ func loadAssessStatusManifest(runDir string) (manifest AssessManifest, signed bo
 
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return manifest, false, fmt.Errorf("parsing manifest: %w", err)
+	}
+	if err := jsonscan.RejectNonCanonicalFields(data, &manifest); err != nil {
+		return AssessManifest{}, false, fmt.Errorf("parsing manifest: %w", err)
 	}
 
 	sigPath := manifestPath + signing.SigExtension

@@ -6,6 +6,7 @@ package policy
 import (
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -118,5 +119,59 @@ func TestCommandAfterParts(t *testing.T) {
 				t.Fatalf("commandAfterParts = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCommandAfterPartsSharedMatchesUnshared checks that results shared between
+// the views of one check are reused only where the text checked is the same:
+// each view gets exactly its own commandAfterParts result, in either order.
+func TestCommandAfterPartsSharedMatchesUnshared(t *testing.T) {
+	pat := regexp.MustCompile(`chmod\b.*-R\b.*\b777\b`)
+	views := map[string][]string{
+		// chmod is at the same position in each; the words before it differ
+		// (-R or -v), or only the words after it do.
+		"handed-words-match": strings.Fields("echo -R 777 x | xargs chmod"),
+		"earlier-word-only":  strings.Fields("echo -v 777 x | xargs chmod"),
+		"later-words-only":   strings.Fields("echo -R 777 x | xargs chmod --quiet"),
+	}
+	for _, pair := range [][2]string{
+		{"handed-words-match", "earlier-word-only"},
+		{"earlier-word-only", "handed-words-match"},
+		{"handed-words-match", "later-words-only"},
+		{"later-words-only", "earlier-word-only"},
+	} {
+		memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
+		for _, name := range pair {
+			segs := [][]string{views[name]}
+			if got, want := commandAfterPartsShared(pat, segs, memo), commandAfterParts(pat, segs); got != want {
+				t.Errorf("%s after %s: shared result %v, own result %v", name, pair[0], got, want)
+			}
+		}
+	}
+	if !commandAfterParts(pat, [][]string{views["handed-words-match"]}) || commandAfterParts(pat, [][]string{views["earlier-word-only"]}) {
+		t.Fatal("fixture: the two views must differ in their own results")
+	}
+}
+
+// The memo is keyed by command index. A result recorded for one command must
+// never be applied to a different command in a later view.
+func TestCommandAfterPartsSharedMultiSegment(t *testing.T) {
+	pat := regexp.MustCompile(`chmod\b.*-R\b.*\b777\b`)
+	match := strings.Fields("echo -R 777 x | xargs chmod")
+	miss := strings.Fields("echo -v 777 x | xargs chmod")
+	views := [][][]string{
+		{strings.Fields("ls"), match},
+		{miss, match},
+		{match, miss},
+		{miss, miss},
+	}
+	if !commandAfterParts(pat, [][]string{match}) || commandAfterParts(pat, [][]string{miss}) {
+		t.Fatal("fixture: the two commands must differ in their own results")
+	}
+	memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
+	for i, segs := range views {
+		if got, want := commandAfterPartsShared(pat, segs, memo), commandAfterParts(pat, segs); got != want {
+			t.Errorf("view %d: shared result %v, own result %v", i, got, want)
+		}
 	}
 }

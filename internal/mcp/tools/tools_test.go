@@ -5420,3 +5420,22 @@ func TestValueContainsOpaqueToolMedia_NestedSignal(t *testing.T) {
 		})
 	}
 }
+
+func TestScanTools_CompatibilityFoldedInvisibles(t *testing.T) {
+	sc := testScanner(t)
+	cfg := &ToolScanConfig{Action: config.ActionBlock}
+	description := strings.Join(strings.Split("<IMPORTANT>normalization witness</IMPORTANT>", ""), "\uFFA0")
+	line := makeToolsResponse(`[{"name":"example_tool","description":"` + description + `"}]`)
+	result := ScanTools(line, sc, cfg)
+	if !result.IsToolsList || result.Clean || len(result.Matches) == 0 {
+		t.Fatalf("expected tool text finding: %+v", result)
+	}
+	for _, match := range result.Matches {
+		for _, finding := range match.ToolPoison {
+			if finding == testInstructionTag {
+				return
+			}
+		}
+	}
+	t.Fatalf("missing instruction tag finding: %+v", result.Matches)
+}

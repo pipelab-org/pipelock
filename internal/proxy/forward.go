@@ -1543,6 +1543,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
+			AuditMode:        !cfg.EnforceEnabled(),
 			Body:             r.Body,
 			Trailer:          r.Trailer,
 			Scheme:           r.URL.Scheme,
@@ -1676,6 +1677,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if bodyResult.RedactionBlockReason == "" {
 				scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 			}
+			if unreadHoldOnly(bodyResult) {
+				scannerLabel = scanner.ScannerParser
+			}
 			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
 			if promptInjectionHardBlock || dlpHardBlock {
 				action = config.ActionBlock
@@ -1735,7 +1739,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				setBodyBlockHint(w, scannerLabel)
+				setBodyResultHint(w, scannerLabel, reason)
 				writeBlockedError(w,
 					blockInfo(scannerLabel).WithRequestID(requestID),
 					"blocked: "+reason, http.StatusForbidden)
@@ -1777,7 +1781,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				setBodyBlockHint(w, scannerLabel)
+				setBodyResultHint(w, scannerLabel, reason)
 				writeBlockedError(w,
 					blockInfo(scannerLabel).WithRequestID(requestID),
 					"blocked: "+reason, http.StatusForbidden)
@@ -1806,13 +1810,14 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 					TaskOverrideApplied: forwardTaint.TaskOverrideApplied,
 				}))
 				p.metrics.RecordBlocked(r.URL.Hostname(), scannerLabel, time.Since(start), agentLabel)
-				setBodyBlockHint(w, scannerLabel)
+				setBodyResultHint(w, scannerLabel, reason)
 				writeBlockedError(w,
 					blockInfo(scannerLabel).WithRequestID(requestID),
 					"blocked: "+reason+" (escalated)", http.StatusForbidden)
 				return
 			}
 			if action == config.ActionWarn {
+				recordIncompleteFileObservation(p.metrics, p.logger, actx, action, agentLabel, bodyResult)
 				forwardReceiptVerdict = config.ActionWarn
 				forwardReceiptLayer = scannerLabel
 				forwardReceiptPattern = receiptPattern

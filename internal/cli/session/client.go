@@ -319,7 +319,7 @@ func decodeAdminJSON(raw []byte, out any) error {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return contract.ErrEmptyPayload
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectDuplicateFields(raw, out); err != nil {
 		return fmt.Errorf("admin response: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

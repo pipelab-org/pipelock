@@ -110,7 +110,10 @@ type Pin struct {
 	// of the executable image the owning process is running.
 	ExecutableSHA256 string
 	// MappedFiles is verified_local_service.mapped_files: files the owner must
-	// hold open or mapped, each hashed against its registered digest.
+	// hold open or mapped, each hashed against its registered digest on every
+	// check. Pinned paths must live on local, trusted filesystems: a network
+	// or user-space filesystem can report any times and serve different bytes
+	// to each read, so its files cannot be pinned meaningfully.
 	MappedFiles []FilePin
 	// ControlEnvironment is verified_local_service.control_environment: control
 	// variables (see ControlEnvironmentDenyList) the owner may carry, each with

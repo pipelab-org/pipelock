@@ -498,7 +498,9 @@ func walkEvidenceReceiptLines(input io.Reader, label string, deliver func(Eviden
 		if len(raw) == 0 {
 			continue
 		}
-		if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+		// Check outer names against the full entry schema, as
+		// recorder.ParseEntryLine does, so unread fields cannot diverge.
+		if err := jsonscan.RejectNonCanonicalFields(raw, new(recorder.Entry)); err != nil {
 			return fmt.Errorf("%s line %d: decode recorder entry: %w", label, line, err)
 		}
 		var entry recorderLine

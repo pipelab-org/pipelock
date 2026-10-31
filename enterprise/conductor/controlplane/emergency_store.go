@@ -518,7 +518,7 @@ func readEmergencyState(path string) (emergencyStateRecord, error) {
 	if len(data) > maxEmergencyStateJSONSize {
 		return emergencyStateRecord{}, fmt.Errorf("%w: emergency state too large", conductor.ErrPayloadTooLarge)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(emergencyStateRecord)); err != nil {
 		return emergencyStateRecord{}, fmt.Errorf("%w: decode emergency state: %w", ErrInvalidEmergencyRecord, err)
 	}
 	var record emergencyStateRecord

@@ -560,7 +560,8 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 		}
 		return value, nil
 	case OperationDLPNormalize:
-		return ForDLP(value), nil
+		// Published transform profiles pin the strip-before-NFKC order.
+		return dlpNormalizeFull(value, false), nil
 	case OperationLowercase:
 		return strings.ToLower(value), nil
 	case OperationInvisibleStrip:
@@ -618,7 +619,8 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 	case OperationInvisibleSpace:
 		return ReplaceInvisibleWithSpace(value), nil
 	case OperationMatchingNormalize:
-		return matchingNormalize(value, profile.version >= transformProfileV3), nil
+		// Replay follows the published profile, independently of live scanning.
+		return matchingPipelineFull(value, profile.version >= transformProfileV3, false), nil
 	case OperationASCIIUpper:
 		return ASCIIUpper(value), nil
 	case OperationJSONUnicodeEscape:
