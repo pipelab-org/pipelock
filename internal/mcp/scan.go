@@ -1442,6 +1442,11 @@ func lineWithoutVerifiedCardSignature(line []byte, a2aOpts *A2AResponseOpts) []b
 
 func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanVerdict {
 	if verdict.Error != "" || joined.Clean {
+		if verdict.Error == "" && verdict.Clean && joined.Clean {
+			// The field-aware A2A verdict carries no wording assessment; the
+			// joined scan does. Keep it so a clean reply can earn clean credit.
+			verdict.Assessment = joined.Assessment
+		}
 		return verdict
 	}
 	kinds := session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), ResponseTaintFindingKinds(joined))

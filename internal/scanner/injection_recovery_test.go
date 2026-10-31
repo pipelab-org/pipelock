@@ -196,8 +196,13 @@ func TestInjectionRecoveryDecodedStatus(t *testing.T) {
 	defer sc.Close()
 	for _, status := range []AssessmentStatus{"", "future", AssessmentNotAssessed, AssessmentOff, AssessmentIncomplete, AssessmentBenign, AssessmentFinding} {
 		raw := ResponseScanResult{Clean: true, Assessment: InjectionAssessment{Checker: InjectionCheckerBasic, Status: AssessmentBenign}}
+		if status == AssessmentFinding {
+			// The only caller copies decoded finding evidence before retaining
+			// the decoded assessment; a status-only finding is not reachable.
+			raw.WarnedMatches = []ResponseMatch{{}}
+		}
 		sc.retainDecodedAssessment(&raw, InjectionAssessment{Checker: InjectionCheckerBasic, Status: status})
-		want := status == AssessmentBenign || status == AssessmentFinding
+		want := status == AssessmentBenign
 		if raw.Assessment.IsBenign() != want {
 			t.Fatalf("decoded=%q raw=%+v", status, raw)
 		}
