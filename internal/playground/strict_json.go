@@ -12,7 +12,7 @@ import (
 )
 
 func unmarshalStrictArtifact(name string, data []byte, dst any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, dst); err != nil {
 		if errors.Is(err, jsonscan.ErrDuplicateKey) {
 			return fmt.Errorf("%s contains duplicate JSON key: %w", name, err)
 		}

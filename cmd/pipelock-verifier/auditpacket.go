@@ -171,7 +171,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 
 	var packet auditpacket.Packet
-	if err := jsonscan.RejectDuplicateKeys(rawPacket); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(rawPacket, new(auditpacket.Packet)); err != nil {
 		report.Errors = append(report.Errors, fmt.Sprintf("packet json: %v", err))
 		emitReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("unmarshal packet: %w", err))

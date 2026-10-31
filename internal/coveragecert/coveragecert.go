@@ -16,12 +16,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"reflect"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -569,6 +571,9 @@ func Unmarshal(data []byte) (Certificate, error) {
 		return Certificate{}, fmt.Errorf("unmarshal coverage certificate: %w", err)
 	}
 	var cert Certificate
+	if err := jsonscan.RejectStructAliases(data, reflect.TypeFor[Certificate]()); err != nil {
+		return Certificate{}, fmt.Errorf("unmarshal coverage certificate: %w", err)
+	}
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cert); err != nil {

@@ -209,7 +209,7 @@ func (p *RollbackPoller) PollOnce(ctx context.Context) error {
 	if err := decoder.Decode(&auth); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrRollbackPollResponse, err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(body, &auth); err != nil {
 		return fmt.Errorf("%w: ambiguous response: %w", ErrRollbackPollResponse, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
