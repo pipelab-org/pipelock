@@ -763,3 +763,34 @@ func TestUploadInspectionStrongEncryptionHold(t *testing.T) {
 		})
 	}
 }
+
+// A macro-enabled workbook carries its VBA project as an OLE compound file
+// whose module source is compressed. Pipelock can't read it, so block mode
+// holds the file under the unread-upload label, not a secret match.
+func TestUploadInspectionMacroProjectHold(t *testing.T) {
+	cfb := append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, bytes.Repeat([]byte{0}, 504)...)
+	data := uploadArchive(t, map[string][]byte{
+		"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/xl/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>`),
+		"xl/workbook.xml":     []byte(`<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"/>`),
+		"xl/vbaProject.bin":   cfb,
+	})
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			status, hits, _, message, hdr := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, "application/vnd.ms-excel.sheet.macroEnabled.12", data)
+			if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "OLE compound file member has no reader") {
+				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
+			}
+			if got := hdr.Get("X-Pipelock-Block-Reason"); got != "parse_error" {
+				t.Fatalf("block reason = %q, want parse_error", got)
+			}
+			if hint := hdr.Get("X-Pipelock-Hint"); hint != "Request blocked: the upload could not be fully read." {
+				t.Fatalf("hint = %q", hint)
+			}
+		})
+	}
+	// Warn keeps delivery; the observation is not a hold.
+	status, hits, intact, message, _ := exerciseUpload(t, "forward", uploadPolicy{config.ActionWarn, false}, "application/vnd.ms-excel.sheet.macroEnabled.12", data)
+	if status != http.StatusCreated || hits != 1 || !intact {
+		t.Fatalf("warn delivery: status=%d hits=%d intact=%t body=%s", status, hits, intact, message)
+	}
+}

@@ -201,7 +201,7 @@ func TestInspectAdditionalMembers(t *testing.T) {
 		{"directory", map[string][]byte{"directory/": nil, "directory/file.txt": []byte("ordinary")}, true},
 		{"nested 7z", map[string][]byte{"nested.bin": {'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}}, false},
 		{"binary", map[string][]byte{"unknown.bin": {0xff, 0xfe, 0xff}}, false},
-		{"macro", map[string][]byte{"word/vbaProject.bin": {0xff, 0xfe, 0xff}}, true},
+		{"macro", map[string][]byte{"word/vbaProject.bin": {0xff, 0xfe, 0xff}}, false},
 		{"printer settings", map[string][]byte{"word/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
 		{"spreadsheet printer settings", map[string][]byte{"xl/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
 		{"presentation printer settings", map[string][]byte{"ppt/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
@@ -709,5 +709,37 @@ func TestInspectEncryptionIndicators(t *testing.T) {
 	r := Inspect(t.Context(), rawArchive(t, declarations, rawMember{name: "notes.txt", data: hexCiphertext, flags: 1 << 11}), Limits{1 << 20, 64})
 	if !r.Complete {
 		t.Fatalf("EFS member: complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}
+
+// MS-CFB compound files are sector-allocated containers and VBA source inside
+// them is compressed (MS-OVBA), so none of the allow routes may complete one.
+func TestInspectCompoundFileMembers(t *testing.T) {
+	cfb := append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, bytes.Repeat([]byte{0}, 504)...)
+	opc := `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/>` +
+		`<Override PartName="/xl/activeX/activeX1.bin" ContentType="application/vnd.ms-office.activeX"/>` +
+		`<Override PartName="/word/fonts/font1.odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/>` +
+		`<Override PartName="/xl/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/></Types>`
+	manifest := func(entry string) string {
+		return `<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/>` + entry + `</manifest:manifest>`
+	}
+	content := `<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:frame><draw:image xlink:href="./ObjectReplacements/Obj"/></draw:frame></office:document-content>`
+	for _, tc := range []struct {
+		name    string
+		members map[string][]byte
+	}{
+		{"vba project", map[string][]byte{"[Content_Types].xml": []byte(opc), "xl/vbaProject.bin": cfb}},
+		{"declared image", map[string][]byte{"[Content_Types].xml": []byte(opc), "word/media/image1.png": cfb}},
+		{"declared activex", map[string][]byte{"[Content_Types].xml": []byte(opc), "xl/activeX/activeX1.bin": cfb}},
+		{"declared font", map[string][]byte{"[Content_Types].xml": []byte(opc), "word/fonts/font1.odttf": cfb}},
+		{"odf manifest image", map[string][]byte{"META-INF/manifest.xml": []byte(manifest(`<manifest:file-entry manifest:full-path="Pictures/a.png" manifest:media-type="image/png"/>`)), "Pictures/a.png": cfb}},
+		{"odf replacement image", map[string][]byte{"META-INF/manifest.xml": []byte(manifest("")), "content.xml": []byte(content), "ObjectReplacements/Obj": cfb}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), archiveFixture(t, tc.members), Limits{1 << 20, 64})
+			if r.Complete || r.Reason != "OLE compound file member has no reader" {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
 	}
 }

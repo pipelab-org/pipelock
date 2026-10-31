@@ -121,6 +121,9 @@ const (
 	aexEncryptionExtraID    = 0x9901
 )
 
+// MS-CFB 2.2 Compound File Header: Header Signature.
+var compoundFileSignature = []byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}
+
 func (w *walk) preflight(data []byte) error {
 	if len(data) > w.limits.MaxBytes {
 		return fmt.Errorf("archive exceeds max_body_bytes")
@@ -375,6 +378,13 @@ func (w *walk) archive(data []byte, depth int) error {
 		// not another speculative text scan of compressed bytes. The original
 		// request still receives its existing raw DLP scan.
 		w.result.Texts = append(w.result.Texts, string(member))
+		// An OLE compound file (MS-CFB) is a sector-allocated container: a
+		// stream can be fragmented across sectors, and VBA project source is
+		// compressed inside it (MS-OVBA). The signature decides, not a name,
+		// a declared type, or a replacement-image reference.
+		if bytes.HasPrefix(member, compoundFileSignature) {
+			return fmt.Errorf("OLE compound file member has no reader")
+		}
 		if bytes.HasPrefix(member, []byte("%PDF-")) {
 			continue
 		}
@@ -386,11 +396,12 @@ func (w *walk) archive(data []byte, depth int) error {
 			continue
 		} // Non-text, including ODF Thumbnails/thumbnail.png.
 		if !utf8.Valid(member) {
-			// ECMA-376 binary macro/printer parts aren't text and aren't executed.
+			// ECMA-376 binary printer parts aren't text and aren't executed.
 			// Part 1 defines the Printer Settings part for WordprocessingML,
-			// SpreadsheetML and PresentationML packages alike.
+			// SpreadsheetML and PresentationML packages alike. A VBA project
+			// part is not on this list: its macro source is compressed.
 			if strings.HasPrefix(f.Name, "word/printerSettings/") || strings.HasPrefix(f.Name, "xl/printerSettings/") ||
-				strings.HasPrefix(f.Name, "ppt/printerSettings/") || strings.HasSuffix(f.Name, "/vbaProject.bin") {
+				strings.HasPrefix(f.Name, "ppt/printerSettings/") {
 				continue
 			}
 			// A declared font, media, or ActiveX binary is not a text container.
