@@ -67,6 +67,19 @@ func parseCanonicalZIP(data []byte, entryBudget int) (zipArchive, error) {
 		if int(binary.LittleEndian.Uint16(e[20:])) != len(e)-endHeaderBytes {
 			continue
 		}
+		// Go archive/zip, Python zipfile, Info-ZIP unzip and libarchive take
+		// the last end record signature in the tail, not the one whose
+		// comment reaches EOF. A later signature, here inside this record's
+		// comment, names a central directory those receivers read instead.
+		if bytes.Contains(data[i+1:], []byte("PK\x05\x06")) {
+			return zipArchive{}, fmt.Errorf("multiple end-of-central-directory records")
+		}
+		// APPNOTE 4.3.15: a ZIP64 end of central directory locator sits
+		// immediately before this record. Python zipfile and libarchive
+		// follow it even when no field below is 0xFFFF or 0xFFFFFFFF.
+		if i >= 20 && bytes.HasPrefix(data[i-20:], []byte("PK\x06\x07")) {
+			return zipArchive{}, fmt.Errorf("ZIP64 archive is not readable")
+		}
 		count := int(binary.LittleEndian.Uint16(e[10:]))
 		if binary.LittleEndian.Uint32(e[4:]) != 0 || int(binary.LittleEndian.Uint16(e[8:])) != count {
 			return zipArchive{}, fmt.Errorf("multi-volume archive is not readable")
@@ -209,6 +222,16 @@ func canonicalMember(data []byte, p, cd, nameLen, extraLen, commentLen int) (zip
 			binary.LittleEndian.Uint32(data[local+18:]) != 0 ||
 			binary.LittleEndian.Uint32(data[local+22:]) != 0 {
 			return zipMember{}, 0, 0, fmt.Errorf("local member checksum or size disagrees with directory")
+		}
+		// APPNOTE 4.3.9.3: readers look for the 0x08074b50 signature to find
+		// a descriptor. A stored member's length is not in its local header,
+		// so a streaming reader ends it at the first signature inside the
+		// data (libarchive does when the CRC of the bytes before it matches)
+		// and reads what follows as further members. The search runs three
+		// bytes past the data, so a signature that starts in the data and
+		// continues into an unsigned descriptor also counts.
+		if method == zipMethodStore && bytes.Contains(data[headerEnd:min(dataEnd+3, len(data))], []byte(dataDescriptorSig)) {
+			return zipMember{}, 0, 0, fmt.Errorf("stored member data contains a data descriptor signature")
 		}
 		body := 12
 		if hasExtra(localExtra, zip64ExtraID) {
