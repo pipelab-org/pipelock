@@ -151,10 +151,25 @@ func (p gitProof) grants(judged []string) bool {
 // gitWord is one word of a carrier. literal marks an array element, which is
 // one argument exactly as written. ambiguous marks a word from a value that
 // may be either a literal argument or text a tool splits into words, when
-// those readings give the word different boundaries.
+// those readings give the word different boundaries. script marks a shell's
+// command string given as one whole value (see shellScriptOperand).
 type gitWord struct {
-	text               string
-	literal, ambiguous bool
+	text                       string
+	literal, ambiguous, script bool
+}
+
+// scriptShells are shells whose -c option reads commands from the next
+// argument, as POSIX sh -c reads its command_string operand.
+var scriptShells = map[string]bool{"sh": true, "bash": true, "dash": true, "ksh": true, "zsh": true}
+
+// shellScriptOperand reports whether values[i] directly follows a shell and
+// its -c, each a whole plain value, so the shell reads values[i] as commands.
+// A value that may instead be text a tool splits into words reads the same way
+// after the shell: words after a separator run as written, and the first
+// command's later words become positional parameters, so it runs no Git
+// subcommand.
+func shellScriptOperand(values []string, i int) bool {
+	return i >= 2 && values[i-1] == "-c" && plainShellWord(values[i-2]) && scriptShells[commandName(values[i-2])]
 }
 
 // proveGitBuiltins reads args for gitProof. carriers is the shape of args
@@ -185,7 +200,11 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 	var proof gitProof
 	if carriers == nil {
 		var words []gitWord
-		for _, arg := range args {
+		for i, arg := range args {
+			if !gitTool && shellScriptOperand(args, i) {
+				words = append(words, gitWord{text: arg, script: true})
+				continue
+			}
 			fields := splitPlainFields(arg)
 			for _, field := range fields {
 				words = append(words, gitWord{text: field, ambiguous: len(args) > 1 && len(fields) > 1})
@@ -200,7 +219,11 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 	}
 	for _, carrier := range carriers {
 		var words []gitWord
-		for _, value := range carrier.values {
+		for i, value := range carrier.values {
+			if carrier.array && !gitTool && shellScriptOperand(carrier.values, i) {
+				words = append(words, gitWord{text: value, literal: true, script: true})
+				continue
+			}
 			if carrier.array {
 				words = append(words, gitWord{text: value, literal: true})
 				continue
@@ -257,7 +280,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 					p.unproved, state = true, done
 				}
 			case !strings.HasPrefix(w.text, "-"):
-				if _, covered := commandLongOptions[utilityKey(name)]; covered {
+				if _, covered := utilityOptionKey(name); covered {
 					state = done
 				}
 			}
@@ -281,10 +304,11 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			}
 		}
 	}
-	for _, w := range words {
+	// feed reads one word, splitting a scalar word at shell separators.
+	feed := func(w gitWord) {
 		if w.literal || noShell {
 			word(w)
-			continue
+			return
 		}
 		start := 0
 		// The pass at i == len(w.text) flushes the last piece; the loop ends there.
@@ -303,6 +327,28 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			}
 			state = seeking
 			start = i + 1
+		}
+	}
+	for _, w := range words {
+		switch {
+		case w.script && state == seeking:
+			// The shell runs the commands in its command string; the words
+			// after it are positional parameters.
+			fields := splitPlainFields(w.text)
+			script := make([]gitWord, 0, len(fields))
+			for _, field := range fields {
+				script = append(script, gitWord{text: field})
+			}
+			p.read(script, false, false)
+			state = done
+		case w.script && !w.literal:
+			// Elsewhere the value reads as it would without a shell.
+			fields := splitPlainFields(w.text)
+			for _, field := range fields {
+				feed(gitWord{text: field, ambiguous: len(fields) > 1})
+			}
+		default:
+			feed(w)
 		}
 	}
 	if state == global || state == value {
