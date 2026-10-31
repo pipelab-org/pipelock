@@ -131,6 +131,7 @@ func rejectSchemaNames(data []byte, typ reflect.Type, policy schemaPolicy) error
 		return nil // The consuming decoder owns type errors.
 	}
 	schema := cachedStructFields(typ)
+	folded := cachedFoldedFields(typ)
 	hazards := cachedSchemaHazards(typ)
 	if hazards.unsupported {
 		return fmt.Errorf("%w: %s has a json field shape that binds differently across Go JSON decoders", ErrDuplicateKey, typ)
@@ -140,7 +141,7 @@ func rejectSchemaNames(data []byte, typ reflect.Type, policy schemaPolicy) error
 		if hazards.depthFolds[FoldKey(key)] {
 			return fmt.Errorf("%w: %q matches fields at different embedding depths of %s", ErrDuplicateKey, key, typ)
 		}
-		name, field, ok := boundField(schema, key)
+		name, field, ok := boundField(schema, folded, key)
 		if !ok {
 			continue // Preserve the consuming decoder's unknown-field policy.
 		}
@@ -160,23 +161,16 @@ func rejectSchemaNames(data []byte, typ reflect.Type, policy schemaPolicy) error
 
 // encoding/json resolves exact names first, then the first folded match in
 // field-index order after embedded-field dominance has removed ambiguities.
-func boundField(schema map[string]schemaField, key string) (string, schemaField, bool) {
+// folded is the schema's cachedFoldedFields index.
+func boundField(schema map[string]schemaField, folded map[string]string, key string) (string, schemaField, bool) {
 	if field, ok := schema[key]; ok && !field.ambiguous {
 		return key, field, true
 	}
-	var name string
-	var first schemaField
-	found := false
-	folded := FoldKey(key)
-	for candidate, field := range schema {
-		if field.ambiguous || FoldKey(candidate) != folded {
-			continue
-		}
-		if !found || slices.Compare(field.index, first.index) < 0 {
-			name, first, found = candidate, field, true
-		}
+	name, ok := folded[FoldKey(key)]
+	if !ok {
+		return "", schemaField{}, false
 	}
-	return name, first, found
+	return name, schema[name], true
 }
 
 func rejectNestedNames(data []byte, typ reflect.Type, policy schemaPolicy) error {
@@ -289,6 +283,30 @@ func structFields(typ reflect.Type, ancestors map[reflect.Type]bool) map[string]
 		add(name, schemaField{typ: field.Type, index: []int{i}, tagged: tagged})
 	}
 	return fields
+}
+
+var foldedFieldCache sync.Map // map[reflect.Type]map[string]string
+
+// cachedFoldedFields maps each folded name to the unambiguous field that
+// encoding/json binds for it: the lowest field index among folded matches.
+// Lookups then cost one fold per key instead of one per schema field.
+func cachedFoldedFields(typ reflect.Type) map[string]string {
+	if folded, ok := foldedFieldCache.Load(typ); ok {
+		return folded.(map[string]string)
+	}
+	schema := cachedStructFields(typ)
+	folded := make(map[string]string, len(schema))
+	for name, field := range schema {
+		if field.ambiguous {
+			continue
+		}
+		key := FoldKey(name)
+		if previous, seen := folded[key]; !seen || slices.Compare(field.index, schema[previous].index) < 0 {
+			folded[key] = name
+		}
+	}
+	actual, _ := foldedFieldCache.LoadOrStore(typ, folded)
+	return actual.(map[string]string)
 }
 
 // schemaHazards records schema shapes whose bindings differ between the

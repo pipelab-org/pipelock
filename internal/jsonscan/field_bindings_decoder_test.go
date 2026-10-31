@@ -6,6 +6,7 @@ package jsonscan
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
@@ -74,7 +75,7 @@ func goBinding(t *testing.T, target any, key string) string {
 
 func walkerBinding(target any, key string) string {
 	typ := reflect.TypeOf(target).Elem()
-	_, field, ok := boundField(cachedStructFields(typ), key)
+	_, field, ok := boundField(cachedStructFields(typ), cachedFoldedFields(typ), key)
 	if !ok {
 		return ""
 	}
@@ -159,6 +160,45 @@ func TestFieldBindingMatchesDecoder(t *testing.T) {
 		}
 	}
 	if checked < 1000 {
+		t.Fatalf("only %d keys checked", checked)
+	}
+}
+
+// The folded index must return exactly what a scan of every schema name
+// returns: exact names first, then the lowest-index unambiguous folded match.
+func TestFoldedFieldIndexMatchesLinearScan(t *testing.T) {
+	linear := func(schema map[string]schemaField, key string) (string, bool) {
+		if field, ok := schema[key]; ok && !field.ambiguous {
+			return key, true
+		}
+		name, found := "", false
+		for candidate, field := range schema {
+			if field.ambiguous || FoldKey(candidate) != FoldKey(key) {
+				continue
+			}
+			if !found || slices.Compare(field.index, schema[name].index) < 0 {
+				name, found = candidate, true
+			}
+		}
+		return name, found
+	}
+	rng := &foldBits{x: 7}
+	checked := 0
+	for _, target := range []any{new(diffSchema), new(diffAmbig), dashSchema(), new(cacheAmbiguousDocument), new(cacheBenchDocument)} {
+		typ := reflect.TypeOf(target).Elem()
+		schema := cachedStructFields(typ)
+		for name := range schema {
+			for _, key := range append(variants(name, rng), "unknown", "") {
+				wantName, wantOK := linear(schema, key)
+				gotName, gotField, gotOK := boundField(schema, cachedFoldedFields(typ), key)
+				checked++
+				if gotName != wantName || gotOK != wantOK || (gotOK && !slices.Equal(gotField.index, schema[wantName].index)) {
+					t.Errorf("%s key %+q: index resolves (%q, %v), linear scan (%q, %v)", typ, key, gotName, gotOK, wantName, wantOK)
+				}
+			}
+		}
+	}
+	if checked < 500 {
 		t.Fatalf("only %d keys checked", checked)
 	}
 }
