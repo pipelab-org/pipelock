@@ -148,7 +148,7 @@ func TestInjectionAssessmentCoreOnly(t *testing.T) {
 }
 
 func TestIsBlankInjectionView(t *testing.T) {
-	for _, view := range []string{"", " \n\t", "\u200b", "\ufeff", "\u2060", " \u200b\ufeff\u2060\n"} {
+	for _, view := range []string{"", " \n\t", "\u200b", "\ufeff", "\u2060", " \u200b\ufeff\u2060\n", "\u3164", "\u115f\u1160", " \u3164\u200b \u115f\n"} {
 		if !IsBlankInjectionView(view) {
 			t.Errorf("view %q should be blank", view)
 		}
@@ -191,5 +191,23 @@ func TestBlankViewAddsNoCoverage(t *testing.T) {
 		if IsBlankInjectionView(view) {
 			t.Errorf("letter or digit view %q became blank", view)
 		}
+	}
+}
+
+// Hangul fillers are letters that matching normalization strips. A response made
+// only of them carries no wording, so the scanner must never report it as
+// assessed benign; that would let filler-only replies earn adaptive clean credit.
+// Guards the contract for any future change to the blankness check.
+func TestScanResponseFillerOnlyIsNotAssessed(t *testing.T) {
+	sc := MustNew(testConfig())
+	defer sc.Close()
+	for _, content := range []string{"\u3164", "\u115f\u1160\u3164", " \u3164\u200b\n"} {
+		result := sc.ScanResponse(context.Background(), content)
+		if result.Assessment.IsBenign() {
+			t.Errorf("filler-only response %q assessed benign: %+v", content, result.Assessment)
+		}
+	}
+	if result := sc.ScanResponse(context.Background(), "plain wording"); !result.Assessment.IsBenign() {
+		t.Fatalf("control: ordinary wording not assessed benign: %+v", result.Assessment)
 	}
 }

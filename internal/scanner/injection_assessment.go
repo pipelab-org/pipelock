@@ -5,7 +5,6 @@ package scanner
 
 import (
 	"strings"
-	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -15,12 +14,14 @@ import (
 // identify views with no wording. Blankness alone never establishes a benign
 // assessment: callers must preserve findings, failures and disabled coverage.
 //
-// A letter or digit survives matching normalization, so the full pass runs only
-// for text made of spaces, marks, symbols and invisible characters. A wrong
-// early "not blank" can only withhold credit, never grant it.
+// The scanner itself uses this answer to decide whether text was assessed, so
+// an early "not blank" can grant credit and must be exact. Only ASCII letters
+// and digits take the shortcut: matching normalization never removes them.
+// Other letters do not qualify (Hangul fillers are letters that it strips),
+// so any other text takes the full pass.
 func IsBlankInjectionView(content string) bool {
-	for _, r := range content {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+	for i := 0; i < len(content); i++ {
+		if c := content[i]; c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
 			return false
 		}
 	}
