@@ -14,6 +14,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -72,6 +74,8 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 	// the run must read straight through them rather than end at them.
 	ctrlUnits := strings.Join(strings.Split(cyr, ""), "\u0001")
 	c1Units := strings.Join(strings.Split(mediaTestPhrase, ""), "\u0085")
+	foldedInvisible := strings.Join(strings.Split(mediaTestPhrase, ""), "\uFFA0")
+	foldedMark := strings.Join(strings.Split(mediaTestPhrase, ""), "\uFF9E")
 
 	tests := []struct {
 		name    string
@@ -100,6 +104,11 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 		{"latin-1 letters utf8", []byte(strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)), strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)},
 		{"homoglyph with control units between characters", utf16Encode(ctrlUnits, le), cyr},
 		{"ascii with C1 units between characters", utf16Encode(c1Units, be), mediaTestPhrase},
+		{"compatibility invisible utf8", []byte(foldedInvisible), foldedInvisible},
+		{"compatibility invisible utf16le", utf16Encode(foldedInvisible, le), foldedInvisible},
+		{"compatibility invisible utf16be", utf16Encode(foldedInvisible, be), foldedInvisible},
+		{"compatibility mark utf8", []byte(foldedMark), foldedMark},
+		{"compatibility mark utf16le", utf16Encode(foldedMark, le), foldedMark},
 		{"astral letters via surrogate pairs le", utf16Encode(bold, le), bold},
 		{"astral letters via surrogate pairs be", utf16Encode(bold, be), bold},
 		{"zero-width characters are kept for the scanner", utf16Encode(zw, le), zw},
@@ -223,16 +232,23 @@ func TestNormalizedMediaTextBoundaries(t *testing.T) {
 func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 	// The table is derived from the scanner's normalization; this recomputes the
 	// derivation over every scalar so the two cannot drift apart silently. A
-	// scalar the normalizer turns into printable ASCII must never end a run.
+	// scalar that folds to an invisible or printable ASCII must never end a run.
 	for r := rune(0x80); r <= unicode.MaxRune; r++ {
 		if r >= 0xD800 && r <= 0xDFFF {
 			continue
 		}
 		s := string(r)
-		contributes := false
+		contributes := strings.ContainsFunc(norm.NFKC.String(s), func(folded rune) bool {
+			return unicode.Is(normalize.InvisibleRanges, folded)
+		})
 		for _, out := range []string{normalize.ForMatching(s), normalize.ForDLP(s), normalize.ForToolText(s)} {
 			if out == s {
 				continue
+			}
+			// A scalar the scanner deletes outright can be interleaved to cut
+			// an instruction into short runs.
+			if out == "" {
+				contributes = true
 			}
 			for _, o := range out {
 				if o >= 0x20 && o <= 0x7e {
@@ -241,7 +257,51 @@ func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 			}
 		}
 		if contributes && classifyMediaRune(r) == mediaRuneBreak {
-			t.Fatalf("U+%04X normalizes to ASCII (%q) but ends a media text run", r, normalize.ForMatching(s))
+			t.Fatalf("U+%04X folds to an invisible or ASCII (%q) but ends a media text run", r, normalize.ForMatching(s))
+		}
+	}
+}
+
+func TestScannerDeletesMatchesPipelines(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if got, want := scannerDeletes(r), scannerDeletesFull(r); got != want {
+			t.Fatalf("scannerDeletes(U+%04X) = %v, full pipelines say %v", r, got, want)
+		}
+	}
+}
+
+func TestAstralRunBreaksClassifyWithoutNormalizing(t *testing.T) {
+	// These decompose but sit outside the text ranges, so they reach the
+	// deletion check. A payload of them must not run the normalization
+	// pipelines once per rune.
+	runes := []rune{0x2F800, 0x1EE00, 0x1F200, 0x1D15E}
+	for _, r := range runes {
+		_ = classifyMediaRune(r)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		for _, r := range runes {
+			if classifyMediaRune(r) != mediaRuneBreak {
+				t.Fatalf("U+%04X no longer ends a media text run", r)
+			}
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("classifying supplementary run breaks allocated %v times per run, want 0", allocs)
+	}
+}
+
+func TestMediaTextRangesHoldNoScannerDeletedScalar(t *testing.T) {
+	// classifyMediaRune tests text ranges before scannerDeletes. That order is
+	// equivalent to testing deletion first only while this holds.
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if unicode.Is(mediaTextRanges, r) && scannerDeletes(r) {
+			t.Fatalf("U+%04X is a media text scalar the scanner deletes", r)
 		}
 	}
 }
@@ -263,6 +323,9 @@ func TestMediaRuneClasses(t *testing.T) {
 		{"del", 0x7f, mediaRuneDrop},
 		{"c1 control", 0x85, mediaRuneDrop},
 		{"zero width space", 0x200B, mediaRuneKeep},
+		{"compatibility folded invisible", 0xFFA0, mediaRuneKeep},
+		{"halfwidth voiced sound mark", 0xFF9E, mediaRuneKeep},
+		{"halfwidth semi-voiced sound mark", 0xFF9F, mediaRuneKeep},
 		{"bom", 0xFEFF, mediaRuneKeep},
 		{"tag character", 0xE0041, mediaRuneKeep},
 		{"combining acute", 0x0301, mediaRuneKeep},

@@ -155,6 +155,7 @@ func buildSuspects() map[rune]suspectRune {
 	put(0x2800, 0x2800, "BRAILLE PATTERN BLANK", CategoryZeroWidth, SeverityLow)
 	put(0x115F, 0x1160, "HANGUL FILLER", CategoryZeroWidth, SeverityMed)
 	put(0x3164, 0x3164, "HANGUL FILLER", CategoryZeroWidth, SeverityMed)
+	put(0xFFA0, 0xFFA0, "HALFWIDTH HANGUL FILLER", CategoryZeroWidth, SeverityMed) // NFKC folds it to U+1160
 	put(0xFFF9, 0xFFFB, "INTERLINEAR ANNOTATION", CategoryZeroWidth, SeverityMed)
 	put(0xFE00, 0xFE0F, "VARIATION SELECTOR", CategoryZeroWidth, SeverityLow) // legit in emoji
 	put(0xE0100, 0xE01EF, "VARIATION SELECTOR SUPPLEMENT", CategoryZeroWidth, SeverityLow)

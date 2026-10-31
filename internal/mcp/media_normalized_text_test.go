@@ -78,6 +78,7 @@ func mediaEncodings() []mediaEncoding {
 	le, be := binary.LittleEndian, binary.BigEndian
 	odd := func(b []byte) []byte { return append([]byte{0xAA}, b...) }
 	zeroWidth := func(s string) string { return strings.ReplaceAll(s, " ", "\u200b ") }
+	foldedInvisible := func(s string) string { return strings.Join(strings.Split(s, ""), "\uFFA0") }
 	return []mediaEncoding{
 		{"utf16le", func(s string) []byte { return mediaUTF16(s, le) }},
 		{"utf16be", func(s string) []byte { return mediaUTF16(s, be) }},
@@ -87,6 +88,9 @@ func mediaEncodings() []mediaEncoding {
 		{"utf16be with byte order mark", func(s string) []byte { return append([]byte{0xFE, 0xFF}, mediaUTF16(s, be)...) }},
 		{"utf16le with zero-width characters", func(s string) []byte { return mediaUTF16(zeroWidth(s), le) }},
 		{"utf16be with zero-width characters", func(s string) []byte { return mediaUTF16(zeroWidth(s), be) }},
+		{"utf8 with compatibility invisibles", func(s string) []byte { return []byte(foldedInvisible(s)) }},
+		{"utf16le with compatibility invisibles", func(s string) []byte { return mediaUTF16(foldedInvisible(s), le) }},
+		{"utf16be with compatibility invisibles", func(s string) []byte { return mediaUTF16(foldedInvisible(s), be) }},
 		{"utf8 homoglyphs", func(s string) []byte {
 			// Letters swapped for Cyrillic look-alikes the scanner folds back; the
 			// plain ASCII views cannot read the non-ASCII bytes.

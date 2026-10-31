@@ -95,6 +95,7 @@ func TestForDLP_Parity(t *testing.T) {
 			old := StripControlChars(tt.input)
 			old = StripExoticWhitespace(old)
 			old = norm.NFKC.String(old)
+			old = StripControlChars(old)
 			old = ConfusableToASCII(old)
 			old = StripCombiningMarks(old)
 			if got != old {
@@ -145,6 +146,7 @@ func TestMatchingNormalizePrintableASCIIReferenceParity(t *testing.T) {
 		for _, input := range inputs {
 			want := StripZeroWidth(input)
 			want = norm.NFKC.String(want)
+			want = StripZeroWidth(want)
 			want = ConfusableToASCII(want)
 			want = StripCombiningMarks(want)
 			if recompose {
