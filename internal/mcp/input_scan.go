@@ -687,7 +687,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 // A configured pattern can still match blank text; retain that finding even
 // when warn policy permits delivery.
 func mergeInputViewAssessment(aggregate scanner.ResponseScanResult, view string, viewResult scanner.ResponseScanResult) scanner.InjectionAssessment {
-	if viewResult.Clean && viewResult.Assessment.Status == scanner.AssessmentNotAssessed && scanner.IsBlankInjectionView(view) {
+	if scanner.BlankViewAddsNoCoverage(view, viewResult) {
 		return aggregate.RecoveryAssessment()
 	}
 	return aggregate.RecoveryAssessment().Merge(viewResult.RecoveryAssessment())

@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -13,8 +14,27 @@ import (
 // IsBlankInjectionView uses the wording checker's matching normalization to
 // identify views with no wording. Blankness alone never establishes a benign
 // assessment: callers must preserve findings, failures and disabled coverage.
+//
+// A letter or digit survives matching normalization, so the full pass runs only
+// for text made of spaces, marks, symbols and invisible characters. A wrong
+// early "not blank" can only withhold credit, never grant it.
 func IsBlankInjectionView(content string) bool {
+	for _, r := range content {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return false
+		}
+	}
 	return strings.TrimSpace(normalize.ForMatching(content)) == ""
+}
+
+// BlankViewAddsNoCoverage reports whether a view can be skipped when merging
+// assessments: it is blank under matching normalization and its scan produced
+// no failure, match, steganography signal or assessment of its own. Any of
+// those must still reach the merge so it can withhold clean credit.
+func BlankViewAddsNoCoverage(view string, result ResponseScanResult) bool {
+	return result.Clean && !result.Failed() && !result.StegoDetected &&
+		len(result.Matches)+len(result.WarnedMatches)+len(result.SuppressedMatches)+len(result.ObservedCoreMatches) == 0 &&
+		result.Assessment.Status == AssessmentNotAssessed && IsBlankInjectionView(view)
 }
 
 // AssessmentStatus describes wording coverage, independently of delivery policy.

@@ -159,3 +159,37 @@ func TestIsBlankInjectionView(t *testing.T) {
 		}
 	}
 }
+
+// Blank views are skipped only when their scan carries nothing that must
+// withhold clean credit. Steganography in combining marks normalizes to blank,
+// so it is the case most likely to be dropped by a blankness-only check.
+func TestBlankViewAddsNoCoverage(t *testing.T) {
+	marks := "́̂̃̄"
+	if !IsBlankInjectionView(marks) {
+		t.Fatal("combining-mark-only view should be blank under matching normalization")
+	}
+	notAssessed := InjectionAssessment{Checker: InjectionCheckerBasic, Status: AssessmentNotAssessed}
+	plain := ResponseScanResult{Clean: true, Assessment: notAssessed}
+	if !BlankViewAddsNoCoverage(marks, plain) {
+		t.Fatal("clean unassessed blank view should be skippable")
+	}
+	for name, result := range map[string]ResponseScanResult{
+		"stego":    {Clean: true, StegoDetected: true, Assessment: notAssessed},
+		"warned":   {Clean: true, WarnedMatches: []ResponseMatch{{}}, Assessment: notAssessed},
+		"failed":   {Clean: true, ScanError: "budget", Assessment: notAssessed},
+		"assessed": {Clean: true, Assessment: InjectionAssessment{Checker: InjectionCheckerBasic, Status: AssessmentBenign}},
+		"blocked":  {Clean: false, Assessment: notAssessed},
+	} {
+		if BlankViewAddsNoCoverage(marks, result) {
+			t.Errorf("%s: blank view with evidence was skipped", name)
+		}
+	}
+	if BlankViewAddsNoCoverage("wording", plain) {
+		t.Error("non-blank view was skipped")
+	}
+	for _, view := range []string{"漢字テキスト", "١٢٣", "😀 ok", "Ⅻ"} {
+		if IsBlankInjectionView(view) {
+			t.Errorf("letter or digit view %q became blank", view)
+		}
+	}
+}
