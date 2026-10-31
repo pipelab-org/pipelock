@@ -4901,3 +4901,21 @@ func TestCheckToolCall_GauntletIFSManipulation(t *testing.T) {
 		t.Error("IFS manipulation command construction not detected")
 	}
 }
+
+func TestCheckToolCall_CompatibilityFoldedInvisibles(t *testing.T) {
+	t.Parallel()
+	pc := defaultConfig(t)
+	for _, tc := range []struct {
+		name, tool, arg string
+	}{
+		{"within_argument", "bash", "r\uFFA0m -rf /"},
+		{"argument_boundary", "bash", "rm\uFFA0-rf /"},
+		{"tool_name", "ba\uFFA0sh", "rm -rf /"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if v := pc.CheckToolCall(tc.tool, []string{tc.arg}); !v.Matched {
+				t.Fatal("expected normalized policy match")
+			}
+		})
+	}
+}

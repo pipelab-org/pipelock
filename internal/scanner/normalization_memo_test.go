@@ -17,7 +17,7 @@ import (
 
 func TestNormalizationMemoPreservesDepthAndMixedInputs(t *testing.T) {
 	var memo decodingMemo
-	inputs := []string{"", "first body", "second body", "\xff\x00", "Ａ\u00a0Ｂ", "\uffa0", "e\u0301", "first body"}
+	inputs := []string{"", "first body", "second body", "\xff\x00", "Ａ\u00a0Ｂ", "\uffa0", "\u0401", "e\u0301", "first body"}
 	for _, input := range inputs {
 		for range 3 {
 			want := normalize.ForDLP(input)
@@ -32,7 +32,9 @@ func TestNormalizationMemoPreservesDepthAndMixedInputs(t *testing.T) {
 			input = want
 		}
 	}
-	first := normalize.ForDLP("\uffa0")
+	// Unicode canonical decomposition leaves a Cyrillic base letter after
+	// mark removal; the next pass applies the existing confusable mapping.
+	first := normalize.ForDLP("\u0401")
 	if first == normalize.ForDLP(first) {
 		t.Fatal("depth fixture did not exercise a second changing normalization pass")
 	}
