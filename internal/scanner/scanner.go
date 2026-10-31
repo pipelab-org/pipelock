@@ -3563,6 +3563,13 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		{text: strings.ToLower(fullURL), viewLabel: lowerViewLabel("control_stripped_url")},
 		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
 	}
+	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
+	// a known value that contains '+' whole.
+	percentURL := normalize.StripControlChars(iterativePercentDecode(fullURL))
+	if percentURL != fullURL && percentURL != decodedURL {
+		texts = append(texts, spanTextView{text: percentURL, viewLabel: "control_stripped_url:percent_decoded"})
+		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percentURL), viewLabel: lowerViewLabel("control_stripped_url:percent_decoded")})
+	}
 
 	for phase := range 2 {
 		if phase == 1 {
@@ -3572,8 +3579,8 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			// whose encoding holds '+' as data decodes only from the raw or
 			// the RFC 3986 percent-decoded URL.
 			texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, &decodes), "control_stripped_url")...)
-			if percent := normalize.StripControlChars(iterativePercentDecode(fullURL)); percent != fullURL && percent != decodedURL {
-				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, &decodes), "percent_decoded")...)
+			if percentURL != fullURL && percentURL != decodedURL {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, &decodes), "percent_decoded")...)
 			}
 		}
 

@@ -1395,19 +1395,27 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
+	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
+	// a known value that contains '+' whole.
+	decoded := IterativeDecode(text)
+	percent := iterativePercentDecode(text)
+	if percent != text && percent != decoded {
+		percentLabel := spanViewLabel(ViewDLPNormalized, "percent_decoded")
+		texts = append(texts, spanTextView{text: percent, viewLabel: percentLabel})
+		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percent), viewLabel: lowerViewLabel(percentLabel)})
+	}
 
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
 			// URL serialization can escape a separator into path data. Split
 			// the decoded view too, as known-value URL scanning already does.
-			decoded := IterativeDecode(text)
 			if decoded != text {
 				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(decoded, decodes), "url_decoded")...)
 			}
 			// Form decoding turns an escaped '+' into a space; the RFC 3986
 			// view keeps it as data.
-			if percent := iterativePercentDecode(text); percent != text && percent != decoded {
+			if percent != text && percent != decoded {
 				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, decodes), "percent_decoded")...)
 			}
 		}

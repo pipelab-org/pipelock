@@ -93,3 +93,26 @@ func TestRelabelKnownSecretViewsNamesSource(t *testing.T) {
 		t.Fatalf("label = %q, want %q", views[0].viewLabel, want)
 	}
 }
+
+// A known value containing '+' sent escaped as %2B: repeated form decoding
+// turns it into a space, so only the percent-decoded text holds it whole.
+func TestKnownValueWithPlusEscapedMatchesPercentView(t *testing.T) {
+	secret := "Zq7Lm2Xc+Vb4" + "Nn8Kp3Rt6Wy1" // Synthetic; never a real credential.
+	s := knownValuePlusScanner(t, secret)
+	escaped := url.QueryEscape(secret)
+	if !strings.Contains(escaped, "%2B") {
+		t.Fatalf("fixture %q carries no escaped '+'", escaped)
+	}
+	for _, target := range []string{
+		"https://example.test/p/" + escaped,
+		"https://example.test/p#" + escaped,
+		"https://example.test/p?q=" + escaped,
+	} {
+		if got := s.Scan(t.Context(), target); got.Allowed {
+			t.Errorf("%s: escaped known value with '+' was allowed", target)
+		}
+	}
+	if got := s.ScanTextForDLP(t.Context(), "note "+escaped); got.Clean {
+		t.Error("text: escaped known value with '+' was missed")
+	}
+}
