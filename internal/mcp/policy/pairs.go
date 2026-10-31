@@ -114,7 +114,8 @@ func buildArgViews(args []string) []argView {
 		}
 		add(v)
 		expanded := v
-		expanded.tokens = normalizeCommandOptions(v.tokens)
+		var unknownGit bool
+		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens)
 		expanded.joined = strings.Join(expanded.tokens, " ")
 		if v.segments != nil {
 			expanded.segments = make([][]string, 0, len(v.segments))
@@ -123,7 +124,10 @@ func buildArgViews(args []string) []argView {
 					// The only segment is the token list just interpreted.
 					expanded.segments = append(expanded.segments, expanded.tokens)
 				} else {
-					expanded.segments = append(expanded.segments, normalizeCommandOptions(seg))
+					// A non-builtin Git subcommand anywhere on the line makes every
+					// command's destructive readings visible to the pairs it forms.
+					t, _ := normalizeOptions(seg, unknownGit)
+					expanded.segments = append(expanded.segments, t)
 				}
 			}
 		}

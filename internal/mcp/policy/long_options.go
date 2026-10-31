@@ -117,11 +117,36 @@ func utilityKey(name string) string {
 // ambiguous prefixes; policy conservatively presents every candidate instead
 // of choosing one. The output is linear in input size: see optionExpander.
 func normalizeCommandOptions(tokens []string) []string {
+	out, _ := normalizeLineOptions(tokens)
+	return out
+}
+
+// normalizeLineOptions is normalizeCommandOptions, also reporting whether the
+// tokens run a Git subcommand that is not a builtin (see gitBuiltins). Such a
+// subcommand may run an alias or external program whose definition the tokens
+// do not show, possibly assembled from text elsewhere on the line, such as an
+// earlier export. Every long option word in the tokens then also presents the
+// readings gitDestructiveReadings returns, so it receives the verdict of the
+// strictest covered builtin it may spell or abbreviate. A personal alias used
+// with such a prefix (git l --for=..., where l runs ls-files) is therefore
+// matched, as is any such word elsewhere on its line; an alias run with no
+// option word on the line is not.
+func normalizeLineOptions(tokens []string) ([]string, bool) {
+	out, unknown := normalizeOptions(tokens, false)
+	if unknown {
+		out, _ = normalizeOptions(tokens, true)
+	}
+	return out, unknown
+}
+
+// normalizeOptions presents option interpretations and reports whether the
+// tokens run a non-builtin Git subcommand. strict presents every long option
+// word's destructive Git readings, once each per call.
+func normalizeOptions(tokens []string, strict bool) (out []string, unknownGit bool) {
 	hasLongOption := slices.ContainsFunc(tokens, func(token string) bool { return strings.Contains(token, "--") })
 	if !hasLongOption {
-		return tokens
+		return tokens, false
 	}
-	var out []string
 	var activeKey string
 	var candidateKeys []string
 	remember := func(key string) bool {
@@ -152,6 +177,16 @@ func normalizeCommandOptions(tokens []string) []string {
 	// stopped marks the end of options in a utility, or an uncovered Git
 	// subcommand while seeking.
 	var active, git, stopped, skipValue bool
+	// unknown marks a Git command whose subcommand is not a builtin. gitConfig
+	// marks a -c or --config-env value read before the subcommand: quote removal
+	// can leave a separator from inside that value, such as an alias
+	// definition's shell text, so a separator met while still seeking the
+	// subcommand leaves it unknown. A command substitution or subshell met while
+	// seeking, such as git -C "$(pwd)", suspends the seek until its parentheses
+	// close (depth); if they never close, the subcommand is unknown.
+	var unknown, gitConfig, resumeConfig bool
+	depth := 0
+	presented := make(map[string]bool)
 	for _, token := range tokens {
 		// A redirection target is a word too: flattened substitutions (>`rm ...`)
 		// and process substitutions (<(rm ...)) leave commands there.
@@ -171,20 +206,34 @@ func normalizeCommandOptions(tokens []string) []string {
 			}
 			if word := token[start:i]; word != "" {
 				name := commandName(word)
-				gitKey, gitCommand := gitCommandKey(name)
+				gitKey, _ := gitCommandKey(name)
+				// Builtin names match exactly (see gitBuiltins).
+				subKey, subCommand := gitCommandKey(word)
+				// A shell alias definition (alias.<name>=!<command>) runs its first
+				// word as a utility; the definition's options follow this word
+				// once quote removal splits it.
+				if _, command, found := strings.Cut(word, "=!"); found {
+					remember(utilityKey(commandName(command)))
+				}
 				expand := false
 				switch {
 				case skipValue:
 					skipValue = false
 				case !active:
 					switch {
-					case git && gitCommand:
-						active, git, stopped = activate(gitKey), false, false
+					case git && subCommand:
+						active, git, stopped = activate(subKey), false, false
+					case unknown && strings.HasPrefix(word, "-"):
+						// The options may belong to whatever the alias runs.
+						expand = true
 					case stopped:
 					case name == "git":
 						git = true
 					case git && slices.Contains(gitValueOptions, word):
 						skipValue = true
+						gitConfig = gitConfig || word == "-c" || word == "--config-env"
+					case git && strings.HasPrefix(word, "--config-env="):
+						gitConfig = true
 					case strings.HasPrefix(word, "--coreutils-prog="):
 						// The coreutils multi-call binary runs the named program.
 						active = activate(commandName(strings.TrimPrefix(word, "--coreutils-prog=")))
@@ -193,11 +242,15 @@ func normalizeCommandOptions(tokens []string) []string {
 						// can make a separator inside an operand look like shell syntax,
 						// so earlier utilities' interpretations still apply.
 						expand = true
-					default:
-						active = activate(utilityKey(name))
+					case git:
 						// An unrelated Git subcommand must not adopt a later operand as
-						// its command. Bare subcommands still support the MCP git tool.
-						stopped = git && !active
+						// its command.
+						stopped = true
+						unknown = !gitBuiltins[word]
+						unknownGit = unknownGit || unknown
+					default:
+						// Bare subcommands still support the MCP git tool.
+						active = activate(utilityKey(name))
 					}
 				case word == "--" && !stopped:
 					stopped = true
@@ -234,10 +287,40 @@ func normalizeCommandOptions(tokens []string) []string {
 				} else {
 					parts = append(parts, word)
 				}
+				if strict {
+					// An assigned option (V=--hard) can reach the command as $V.
+					readings := gitDestructiveReadings(word)
+					if _, value, found := strings.Cut(word, "="); found {
+						readings = append(readings, gitDestructiveReadings(value)...)
+					}
+					for _, reading := range readings {
+						if !presented[reading] {
+							presented[reading] = true
+							parts = append(parts, " "+reading+" ")
+							changed = true
+						}
+					}
+				}
 			}
 			if i < len(token) {
+				seeking, resume := git && !active && !stopped, false
+				switch c := token[i]; {
+				case depth > 0 && c == '(':
+					depth++
+				case depth > 0 && c == ')':
+					depth--
+					resume = depth == 0
+				case seeking && c == '(' && (!gitConfig || i > 0 && token[i-1] == '$'):
+					depth, resumeConfig = 1, gitConfig
+				case seeking && gitConfig:
+					unknownGit = true
+				}
 				parts = append(parts, token[i:i+1])
 				active, git, stopped, skipValue = false, false, false, false
+				unknown, gitConfig = false, false
+				if resume {
+					git, gitConfig = true, resumeConfig
+				}
 				operands = operands[:0]
 				clear(expander.extra)
 			}
@@ -249,7 +332,7 @@ func normalizeCommandOptions(tokens []string) []string {
 			out = append(out, token)
 		}
 	}
-	return out
+	return out, unknownGit || depth > 0
 }
 
 // redirectOperatorRe matches the operator that starts a redirection word; the

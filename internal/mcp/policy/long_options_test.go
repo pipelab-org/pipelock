@@ -159,6 +159,15 @@ func TestCommandLongOptionsNormalization(t *testing.T) {
 		{"chmod --re a --re b", "chmod --re --reference --recursive a --re b"},
 		{"sudo -u push -- git reset --ha", "sudo -u push -- git reset --ha --hard"},
 		{"cat >rm --rec file", "cat >rm --recursive file"},
+		{"git r --ha", "git r --ha reset --hard"},
+		{"git r --f origin --f", "git r --f push --force rm --force origin --f"},
+		{"git -c alias.a=reset --ha a", "git -c alias.a=reset --ha reset --hard a"},
+		{"V=--ha git x", "V=--ha reset --hard git x"},
+		{"echo --ha; git x", "echo --ha reset --hard ; git x"},
+		{"git -c alias.a=reset --ha status", "git -c alias.a=reset --ha status"},
+		{"git RESET --ha", "git RESET --ha reset --hard"},
+		{"git status --ha", "git status --ha"},
+		{"git st --oneline", "git st --oneline"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -212,6 +221,9 @@ func TestCommandLongOptionsOutputBound(t *testing.T) {
 		"commands":          strings.Repeat("push --n; ", 5000),
 		"utility commands":  strings.Repeat(utilities+"--s; ", 500),
 		"separator options": "git push x" + strings.Repeat(";--n", 5000),
+		"unknown commands":  strings.Repeat("git x --f --h; ", 5000),
+		"unknown options":   "git x " + strings.Repeat("--f --h ", 5000),
+		"seek substitution": strings.Repeat("git -C $(git -c x=y --f) --h ", 2000),
 	} {
 		t.Run(name, func(t *testing.T) {
 			tokens := strings.Fields(input)
