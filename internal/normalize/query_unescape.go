@@ -8,7 +8,22 @@ import "strings"
 // QueryUnescapePartial keeps malformed escapes verbatim and decodes every
 // complete percent escape. It has form semantics: plus becomes a space.
 func QueryUnescapePartial(value string) string {
-	if !strings.ContainsAny(value, "%+") {
+	return unescapePartial(value, true)
+}
+
+// PercentUnescapePartial is QueryUnescapePartial without form semantics.
+// RFC 3986 section 2.1 percent-encoding has no plus-as-space rule; only
+// application/x-www-form-urlencoded maps plus to a space. Plus stays data.
+func PercentUnescapePartial(value string) string {
+	return unescapePartial(value, false)
+}
+
+func unescapePartial(value string, plusAsSpace bool) string {
+	special := "%"
+	if plusAsSpace {
+		special = "%+"
+	}
+	if !strings.ContainsAny(value, special) {
 		return value
 	}
 	var out strings.Builder
@@ -23,7 +38,7 @@ func QueryUnescapePartial(value string) string {
 				continue
 			}
 		}
-		if value[i] == '+' {
+		if plusAsSpace && value[i] == '+' {
 			out.WriteByte(' ')
 		} else {
 			out.WriteByte(value[i])
