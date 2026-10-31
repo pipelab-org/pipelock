@@ -431,7 +431,7 @@ if [ "${build_broker}" -eq 1 ]; then
 		echo "[build-images] ERROR: viewer contains symlinks; refusing incomplete provenance" >&2
 		exit 1
 	fi
-	chmod u+w "${stage}/ui"
+	find "${stage}/ui" -type d -exec chmod u+w {} +
 	for staged_file in "${stage}/ui/"*; do
 		if viewer_file_is_generated "${staged_file##*/}"; then
 			rm -f -- "${staged_file}"
