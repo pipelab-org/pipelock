@@ -26,11 +26,20 @@ SCRIPT
 cat > "${tmp}/source/deploy/wasm-verify/build.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 set -eu
+if [ "${PROVENANCE_WASM_NOOP:-}" = 1 ]; then
+	exit 0
+fi
 if [ "${PROVENANCE_VERSION_PROBE:-}" = 1 ]; then
 	go list -m -f '{{.Version}}' version.example/dep > "$1/pipelock-verifier.wasm"
 else
 	printf 'fresh wasm' > "$1/pipelock-verifier.wasm"
 fi
+# build-images.sh only accepts a .wasm strictly newer than the stamp it writes
+# just before calling this script. A real build takes long enough for that;
+# this stub writes at once, and filesystems with coarse timestamps then give
+# both files the same mtime. Date the output 2 seconds ahead so it is newer
+# than the stamp at any timestamp granularity up to 2 seconds.
+python3 -c 'import os, sys, time; t = time.time() + 2; os.utime(sys.argv[1], (t, t))' "$1/pipelock-verifier.wasm"
 printf 'fresh shim' > "$1/wasm_exec.js"
 SCRIPT
 cat > "${tmp}/bin/docker" <<'SCRIPT'
@@ -407,6 +416,18 @@ import sys
 info = json.load(open(sys.argv[1], encoding="utf-8"))
 assert info["dirty"] is False and info["site_dirty"] is False
 CHECK
+# A verifier build that writes no .wasm fails, even though the staging copy
+# already holds the viewer's older one.
+python3 -c 'import os, sys, time; t = time.time() - 600; os.utime(sys.argv[1], (t, t))' "${PLAYGROUND_UI_DIR}/pipelock-verifier.wasm"
+if PROVENANCE_WASM_NOOP=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/no-wasm.out" 2>&1; then
+	echo 'a verifier build that wrote no .wasm was accepted with an older .wasm in the viewer' >&2
+	exit 1
+fi
+if ! grep -q 'browser-verifier build produced no .wasm in staging' "${tmp}/no-wasm.out"; then
+	echo 'a verifier build that wrote no .wasm failed for the wrong reason' >&2
+	cat "${tmp}/no-wasm.out" >&2
+	exit 1
+fi
 for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	mv "${PLAYGROUND_UI_DIR}/${generated}" "${tmp}/${generated}"
 done
