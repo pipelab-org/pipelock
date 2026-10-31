@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -722,5 +723,43 @@ func TestUploadInspectionMultipartZipPreamble(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// APPNOTE 4.4.4 bit 6 is strong encryption. archive/zip ignores it and hands
+// back the stored ciphertext, which a declared image would otherwise pass.
+func TestUploadInspectionStrongEncryptionHold(t *testing.T) {
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	members := []struct {
+		name  string
+		data  []byte
+		flags uint16
+	}{
+		{"[Content_Types].xml", []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`), 0},
+		{"word/media/image1.png", []byte{0x9c, 0x13, 0xf7, 0x02, 0xaa, 0x51, 0xe8, 0x7d, 0x00, 0xc4, 0x3b, 0x91}, 1 << 6},
+	}
+	for _, m := range members {
+		f, err := z.CreateRaw(&zip.FileHeader{Name: m.name, Method: zip.Store, Flags: m.flags, CRC32: crc32.ChecksumIEEE(m.data), CompressedSize64: uint64(len(m.data)), UncompressedSize64: uint64(len(m.data))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write(m.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			status, hits, _, message, hdr := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, "application/zip", buf.Bytes())
+			if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "encrypted member") {
+				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
+			}
+			if got := hdr.Get("X-Pipelock-Block-Reason"); got != "parse_error" {
+				t.Fatalf("block reason = %q, want parse_error", got)
+			}
+		})
 	}
 }

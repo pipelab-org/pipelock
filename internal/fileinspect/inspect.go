@@ -109,6 +109,16 @@ const (
 const (
 	centralHeaderBytes = 46
 	endHeaderBytes     = 22 // APPNOTE 4.3.16.
+
+	// APPNOTE 6.3.10 4.4.4 general purpose bits 0, 6 and 13, and bit 5.
+	encryptionFlags = 1 | 1<<6 | 1<<13
+	patchedDataFlag = 1 << 5
+	// APPNOTE 6.3.10 extra field IDs: 0x0001 ZIP64 extended information
+	// (4.5.3), 0x0017 Strong Encryption Header (4.5.12) and 0x9901 AE-x
+	// encryption structure (4.6.1, APPENDIX E).
+	zip64ExtraID            = 0x0001
+	strongEncryptionExtraID = 0x0017
+	aexEncryptionExtraID    = 0x9901
 )
 
 func (w *walk) preflight(data []byte) error {
@@ -170,6 +180,14 @@ func (w *walk) preflight(data []byte) error {
 			if headerEnd > int(offset) || localNameLen != nameLen || !bytes.Equal(data[l+30:l+30+localNameLen], data[p+centralHeaderBytes:p+centralHeaderBytes+nameLen]) {
 				return fmt.Errorf("local member name or length disagrees with directory")
 			}
+			// An encryption extra record marks an encrypted member even when
+			// a writer leaves the flag bits clear. APPNOTE 7.2.3 places 0x0017
+			// in the central header; AE-x records appear in both headers.
+			centralExtra := data[p+centralHeaderBytes+nameLen : p+centralHeaderBytes+nameLen+int(binary.LittleEndian.Uint16(data[p+30:]))]
+			if hasExtra(centralExtra, strongEncryptionExtraID, aexEncryptionExtraID) ||
+				hasExtra(data[l+30+localNameLen:headerEnd], strongEncryptionExtraID, aexEncryptionExtraID) {
+				return fmt.Errorf("encrypted member")
+			}
 			if int64(headerEnd)+int64(binary.LittleEndian.Uint32(data[p+20:])) > offset {
 				return fmt.Errorf("compressed member overlaps ZIP directory")
 			}
@@ -185,7 +203,7 @@ func (w *walk) preflight(data []byte) error {
 				// optional signature. Its sizes are 8 bytes when the local
 				// header has a ZIP64 extended information field (4.3.9.2).
 				descriptor := 12
-				if hasZIP64Extra(data[l+30+localNameLen : headerEnd]) {
+				if hasExtra(data[l+30+localNameLen:headerEnd], zip64ExtraID) {
 					descriptor = 20
 				}
 				if end+4 <= int(offset) && bytes.HasPrefix(data[end:], []byte("PK\x07\x08")) {
@@ -219,13 +237,15 @@ func (w *walk) preflight(data []byte) error {
 	return fmt.Errorf("missing or damaged ZIP trailer")
 }
 
-// hasZIP64Extra walks APPNOTE 4.5.1 extra-field records (2-byte header ID,
-// 2-byte data size) for the ZIP64 extended information ID 0x0001 (4.5.3).
-func hasZIP64Extra(extra []byte) bool {
+// hasExtra walks APPNOTE 4.5.1 extra-field records (2-byte header ID, 2-byte
+// data size) for any of the given header IDs.
+func hasExtra(extra []byte, ids ...uint16) bool {
 	for len(extra) >= 4 {
 		id, size := binary.LittleEndian.Uint16(extra), int(binary.LittleEndian.Uint16(extra[2:]))
-		if id == 0x0001 {
-			return true
+		for _, want := range ids {
+			if id == want {
+				return true
+			}
 		}
 		if 4+size > len(extra) {
 			return false
@@ -270,9 +290,16 @@ func (w *walk) archive(data []byte, depth int) error {
 		if err := w.ctx.Err(); err != nil {
 			return err
 		}
-		// APPNOTE 4.4.4 bit 0 is encryption, including on deflate members.
-		if f.Flags&1 != 0 {
+		// APPNOTE 6.3.10 4.4.4: bit 0 is encryption, bit 6 strong encryption
+		// and bit 13 local header values masked by central directory
+		// encryption. archive/zip reads none of them and returns the stored
+		// bytes as if they were the member. Bit 5 marks compressed patched
+		// data, a delta against another file rather than the member itself.
+		if f.Flags&encryptionFlags != 0 {
 			return fmt.Errorf("encrypted member")
+		}
+		if f.Flags&patchedDataFlag != 0 {
+			return fmt.Errorf("patched data member has no reader")
 		}
 		if f.Method != zip.Store && f.Method != zip.Deflate {
 			return fmt.Errorf("unsupported ZIP compression method %d", f.Method)

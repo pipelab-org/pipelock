@@ -645,3 +645,69 @@ func TestInspectDirectoryCompressedPayload(t *testing.T) {
 		t.Fatalf("directory expansion: complete=%t reason=%q", r.Complete, r.Reason)
 	}
 }
+
+type rawMember struct {
+	name    string
+	data    []byte
+	flags   uint16
+	creator uint16
+	attrs   uint32
+	extra   []byte
+}
+
+// rawArchive stores members with caller-chosen header fields. CreateRaw keeps
+// the flag bits, host byte, external attributes and extra field as given.
+func rawArchive(t *testing.T, members ...rawMember) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	z := zip.NewWriter(&b)
+	for _, m := range members {
+		f, err := z.CreateRaw(&zip.FileHeader{
+			Name: m.name, Method: zip.Store, Flags: m.flags, CreatorVersion: m.creator, ExternalAttrs: m.attrs, Extra: m.extra,
+			CRC32: crc32.ChecksumIEEE(m.data), CompressedSize64: uint64(len(m.data)), UncompressedSize64: uint64(len(m.data)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write(m.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// archive/zip reads none of APPNOTE's encryption indicators and returns stored
+// ciphertext as the member. Each case would otherwise read complete: a declared
+// image passes the non-text rule and hex ciphertext is valid UTF-8.
+func TestInspectEncryptionIndicators(t *testing.T) {
+	declarations := rawMember{name: "[Content_Types].xml", data: []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="png" ContentType="image/png"/></Types>`)}
+	ciphertext := []byte{0x9c, 0x13, 0xf7, 0x02, 0xaa, 0x51, 0xe8, 0x7d, 0x00, 0xc4, 0x3b, 0x91}
+	hexCiphertext := []byte("9c13f702aa51e87d00c43b91")
+	for _, tc := range []struct {
+		name   string
+		member rawMember
+		reason string
+	}{
+		{"strong encryption bit 6 declared image", rawMember{name: "word/media/image1.png", data: ciphertext, flags: 1 << 6}, "encrypted member"},
+		{"strong encryption bit 6 text", rawMember{name: "notes.txt", data: hexCiphertext, flags: 1 << 6}, "encrypted member"},
+		{"masked local header bit 13", rawMember{name: "notes.txt", data: hexCiphertext, flags: 1 << 13}, "encrypted member"},
+		{"compressed patched data bit 5", rawMember{name: "notes.txt", data: hexCiphertext, flags: 1 << 5}, "patched data member"},
+		{"strong encryption header extra", rawMember{name: "notes.txt", data: hexCiphertext, extra: []byte{0x17, 0x00, 0x04, 0x00, 2, 0, 0, 0}}, "encrypted member"},
+		{"AE-x extra", rawMember{name: "word/media/image1.png", data: ciphertext, extra: []byte{0x01, 0x99, 0x07, 0x00, 2, 0, 'A', 'E', 3, 8, 0}}, "encrypted member"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), rawArchive(t, declarations, tc.member), Limits{1 << 20, 64})
+			if r.Complete || !strings.Contains(r.Reason, tc.reason) {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+	// Bits outside the indicators, such as EFS (bit 11), stay readable.
+	r := Inspect(t.Context(), rawArchive(t, declarations, rawMember{name: "notes.txt", data: hexCiphertext, flags: 1 << 11}), Limits{1 << 20, 64})
+	if !r.Complete {
+		t.Fatalf("EFS member: complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}
