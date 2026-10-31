@@ -923,7 +923,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Extract text strings from body based on content type. The DLP extractor
 	// also returns generic ordered text so JSON bodies are traversed once here.
 	dlpExtracted := extractBodyTextForDLP(buf, req)
-	if fileinspect.Kind(buf) != "" {
+	// A multipart parser skips any preamble before the first boundary (RFC 2046
+	// section 5.1.1), so a body can be a ZIP and a multipart form at once. Keep
+	// the part decoding the receiver will apply; the whole body is also inspected.
+	// The media type is parsed exactly as extractBodyTextForDLP parses it.
+	if mediaType, _, _ := mime.ParseMediaType(req.ContentType); fileinspect.Kind(buf) != "" && mediaType != "multipart/form-data" {
 		dlpExtracted = bodyDLPTextExtraction{GenericTexts: []string{string(buf)}, Texts: []string{string(buf)}}
 	}
 	if dlpExtracted.Err != "" {

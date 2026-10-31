@@ -32,11 +32,15 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 			incomplete = fmt.Sprintf("%s upload not fully read: %s; governed by request_body_scanning.action=block with enforce=true (warn/audit retain delivery)", r.Type, r.Reason)
 		}
 	}
+	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
 	if fileinspect.Kind(body) != "" {
 		inspect(body)
-		return views, incomplete
+		// A multipart preamble may begin with a file signature; its parts are
+		// still what the receiver reads, so they are inspected as well.
+		if mediaType != "multipart/form-data" {
+			return views, incomplete
+		}
 	}
-	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
 	if mediaType == "multipart/form-data" {
 		// The existing multipart parser exposes raw and transfer-decoded parts.
 		for _, part := range extracted.FileParts {

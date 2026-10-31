@@ -428,3 +428,59 @@ func TestUploadInspectionIncompleteCredentialFloor(t *testing.T) {
 		t.Fatalf("core-floor block must name governing credential control: status=%d hits=%d body=%s", status, hits, message)
 	}
 }
+
+// A multipart parser skips its preamble, so a ZIP signature at offset zero must
+// not replace the part decoding the receiver applies. The stored ZIP member
+// makes the same bytes a complete archive and a valid multipart form.
+func TestUploadInspectionMultipartZipPreamble(t *testing.T) {
+	stored := func(form string) []byte {
+		var buf bytes.Buffer
+		z := zip.NewWriter(&buf)
+		member, err := z.CreateHeader(&zip.FileHeader{Name: "note.txt", Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = io.WriteString(member, form); err != nil {
+			t.Fatal(err)
+		}
+		if err = z.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}
+	form := "\r\n--B\r\nContent-Disposition: form-data; name=\"note\"\r\nContent-Transfer-Encoding: quoted-printable\r\n\r\n" +
+		"AKIA=\r\nQ9W8=\r\nE7R6T5Y4U3I2\r\n--B--\r\n"
+	polyglot := stored(form)
+	seeded, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", "libreoffice-seeded.docx")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	documentPolyglot := stored("\r\n--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.bin\"\r\n\r\n" + string(seeded) + "\r\n--B--\r\n")
+	part, err := multipart.NewReader(bytes.NewReader(polyglot), "B").NextPart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := io.ReadAll(part)
+	if err != nil || string(decoded) != "AKIA"+"Q9W8E7R6T5Y4U3I2" {
+		t.Fatalf("receiver view of the polyglot: %q err=%v", decoded, err)
+	}
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		for _, tc := range []struct {
+			name   string
+			body   []byte
+			policy uploadPolicy
+		}{
+			{"complete archive enforce", polyglot, uploadPolicy{config.ActionBlock, false}},
+			{"complete archive audit", polyglot, uploadPolicy{config.ActionWarn, true}},
+			{"document part audit", documentPolyglot, uploadPolicy{config.ActionWarn, true}},
+			{"damaged archive audit", append([]byte("PK\x03\x04"), form...), uploadPolicy{config.ActionWarn, true}},
+		} {
+			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				status, hits, _, message := exerciseUpload(t, surface, tc.policy, "multipart/form-data; boundary=B", tc.body)
+				if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "AWS Access ID") {
+					t.Fatalf("decoded multipart credential delivered: status=%d hits=%d body=%s", status, hits, message)
+				}
+			})
+		}
+	}
+}
