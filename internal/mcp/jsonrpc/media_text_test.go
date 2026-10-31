@@ -14,6 +14,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -72,6 +74,7 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 	// the run must read straight through them rather than end at them.
 	ctrlUnits := strings.Join(strings.Split(cyr, ""), "\u0001")
 	c1Units := strings.Join(strings.Split(mediaTestPhrase, ""), "\u0085")
+	foldedInvisible := strings.Join(strings.Split(mediaTestPhrase, ""), "\uFFA0")
 
 	tests := []struct {
 		name    string
@@ -100,6 +103,9 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 		{"latin-1 letters utf8", []byte(strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)), strings.Repeat(string(rune(0xe9)), minSmuggledTextRun)},
 		{"homoglyph with control units between characters", utf16Encode(ctrlUnits, le), cyr},
 		{"ascii with C1 units between characters", utf16Encode(c1Units, be), mediaTestPhrase},
+		{"compatibility invisible utf8", []byte(foldedInvisible), foldedInvisible},
+		{"compatibility invisible utf16le", utf16Encode(foldedInvisible, le), foldedInvisible},
+		{"compatibility invisible utf16be", utf16Encode(foldedInvisible, be), foldedInvisible},
 		{"astral letters via surrogate pairs le", utf16Encode(bold, le), bold},
 		{"astral letters via surrogate pairs be", utf16Encode(bold, be), bold},
 		{"zero-width characters are kept for the scanner", utf16Encode(zw, le), zw},
@@ -223,13 +229,15 @@ func TestNormalizedMediaTextBoundaries(t *testing.T) {
 func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 	// The table is derived from the scanner's normalization; this recomputes the
 	// derivation over every scalar so the two cannot drift apart silently. A
-	// scalar the normalizer turns into printable ASCII must never end a run.
+	// scalar that folds to an invisible or printable ASCII must never end a run.
 	for r := rune(0x80); r <= unicode.MaxRune; r++ {
 		if r >= 0xD800 && r <= 0xDFFF {
 			continue
 		}
 		s := string(r)
-		contributes := false
+		contributes := strings.ContainsFunc(norm.NFKC.String(s), func(folded rune) bool {
+			return unicode.Is(normalize.InvisibleRanges, folded)
+		})
 		for _, out := range []string{normalize.ForMatching(s), normalize.ForDLP(s), normalize.ForToolText(s)} {
 			if out == s {
 				continue
@@ -241,7 +249,7 @@ func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 			}
 		}
 		if contributes && classifyMediaRune(r) == mediaRuneBreak {
-			t.Fatalf("U+%04X normalizes to ASCII (%q) but ends a media text run", r, normalize.ForMatching(s))
+			t.Fatalf("U+%04X folds to an invisible or ASCII (%q) but ends a media text run", r, normalize.ForMatching(s))
 		}
 	}
 }
@@ -263,6 +271,7 @@ func TestMediaRuneClasses(t *testing.T) {
 		{"del", 0x7f, mediaRuneDrop},
 		{"c1 control", 0x85, mediaRuneDrop},
 		{"zero width space", 0x200B, mediaRuneKeep},
+		{"compatibility folded invisible", 0xFFA0, mediaRuneKeep},
 		{"bom", 0xFEFF, mediaRuneKeep},
 		{"tag character", 0xE0041, mediaRuneKeep},
 		{"combining acute", 0x0301, mediaRuneKeep},

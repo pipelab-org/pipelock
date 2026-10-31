@@ -82,7 +82,7 @@ func classifyMediaRune(r rune) mediaRuneClass {
 		return mediaRuneDrop
 	case normalize.Whitespace(string(r)) == " ":
 		return mediaRuneSpace
-	case unicode.Is(normalize.InvisibleRanges, r), unicode.Is(unicode.Mn, r):
+	case normalize.ContainsInvisible(string(r)), unicode.Is(unicode.Mn, r):
 		return mediaRuneKeep
 	case unicode.Is(mediaTextRanges, r):
 		return mediaRuneText
