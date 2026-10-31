@@ -214,7 +214,8 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 		// Retain shell operators while resetting option scope on both sides. The
 		// caller already resolves shell spelling and splits quoted command views.
 		start := len(op)
-		for i := start; i <= len(token); i++ {
+		// The pass at i == len(token) flushes the last word; the loop ends there.
+		for i := start; ; i++ {
 			if i < len(token) && !strings.ContainsRune(";|&()\n", rune(token[i])) {
 				continue
 			}
@@ -345,6 +346,9 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 				}
 				operands = operands[:0]
 				clear(expander.extra)
+			}
+			if i == len(token) {
+				break
 			}
 			start = i + 1
 		}
