@@ -431,6 +431,11 @@ if [ "${build_broker}" -eq 1 ]; then
 		echo "[build-images] ERROR: viewer contains symlinks; refusing incomplete provenance" >&2
 		exit 1
 	fi
+	for staged_file in "${stage}/ui/"*; do
+		if viewer_file_is_generated "${staged_file##*/}"; then
+			rm -f -- "${staged_file}"
+		fi
+	done
 	echo "[build-images] building browser-verifier WASM into private staging copy"
 	wasm_stage="${stage}/wasm"
 	mkdir "${wasm_stage}"

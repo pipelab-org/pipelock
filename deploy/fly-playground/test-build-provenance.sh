@@ -402,6 +402,7 @@ mv "${PLAYGROUND_UI_DIR}/test-bundle.tar.gz" "${tmp}/ignored-bundle.tar.gz"
 for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	printf '/static/playground/demo/%s\n' "${generated}" >> "${tmp}/site/.git/info/exclude"
 	printf 'stale output\n' > "${PLAYGROUND_UI_DIR}/${generated}"
+	chmod 0444 "${PLAYGROUND_UI_DIR}/${generated}"
 done
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/generated.out"
 python3 - "${tmp}/capture/build-info.json" <<'CHECK'
@@ -409,6 +410,16 @@ import json
 import sys
 info = json.load(open(sys.argv[1], encoding="utf-8"))
 assert info["dirty"] is False and info["site_dirty"] is False
+CHECK
+python3 - "${PLAYGROUND_UI_DIR}" "${tmp}/capture" <<'CHECK'
+import pathlib
+import sys
+source, staged = map(pathlib.Path, sys.argv[1:])
+for name in ("pipelock-verifier.wasm", "wasm_exec.js", "build-info.json"):
+    assert (source / name).stat().st_mode & 0o777 == 0o444
+    assert (source / name).read_bytes() == b"stale output\n"
+assert (staged / "pipelock-verifier.wasm").read_bytes() == b"fresh wasm"
+assert (staged / "wasm_exec.js").read_bytes() == b"fresh shim"
 CHECK
 # A verifier build that writes no .wasm fails, even though the staging copy
 # already holds a viewer copy dated in the future.
