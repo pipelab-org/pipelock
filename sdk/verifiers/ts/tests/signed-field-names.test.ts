@@ -16,6 +16,6 @@ test("signed field names match shared parity fixture", async () => {
   };
   for (const entry of fixture.cases) {
     const report = await runReceipt(`${dir}/${entry.file}`, key.public_key_hex);
-    assert.equal(report.valid, entry.valid, report.error);
+    assert.equal(report.valid, entry.valid, `${entry.file}: ${report.error ?? "no error"}`);
   }
 });
