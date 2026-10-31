@@ -3106,9 +3106,12 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		rawPath = parsed.EscapedPath()
 	}
 	formPath, percentPath := urlComponentDecodes(rawPath)
-	for _, decodedPath := range []string{formPath, percentPath} {
-		if decodedPath != "" && decodedPath != parsed.Path {
-			targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+	for _, decoded := range []dlpTarget{
+		{formPath, dlpViewLabel("url_path_decoded"), ""},
+		{percentPath, dlpViewLabel(spanViewLabel("percent_decoded", "url_path")), ""},
+	} {
+		if decoded.text != "" && decoded.text != parsed.Path {
+			targets = append(targets, decoded)
 		}
 	}
 

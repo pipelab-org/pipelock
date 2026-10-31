@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
@@ -206,6 +207,56 @@ func TestURLRegexDLPDecodedPathSpanLabel(t *testing.T) {
 		rawPath = parsed.EscapedPath()
 	}
 	assertSpanSlice(t, normalize.ForDLP(IterativeDecode(rawPath)), span, secret)
+}
+
+// When form and RFC 3986 decoding of an escaped path differ, each decoded
+// view needs its own label so a span identifies the text its offsets index.
+func TestURLDecodedPathSpanLabelNamesPercentView(t *testing.T) {
+	percentLabel := dlpViewLabel(spanViewLabel("percent_decoded", "url_path"))
+
+	t.Run("configured", func(t *testing.T) {
+		cfg := testConfig()
+		cfg.DLP.IncludeDefaults = new(false)
+		cfg.DLP.Patterns = []config.DLPPattern{{Name: "plus fixture", Regex: `SYNTHETIC\+VALUE_42`, Severity: config.SeverityHigh}}
+		s := MustNew(cfg)
+		t.Cleanup(s.Close)
+		rawURL := "https://example.com/SYNTHETIC%252BVALUE_42"
+		result := s.Scan(t.Context(), rawURL)
+		if result.Allowed {
+			t.Fatal("expected the percent-decoded path match to block")
+		}
+		span := onlyResultSpan(t, result)
+		if span.ViewLabel != percentLabel {
+			t.Fatalf("view label = %q, want %q", span.ViewLabel, percentLabel)
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatalf("parse URL: %v", err)
+		}
+		_, percent := urlComponentDecodes(parsed.EscapedPath())
+		assertSpanSlice(t, normalize.ForDLP(percent), span, "SYNTHETIC+VALUE_42")
+	})
+
+	t.Run("core", func(t *testing.T) {
+		cfg := config.Defaults()
+		cfg.Internal = nil // Loopback destination only, without DNS.
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+		cfg.DLP.ScanEnv = false
+		cfg.DLP.IncludeDefaults = new(false)
+		cfg.DLP.Patterns = nil
+		s := MustNew(cfg)
+		t.Cleanup(s.Close)
+		s.entropyThreshold = 0 // Isolate DLP from the separate entropy policy.
+		key := "Ab1/Cd2/Ef3+Gh4/Ij5/Kl6Mn7Op8Qr9St0Uv1Wx"
+		result := s.Scan(t.Context(), "http://127.0.0.1/receive/aws_secret_access_key="+strings.ReplaceAll(key, "+", "%252B"))
+		if result.Allowed || result.Scanner != ScannerCoreDLP {
+			t.Fatalf("expected the core floor to block: %+v", result)
+		}
+		span := onlyResultSpan(t, result)
+		if span.ViewLabel != percentLabel {
+			t.Fatalf("view label = %q, want %q", span.ViewLabel, percentLabel)
+		}
+	})
 }
 
 func TestTextHostnameExfilSpanIndexesSourceView(t *testing.T) {
