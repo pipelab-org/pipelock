@@ -269,3 +269,65 @@ func TestAdaptiveUniformRefusalWebSocketClose(t *testing.T) {
 		})
 	}
 }
+
+// HTTP findings escalate a destination scope, not the whole session. The
+// refusal projection must resolve that scope from the same target the handler
+// scores: /fetch and /ws strip control characters before parsing, so a tab in
+// the target must not hide the scope from the projection.
+func TestAdaptiveUniformRefusalScopedTargetParsing(t *testing.T) {
+	for _, transport := range []string{TransportFetch, TransportWS} {
+		t.Run(transport, func(t *testing.T) {
+			cfg := adaptiveConfigBlockAll()
+			cfg.Enforce = ptrBool(true)
+			cfg.DefaultAgentIdentity = ""
+			cfg.BindDefaultAgentIdentity = false
+			cfg.ExplainBlocks = ptrBool(true)
+			cfg.WebSocketProxy.Enabled = true
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			scope := adaptiveScopeForHost("api.vendor.example")
+			rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyHTTPTest)
+			for rec.EffectiveEscalationLevel(scope) < 1 {
+				rec.RecordScopedSignal(scope, session.SignalBlock, adaptiveTestThreshold)
+			}
+			if rec.EffectiveEscalationLevel("") >= 1 {
+				t.Fatal("fixture must escalate only the destination scope")
+			}
+			handle := p.handleFetch
+			endpoint, scheme := "/fetch", "https://"
+			if transport == TransportWS {
+				handle, endpoint, scheme = p.handleWebSocket, "/ws", "wss://"
+			}
+			makeRequest := func(caught bool) *http.Request {
+				target := scheme + "api.vendor.example/o\tk"
+				if caught {
+					target += "?token=" + "gh" + "p_" + strings.Repeat("aB3c", 9)
+				}
+				return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example"+endpoint+"?url="+url.QueryEscape(target), nil)
+			}
+			clean, caught := httptest.NewRecorder(), httptest.NewRecorder()
+			handle(clean, makeRequest(false))
+			handle(caught, makeRequest(true))
+			if caught.Header().Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) || caught.Code != clean.Code || !reflect.DeepEqual(caught.Result().Header, clean.Result().Header) || !bytes.Equal(caught.Body.Bytes(), clean.Body.Bytes()) {
+				t.Fatalf("scoped lockdown differs:\nclean %d %v %s\ncaught %d %v %s", clean.Code, clean.Result().Header, clean.Body.String(), caught.Code, caught.Result().Header, caught.Body.String())
+			}
+		})
+	}
+}
+
+func TestRefusalHostsMatchHandlerParsing(t *testing.T) {
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "http://proxy.example/fetch?url=https://API.vendor.example/a%09b?x=1&y=2", nil)
+	if got := refusalTargetHost(r); got != "API.vendor.example" {
+		t.Fatalf("target host = %q", got)
+	}
+	for authority, want := range map[string]string{"api.vendor.example:443": "api.vendor.example", "api.vendor.example": "api.vendor.example", "[2001:db8::1]:443": "2001:db8::1", "::1": "::1", "bad:port": ""} {
+		if got := refusalConnectHost(authority); got != want {
+			t.Errorf("refusalConnectHost(%q) = %q, want %q", authority, got, want)
+		}
+	}
+}

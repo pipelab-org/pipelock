@@ -83,6 +83,23 @@ func (p *Proxy) withAdaptiveClose(conn net.Conn, opts adaptiveRefusalOptions) ne
 	return &adaptiveCloseConn{Conn: conn, cfg: &opts.config.AdaptiveEnforcement, level: func() int { return p.adaptiveRefusalLevel(opts) }}
 }
 
+// refusalTargetHost derives the /fetch and /ws destination exactly as those
+// handlers do before scoring it. A different parse lets a target the handler
+// accepts, such as one carrying a stripped control character, select no scope
+// here and bypass the projection.
+func refusalTargetHost(r *http.Request) string {
+	return refusalURLHost(stripFetchControlChars(extractTargetURL(r)))
+}
+
+// refusalConnectHost uses the CONNECT handler's authority normalization.
+func refusalConnectHost(authority string) string {
+	_, host, _, _, ok := normalizeConnectTarget(authority)
+	if !ok {
+		return ""
+	}
+	return host
+}
+
 func refusalURLHost(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {

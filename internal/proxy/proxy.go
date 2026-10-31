@@ -5388,7 +5388,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
-	w = p.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalURLHost(r.URL.Query().Get("url")) }, transport: TransportFetch})
+	w = p.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportFetch})
 	// Carry the provenance grade on the request from the moment identity is
 	// resolved. Every audit context below derives from r.Context(), so setting
 	// it only at fetch time would report "unknown" for each event on the way.

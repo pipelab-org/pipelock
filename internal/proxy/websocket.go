@@ -310,7 +310,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
-	refusalOpts := adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalURLHost(r.URL.Query().Get("url")) }, transport: TransportWS}
+	refusalOpts := adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportWS}
 	w = p.withAdaptiveRefusal(w, refusalOpts)
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
