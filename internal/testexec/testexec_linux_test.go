@@ -25,6 +25,7 @@ func TestWriteExecutableRunsWhileOtherTestsFork(t *testing.T) {
 		forkers    = 4
 		iterations = 200
 	)
+	ctx := t.Context()
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	for range forkers {
@@ -37,7 +38,7 @@ func TestWriteExecutableRunsWhileOtherTestsFork(t *testing.T) {
 					return
 				default:
 				}
-				_ = exec.Command("/bin/true").Run()
+				_ = exec.CommandContext(ctx, "/bin/true").Run()
 			}
 		}()
 	}
@@ -50,7 +51,7 @@ func TestWriteExecutableRunsWhileOtherTestsFork(t *testing.T) {
 	for i := range iterations {
 		path := filepath.Join(dir, "probe-"+strconv.Itoa(i))
 		testexec.WriteExecutable(t, path, []byte("#!/bin/sh\nexit 0\n"), 0o700)
-		if out, err := exec.Command(path).CombinedOutput(); err != nil { // #nosec G204 -- test-owned fixture path.
+		if out, err := exec.CommandContext(ctx, path).CombinedOutput(); err != nil { // #nosec G204 -- test-owned fixture path.
 			t.Fatalf("iteration %d: run %s: %v: %s", i, path, err, out)
 		}
 	}
