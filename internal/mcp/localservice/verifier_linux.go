@@ -63,8 +63,9 @@ type Verifier struct {
 	onAttempt func()
 	// retryCap overrides verifyRetryCap when positive.
 	retryCap time.Duration
-	// onHash observes each content read. Tests use it to verify repeated checks.
-	onHash func(string)
+	// onHash observes each opened file right after its content was hashed, so a
+	// test can check that the descriptor itself was read.
+	onHash func(*os.File)
 }
 
 // NewVerifier returns a Verifier that reads the live /proc.
@@ -531,10 +532,11 @@ func (v *Verifier) executableDigest(pid int) (dev, ino uint64, sum string, err e
 }
 
 func (v *Verifier) hashOpened(f *os.File) (string, error) {
+	sum, err := hashFile(f)
 	if v.onHash != nil {
-		v.onHash(f.Name())
+		v.onHash(f)
 	}
-	return hashFile(f)
+	return sum, err
 }
 
 // heldFile is a file the owner holds as a descriptor or a memory mapping.

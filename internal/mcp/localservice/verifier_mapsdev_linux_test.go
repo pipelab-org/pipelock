@@ -8,6 +8,7 @@ package localservice
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -234,7 +235,18 @@ func TestVerifyConnReadsContentOnEveryCheck(t *testing.T) {
 	f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
 	f.pin.MappedFiles = []FilePin{{Path: path, SHA256: sha256Hex([]byte(pinnedContent))}}
 	reads := make(map[string]int)
-	f.v.onHash = func(name string) { reads[name]++ }
+	f.v.onHash = func(h *os.File) {
+		// A digest served without reading leaves the descriptor at offset 0.
+		fi, err := h.Stat()
+		if err != nil {
+			t.Errorf("stat %s: %v", h.Name(), err)
+			return
+		}
+		if off, err := h.Seek(0, io.SeekCurrent); err != nil || off != fi.Size() || off == 0 {
+			t.Errorf("%s hashed without consuming the descriptor: offset %d, size %d, err %v", h.Name(), off, fi.Size(), err)
+		}
+		reads[h.Name()]++
+	}
 	for i := 1; i <= 2; i++ {
 		if _, err := f.verify(); err != nil {
 			t.Fatalf("VerifyConn %d = %v", i, err)
