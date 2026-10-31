@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -229,6 +230,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req Request
+	if err := jsonscan.RejectDuplicateFieldsInValidatedJSON(body, &req); err != nil {
+		h.writeError(w, http.StatusBadRequest, "", "invalid_json", fmt.Sprintf("Invalid request: %v", err), false)
+		return
+	}
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {

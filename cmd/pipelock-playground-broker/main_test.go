@@ -2072,6 +2072,60 @@ func TestCFAccessRejectsAmbiguousJWTAndJWKS(t *testing.T) {
 	}
 }
 
+// The duplicate-field walker leaves each jose.JSONWebKey to its own decoder.
+// That decoder matches member names exactly and rejects exact duplicates, so a
+// case variant such as "KID" is an unknown member and cannot rebind the key ID.
+func TestCFAccessJWKSKeyMembersBindExactly(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate JWKS key: %v", err)
+	}
+	keyJSON, err := json.Marshal(jose.JSONWebKey{
+		Key:       &priv.PublicKey,
+		KeyID:     "proof-key",
+		Algorithm: string(jose.RS256),
+		Use:       "sig",
+	})
+	if err != nil {
+		t.Fatalf("marshal JWKS key: %v", err)
+	}
+	withMember := func(member string) string {
+		return `{"keys":[` + string(keyJSON[:len(keyJSON)-1]) + `,` + member + `}]}`
+	}
+	withoutKeyID := strings.Replace(string(keyJSON), `"kid":"proof-key",`, ``, 1)
+	if withoutKeyID == string(keyJSON) {
+		t.Fatalf("marshalled key has no kid member: %s", keyJSON)
+	}
+	fetch := func(body string) (*jose.JSONWebKeySet, error) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		defer server.Close()
+		verifier := &cfAccessVerifier{certsURL: server.URL, client: server.Client()}
+		return verifier.fetchKeys(context.Background())
+	}
+
+	for name, tc := range map[string]struct {
+		body    string
+		wantKID string
+	}{
+		// A case-insensitive last-wins decoder would bind "other-key" here.
+		"case variant after kid": {withMember(`"KID":"other-key"`), "proof-key"},
+		"lone case variant":      {`{"keys":[` + withoutKeyID[:len(withoutKeyID)-1] + `,"KID":"other-key"}]}`, ""},
+	} {
+		keys, err := fetch(tc.body)
+		if err != nil {
+			t.Fatalf("%s: fetch JWKS: %v", name, err)
+		}
+		if len(keys.Keys) != 1 || keys.Keys[0].KeyID != tc.wantKID {
+			t.Fatalf("%s: key IDs = %+v, want %q", name, keys.Keys, tc.wantKID)
+		}
+	}
+	if _, err := fetch(withMember(`"kid":"other-key"`)); err == nil {
+		t.Fatal("accepted duplicate kid member in a JWKS key")
+	}
+}
+
 func TestCFAccessJWKS_NegativeCache(t *testing.T) {
 	t.Parallel()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)

@@ -1871,7 +1871,7 @@ func (v *cfAccessVerifier) fetchKeys(ctx context.Context) (*jose.JSONWebKeySet, 
 	if len(raw) > maxJWKSBytes {
 		return nil, fmt.Errorf("cloudflare Access JWKS exceeds %d bytes", maxJWKSBytes)
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectDuplicateFields(raw, new(jose.JSONWebKeySet)); err != nil {
 		return nil, fmt.Errorf("decode Cloudflare Access JWKS: %w", err)
 	}
 	var keys jose.JSONWebKeySet

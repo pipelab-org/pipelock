@@ -154,7 +154,7 @@ func (p *RemoteKillPoller) PollOnce(ctx context.Context) error {
 	if err := decoder.Decode(&msg); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrRemoteKillPollResponse, err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(body, &msg); err != nil {
 		return fmt.Errorf("%w: ambiguous response: %w", ErrRemoteKillPollResponse, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {

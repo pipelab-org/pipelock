@@ -465,3 +465,45 @@ func hashHex(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
+
+func TestHandler_RejectsNoncanonicalSignedEnvelope(t *testing.T) {
+	payload := []byte(`{"events":[{"message":"clean audit event"}]}`)
+	for _, tc := range []struct {
+		name, from, to string
+		want           int
+	}{
+		{"canonical", "", "", http.StatusAccepted},
+		{"lone_alias", `"batch_id":`, `"Batch_id":`, http.StatusBadRequest},
+		{"exact_duplicate", `"batch_id":`, `"batch_id":"batch-other","batch_id":`, http.StatusBadRequest},
+		{"folded_collision", `"batch_id":`, `"batch_id":"batch-other","BATCH_ID":`, http.StatusBadRequest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, store, priv := testHandler(t)
+			body, err := json.Marshal(uploadRequest{Envelope: signedEnvelope(t, "batch-1", 1, 1, payload, priv), Payload: payload})
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := string(body)
+			if tc.from != "" {
+				if !strings.Contains(raw, tc.from) {
+					t.Fatalf("fixture lacks %s", tc.from)
+				}
+				raw = strings.Replace(raw, tc.from, tc.to, 1)
+			}
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, AuditBatchesPath, strings.NewReader(raw))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			if resp.Code != tc.want {
+				t.Fatalf("status = %d body=%s want=%d", resp.Code, resp.Body.String(), tc.want)
+			}
+			_, stored, err := store.Get(context.Background(), "org-test", "fleet-prod", "instance-a", "batch-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored != (tc.want == http.StatusAccepted) {
+				t.Fatalf("stored = %v after status %d", stored, resp.Code)
+			}
+		})
+	}
+}

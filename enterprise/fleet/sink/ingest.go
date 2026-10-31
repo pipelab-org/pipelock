@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -291,6 +292,11 @@ func decodeUpload(w http.ResponseWriter, r *http.Request, maxBytes int64) (uploa
 		return uploadRequest{}, fmt.Errorf("%w: %w", ErrInvalidRequestBody, err)
 	}
 
+	// The follower-signed envelope's signature covers a typed preimage, so a
+	// duplicate or renamed member would still verify; require canonical names.
+	if err := jsonscan.RejectDuplicateFields(body, new(uploadRequest), new(conductor.AuditBatchEnvelope)); err != nil {
+		return uploadRequest{}, fmt.Errorf("%w: %w", ErrInvalidRequestBody, err)
+	}
 	var top map[string]json.RawMessage
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()

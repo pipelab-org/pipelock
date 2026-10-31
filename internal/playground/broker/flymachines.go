@@ -166,7 +166,7 @@ func (f *FlyMachines) CreateMachine(ctx context.Context, spec MachineSpec) (*Mac
 	if err != nil {
 		return nil, err
 	}
-	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+	if err := jsonscan.RejectDuplicateFields(respBody, new(flyMachineResponse)); err != nil {
 		return nil, fmt.Errorf("fly: parse create response: %w", err)
 	}
 	var m flyMachineResponse
@@ -297,7 +297,7 @@ func (f *FlyMachines) ListManagedMachines(ctx context.Context) ([]Machine, error
 }
 
 func parseFlyListMachines(respBody []byte) ([]flyListMachine, string, error) {
-	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+	if err := jsonscan.RejectDuplicateFields(respBody, new([]flyListMachine)); err != nil {
 		return nil, "", fmt.Errorf("fly: parse list machines response: %w", err)
 	}
 	var raw []flyListMachine
@@ -305,6 +305,9 @@ func parseFlyListMachines(respBody []byte) ([]flyListMachine, string, error) {
 		return raw, "", nil
 	}
 	var page flyListMachinesPage
+	if err := jsonscan.RejectDuplicateFields(respBody, &page); err != nil {
+		return nil, "", fmt.Errorf("fly: parse list machines response: %w", err)
+	}
 	if err := json.Unmarshal(respBody, &page); err != nil {
 		return nil, "", fmt.Errorf("fly: parse list machines response: %w", err)
 	}

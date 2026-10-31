@@ -28,7 +28,7 @@ func VerifyPacketDir(dir, keyHex string) error {
 		return fmt.Errorf("reading packet.json: %w", err)
 	}
 	var pkt auditpacket.Packet
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &pkt); err != nil {
 		return fmt.Errorf("parsing packet.json: %w", err)
 	}
 	if err := jsonscan.RejectUnsafeNumbers(data); err != nil {
@@ -67,7 +67,7 @@ func VerifyPacketBytes(packetJSON, evidenceJSONL []byte, keyHex string) error {
 		return fmt.Errorf("evidence.jsonl exceeds %d bytes", recorder.MaxEvidenceReadFileBytes)
 	}
 	var pkt auditpacket.Packet
-	if err := jsonscan.RejectDuplicateKeys(packetJSON); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(packetJSON, &pkt); err != nil {
 		return fmt.Errorf("parsing packet.json: %w", err)
 	}
 	if err := jsonscan.RejectUnsafeNumbers(packetJSON); err != nil {

@@ -218,7 +218,7 @@ func Verify(data []byte, trustedKeys map[string]ed25519.PublicKey) (Verification
 }
 
 func UnmarshalEnvelope(data []byte) (Envelope, error) {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(Envelope)); err != nil {
 		return Envelope{}, fmt.Errorf("%w: %w", ErrInvalidEnvelope, err)
 	}
 	var env Envelope

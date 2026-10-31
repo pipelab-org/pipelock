@@ -454,7 +454,7 @@ func (c Capsule) MarshalJSON() ([]byte, error) {
 // side-channel data cannot piggyback on an otherwise valid signed capsule.
 func (c *Capsule) UnmarshalJSON(data []byte) error {
 	type alias Capsule
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(alias)); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
