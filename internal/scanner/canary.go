@@ -136,7 +136,7 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 	}
 
 	for _, view := range textDLPEncodingSegmentViews(cleaned) {
-		segments := strings.FieldsFunc(view.text, isTextDLPEncodingDelimiter)
+		segments := textDLPSegments(view.text)
 		for _, seg := range segments {
 			if len(seg) < 8 {
 				continue

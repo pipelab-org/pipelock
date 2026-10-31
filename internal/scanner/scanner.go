@@ -2051,6 +2051,36 @@ func IterativeDecode(s string) string {
 	return s
 }
 
+// iterativePercentDecode is IterativeDecode for URL components other than a
+// form-encoded query. RFC 3986 percent-encoding keeps '+' as data; only
+// application/x-www-form-urlencoded maps it to a space. Malformed escapes stay
+// verbatim, as in partial query unescaping. No published replay operation
+// has these semantics yet, so this view claims none.
+func iterativePercentDecode(s string) string {
+	for range maxDecodeRounds {
+		decoded := normalize.PercentUnescapePartial(s)
+		if decoded == s {
+			break
+		}
+		s = decoded
+	}
+	return s
+}
+
+// urlComponentDecodes returns the form and RFC 3986 decodings of a path or
+// fragment, each empty when it adds nothing. The form view preserves existing
+// coverage for applications that read the component like a query; the
+// percent view keeps '+' as data.
+func urlComponentDecodes(s string) (form, percent string) {
+	if form = IterativeDecode(s); form == s {
+		form = ""
+	}
+	if percent = iterativePercentDecode(s); percent == s || percent == form {
+		percent = ""
+	}
+	return form, percent
+}
+
 // stripURLNoise removes every byte that cannot legitimately appear as DATA in
 // one of pipelock's DLP credential alphabets, so an attacker-chosen delimiter
 // inserted between fragments of a split secret does not survive to break
@@ -2453,14 +2483,17 @@ const (
 	encodedTokenBase64Std encodedTokenKind = iota
 	encodedTokenBase64URL
 	encodedTokenBase32
+	// encodedTokenBase32Hex is the RFC 4648 section 7 extended-hex alphabet,
+	// 0-9 and A-V, applied to already uppercased input.
+	encodedTokenBase32Hex
 )
 
 func isEncodedTokenByte(c byte, kind encodedTokenKind) bool {
 	switch {
 	case c >= 'A' && c <= 'Z':
-		return true
+		return kind != encodedTokenBase32Hex || c <= 'V'
 	case c >= 'a' && c <= 'z':
-		return kind != encodedTokenBase32
+		return kind != encodedTokenBase32 && kind != encodedTokenBase32Hex
 	case c >= '0' && c <= '9':
 		return kind != encodedTokenBase32 || c == '2' || c == '3' || c == '4' || c == '5' || c == '6' || c == '7'
 	case c == '=':
@@ -2576,13 +2609,24 @@ func hexBytePrefix(hexStr, prefix string) string {
 //pipelock:provenance-transform base32_decode_liberal
 //pipelock:provenance-transform base64_decode_liberal
 func decodeEncodings(s string) []decodedResult {
+	return decodeEncodingsMode(s, 0)
+}
+
+// A positive minPrefix retains decoded bytes preceding a trailing decode
+// error. Known-value matching can verify those bytes without trusting the rest
+// of the carrier; ordinary pattern decoding keeps its existing semantics.
+func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 	var out []decodedResult
-	if decoded, err := hex.DecodeString(s); err == nil && len(decoded) > 0 {
-		out = append(out, decodedResult{string(decoded), encodingHex})
-	} else if normalized := normalizeHex(s); normalized != "" {
-		// Delimiter-separated hex (e.g., 73:6b:2d, \x73\x6b, 0x736b).
-		if decoded, err := hex.DecodeString(normalized); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingHex})
+	decodedHex, hexErr := hex.DecodeString(s)
+	if (hexErr == nil || minPrefix > 0) && len(decodedHex) >= max(minPrefix, 1) {
+		out = append(out, decodedResult{string(decodedHex), encodingHex})
+	}
+	if hexErr != nil || len(decodedHex) == 0 {
+		// Retain the normalized view even when a raw prefix was recovered.
+		if normalized := normalizeHex(s); normalized != "" {
+			if decoded, err := hex.DecodeString(normalized); (err == nil || minPrefix > 0) && len(decoded) >= max(minPrefix, 1) {
+				out = append(out, decodedResult{string(decoded), encodingHex})
+			}
 		}
 	}
 	// Every base64 variant below is no longer than s. One raw-size scratch
@@ -2595,11 +2639,11 @@ func decodeEncodings(s string) []decodedResult {
 	} else {
 		base64Buffer = base64Buffer[:decodedSize]
 	}
-	standard := decodeBase64PaddingVariants(s, base64.StdEncoding, base64.RawStdEncoding, base64Buffer)
+	standard := decodeBase64PaddingVariants(s, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix)
 	urlSafe := standard
 	sharedBase64Alphabet := !strings.ContainsAny(s, "+/-_")
 	if !sharedBase64Alphabet {
-		urlSafe = decodeBase64PaddingVariants(s, base64.URLEncoding, base64.RawURLEncoding, base64Buffer)
+		urlSafe = decodeBase64PaddingVariants(s, base64.URLEncoding, base64.RawURLEncoding, base64Buffer, minPrefix)
 	}
 	// Preserve every view and its position, including duplicate decodings.
 	for i := range standard {
@@ -2613,14 +2657,14 @@ func decodeEncodings(s string) []decodedResult {
 	}
 	var normalizedViews [2]string
 	if normalizedStandard != "" {
-		normalizedViews = decodeBase64PaddingVariants(normalizedStandard, base64.StdEncoding, base64.RawStdEncoding, base64Buffer)
+		normalizedViews = decodeBase64PaddingVariants(normalizedStandard, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix)
 		for _, decoded := range normalizedViews {
 			out = appendBase64View(out, decoded)
 		}
 	}
 	if normalizedURL != "" {
 		if normalizedURL != normalizedStandard {
-			normalizedViews = decodeBase64PaddingVariants(normalizedURL, base64.URLEncoding, base64.RawURLEncoding, base64Buffer)
+			normalizedViews = decodeBase64PaddingVariants(normalizedURL, base64.URLEncoding, base64.RawURLEncoding, base64Buffer, minPrefix)
 		}
 		for _, decoded := range normalizedViews {
 			out = appendBase64View(out, decoded)
@@ -2631,9 +2675,18 @@ func decodeEncodings(s string) []decodedResult {
 	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
 	// the fold as its own operation so older profiles stay case-sensitive.
 	foldedBase32 := normalize.ASCIIUpper(s)
-	out = appendBase32Decodes(out, foldedBase32)
+	out = appendBase32DecodesMode(out, foldedBase32, minPrefix)
 	if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32); normalized != "" && normalized != foldedBase32 {
-		out = appendBase32Decodes(out, normalized)
+		out = appendBase32DecodesMode(out, normalized, minPrefix)
+	}
+	if minPrefix > 0 {
+		// The standard-alphabet view above deletes extended-hex digits, so
+		// glue around a base32hex value needs its own stripped view. Known
+		// values match exact bytes, so this extra view cannot widen patterns.
+		// The standard alphabet already has its own stripped view.
+		if normalized := normalizeEncodedToken(foldedBase32, encodedTokenBase32Hex); normalized != "" && normalized != foldedBase32 {
+			out = appendBase32AlphabetDecodes(out, normalized, minPrefix, base32HexAlphabet)
+		}
 	}
 	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
 		out = append(out, decodedResult{decoded, encodingJSONUnicode})
@@ -2646,21 +2699,91 @@ func decodeEncodings(s string) []decodedResult {
 // decode. Reuse that immutable string; ambiguous inputs still use both decoders.
 // buffer must hold the raw decoded length of value; callers size it from the
 // original input, which is at least as long as every normalized variant.
-func decodeBase64PaddingVariants(value string, padded, raw *base64.Encoding, buffer []byte) [2]string {
+func decodeBase64PaddingVariants(value string, padded, raw *base64.Encoding, buffer []byte, minPrefix int) [2]string {
 	var out [2]string
-	// Reuse only scratch storage: successful results are copied to strings
-	// before another decoding attempt can overwrite the buffer.
-	if n, err := padded.Decode(buffer, []byte(value)); err == nil && n > 0 {
-		out[0] = string(buffer[:n])
-		if !strings.Contains(value, "=") {
-			out[1] = out[0]
-			return out
-		}
+	if minPrefix > 0 {
+		// Decode skips these bytes but reports error offsets that count
+		// them. Prefix recovery needs one coordinate space, as for base32.
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", "")
 	}
-	if n, err := raw.Decode(buffer, []byte(value)); err == nil && n > 0 {
-		out[1] = string(buffer[:n])
+	// Copy each result before reusing scratch storage.
+	n, err := padded.Decode(buffer, []byte(value))
+	switch {
+	case err == nil:
+		if n >= max(minPrefix, 1) {
+			out[0] = string(buffer[:n])
+			if !strings.Contains(value, "=") {
+				out[1] = out[0]
+				return out
+			}
+		}
+	case minPrefix > 0:
+		out[0] = recoverKnownValuePrefix(value, buffer[:n], minPrefix, 4, 3, err, padded.DecodeString)
+	}
+	n, err = raw.Decode(buffer, []byte(value))
+	switch {
+	case err == nil:
+		if n >= max(minPrefix, 1) {
+			out[1] = string(buffer[:n])
+		}
+	case minPrefix > 0:
+		out[1] = recoverKnownValuePrefix(value, buffer[:n], minPrefix, 4, 3, err, raw.DecodeString)
 	}
 	return out
+}
+
+// recoverKnownValuePrefix returns the longest decoded prefix of at least
+// minimum bytes, or "" when none qualifies. complete holds what the decoder
+// wrote before it stopped; value contains no bytes the decoder skips.
+// RFC 4648 sections 4 and 6 define groups of four base64 or eight base32
+// symbols, each yielding three or five bytes. A decoder may discard the group
+// it stopped in, so try ends at most one group on either side of the reported
+// offset, including the group silently dropped at EOF.
+//
+// Each full group in complete was decoded from a full group of value with no
+// padding, and decoding restarts at every group boundary. Decoding value[:end]
+// therefore equals that clean prefix of complete followed by decoding the
+// rest from the boundary. Each try reads at most three groups instead of
+// re-decoding the whole carrier, so the work per graph edge stays constant.
+func recoverKnownValuePrefix(value string, complete []byte, minimum, quantum, groupBytes int, decodeErr error, decode func(string) ([]byte, error)) string {
+	best := 0
+	if len(complete) >= minimum {
+		best = len(complete)
+	}
+	var offset int
+	var corrupt64 base64.CorruptInputError
+	var corrupt32 base32.CorruptInputError
+	switch {
+	case decodeErr == nil:
+		// Raw base32 can return success after silently dropping an
+		// incomplete final group. Its recovery boundary is EOF.
+		offset = len(value)
+	case errors.As(decodeErr, &corrupt64):
+		offset = int(corrupt64)
+	case errors.As(decodeErr, &corrupt32):
+		offset = int(corrupt32)
+	default:
+		return string(complete[:best])
+	}
+	low := max(minimum, offset-quantum+1)
+	groups := min(low/quantum, len(complete)/groupBytes)
+	start, base := groups*quantum, groups*groupBytes
+	var tail []byte
+	recovered := false
+	for end := min(len(value)-1, offset+quantum-1); end >= low; end-- {
+		suffix, err := decode(value[start:end])
+		if err == nil && base+len(suffix) >= minimum && base+len(suffix) > best {
+			best, tail, recovered = base+len(suffix), suffix, true
+		}
+	}
+	if !recovered {
+		return string(complete[:best])
+	}
+	var b strings.Builder
+	b.Grow(best)
+	b.Write(complete[:base])
+	b.Write(tail)
+	return b.String()
 }
 
 func appendBase64View(out []decodedResult, text string) []decodedResult {
@@ -2690,28 +2813,71 @@ func decodeBase32Strings(s string) []string {
 // value. value is already ASCII-uppercased. Padding and no-padding are both
 // retained, including equal results from the two padding modes.
 func appendBase32Decodes(out []decodedResult, value string) []decodedResult {
-	for _, alphabet := range []struct {
-		padded *base32.Encoding
-		raw    *base32.Encoding
-		hex    bool
-	}{
+	return appendBase32DecodesMode(out, value, 0)
+}
+
+type base32Alphabet struct {
+	padded *base32.Encoding
+	raw    *base32.Encoding
+	hex    bool
+}
+
+var (
+	base32Alphabets = []base32Alphabet{
 		{base32.StdEncoding, rawBase32Standard, false},
 		{base32.HexEncoding, rawBase32Hex, true},
-	} {
-		if !base32PrefixPossible(value, alphabet.hex) {
+	}
+	base32HexAlphabet = base32Alphabets[1:]
+)
+
+func appendBase32DecodesMode(out []decodedResult, value string, minPrefix int) []decodedResult {
+	return appendBase32AlphabetDecodes(out, value, minPrefix, base32Alphabets)
+}
+
+func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix int, alphabets []base32Alphabet) []decodedResult {
+	if minPrefix > 0 {
+		// DecodeString ignores these bytes before reporting an error offset.
+		// Keep prefix recovery in that same input coordinate space.
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", "")
+	}
+	for _, alphabet := range alphabets {
+		prefix := value
+		if minPrefix > 0 {
+			// RFC 4648 needs this many symbols to produce the minimum
+			// matchable byte count. Reject impossible prefixes before allocation.
+			prefix = value[:min(len(value), alphabet.raw.EncodedLen(minPrefix))]
+		}
+		if !base32PrefixPossible(prefix, alphabet.hex) {
 			continue
 		}
 		paddedText := ""
-		if decoded, err := alphabet.padded.DecodeString(value); err == nil && len(decoded) > 0 {
-			paddedText = string(decoded)
+		decoded, err := alphabet.padded.DecodeString(value)
+		paddedComplete := err == nil
+		switch {
+		case err == nil:
+			if len(decoded) >= max(minPrefix, 1) {
+				paddedText = string(decoded)
+			}
+		case minPrefix > 0:
+			paddedText = recoverKnownValuePrefix(value, decoded, minPrefix, 8, 5, err, alphabet.padded.DecodeString)
+		}
+		if paddedText != "" {
 			out = append(out, decodedResult{paddedText, encodingBase32})
 		}
-		if paddedText != "" && strings.IndexByte(value, '=') < 0 && strings.IndexByte(value, 0xff) < 0 {
-			// A complete padded decode with neither padding sentinel is
-			// also the same raw decode. Retain its duplicate view in order.
+		if paddedComplete && paddedText != "" && strings.IndexByte(value, '=') < 0 && strings.IndexByte(value, 0xff) < 0 {
 			out = append(out, decodedResult{paddedText, encodingBase32})
-		} else if decoded, err := alphabet.raw.DecodeString(value); err == nil && len(decoded) > 0 {
-			out = append(out, decodedResult{string(decoded), encodingBase32})
+			continue
+		}
+		rawText := ""
+		decoded, err = alphabet.raw.DecodeString(value)
+		switch {
+		case minPrefix > 0 && (err != nil || len(decoded) < alphabet.raw.DecodedLen(len(value))):
+			rawText = recoverKnownValuePrefix(value, decoded, minPrefix, 8, 5, err, alphabet.raw.DecodeString)
+		case err == nil && len(decoded) >= max(minPrefix, 1):
+			rawText = string(decoded)
+		}
+		if rawText != "" {
+			out = append(out, decodedResult{rawText, encodingBase32})
 		}
 	}
 	return out
@@ -2753,6 +2919,10 @@ func decodeEncodingsRecursive(s string) []decodedResult {
 }
 
 func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
+	return decodeEncodingsFixpointMode(s, includeURL, 0)
+}
+
+func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) []decodedResult {
 	if s == "" || len(s) > maxDecodeTotalBytes {
 		return nil
 	}
@@ -2763,12 +2933,15 @@ func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
 	consumed := 0
 	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
 		text := queue[head]
-		for _, d := range decodeEncodingsOnce(text, includeURL) {
-			if d.text == "" {
+		for _, d := range decodeEncodingsOnce(text, includeURL, minPrefix) {
+			if len(d.text) < max(minPrefix, 1) {
 				continue
 			}
 			if _, ok := seen[d.text]; ok {
 				continue
+			}
+			if minPrefix > 0 && len(d.text) > maxDecodeTotalBytes-consumed {
+				return out
 			}
 			seen[d.text] = struct{}{}
 			out = append(out, d)
@@ -2782,8 +2955,8 @@ func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
 	return out
 }
 
-func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
-	out := decodeEncodings(s)
+func decodeEncodingsOnce(s string, includeURL bool, minPrefix int) []decodedResult {
+	out := decodeEncodingsMode(s, minPrefix)
 	if !includeURL {
 		return out
 	}
@@ -2797,6 +2970,63 @@ func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
 // Scanning the full URL catches secrets encoded in subdomains (e.g., sk-proj-xxx.evil.com)
 // and secrets split across query parameters. Iterative URL decoding
 // prevents multi-layer encoding bypass.
+// urlPathDecodeSegments returns the path segments tried by the encoded-value
+// decoders. A request target has no fragment component (RFC 9112 section
+// 3.2), so a raw '#' (RFC 3986 section 3.5) stays in the parsed path and is
+// forwarded. The pieces around it are added beside the whole segment: no
+// decoder alphabet contains '#', and keeping the whole segment preserves
+// every view the slash split already produced.
+func urlPathDecodeSegments(path string) []string {
+	segments := strings.Split(path, "/")
+	form, percent := urlComponentDecodes(path)
+	for _, decoded := range []string{form, percent} {
+		if decoded != "" {
+			segments = append(segments, strings.Split(decoded, "/")...)
+		}
+	}
+	for _, segment := range segments {
+		if strings.Contains(segment, "#") {
+			segments = append(segments, strings.FieldsFunc(segment, func(r rune) bool { return r == '#' })...)
+		}
+	}
+	return segments
+}
+
+// urlFragmentDLPTargets keeps client-side URL content in the same DLP path
+// as other components before a destination can enter an audit record.
+// Labels describe the returned bytes. Pattern callers add their normalization
+// stage; seed detection indexes these raw or decoded views directly.
+func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
+	if parsed.Fragment == "" {
+		return nil
+	}
+	texts := []dlpTarget{{parsed.Fragment, "url_fragment", ""}}
+	form, percent := urlComponentDecodes(parsed.Fragment)
+	if form != "" {
+		texts = append(texts, dlpTarget{form, spanViewLabel("url_decoded", "url_fragment"), ""})
+	}
+	if percent != "" {
+		texts = append(texts, dlpTarget{percent, spanViewLabel("percent_decoded", "url_fragment"), ""})
+	}
+	var targets []dlpTarget
+	for _, source := range texts {
+		targets = append(targets, source)
+		// Preserve the whole fragment alongside its independently encoded pieces.
+		segments := []string{source.text}
+		for _, segment := range textDLPSegments(source.text) {
+			if segment != source.text {
+				segments = append(segments, segment)
+			}
+		}
+		for _, segment := range segments {
+			for _, decoded := range decodes.decode(segment, false) {
+				targets = append(targets, dlpTarget{decoded.text, spanViewLabel(decoded.encoding+"_decoded", source.viewLabel), ""})
+			}
+		}
+	}
+	return targets
+}
+
 func (s *Scanner) checkDLP(parsed *url.URL) (result Result, warnMatches []WarnMatch) {
 	var decodes decodingMemo
 	return s.checkDLPWithDecodes(parsed, &decodes)
@@ -2825,6 +3055,14 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	targets := []dlpTarget{
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
+	}
+	fragmentTargets := urlFragmentDLPTargets(parsed, decodes)
+	for _, target := range fragmentTargets {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+		if stripped := stripURLNoise(target.text); stripped != target.text {
+			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), target.text})
+		}
 	}
 
 	// Also check decoded query keys and values individually.
@@ -2867,15 +3105,20 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	if rawPath == "" {
 		rawPath = parsed.EscapedPath()
 	}
-	decodedPath := IterativeDecode(rawPath)
-	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+	formPath, percentPath := urlComponentDecodes(rawPath)
+	for _, decoded := range []dlpTarget{
+		{formPath, dlpViewLabel("url_path_decoded"), ""},
+		{percentPath, dlpViewLabel(spanViewLabel("percent_decoded", "url_path")), ""},
+	} {
+		if decoded.text != "" && decoded.text != parsed.Path {
+			targets = append(targets, decoded)
+		}
 	}
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range strings.Split(parsed.Path, "/") {
+	for _, segment := range urlPathDecodeSegments(parsed.Path) {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, false) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -2987,6 +3230,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		seedTargets := []dlpTarget{
 			{parsed.Path, "url_path", ""},
 		}
+		seedTargets = append(seedTargets, fragmentTargets...)
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
 			decoded := IterativeDecode(pair.value)
@@ -3017,7 +3261,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded", ""})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
-		for _, seg := range strings.Split(parsed.Path, "/") {
+		for _, seg := range urlPathDecodeSegments(parsed.Path) {
 			if len(seg) < 20 {
 				continue
 			}
@@ -3319,11 +3563,25 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		{text: strings.ToLower(fullURL), viewLabel: lowerViewLabel("control_stripped_url")},
 		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
 	}
+	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
+	// a known value that contains '+' whole.
+	percentURL := normalize.StripControlChars(iterativePercentDecode(fullURL))
+	if percentURL != fullURL && percentURL != decodedURL {
+		texts = append(texts, spanTextView{text: percentURL, viewLabel: "control_stripped_url:percent_decoded"})
+		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percentURL), viewLabel: lowerViewLabel("control_stripped_url:percent_decoded")})
+	}
 
 	for phase := range 2 {
 		if phase == 1 {
 			var decodes decodingMemo
 			texts = s.decodedKnownSecretViews(decodedURL, &decodes)
+			// Form decoding turns a '+' into a space, so a nested carrier
+			// whose encoding holds '+' as data decodes only from the raw or
+			// the RFC 3986 percent-decoded URL.
+			texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, &decodes), "control_stripped_url")...)
+			if percentURL != fullURL && percentURL != decodedURL {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, &decodes), "percent_decoded")...)
+			}
 		}
 
 		hits := newKnownValueWindowHits(texts)

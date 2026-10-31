@@ -922,7 +922,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		// Segment-level decoding: use the shared text-encoding delimiters
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
 		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").
-		segments := strings.FieldsFunc(seedText, isTextDLPEncodingDelimiter)
+		segments := textDLPSegments(seedText)
 		for _, seg := range segments {
 			if len(seg) < 20 { // seed phrases are long; skip short segments
 				continue
@@ -1395,10 +1395,29 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
+	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
+	// a known value that contains '+' whole.
+	decoded := IterativeDecode(text)
+	percent := iterativePercentDecode(text)
+	if percent != text && percent != decoded {
+		percentLabel := spanViewLabel(ViewDLPNormalized, "percent_decoded")
+		texts = append(texts, spanTextView{text: percent, viewLabel: percentLabel})
+		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percent), viewLabel: lowerViewLabel(percentLabel)})
+	}
 
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
+			// URL serialization can escape a separator into path data. Split
+			// the decoded view too, as known-value URL scanning already does.
+			if decoded != text {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(decoded, decodes), "url_decoded")...)
+			}
+			// Form decoding turns an escaped '+' into a space; the RFC 3986
+			// view keeps it as data.
+			if percent != text && percent != decoded {
+				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percent, decodes), "percent_decoded")...)
+			}
 		}
 
 		hits := newKnownValueWindowHits(texts)
@@ -1420,6 +1439,11 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 					m.Encoded = match.encoding
 					if m.Encoded == "" && phase == 1 {
 						m.Encoded = strings.TrimPrefix(viewLabel, ViewDLPNormalized+":")
+					}
+					// The view's source names where the text came from, not
+					// an encoding.
+					for _, source := range []string{"url_decoded:", "percent_decoded:"} {
+						m.Encoded = strings.TrimPrefix(m.Encoded, source)
 					}
 				}
 				m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")
@@ -1486,7 +1510,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	// Split on URL-like and structured-data delimiters. Request bodies often
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
-	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
+	segments := textDLPSegments(text)
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
@@ -1517,7 +1541,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // piece-length floor or budget.
 func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
+	for _, run := range adjacentHexRuns(textDLPFlatSegments(text)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
 			body = body[:len(body)-len(body)%2]
@@ -1576,6 +1600,50 @@ func isHexText(s string) bool {
 		}
 	}
 	return true
+}
+
+// textDLPSegments splits text into the segments every encoded-value decoder
+// tries. Each text_segment segment is kept whole, followed by the distinct
+// pieces between any '#' it contains, which RFC 3986 section 3.5 uses to
+// introduce a URL fragment. The pieces catch a value that starts after a
+// fragment delimiter. The whole segment stays because the decoders drop bytes
+// outside their alphabet, so a '#' inserted inside one encoded value is noise
+// there. The piece step claims no replay operation: published text_segment
+// replay keeps '#' inside a segment.
+func textDLPSegments(text string) []string {
+	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
+	if !strings.Contains(text, "#") {
+		return segments
+	}
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, segment)
+		if !strings.Contains(segment, "#") {
+			continue
+		}
+		seen := make(map[string]struct{})
+		for _, piece := range strings.FieldsFunc(segment, isURLFragmentDelimiter) {
+			if _, dup := seen[piece]; !dup {
+				seen[piece] = struct{}{}
+				out = append(out, piece)
+			}
+		}
+	}
+	return out
+}
+
+// textDLPFlatSegments splits text once on the text_segment delimiters and
+// '#' together, keeping every piece in order. Hex-run joining needs pieces
+// that sit next to each other, which the whole segments textDLPSegments adds
+// would separate.
+func textDLPFlatSegments(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool {
+		return isTextDLPEncodingDelimiter(r) || isURLFragmentDelimiter(r)
+	})
+}
+
+func isURLFragmentDelimiter(r rune) bool {
+	return r == '#'
 }
 
 //pipelock:provenance-transform text_segment

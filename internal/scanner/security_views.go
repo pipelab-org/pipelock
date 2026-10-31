@@ -30,6 +30,7 @@ func rawQuerySecurityPairs(query string) []rawQuerySecurityPair {
 // DLP. Matching encoded representations alone misses secrets inside a carrier.
 func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []spanTextView {
 	var views []spanTextView
+	seen := make(map[string]struct{})
 	minimum := min(minKnownSecretSubstringLen, s.minEnvSecretLen)
 	add := func(value string) {
 		// Decoding cannot grow a candidate; shorter input cannot contain a
@@ -37,12 +38,23 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		if len(value) < minimum {
 			return
 		}
+		// Complete decodes come from the graph pattern DLP shares, under its
+		// own budget. Recovered prefixes walk a separate graph, so a large
+		// recoverable carrier cannot spend the budget those views rely on.
 		for _, decoded := range decodes.decode(value, true) {
+			seen[decoded.text] = struct{}{}
+			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
+		}
+		for _, decoded := range decodes.decodeKnownSecret(value, minimum) {
+			if _, ok := seen[decoded.text]; ok {
+				continue
+			}
+			seen[decoded.text] = struct{}{}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
 	}
 	add(text)
-	for _, segment := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
+	for _, segment := range textDLPSegments(text) {
 		if segment != text {
 			add(segment)
 		}
@@ -84,6 +96,15 @@ func queryDLPSecurityViews(rawQuery string) []string {
 				}
 			}
 		}
+	}
+	return views
+}
+
+// relabelKnownSecretViews names the text a set of decoded views came from, so
+// a span's label identifies the string its offsets index.
+func relabelKnownSecretViews(views []spanTextView, source string) []spanTextView {
+	for i := range views {
+		views[i].viewLabel = spanViewLabel(ViewDLPNormalized, source, strings.TrimPrefix(views[i].viewLabel, ViewDLPNormalized+":"))
 	}
 	return views
 }
