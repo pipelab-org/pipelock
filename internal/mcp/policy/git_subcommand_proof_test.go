@@ -128,8 +128,8 @@ func TestGitSubcommandProof(t *testing.T) {
 		{"ansi-c", []string{"$'fetch'", "--force"}, nil},
 		{"ansi-c hex", []string{`$'fe\x74ch'`, "--force"}, nil},
 		{"continuation", []string{"fe\\\ntch", "--force"}, nil},
-		{"ansi-c unicode", []string{`$'fetch'`, "--force"}, nil},
-		{"ansi-c unicode e", []string{`$'fetch'`, "--force"}, nil},
+		{"ansi-c unicode", []string{`$'\u0066etch'`, "--force"}, nil},
+		{"ansi-c unicode e", []string{`$'f\u0065tch'`, "--force"}, nil},
 		{"variable", []string{"$SUB", "--force"}, nil},
 		// The executable word is a subcommand once git has been read.
 		{"git as subcommand", []string{"git", "--force"}, nil},
@@ -258,6 +258,16 @@ func TestGitSubcommandProofShellPrefix(t *testing.T) {
 		{"x=`git rogue --force`", true},
 		{"bash -c \"git f''etch --force\"", true},
 		{"git -c 'x=1; y' fetch --force", true},
+		// A plain Git command after an executable the views read as git, but
+		// spelled otherwise, must not stand in for it: in a comment, after a
+		// separator, or as a later operand.
+		{`g''it fe\x74ch --hard # git fetch`, true},
+		{`"git" fe\x74ch --force # git fetch`, true},
+		{`g\it fe\x74ch --force # git fetch`, true},
+		{`g''it fe\x74ch --hard git fetch`, true},
+		{`'git' fe\x74ch --hard; git fetch`, true},
+		{"cd \"/srv/repo\" && git fetch --force", false},
+		{"echo 'note' # git fetch\ngit fetch --force", false},
 		{"git -C", false},
 	} {
 		t.Run(tc.command, func(t *testing.T) {

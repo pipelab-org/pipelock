@@ -243,6 +243,14 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 		case seeking:
 			name := commandName(w.text)
 			switch {
+			case !w.literal && strings.HasPrefix(w.text, "#"):
+				// The shell reads the rest of this command as a comment.
+				state = done
+			case !w.literal && name != "git" && viewsReadGit(w.text):
+				// A rule view reads this word as Git, but its spelling is not
+				// git, so the proof cannot say which Git command a later word
+				// belongs to.
+				p.unproved, state = true, done
 			case name == "git":
 				state = global
 				if !w.literal && !plainShellWord(w.text) {
@@ -279,25 +287,39 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			continue
 		}
 		start := 0
-		for i := 0; i <= len(w.text); i++ {
+		// The pass at i == len(w.text) flushes the last piece; the loop ends there.
+		for i := 0; ; i++ {
 			if i < len(w.text) && !strings.ContainsRune(gitProofSeparators, rune(w.text[i])) {
 				continue
 			}
 			if piece := w.text[start:i]; piece != "" {
 				word(gitWord{text: piece, ambiguous: w.ambiguous})
 			}
-			if i < len(w.text) {
-				if state == global || state == value {
-					p.unproved = true
-				}
-				state = seeking
+			if i == len(w.text) {
+				break
 			}
+			if state == global || state == value {
+				p.unproved = true
+			}
+			state = seeking
 			start = i + 1
 		}
 	}
 	if state == global || state == value {
 		p.unproved = true
 	}
+}
+
+// viewsReadGit reports whether any rule view reads word as the git
+// executable, under the same normalizations the views use (argViewNorms).
+func viewsReadGit(word string) bool {
+	for _, n := range argViewNorms {
+		tokens, _ := normalizeArgTokensUnexpanded([]string{word}, n.fn, n.pre)
+		if slices.ContainsFunc(tokens, func(t string) bool { return commandName(t) == "git" }) {
+			return true
+		}
+	}
+	return false
 }
 
 // gitProofSeparators end a command in a shell command string: the separators

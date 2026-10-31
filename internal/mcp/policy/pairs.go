@@ -64,6 +64,17 @@ func literalArgTokens(args []string) ([]string, string) {
 	return args, strings.Join(args, " ")
 }
 
+// argViewNorms are the normalizations the rule views read arguments under:
+// a Unicode normalization function and an optional confusable pre-normalizer.
+var argViewNorms = []struct {
+	fn  func(string) string
+	pre *strings.Replacer
+}{
+	{normalize.ForMatching, policyPreNormalize},
+	{normalize.ForPolicy, policyPreNormalize},
+	{normalize.ForMatching, nil},
+}
+
 // buildArgViews retains the primary, alt, baseline, and literal views, and adds
 // command-option interpretations where they differ. Adding an interpretation
 // must not erase a spelling that an existing configured rule matches.
@@ -79,14 +90,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	}
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
-	norms := []struct {
-		fn  func(string) string
-		pre *strings.Replacer
-	}{
-		{normalize.ForMatching, policyPreNormalize},
-		{normalize.ForPolicy, policyPreNormalize},
-		{normalize.ForMatching, nil},
-	}
+	norms := argViewNorms
 	views := make([]argView, 0, 2*len(norms)+1)
 	// add keeps the first of identical views. matchArgViewSet skips a view the
 	// same as an earlier one, so dropping it here only saves the work of
