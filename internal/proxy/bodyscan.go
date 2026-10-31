@@ -563,6 +563,17 @@ func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
 	return current
 }
 
+// fileHoldOnly is an enforced unread-file hold with no credential, injection,
+// entropy, address, or redaction finding. Those findings keep their own labels.
+// The hold reuses the parser layer, whose block reason is parse_error: the
+// published code for input that could not be fully scanned.
+func fileHoldOnly(result BodyScanResult) bool {
+	return result.FileInspectionBlock && result.FileInspectionIncomplete != "" &&
+		len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
+		len(result.AddressFindings) == 0 && result.EntropyFinding == nil &&
+		result.RedactionBlockReason == ""
+}
+
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {
 	if !shouldHardBlockRequestDLP(result.DLPMatches, cfg) {
 		return false

@@ -77,7 +77,7 @@ type uploadPolicy struct {
 
 // exerciseUpload uses a real upstream and counts actual deliveries. Hashing the
 // full received request also verifies multipart framing is preserved on allow.
-func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType string, body []byte) (int, int32, bool, string) {
+func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType string, body []byte) (int, int32, bool, string, http.Header) {
 	t.Helper()
 	var hits atomic.Int32
 	var intact atomic.Bool
@@ -175,7 +175,7 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 	if err != nil {
 		t.Fatal(err)
 	}
-	return response.StatusCode, hits.Load(), intact.Load(), string(message)
+	return response.StatusCode, hits.Load(), intact.Load(), string(message), response.Header.Clone()
 }
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
@@ -196,7 +196,7 @@ func TestUploadInspectionProducerTransports(t *testing.T) {
 						data = []byte(`{"attachments":[{"contentBytes":"` + base64.StdEncoding.EncodeToString(data) + `"}]}`)
 					}
 					wantBlock := (strings.Contains(name, "seeded") || name == "split-run.docx") && !strings.HasSuffix(name, ".pdf")
-					status, hits, intact, reason := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, mediaType, data)
+					status, hits, intact, reason, _ := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, mediaType, data)
 					if wantBlock {
 						if status != http.StatusForbidden || hits != 0 {
 							t.Fatalf("status=%d hits=%d body=%s", status, hits, reason)
@@ -245,7 +245,7 @@ func TestUploadInspectionUnreadablePolicy(t *testing.T) {
 						if carrier == "multipart" {
 							mediaType, data = uploadMultipart(t, data)
 						}
-						status, hits, intact, message := exerciseUpload(t, surface, policy, mediaType, data)
+						status, hits, intact, message, _ := exerciseUpload(t, surface, policy, mediaType, data)
 						if policy.action == config.ActionBlock && !policy.audit {
 							if status != http.StatusForbidden || hits != 0 {
 								t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
@@ -265,14 +265,14 @@ func TestUploadInspectionOfficeLocations(t *testing.T) {
 	for _, path := range []string{"word/header1.xml", "word/footer1.xml", "word/comments.xml", "word/footnotes.xml", "docProps/core.xml", "docProps/custom.xml", "xl/worksheets/sheet2.xml", "xl/comments1.xml", "ppt/notesSlides/notesSlide1.xml", "ppt/comments/comment1.xml", "meta.xml"} {
 		t.Run(path, func(t *testing.T) {
 			data := uploadArchive(t, map[string][]byte{path: []byte(`<root><p>` + key + `</p></root>`)})
-			status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "video/mp4", data)
+			status, hits, _, message, _ := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "video/mp4", data)
 			if status != http.StatusForbidden || hits != 0 {
 				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
 			}
 		})
 	}
 	data := uploadArchive(t, map[string][]byte{"word/embeddings/document.bin": uploadArchive(t, map[string][]byte{"word/document.xml": []byte(`<p>` + key + `</p>`)}), "Thumbnails/thumbnail.png": []byte("\x89PNG\r\n\x1a\n\xff")})
-	status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "video/mp4", data)
+	status, hits, _, message, _ := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "video/mp4", data)
 	if status != http.StatusForbidden || hits != 0 {
 		t.Fatalf("nested status=%d hits=%d body=%s", status, hits, message)
 	}
@@ -326,9 +326,34 @@ func TestUploadInspectionProducerHiddenSheet(t *testing.T) {
 	}
 	for _, surface := range []string{"forward", "intercept", "reverse"} {
 		t.Run(surface, func(t *testing.T) {
-			status, hits, _, message := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, "video/mp4", output.Bytes())
+			status, hits, _, message, _ := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, "video/mp4", output.Bytes())
 			if status != http.StatusForbidden || hits != 0 {
 				t.Fatalf("hidden sheet: status=%d hits=%d body=%s", status, hits, message)
+			}
+		})
+	}
+}
+
+func TestUploadInspectionFileHoldIdentity(t *testing.T) {
+	data := []byte("Rar!\x1a\x07\x01\x00")
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			status, hits, _, message, hdr := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, "video/mp4", data)
+			if status != http.StatusForbidden || hits != 0 {
+				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
+			}
+			if got := hdr.Get("X-Pipelock-Block-Reason"); got != "parse_error" {
+				t.Fatalf("block reason = %q, want parse_error", got)
+			}
+			if got := hdr.Get("X-Pipelock-Block-Reason-Layer"); got != scanner.ScannerParser {
+				t.Fatalf("layer = %q, want parser", got)
+			}
+			hint := hdr.Get("X-Pipelock-Hint")
+			if hint != "Request blocked: the upload could not be fully read." || strings.Contains(hint, "secret") || strings.Contains(hint, "suppress") {
+				t.Fatalf("hint = %q", hint)
+			}
+			if strings.Contains(strings.ToLower(message), "secret") || strings.Contains(message, "suppress") {
+				t.Fatalf("body told the agent a secret matched: %s", message)
 			}
 		})
 	}
@@ -383,7 +408,7 @@ func TestUploadInspectionMultipartBoundaries(t *testing.T) {
 			if err = w.Close(); err != nil {
 				t.Fatal(err)
 			}
-			status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, w.FormDataContentType(), buf.Bytes())
+			status, hits, _, message, _ := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, w.FormDataContentType(), buf.Bytes())
 			if status != http.StatusForbidden || hits != 0 {
 				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
 			}
@@ -450,7 +475,7 @@ func TestUploadInspectionDeclaredBinaryMember(t *testing.T) {
 	if bytes.Contains(data, []byte(key)) {
 		t.Fatal("compressed font member must not leave the key in the raw archive")
 	}
-	status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data)
+	status, hits, _, message, _ := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data)
 	if status != http.StatusForbidden || hits != 0 || strings.Contains(message, "not fully read") {
 		t.Fatalf("declared font must be scanned, not held unread: status=%d hits=%d body=%s", status, hits, message)
 	}
@@ -458,9 +483,15 @@ func TestUploadInspectionDeclaredBinaryMember(t *testing.T) {
 
 func TestUploadInspectionIncompleteCredentialFloor(t *testing.T) {
 	data := uploadArchive(t, map[string][]byte{"word/document.xml": []byte(`<p>` + "AKIA" + "Q9W8E7R6T5Y4U3I2")})
-	status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, true}, "video/mp4", data)
+	status, hits, _, message, hdr := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, true}, "video/mp4", data)
 	if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "AWS Access ID") || strings.Contains(message, "governed by request_body_scanning.action") {
 		t.Fatalf("core-floor block must name governing credential control: status=%d hits=%d body=%s", status, hits, message)
+	}
+	if got := hdr.Get("X-Pipelock-Block-Reason"); got != "dlp_match" {
+		t.Fatalf("credential inside an unread file block reason = %q, want dlp_match", got)
+	}
+	if hint := hdr.Get("X-Pipelock-Hint"); hint != "Request blocked: the destination or content matched a secret/credential pattern." {
+		t.Fatalf("credential hint = %q", hint)
 	}
 }
 
@@ -511,7 +542,7 @@ func TestUploadInspectionMultipartZipPreamble(t *testing.T) {
 			{"damaged archive audit", append([]byte("PK\x03\x04"), form...), uploadPolicy{config.ActionWarn, true}},
 		} {
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
-				status, hits, _, message := exerciseUpload(t, surface, tc.policy, "multipart/form-data; boundary=B", tc.body)
+				status, hits, _, message, _ := exerciseUpload(t, surface, tc.policy, "multipart/form-data; boundary=B", tc.body)
 				if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "AWS Access ID") {
 					t.Fatalf("decoded multipart credential delivered: status=%d hits=%d body=%s", status, hits, message)
 				}

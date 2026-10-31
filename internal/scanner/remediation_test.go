@@ -10,6 +10,41 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+func TestIncompleteFileHoldGuidance(t *testing.T) {
+	reason := "RAR upload not fully read: no reader; " + IncompleteFileGovernedSuffix
+	got, ok := GuidanceForResult(ScannerParser, reason)
+	if !ok {
+		t.Fatal("unread-file reason produced no guidance")
+	}
+	if got.AgentReason != "Request blocked: the upload could not be fully read." {
+		t.Fatalf("agent reason = %q", got.AgentReason)
+	}
+	if strings.Contains(got.AgentReason, "secret") || strings.Contains(got.AgentReason, "suppress") || strings.Contains(got.OperatorKnob, "suppress") {
+		t.Fatalf("file hold named a secret or suppress: %+v", got)
+	}
+	if !strings.Contains(got.OperatorKnob, "request_body_scanning.action") || !strings.Contains(got.OperatorKnob, "enforce") {
+		t.Fatalf("operator knob omitted the hold controls: %s", got.OperatorKnob)
+	}
+	// The same clause selects the hold text even when the caller still carries
+	// the body DLP label. A shorter "upload not fully read" string does not.
+	labeled, ok := GuidanceForResult(ScannerBodyDLP, reason)
+	if !ok || labeled.AgentReason != got.AgentReason {
+		t.Fatalf("body label changed the hold sentence: %+v ok=%t", labeled, ok)
+	}
+	loose, ok := GuidanceForResult(ScannerBodyDLP, "ZIP upload not fully read: gap")
+	if !ok || !strings.Contains(loose.OperatorKnob, "suppress:") {
+		t.Fatalf("a reason without the hold clause left the secret knob: %+v ok=%t", loose, ok)
+	}
+	secret, ok := GuidanceForResult(ScannerBodyDLP, "request body contains secret: AWS Access Key")
+	if !ok || !strings.Contains(secret.OperatorKnob, "suppress:") || secret.AgentReason != secretAgentReason {
+		t.Fatalf("credential reason changed: %+v ok=%t", secret, ok)
+	}
+	hint := OperatorHintForPatterns(ScannerBodyDLP, []string{reason})
+	if strings.Contains(hint, "suppress:") || !strings.Contains(hint, "request_body_scanning.action") {
+		t.Fatalf("pattern hint for a file reason = %q", hint)
+	}
+}
+
 func TestMCPHeaderGuidanceNamesActualScanControls(t *testing.T) {
 	dlp, ok := guidanceForResult(AuditMCPHeaderDLP, "test credential")
 	if !ok {

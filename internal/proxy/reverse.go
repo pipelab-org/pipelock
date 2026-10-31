@@ -2178,6 +2178,11 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if signalScanner == "" {
 		signalScanner = layer
 	}
+	if fileHoldOnly(result) {
+		layer = scanner.ScannerParser
+		bodyBlockReason = blockreason.ParseError
+		signalScanner = scanner.ScannerParser
+	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
 		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, layer)
@@ -2193,6 +2198,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
+		setBodyResultHint(w, layer, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)
@@ -2214,6 +2220,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			Agent:     receiptInput.Agent,
 		})
 		rp.recordBodyBlockSignal(r, cfg, result, receiptInput, clientIP, requestID, signalScanner, receiptPattern)
+		setBodyResultHint(w, layer, reason)
 		writeReverseProxyBlock(w, http.StatusForbidden,
 			blockInfoFor(bodyBlockReason, layer).WithRequestID(requestID),
 			reason)

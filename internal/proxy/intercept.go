@@ -1437,6 +1437,9 @@ func newInterceptHandler(
 				if result.RedactionBlockReason == "" {
 					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 				}
+				if fileHoldOnly(result) {
+					scannerLabel = scanner.ScannerParser
+				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {
@@ -1489,7 +1492,7 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					setBodyBlockHint(w, scannerLabel)
+					setBodyResultHint(w, scannerLabel, reason)
 					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
@@ -1516,7 +1519,7 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					setBodyBlockHint(w, scannerLabel)
+					setBodyResultHint(w, scannerLabel, reason)
 					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return

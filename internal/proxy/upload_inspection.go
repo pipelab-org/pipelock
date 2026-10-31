@@ -29,7 +29,7 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 		views = append(views, r.Texts...)
 		remaining -= r.ReadBytes
 		if !r.Complete && incomplete == "" {
-			incomplete = fmt.Sprintf("%s upload not fully read: %s; governed by request_body_scanning.action=block with enforce=true (warn/audit retain delivery)", r.Type, r.Reason)
+			incomplete = fmt.Sprintf("%s upload not fully read: %s; %s", r.Type, r.Reason, scanner.IncompleteFileGovernedSuffix)
 		}
 	}
 	mediaType, _, _ := mime.ParseMediaType(req.ContentType)

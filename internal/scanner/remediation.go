@@ -87,6 +87,11 @@ const (
 	DecideStructuralLabel = "decide"
 )
 
+// IncompleteFileGovernedSuffix is the terminal clause of an unread-upload
+// reason. Request-body inspection appends it. Guidance matches the whole
+// clause with HasSuffix so an earlier client-chosen substring cannot select it.
+const IncompleteFileGovernedSuffix = "governed by request_body_scanning.action=block with enforce=true (warn/audit retain delivery)"
+
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
 	bodyEntropyOperatorKnob    = "If the global `request_body_scanning.content_entropy_action` is `block`, an exact, expiring `content_entropy_warn_routes` entry can keep one HTTPS upload route visible without blocking it. With global `warn`, that route control is unavailable; use the existing warning or set the action to `block` when opaque traffic must stop. For a WebSocket-only endpoint, use `websocket_proxy.content_entropy_exclusions`."
@@ -584,9 +589,22 @@ func hasQueryGrantValidityNote(reason string) bool {
 	return false
 }
 
+func incompleteFileHoldGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "The upload could not be fully read. `request_body_scanning.action` set to `block` with `enforce` true withholds it. `action` `warn`, or `enforce` false, delivers it and keeps the observation. `max_body_bytes` bounds expansion and does not lift an unread member, an OLE container, or encryption.",
+		AgentReason:  "Request blocked: the upload could not be fully read.",
+	}
+}
+
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
+	// An unread file is not a credential match. The published parse_error
+	// reason already covers input that could not be fully scanned, so this
+	// branch only replaces the operator and agent sentences.
+	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
+		return incompleteFileHoldGuidance(), true
+	}
 	if label == AuditContract && reason == "MCP contract evaluation failed" {
 		return RemediationGuidance{
 			OperatorKnob: "The live-lock contract could not be evaluated. Restore the active contract loader or correct the invalid contract state and retry; changing a rule's allow/block action does not repair an evaluation failure.",
