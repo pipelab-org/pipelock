@@ -38,8 +38,16 @@ func TestInspectArchive(t *testing.T) {
 	crc[central+16] ^= 1
 	encrypted := bytes.Clone(plain)
 	encrypted[central+8] |= 1
+	encrypted[6] |= 1
 	method := bytes.Clone(plain)
 	binary.LittleEndian.PutUint16(method[central+10:], 99)
+	binary.LittleEndian.PutUint16(method[8:], 99)
+	localFlags := bytes.Clone(plain)
+	localFlags[6] |= 1
+	count := bytes.Clone(plain)
+	end := len(count) - endHeaderBytes
+	binary.LittleEndian.PutUint16(count[end+8:], 65534)
+	binary.LittleEndian.PutUint16(count[end+10:], 65534)
 	for _, tc := range []struct {
 		name   string
 		data   []byte
@@ -54,6 +62,8 @@ func TestInspectArchive(t *testing.T) {
 		{"encrypted", encrypted, Limits{4096, 8}, "encrypted", "ZIP"},
 		{"checksum", crc, Limits{4096, 8}, "checksum", "ZIP"},
 		{"method", method, Limits{4096, 8}, "compression method", "ZIP"},
+		{"local flags", localFlags, Limits{4096, 8}, "flags", "ZIP"},
+		{"member count", count, Limits{4096, 8}, "member count", "ZIP"},
 		{"trailer", plain[:len(plain)-1], Limits{4096, 8}, "trailer", "ZIP"},
 		{"tail", append(bytes.Clone(plain), 'x'), Limits{4096, 8}, "trailer", "ZIP"},
 		{"size", plain, Limits{12, 8}, "max_body_bytes", "ZIP"},
@@ -77,6 +87,36 @@ func TestInspectArchive(t *testing.T) {
 			}
 			if (tc.reason == "") != r.Complete || (tc.reason != "" && !strings.Contains(r.Reason, tc.reason)) {
 				t.Fatalf("complete=%t reason=%q want=%q", r.Complete, r.Reason, tc.reason)
+			}
+		})
+	}
+}
+
+func TestInspectPackageDeclarations(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	for _, tc := range []struct {
+		name         string
+		members      map[string][]byte
+		wantComplete bool
+		wantText     string
+	}{
+		{"OPC declared XML", map[string][]byte{
+			"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/opaque.part" ContentType="application/xml"/></Types>`),
+			"word/opaque.part":    []byte(`<p><t>AKIAQ9W8E7</t><t>R6T5Y4U3I2</t></p>`),
+		}, true, key},
+		{"ODF encrypted", map[string][]byte{
+			"META-INF/manifest.xml": []byte(`<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="content.xml" manifest:media-type="text/xml"><manifest:encryption-data/></manifest:file-entry></manifest:manifest>`),
+			"content.xml":           []byte("ciphertext"),
+		}, false, ""},
+		{"malformed XML", map[string][]byte{"word/document.xml": []byte(`<p>unclosed`)}, false, ""},
+		{"XML depth", map[string][]byte{"word/document.xml": []byte(strings.Repeat(`<p>`, 65) + strings.Repeat(`</p>`, 65))}, false, ""},
+		{"directive", map[string][]byte{"word/document.xml": []byte(`<!DOCTYPE p [<!ENTITY e SYSTEM "https://api.vendor.example/private">]><p>&e;</p>`)}, false, ""},
+		{"nested PDF raw", map[string][]byte{"document.bin": []byte("%PDF-1.7\xff\x00 compressed")}, true, "%PDF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), archiveFixture(t, tc.members), Limits{8192, 64})
+			if r.Complete != tc.wantComplete || (tc.wantText != "" && !strings.Contains(strings.Join(r.Texts, "\n"), tc.wantText)) {
+				t.Fatalf("complete=%t reason=%s", r.Complete, r.Reason)
 			}
 		})
 	}
@@ -112,5 +152,108 @@ func TestInspectCanceled(t *testing.T) {
 	r := Inspect(ctx, archiveFixture(t, map[string][]byte{"x": []byte("a")}), Limits{4096, 64})
 	if r.Complete || !strings.Contains(r.Reason, "canceled") {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestInspectArchiveMetadataFailures(t *testing.T) {
+	plain := archiveFixture(t, map[string][]byte{"data.txt": []byte("ordinary text")})
+	c := bytes.Index(plain, []byte("PK\x01\x02"))
+	e := len(plain) - endHeaderBytes
+	for _, tc := range []struct {
+		name   string
+		mutate func([]byte)
+	}{
+		{"multi-volume", func(b []byte) { b[e+4] = 1 }},
+		{"ZIP64", func(b []byte) {
+			binary.LittleEndian.PutUint16(b[e+8:], 65535)
+			binary.LittleEndian.PutUint16(b[e+10:], 65535)
+		}},
+		{"directory offset", func(b []byte) { b[e+16]++ }},
+		{"directory record", func(b []byte) { b[c] = 0 }},
+		{"directory length", func(b []byte) { binary.LittleEndian.PutUint16(b[c+28:], 65535) }},
+		{"local offset", func(b []byte) { binary.LittleEndian.PutUint32(b[c+42:], 0xffffffff) }},
+		{"local name", func(b []byte) { b[30] ^= 1 }},
+		{"local length", func(b []byte) { binary.LittleEndian.PutUint16(b[26:], 65535) }},
+		{"compressed overlap", func(b []byte) { binary.LittleEndian.PutUint32(b[c+20:], 65535) }},
+		{"unread directory", func(b []byte) { binary.LittleEndian.PutUint16(b[e+8:], 0); binary.LittleEndian.PutUint16(b[e+10:], 0) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := bytes.Clone(plain)
+			tc.mutate(data)
+			r := Inspect(t.Context(), data, Limits{4096, 64})
+			if r.Complete || r.Reason == "" {
+				t.Fatalf("malformed archive reported complete: %+v", r)
+			}
+		})
+	}
+}
+
+func TestInspectAdditionalMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		members  map[string][]byte
+		complete bool
+	}{
+		{"directory", map[string][]byte{"directory/": nil, "directory/file.txt": []byte("ordinary")}, true},
+		{"nested 7z", map[string][]byte{"nested.bin": {'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}}, false},
+		{"binary", map[string][]byte{"unknown.bin": {0xff, 0xfe, 0xff}}, false},
+		{"macro", map[string][]byte{"word/vbaProject.bin": {0xff, 0xfe, 0xff}}, true},
+		{"printer settings", map[string][]byte{"word/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
+		{"malformed declarations", map[string][]byte{"[Content_Types].xml": []byte(`<Types`)}, false},
+		{"default XML", map[string][]byte{"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="part" ContentType="text/xml"/></Types>`), "custom.part": []byte(`<p>ordinary</p>`)}, true},
+		{"ODF metadata", map[string][]byte{"META-INF/manifest.xml": []byte(`<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/></manifest:manifest>`), "meta.xml": []byte(`<meta>ordinary</meta>`)}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), archiveFixture(t, tc.members), Limits{8192, 64})
+			if r.Complete != tc.complete {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	r := contextReader{ctx, bytes.NewReader([]byte("data"))}
+	if _, err := r.Read(make([]byte, 4)); err == nil {
+		t.Fatal("canceled member read succeeded")
+	}
+}
+
+func TestInspectPreflightEntryBudget(t *testing.T) {
+	data := archiveFixture(t, map[string][]byte{"one": nil, "two": nil})
+	w := walk{ctx: t.Context(), limits: Limits{4096, 64}, entries: 1}
+	if err := w.preflight(data); err == nil || !strings.Contains(err.Error(), "member count") {
+		t.Fatalf("entry budget: %v", err)
+	}
+}
+
+func TestInspectOPCPartURIs(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	for _, tc := range []struct {
+		name, declaration, member string
+		complete                  bool
+	}{
+		{"escaped", `<Override PartName="/word/custom%20text.part" ContentType="application/xml"/>`, "word/custom text.part", true},
+		{"extension case", `<Default Extension="PART" ContentType="application/xml"/>`, "word/custom.part", true},
+		{"invalid URI", `<Override PartName="/word/bad%escape.part" ContentType="application/xml"/>`, "word/custom.part", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			members := map[string][]byte{"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` + tc.declaration + `</Types>`), tc.member: []byte(`<p><t>AKIAQ9W8E7</t><t>R6T5Y4U3I2</t></p>`)}
+			r := Inspect(t.Context(), archiveFixture(t, members), Limits{8192, 64})
+			if r.Complete != tc.complete || (r.Complete && !strings.Contains(strings.Join(r.Texts, "\n"), key)) {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+}
+
+func TestInspectXMLFailurePrivacy(t *testing.T) {
+	const privateMarker = "private-document-element"
+	for _, name := range []string{"word/document.xml", "[Content_Types].xml"} {
+		t.Run(name, func(t *testing.T) {
+			r := Inspect(t.Context(), archiveFixture(t, map[string][]byte{name: []byte(`<` + privateMarker + `></mismatch>`)}), Limits{8192, 64})
+			if r.Complete || r.Reason == "" || strings.Contains(r.Reason, privateMarker) {
+				t.Fatalf("reason must name failure without document text: %q", r.Reason)
+			}
+		})
 	}
 }

@@ -1989,6 +1989,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	maxBytes := reverseRequestScanMaxBytes(cfg)
 
 	bodyReq := BodyScanRequest{
+		AuditMode:       !cfg.EnforceEnabled(),
 		Body:            r.Body,
 		Trailer:         r.Trailer,
 		Scheme:          rp.upstream.Scheme,

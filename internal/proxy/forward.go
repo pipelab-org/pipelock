@@ -1541,6 +1541,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.RequestBodyScanning.Enabled && r.Body != nil && r.Body != http.NoBody {
 		bodyReq := BodyScanRequest{
+			AuditMode:        !cfg.EnforceEnabled(),
 			Body:             r.Body,
 			Trailer:          r.Trailer,
 			Scheme:           r.URL.Scheme,

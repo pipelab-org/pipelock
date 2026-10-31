@@ -1,0 +1,3 @@
+These fixtures contain synthetic text only. Clean and seeded pairs come from LibreOffice (DOCX, XLSX, ODT, ODS), Pandoc (DOCX, PPTX), and LibreOffice PDF export. The split-run DOCX is constructed to place one synthetic credential across formatting runs. PPTX files were generated with Pandoc 3.11 using its default presentation template. The LibreOffice files were generated with LibreOffice 26.8.1.1.
+
+Tests send the original bytes to a local upstream and compare SHA-256 on allowed delivery. Seeded PDFs intentionally retain raw-scan behavior; they aren't acceptance evidence for a PDF reader.

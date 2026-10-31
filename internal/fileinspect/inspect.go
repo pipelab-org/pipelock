@@ -15,8 +15,11 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
 // Limits are supplied by the consumer's existing byte and extraction-depth caps.
@@ -33,6 +36,7 @@ type Result struct {
 	Complete   bool
 	Reason     string
 	Texts      []string
+	ReadBytes  int
 }
 
 // Kind uses format signatures, independently of filenames and MIME labels.
@@ -81,9 +85,11 @@ func Inspect(ctx context.Context, data []byte, limits Limits) Result {
 	}
 	w := walk{ctx: ctx, limits: limits, remaining: limits.MaxBytes, entries: limits.MaxBytes / centralHeaderBytes, result: &r}
 	if err := w.archive(data, 0); err != nil {
+		r.ReadBytes = limits.MaxBytes - w.remaining
 		r.Reason = err.Error()
 		return r
 	}
+	r.ReadBytes = limits.MaxBytes - w.remaining
 	r.Complete = true
 	return r
 }
@@ -137,6 +143,32 @@ func (w *walk) preflight(data []byte) error {
 			if n > i-p {
 				return fmt.Errorf("truncated central directory record")
 			}
+			// The local and central headers describe the same member (APPNOTE
+			// 4.3.7/4.3.12). archive/zip trusts the central flags, so verify the
+			// local encryption flag too before accepting any derived view.
+			local := int64(binary.LittleEndian.Uint32(data[p+42:]))
+			if local > math.MaxInt32 || local+30 > offset {
+				return fmt.Errorf("invalid local member header")
+			}
+			l := int(local)
+			if !bytes.HasPrefix(data[l:], []byte("PK\x03\x04")) || binary.LittleEndian.Uint16(data[l+6:]) != binary.LittleEndian.Uint16(data[p+8:]) || binary.LittleEndian.Uint16(data[l+8:]) != binary.LittleEndian.Uint16(data[p+10:]) {
+				return fmt.Errorf("local member flags or method disagree with directory")
+			}
+			nameLen := int(binary.LittleEndian.Uint16(data[p+28:]))
+			localNameLen := int(binary.LittleEndian.Uint16(data[l+26:]))
+			headerEnd := l + 30 + localNameLen + int(binary.LittleEndian.Uint16(data[l+28:]))
+			if headerEnd > int(offset) || localNameLen != nameLen || !bytes.Equal(data[l+30:l+30+localNameLen], data[p+centralHeaderBytes:p+centralHeaderBytes+nameLen]) {
+				return fmt.Errorf("local member name or length disagrees with directory")
+			}
+			if int64(headerEnd)+int64(binary.LittleEndian.Uint32(data[p+20:])) > offset {
+				return fmt.Errorf("compressed member overlaps ZIP directory")
+			}
+			if binary.LittleEndian.Uint16(data[p+8:])&8 == 0 &&
+				(binary.LittleEndian.Uint32(data[l+14:]) != binary.LittleEndian.Uint32(data[p+16:]) ||
+					binary.LittleEndian.Uint32(data[l+18:]) != binary.LittleEndian.Uint32(data[p+20:]) ||
+					binary.LittleEndian.Uint32(data[l+22:]) != binary.LittleEndian.Uint32(data[p+24:])) {
+				return fmt.Errorf("local member checksum or size disagrees with directory")
+			}
 			p += n
 		}
 		if p != i {
@@ -173,6 +205,8 @@ func (w *walk) archive(data []byte, depth int) error {
 		}
 	}
 	w.result.Texts = append(w.result.Texts, z.Comment)
+	var parts packageParts
+	sort.SliceStable(z.File, func(i, j int) bool { return declarationPriority(z.File[i].Name) < declarationPriority(z.File[j].Name) })
 	for _, f := range z.File {
 		if err := w.ctx.Err(); err != nil {
 			return err
@@ -220,7 +254,18 @@ func (w *walk) archive(data []byte, depth int) error {
 			}
 			continue
 		}
-		if image(member) {
+		// Container members contribute their recursively recovered views,
+		// not another speculative text scan of compressed bytes. The original
+		// request still receives its existing raw DLP scan.
+		w.result.Texts = append(w.result.Texts, string(member))
+		if bytes.HasPrefix(member, []byte("%PDF-")) {
+			continue
+		}
+		if err := parts.metadata(f.Name, member); err != nil {
+			return err
+		}
+		contentType := parts.contentType(f.Name)
+		if image(member) || strings.HasPrefix(contentType, "image/") {
 			continue
 		} // Non-text, including ODF Thumbnails/thumbnail.png.
 		if !utf8.Valid(member) {
@@ -230,8 +275,7 @@ func (w *walk) archive(data []byte, depth int) error {
 			}
 			return fmt.Errorf("non-text member has no reader")
 		}
-		w.result.Texts = append(w.result.Texts, string(member))
-		if strings.HasSuffix(strings.ToLower(f.Name), ".xml") || strings.HasSuffix(strings.ToLower(f.Name), ".rels") {
+		if isXMLPart(f.Name, contentType) {
 			text, xmlErr := xmlText(member, w.limits.MaxDepth)
 			if xmlErr != nil {
 				return xmlErr
@@ -254,10 +298,10 @@ func (r *contextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
+// image joins the existing media.DetectType signature contract. Its detector
+// and dependencies use only the standard library; no image decoder is added.
 func image(data []byte) bool {
-	return bytes.HasPrefix(data, []byte("\x89PNG\r\n\x1a\n")) || bytes.HasPrefix(data, []byte("\xff\xd8\xff")) ||
-		bytes.HasPrefix(data, []byte("GIF87a")) || bytes.HasPrefix(data, []byte("GIF89a")) ||
-		(len(data) >= 12 && string(data[:4]) == "RIFF" && string(data[8:12]) == "WEBP")
+	return strings.HasPrefix(media.DetectType(data), "image/")
 }
 
 // XML character data joins formatting runs within paragraphs/cells. Paragraph,
@@ -274,7 +318,10 @@ func xmlText(data []byte, maxDepth int) (string, error) {
 			return out.String(), nil
 		}
 		if err != nil {
-			return "", fmt.Errorf("reading package XML: %w", err)
+			// SyntaxError may quote element names or entity text from the file.
+			// Reasons can reach logs and receipts; retain the failure class,
+			// never document content.
+			return "", fmt.Errorf("malformed package XML")
 		}
 		switch t := token.(type) {
 		case xml.StartElement:

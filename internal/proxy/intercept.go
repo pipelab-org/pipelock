@@ -1277,6 +1277,7 @@ func newInterceptHandler(
 				}
 			}
 			bodyReq := BodyScanRequest{
+				AuditMode:        !ic.Config.EnforceEnabled(),
 				Body:             r.Body,
 				Trailer:          r.Trailer,
 				Scheme:           "https",

@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/fileinspect"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
@@ -578,11 +579,22 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 }
 
 func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if result.IsEntropyOnly() || result.IsInformationalCardRuns() {
+	if result.IsEntropyOnly() || result.IsInformationalCardRuns() || result.IsIncompleteFileWarningOnly() {
 		return true
 	}
 	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
 		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
+// IsIncompleteFileWarningOnly keeps an unreadable-file observation under the
+// configured warn/audit delivery policy. Other findings and enforced file
+// blocks retain their existing enforcement and adaptive behavior.
+func (r BodyScanResult) IsIncompleteFileWarningOnly() bool {
+	return r.FileInspectionIncomplete != "" && r.Reason == r.FileInspectionIncomplete &&
+		r.Action == config.ActionWarn && !r.FileInspectionBlock &&
+		len(r.DLPMatches) == 0 && len(r.InjectionMatches) == 0 && len(r.AddressFindings) == 0 &&
+		r.EntropyFinding == nil && !r.RedactedDLPOnly && r.RedactionBlockReason == "" &&
+		r.HeaderName == "" && r.CredentialAudienceReceiptErr == nil
 }
 
 // IsInformationalCardRuns excludes other evidence and incomplete inspection.
@@ -598,14 +610,18 @@ func (r BodyScanResult) IsEntropyOnly() bool {
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
-	Clean            bool
-	Action           string
-	DLPMatches       []scanner.TextDLPMatch
-	InjectionMatches []scanner.ResponseMatch
-	AddressFindings  []addressprotect.Finding // crypto address poisoning findings
-	EntropyFinding   *ContentEntropyFinding
-	EntropyAction    string
-	EntropyWarnRoute *BodyEntropyWarnRouteMatch
+	// FileInspectionIncomplete names a recognized upload that was not fully read.
+	FileInspectionIncomplete string
+	// FileInspectionBlock is set only for enforced request-body block policy.
+	FileInspectionBlock bool
+	Clean               bool
+	Action              string
+	DLPMatches          []scanner.TextDLPMatch
+	InjectionMatches    []scanner.ResponseMatch
+	AddressFindings     []addressprotect.Finding // crypto address poisoning findings
+	EntropyFinding      *ContentEntropyFinding
+	EntropyAction       string
+	EntropyWarnRoute    *BodyEntropyWarnRouteMatch
 	// RedactedDLPOnly is true when DLP matched the original body but the
 	// post-redaction body scanned clean. Callers can use this to distinguish
 	// "raw residual secret remains" from "secret was removed before forward".
@@ -662,7 +678,9 @@ type BodyEntropyWarnRouteMatch struct {
 // BodyScanRequest groups the parameters for scanRequestBody, keeping the
 // function signature under the 6-parameter guideline (ctx is passed separately).
 type BodyScanRequest struct {
-	Body io.Reader
+	// AuditMode retains delivery for incomplete upload inspection.
+	AuditMode bool
+	Body      io.Reader
 	// Trailer is populated by net/http only after Body reaches EOF. Request
 	// scanning does not yet inspect trailer fields, so a populated map must
 	// fail closed rather than let values bypass the scanned body and headers.
@@ -905,11 +923,24 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Extract text strings from body based on content type. The DLP extractor
 	// also returns generic ordered text so JSON bodies are traversed once here.
 	dlpExtracted := extractBodyTextForDLP(buf, req)
+	if fileinspect.Kind(buf) != "" {
+		dlpExtracted = bodyDLPTextExtraction{GenericTexts: []string{string(buf)}, Texts: []string{string(buf)}}
+	}
 	if dlpExtracted.Err != "" {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
 			Reason: dlpExtracted.Err,
+		}
+	}
+	fileTexts, fileIncomplete := inspectUploadTextViews(ctx, buf, req, dlpExtracted)
+	for _, text := range fileTexts {
+		dlpExtracted.Texts = append(dlpExtracted.Texts, text)
+		if len(dlpExtracted.CardTexts) > 0 {
+			dlpExtracted.CardTexts = append(dlpExtracted.CardTexts, text)
+		}
+		if len(dlpExtracted.Atoms) > 0 {
+			dlpExtracted.Atoms = append(dlpExtracted.Atoms, extract.DLPAtom{Text: text, Card: text})
 		}
 	}
 	texts := dlpExtracted.GenericTexts
@@ -932,6 +963,15 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	var result BodyScanResult
 	var action string
+	if fileIncomplete != "" {
+		result.FileInspectionIncomplete = fileIncomplete
+		result.FileInspectionBlock = req.Action == config.ActionBlock && !req.AuditMode
+		result.Reason = fileIncomplete
+		action = req.Action
+		if action == "" || req.AuditMode {
+			action = config.ActionWarn
+		}
+	}
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
@@ -1016,10 +1056,13 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 
-	if len(result.DLPMatches) > 0 || len(result.InjectionMatches) > 0 || len(result.AddressFindings) > 0 || result.EntropyFinding != nil {
+	if result.FileInspectionIncomplete != "" || len(result.DLPMatches) > 0 || len(result.InjectionMatches) > 0 || len(result.AddressFindings) > 0 || result.EntropyFinding != nil {
 		result.Clean = false
 		result.Action = action
 		result.RedactionReport = redactReport
+		if result.FileInspectionIncomplete != "" && containsCoreFloorMatch(result.DLPMatches) {
+			result.Reason = ""
+		}
 		if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)
 		}
@@ -1076,6 +1119,7 @@ type jsonBodyDLPFrame struct {
 }
 
 type bodyDLPTextExtraction struct {
+	FileParts           [][]byte
 	CardTexts           []string
 	Atoms               []extract.DLPAtom
 	GenericTexts        []string
@@ -1085,7 +1129,15 @@ type bodyDLPTextExtraction struct {
 }
 
 func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtraction {
-	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
+	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
+	if mediaType == "multipart/form-data" {
+		if params["boundary"] == "" {
+			return bodyDLPTextExtraction{Err: "multipart/form-data missing boundary"}
+		}
+		var files [][]byte
+		texts, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
+		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, FileParts: files, Err: errText}
+	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
 		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, Err: errText}
@@ -1929,7 +1981,7 @@ func unparseableRouteMatches(req BodyScanRequest, route redact.UnparseableRouteS
 // request would violate the scanner's safety invariant, such as a consumed body
 // that cannot be replayed or a redaction gate that explicitly failed closed.
 func isFailClosedBodyResult(result BodyScanResult, bodyBytes []byte) bool {
-	return bodyBytes == nil || result.RedactionBlockReason != "" || scanner.HasInspectionLimit(result.DLPMatches)
+	return bodyBytes == nil || result.RedactionBlockReason != "" || scanner.HasInspectionLimit(result.DLPMatches) || result.FileInspectionBlock
 }
 
 // isJSONContentType reports whether ct is a recognised JSON media type,
@@ -2060,6 +2112,10 @@ func extractFormURLEncoded(body []byte) ([]string, string) {
 // Returns extracted strings and an error message if any limit is exceeded.
 // On limit violation: fail-closed (returns error, caller blocks).
 func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, string) {
+	return extractMultipartWithFiles(body, boundary, maxBytes, nil)
+}
+
+func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) ([]string, string) {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 
 	var result []string
@@ -2118,8 +2174,8 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 
 		// Read ALL part bodies regardless of Content-Type. An attacker can
 		// set Content-Type: image/png on a part whose body is plaintext
-		// containing secrets. Real binary data (actual images) won't match
-		// DLP patterns (they're structured key prefixes like sk-ant-, AKIA).
+		// containing secrets. Binary data still receives the raw DLP scan;
+		// neither a media label nor successful file inspection exempts it.
 		partBody, readErr := io.ReadAll(io.LimitReader(part, int64(maxBytes)+1))
 		_ = part.Close()
 
@@ -2152,6 +2208,9 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 			// Scan BOTH decoded (catches actual secrets) and raw
 			// (catches patterns visible in encoded form).
 			result = append(result, string(decoded))
+			if onPart != nil {
+				onPart(decoded)
+			}
 			result = append(result, rawBody)
 		case "quoted-printable":
 			if err := validateQuotedPrintable(partBody); err != nil {
@@ -2162,8 +2221,14 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			result = append(result, string(decoded))
+			if onPart != nil {
+				onPart(decoded)
+			}
 			result = append(result, rawBody)
 		case "", "7bit", "8bit", "binary":
+			if onPart != nil {
+				onPart(partBody)
+			}
 			if len(partBody) > 0 {
 				result = append(result, rawBody)
 			}

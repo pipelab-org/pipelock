@@ -1706,6 +1706,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 	}
 
 	bodyReq := BodyScanRequest{
+		AuditMode:       !r.cfg.EnforceEnabled(),
 		Body:            bytes.NewReader(msg),
 		Method:          http.MethodGet,
 		ContentType:     contentType,
@@ -2485,7 +2486,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+	if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
@@ -2514,7 +2515,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(decide.UpgradedWarningSignal(originalAction, session.SignalBlock), log, scannerLabel, receiptPattern)
 		}
 		blockReason := reason
@@ -2551,7 +2552,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(session.SignalWarning, log, scannerLabel, receiptPattern)
 		}
 		if len(result.DLPMatches) > 0 {
