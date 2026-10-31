@@ -84,41 +84,6 @@ func (p *packageParts) metadata(name string, data []byte) error {
 	}
 }
 
-// declaredNonTextBinary is a package-declared member whose bytes are not a
-// text or embedded-object container. The raw decompressed bytes are already
-// in the text views, so request DLP sees them the same way it sees a raw
-// upload. OLE and other containers that can hold text are absent here and
-// stay unread.
-//
-// Declarations come from OPC [Content_Types].xml (ECMA-376 Part 2) and the
-// ODF manifest:media-type (ODF 1.3 Part 2 §4.16.10). The type strings are:
-//   - image/, audio/, video/ top-level types (RFC 6838; IANA media type registry)
-//   - font/ plus the deprecated application/font-sfnt and application/font-woff (RFC 8081)
-//   - application/x-font-ttf and application/x-fontdata (ECMA-376 Part 1 §15.2.12)
-//   - application/vnd.openxmlformats-officedocument.obfuscatedFont (MS-OE376 2.1.34, that section)
-//   - application/vnd.ms-office.activeX, not the +xml part (MS-XLSB 2.1.7.2)
-func declaredNonTextBinary(contentType string) bool {
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	switch {
-	case strings.HasPrefix(contentType, "image/"),
-		strings.HasPrefix(contentType, "audio/"),
-		strings.HasPrefix(contentType, "video/"),
-		strings.HasPrefix(contentType, "font/"):
-		return true
-	}
-	switch contentType {
-	case "application/x-font-ttf",
-		"application/x-fontdata",
-		"application/font-sfnt",
-		"application/font-woff",
-		"application/vnd.openxmlformats-officedocument.obfuscatedfont",
-		"application/vnd.ms-office.activex":
-		return true
-	default:
-		return false
-	}
-}
-
 func isXMLPart(name, contentType string) bool {
 	return strings.HasSuffix(strings.ToLower(name), ".xml") || strings.HasSuffix(strings.ToLower(name), ".rels") ||
 		contentType == "application/xml" || contentType == "text/xml" || strings.HasSuffix(contentType, "+xml")

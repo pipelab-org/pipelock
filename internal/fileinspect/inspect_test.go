@@ -116,7 +116,9 @@ func TestInspectPackageDeclarations(t *testing.T) {
 		{"malformed XML", map[string][]byte{"word/document.xml": []byte(`<p>unclosed`)}, false, ""},
 		{"XML depth", map[string][]byte{"word/document.xml": []byte(strings.Repeat(`<p>`, 65) + strings.Repeat(`</p>`, 65))}, false, ""},
 		{"directive", map[string][]byte{"word/document.xml": []byte(`<!DOCTYPE p [<!ENTITY e SYSTEM "https://api.vendor.example/private">]><p>&e;</p>`)}, false, ""},
-		{"nested PDF raw", map[string][]byte{"document.bin": []byte("%PDF-1.7\xff\x00 compressed")}, true, "%PDF"},
+		// PDF is not a published image, font, or media signature. The raw bytes
+		// stay in the text views; the archive is not fully read.
+		{"nested PDF raw", map[string][]byte{"document.bin": []byte("%PDF-1.7\xff\x00 compressed")}, false, "%PDF"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Inspect(t.Context(), archiveFixture(t, tc.members), Limits{8192, 64})
@@ -203,9 +205,9 @@ func TestInspectAdditionalMembers(t *testing.T) {
 		{"nested 7z", map[string][]byte{"nested.bin": {'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}}, false},
 		{"binary", map[string][]byte{"unknown.bin": {0xff, 0xfe, 0xff}}, false},
 		{"macro", map[string][]byte{"word/vbaProject.bin": {0xff, 0xfe, 0xff}}, false},
-		{"printer settings", map[string][]byte{"word/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
-		{"spreadsheet printer settings", map[string][]byte{"xl/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
-		{"presentation printer settings", map[string][]byte{"ppt/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, true},
+		{"printer settings", map[string][]byte{"word/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, false},
+		{"spreadsheet printer settings", map[string][]byte{"xl/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, false},
+		{"presentation printer settings", map[string][]byte{"ppt/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, false},
 		{"printer settings elsewhere", map[string][]byte{"docProps/printerSettings/printerSettings1.bin": {0xff, 0xfe, 0xff}}, false},
 		{"malformed declarations", map[string][]byte{"[Content_Types].xml": []byte(`<Types`)}, false},
 		{"default XML", map[string][]byte{"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="part" ContentType="text/xml"/></Types>`), "custom.part": []byte(`<p>ordinary</p>`)}, true},
@@ -394,10 +396,11 @@ func TestInspectDeflateTrailingBytes(t *testing.T) {
 	}
 }
 
-// ODF draw:frame gives an embedded object a draw:image replacement; that member
-// is an image wherever it appears in the archive. Other binary stays unread.
+// A StarView metafile is accepted from its VCLMTF signature, referenced or not.
+// A draw:image href does not accept a member that has no published signature.
 func TestInspectODFReplacementImages(t *testing.T) {
 	metafile := []byte("VCLMTF\x01\x00\xff\xfe\x00")
+	blob := []byte{0xff, 0xfe, 0x00, 0x11}
 	frame := func(href string) []byte {
 		return []byte(`<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:frame><draw:object xlink:href="./Object 1"/><draw:image xlink:href="` + href + `"/></draw:frame></office:document-content>`)
 	}
@@ -427,10 +430,9 @@ func TestInspectODFReplacementImages(t *testing.T) {
 		{"replacement after image", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", frame("./ObjectReplacements/Object 1"))), true},
 		{"percent-encoded reference", ordered(member("content.xml", frame("./ObjectReplacements/Object%201")), member("ObjectReplacements/Object 1", metafile)), true},
 		{"sub-document reference", ordered(member("Object 1/ObjectReplacements/chart", metafile), member("Object 1/content.xml", frame("./ObjectReplacements/chart"))), true},
-		{"unreferenced binary", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", frame("./ObjectReplacements/Other"))), false},
-		{"other element", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", bytes.ReplaceAll(frame("./ObjectReplacements/Object 1"), []byte("draw:image"), []byte("draw:plugin")))), false},
-		{"other namespace", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", bytes.ReplaceAll(frame("./ObjectReplacements/Object 1"), []byte("urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"), []byte("http://www.w3.org/2000/svg")))), false},
-		{"external reference", ordered(member("file:ObjectReplacements/Object 1", metafile), member("content.xml", frame("file:ObjectReplacements/Object 1"))), false},
+		{"unreferenced metafile", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", frame("./ObjectReplacements/Other"))), true},
+		{"referenced blob", ordered(member("ObjectReplacements/Object 1", blob), member("content.xml", frame("./ObjectReplacements/Object 1"))), false},
+		{"unreferenced blob", ordered(member("ObjectReplacements/Object 1", blob), member("content.xml", frame("./ObjectReplacements/Other"))), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := Inspect(t.Context(), tc.data, Limits{8192, 64})
@@ -496,8 +498,8 @@ func TestInspectZIP64DataDescriptor(t *testing.T) {
 	}
 }
 
-// Declared font, audio, video, and ActiveX binary parts are not text containers.
-// OLE containers stay unread. The raw member bytes stay in the text views.
+// A declared content type does not make a non-text member readable. The raw
+// bytes stay in the text views. OLE containers stay unread.
 func TestInspectDeclaredBinaryMembers(t *testing.T) {
 	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
 	payload := append([]byte{0xff, 0xfe}, []byte("key="+key)...)
@@ -518,13 +520,13 @@ func TestInspectDeclaredBinaryMembers(t *testing.T) {
 		members  map[string][]byte
 		complete bool
 	}{
-		{"obfuscated font", opc("word/fonts/font1.odttf", "application/vnd.openxmlformats-officedocument.obfuscatedFont"), true},
-		{"odf truetype", odf("Fonts/Font_Sample_1.ttf", "application/x-font-ttf"), true},
-		{"font data", opc("word/fonts/font1.fntdata", "application/x-fontdata"), true},
-		{"audio", opc("word/media/audio1.mp3", "audio/mpeg"), true},
-		{"video", opc("ppt/media/video1.mp4", "video/mp4"), true},
-		{"font top-level", odf("Fonts/face.ttf", "font/ttf"), true},
-		{"activex binary", opc("xl/activeX/activeX1.bin", "application/vnd.ms-office.activeX"), true},
+		{"obfuscated font", opc("word/fonts/font1.odttf", "application/vnd.openxmlformats-officedocument.obfuscatedFont"), false},
+		{"odf truetype", odf("Fonts/Font_Sample_1.ttf", "application/x-font-ttf"), false},
+		{"font data", opc("word/fonts/font1.fntdata", "application/x-fontdata"), false},
+		{"audio", opc("word/media/audio1.mp3", "audio/mpeg"), false},
+		{"video", opc("ppt/media/video1.mp4", "video/mp4"), false},
+		{"font top-level", odf("Fonts/face.ttf", "font/ttf"), false},
+		{"activex binary", opc("xl/activeX/activeX1.bin", "application/vnd.ms-office.activeX"), false},
 		{"ole object", opc("word/embeddings/oleObject1.bin", "application/vnd.openxmlformats-officedocument.oleObject"), false},
 		{"octet stream", opc("word/embeddings/unknown.bin", "application/octet-stream"), false},
 		{"undeclared", map[string][]byte{"word/fonts/font1.odttf": payload}, false},
