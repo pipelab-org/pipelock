@@ -238,6 +238,7 @@ metrics are both observability and enforcement context.
 | `pipelock_sessions_active` | gauge | (none) | Currently tracked sessions. |
 | `pipelock_sessions_evicted_total` | counter | (none) | Sessions evicted by TTL or capacity limit. |
 | `pipelock_adaptive_sessions_current` | gauge | `level` | Currently escalated sessions. Each logical session is counted once at its strongest effective global or destination-scoped level. |
+| `pipelock_adaptive_residual_expirations_total` | counter | (none) | Positive normal-level threat scores cleared after the quiet period. Aggregate and destination scores count separately. |
 | `pipelock_session_auto_deescalation_total` | counter | `from`, `to` | Autonomous time-based session de-escalations. |
 
 ## Adaptive Enforcement Metrics

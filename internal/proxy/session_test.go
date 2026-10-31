@@ -2135,7 +2135,7 @@ func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
 	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
 		t.Fatalf("global escalation gauge = %.0f, want 1", got)
 	}
-	recordCleanForAdaptiveScope(sess, "", adaptiveCfg, true, adaptiveRecoveryContext{metrics: m})
+	recordCleanForAdaptiveScope(sess, "", adaptiveCfg, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment(), metrics: m})
 	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
 		t.Fatalf("global recovery gauge = %.0f, want 0", got)
 	}
@@ -2149,7 +2149,7 @@ func TestSessionManager_AdaptiveGaugeDerivesFromLiveState(t *testing.T) {
 	if got := adaptiveElevatedGaugeValue(t, m); got != 1 {
 		t.Fatalf("scoped escalation gauge = %.0f, want 1", got)
 	}
-	recordCleanForAdaptiveScope(scopedSess, scope, adaptiveCfg, true, adaptiveRecoveryContext{scope: scope, metrics: m})
+	recordCleanForAdaptiveScope(scopedSess, scope, adaptiveCfg, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment(), scope: scope, metrics: m})
 	if got := adaptiveElevatedGaugeValue(t, m); got != 0 {
 		t.Fatalf("scoped recovery gauge = %.0f, want 0", got)
 	}

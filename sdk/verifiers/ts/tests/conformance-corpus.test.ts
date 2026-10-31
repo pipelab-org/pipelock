@@ -20,7 +20,7 @@ test("canonical: shield-bearing corpus receipt verifies", async () => {
   // before this change, which broke signature verification on shield-bearing
   // receipts. It must now verify against the Go signer's key.
   const report = await runReceipt(`${corpus}/golden/09-allow-shield-summary.json`, corpusKey);
-  assert.equal(report.valid, true, report.error);
+  assert.equal(report.valid, true, report.error ?? "");
 });
 
 test("canonical: full-field differential corpus receipt verifies", async () => {
@@ -28,12 +28,12 @@ test("canonical: full-field differential corpus receipt verifies", async () => {
   // recent_taint_sources entry), the contract block, redaction, and shield —
   // every field block previously missing from at least one verifier.
   const report = await runReceipt(`${corpus}/golden/10-full-field-differential.json`, corpusKey);
-  assert.equal(report.valid, true, report.error);
+  assert.equal(report.valid, true, report.error ?? "");
 });
 
 test("canonical: run-nonce corpus receipt verifies", async () => {
   const report = await runReceipt(`${corpus}/golden/11-run-nonce-bound.json`, corpusKey);
-  assert.equal(report.valid, true, report.error);
+  assert.equal(report.valid, true, report.error ?? "");
 });
 
 test("canonical: tampered run-nonce corpus receipt is rejected", async () => {

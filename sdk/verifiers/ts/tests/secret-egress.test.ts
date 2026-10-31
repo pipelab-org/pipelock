@@ -411,13 +411,13 @@ test("secret-egress: raw version spelling, duplicates, and size checked in file 
       const boundedFile = join(dir, `bounded-${size}.json`);
       writeFileSync(boundedFile, source.replace(rawDecision, paddedDecision));
       const boundedReport = await runReceipt(boundedFile, publicKey);
-      assert.equal(boundedReport.valid, size === 16 * 1024, boundedReport.error);
+      assert.equal(boundedReport.valid, size === 16 * 1024, boundedReport.error ?? "");
     }
     const reordered = Object.fromEntries(Object.entries(r).reverse());
     const file = join(dir, "reformatted.json");
     writeFileSync(file, JSON.stringify(reordered, null, 2) + "\n");
     const report = await runReceipt(file, publicKey);
-    assert.equal(report.valid, true, report.error);
+    assert.equal(report.valid, true, report.error ?? "");
     assert.equal(report.transport, "forward");
     const actionID = (r.payload as { decision: { action_id: string } }).decision.action_id;
     assert.notEqual(actionID, r.event_id);
@@ -525,7 +525,7 @@ test("secret-egress: envelope integer source spelling survives standalone and re
     const file = join(dir, "valid.json");
     writeFileSync(file, JSON.stringify(r));
     const report = await runReceipt(file, publicKey);
-    assert.equal(report.valid, true, report.error);
+    assert.equal(report.valid, true, report.error ?? "");
     assert.equal(report.transport, "forward");
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -730,7 +730,7 @@ test("secret-egress: typed version value is separate from raw number spelling", 
       const path = join(dir, `${token}.json`);
       writeFileSync(path, source);
       const report = await runReceipt(path, publicKey);
-      assert.equal(report.valid, token === "1", report.error);
+      assert.equal(report.valid, token === "1", report.error ?? "");
       const recorderPath = join(dir, `${token}.jsonl`);
       writeFileSync(recorderPath, '{"v":1,"type":"evidence_receipt","detail":' + source + "}\n");
       if (token === "1") assert.doesNotThrow(() => readEntries(recorderPath));

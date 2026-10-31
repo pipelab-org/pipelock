@@ -1217,6 +1217,15 @@
       "format": "version"
     },
     {
+      "id": "docs-guides-release-downloads.md-6",
+      "path": "docs/guides/release-downloads.md",
+      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?1\\.20\\.1\\-2)(?![A-Za-z0-9-]|\\.[0-9])",
+      "expected": "1.20.1-2",
+      "count": 2,
+      "reason": "Illustrative Debian package version in a package-pool filename example, not a release number of this product.",
+      "format": "version"
+    },
+    {
       "id": "docs-guides-sse-streaming.md-1",
       "path": "docs/guides/sse-streaming.md",
       "pattern": "(?<![A-Za-z0-9.])(?P<value>v?2\\.3\\.0)(?![A-Za-z0-9-]|\\.[0-9])",

@@ -6261,3 +6261,13 @@ func TestJSONInspectionRemediationPatternIdentity(t *testing.T) {
 		t.Fatalf("display text changed hint: %v", entry["remediation_hint"])
 	}
 }
+
+func TestLogAdaptiveRecoveryResidualScore(t *testing.T) {
+	logger, sink := newLoggerWithEmitter(t)
+	defer logger.Close()
+	logger.LogAdaptiveRecovery(LogAdaptiveRecoveryOptions{SessionKey: "session", From: "normal", To: "normal", Reason: "residual_score_expired", PreviousScore: 3})
+	ev := sink.onlyEvent(t)
+	if ev.Type != string(EventAdaptiveRecovery) || ev.Fields["previous_score"] != float64(3) {
+		t.Fatalf("expiry audit event = %+v", ev)
+	}
+}

@@ -4594,8 +4594,8 @@ func TestRecordCleanSession_IneligibleCleanDoesNotRecover(t *testing.T) {
 
 	recordCleanSession(rec, adaptiveCfg, false, adaptiveRecoveryContext{})
 
-	if rec.recordCleanCalls != 1 {
-		t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
+	if rec.recordCleanCalls != 0 {
+		t.Fatalf("RecordClean calls = %d, want 0", rec.recordCleanCalls)
 	}
 	if cleanRecoveryCalls != 0 {
 		t.Fatalf("RecordCleanWithRecovery calls = %d, want 0 for ineligible clean traffic", cleanRecoveryCalls)
@@ -4633,6 +4633,7 @@ func TestRecordCleanSession_EligibleCleanRecoveryObservable(t *testing.T) {
 	})
 
 	recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+		assessment: benignRecoveryAssessment(),
 		sessionKey: "mcp-session",
 		scope:      "tools/call",
 		reason:     adaptiveRecoveryClean,

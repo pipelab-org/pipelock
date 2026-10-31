@@ -6,6 +6,14 @@ A final filename may repeat the semantic version in the immediately preceding pa
 
 The preceding segment is still scored. A filename that already passes keeps its allowance, since removing text can increase entropy. Other path segments and query values retain their checks. The same scorer handles URLs nested in query values after their existing decoding. Credential detection still checks the original URL; this changes only the path-entropy heuristic. It does not verify a publisher or an artifact's integrity.
 
+## Package-pool filenames
+
+For a final filename that matches a supported Debian `.deb`/`.udeb`, RPM `.rpm`, or Alpine `.apk` naming grammar, Pipelock can score the version separately from the remaining filename. The remaining filename keeps the separators around the version. Both subjects must pass the existing entropy checks; a high-entropy version or package name still blocks the request. For example, `libk5crypto3_1.20.1-2+deb12u5_amd64.deb` is scored as `libk5crypto3__amd64.deb` and `1.20.1-2+deb12u5`.
+
+This split applies only when the whole final segment blocks and the repeated-SemVer discount hasn't allowed it. It uses the decoded path for both HTTP and HTTPS. Nonmatching filenames, earlier path segments, and query values retain their checks. The package grammar doesn't establish publisher trust or artifact integrity.
+
+## Path exclusions
+
 For recurring software downloads that still trigger path entropy, an operator-reviewed publisher-specific prefix in `fetch_proxy.monitoring.path_entropy_exclusions` can cover successive releases without another filename entry. Every request under that prefix loses path-entropy checking, including names not published by that source. Review whether an agent can send chosen data there and read it back before adding the exclusion; a familiar publisher name alone is not sufficient. An exact artifact prefix remains appropriate for an incident limited to one download.
 
 Path entropy exclusions retain subdomain entropy, query entropy, query-key entropy, credential detection and SSRF checks. See [path entropy exclusions](../configuration.md#fetch-proxy) for configuration details. Use `pipelock explain --json https://assets.vendor.example/download/v1.2.3/App-1.2.3-linux-x64.tar.gz` to inspect a verdict before changing policy.

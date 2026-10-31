@@ -856,6 +856,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 		}
 		if !hadAdaptiveFinding {
 			recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+				assessment: verdict.Assessment,
 				sessionKey: auditSessionKey,
 				reason:     adaptiveRecoveryClean,
 				requestID:  canonicalID(verdict.ID),
