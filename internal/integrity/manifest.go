@@ -75,7 +75,7 @@ func LoadVerified(path string, pubKey ed25519.PublicKey) (*Manifest, error) {
 
 func parseManifest(data []byte) (*Manifest, error) {
 	var m Manifest
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(Manifest)); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 	if err := json.Unmarshal(data, &m); err != nil {

@@ -44,7 +44,7 @@ func (a ReplayArchiveAuthorization) SignedBytes() []byte {
 
 func ParseReplayArchiveAuthorization(data []byte) (ReplayArchiveAuthorization, error) {
 	var a ReplayArchiveAuthorization
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &a); err != nil {
 		return ReplayArchiveAuthorization{}, fmt.Errorf("%s is invalid JSON: %w", replayArchiveAuthorizationFile, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

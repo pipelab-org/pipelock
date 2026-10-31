@@ -282,7 +282,7 @@ func (s *LegalHoldStore) reloadLocked() error {
 	if len(data) == 0 {
 		return errors.New("legal hold store: empty file is invalid")
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new([]LegalHold)); err != nil {
 		return fmt.Errorf("legal hold store: parse: %w", err)
 	}
 	var records []LegalHold

@@ -1257,7 +1257,7 @@ func (s *Server) attemptVMSession(ctx context.Context, target string, reqBody []
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: vm session status %d", httpResp.StatusCode)
 	}
-	if err := jsonscan.RejectDuplicateKeys(respBody); err != nil {
+	if err := jsonscan.RejectDuplicateFields(respBody, new(vmSessionResponse)); err != nil {
 		return vmSessionResponse{}, time.Time{}, false, fmt.Errorf("broker: parse vm session response: %w", err)
 	}
 	var vmResp vmSessionResponse

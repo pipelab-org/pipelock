@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 )
 
@@ -601,6 +602,9 @@ func (q *Queue) queueEncryptionSeenLocked() (bool, error) {
 		return false, fmt.Errorf("auditbatcher: read queue state: %w", err)
 	}
 	var state queueState
+	if err := jsonscan.RejectNonCanonicalFields(data, &state); err != nil {
+		return false, fmt.Errorf("auditbatcher: decode queue state: %w", err)
+	}
 	if err := json.Unmarshal(data, &state); err != nil {
 		return false, fmt.Errorf("auditbatcher: decode queue state: %w", err)
 	}

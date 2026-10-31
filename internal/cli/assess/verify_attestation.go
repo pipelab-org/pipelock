@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/report/attestation"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -109,6 +110,9 @@ func runAssessVerifyAttestation(runDir, agent, keystoreDir string) (int, error) 
 
 	var att attestation.Attestation
 	if err := json.Unmarshal(data, &att); err != nil {
+		return verifyExitTamperedArtifact, fmt.Errorf("parsing attestation: %w", err)
+	}
+	if err := jsonscan.RejectNonCanonicalFields(data, &att); err != nil {
 		return verifyExitTamperedArtifact, fmt.Errorf("parsing attestation: %w", err)
 	}
 

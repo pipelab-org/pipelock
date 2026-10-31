@@ -10,9 +10,9 @@ import (
 )
 
 // decodeLicenseJSON preserves forward-compatible unknown fields while rejecting
-// the cross-parser ambiguity of duplicate object members before typed decoding.
+// duplicate members and noncanonical typed field names before decoding.
 func decodeLicenseJSON(data []byte, out any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, out); err != nil {
 		return err
 	}
 	return json.Unmarshal(data, out)

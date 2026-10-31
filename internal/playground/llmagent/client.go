@@ -173,7 +173,7 @@ func (a *Agent) complete(ctx context.Context, messages []chatMessage, offerTools
 		}
 	}
 
-	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+	if err := jsonscan.RejectDuplicateFields(body, new(completionResponse)); err != nil {
 		return chatMessage{}, fmt.Errorf("decode model response: %w", err)
 	}
 	var parsed completionResponse

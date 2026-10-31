@@ -324,7 +324,7 @@ func (v TurnstileVerifier) Verify(ctx context.Context, token, remoteIP string) e
 	if len(raw) > 64*1024 {
 		return errors.New("turnstile response exceeds 65536 bytes")
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectDuplicateFields(raw, new(turnstileResponse)); err != nil {
 		return fmt.Errorf("decode turnstile response: %w", err)
 	}
 	var out turnstileResponse
