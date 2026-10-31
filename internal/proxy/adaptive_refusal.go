@@ -129,8 +129,13 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 		return
 	}
 	w.wroteHeader = true
+	// Successful responses skip the session lookup and its lock.
+	if status < http.StatusBadRequest || keepsOwnRefusal(w.Header()) {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
 	info, message, blocked := decide.AdaptiveRefusal(w.level(), w.cfg)
-	if status < http.StatusBadRequest || !blocked || keepsOwnRefusal(w.Header()) {
+	if !blocked {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
