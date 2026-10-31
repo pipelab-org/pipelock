@@ -184,8 +184,8 @@ func summarizeAuditSnapshot(source io.Reader, size int64, since, until time.Time
 		if !json.Valid(line) {
 			return result, fmt.Errorf("audit ledger line %d is malformed JSON", lineNumber)
 		}
-		if err := jsonscan.RejectDuplicateKeys(line); err != nil {
-			return result, fmt.Errorf("audit ledger line %d has duplicate keys", lineNumber)
+		if err := jsonscan.RejectNonCanonicalFields(line, new(licenseservice.AuditEntry)); err != nil {
+			return result, fmt.Errorf("audit ledger line %d has duplicate keys or noncanonical fields: %w", lineNumber, err)
 		}
 		var entry licenseservice.AuditEntry
 		if err := json.Unmarshal(line, &entry); err != nil {

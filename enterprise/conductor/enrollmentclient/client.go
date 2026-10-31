@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/controlplane"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 const maxResponseBytes = 64 * 1024
@@ -102,6 +103,9 @@ func (c *Client) Enroll(ctx context.Context, reqBody Request) (Response, error) 
 	}
 	var out Response
 	if _, err := contract.ParseJSONStrict(respBody); err != nil {
+		return Response{}, fmt.Errorf("enrollmentclient: decode enroll response: %w", err)
+	}
+	if err := jsonscan.RejectDuplicateFieldsInValidatedJSON(respBody, &out); err != nil {
 		return Response{}, fmt.Errorf("enrollmentclient: decode enroll response: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(respBody))

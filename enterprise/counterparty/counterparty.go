@@ -444,7 +444,7 @@ func UnmarshalPayloadCapture(data []byte) (PayloadCapture, error) {
 
 func unmarshalStrict[T any](data []byte, label string) (T, error) {
 	var v T
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &v); err != nil {
 		return v, fmt.Errorf("unmarshal %s: %w", label, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

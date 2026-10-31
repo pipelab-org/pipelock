@@ -226,6 +226,9 @@ func (a *RemoteKillApplier) applyPersistedDecisionLocked(state remoteKillState) 
 		return errors.New("conductor remote kill applier resolver required to verify persisted decision")
 	}
 	var msg conductor.RemoteKillMessage
+	if err := jsonscan.RejectNonCanonicalFields(state.SignedMessage, &msg); err != nil {
+		return fmt.Errorf("decode persisted conductor remote kill message: %w", err)
+	}
 	if err := json.Unmarshal(state.SignedMessage, &msg); err != nil {
 		return fmt.Errorf("decode persisted conductor remote kill message: %w", err)
 	}
@@ -298,7 +301,7 @@ func readRemoteKillStateFile(clean string) (remoteKillState, error) {
 	if len(data) > maxRemoteKillStateBytes {
 		return remoteKillState{}, fmt.Errorf("conductor remote kill state too large")
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(remoteKillState)); err != nil {
 		return remoteKillState{}, fmt.Errorf("decode conductor remote kill state: %w", err)
 	}
 	var state remoteKillState
@@ -590,7 +593,7 @@ func readRemoteKillStateContext(path string) (bool, error) {
 		return false, fmt.Errorf("read conductor remote kill state context: %w", err)
 	}
 	var ctx remoteKillStateContext
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &ctx); err != nil {
 		return false, fmt.Errorf("parse conductor remote kill state context: %w", err)
 	}
 	if err := json.Unmarshal(data, &ctx); err != nil {

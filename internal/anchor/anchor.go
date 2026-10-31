@@ -979,7 +979,7 @@ func checkpointsEqual(a, b Checkpoint) bool {
 }
 
 func decodeStrict(data []byte, dst any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, dst); err != nil {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

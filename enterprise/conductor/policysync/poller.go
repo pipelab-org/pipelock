@@ -217,7 +217,7 @@ func (p *Poller) PollOnce(ctx context.Context) error {
 	if err := decoder.Decode(&bundle); err != nil {
 		return fmt.Errorf("%w: decode: %w", ErrPollResponse, err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(body); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(body, &bundle); err != nil {
 		return fmt.Errorf("%w: ambiguous response: %w", ErrPollResponse, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {

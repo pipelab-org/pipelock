@@ -169,7 +169,7 @@ func ParseManifest(data []byte) (*Manifest, error) {
 	if len(data) > maxManifestFileSize {
 		return nil, fmt.Errorf("parsing manifest: exceeds %d bytes", maxManifestFileSize)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(Manifest)); err != nil {
 		return nil, fmt.Errorf("parsing manifest: %w", err)
 	}
 	var m Manifest
