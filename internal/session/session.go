@@ -149,7 +149,8 @@ func NoteClassifiedDenial(rec Recorder, scope, scannerName, reason, policyHash s
 }
 
 // Recoverer is an optional extension for recorders that can de-escalate
-// autonomously after time has passed.
+// autonomously after time has passed or expire a residual score at normal
+// level. The return values describe level changes only, not score-only expiry.
 type Recoverer interface {
 	TryAutoRecover(levelDuration time.Duration, blockAllCheck func(int) bool) (bool, int, int)
 }
