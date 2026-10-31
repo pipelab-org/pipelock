@@ -135,6 +135,7 @@ func (w *walk) preflight(data []byte) error {
 			return fmt.Errorf("ZIP directory exceeds addressable index")
 		}
 		p := int(offset)
+		spans := make([][2]int, 0, count)
 		for range count {
 			if p > i-centralHeaderBytes || !bytes.HasPrefix(data[p:], []byte("PK\x01\x02")) {
 				return fmt.Errorf("invalid central directory record")
@@ -169,10 +170,34 @@ func (w *walk) preflight(data []byte) error {
 					binary.LittleEndian.Uint32(data[l+22:]) != binary.LittleEndian.Uint32(data[p+24:])) {
 				return fmt.Errorf("local member checksum or size disagrees with directory")
 			}
+			end := headerEnd + int(binary.LittleEndian.Uint32(data[p+20:]))
+			if binary.LittleEndian.Uint16(data[p+8:])&8 != 0 {
+				// APPNOTE 4.3.9: a data descriptor follows the data, with an
+				// optional signature; ZIP64 sizes were refused above.
+				end += 12
+				if bytes.HasPrefix(data[end-12:], []byte("PK\x07\x08")) {
+					end += 4
+				}
+			}
+			spans = append(spans, [2]int{l, end})
 			p += n
 		}
 		if p != i {
 			return fmt.Errorf("unread central directory data")
+		}
+		// APPNOTE 4.3.6: member records precede the central directory. A byte
+		// range no listed member covers, such as a local record the directory
+		// omits, is input a streaming reader can extract and this walk would skip.
+		sort.Slice(spans, func(a, b int) bool { return spans[a][0] < spans[b][0] })
+		next := 0
+		for _, s := range spans {
+			if s[0] != next {
+				return fmt.Errorf("ZIP data outside listed members")
+			}
+			next = s[1]
+		}
+		if next != int(offset) {
+			return fmt.Errorf("ZIP data outside listed members")
 		}
 		w.entries -= count
 		return nil

@@ -8,6 +8,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -255,5 +257,94 @@ func TestInspectXMLFailurePrivacy(t *testing.T) {
 				t.Fatalf("reason must name failure without document text: %q", r.Reason)
 			}
 		})
+	}
+}
+
+// A local record the central directory omits is extracted by streaming readers
+// but skipped by a directory walk, so it must leave the file incomplete.
+func TestInspectUnlistedMemberBytes(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	archiveAt := func(offset int64, name, text string) []byte {
+		var b bytes.Buffer
+		z := zip.NewWriter(&b)
+		z.SetOffset(offset)
+		f, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write([]byte(text)); err != nil {
+			t.Fatal(err)
+		}
+		if err = z.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	hidden := archiveAt(0, "secret.txt", "key="+key+strings.Repeat(" padding", 32))
+	hiddenRecord := hidden[:bytes.Index(hidden, []byte("PK\x01\x02"))]
+	if bytes.Contains(hiddenRecord, []byte(key)) {
+		t.Fatal("hidden record must be compressed")
+	}
+	plain := archiveFixture(t, map[string][]byte{"data.txt": []byte("ordinary text")})
+	central := bytes.Index(plain, []byte("PK\x01\x02"))
+	duplicate := append(bytes.Clone(plain[:central]), plain[central:len(plain)-endHeaderBytes]...)
+	duplicate = append(duplicate, plain[central:len(plain)-endHeaderBytes]...)
+	duplicate = append(duplicate, plain[len(plain)-endHeaderBytes:]...)
+	e := len(duplicate) - endHeaderBytes
+	binary.LittleEndian.PutUint16(duplicate[e+8:], 2)
+	binary.LittleEndian.PutUint16(duplicate[e+10:], 2)
+	binary.LittleEndian.PutUint32(duplicate[e+12:], 2*binary.LittleEndian.Uint32(plain[len(plain)-endHeaderBytes+12:]))
+	gap := append(bytes.Clone(plain[:central]), "unlisted bytes"...)
+	gap = append(gap, plain[central:]...)
+	binary.LittleEndian.PutUint32(gap[len(gap)-endHeaderBytes+16:], binary.LittleEndian.Uint32(plain[len(plain)-endHeaderBytes+16:])+uint32(len("unlisted bytes")))
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
+		{"gap before directory", gap},
+		{"unlisted local record", append(bytes.Clone(hiddenRecord), archiveAt(int64(len(hiddenRecord)), "a.txt", "hello")...)},
+		{"bytes after signature", append([]byte("PK\x03\x04stub"), archiveAt(8, "a.txt", "hello")...)},
+		{"duplicate directory reference", duplicate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), tc.data, Limits{1 << 20, 64})
+			if r.Complete || !strings.Contains(r.Reason, "outside listed members") {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+	raw := func() []byte {
+		var b bytes.Buffer
+		z := zip.NewWriter(&b)
+		f, err := z.CreateRaw(&zip.FileHeader{Name: "a.txt", Method: zip.Store, CRC32: 0x3610a686, CompressedSize64: 5, UncompressedSize64: 5})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write([]byte("hello")); err != nil {
+			t.Fatal(err)
+		}
+		if err = z.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}()
+	if r := Inspect(t.Context(), raw, Limits{4096, 64}); !r.Complete {
+		t.Fatalf("member without a data descriptor: %q", r.Reason)
+	}
+	entries, err := os.ReadDir("testdata")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		data, readErr := os.ReadFile(filepath.Join("testdata", entry.Name()))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if Kind(data) != "ZIP" {
+			continue
+		}
+		if r := Inspect(t.Context(), data, Limits{1 << 22, 64}); !r.Complete {
+			t.Fatalf("%s: producer file reported incomplete: %q", entry.Name(), r.Reason)
+		}
 	}
 }
