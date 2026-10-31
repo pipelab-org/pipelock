@@ -59,3 +59,27 @@ func TestAddressAndEntropyUnreadGuidance(t *testing.T) {
 		t.Fatal("an entropy reason without an unread upload matched")
 	}
 }
+
+// A JSON inspection limit with an unread upload keeps the fixed-limit guidance:
+// suppression cannot lift it, so the secret-finding sentence must not appear.
+func TestJSONInspectionLimitAndUnreadGuidance(t *testing.T) {
+	unread := "; ZIP upload not fully read: encrypted member; " + IncompleteFileGovernedSuffix
+	limit := jsonInspectionLimitGuidance()
+	for _, names := range []string{UninspectableJSONNumberPattern, "Stripe Key, " + UninspectableJSONNumberPattern} {
+		reason := "request body contains secret: " + names + unread
+		got, ok := GuidanceForResult(ScannerBodyDLP, reason)
+		if !ok || !got.Immutable || !strings.HasPrefix(got.AgentReason, limit.AgentReason) || !strings.Contains(got.AgentReason, "could not be fully read") ||
+			strings.Contains(got.OperatorKnob, "suppress:") || !strings.Contains(got.OperatorKnob, limit.OperatorKnob) || !strings.Contains(got.OperatorKnob, "request_body_scanning.action") {
+			t.Fatalf("%s: guidance = %+v ok=%t", names, got, ok)
+		}
+		agent, ok := FindingAndUnreadAgentReason(reason)
+		if !ok || agent != got.AgentReason {
+			t.Fatalf("%s: agent reason = %q ok=%t", names, agent, ok)
+		}
+	}
+	// An ordinary secret with an unread upload keeps the suppression sentence.
+	got, ok := GuidanceForResult(ScannerBodyDLP, "request body contains secret: Stripe Key"+unread)
+	if !ok || got.Immutable || !strings.Contains(got.OperatorKnob, "suppress:") {
+		t.Fatalf("ordinary secret guidance = %+v ok=%t", got, ok)
+	}
+}

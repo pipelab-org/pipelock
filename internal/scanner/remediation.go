@@ -118,6 +118,7 @@ const (
 // unread upload, with that finding's own operator and agent sentences.
 type findingAndUnread struct {
 	agent, knob string
+	immutable   bool
 }
 
 func findingBeforeUnread(reason string) (findingAndUnread, bool) {
@@ -126,14 +127,21 @@ func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 	}
 	switch {
 	case strings.HasPrefix(reason, secretAndUnreadPrefix):
-		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret."}, true
+		// The pattern names end where the unread-upload clause begins. A
+		// fixed JSON inspection limit is not lifted by suppression.
+		names, _, _ := strings.Cut(strings.TrimPrefix(reason, secretAndUnreadPrefix+" "), "; ")
+		if jsonInspectionLimitInNames(names) {
+			limit := jsonInspectionLimitGuidance()
+			return findingAndUnread{limit.AgentReason, "The reason names a JSON inspection limit and then an unread upload. " + limit.OperatorKnob, true}, true
+		}
+		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret.", false}, true
 	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
-		return findingAndUnread{promptInjectionAgentReason, "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob}, true
+		return findingAndUnread{promptInjectionAgentReason, "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob, false}, true
 	case strings.HasPrefix(reason, addressAndUnreadPrefix):
-		return findingAndUnread{auditPolicyAgentReason, "The reason names an address-poisoning finding and then an unread upload. " + addressProtectionOperatorKnob}, true
+		return findingAndUnread{auditPolicyAgentReason, "The reason names an address-poisoning finding and then an unread upload. " + addressProtectionOperatorKnob, false}, true
 	case strings.HasPrefix(reason, entropyAndUnreadPrefix),
 		strings.HasPrefix(reason, opaqueEntropyAndUnreadPrefix) && strings.Contains(reason, opaqueEntropyAndUnreadContains):
-		return findingAndUnread{highEntropyAgentReason, "The reason names a high-entropy finding and then an unread upload. " + bodyEntropyOperatorKnob}, true
+		return findingAndUnread{highEntropyAgentReason, "The reason names a high-entropy finding and then an unread upload. " + bodyEntropyOperatorKnob, false}, true
 	}
 	return findingAndUnread{}, false
 }
@@ -670,7 +678,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// also names a secret keeps that finding first.
 	if f, ok := findingBeforeUnread(reason); ok {
 		file := incompleteFileHoldGuidance()
-		return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason}, true
+		return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason, Immutable: f.immutable}, true
 	}
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true
