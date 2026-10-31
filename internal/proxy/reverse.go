@@ -807,6 +807,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		agent = resolvedIdentity.Name
 		agentAuth = string(resolvedIdentity.Auth)
 	}
+	w = rp.owner.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: resolvedIdentity.Auth, host: func() string { return rp.upstream.Hostname() }, transport: TransportReverse})
 	emitReverseReceipt := func(opts receipt.EmitOpts) {
 		opts = withReceiptShard(opts, selectedReceiptShard)
 		if snap.cfg != nil {

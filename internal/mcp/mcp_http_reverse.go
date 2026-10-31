@@ -654,6 +654,9 @@ func RunHTTPListenerProxy(
 		setClientState := func(state *mcpListenerClientState) {
 			clientState = state
 			clientStateKey = state.key
+			w.opts.Rec = state.recorder
+			w.opts.AdaptiveCfg = adaptiveCfg
+			w.opts.AdaptiveCfgFn = nil
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
 				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
@@ -1024,6 +1027,24 @@ func RunHTTPListenerProxy(
 			}
 			return true
 		}
+		blockedByAdaptiveLockdown := func() bool {
+			reqOpts := requestBaseOpts
+			reqOpts.Rec = clientState.recorder
+			reqOpts.AdaptiveCfg = adaptiveCfg
+			reqOpts.AdaptiveCfgFn = nil
+			tryRecoverSession(reqOpts.Rec, adaptiveCfg, adaptiveRecoveryContext{sessionKey: listenerStateAuditKey(), logger: reqOpts.AuditLogger, metrics: opts.Metrics})
+			message, blocked := adaptiveRefusalMessage(reqOpts)
+			if !blocked {
+				return false
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason: blockreason.EscalationLevel, headerSeverity: blockreason.SeverityCritical,
+				retry: blockreason.RetryTransient, layer: "session_deny", pattern: "session escalation", target: "mcp:listener-session",
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(blockSessionDenyResponse(nil, message))
+			return true
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
 			if headerResult == nil {
@@ -1172,6 +1193,9 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByA2AHeaders() {
+				return
+			}
+			if blockedByAdaptiveLockdown() {
 				return
 			}
 			if principalStateAdmissionDenied {
@@ -1340,6 +1364,9 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByA2AHeaders() {
+				return
+			}
+			if blockedByAdaptiveLockdown() {
 				return
 			}
 			if principalStateAdmissionDenied {

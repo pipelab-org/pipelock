@@ -13,6 +13,12 @@ import (
 	"github.com/gobwas/ws"
 )
 
+// CloseFrameProjector lets a connection's owner apply its final close policy
+// before either server or client framing. Ordinary connections are unchanged.
+type CloseFrameProjector interface {
+	ProjectCloseFrame(ws.StatusCode, string) (ws.StatusCode, string)
+}
+
 // sanitizeCloseReason truncates and validates UTF-8 for close frame reasons.
 // RFC 6455 requires close reasons to be valid UTF-8 and fit in 123 bytes
 // (125-byte control payload minus 2-byte status code).
@@ -31,6 +37,9 @@ func sanitizeCloseReason(reason string) []byte {
 
 // WriteCloseFrame sends a WebSocket close frame with the given status code and reason.
 func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
+	if projector, ok := conn.(CloseFrameProjector); ok {
+		code, reason = projector.ProjectCloseFrame(code, reason)
+	}
 	// Close frame payload: 2-byte status code + optional UTF-8 reason.
 	reasonBytes := sanitizeCloseReason(reason)
 	payload := make([]byte, 2+len(reasonBytes))
@@ -55,6 +64,9 @@ func WriteCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
 
 // WriteClientCloseFrame sends a masked close frame (client-to-server per RFC 6455).
 func WriteClientCloseFrame(conn net.Conn, code ws.StatusCode, reason string) {
+	if projector, ok := conn.(CloseFrameProjector); ok {
+		code, reason = projector.ProjectCloseFrame(code, reason)
+	}
 	reasonBytes := sanitizeCloseReason(reason)
 	payload := make([]byte, 2+len(reasonBytes))
 	payload[0] = byte(code >> 8) //nolint:gosec // StatusCode is uint16, high byte extraction is safe

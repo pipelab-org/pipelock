@@ -24,15 +24,17 @@ type mcpDenialScope struct {
 }
 
 type mcpTerminalDecision struct {
-	once   sync.Once
-	audit  mcpDenialAudit
-	scope  mcpDenialScope
-	logger *audit.Logger
+	once         sync.Once
+	audit        mcpDenialAudit
+	scope        mcpDenialScope
+	logger       *audit.Logger
+	projectReply func([]byte) []byte
 }
 
 type mcpDenial struct {
 	decision *mcpTerminalDecision
 	reply    []byte
+	framed   bool // HTTP/SSE bytes have already passed the message projection
 }
 
 type (
@@ -55,7 +57,8 @@ func newMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, direction string
 	create := func() *mcpTerminalDecision {
 		return &mcpTerminalDecision{
 			audit: descriptor, logger: opts.AuditLogger,
-			scope: mcpDenialScope{transport: firstNonEmpty(opts.Transport, transportMCPStdio), direction: direction, method: method},
+			scope:        mcpDenialScope{transport: firstNonEmpty(opts.Transport, transportMCPStdio), direction: direction, method: method},
+			projectReply: func(reply []byte) []byte { return adaptiveDeniedReply(opts, reply) },
 		}
 	}
 	terminal := create
@@ -88,7 +91,11 @@ func finishMCPDenial(d *mcpDenial, adapter mcpDenialAdapter) error {
 		ctx = ctx.WithMCPRoute(terminal.scope.transport, terminal.scope.direction)
 		terminal.logger.LogMCPBlocked(ctx, spec.label, reason, audit.BlockDetail{Class: spec.class})
 	})
-	if err := adapter.deliverDeniedReply(d.reply); err != nil {
+	reply := d.reply
+	if !d.framed && d.decision.projectReply != nil {
+		reply = d.decision.projectReply(reply)
+	}
+	if err := adapter.deliverDeniedReply(reply); err != nil {
 		return &mcpFinalizedDenialError{err: err}
 	}
 	return nil
@@ -107,6 +114,7 @@ func writeMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transpo
 func sendMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, br BlockedRequest, out chan<- BlockedRequest) {
 	d := newMCPDenial(opts, descriptor, "input", nil)
 	br.terminal = d.decision
+	adaptiveBlockedRequest(opts, &br)
 	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { out <- br; return nil }))
 }
 
@@ -118,6 +126,7 @@ func inputMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, br *BlockedReq
 	}
 	d := newMCPDenial(opts, descriptor, "input", nil)
 	br.terminal = d.decision
+	adaptiveBlockedRequest(opts, br)
 	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { return nil }))
 	return br
 }
