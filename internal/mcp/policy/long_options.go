@@ -117,7 +117,7 @@ func utilityKey(name string) string {
 // ambiguous prefixes; policy conservatively presents every candidate instead
 // of choosing one. The output is linear in input size: see optionExpander.
 func normalizeCommandOptions(tokens []string) []string {
-	out, _ := normalizeLineOptions(tokens, false)
+	out, _ := normalizeLineOptions(tokens, false, false)
 	return out
 }
 
@@ -137,8 +137,12 @@ func normalizeCommandOptions(tokens []string) []string {
 // tool runs no shell, so its subcommand is the whole argument word: one that
 // carries more than a builtin name, such as status; with its separator, is
 // not that builtin.
-func normalizeLineOptions(tokens []string, gitTool bool) ([]string, bool) {
-	out, unknown := normalizeOptions(tokens, false, gitTool)
+//
+// unknown reports that the line runs a non-builtin subcommand by a reading
+// these tokens can no longer show (see gitSubcommandUnknown).
+func normalizeLineOptions(tokens []string, gitTool, unknown bool) ([]string, bool) {
+	out, unknownHere := normalizeOptions(tokens, false, gitTool)
+	unknown = unknown || unknownHere
 	if unknown {
 		out, _ = normalizeOptions(tokens, true, gitTool)
 	}

@@ -72,6 +72,7 @@ func literalArgTokens(args []string) ([]string, string) {
 // normalizeLineOptions).
 func buildArgViews(args []string, gitTool bool) []argView {
 	segs, plain := splitCommands(args)
+	rawUnknown := gitSubcommandUnknown(args, gitTool)
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
@@ -118,7 +119,7 @@ func buildArgViews(args []string, gitTool bool) []argView {
 		add(v)
 		expanded := v
 		var unknownGit bool
-		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool)
+		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool, rawUnknown)
 		expanded.joined = strings.Join(expanded.tokens, " ")
 		if v.segments != nil {
 			expanded.segments = make([][]string, 0, len(v.segments))

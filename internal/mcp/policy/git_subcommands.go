@@ -54,6 +54,26 @@ var gitBuiltins = func() map[string]bool {
 // default rules.
 var gitToolName = regexp.MustCompile(`(?i)^(?:` + builtinToolNameAliasPrefix + `)?git$`)
 
+// gitSubcommandUnknown reports whether args run a Git subcommand that is not a
+// builtin, reading each subcommand word as Git receives it. The normalized
+// views drop invisible characters, fold lookalike letters and split words on
+// every Unicode space, so a word such as fetch followed by a carriage return,
+// or written with a Cyrillic e, reads there as the builtin fetch while Git
+// looks it up as written and runs an alias or git-<name> program. Here only
+// the shell's own spelling is resolved (quotes, escapes, expansions), and
+// words split on the shell's default field separators, space and tab; a
+// newline stays in the word and separates commands as in the normalized views.
+// gitBuiltins then matches only the exact ASCII name. gitTool is as for
+// normalizeLineOptions.
+func gitSubcommandUnknown(args []string, gitTool bool) bool {
+	var words []string
+	for _, arg := range args {
+		words = append(words, strings.FieldsFunc(resolveShellSpelling(arg), func(r rune) bool { return r == ' ' || r == '\t' })...)
+	}
+	_, unknown := normalizeOptions(words, false, gitTool)
+	return unknown
+}
+
 // gitDestructiveOptions are the long options in the covered Git subcommands'
 // option tables (commandLongOptions) that a built-in rule blocks on their own:
 // reset --hard and push --force under Destructive Git Operation, and git rm

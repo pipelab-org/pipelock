@@ -517,20 +517,25 @@ func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) strin
 		if preNorm != nil {
 			s = preNorm.Replace(s)
 		}
-		normalized := normFn(s)
-		normalized = decodeShellEscapes(normalized)
-		normalized = backtickCmdSubRe.ReplaceAllString(normalized, "$1")
-		normalized = shellQuoteStripper.Replace(normalized)
-		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
-		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
-		normalized = resolveShellConstruction(normalized)
-		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
-		normalized = expandBraces(normalized)
-		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
-		normalized = collapsePathSeparators(normalized)
-		tokens = append(tokens, strings.Fields(normalized)...)
+		tokens = append(tokens, strings.Fields(resolveShellSpelling(normFn(s)))...)
 	}
 	return tokens, strings.Join(tokens, " ")
+}
+
+// resolveShellSpelling applies the shell escape decoding, quote removal and
+// shell construction resolution of normalizeArgTokensUnexpanded, without
+// Unicode normalization.
+func resolveShellSpelling(s string) string {
+	s = decodeShellEscapes(s)
+	s = backtickCmdSubRe.ReplaceAllString(s, "$1")
+	s = shellQuoteStripper.Replace(s)
+	s = shellEscapeRe.ReplaceAllString(s, "$1")
+	s = shellPositionalRe.ReplaceAllString(s, "")
+	s = resolveShellConstruction(s)
+	s = shellHomeSlashRe.ReplaceAllString(s, "/")
+	s = expandBraces(s)
+	s = shellExpansionRe.ReplaceAllString(s, " ")
+	return collapsePathSeparators(s)
 }
 
 // pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem

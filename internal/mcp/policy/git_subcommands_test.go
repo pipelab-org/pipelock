@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -340,6 +341,54 @@ func TestGitToolNameFromRules(t *testing.T) {
 		want := gitRule.MatchString(name) && !shellRule.MatchString(name)
 		if got := gitToolName.MatchString(name); got != want {
 			t.Errorf("%q: gitToolName %v, rules %v", name, got, want)
+		}
+	}
+}
+
+// TestGitSubcommandRawSpelling checks that the builtin check reads the
+// subcommand as submitted. Normalization drops invisible characters, folds
+// lookalike letters and splits words on every Unicode space, so a word that
+// only normalizes to a builtin name must not be read as that builtin: Git looks
+// it up as written and runs an alias or a git-<name> program instead.
+func TestGitSubcommandRawSpelling(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		subcommand string
+		block      bool
+	}{
+		{"fet\u200bch", true},  // zero-width space
+		{"f\u0435tch", true},   // Cyrillic e
+		{"\uff46etch", true},   // fullwidth f
+		{"fetch\r", true},      // carriage return
+		{"fetch\u00a0x", true}, // no-break space
+		{"fetch\u2060", true},  // word joiner
+		{"a\u200bdd", true},
+		{"\u0430dd", true}, // Cyrillic a
+		{"FETCH", true},
+		// Spellings the shell itself reduces to the builtin name.
+		{"fetch", false},
+		{"add", false},
+		{"f''etch", false},
+		{`"fetch"`, false},
+		{`fe\tch`, false},
+	} {
+		line := tc.subcommand + " --force notes"
+		cases := map[string]func() Verdict{
+			"bash":      func() Verdict { return pc.CheckToolCall("bash", []string{"git " + line}) },
+			"bash argv": func() Verdict { return pc.CheckToolCall("bash", []string{"git", tc.subcommand, "--force", "notes"}) },
+			"git tool":  func() Verdict { return pc.CheckToolCall("git", []string{line}) },
+			"git argv":  func() Verdict { return pc.CheckToolCall("git", []string{tc.subcommand, "--force", "notes"}) },
+		}
+		for name, check := range cases {
+			if strings.ContainsAny(tc.subcommand, `'"\`) && name != "bash" {
+				continue // shell quoting applies only to a shell command string
+			}
+			t.Run(name+"/"+strconv.Quote(tc.subcommand), func(t *testing.T) {
+				v := check()
+				if blocked := v.Matched && v.Action == config.ActionBlock; blocked != tc.block {
+					t.Errorf("got %+v, want block=%v", v, tc.block)
+				}
+			})
 		}
 	}
 }
