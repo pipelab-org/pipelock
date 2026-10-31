@@ -539,6 +539,11 @@ func ForDLP(s string) string {
 // forDLPFull is the complete ForDLP pipeline without fast paths. It is the
 // reference the segmented fast path is derived from and tested against.
 func forDLPFull(s string) string {
+	return dlpNormalizeFull(s, true)
+}
+
+// stripFolded is false only for replay of published transform profiles.
+func dlpNormalizeFull(s string, stripFolded bool) string {
 	// These two stages only delete runes. Their union preserves the original
 	// order and strings.Map's malformed UTF-8 repair while walking once.
 	s = strings.Map(func(r rune) rune {
@@ -548,6 +553,9 @@ func forDLPFull(s string) string {
 		return r
 	}, s)
 	s = norm.NFKC.String(s)
+	if stripFolded {
+		s = StripControlChars(s)
+	}
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	return s
@@ -594,8 +602,17 @@ func decomposedMatchingFull(s string) string { return matchingNormalizeFull(s, f
 
 // matchingNormalizeFull is the complete matching pipeline without fast paths.
 func matchingNormalizeFull(s string, recompose bool) string {
+	return matchingPipelineFull(s, recompose, true)
+}
+
+// stripFolded is false only for replay of published transform profiles.
+func matchingPipelineFull(s string, recompose, stripFolded bool) string {
 	s = StripZeroWidth(s)
 	s = norm.NFKC.String(s)
+	// Compatibility folding can produce characters in InvisibleRanges.
+	if stripFolded {
+		s = StripZeroWidth(s)
+	}
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	if recompose {
@@ -700,7 +717,7 @@ func parseHex4(s string) (rune, bool) {
 // critical for tool-policy regex: "rm\u200b-rf" → "rm -rf" (matchable).
 func ForPolicy(s string) string {
 	s = ReplaceInvisibleWithSpace(s)
-	s = norm.NFKC.String(s)
+	s = ReplaceInvisibleWithSpace(norm.NFKC.String(s))
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	s = Whitespace(s)
@@ -733,7 +750,7 @@ func FoldVowels(s string) string {
 // whitespace. More aggressive than ForMatching because tool descriptions have no
 // legitimate control chars - any present are evasion attempts.
 func ForToolText(s string) string {
-	return toolTextNormalize(StripControlChars(s))
+	return toolTextNormalize(s, StripControlChars)
 }
 
 // ForToolTextSpaced is ForToolText with each control and invisible character
@@ -743,16 +760,21 @@ func ForToolText(s string) string {
 // Removal is still right for a separator inside a word ("IMPOR\tTANT"), so
 // tool scanning matches both views, as response scanning does.
 func ForToolTextSpaced(s string) string {
-	return toolTextNormalize(strings.Map(func(r rune) rune {
+	return toolTextNormalize(s, replaceToolControlsWithSpace)
+}
+
+func replaceToolControlsWithSpace(s string) string {
+	return strings.Map(func(r rune) rune {
 		if isDLPControl(r) {
 			return ' '
 		}
 		return r
-	}, s))
+	}, s)
 }
 
-func toolTextNormalize(s string) string {
-	s = norm.NFKC.String(s)
+func toolTextNormalize(s string, controls func(string) string) string {
+	s = controls(s)
+	s = controls(norm.NFKC.String(s))
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	s = Leetspeak(s)
