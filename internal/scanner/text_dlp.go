@@ -1522,7 +1522,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // piece-length floor or budget.
 func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, run := range adjacentHexRuns(textDLPSegments(text)) {
+	for _, run := range adjacentHexRuns(textDLPFlatSegments(text)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
 			body = body[:len(body)-len(body)%2]
@@ -1602,14 +1602,25 @@ func textDLPSegments(text string) []string {
 		if !strings.Contains(segment, "#") {
 			continue
 		}
-		pieces := strings.FieldsFunc(segment, isURLFragmentDelimiter)
-		for i, piece := range pieces {
-			if !slices.Contains(pieces[:i], piece) {
+		seen := make(map[string]struct{})
+		for _, piece := range strings.FieldsFunc(segment, isURLFragmentDelimiter) {
+			if _, dup := seen[piece]; !dup {
+				seen[piece] = struct{}{}
 				out = append(out, piece)
 			}
 		}
 	}
 	return out
+}
+
+// textDLPFlatSegments splits text once on the text_segment delimiters and
+// '#' together, keeping every piece in order. Hex-run joining needs pieces
+// that sit next to each other, which the whole segments textDLPSegments adds
+// would separate.
+func textDLPFlatSegments(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool {
+		return isTextDLPEncodingDelimiter(r) || isURLFragmentDelimiter(r)
+	})
 }
 
 func isURLFragmentDelimiter(r rune) bool {

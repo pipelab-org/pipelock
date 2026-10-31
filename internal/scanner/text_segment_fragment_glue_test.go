@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"encoding/base64"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +66,26 @@ func TestKnownValuesKeepWholeSegmentAroundFragmentDelimiter(t *testing.T) {
 				t.Errorf("%.6s cut %d: known value split by '#' was missed", value, cut)
 			}
 		}
+	}
+}
+
+// Hex-run joining reads the pieces in order, so a hex value split across a
+// text delimiter and a '#' still joins into one run.
+func TestSplitHexRunAcrossFragmentDelimiter(t *testing.T) {
+	encoded := hex.EncodeToString([]byte(testAnthropicPrefix + strings.Repeat("c", 25)))
+	body := `{"note":"` + encoded[:20] + ":" + encoded[20:40] + "#" + encoded[40:] + `"}`
+	s := MustNew(testConfig())
+	t.Cleanup(s.Close)
+	if got := s.ScanTextForDLP(t.Context(), body); got.Clean {
+		t.Fatal("hex secret split across ':' and '#' was missed")
+	}
+}
+
+// Repeated '#' pieces are deduplicated in linear time.
+func TestTextDLPSegmentsManyFragmentDelimiters(t *testing.T) {
+	text := strings.Repeat("ab#", 200000)
+	if got := textDLPSegments(text); len(got) != 2 || got[0] != text || got[1] != "ab" {
+		t.Fatalf("segments = %d, want the whole segment and one distinct piece", len(got))
 	}
 }
 
