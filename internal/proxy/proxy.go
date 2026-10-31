@@ -5388,7 +5388,10 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
-	w = p.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportFetch})
+	// Count the representation sent by the refusal projection, including
+	// partial writes, rather than the detector body it may discard.
+	delivery := &fetchDeliveryWriter{ResponseWriter: w}
+	w = p.withAdaptiveRefusal(delivery, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportFetch})
 	// Carry the provenance grade on the request from the moment identity is
 	// resolved. Every audit context below derives from r.Context(), so setting
 	// it only at fetch time would report "unknown" for each event on the way.
@@ -6422,8 +6425,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Count decoded source bytes before shield rewriting or text extraction.
 	// -1 signs bytes=unknown on paths that end before the body is read.
 	capturedBytes := int64(-1)
-	delivery := &fetchDeliveryWriter{ResponseWriter: w}
-	w = delivery
 	defer func() {
 		verdict := config.ActionAllow
 		// A policy denial describes withheld upstream content, even if its
