@@ -10,6 +10,8 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -82,10 +84,14 @@ func classifyMediaRune(r rune) mediaRuneClass {
 		return mediaRuneDrop
 	case normalize.Whitespace(string(r)) == " ":
 		return mediaRuneSpace
-	case normalize.ContainsInvisible(string(r)), unicode.Is(unicode.Mn, r), scannerDeletes(r):
+	case normalize.ContainsInvisible(string(r)), unicode.Is(unicode.Mn, r):
 		return mediaRuneKeep
 	case unicode.Is(mediaTextRanges, r):
 		return mediaRuneText
+	// No text-range scalar is deleted by the scanner, so this costlier check
+	// runs only for scalars that would otherwise end the run.
+	case scannerDeletes(r):
+		return mediaRuneKeep
 	default:
 		return mediaRuneBreak
 	}
@@ -94,6 +100,20 @@ func classifyMediaRune(r rune) mediaRuneClass {
 // scannerDeletes reports whether some scanner normalization removes r
 // entirely, for example a halfwidth sound mark that folds to a combining mark.
 func scannerDeletes(r rune) bool {
+	// A scalar with no decomposition survives normalization unless it is
+	// invisible, a separator, mark, control or format character itself, so
+	// skip the full pipelines for the rest. TestScannerDeletesMatchesPipelines
+	// checks this over every scalar.
+	if !unicode.In(r, normalize.InvisibleRanges, unicode.Z, unicode.M, unicode.Cc, unicode.Cf) {
+		var buf [utf8.UTFMax]byte
+		if norm.NFKC.Properties(buf[:utf8.EncodeRune(buf[:], r)]).Decomposition() == nil {
+			return false
+		}
+	}
+	return scannerDeletesFull(r)
+}
+
+func scannerDeletesFull(r rune) bool {
 	s := string(r)
 	return normalize.ForMatching(s) == "" || normalize.ForDLP(s) == "" || normalize.ForToolText(s) == ""
 }

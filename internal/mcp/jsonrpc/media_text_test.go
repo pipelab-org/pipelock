@@ -262,6 +262,30 @@ func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 	}
 }
 
+func TestScannerDeletesMatchesPipelines(t *testing.T) {
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if got, want := scannerDeletes(r), scannerDeletesFull(r); got != want {
+			t.Fatalf("scannerDeletes(U+%04X) = %v, full pipelines say %v", r, got, want)
+		}
+	}
+}
+
+func TestMediaTextRangesHoldNoScannerDeletedScalar(t *testing.T) {
+	// classifyMediaRune tests text ranges before scannerDeletes. That order is
+	// equivalent to testing deletion first only while this holds.
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if unicode.Is(mediaTextRanges, r) && scannerDeletes(r) {
+			t.Fatalf("U+%04X is a media text scalar the scanner deletes", r)
+		}
+	}
+}
+
 func TestMediaRuneClasses(t *testing.T) {
 	tests := []struct {
 		name string
