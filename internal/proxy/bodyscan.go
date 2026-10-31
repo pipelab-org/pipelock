@@ -984,7 +984,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		dlpExtracted.Texts = append(dlpExtracted.Texts, dnsInspection.DLPTexts...)
 	}
 
-	if len(texts) == 0 {
+	// A multipart form with no parts can still carry a file in its preamble.
+	// Recovered file text and an unread file decide the result like any field.
+	if len(texts) == 0 && len(fileTexts) == 0 && fileIncomplete == "" {
 		if len(preRedactionDLP) > 0 {
 			return buf, BodyScanResult{
 				Clean:           false,
