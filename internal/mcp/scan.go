@@ -327,7 +327,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed, false))
 	}
 	if result.Clean && len(dlpMatches) == 0 {
-		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
+		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true, Assessment: result.RecoveryAssessment()}
 	}
 
 	return jsonrpc.ScanVerdict{
@@ -432,6 +432,7 @@ type responseDLPView struct{ text, card string }
 // injection scan returns the failed result; the caller must fail closed.
 func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts ResponseScanOptions, injectionViews []string, dlpViews []responseDLPView) (scanner.ResponseScanResult, []scanner.TextDLPMatch, []scanner.TextDLPMatch) {
 	result := scanner.ResponseScanResult{Clean: true}
+	firstView := true
 	for _, view := range injectionViews {
 		if view == "" {
 			continue
@@ -440,6 +441,16 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		if viewResult.Failed() {
 			return viewResult, nil, nil
 		}
+		switch {
+		case scanner.BlankViewAddsNoCoverage(view, viewResult):
+			// A blank view holds no wording; it neither adds nor removes coverage.
+		case firstView:
+			result.Assessment = viewResult.RecoveryAssessment()
+			firstView = false
+		default:
+			result.Assessment = result.Assessment.Merge(viewResult.RecoveryAssessment())
+		}
+		result.WarnedMatches = appendUniqueResponseViewMatches(result.WarnedMatches, viewResult.WarnedMatches)
 		result.Clean = result.Clean && viewResult.Clean
 		result.Matches = appendUniqueResponseViewMatches(result.Matches, viewResult.Matches)
 		result.SuppressedMatches = appendUniqueResponseViewMatches(result.SuppressedMatches, viewResult.SuppressedMatches)
@@ -927,6 +938,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{Clean: true}, false
 	}
 
+	var assessment scanner.InjectionAssessment
 	var allKinds []session.HostileFindingKind
 	var allMatches []scanner.ResponseMatch
 	var allDLPMatches []scanner.TextDLPMatch
@@ -938,8 +950,13 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 	var firstError string
 	var errorAction string
 
-	for _, elem := range batch {
+	for i, elem := range batch {
 		v := scan(elem)
+		if i == 0 {
+			assessment = v.Assessment
+		} else {
+			assessment = assessment.Merge(v.Assessment)
+		}
 		if firstID == nil && len(v.ID) > 0 {
 			firstID = v.ID
 		}
@@ -972,7 +989,7 @@ func scanBatchElements(batch []json.RawMessage, scan func([]byte) jsonrpc.ScanVe
 		return jsonrpc.ScanVerdict{ID: firstID, Clean: false, Action: errorAction, Error: firstError}, len(allMatches) > 0 || len(allDLPMatches) > 0 || len(allToolFindings) > 0
 	}
 	if len(allMatches) == 0 && len(allDLPMatches) == 0 && len(allToolFindings) == 0 && len(allUnscanned) == 0 {
-		return jsonrpc.ScanVerdict{ID: firstID, Clean: true}, false
+		return jsonrpc.ScanVerdict{ID: firstID, Clean: true, Assessment: assessment}, false
 	}
 	return jsonrpc.ScanVerdict{
 		ID: firstID, Clean: false, Action: action, Matches: allMatches, DLPMatches: allDLPMatches, TaintFindingKinds: taintFindingLabels(allKinds),
@@ -1425,6 +1442,11 @@ func lineWithoutVerifiedCardSignature(line []byte, a2aOpts *A2AResponseOpts) []b
 
 func mergeA2AResponseVerdicts(verdict, joined jsonrpc.ScanVerdict) jsonrpc.ScanVerdict {
 	if verdict.Error != "" || joined.Clean {
+		if verdict.Error == "" && verdict.Clean && joined.Clean {
+			// The field-aware A2A verdict carries no wording assessment; the
+			// joined scan does. Keep it so a clean reply can earn clean credit.
+			verdict.Assessment = joined.Assessment
+		}
 		return verdict
 	}
 	kinds := session.MergeFindingKinds(ResponseTaintFindingKinds(verdict), ResponseTaintFindingKinds(joined))

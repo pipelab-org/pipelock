@@ -42,6 +42,7 @@ const (
 )
 
 type adaptiveRecoveryContext struct {
+	assessment scanner.InjectionAssessment
 	sessionKey string
 	scope      string
 	reason     string
@@ -82,7 +83,7 @@ func tryRecoverSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforce
 }
 
 func recordCleanSession(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
-	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled || !ctx.assessment.IsBenign() {
 		return
 	}
 	if !eligibleForCleanRecovery {
@@ -165,15 +166,17 @@ const ceeStdioKey = "_default|stdio"
 
 // InputVerdict describes the outcome of scanning a single MCP request.
 type InputVerdict struct {
-	ID              json.RawMessage          `json:"id"`
-	Method          string                   `json:"method,omitempty"`
-	Clean           bool                     `json:"clean"`
-	Action          string                   `json:"action,omitempty"`
-	Matches         []scanner.TextDLPMatch   `json:"dlp_matches,omitempty"`
-	Inject          []scanner.ResponseMatch  `json:"injection_matches,omitempty"`
-	URLFindings     []scanner.Result         `json:"url_findings,omitempty"`
-	AddressFindings []addressprotect.Finding `json:"address_findings,omitempty"`
-	Error           string                   `json:"error,omitempty"`
+	// Assessment is runtime recovery evidence, separate from delivery.
+	Assessment      scanner.InjectionAssessment `json:"-"`
+	ID              json.RawMessage             `json:"id"`
+	Method          string                      `json:"method,omitempty"`
+	Clean           bool                        `json:"clean"`
+	Action          string                      `json:"action,omitempty"`
+	Matches         []scanner.TextDLPMatch      `json:"dlp_matches,omitempty"`
+	Inject          []scanner.ResponseMatch     `json:"injection_matches,omitempty"`
+	URLFindings     []scanner.Result            `json:"url_findings,omitempty"`
+	AddressFindings []addressprotect.Finding    `json:"address_findings,omitempty"`
+	Error           string                      `json:"error,omitempty"`
 	// RedactedDLPOnly is true when the pre-redaction scan matched DLP
 	// patterns that argument redaction then scrubbed, and the post-redaction
 	// rescan was clean. The request forwards scrubbed, but the pre-redaction
@@ -1148,6 +1151,7 @@ func ForwardScannedInput(
 			commitMCPToolCall(baselineMetricsRecorder(opts, rec), baselineIdentity)
 			if !hadAdaptiveFinding {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+					assessment: verdict.Assessment,
 					sessionKey: "default",
 					reason:     adaptiveRecoveryClean,
 					requestID:  canonicalID(verdict.ID),
@@ -1846,6 +1850,7 @@ func ForwardScannedInput(
 		default:
 			if !hadAdaptiveFinding {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+					assessment: verdict.Assessment,
 					sessionKey: "default",
 					reason:     adaptiveRecoveryClean,
 					requestID:  canonicalID(verdict.ID),

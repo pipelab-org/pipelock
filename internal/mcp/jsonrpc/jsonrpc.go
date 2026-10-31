@@ -124,6 +124,8 @@ type ToolFinding struct {
 //   - Finding:   Clean=false, Error empty, Matches and/or DLPMatches and/or
 //     ToolFindings and Action set.
 type ScanVerdict struct {
+	// Assessment is runtime recovery evidence, separate from delivery.
+	Assessment scanner.InjectionAssessment `json:"-"`
 	// TaintFindingKinds preserves causes behind synthetic response matches.
 	// Runtime metadata only; it does not extend scan output or signed receipts.
 	TaintFindingKinds []string        `json:"-"`

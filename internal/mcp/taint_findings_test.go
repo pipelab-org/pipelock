@@ -311,3 +311,22 @@ func TestMCPResponseFindingKindFallbacks(t *testing.T) {
 		})
 	}
 }
+
+// A clean field-aware A2A verdict carries no wording assessment, so the merge
+// must keep the joined scan's assessment; otherwise clean replies never earn
+// adaptive clean credit. Errors and findings never inherit a benign result.
+func TestMergeA2AResponseVerdictsKeepsJoinedAssessment(t *testing.T) {
+	benign := scanner.InjectionAssessment{Checker: scanner.InjectionCheckerBasic, Status: scanner.AssessmentBenign}
+	joined := jsonrpc.ScanVerdict{Clean: true, Assessment: benign}
+
+	if got := mergeA2AResponseVerdicts(jsonrpc.ScanVerdict{Clean: true}, joined); !got.Assessment.IsBenign() {
+		t.Fatalf("clean merge dropped the joined assessment: %+v", got.Assessment)
+	}
+	if got := mergeA2AResponseVerdicts(jsonrpc.ScanVerdict{Error: "response scan failed"}, joined); got.Assessment.IsBenign() {
+		t.Fatal("failed field-aware scan inherited a benign assessment")
+	}
+	dirty := jsonrpc.ScanVerdict{Matches: []scanner.ResponseMatch{{PatternName: "wording"}}}
+	if got := mergeA2AResponseVerdicts(dirty, joined); got.Assessment.IsBenign() {
+		t.Fatal("field-aware finding inherited a benign assessment")
+	}
+}
