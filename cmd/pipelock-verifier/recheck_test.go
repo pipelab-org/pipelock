@@ -219,7 +219,7 @@ func TestReproduceSpanViewDecodedInputs(t *testing.T) {
 		// The scanner's spaced view also spaces invisibles produced by
 		// compatibility folding; recheck reproduces the same view.
 		"invisible spaced compatibility folded": {
-			source: "normalizationﾠwitness",
+			source: "normalization\uFFA0witness",
 			view:   contractreceipt.NormalizedViewInvisibleSpaced,
 			want:   "normalization witness",
 		},

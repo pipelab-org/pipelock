@@ -610,7 +610,7 @@ func matchingNormalizeFull(s string, recompose bool) string {
 // ForMatchingSpaced is ForMatching with each control and invisible character
 // replaced by a space instead of removed, including invisible characters that
 // compatibility folding produces. Removal rejoins a split word; replacement
-// keeps a word boundary ("ignore​all" → "ignore all"), so response and
+// keeps a word boundary ("ignore\u200ball" → "ignore all"), so response and
 // seed scanning match both views.
 func ForMatchingSpaced(s string) string {
 	if isPrintableASCII(s) {

@@ -143,13 +143,13 @@ func TestContainsInvisibleMatchesSpacedView(t *testing.T) {
 			found++
 		}
 	}
-	if found == 0 || !ContainsInvisible("aﾠz") || ContainsInvisible("a\tz") {
+	if found == 0 || !ContainsInvisible("a\uFFA0z") || ContainsInvisible("a\tz") {
 		t.Fatalf("predicate fixture was vacuous: %d differing scalars", found)
 	}
 }
 
 func TestForMatchingSpacedCompatibilityFoldedSeparator(t *testing.T) {
-	for _, sep := range []string{"​", "ᅠ", "ㅤ", "ﾠ"} {
+	for _, sep := range []string{"\u200B", "\u1160", "\u3164", "\uFFA0"} {
 		t.Run(fmt.Sprintf("%+q", sep), func(t *testing.T) {
 			if got := ForMatchingSpaced("normalization" + sep + "witness"); got != "normalization witness" {
 				t.Fatalf("got %q", got)
@@ -157,7 +157,7 @@ func TestForMatchingSpacedCompatibilityFoldedSeparator(t *testing.T) {
 		})
 	}
 	// Without compatibility-folded invisibles the view keeps its prior form.
-	for _, input := range []string{"", "plain", "é  x", "ｉｇｎｏｒｅ​all", "\xff\x01a", "ᄀㅤᅡ"} {
+	for _, input := range []string{"", "plain", "e\u0301 \u00A0x", "ｉｇｎｏｒｅ\u200Ball", "\xff\x01a", "\u1100\u3164\u1161"} {
 		if got, want := ForMatchingSpaced(input), ForMatching(ReplaceInvisibleWithSpace(input)); got != want {
 			t.Fatalf("%+q: got %q, want %q", input, got, want)
 		}

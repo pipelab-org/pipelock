@@ -87,7 +87,7 @@ func TestResponseCompatibilityFoldedSeparator(t *testing.T) {
 	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "Normalization witness", Regex: "normalization witness"}}
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
-	const prefix, suffix, wording = "前 ok ", " 後", "normalizationﾠwitness"
+	const prefix, suffix, wording = "前 ok ", " 後", "normalization\uFFA0witness"
 	input := prefix + wording + suffix
 	result := s.ScanResponse(t.Context(), input)
 	if result.Clean || len(result.Matches) != 1 {
