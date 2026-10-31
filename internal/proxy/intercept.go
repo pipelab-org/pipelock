@@ -613,7 +613,7 @@ func newInterceptHandler(
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestContext := *ic
 		ic := &requestContext
-		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept"})
+		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept", level: func() int { return interceptEscalationLevel(ic) }})
 		if ic.Proxy != nil {
 			ic.receiptShard = ic.Proxy.admitReceiptShard()
 		}

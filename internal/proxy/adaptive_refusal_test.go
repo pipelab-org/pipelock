@@ -404,3 +404,32 @@ func TestAdaptiveUniformRefusalKeepsKillSwitch(t *testing.T) {
 		}
 	})
 }
+
+// An intercepted tunnel decides from the recorder it admitted with. block_all
+// sessions stop refreshing activity and are evicted after the session TTL, so a
+// long tunnel can outlive its manager entry. The projection must follow the
+// tunnel's recorder, or a caught inner request regains its detector reason.
+func TestAdaptiveUniformRefusalInterceptEvictedSession(t *testing.T) {
+	cfg := adaptiveConfigBlockAll()
+	cfg.Enforce = ptrBool(true)
+	cfg.DefaultAgentIdentity = ""
+	cfg.BindDefaultAgentIdentity = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	sm := p.sessionMgrPtr.Load()
+	rec := sm.GetOrCreate(adaptiveSessionKeyHTTPTest)
+	escalateRec(rec, 1)
+	sm.Delete(adaptiveSessionKeyHTTPTest)
+	handle := newInterceptHandler(&InterceptContext{Proxy: p, TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, ClientIP: adaptiveSessionKeyHTTPTest, Agent: agentAnonymous, SessionMgr: sm, Recorder: rec}, &interceptMockRT{}).ServeHTTP
+	clean, caught := httptest.NewRecorder(), httptest.NewRecorder()
+	handle(clean, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/ok", nil))
+	handle(caught, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/ok?token="+"gh"+"p_"+strings.Repeat("aB3c", 9), nil))
+	if caught.Header().Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) || caught.Code != clean.Code || !reflect.DeepEqual(caught.Result().Header, clean.Result().Header) || !bytes.Equal(caught.Body.Bytes(), clean.Body.Bytes()) {
+		t.Fatalf("evicted-session tunnel differs:\nclean %d %v %s\ncaught %d %v %s", clean.Code, clean.Result().Header, clean.Body.String(), caught.Code, caught.Result().Header, caught.Body.String())
+	}
+}

@@ -37,6 +37,11 @@ type adaptiveRefusalOptions struct {
 	auth            envelope.ActorAuth
 	host            func() string
 	transport       string
+	// level overrides the session lookup when the handler decides from a
+	// recorder it already holds. An intercepted tunnel keeps its admission
+	// recorder after the manager evicts or replaces that session, so the
+	// lookup could disagree with the handler's own session_deny.
+	level func() int
 }
 
 func (p *Proxy) withAdaptiveRefusal(w http.ResponseWriter, opts adaptiveRefusalOptions) http.ResponseWriter {
@@ -50,6 +55,9 @@ func (p *Proxy) withAdaptiveRefusal(w http.ResponseWriter, opts adaptiveRefusalO
 }
 
 func (p *Proxy) adaptiveRefusalLevel(opts adaptiveRefusalOptions) int {
+	if opts.level != nil {
+		return opts.level()
+	}
 	sm := p.sessionMgrPtr.Load()
 	if sm == nil {
 		return 0
