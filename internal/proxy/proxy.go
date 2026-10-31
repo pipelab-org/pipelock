@@ -3964,26 +3964,22 @@ type adaptiveRecoveryContext struct {
 	metrics    *metrics.Metrics
 }
 
+// recordCleanForAdaptiveScope grants clean-traffic credit only for a response
+// that was eligible (fully scanned, not exempt, not truncated) and assessed
+// benign. A benign assessment of a truncated or exempt response describes only
+// part of what the agent received, so it earns no score reduction either.
 func recordCleanForAdaptiveScope(rec session.Recorder, scope string, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
-	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled || !ctx.assessment.IsBenign() {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled || !eligibleForCleanRecovery || !ctx.assessment.IsBenign() {
 		return
 	}
 	scope = normalizeAdaptiveScope(scope)
 	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
 	if sess, ok := rec.(*SessionState); ok {
-		if !eligibleForCleanRecovery {
-			sess.RecordScopedClean(scope, adaptiveCfg.DecayPerCleanRequest)
-			return
-		}
 		changed, from, to := sess.RecordScopedCleanWithRecovery(scope, adaptiveCfg.DecayPerCleanRequest, adaptiveCfg.CleanRequestsToDeescalate, blockAllCheck)
 		if changed {
 			ctx.scope = firstNonEmptyString(ctx.scope, scope)
 			emitAdaptiveRecovery(sess, from, to, ctx)
 		}
-		return
-	}
-	if !eligibleForCleanRecovery {
-		rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		return
 	}
 	if r, ok := rec.(session.CleanRecoverer); ok {

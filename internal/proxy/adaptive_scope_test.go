@@ -714,6 +714,14 @@ func TestRecordCleanForAdaptiveScope_NonSessionRecorderBranches(t *testing.T) {
 		}
 	})
 
+	t.Run("ineligible_benign_does_not_decay", func(t *testing.T) {
+		rec := &cleanRecoveryRecorder{}
+		recordCleanForAdaptiveScope(rec, "", &cfg, false, adaptiveRecoveryContext{assessment: benignRecoveryAssessment()})
+		if rec.recordCleanCalls != 0 || rec.recoverCalls != 0 {
+			t.Fatalf("ineligible benign credit: RecordClean=%d RecordCleanWithRecovery=%d, want 0/0", rec.recordCleanCalls, rec.recoverCalls)
+		}
+	})
+
 	t.Run("eligible_clean_recoverer_emits_metric", func(t *testing.T) {
 		rec := &cleanRecoveryRecorder{}
 		m := metrics.New()

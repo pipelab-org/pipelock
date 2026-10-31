@@ -1067,12 +1067,21 @@ func TestRecordSessionActivity_DeferClean(t *testing.T) {
 		t.Errorf("URL-only success should not decay score, before=%f after=%f", scoreBefore, scoreAfter)
 	}
 
-	// A later assessed-benign result can still earn traffic credit.
+	// A benign assessment of an ineligible (truncated or exempt) response
+	// describes only part of what the agent received and earns no credit.
 	recordCleanForAdaptiveScope(rec, adaptiveScopeForHost(hostname), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{
 		assessment: benignRecoveryAssessment(),
 	})
+	if scoreAfter := rec.ThreatScore(); scoreAfter != scoreBefore {
+		t.Errorf("ineligible assessed-benign result should not decay score, before=%f after=%f", scoreBefore, scoreAfter)
+	}
+
+	// An eligible assessed-benign result still earns traffic credit.
+	recordCleanForAdaptiveScope(rec, adaptiveScopeForHost(hostname), &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{
+		assessment: benignRecoveryAssessment(),
+	})
 	if scoreAfter := rec.ThreatScore(); scoreAfter >= scoreBefore {
-		t.Errorf("assessed-benign result should decay score, before=%f after=%f", scoreBefore, scoreAfter)
+		t.Errorf("eligible assessed-benign result should decay score, before=%f after=%f", scoreBefore, scoreAfter)
 	}
 }
 
