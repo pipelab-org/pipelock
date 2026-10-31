@@ -152,3 +152,26 @@ func TestCommandAfterPartsSharedMatchesUnshared(t *testing.T) {
 		t.Fatal("fixture: the two views must differ in their own results")
 	}
 }
+
+// The memo is keyed by command index. A result recorded for one command must
+// never be applied to a different command in a later view.
+func TestCommandAfterPartsSharedMultiSegment(t *testing.T) {
+	pat := regexp.MustCompile(`chmod\b.*-R\b.*\b777\b`)
+	match := strings.Fields("echo -R 777 x | xargs chmod")
+	miss := strings.Fields("echo -v 777 x | xargs chmod")
+	views := [][][]string{
+		{strings.Fields("ls"), match},
+		{miss, match},
+		{match, miss},
+		{miss, miss},
+	}
+	if !commandAfterParts(pat, [][]string{match}) || commandAfterParts(pat, [][]string{miss}) {
+		t.Fatal("fixture: the two commands must differ in their own results")
+	}
+	memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
+	for i, segs := range views {
+		if got, want := commandAfterPartsShared(pat, segs, memo), commandAfterParts(pat, segs); got != want {
+			t.Errorf("view %d: shared result %v, own result %v", i, got, want)
+		}
+	}
+}
