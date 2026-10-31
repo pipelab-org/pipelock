@@ -2255,29 +2255,15 @@ fetch_proxy:
 		}
 
 		statusURL := "http://" + fetchAddr + "/api/v1/killswitch/status"
-		statusReq, _ := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
-		statusReq.Header.Set("Authorization", "Bearer reload-token")
-		resp, err := client.Do(statusReq)
-		if err == nil {
-			_ = resp.Body.Close()
-		}
-		if err != nil || resp.StatusCode != http.StatusServiceUnavailable {
-			// If the run already exited (for example it lost its port to the
-			// listener that answered the health gate), return that error so
-			// WithRetry can classify it.
-			select {
-			case cmdErr := <-errCh:
-				cancel()
-				return runExitedError("before kill switch status check", cmdErr, nil)
-			default:
-			}
-		}
-		if err != nil {
+		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, statusURL, nil)
+			req.Header.Set("Authorization", "Bearer reload-token")
+			return req
+		}, client, func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusServiceUnavailable
+		}, "kill switch status before reload"); err != nil {
 			cancel()
-			t.Fatalf("kill switch status request failed before reload: %v", err)
-		}
-		if resp.StatusCode != http.StatusServiceUnavailable {
-			t.Fatalf("expected 503 before reload, got %d", resp.StatusCode)
+			return err
 		}
 
 		updatedCfg := fmt.Sprintf(`version: 1

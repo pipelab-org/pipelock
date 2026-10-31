@@ -225,13 +225,14 @@ func TestLogSummaryNamesStatusCountsOnFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		perf performanceReport
+		want string
 	}{
-		{"unexpected", performanceReport{Unexpected: 2, StatusCounts: map[int]int{503: 2, 200: 7}}},
-		{"errors", performanceReport{Errors: 1, StatusCounts: map[int]int{0: 1, 200: 7}}},
-		{"body read errors", performanceReport{BodyReadErrors: 1, StatusCounts: map[int]int{200: 8}}},
+		{"unexpected", performanceReport{Unexpected: 2, StatusCounts: map[int]int{503: 2, 200: 7}}, "200=7 503=2"},
+		{"errors", performanceReport{Errors: 1, StatusCounts: map[int]int{0: 1, 200: 7}}, "0=1 200=7"},
+		{"body read errors", performanceReport{BodyReadErrors: 1, StatusCounts: map[int]int{200: 8}}, "200=8"},
 	} {
 		out := capture(&result{Performance: tc.perf})
-		want := `"on": performance: measured status counts ` + formatStatusCounts(tc.perf.StatusCounts)
+		want := `"on": performance: measured status counts ` + tc.want + "\n"
 		if !strings.Contains(out, want) {
 			t.Errorf("%s: log does not name the status counts\nwant line containing %q\ngot:\n%s", tc.name, want, out)
 		}

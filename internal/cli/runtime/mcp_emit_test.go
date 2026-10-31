@@ -249,7 +249,10 @@ emit:
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(ctx) }()
+		go func() {
+			defer close(errCh)
+			errCh <- s.Start(ctx)
+		}()
 		defer func() {
 			_ = s.Shutdown(context.Background())
 			select {

@@ -199,8 +199,8 @@ type pkgInfo struct {
 	fset  *token.FileSet
 	files []*ast.File
 	names map[*ast.File]*fileNames
-	// decls holds functions by name and methods by "." + name.
-	decls map[string]*ast.FuncDecl
+	// decls holds all functions by name and methods by "." + name.
+	decls map[string][]*ast.FuncDecl
 	// declFile maps each declaration to its file.
 	declFile map[*ast.FuncDecl]*ast.File
 	// namedLits holds function literals assigned to a name.
@@ -217,7 +217,7 @@ type pkgInfo struct {
 func newPkgInfo(fset *token.FileSet, p *pkgFiles) *pkgInfo {
 	pi := &pkgInfo{
 		fset: fset, files: p.files, names: map[*ast.File]*fileNames{},
-		decls: map[string]*ast.FuncDecl{}, declFile: map[*ast.FuncDecl]*ast.File{},
+		decls: map[string][]*ast.FuncDecl{}, declFile: map[*ast.FuncDecl]*ast.File{},
 		namedLits: map[string][]*ast.FuncLit{}, chanElems: map[string][]string{},
 		errStructs: map[string]bool{}, serverFuncs: map[string]bool{},
 		exitPath: map[token.Pos]bool{},
@@ -233,7 +233,7 @@ func newPkgInfo(fset *token.FileSet, p *pkgFiles) *pkgInfo {
 			if fd.Recv != nil {
 				key = "." + key
 			}
-			pi.decls[key] = fd
+			pi.decls[key] = append(pi.decls[key], fd)
 			pi.declFile[fd] = f
 			if returnsServer(fd.Type, pi.names[f]) {
 				pi.serverFuncs[key] = true
@@ -433,7 +433,7 @@ func (pi *pkgInfo) callbackBodies(arg ast.Expr) []*ast.BlockStmt {
 		return []*ast.BlockStmt{x.Body}
 	case *ast.Ident:
 		var out []*ast.BlockStmt
-		if fd := pi.decls[x.Name]; fd != nil {
+		for _, fd := range pi.decls[x.Name] {
 			out = append(out, fd.Body)
 		}
 		for _, lit := range pi.namedLits[x.Name] {
@@ -441,9 +441,11 @@ func (pi *pkgInfo) callbackBodies(arg ast.Expr) []*ast.BlockStmt {
 		}
 		return out
 	case *ast.SelectorExpr:
-		if fd := pi.decls["."+x.Sel.Name]; fd != nil {
-			return []*ast.BlockStmt{fd.Body}
+		var out []*ast.BlockStmt
+		for _, fd := range pi.decls["."+x.Sel.Name] {
+			out = append(out, fd.Body)
 		}
+		return out
 	}
 	return nil
 }
@@ -522,24 +524,26 @@ func checkPackage(fset *token.FileSet, p *pkgFiles) []finding {
 func (pi *pkgInfo) stoppingHelpers() map[string]bool {
 	calls := map[string][]string{}
 	stops := map[string]bool{}
-	for name, fd := range pi.decls {
-		n := pi.names[pi.declFile[fd]]
-		ast.Inspect(fd.Body, func(node ast.Node) bool {
-			if _, ok := node.(*ast.GoStmt); ok {
-				return false
-			}
-			call, ok := node.(*ast.CallExpr)
-			if !ok {
+	for name, decls := range pi.decls {
+		for _, fd := range decls {
+			n := pi.names[pi.declFile[fd]]
+			ast.Inspect(fd.Body, func(node ast.Node) bool {
+				if _, ok := node.(*ast.GoStmt); ok {
+					return false
+				}
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if pi.exitPath[call.Pos()] {
+					stops[name] = true
+				}
+				if callee := pi.localCallee(call, n); callee != "" && pi.decls[callee] != nil {
+					calls[name] = append(calls[name], callee)
+				}
 				return true
-			}
-			if pi.exitPath[call.Pos()] {
-				stops[name] = true
-			}
-			if callee := pi.localCallee(call, n); callee != "" && pi.decls[callee] != nil {
-				calls[name] = append(calls[name], callee)
-			}
-			return true
-		})
+			})
+		}
 	}
 	propagate(stops, calls)
 	return stops
@@ -550,25 +554,27 @@ func (pi *pkgInfo) stoppingHelpers() map[string]bool {
 func (pi *pkgInfo) exitObservers() map[string]bool {
 	calls := map[string][]string{}
 	obs := map[string]bool{}
-	for name, fd := range pi.decls {
-		n := pi.names[pi.declFile[fd]]
-		ast.Inspect(fd.Body, func(node ast.Node) bool {
-			switch x := node.(type) {
-			case *ast.CommClause:
-				if pi.isReceive(x.Comm) {
-					obs[name] = true
+	for name, decls := range pi.decls {
+		for _, fd := range decls {
+			n := pi.names[pi.declFile[fd]]
+			ast.Inspect(fd.Body, func(node ast.Node) bool {
+				switch x := node.(type) {
+				case *ast.CommClause:
+					if pi.isReceive(x.Comm) {
+						obs[name] = true
+					}
+				case *ast.UnaryExpr:
+					if pi.exitReceive(x) {
+						obs[name] = true
+					}
+				case *ast.CallExpr:
+					if callee := pi.localCallee(x, n); callee != "" && pi.decls[callee] != nil {
+						calls[name] = append(calls[name], callee)
+					}
 				}
-			case *ast.UnaryExpr:
-				if pi.exitReceive(x) {
-					obs[name] = true
-				}
-			case *ast.CallExpr:
-				if callee := pi.localCallee(x, n); callee != "" && pi.decls[callee] != nil {
-					calls[name] = append(calls[name], callee)
-				}
-			}
-			return true
-		})
+				return true
+			})
+		}
 	}
 	propagate(obs, calls)
 	return obs
@@ -872,9 +878,11 @@ func (pi *pkgInfo) unexcludedInBody(body *ast.BlockStmt, n *fileNames) []token.P
 // start a test server and wait for readiness without excluding it.
 func (pi *pkgInfo) unexcludedUpstreamHelpers() map[string]bool {
 	out := map[string]bool{}
-	for name, fd := range pi.decls {
-		if len(pi.unexcludedInBody(fd.Body, pi.names[pi.declFile[fd]])) > 0 {
-			out[name] = true
+	for name, decls := range pi.decls {
+		for _, fd := range decls {
+			if len(pi.unexcludedInBody(fd.Body, pi.names[pi.declFile[fd]])) > 0 {
+				out[name] = true
+			}
 		}
 	}
 	return out

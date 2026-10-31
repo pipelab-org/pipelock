@@ -43,6 +43,24 @@ func TestAnalyzeFindings(t *testing.T) {
 		want []int
 	}{
 		{
+			name: "same-name methods retain the stopping declaration",
+			src: `package x
+type first struct{}
+type second struct{}
+func (first) wait(t *testing.T, errCh <-chan error) {
+	select { case err := <-errCh: t.Fatal(err) }
+}
+func (second) wait(t *testing.T, errCh <-chan error) {}
+func TestA(t *testing.T) {
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		first{}.wait(t, errCh)
+		return nil
+	})
+}
+`,
+			want: []int{10},
+		},
+		{
 			name: "fatal on run exit receive",
 			src: `package x
 func TestA(t *testing.T) {
