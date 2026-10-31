@@ -2054,9 +2054,8 @@ func IterativeDecode(s string) string {
 // iterativePercentDecode is IterativeDecode for URL components other than a
 // form-encoded query. RFC 3986 percent-encoding keeps '+' as data; only
 // application/x-www-form-urlencoded maps it to a space. Malformed escapes stay
-// verbatim, as in partial query unescaping.
-//
-//pipelock:provenance-transform percent_decode
+// verbatim, as in partial query unescaping. No published replay operation
+// has these semantics yet, so this view claims none.
 func iterativePercentDecode(s string) string {
 	for range maxDecodeRounds {
 		decoded := normalize.PercentUnescapePartial(s)
