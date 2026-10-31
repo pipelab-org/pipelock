@@ -329,3 +329,19 @@ func TestInspectNestedFailureTextIsLinear(t *testing.T) {
 		t.Fatalf("complete=%t reason=%q text bytes=%d archive bytes=%d", r.Complete, r.Reason, total, len(deep))
 	}
 }
+
+// A stored member refused by the byte budget is not inflated, but its own
+// bytes are kept, including inside a nested archive whose parent therefore
+// does not repeat the nested bytes.
+func TestInspectBudgetRefusedMemberKeepsBytes(t *testing.T) {
+	plain := []byte(strings.Repeat("quarterly notes ", 120) + "token=sk_live_" + strings.Repeat("e", 24))
+	nested := rawArchive(t, rawMember{name: "big.txt", data: plain})
+	outer := layoutEntry{name: "inner.zip", method: zipMethodDeflate, data: huffmanOnly(t, nested), plain: nested}
+	local := layoutLocal(outer)
+	central := layoutCentral(outer, 0)
+	data := append(append(append([]byte{}, local...), central...), layoutEnd(1, len(central), len(local), nil)...)
+	r := Inspect(t.Context(), data, Limits{len(nested) + len(plain)/2, 64})
+	if r.Complete || !strings.Contains(r.Reason, "max_body_bytes") || !strings.Contains(strings.Join(r.Texts, "\n"), "sk_live_eeee") {
+		t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}

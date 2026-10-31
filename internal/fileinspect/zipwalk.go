@@ -102,9 +102,10 @@ func (w *walk) archive(data []byte, depth int) error {
 			before := len(w.result.Texts)
 			if err := w.archive(item.payload, depth+1); err != nil {
 				// A nested archive that could not be parsed added nothing,
-				// so its raw bytes are kept. One that was parsed already
-				// added its members; appending its bytes again at every
-				// level would grow the views with the nesting depth.
+				// so its raw bytes are kept. One that was parsed has put
+				// each member's recoverable bytes in the views;
+				// appending its bytes again at every level would grow the
+				// views with the nesting depth.
 				if len(w.result.Texts) == before {
 					w.result.Texts = append(w.result.Texts, string(item.payload))
 				}
@@ -187,6 +188,11 @@ func (w *walk) memberBytes(m zipMember) ([]byte, bool, error) {
 	}
 	if m.uncompressed > 0 {
 		if w.remaining < 0 || m.uncompressed > math.MaxInt32 || m.uncompressed > uint64(w.remaining) {
+			// Not inflated, but the member's own bytes are already charged
+			// input (the request or the parent member). Keeping them means
+			// each member's recoverable bytes reach the views, so a parent
+			// need not repeat a parsed nested archive's bytes.
+			w.result.Texts = append(w.result.Texts, string(m.payload))
 			return nil, false, fmt.Errorf("expanded member exceeds max_body_bytes / compression-ratio budget")
 		}
 		w.remaining -= int(m.uncompressed)
