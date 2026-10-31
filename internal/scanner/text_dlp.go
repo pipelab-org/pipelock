@@ -1584,11 +1584,13 @@ func isHexText(s string) bool {
 }
 
 // textDLPSegments splits text into the segments every encoded-value decoder
-// tries. After the text_segment split it splits each segment again on '#',
-// which RFC 3986 section 3.5 uses to introduce a URL fragment. That second
-// step claims no replay operation: published text_segment replay keeps '#'
-// inside a segment. Both steps drop empty fields, so the result equals one
-// split on both delimiter sets.
+// tries. Each text_segment segment is kept whole, followed by the distinct
+// pieces between any '#' it contains, which RFC 3986 section 3.5 uses to
+// introduce a URL fragment. The pieces catch a value that starts after a
+// fragment delimiter. The whole segment stays because the decoders drop bytes
+// outside their alphabet, so a '#' inserted inside one encoded value is noise
+// there. The piece step claims no replay operation: published text_segment
+// replay keeps '#' inside a segment.
 func textDLPSegments(text string) []string {
 	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
 	if !strings.Contains(text, "#") {
@@ -1596,7 +1598,16 @@ func textDLPSegments(text string) []string {
 	}
 	out := make([]string, 0, len(segments))
 	for _, segment := range segments {
-		out = append(out, strings.FieldsFunc(segment, isURLFragmentDelimiter)...)
+		out = append(out, segment)
+		if !strings.Contains(segment, "#") {
+			continue
+		}
+		pieces := strings.FieldsFunc(segment, isURLFragmentDelimiter)
+		for i, piece := range pieces {
+			if !slices.Contains(pieces[:i], piece) {
+				out = append(out, piece)
+			}
+		}
 	}
 	return out
 }

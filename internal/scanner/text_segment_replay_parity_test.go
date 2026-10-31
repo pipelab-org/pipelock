@@ -4,7 +4,7 @@
 package scanner
 
 import (
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -49,10 +49,11 @@ func TestTextSegmentDelimiterMatchesReplay(t *testing.T) {
 	}
 }
 
-// textDLPSegments adds a '#' split after text_segment. Its segments must equal
-// one split on both delimiter sets, which is what every caller inspected
-// before the fragment step was separated from the replayed transform.
-func TestTextDLPSegmentsEqualsCombinedSplit(t *testing.T) {
+// textDLPSegments keeps every text_segment segment whole and adds the pieces
+// between its '#' delimiters. The result must hold every segment the earlier
+// text_segment split produced, every piece of one split on both delimiter
+// sets, and nothing else.
+func TestTextDLPSegmentsCoversBothSplits(t *testing.T) {
 	combined := func(r rune) bool { return isTextDLPEncodingDelimiter(r) || r == '#' }
 	const alphabet = "ab#/?& =:\n,"
 	r := &knownValueTestRNG{state: 11}
@@ -64,9 +65,17 @@ func TestTextDLPSegmentsEqualsCombinedSplit(t *testing.T) {
 		}
 		text := string(b)
 		got := textDLPSegments(text)
-		want := strings.FieldsFunc(text, combined)
-		if len(got) != len(want) || (len(want) > 0 && !reflect.DeepEqual(got, want)) {
-			t.Fatalf("%q: got %q want %q", text, got, want)
+		whole := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
+		pieces := strings.FieldsFunc(text, combined)
+		for _, want := range append(append([]string(nil), whole...), pieces...) {
+			if !slices.Contains(got, want) {
+				t.Fatalf("%q: segments %q miss %q", text, got, want)
+			}
+		}
+		for _, seg := range got {
+			if !slices.Contains(whole, seg) && !slices.Contains(pieces, seg) {
+				t.Fatalf("%q: segments %q hold unexpected %q", text, got, seg)
+			}
 		}
 		if strings.Contains(text, "#") {
 			withFragment++
