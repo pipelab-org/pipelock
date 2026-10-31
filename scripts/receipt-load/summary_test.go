@@ -197,3 +197,47 @@ func TestFormatStatusCounts(t *testing.T) {
 		t.Fatalf("counts = %q", got)
 	}
 }
+
+// TestLogSummaryNamesStatusCountsOnFailure swaps os.Stderr, so it must not run
+// in parallel with other tests.
+func TestLogSummaryNamesStatusCountsOnFailure(t *testing.T) {
+	old := os.Stderr
+	t.Cleanup(func() { os.Stderr = old })
+	capture := func(res *result) string {
+		t.Helper()
+		f, err := os.CreateTemp(t.TempDir(), "stderr")
+		if err != nil {
+			t.Fatalf("create stderr capture: %v", err)
+		}
+		os.Stderr = f
+		logSummary("on", res)
+		os.Stderr = old
+		if err := f.Close(); err != nil {
+			t.Fatalf("close stderr capture: %v", err)
+		}
+		out, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatalf("read stderr capture: %v", err)
+		}
+		return string(out)
+	}
+
+	for _, tc := range []struct {
+		name string
+		perf performanceReport
+	}{
+		{"unexpected", performanceReport{Unexpected: 2, StatusCounts: map[int]int{503: 2, 200: 7}}},
+		{"errors", performanceReport{Errors: 1, StatusCounts: map[int]int{0: 1, 200: 7}}},
+		{"body read errors", performanceReport{BodyReadErrors: 1, StatusCounts: map[int]int{200: 8}}},
+	} {
+		out := capture(&result{Performance: tc.perf})
+		want := `"on": performance: measured status counts ` + formatStatusCounts(tc.perf.StatusCounts)
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: log does not name the status counts\nwant line containing %q\ngot:\n%s", tc.name, want, out)
+		}
+	}
+
+	if out := capture(&result{Performance: performanceReport{StatusCounts: map[int]int{200: 9}}}); strings.Contains(out, "measured status counts") {
+		t.Errorf("clean run logged status counts:\n%s", out)
+	}
+}
