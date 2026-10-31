@@ -55,3 +55,42 @@ func TestMultipartPreambleMatchesReader(t *testing.T) {
 		})
 	}
 }
+
+// multipartEpilogue must start no later than where Go's mime/multipart reader
+// stops. Bytes after the reader's final delimiter are never a part.
+func TestMultipartEpilogueMatchesReader(t *testing.T) {
+	part := "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue\r\n"
+	for _, tc := range []struct {
+		name, body, epilogue string
+	}{
+		{"after final delimiter", part + "--B--\r\ntrailing bytes", "trailing bytes"},
+		{"final delimiter with space", part + "--B-- \t\r\ntrailing", "trailing"},
+		{"LF form", "--B\nContent-Disposition: form-data; name=\"a\"\n\nv\n--B--\nafter", "after"},
+		{"no parts", "preamble\r\n--B--\r\nafter", "after"},
+		{"nothing after", part + "--B--", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			preamble := multipartPreamble([]byte(tc.body), "B")
+			if got := string(multipartEpilogue([]byte(tc.body), "B", len(preamble))); got != tc.epilogue {
+				t.Fatalf("epilogue = %q, want %q", got, tc.epilogue)
+			}
+			reader := multipart.NewReader(bytes.NewReader([]byte(tc.body)), "B")
+			for {
+				p, err := reader.NextPart()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				if err != nil {
+					t.Fatalf("reader: %v", err)
+				}
+				data, err := io.ReadAll(p)
+				if err != nil {
+					t.Fatalf("reader: %v", err)
+				}
+				if tc.epilogue != "" && bytes.Contains(data, []byte(tc.epilogue)) {
+					t.Fatalf("reader returned epilogue bytes in a part: %q", data)
+				}
+			}
+		})
+	}
+}

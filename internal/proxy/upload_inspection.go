@@ -36,13 +36,20 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
 	switch {
 	case mediaType == "multipart/form-data":
-		// A multipart reader skips the preamble, but an archive reader given
-		// the raw body reads an archive that starts there, so that archive is
-		// the whole body. An archive inside a part is that part, below; the
-		// body of an ordinary form whose last part is a document is not read
-		// as a damaged archive.
-		if fileinspect.Kind(multipartPreamble(body, params["boundary"])) != "" {
+		// A multipart reader skips the preamble and the epilogue, but an
+		// archive reader given the raw body reads an archive placed in either,
+		// so that archive is the whole body. An epilogue archive is also read
+		// on its own, as an archive reader corrects for the bytes before it.
+		// An archive inside a part is that part, below; the body of an
+		// ordinary form whose last part is a document is not read as a
+		// damaged archive.
+		preamble := multipartPreamble(body, params["boundary"])
+		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
+		if fileinspect.Kind(preamble) != "" || fileinspect.Kind(epilogue) != "" {
 			inspect(body)
+		}
+		if fileinspect.Kind(epilogue) != "" {
+			inspect(epilogue)
 		}
 		// The existing multipart parser exposes raw and transfer-decoded parts.
 		for _, part := range extracted.FileParts {
@@ -96,4 +103,28 @@ func multipartPreamble(body []byte, boundary string) []byte {
 		off += len(line)
 	}
 	return body
+}
+
+// multipartEpilogue returns the bytes after the final delimiter line, which a
+// multipart reader ignores (RFC 2046 section 5.1.1). Go's reader ends the form
+// at the first line after the preamble that starts with "--" boundary "--";
+// a request that parsed has one. Taking the first such line, whether or not
+// the reader treated it as final, can only start the epilogue earlier, so it
+// checks more bytes, never fewer.
+func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
+	final := []byte("--" + boundary + "--")
+	rest := body[preamble:]
+	start := 0
+	if !bytes.HasPrefix(rest, final) {
+		i := bytes.Index(rest, append([]byte("\n"), final...))
+		if i < 0 {
+			return nil
+		}
+		start = i + 1
+	}
+	line := rest[start:]
+	if i := bytes.IndexByte(line, '\n'); i >= 0 {
+		return line[i+1:]
+	}
+	return nil
 }
