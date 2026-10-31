@@ -3,7 +3,10 @@
 
 package policy
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // gitBuiltins is the output of `git --list-cmds=builtins` from Git 2.56.0, the
 // version the Git option tables in long_options.go follow. Git runs a builtin
@@ -42,6 +45,14 @@ var gitBuiltins = func() map[string]bool {
 	}
 	return set
 }()
+
+// gitToolName matches the dedicated git tool, whose arguments are Git's own
+// argument list without the word git. It is the git alternative of the default
+// Destructive Git Operation rule's tool pattern, with the namespace prefixes
+// every shipped rule accepts (builtinToolNameAliasPrefix); the rule's other
+// alternatives are shell tools. TestGitToolNameFromRules derives it from the
+// default rules.
+var gitToolName = regexp.MustCompile(`(?i)^(?:` + builtinToolNameAliasPrefix + `)?git$`)
 
 // gitDestructiveOptions are the long options in the covered Git subcommands'
 // option tables (commandLongOptions) that a built-in rule blocks on their own:

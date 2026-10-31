@@ -117,7 +117,7 @@ func utilityKey(name string) string {
 // ambiguous prefixes; policy conservatively presents every candidate instead
 // of choosing one. The output is linear in input size: see optionExpander.
 func normalizeCommandOptions(tokens []string) []string {
-	out, _ := normalizeLineOptions(tokens)
+	out, _ := normalizeLineOptions(tokens, false)
 	return out
 }
 
@@ -131,18 +131,25 @@ func normalizeCommandOptions(tokens []string) []string {
 // with such a prefix (git l --for=..., where l runs ls-files) is therefore
 // matched, as is any such word elsewhere on its line; an alias run with no
 // option word on the line is not.
-func normalizeLineOptions(tokens []string) ([]string, bool) {
-	out, unknown := normalizeOptions(tokens, false)
+//
+// gitTool reads the tokens as the dedicated git tool's arguments (see
+// gitToolName): Git's own argument list, as if preceded by the word git. That
+// tool runs no shell, so its subcommand is the whole argument word: one that
+// carries more than a builtin name, such as status; with its separator, is
+// not that builtin.
+func normalizeLineOptions(tokens []string, gitTool bool) ([]string, bool) {
+	out, unknown := normalizeOptions(tokens, false, gitTool)
 	if unknown {
-		out, _ = normalizeOptions(tokens, true)
+		out, _ = normalizeOptions(tokens, true, gitTool)
 	}
 	return out, unknown
 }
 
 // normalizeOptions presents option interpretations and reports whether the
 // tokens run a non-builtin Git subcommand. strict presents every long option
-// word's destructive Git readings, once each per call.
-func normalizeOptions(tokens []string, strict bool) (out []string, unknownGit bool) {
+// word's destructive Git readings, once each per call. gitTool is as for
+// normalizeLineOptions.
+func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unknownGit bool) {
 	hasLongOption := slices.ContainsFunc(tokens, func(token string) bool { return strings.Contains(token, "--") })
 	if !hasLongOption {
 		return tokens, false
@@ -176,7 +183,8 @@ func normalizeOptions(tokens []string, strict bool) (out []string, unknownGit bo
 	// assignments and their options; a shell separator starts the next command.
 	// stopped marks the end of options in a utility, or an uncovered Git
 	// subcommand while seeking.
-	var active, git, stopped, skipValue bool
+	var active, stopped, skipValue bool
+	git := gitTool
 	// unknown marks a Git command whose subcommand is not a builtin. gitConfig
 	// marks a -c or --config-env value read before the subcommand: quote removal
 	// can leave a separator from inside that value, such as an alias
@@ -223,6 +231,7 @@ func normalizeOptions(tokens []string, strict bool) (out []string, unknownGit bo
 					switch {
 					case git && subCommand:
 						active, git, stopped = activate(subKey), false, false
+						unknownGit = unknownGit || gitTool && word != token
 					case unknown && strings.HasPrefix(word, "-"):
 						// The options may belong to whatever the alias runs.
 						expand = true
@@ -246,7 +255,7 @@ func normalizeOptions(tokens []string, strict bool) (out []string, unknownGit bo
 						// An unrelated Git subcommand must not adopt a later operand as
 						// its command.
 						stopped = true
-						unknown = !gitBuiltins[word]
+						unknown = !gitBuiltins[word] || gitTool && word != token
 						unknownGit = unknownGit || unknown
 					default:
 						// Bare subcommands still support the MCP git tool.

@@ -67,7 +67,10 @@ func literalArgTokens(args []string) ([]string, string) {
 // buildArgViews retains the primary, alt, baseline, and literal views, and adds
 // command-option interpretations where they differ. Adding an interpretation
 // must not erase a spelling that an existing configured rule matches.
-func buildArgViews(args []string) []argView {
+//
+// gitTool reads args as the dedicated git tool's arguments (see
+// normalizeLineOptions).
+func buildArgViews(args []string, gitTool bool) []argView {
 	segs, plain := splitCommands(args)
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
@@ -115,7 +118,7 @@ func buildArgViews(args []string) []argView {
 		add(v)
 		expanded := v
 		var unknownGit bool
-		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens)
+		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool)
 		expanded.joined = strings.Join(expanded.tokens, " ")
 		if v.segments != nil {
 			expanded.segments = make([][]string, 0, len(v.segments))
@@ -126,7 +129,7 @@ func buildArgViews(args []string) []argView {
 				} else {
 					// A non-builtin Git subcommand anywhere on the line makes every
 					// command's destructive readings visible to the pairs it forms.
-					t, _ := normalizeOptions(seg, unknownGit)
+					t, _ := normalizeOptions(seg, unknownGit, gitTool)
 					expanded.segments = append(expanded.segments, t)
 				}
 			}

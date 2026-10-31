@@ -251,7 +251,7 @@ func TestSingleSegmentKeepsRawCheck(t *testing.T) {
 		{"no separator token", "example --flag 2>&1", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			views := buildArgViews([]string{tc.command})
+			views := buildArgViews([]string{tc.command}, false)
 			matched, incomplete := matchArgViews(re, views[:]...)
 			if matched != tc.wantMatch || incomplete != tc.wantIncomp {
 				t.Fatalf("matched=%v incomplete=%v, want matched=%v incomplete=%v", matched, incomplete, tc.wantMatch, tc.wantIncomp)

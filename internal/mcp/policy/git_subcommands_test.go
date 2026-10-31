@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"regexp"
 	"slices"
 	"strings"
@@ -235,6 +236,110 @@ func TestGitBuiltinsList(t *testing.T) {
 	for name := range gitBuiltins {
 		if strings.ToLower(name) != name {
 			t.Errorf("%s is not lowercase", name)
+		}
+	}
+}
+
+// TestGitToolUnknownSubcommandPolicy checks the dedicated git tool, whose
+// arguments are Git's own argument list without the word git: a subcommand
+// other than a builtin gets the strictest covered builtin verdict through the
+// tool too, through every entry point, and builtins keep their verdicts.
+func TestGitToolUnknownSubcommandPolicy(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, Rules: DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		tool  string
+		args  []string
+		block bool
+	}{
+		{"git", []string{"r --ha"}, true},
+		{"git", []string{"r", "--ha"}, true},
+		{"git", []string{"r --hard"}, true},
+		{"git", []string{"-c alias.r=reset r --ha"}, true},
+		{"git", []string{"-c", "alias.r=reset", "r", "--ha"}, true},
+		{"git", []string{"-C /srv/repo r --ha"}, true},
+		{"git", []string{"l --for=%(path)"}, true},
+		{"git", []string{"p --forc origin main"}, true},
+		{"git", []string{"git r --ha"}, true},
+		// A git tool runs no shell, so a separator stays inside an argument.
+		{"git", []string{"status; fetch --force"}, true},
+		{"git", []string{`-C "$(pwd)" r --ha`}, true},
+		{"GIT", []string{"r --ha"}, true},
+		{"mcp__vcs__git", []string{"r --ha"}, true},
+		{"vcs.git", []string{"r --ha"}, true},
+		{"vcs:git", []string{"r --ha"}, true},
+		{"git", []string{"reset --ha"}, true},
+		{"git", []string{"push --for origin main"}, true},
+		{"git", []string{"clean --fo -d"}, true},
+		// Builtins keep their verdicts.
+		{"git", []string{"fetch --force"}, false},
+		{"git", []string{"fetch", "--force"}, false},
+		{"git", []string{"add --force notes"}, false},
+		{"git", []string{"ls-files --for=%(path)"}, false},
+		{"git", []string{"reset --soft HEAD"}, false},
+		{"git", []string{"reset --sof HEAD"}, false},
+		{"git", []string{"-C /srv/repo fetch --force"}, false},
+		{"git", []string{"-c alias.r=reset status --short"}, false},
+		// Unknown subcommands without a destructive option word.
+		{"git", []string{"st"}, false},
+		{"git", []string{"lg --oneline"}, false},
+		// Names the default rules don't treat as the git tool keep the
+		// shell reading, where a bare word is not a Git subcommand.
+		{"mcp__git__run", []string{"r --ha"}, false},
+		{"git_status", []string{"r --ha"}, false},
+		{"bash", []string{"r --ha"}, false},
+	} {
+		t.Run(tc.tool+" "+strings.Join(tc.args, " | "), func(t *testing.T) {
+			raw, err := json.Marshal(map[string]any{"command": strings.Join(tc.args, " ")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			line, err := json.Marshal(map[string]any{
+				"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+				"params": map[string]any{"name": tc.tool, "arguments": json.RawMessage(raw)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			command := strings.Join(tc.args, " ")
+			verdicts := map[string]Verdict{
+				"argv": pc.CheckToolCall(tc.tool, tc.args),
+				"MCP":  pc.CheckRequest(line),
+				"hook": pc.CheckToolCallJSON(tc.tool, []string{command}, []string{"command", command}, raw),
+			}
+			for name, v := range verdicts {
+				blocked := v.Matched && v.Action == config.ActionBlock
+				if blocked != tc.block {
+					t.Errorf("%s: got %+v, want block=%v", name, v, tc.block)
+				}
+			}
+		})
+	}
+}
+
+// TestGitToolNameFromRules checks gitToolName against the default rules: a
+// tool is the git tool when the Destructive Git Operation rule matches it and
+// the shell tool rules (here Destructive File Delete) do not.
+func TestGitToolNameFromRules(t *testing.T) {
+	var gitRule, shellRule *regexp.Regexp
+	for _, rule := range DefaultToolPolicyRules() {
+		switch rule.Name {
+		case "Destructive Git Operation":
+			gitRule = regexp.MustCompile(rule.ToolPattern)
+		case "Destructive File Delete":
+			shellRule = regexp.MustCompile(rule.ToolPattern)
+		}
+	}
+	if gitRule == nil || shellRule == nil {
+		t.Fatal("default rules missing")
+	}
+	for _, name := range []string{
+		"git", "GIT", "mcp__vcs__git", "mcp__git__git", "vcs.git", "vcs:git",
+		"bash", "mcp__vcs__bash", "shell", "mcp__git__run", "git_status", "gitx",
+		"xgit", "mcp__a__b__git", "a.b.git", "git.bash", "run_command", "",
+	} {
+		want := gitRule.MatchString(name) && !shellRule.MatchString(name)
+		if got := gitToolName.MatchString(name); got != want {
+			t.Errorf("%q: gitToolName %v, rules %v", name, got, want)
 		}
 	}
 }

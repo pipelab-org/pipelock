@@ -310,8 +310,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// such as `id_rsa.p'ub` read as `id_rsa.pub` while the tool opens the file
 	// with the quote in its name. Matching the literal string as well keeps a
 	// normalized spelling from narrowing what a pattern sees.
+	// The git tool's values are Git's argument list; JSON keys checked with
+	// checkInput false are not (see CheckToolCallJSON).
+	gitTool := checkInput && (gitToolName.MatchString(policyToolName) || gitToolName.MatchString(baselineToolName))
 	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
-	views := buildArgViews(matchArgs)
+	views := buildArgViews(matchArgs, gitTool)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -360,7 +363,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViews(scopedStrings)
+			ruleViews = buildArgViews(scopedStrings, gitTool)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -370,7 +373,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleViews = buildArgViews(matchStrings)
+				ruleViews = buildArgViews(matchStrings, gitTool)
 			}
 		}
 
