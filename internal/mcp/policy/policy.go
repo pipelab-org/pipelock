@@ -262,10 +262,14 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 //  3. Pairwise token combinations - catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
 func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
-	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true)
+	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true, argStrings, rawArgs)
 }
 
-func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage, checkInput bool) Verdict {
+// checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
+// submitted values and the JSON that carried them, read for the Git builtin
+// exception (see proveGitBuiltins); a shape is used only where it reproduces
+// proofArgs.
+func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage, checkInput bool, proofArgs []string, proofShape json.RawMessage) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return Verdict{}
 	}
@@ -310,12 +314,25 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// such as `id_rsa.p'ub` read as `id_rsa.pub` while the tool opens the file
 	// with the quote in its name. Matching the literal string as well keeps a
 	// normalized spelling from narrowing what a pattern sees.
+	// The git tool's values are Git's argument list; JSON keys checked with
+	// checkInput false are not (see CheckToolCallJSON).
+	gitTool := checkInput && (gitToolName.MatchString(policyToolName) || gitToolName.MatchString(baselineToolName))
+	// The proof reads the submitted values, before local path identities are
+	// added to the values matched.
+	proof := proveGitBuiltins(proofArgs, jsonArgCarriers(proofShape, proofArgs), gitTool)
 	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
-	views := buildArgViews(matchArgs)
+	views := buildArgViews(matchArgs, gitTool, &proof)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
 		}
+	}
+
+	// One command string usually reaches the credential checks unchanged, and
+	// its views are the ones just built.
+	credentialViews := candidateViews{}
+	if len(matchArgs) == 1 {
+		credentialViews[matchArgs[0]] = views
 	}
 
 	var matchedRules, incompleteRules []string
@@ -353,7 +370,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViews(scopedStrings)
+			ruleViews = buildArgViews(scopedStrings, gitTool, nil)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -363,7 +380,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleViews = buildArgViews(matchStrings)
+				ruleViews = buildArgViews(matchStrings, gitTool, nil)
 			}
 		}
 
@@ -376,11 +393,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs); handled {
+		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
 			argPatternMatched, pairIncomplete = matched, false
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations); handled {
+			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
 				argPatternMatched, pairIncomplete = matched, false
 			}
 		}
@@ -405,6 +422,9 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		}
 		if !structuralMatched {
 			continue
+		}
+		if pairIncomplete {
+			incompleteRules = append(incompleteRules, rule.Name)
 		}
 
 		matchedRule := rule.Name
@@ -491,6 +511,14 @@ func appendUniqueRule(rules []string, rule string) []string {
 // confusable remapping before Unicode normalization; pass nil to use only the
 // baseline confusable map from normalize.ForMatching.
 func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
+	tokens, _ := normalizeArgTokensUnexpanded(argStrings, normFn, preNorm)
+	tokens = normalizeCommandOptions(tokens)
+	return tokens, strings.Join(tokens, " ")
+}
+
+// normalizeArgTokensUnexpanded retains the normalized spelling that configured
+// rules consumed before command-option expansion was added.
+func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
 	var tokens []string
 	for _, s := range argStrings {
 		if preNorm != nil {
@@ -1211,7 +1239,9 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		}
 	}
 
-	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
+	// The arguments' JSON shape is kept for the Git builtin exception even when
+	// no rule reads raw arguments.
+	return pc.checkToolCallWithArgs(tc.Name, argStrings, rawArgs, true, argStrings, tc.Arguments)
 }
 
 // ArgValues returns the string values of JSON arguments, in sorted-key
@@ -1237,7 +1267,9 @@ func (pc *Config) CheckToolCallJSON(toolName string, values, withKeys []string, 
 	// Keys are still scanned for rule matches, but they aren't runtime argv.
 	// Input provenance is assessed on values above; adding JSON keys must not
 	// turn a proved command string into an unknown argument array.
-	return mergeVerdicts(v, pc.checkToolCallWithArgs(toolName, withKeys, rawArgs, false))
+	// The key pass reads no git tool argument list, so its Git commands are
+	// proved from the values read the same way.
+	return mergeVerdicts(v, pc.checkToolCallWithArgs(toolName, withKeys, rawArgs, false, values, rawArgs))
 }
 
 // mergeVerdicts combines two verdicts for one call. The stricter action wins

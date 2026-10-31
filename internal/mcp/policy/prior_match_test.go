@@ -167,7 +167,7 @@ func earlierCheck(pat *regexp.Regexp, args []string) bool {
 		fn  func(string) string
 		pre *strings.Replacer
 	}{{normalize.ForMatching, policyPreNormalize}, {normalize.ForPolicy, policyPreNormalize}, {normalize.ForMatching, nil}} {
-		tokens, joined := normalizeArgTokens(args, n.fn, n.pre)
+		tokens, joined := normalizeArgTokensUnexpanded(args, n.fn, n.pre)
 		views = append(views, view{tokens, joined})
 	}
 	tokens, joined := literalArgTokens(args)
