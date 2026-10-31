@@ -486,20 +486,16 @@ func TestHTTPUpstreamAcknowledgmentKeepsAdaptiveRisk(t *testing.T) {
 	if !strings.Contains(string(got), `"store_secret"`) {
 		t.Fatalf("acknowledged inventory not forwarded over HTTP: %s", got)
 	}
-	// mockRecorder counts RecordClean calls without lowering its score, so
-	// decay is checked through the call count and new risk through signals
-	// (which do add to the score). The clean tools/list request earns its own
-	// credit on the input side, as any clean request does; the acknowledged
-	// response must add none. The control test below shows a genuinely clean
-	// response is credited, so a missing response credit is observable.
-	if rec.cleans != 1 || len(rec.signals) != 0 || rec.score != 5 {
-		t.Fatalf("adaptive state changed: cleans=%d (want 1, the request's own) signals=%v score=%v", rec.cleans, rec.signals, rec.score)
+	// Neither an unscanned request nor a tool inventory without assessment
+	// evidence earns recovery. Acknowledgment does not change that rule.
+	if rec.cleans != 0 || len(rec.signals) != 0 || rec.score != 5 {
+		t.Fatalf("adaptive state changed: cleans=%d signals=%v score=%v", rec.cleans, rec.signals, rec.score)
 	}
 }
 
-// Control for the test above: the same HTTP flow with a clean inventory
-// credits both the request and the response.
-func TestHTTPUpstreamCleanInventoryEarnsResponseCredit(t *testing.T) {
+// A clean inventory has no complete checker assessment until tool-description
+// assessment is propagated, so delivery alone cannot earn recovery.
+func TestHTTPUpstreamCleanInventoryNeedsAssessment(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"store_secret","description":"Stores notes for later use."}]}}`)
@@ -513,8 +509,8 @@ func TestHTTPUpstreamCleanInventoryEarnsResponseCredit(t *testing.T) {
 	if !strings.Contains(string(got), `"store_secret"`) {
 		t.Fatalf("clean inventory not forwarded: %s", got)
 	}
-	if rec.cleans != 2 || len(rec.signals) != 0 {
-		t.Fatalf("clean control: cleans=%d signals=%v, want 2 credits (request and response) and no signals", rec.cleans, rec.signals)
+	if rec.cleans != 0 || len(rec.signals) != 0 {
+		t.Fatalf("clean control: cleans=%d signals=%v, want no credits without assessment and no signals", rec.cleans, rec.signals)
 	}
 }
 
@@ -754,11 +750,9 @@ func runTransportAdaptive(t *testing.T, transportName, response string, acks ...
 	}
 }
 
-// On SSE (both HTTP transports) and WebSocket, with a session already
-// carrying risk, an acknowledged inventory earns exactly one fewer clean
-// credit than a clean inventory over the same transport: the response's. It
-// raises no signal. mockRecorder counts RecordClean calls rather than
-// lowering its score, so the comparison is by call count.
+// SSE and WebSocket inventory delivery preserves risk whether or not the
+// operator acknowledged a tool finding. Neither inventory carries a complete
+// checker assessment. Assessed response recovery has its own positive controls.
 func TestAcknowledgmentKeepsAdaptiveRiskAcrossTransports(t *testing.T) {
 	for _, transportName := range []string{"upstream", "listener", "websocket"} {
 		t.Run(transportName, func(t *testing.T) {
@@ -770,8 +764,8 @@ func TestAcknowledgmentKeepsAdaptiveRiskAcrossTransports(t *testing.T) {
 			if !strings.Contains(ackedOut, `"store_secret"`) {
 				t.Fatalf("acknowledged inventory not forwarded: %s", ackedOut)
 			}
-			if control.cleans < 1 || acked.cleans != control.cleans-1 {
-				t.Fatalf("clean credits: control %d, acknowledged %d; want exactly the response credit missing", control.cleans, acked.cleans)
+			if control.cleans != 0 || acked.cleans != 0 {
+				t.Fatalf("clean credits: control %d, acknowledged %d; want no credits without assessment", control.cleans, acked.cleans)
 			}
 			if len(control.signals) != 0 || len(acked.signals) != 0 || acked.score != 5 {
 				t.Fatalf("signals: control %v, acknowledged %v, score %v", control.signals, acked.signals, acked.score)

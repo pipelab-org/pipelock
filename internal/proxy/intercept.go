@@ -1822,6 +1822,12 @@ func newInterceptHandler(
 				})
 			}
 
+			// A cross-request warning is a finding for this exchange, as on the
+			// forward and fetch paths, so the clean response earns no credit.
+			if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
+				hasFinding = true
+			}
+
 			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: admission.Sessions, SessionKey: sessionKey,
 				AdaptiveCfg: &admission.AdaptiveConfig, Logger: ic.Logger, Metrics: ic.Metrics,
@@ -2471,8 +2477,8 @@ func newInterceptHandler(
 			// is trusted to carry large files).
 			ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 			// Funnel through the same success bookkeeping as the scanned allow
-			// path: capture verdict (no scan ran, findings empty), clean-decay,
-			// and the allowed metric.
+			// path: capture verdict (no scan ran, findings empty) and the allowed
+			// metric. Unassessed delivery does not earn adaptive recovery.
 			if ic.Proxy != nil {
 				ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
 					Subsurface:        "response_intercept",
@@ -2489,9 +2495,6 @@ func newInterceptHandler(
 					EffectiveAction:   config.ActionAllow,
 					Outcome:           captureOutcome(config.ActionAllow, true),
 				})
-			}
-			if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact {
-				ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 			}
 			ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
 			return
@@ -2619,9 +2622,6 @@ func newInterceptHandler(
 						})
 					}
 					ic.Metrics.RecordAllowed(time.Since(reqStart), agentAnonymous)
-					if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact {
-						ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
-					}
 					return
 				}
 				var scanFailure *sizeExemptResponseReadError
@@ -2917,9 +2917,11 @@ func newInterceptHandler(
 			ic.Logger.LogResponseScanExempt(actx, r.URL.Hostname())
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
+		var recoveryAssessment scanner.InjectionAssessment
 		if ic.Scanner.ResponseScanningEnabled() && !interceptAuthenticatedArtifact {
 			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
 			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
+			recoveryAssessment = scanResult.RecoveryAssessment()
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 			recordDroppedResponseScanMatches(ic.Metrics, ic.Logger, actx, scanResult.SuppressedMatches, TransportConnect)
 			recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, scanResult.ObservedCoreMatches, TransportConnect)
@@ -3075,8 +3077,9 @@ func newInterceptHandler(
 
 		// Record clean request for adaptive score decay. Only apply decay when no
 		// finding was detected; warn/strip paths indicate suspicious traffic and
-		// must not contribute to score decay.
-		if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact {
+		// must not contribute to score decay. Responses from scan-exempt hosts
+		// earn no credit, matching the forward and fetch paths.
+		if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() {
 			ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 

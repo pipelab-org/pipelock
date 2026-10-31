@@ -76,16 +76,17 @@ func (l *Logger) LogAdaptiveEscalation(sessionKey, from, to, clientIP, requestID
 
 // LogAdaptiveRecoveryOptions contains the fields for an adaptive recovery event.
 type LogAdaptiveRecoveryOptions struct {
-	SessionKey string
-	Scope      string
-	From       string
-	To         string
-	Reason     string
-	ClientIP   string
-	RequestID  string
+	PreviousScore float64 // positive only for residual score expiry
+	SessionKey    string
+	Scope         string
+	From          string
+	To            string
+	Reason        string
+	ClientIP      string
+	RequestID     string
 }
 
-// LogAdaptiveRecovery logs an adaptive enforcement de-escalation.
+// LogAdaptiveRecovery logs a level recovery or normal-level residual expiry.
 func (l *Logger) LogAdaptiveRecovery(opts LogAdaptiveRecoveryOptions) {
 	e := newLogEntry(l.zl.Info(), EventAdaptiveRecovery).
 		str("session", opts.SessionKey).
@@ -95,6 +96,10 @@ func (l *Logger) LogAdaptiveRecovery(opts LogAdaptiveRecoveryOptions) {
 		str("reason", opts.Reason).
 		optStr("client_ip", opts.ClientIP).
 		optStr("request_id", opts.RequestID)
+	if opts.PreviousScore > 0 {
+		e.event = e.event.Float64("previous_score", opts.PreviousScore)
+		e.fields["previous_score"] = opts.PreviousScore
+	}
 	e.msg("adaptive enforcement recovered")
 
 	if l.emitter != nil {

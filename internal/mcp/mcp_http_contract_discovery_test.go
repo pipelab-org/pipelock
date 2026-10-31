@@ -145,7 +145,7 @@ func TestContractDiscoveryDoesNotRecoverAdaptiveState(t *testing.T) {
 			if private {
 				want = 0
 			}
-			if timerCalls != want || cleanCalls != want || rec.recordCleanCalls != 0 {
+			if timerCalls != want || cleanCalls != 0 || rec.recordCleanCalls != 0 {
 				t.Fatalf("private=%v timer=%d clean=%d fallback=%d", private, timerCalls, cleanCalls, rec.recordCleanCalls)
 			}
 		})
