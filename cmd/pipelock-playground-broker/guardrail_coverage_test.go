@@ -16,6 +16,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestBuildImagesBrokerPreflightArgumentsPassCheckConfig(t *testing.T) {
@@ -64,14 +65,9 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	dockerLog := filepath.Join(tmp, "docker.log")
 	dockerPath := filepath.Join(tmp, "docker")
 	dockerStub := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DOCKER_LOG\"\n"
-	if err := os.WriteFile(dockerPath, []byte(dockerStub), 0o600); err != nil {
-		t.Fatalf("write docker stub: %v", err)
-	}
 	// The temporary file has to be executable because build-images.sh resolves
 	// docker through PATH. It contains only the fixed test stub above.
-	if err := os.Chmod(dockerPath, 0o700); err != nil { // #nosec G302 -- executable test stub
-		t.Fatalf("make docker stub executable: %v", err)
-	}
+	testexec.WriteExecutable(t, dockerPath, []byte(dockerStub), 0o700)
 	cmd := exec.CommandContext(t.Context(), "bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
 	cmd.Env = append(os.Environ(),
 		"PATH="+tmp+":"+os.Getenv("PATH"),

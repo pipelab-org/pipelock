@@ -629,7 +629,15 @@ func pinBinary(source string, dirs runDirs) (string, string, error) {
 		return "", "", err
 	}
 	target := filepath.Join(binDir, filepath.Base(source))
+	// The copy is executed right after this, possibly while tests in the same
+	// process start children. A fork between opening and closing the copy
+	// would leave the child holding a write descriptor, and exec would fail
+	// with "text file busy". Holding the fork lock for reading, as the
+	// syscall package asks of code that creates descriptors, keeps forks out
+	// of that window (https://go.dev/issue/22315).
+	syscall.ForkLock.RLock()
 	digest, err := copyHashed(root, filepath.Base(resolved), target)
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		return "", "", err
 	}
