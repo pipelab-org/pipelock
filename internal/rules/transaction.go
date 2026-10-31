@@ -279,7 +279,7 @@ func readBundleTransactionRedo(path string) (*BundleTransactionRedo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read bundle transaction: %w (fail-closed)", err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(BundleTransactionRedo)); err != nil {
 		return nil, fmt.Errorf("parse bundle transaction: %w (fail-closed)", err)
 	}
 	var redo BundleTransactionRedo

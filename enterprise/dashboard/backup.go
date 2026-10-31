@@ -676,7 +676,7 @@ func validateLegalHoldState(data []byte) error {
 }
 
 func decodeStrictJSON(data []byte, dst any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, dst); err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))

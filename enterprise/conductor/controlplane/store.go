@@ -1051,7 +1051,7 @@ func readBundleRecordWithOptions(path string, allowLegacyPolicyHash bool) (Publi
 	if len(data) > maxBundleRecordJSONSize {
 		return PublishedBundle{}, fmt.Errorf("%w: bundle record too large", conductor.ErrPayloadTooLarge)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(PublishedBundle)); err != nil {
 		return PublishedBundle{}, fmt.Errorf("%w: decode bundle record: %w", ErrInvalidStoreRecord, err)
 	}
 	var record PublishedBundle
@@ -1106,7 +1106,7 @@ func readStreamHeadRecord(path string) (streamHeadRecord, error) {
 	if len(data) > maxStreamHeadJSONSize {
 		return streamHeadRecord{}, fmt.Errorf("%w: stream-head record too large", conductor.ErrPayloadTooLarge)
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(streamHeadRecord)); err != nil {
 		return streamHeadRecord{}, fmt.Errorf("%w: decode stream-head record: %w", ErrInvalidStoreRecord, err)
 	}
 	var record streamHeadRecord

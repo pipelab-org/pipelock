@@ -230,7 +230,7 @@ func runVerifyLegacyEpochInventory(cmd *cobra.Command, opts verifyLegacyInventor
 	if hex.EncodeToString(gotDigest[:]) != wantDigest {
 		return errors.New("--inventory SHA-256 does not match --sha256")
 	}
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, new(legacyInventoryDocument)); err != nil {
 		return fmt.Errorf("decode --inventory: %w", err)
 	}
 	var supplied legacyInventoryDocument

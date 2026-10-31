@@ -64,7 +64,7 @@ func decodeJSONBody(r *http.Request, v any) error {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return nil
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectDuplicateFields(raw, v); err != nil {
 		return fmt.Errorf("decode body: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))

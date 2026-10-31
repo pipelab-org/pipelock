@@ -128,7 +128,7 @@ func (c *CapabilitiesClient) Handshake(ctx context.Context) (NegotiatedCapabilit
 	if err := decoder.Decode(&capabilities); err != nil {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: decode response: %w", ErrCapabilityNegotiation, err)
 	}
-	if err := jsonscan.RejectDuplicateKeys(raw); err != nil {
+	if err := jsonscan.RejectDuplicateFields(raw, &capabilities); err != nil {
 		return NegotiatedCapabilities{}, fmt.Errorf("%w: ambiguous response: %w", ErrCapabilityNegotiation, err)
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {

@@ -86,7 +86,7 @@ func (d OrchestratorDelegation) SignedBytes() []byte {
 // root key before relying on any field.
 func ParseOrchestratorDelegation(data []byte) (OrchestratorDelegation, error) {
 	var d OrchestratorDelegation
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, &d); err != nil {
 		return OrchestratorDelegation{}, fmt.Errorf("%s is invalid JSON: %w", orchestratorDelegationFile, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

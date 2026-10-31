@@ -263,7 +263,7 @@ func readCRLHighWaterContext(crlFile string) (bool, error) {
 }
 
 func decodeCRLHighWaterJSON(data []byte, label string, dst any) error {
-	if err := jsonscan.RejectDuplicateKeys(data); err != nil {
+	if err := jsonscan.RejectNonCanonicalFields(data, dst); err != nil {
 		return fmt.Errorf("parse %s: %w", label, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))

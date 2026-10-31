@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 )
 
@@ -1468,6 +1469,13 @@ func ifNoneMatchMatches(raw, etag string) bool {
 	return false
 }
 
+// signedArtifact selects every signed Conductor message, at any depth of a
+// request, for canonical field names. Their signatures cover typed preimages,
+// so only ingress can reject a renamed member.
+type signedArtifact interface {
+	SignablePreimage() ([]byte, error)
+}
+
 func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, dest any) error {
 	if r.Body == nil {
 		return errors.New("request body required")
@@ -1479,6 +1487,9 @@ func decodeStrictJSON(w http.ResponseWriter, r *http.Request, maxBytes int64, de
 		return err
 	}
 	if _, err := contract.ParseJSONStrict(raw); err != nil {
+		return fmt.Errorf("strict JSON: %w", err)
+	}
+	if err := jsonscan.RejectDuplicateFieldsInValidatedJSON(raw, dest, (*signedArtifact)(nil)); err != nil {
 		return fmt.Errorf("strict JSON: %w", err)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))

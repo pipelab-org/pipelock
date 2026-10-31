@@ -509,6 +509,33 @@ func TestExtractEvidenceReceipts_RejectsUnexpectedRecorderType(t *testing.T) {
 	}
 }
 
+// The raw JSONL extractor and recorder.ParseEntryLine must agree on outer
+// recorder field names, including fields the extractor does not read.
+func TestExtractEvidenceReceiptsRejectsNoncanonicalOuterFields(t *testing.T) {
+	priv, _ := testKey(t, 1)
+	chain := buildChain(t, priv, 1)
+	detail, err := json.Marshal(chain[0])
+	if err != nil {
+		t.Fatalf("marshal receipt: %v", err)
+	}
+	evidence := `"type":"evidence_receipt","detail":` + string(detail)
+	for _, line := range []string{
+		`{"Seq":1,` + evidence + `}`,
+		`{"seq":1,"SEQ":2,` + evidence + `}`,
+		`{"Prev_Hash":"x","type":"checkpoint","detail":{}}`,
+	} {
+		if _, err := recorder.ParseEntryLine([]byte(line)); err == nil {
+			t.Fatalf("recorder parser accepted %s", line)
+		}
+		if _, err := receipt.ExtractEvidenceReceiptsBytes([]byte(line + "\n")); err == nil {
+			t.Fatalf("raw evidence extractor accepted %s", line)
+		}
+	}
+	if got, err := receipt.ExtractEvidenceReceiptsBytes([]byte(`{"seq":1,` + evidence + "}\n")); err != nil || len(got) != 1 {
+		t.Fatalf("canonical outer field: receipts=%d err=%v", len(got), err)
+	}
+}
+
 func TestExtractEvidenceReceiptsFromSessionDir(t *testing.T) {
 	priv, pub := testKey(t, 1)
 	chain := buildChain(t, priv, 2)
