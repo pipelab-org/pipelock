@@ -5,6 +5,7 @@
 
 import os
 import pathlib
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -126,11 +127,20 @@ class StabilityTests(unittest.TestCase):
     def test_grep_fallback(self):
         tools = self.root / "bin"
         tools.mkdir()
-        for tool in ("bash", "git", "dirname", "mktemp", "rm", "cat", "grep", "go"):
+        for tool in ("bash", "git", "dirname", "mktemp", "rm", "cat", "grep"):
             (tools / tool).symlink_to(shutil.which(tool))
+        # Go may launch helper tools. Preserve their PATH while the shell
+        # gate itself runs with only grep available for searching.
+        self.write(
+            "bin/go",
+            "#!/bin/sh\nPATH=" + shlex.quote(self.env["PATH"])
+            + " exec " + shlex.quote(shutil.which("go")) + ' "$@"\n',
+        )
+        (tools / "go").chmod(0o700)
         self.env["PATH"] = str(tools)
         self.write("new component/clean_test.go", "package example\n")
-        self.assertEqual(self.run_gate().returncode, 0)
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.write("new component/clean_test.go", SLEEP)
         result = self.run_gate()
         self.assertEqual(result.returncode, 1, result.stderr)
