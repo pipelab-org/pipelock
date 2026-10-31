@@ -295,7 +295,10 @@ func (w *walk) archive(data []byte, depth int) error {
 		} // Non-text, including ODF Thumbnails/thumbnail.png.
 		if !utf8.Valid(member) {
 			// ECMA-376 binary macro/printer parts aren't text and aren't executed.
-			if strings.HasPrefix(f.Name, "word/printerSettings/") || strings.HasSuffix(f.Name, "/vbaProject.bin") {
+			// Part 1 defines the Printer Settings part for WordprocessingML,
+			// SpreadsheetML and PresentationML packages alike.
+			if strings.HasPrefix(f.Name, "word/printerSettings/") || strings.HasPrefix(f.Name, "xl/printerSettings/") ||
+				strings.HasPrefix(f.Name, "ppt/printerSettings/") || strings.HasSuffix(f.Name, "/vbaProject.bin") {
 				continue
 			}
 			return fmt.Errorf("non-text member has no reader")
