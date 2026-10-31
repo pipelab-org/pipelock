@@ -651,12 +651,17 @@ func RunHTTPListenerProxy(
 		stateBound := false
 		principalBound := false
 		var sessionCapacityErr error
-		setClientState := func(state *mcpListenerClientState) {
-			clientState = state
-			clientStateKey = state.key
+		// The HTTP adapter projects refusals from the recorder that scores this
+		// request. Every state the request binds, unbound ones included, sets it.
+		bindRefusalRecorder := func(state *mcpListenerClientState) {
 			w.opts.Rec = state.recorder
 			w.opts.AdaptiveCfg = adaptiveCfg
 			w.opts.AdaptiveCfgFn = nil
+		}
+		setClientState := func(state *mcpListenerClientState) {
+			clientState = state
+			clientStateKey = state.key
+			bindRefusalRecorder(state)
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
 				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
@@ -704,6 +709,7 @@ func RunHTTPListenerProxy(
 			if state := listenerClients.newUnboundState(); state != nil {
 				clientState = state
 				clientStateKey = state.key
+				bindRefusalRecorder(state)
 				defer listenerClients.discardUnboundState(state)
 			} else {
 				sessionCapacityErr = session.ErrCapacity

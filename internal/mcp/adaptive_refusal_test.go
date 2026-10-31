@@ -78,6 +78,56 @@ func TestAdaptiveUniformRefusalMCPListenerInFlightResponse(t *testing.T) {
 	}
 }
 
+// A withheld upstream reply is scored before the listener commits its status.
+// When that finding reaches block_all, a tokenless client on a request-local
+// unbound state must get the same answer as a client bound to a session.
+func TestAdaptiveUniformRefusalMCPListenerWithheldUnboundSession(t *testing.T) {
+	for _, binding := range []string{"bound", "unbound", "bound below block_all", "unbound below block_all"} {
+		t.Run(binding, func(t *testing.T) {
+			rec := &listenerDiagnosisRecorder{}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				request, _ := io.ReadAll(r.Body)
+				if bytes.Contains(request, []byte(`"initialize"`)) {
+					w.Header().Set("Content-Type", "application/json")
+					_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"t","version":"1"}}}`)
+					return
+				}
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, upstreamStatusInjection)
+			}))
+			t.Cleanup(upstream.Close)
+			cfg := adaptiveCfgEnabled()
+			cfg.EscalationThreshold = session.SignalPoints[session.SignalBlock]
+			below := strings.HasSuffix(binding, "below block_all")
+			cfg.Levels.Elevated.BlockAll = boolPtr(!below)
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), Store: &singleRecorderStore{rec: rec}, AdaptiveCfg: cfg, ResponseActionOverride: config.ActionBlock, listenerStateTokenRequired: boolPtr(true)})
+			var header http.Header
+			if strings.HasPrefix(binding, "bound") {
+				header = http.Header{listenerSessionTokenHeader: {listenerSetupToken(t, baseURL)}}
+			}
+			// Tokenless clients may forward list methods; their replies are scanned.
+			resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
+			if rec.EscalationLevel() < 1 {
+				t.Fatalf("withheld finding did not escalate: %d %v %s", resp.StatusCode, resp.Header, body)
+			}
+			if below {
+				if resp.StatusCode != http.StatusBadGateway || resp.Header.Get(blockreason.HeaderReason) != "" {
+					t.Fatalf("withheld refusal below block_all changed: %d %v %s", resp.StatusCode, resp.Header, body)
+				}
+				return
+			}
+			if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
+				t.Fatalf("withheld refusal at block_all: %d %v %s", resp.StatusCode, resp.Header, body)
+			}
+			var reply rpcError
+			if err := json.Unmarshal(body, &reply); err != nil || string(reply.ID) != "2" || reply.Error.Code != -32001 || len(reply.Error.Data) != 0 {
+				t.Fatalf("nonuniform response: %s (decode: %v)", body, err)
+			}
+		})
+	}
+}
+
 func TestAdaptiveUniformRefusalMCPListenerStreamFraming(t *testing.T) {
 	for _, state := range []string{"pending", "started", "below", "disabled", "kill"} {
 		t.Run(state, func(t *testing.T) {
