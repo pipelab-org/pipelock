@@ -564,13 +564,14 @@ func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
 	return current
 }
 
-// fileHoldOnly is an enforced unread-file hold with no credential, injection,
-// entropy, address, or redaction finding. Those findings keep their own labels.
-// The hold reuses the parser layer, whose block reason is parse_error: the
-// published code for input that could not be fully scanned.
-func fileHoldOnly(result BodyScanResult) bool {
-	return result.FileInspectionBlock && result.FileInspectionIncomplete != "" &&
-		len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
+// unreadHoldOnly is an enforced unread-file hold, or a body withheld for its
+// Content-Encoding, with no credential, injection, entropy, address, or
+// redaction finding. Those findings keep their own labels. The hold reuses the
+// parser layer, whose block reason is parse_error: the published code for input
+// that could not be fully scanned.
+func unreadHoldOnly(result BodyScanResult) bool {
+	unread := result.UnscannedEncoding || (result.FileInspectionBlock && result.FileInspectionIncomplete != "")
+	return unread && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
 		len(result.AddressFindings) == 0 && result.EntropyFinding == nil &&
 		result.RedactionBlockReason == ""
 }
@@ -641,14 +642,17 @@ type BodyScanResult struct {
 	FileInspectionIncomplete string
 	// FileInspectionBlock is set only for enforced request-body block policy.
 	FileInspectionBlock bool
-	Clean               bool
-	Action              string
-	DLPMatches          []scanner.TextDLPMatch
-	InjectionMatches    []scanner.ResponseMatch
-	AddressFindings     []addressprotect.Finding // crypto address poisoning findings
-	EntropyFinding      *ContentEntropyFinding
-	EntropyAction       string
-	EntropyWarnRoute    *BodyEntropyWarnRouteMatch
+	// UnscannedEncoding marks a body withheld because its Content-Encoding is
+	// not decoded. It is withheld under every action and enforce setting.
+	UnscannedEncoding bool
+	Clean             bool
+	Action            string
+	DLPMatches        []scanner.TextDLPMatch
+	InjectionMatches  []scanner.ResponseMatch
+	AddressFindings   []addressprotect.Finding // crypto address poisoning findings
+	EntropyFinding    *ContentEntropyFinding
+	EntropyAction     string
+	EntropyWarnRoute  *BodyEntropyWarnRouteMatch
 	// RedactedDLPOnly is true when DLP matched the original body but the
 	// post-redaction body scanned clean. Callers can use this to distinguish
 	// "raw residual secret remains" from "secret was removed before forward".
@@ -824,9 +828,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Parse as comma-separated tokens (RFC 7231 section 3.1.2.2).
 	if hasNonIdentityEncoding(req.ContentEncoding) {
 		return nil, BodyScanResult{
-			Clean:  false,
-			Action: config.ActionBlock,
-			Reason: fmt.Sprintf("request body uses Content-Encoding %q; compressed bodies cannot be scanned for secrets", req.ContentEncoding),
+			Clean:             false,
+			Action:            config.ActionBlock,
+			Reason:            fmt.Sprintf("request body uses Content-Encoding %q; %s", req.ContentEncoding, scanner.UnscannedEncodingSuffix),
+			UnscannedEncoding: true,
 		}
 	}
 

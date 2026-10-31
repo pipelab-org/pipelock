@@ -1088,3 +1088,29 @@ func TestQueryEntropyKeyHint(t *testing.T) {
 		})
 	}
 }
+
+func TestUnscannedEncodingGuidance(t *testing.T) {
+	reason := `request body uses Content-Encoding "gzip"; ` + UnscannedEncodingSuffix
+	for _, label := range []string{ScannerParser, ScannerBodyDLP} {
+		got, ok := GuidanceForResult(label, reason)
+		if !ok {
+			t.Fatalf("%s: compressed-body reason produced no guidance", label)
+		}
+		if got.AgentReason != "Request blocked: the compressed request body could not be scanned. Send it without Content-Encoding." {
+			t.Fatalf("%s: agent reason = %q", label, got.AgentReason)
+		}
+		if strings.Contains(got.OperatorKnob, "suppress") || !strings.Contains(got.OperatorKnob, "Content-Encoding") {
+			t.Fatalf("%s: operator knob = %q", label, got.OperatorKnob)
+		}
+		if hint := OperatorHintForResult(label, reason); hint != got.OperatorKnob {
+			t.Fatalf("%s: audit remediation hint = %q", label, hint)
+		}
+	}
+	if !IsUnreadBodyReason(reason) || !IsUnreadBodyReason("ZIP upload not fully read: gap; "+IncompleteFileGovernedSuffix) {
+		t.Fatal("unread-body reasons not recognized")
+	}
+	// A client-chosen encoding name sits inside the quotes, never at the end.
+	if IsUnreadBodyReason(UnscannedEncodingSuffix+" (x)") || IsUnreadBodyReason("request body contains secret: AWS Access Key") {
+		t.Fatal("a reason without the terminal clause was treated as unread")
+	}
+}

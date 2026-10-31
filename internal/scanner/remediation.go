@@ -92,6 +92,17 @@ const (
 // clause with HasSuffix so an earlier client-chosen substring cannot select it.
 const IncompleteFileGovernedSuffix = "governed by request_body_scanning.action=block with enforce=true (warn/audit retain delivery)"
 
+// UnscannedEncodingSuffix is the terminal clause of the reason for a request
+// body withheld because its Content-Encoding is not decoded. The client-chosen
+// encoding name is quoted earlier in the reason and can't supply this clause.
+const UnscannedEncodingSuffix = "compressed bodies cannot be scanned for secrets"
+
+// IsUnreadBodyReason reports a body Pipelock withheld because it could not read
+// it, not because a finding matched. Both share the parse_error block reason.
+func IsUnreadBodyReason(reason string) bool {
+	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
+}
+
 const (
 	bodyDLPOperatorKnob        = "Request body DLP matched. For a non-core false positive, add a top-level `suppress:` entry with `rule:` set to the matched rule name and `path:` scoped to the request path. Core DLP matches cannot be suppressed; fix the core pattern's precision. A built-in provider-key pattern additionally checks the destination: the credential is allowed at its declared audience and reported everywhere else. Prefer sending it only to that audience. If a different destination is intentional, such as an internal relay you operate, a path-scoped `suppress:` entry does apply here; it warns at config load and every match stays audited."
 	bodyEntropyOperatorKnob    = "If the global `request_body_scanning.content_entropy_action` is `block`, an exact, expiring `content_entropy_warn_routes` entry can keep one HTTPS upload route visible without blocking it. With global `warn`, that route control is unavailable; use the existing warning or set the action to `block` when opaque traffic must stop. For a WebSocket-only endpoint, use `websocket_proxy.content_entropy_exclusions`."
@@ -596,6 +607,13 @@ func incompleteFileHoldGuidance() RemediationGuidance {
 	}
 }
 
+func unscannedEncodingGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "The request body used a Content-Encoding Pipelock does not decode, so it was not scanned. It is withheld under every `request_body_scanning.action` and `enforce` setting because no finding decided it. Configure the client to send the body without Content-Encoding.",
+		AgentReason:  "Request blocked: the compressed request body could not be scanned. Send it without Content-Encoding.",
+	}
+}
+
 func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	nested := reason
 	reason = stripNestedURLReasonPrefix(reason)
@@ -604,6 +622,9 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// branch only replaces the operator and agent sentences.
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true
+	}
+	if strings.HasSuffix(reason, UnscannedEncodingSuffix) {
+		return unscannedEncodingGuidance(), true
 	}
 	if label == AuditContract && reason == "MCP contract evaluation failed" {
 		return RemediationGuidance{

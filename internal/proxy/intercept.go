@@ -1437,7 +1437,7 @@ func newInterceptHandler(
 				if result.RedactionBlockReason == "" {
 					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 				}
-				if fileHoldOnly(result) {
+				if unreadHoldOnly(result) {
 					scannerLabel = scanner.ScannerParser
 				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)

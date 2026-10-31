@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"maps"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net/http"
@@ -82,6 +83,11 @@ type uploadPolicy struct {
 // full received request also verifies multipart framing is preserved on allow.
 func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType string, body []byte) (int, int32, bool, string, http.Header) {
 	t.Helper()
+	return exerciseUploadHeaders(t, surface, policy, http.Header{"Content-Type": {mediaType}}, body)
+}
+
+func exerciseUploadHeaders(t *testing.T, surface string, policy uploadPolicy, headers http.Header, body []byte) (int, int32, bool, string, http.Header) {
+	t.Helper()
 	var hits atomic.Int32
 	var intact atomic.Bool
 	original := sha256.Sum256(body)
@@ -113,7 +119,7 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Content-Type", mediaType)
+		maps.Copy(req.Header, headers)
 		response, err = server.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -148,7 +154,7 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 			if reqErr != nil {
 				t.Fatal(reqErr)
 			}
-			req.Header.Set("Content-Type", mediaType)
+			maps.Copy(req.Header, headers)
 			response = interceptAndRequestWithRecorder(t, interceptRequestOptions{Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Request: req, Proxy: p, Agent: "upload-test", ActorAuth: envelope.ActorAuthBound})
 		} else {
 			upstream := httptest.NewServer(handler)
@@ -166,7 +172,7 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 			if reqErr != nil {
 				t.Fatal(reqErr)
 			}
-			req.Header.Set("Content-Type", mediaType)
+			maps.Copy(req.Header, headers)
 			response, err = client.Do(req)
 			if err != nil {
 				t.Fatal(err)
@@ -792,5 +798,31 @@ func TestUploadInspectionMacroProjectHold(t *testing.T) {
 	status, hits, intact, message, _ := exerciseUpload(t, "forward", uploadPolicy{config.ActionWarn, false}, "application/vnd.ms-excel.sheet.macroEnabled.12", data)
 	if status != http.StatusCreated || hits != 1 || !intact {
 		t.Fatalf("warn delivery: status=%d hits=%d intact=%t body=%s", status, hits, intact, message)
+	}
+}
+
+// A non-identity Content-Encoding is withheld on every policy because the body
+// was never scanned. It is the same unread-body hold as an unread file, not a
+// secret match, so the reason, layer and hints say so on every HTTP surface.
+func TestUploadInspectionUnscannedEncodingIdentity(t *testing.T) {
+	headers := http.Header{"Content-Type": {"application/json"}, "Content-Encoding": {"gzip"}}
+	for _, policy := range []uploadPolicy{{config.ActionBlock, false}, {config.ActionWarn, false}, {config.ActionBlock, true}} {
+		for _, surface := range []string{"forward", "intercept", "reverse"} {
+			t.Run(fmt.Sprintf("%s/%s/audit=%t", surface, policy.action, policy.audit), func(t *testing.T) {
+				status, hits, _, message, hdr := exerciseUploadHeaders(t, surface, policy, headers, []byte("compressed bytes"))
+				if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, scanner.UnscannedEncodingSuffix) {
+					t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
+				}
+				if got := hdr.Get("X-Pipelock-Block-Reason"); got != "parse_error" {
+					t.Fatalf("block reason = %q, want parse_error", got)
+				}
+				if got := hdr.Get("X-Pipelock-Block-Reason-Layer"); got != scanner.ScannerParser {
+					t.Fatalf("layer = %q, want parser", got)
+				}
+				if hint := hdr.Get("X-Pipelock-Hint"); hint != "Request blocked: the compressed request body could not be scanned. Send it without Content-Encoding." {
+					t.Fatalf("hint = %q", hint)
+				}
+			})
+		}
 	}
 }
