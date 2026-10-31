@@ -335,7 +335,11 @@ func (w *walk) archive(data []byte, depth int) error {
 		// does not read CompressedSize64, which is how some writers store an
 		// empty deflate stream. A nonempty payload is still a member body:
 		// scan it, and refuse completion when it disagrees with the claimed size.
-		if f.FileInfo().IsDir() {
+		// Directory status is the trailing slash Open tests. External attributes
+		// are host-dependent (APPNOTE 4.4.15), and Open, Python zipfile, Info-ZIP
+		// and LibreOffice all read a slashless member marked as a directory as a
+		// file, so it gets the file member checks.
+		if strings.HasSuffix(f.Name, "/") {
 			w.result.Texts = append(w.result.Texts, f.Name, f.Comment)
 			if f.CompressedSize64 == 0 {
 				continue

@@ -7,6 +7,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/flate"
+	"compress/gzip"
 	"context"
 	"encoding/binary"
 	"hash/crc32"
@@ -742,4 +743,41 @@ func TestInspectCompoundFileMembers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// archive/zip Open decides a directory by its trailing slash, while
+// FileInfo().IsDir also honours host-dependent external attributes. A slashless
+// member marked as a directory is read as a file by Open, Python zipfile,
+// Info-ZIP and LibreOffice, so it must get the file member checks.
+func TestInspectDirectoryAttributeOnFile(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	var gz bytes.Buffer
+	gw := gzip.NewWriter(&gz)
+	if _, err := gw.Write([]byte(strings.Repeat("ordinary text ", 200) + "key=" + key + strings.Repeat(" more text", 200))); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	split := []byte(`<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>AKIAQ9W8E7</w:t></w:r><w:r><w:t>R6T5Y4U3I2</w:t></w:r></w:p></w:body></w:document>`)
+	const unixHost, fatHost = 3 << 8, 0
+	unixDir, fatDir := uint32(0o040755)<<16, uint32(0x10)
+	t.Run("unread binary", func(t *testing.T) {
+		r := Inspect(t.Context(), rawArchive(t, rawMember{name: "notes.bin", data: gz.Bytes(), creator: fatHost, attrs: fatDir}), Limits{1 << 20, 64})
+		if r.Complete || r.Reason != "non-text member has no reader" {
+			t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+		}
+	})
+	t.Run("split runs joined", func(t *testing.T) {
+		r := Inspect(t.Context(), rawArchive(t, rawMember{name: "word/document.xml", data: split, creator: unixHost, attrs: unixDir}), Limits{1 << 20, 64})
+		if !r.Complete || !strings.Contains(strings.Join(r.Texts, "\n"), key) {
+			t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+		}
+	})
+	t.Run("slash directory", func(t *testing.T) {
+		r := Inspect(t.Context(), rawArchive(t, rawMember{name: "word/", creator: unixHost, attrs: unixDir}, rawMember{name: "word/document.xml", data: split}), Limits{1 << 20, 64})
+		if !r.Complete {
+			t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+		}
+	})
 }
