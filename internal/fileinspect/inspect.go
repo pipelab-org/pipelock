@@ -32,23 +32,52 @@ type Result struct {
 	ReadBytes  int
 }
 
+// Archive signatures. PKWARE APPNOTE 4.3.7 (local file header) and 4.3.16
+// (end of central directory record); 7-Zip's 7zFormat.txt,
+// SignatureHeader.Signature[6] (https://www.7-zip.org/sdk.html); RAR 4.x and
+// 5.0 archive signatures (https://www.rarlab.com/technote.htm#rarsign).
+var (
+	zipLocalSignature = []byte("PK\x03\x04")
+	zipEndSignature   = []byte("PK\x05\x06")
+	sevenZipSignature = []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}
+	rar4Signature     = []byte("Rar!\x1a\x07\x00")
+	rar5Signature     = []byte("Rar!\x1a\x07\x01\x00")
+)
+
 // Kind uses format signatures, independently of filenames and MIME labels.
 func Kind(data []byte) string {
 	switch {
-	// PKWARE APPNOTE 4.3.7 and 4.3.16 (local file / empty archive).
-	case bytes.HasPrefix(data, []byte("PK\x03\x04")), bytes.HasPrefix(data, []byte("PK\x05\x06")):
+	case bytes.HasPrefix(data, zipLocalSignature), bytes.HasPrefix(data, zipEndSignature):
 		return "ZIP"
-	// 7-Zip's 7zFormat.txt, SignatureHeader.Signature[6].
-	// https://www.7-zip.org/sdk.html (7z specification in the LZMA SDK).
-	case bytes.HasPrefix(data, []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}):
+	case bytes.HasPrefix(data, sevenZipSignature):
 		return "7z"
-	// RAR format specification, archive signature, RAR 4.x and 5.0:
-	// https://www.rarlab.com/technote.htm#rarsign
-	case bytes.HasPrefix(data, []byte("Rar!\x1a\x07\x00")), bytes.HasPrefix(data, []byte("Rar!\x1a\x07\x01\x00")):
+	case bytes.HasPrefix(data, rar4Signature), bytes.HasPrefix(data, rar5Signature):
 		return "RAR"
+	// APPNOTE 4.1.9 allows data before the archive (a self-extractor stub).
+	// Readers find it from the end record, which starts within the final
+	// 65535+22 bytes because its comment length is a 2-byte field (4.3.16).
+	// Info-ZIP unzip also extracts a prefixed archive whose end record is
+	// further from EOF, so a local header signature anywhere is a ZIP too.
+	// The canonical layout check then leaves either form not fully read.
+	case bytes.Contains(data[max(0, len(data)-endHeaderBytes-65535):], zipEndSignature), bytes.Contains(data, zipLocalSignature):
+		return "ZIP"
 	default:
+		// No tested 7z or RAR reader opened an archive behind a stub that is
+		// not an executable, so those formats are recognized at the start only.
 		return ""
 	}
+}
+
+// embeddedArchive reports an archive signature anywhere in data. A published
+// signature at offset zero accepts a binary member, but says nothing about
+// the bytes after it, and an archive appended to an image remains readable.
+func embeddedArchive(data []byte) bool {
+	for _, sig := range [][]byte{zipLocalSignature, zipEndSignature, sevenZipSignature, rar4Signature, rar5Signature} {
+		if bytes.Contains(data, sig) {
+			return true
+		}
+	}
+	return false
 }
 
 type walk struct {

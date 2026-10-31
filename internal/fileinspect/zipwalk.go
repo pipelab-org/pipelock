@@ -138,6 +138,9 @@ func (w *walk) archive(data []byte, depth int) error {
 			continue
 		}
 		if knownBinarySignature(item.payload) {
+			if embeddedArchive(item.payload) {
+				fail(fmt.Errorf("binary member contains an archive signature"))
+			}
 			continue
 		}
 		deferred = append(deferred, item)
