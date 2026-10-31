@@ -103,27 +103,51 @@ func IsUnreadBodyReason(reason string) bool {
 	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
 }
 
-// Request-body reasons that name a finding before an unread upload.
+// Request-body reasons that name a finding before an unread upload. The
+// entropy prefixes are the two forms contententropy.Reason writes.
 const (
-	secretAndUnreadPrefix    = "request body contains secret:"
-	injectionAndUnreadPrefix = "request body contains prompt injection:"
+	secretAndUnreadPrefix          = "request body contains secret:"
+	injectionAndUnreadPrefix       = "request body contains prompt injection:"
+	addressAndUnreadPrefix         = "address poisoning detected:"
+	entropyAndUnreadPrefix         = "high entropy request body content"
+	opaqueEntropyAndUnreadPrefix   = "opaque "
+	opaqueEntropyAndUnreadContains = " request body content ("
 )
 
-// FindingAndUnreadAgentReason names a non-core secret or prompt-injection
-// finding and then an unread upload. The reason is free text; an audience
-// note may follow the unread-file suffix, so the suffix is not required to be
-// terminal.
-func FindingAndUnreadAgentReason(reason string) (string, bool) {
+// findingAndUnread is the finding a request-body reason names before an
+// unread upload, with that finding's own operator and agent sentences.
+type findingAndUnread struct {
+	agent, knob string
+}
+
+func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 	if !strings.Contains(reason, IncompleteFileGovernedSuffix) {
-		return "", false
+		return findingAndUnread{}, false
 	}
 	switch {
 	case strings.HasPrefix(reason, secretAndUnreadPrefix):
-		return secretAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret."}, true
 	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
-		return promptInjectionAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+		return findingAndUnread{promptInjectionAgentReason, "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob}, true
+	case strings.HasPrefix(reason, addressAndUnreadPrefix):
+		return findingAndUnread{auditPolicyAgentReason, "The reason names an address-poisoning finding and then an unread upload. " + addressProtectionOperatorKnob}, true
+	case strings.HasPrefix(reason, entropyAndUnreadPrefix),
+		strings.HasPrefix(reason, opaqueEntropyAndUnreadPrefix) && strings.Contains(reason, opaqueEntropyAndUnreadContains):
+		return findingAndUnread{highEntropyAgentReason, "The reason names a high-entropy finding and then an unread upload. " + bodyEntropyOperatorKnob}, true
 	}
-	return "", false
+	return findingAndUnread{}, false
+}
+
+// FindingAndUnreadAgentReason names a non-core secret, prompt-injection,
+// address-poisoning or high-entropy finding and then an unread upload. The
+// reason is free text; an audience note may follow the unread-file suffix, so
+// the suffix is not required to be terminal.
+func FindingAndUnreadAgentReason(reason string) (string, bool) {
+	f, ok := findingBeforeUnread(reason)
+	if !ok {
+		return "", false
+	}
+	return f.agent + " " + incompleteFileHoldGuidance().AgentReason, true
 }
 
 const (
@@ -644,13 +668,9 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// reason already covers input that could not be fully scanned, so this
 	// branch only replaces the operator and agent sentences. A reason that
 	// also names a secret keeps that finding first.
-	if agent, ok := FindingAndUnreadAgentReason(reason); ok {
+	if f, ok := findingBeforeUnread(reason); ok {
 		file := incompleteFileHoldGuidance()
-		knob := "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret. "
-		if strings.HasPrefix(reason, injectionAndUnreadPrefix) {
-			knob = "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob + " "
-		}
-		return RemediationGuidance{OperatorKnob: knob + file.OperatorKnob, AgentReason: agent}, true
+		return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason}, true
 	}
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true

@@ -1126,9 +1126,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 		if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)
+			result.Reason = appendUnreadUpload(result.Reason, result.FileInspectionIncomplete)
 		}
 		if result.EntropyFinding != nil && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 && len(result.AddressFindings) == 0 {
-			result.Reason = bodyEntropyReason(result)
+			result.Reason = appendUnreadUpload(bodyEntropyReason(result), result.FileInspectionIncomplete)
 		}
 		return buf, result
 	}
@@ -1435,6 +1436,15 @@ func isProviderOpaqueCiphertext(value string) bool {
 
 func contentEntropyReason(f *ContentEntropyFinding) string {
 	return contententropy.Reason(f)
+}
+
+// appendUnreadUpload keeps an unread upload in a reason that names another
+// finding first, so the receipt records both.
+func appendUnreadUpload(reason, incomplete string) string {
+	if incomplete == "" {
+		return reason
+	}
+	return reason + "; " + incomplete
 }
 
 func bodyEntropyReason(result BodyScanResult) string {
