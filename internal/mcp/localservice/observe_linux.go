@@ -192,7 +192,7 @@ func hashOpenedIfSameInode(file ObservedFile, held heldFile, f *os.File, seen ma
 	if !fi.Mode().IsRegular() {
 		return ObservedFile{}, false
 	}
-	dev, ino, _, ok := fileIdentity(fi)
+	dev, ino, ok := fileIdentity(fi)
 	var mapsID heldFile
 	var mapsOK bool
 	if held.mapped && ok {
