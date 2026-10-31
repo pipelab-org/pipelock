@@ -99,8 +99,15 @@ func (w *walk) archive(data []byte, depth int) error {
 				fail(fmt.Errorf("embedded %s format has no upload reader", kind))
 				continue
 			}
+			before := len(w.result.Texts)
 			if err := w.archive(item.payload, depth+1); err != nil {
-				w.result.Texts = append(w.result.Texts, string(item.payload))
+				// A nested archive that could not be parsed added nothing,
+				// so its raw bytes are kept. One that was parsed already
+				// added its members; appending its bytes again at every
+				// level would grow the views with the nesting depth.
+				if len(w.result.Texts) == before {
+					w.result.Texts = append(w.result.Texts, string(item.payload))
+				}
 				fail(err)
 			}
 			continue

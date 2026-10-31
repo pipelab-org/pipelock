@@ -230,7 +230,7 @@ func TestInspectStoredDescriptorSignature(t *testing.T) {
 // under warn, where the unread file itself is delivered).
 func TestInspectKeepsTextAfterUnreadMember(t *testing.T) {
 	secret := layoutSecret()
-	brokenZip := archiveFixture(t, map[string][]byte{"inner.txt": []byte("x")})
+	brokenZip := rawArchive(t, rawMember{name: "inner.txt", data: []byte("nested sk_live_" + strings.Repeat("d", 24))})
 	brokenZip = brokenZip[:len(brokenZip)-1]
 	for _, tc := range []struct {
 		name   string
@@ -241,7 +241,7 @@ func TestInspectKeepsTextAfterUnreadMember(t *testing.T) {
 		{"compound file", layoutEntry{name: "x.bin", plain: append(append([]byte{}, compoundFileSignature...), make([]byte, 64)...)}, "OLE compound file member has no reader", ""},
 		{"embedded 7z", layoutEntry{name: "x.7z", plain: []byte("7z\xbc\xaf\x27\x1c" + strings.Repeat("copy method data ", 8) + "copy=sk_live_" + strings.Repeat("c", 24))}, "embedded 7z format has no upload reader", "sk_live_cccc"},
 		{"malformed xml", layoutEntry{name: "a.xml", plain: []byte("<a><b></a>")}, "malformed package XML", ""},
-		{"damaged nested zip", layoutEntry{name: "inner.zip", plain: brokenZip}, "missing or damaged ZIP trailer", ""},
+		{"damaged nested zip", layoutEntry{name: "inner.zip", plain: brokenZip}, "missing or damaged ZIP trailer", "sk_live_dddd"},
 		{"checksum", layoutEntry{name: "c.txt", plain: []byte("bad crc text")}, "local member checksum or size disagrees with directory", "bad crc text"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -310,5 +310,22 @@ func TestInspectFailedMembersShareBudget(t *testing.T) {
 	}
 	if r.Complete || r.ReadBytes > budget || total > budget+central.Len() {
 		t.Fatalf("complete=%t reason=%q read=%d text bytes=%d", r.Complete, r.Reason, r.ReadBytes, total)
+	}
+}
+
+// A nesting chain that fails at its deepest level keeps that level's raw bytes
+// once. Every level above was parsed and already added its members.
+func TestInspectNestedFailureTextIsLinear(t *testing.T) {
+	deep := archiveFixture(t, map[string][]byte{"ordinary.txt": []byte("ordinary text")})
+	for range 64 {
+		deep = archiveFixture(t, map[string][]byte{"nested.zip": deep})
+	}
+	r := Inspect(t.Context(), deep, Limits{1 << 22, 64})
+	total := 0
+	for _, text := range r.Texts {
+		total += len(text)
+	}
+	if r.Complete || !strings.Contains(r.Reason, "depth") || total > 2*len(deep) {
+		t.Fatalf("complete=%t reason=%q text bytes=%d archive bytes=%d", r.Complete, r.Reason, total, len(deep))
 	}
 }
