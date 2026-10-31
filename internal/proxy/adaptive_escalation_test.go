@@ -1026,9 +1026,10 @@ func TestFetch_Adaptive_EntropyBudgetWarnAddsNoScore(t *testing.T) {
 
 // --- recordSessionActivity tests ---
 
-// TestRecordSessionActivity_DeferClean verifies that when deferClean=true,
-// a clean URL scan does not trigger RecordClean (score stays at 0, no decay).
+// TestRecordSessionActivity_DeferClean verifies that URL-only success earns
+// no traffic credit, regardless of whether the caller defers clean recovery.
 func TestRecordSessionActivity_DeferClean(t *testing.T) {
+	const hostname = "api.vendor.example"
 	cfg := adaptiveConfig()
 	logger := audit.NewNop()
 	sc := scanner.MustNew(cfg)
@@ -1052,19 +1053,35 @@ func TestRecordSessionActivity_DeferClean(t *testing.T) {
 	}
 
 	// Call recordSessionActivity with deferClean=true and a clean result.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-1", scanner.Result{Allowed: true}, cfg, logger, true)
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, hostname, "req-1", scanner.Result{Allowed: true}, cfg, logger, true)
 
 	scoreAfter := rec.ThreatScore()
 	if scoreAfter != scoreBefore {
 		t.Errorf("deferClean=true should not decay score, before=%f after=%f", scoreBefore, scoreAfter)
 	}
 
-	// Now with deferClean=false: score should decay.
-	p.recordSessionActivity("127.0.0.1", agentAnonymous, "example.com", "req-2", scanner.Result{Allowed: true}, cfg, logger, false)
+	// Disabling deferral still supplies no wording assessment.
+	p.recordSessionActivity("127.0.0.1", agentAnonymous, hostname, "req-2", scanner.Result{Allowed: true}, cfg, logger, false)
 
-	scoreDecayed := rec.ThreatScore()
-	if scoreDecayed >= scoreBefore {
-		t.Errorf("deferClean=false should decay score, before=%f after=%f", scoreBefore, scoreDecayed)
+	if scoreAfter := rec.ThreatScore(); scoreAfter != scoreBefore {
+		t.Errorf("URL-only success should not decay score, before=%f after=%f", scoreBefore, scoreAfter)
+	}
+
+	// A benign assessment of an ineligible (truncated or exempt) response
+	// describes only part of what the agent received and earns no credit.
+	recordCleanForAdaptiveScope(rec, adaptiveScopeForHost(hostname), &cfg.AdaptiveEnforcement, false, adaptiveRecoveryContext{
+		assessment: benignRecoveryAssessment(),
+	})
+	if scoreAfter := rec.ThreatScore(); scoreAfter != scoreBefore {
+		t.Errorf("ineligible assessed-benign result should not decay score, before=%f after=%f", scoreBefore, scoreAfter)
+	}
+
+	// An eligible assessed-benign result still earns traffic credit.
+	recordCleanForAdaptiveScope(rec, adaptiveScopeForHost(hostname), &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{
+		assessment: benignRecoveryAssessment(),
+	})
+	if scoreAfter := rec.ThreatScore(); scoreAfter >= scoreBefore {
+		t.Errorf("eligible assessed-benign result should decay score, before=%f after=%f", scoreBefore, scoreAfter)
 	}
 }
 
@@ -2170,14 +2187,14 @@ func TestAdaptive_RateLimitBlock_NoDecaySuppression(t *testing.T) {
 			scoreAfterDLP, sess.ThreatScore())
 	}
 
-	// Clean repeat request with deferClean=false - SHOULD decay. Use an
+	// URL-only success has no wording assessment and must not decay. Use an
 	// already-seen hostname so this test isolates rate-limit neutrality from
 	// adaptive domain-burst scoring.
 	p.recordSessionActivity("127.0.0.1", agentAnonymous, "registry.npmjs.org", "req-clean",
 		scanner.Result{Allowed: true},
 		cfg, logger, false)
-	if sess.ThreatScore() >= scoreAfterDLP {
-		t.Errorf("ThreatScore = %v, want < %v after clean request (decay should fire)",
+	if sess.ThreatScore() != scoreAfterDLP {
+		t.Errorf("ThreatScore = %v, want %v without a wording assessment",
 			sess.ThreatScore(), scoreAfterDLP)
 	}
 }

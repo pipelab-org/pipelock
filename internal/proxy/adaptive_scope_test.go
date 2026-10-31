@@ -422,10 +422,10 @@ func TestAdaptiveScope_HelperFallbackBranches(t *testing.T) {
 	sess := scopedSession(t, p)
 	scope := adaptiveScopeForHost(adaptiveScopePollHost)
 
-	recordCleanForAdaptiveScope(nil, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{})
+	recordCleanForAdaptiveScope(nil, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment()})
 
 	generic := &interceptMockRecorder{}
-	recordCleanForAdaptiveScope(generic, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{})
+	recordCleanForAdaptiveScope(generic, scope, &cfg.AdaptiveEnforcement, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment()})
 	if !generic.cleanCalled {
 		t.Fatal("generic recorder clean fallback was not called")
 	}
@@ -581,11 +581,11 @@ func TestRecordCleanForAdaptiveScope_IneligibleCleanDoesNotRecover(t *testing.T)
 			}
 		})
 	}
-	if got := sess.ScopedThreatScore(scope); got >= beforeScore {
-		t.Fatalf("ineligible clean should still decay score: before %.1f after %.1f", beforeScore, got)
+	if got := sess.ScopedThreatScore(scope); got != beforeScore {
+		t.Fatalf("unassessed traffic must not decay score: before %.1f after %.1f", beforeScore, got)
 	}
 
-	recordCleanForAdaptiveScope(sess, scope, &cfg, true, adaptiveRecoveryContext{reason: adaptiveRecoveryClean})
+	recordCleanForAdaptiveScope(sess, scope, &cfg, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment(), reason: adaptiveRecoveryClean})
 	if got := sess.EffectiveEscalationLevel(scope); got != 0 {
 		t.Fatalf("eligible fully scanned clean level = %d, want normal", got)
 	}
@@ -614,6 +614,7 @@ func TestRecordCleanForAdaptiveScope_CleanRecoveryObservable(t *testing.T) {
 	})
 
 	recordCleanForAdaptiveScope(sess, scope, &cfg, true, adaptiveRecoveryContext{
+		assessment: benignRecoveryAssessment(),
 		sessionKey: sessionKey,
 		scope:      scope,
 		reason:     adaptiveRecoveryClean,
@@ -702,14 +703,22 @@ func TestRecordCleanForAdaptiveScope_NonSessionRecorderBranches(t *testing.T) {
 		CleanRequestsToDeescalate: 1,
 	}
 
-	t.Run("ineligible_decays_only", func(t *testing.T) {
+	t.Run("unassessed_does_not_decay", func(t *testing.T) {
 		rec := &cleanRecoveryRecorder{}
 		recordCleanForAdaptiveScope(rec, "", &cfg, false, adaptiveRecoveryContext{})
-		if rec.recordCleanCalls != 1 {
-			t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
+		if rec.recordCleanCalls != 0 {
+			t.Fatalf("RecordClean calls = %d, want 0", rec.recordCleanCalls)
 		}
 		if rec.recoverCalls != 0 {
 			t.Fatalf("RecordCleanWithRecovery calls = %d, want 0", rec.recoverCalls)
+		}
+	})
+
+	t.Run("ineligible_benign_does_not_decay", func(t *testing.T) {
+		rec := &cleanRecoveryRecorder{}
+		recordCleanForAdaptiveScope(rec, "", &cfg, false, adaptiveRecoveryContext{assessment: benignRecoveryAssessment()})
+		if rec.recordCleanCalls != 0 || rec.recoverCalls != 0 {
+			t.Fatalf("ineligible benign credit: RecordClean=%d RecordCleanWithRecovery=%d, want 0/0", rec.recordCleanCalls, rec.recoverCalls)
 		}
 	})
 
@@ -717,8 +726,9 @@ func TestRecordCleanForAdaptiveScope_NonSessionRecorderBranches(t *testing.T) {
 		rec := &cleanRecoveryRecorder{}
 		m := metrics.New()
 		recordCleanForAdaptiveScope(rec, "", &cfg, true, adaptiveRecoveryContext{
-			reason:  adaptiveRecoveryClean,
-			metrics: m,
+			assessment: benignRecoveryAssessment(),
+			reason:     adaptiveRecoveryClean,
+			metrics:    m,
 		})
 		if rec.recoverCalls != 1 {
 			t.Fatalf("RecordCleanWithRecovery calls = %d, want 1", rec.recoverCalls)
@@ -731,7 +741,7 @@ func TestRecordCleanForAdaptiveScope_NonSessionRecorderBranches(t *testing.T) {
 
 	t.Run("eligible_plain_recorder_decays", func(t *testing.T) {
 		rec := &plainCleanRecorder{}
-		recordCleanForAdaptiveScope(rec, "", &cfg, true, adaptiveRecoveryContext{})
+		recordCleanForAdaptiveScope(rec, "", &cfg, true, adaptiveRecoveryContext{assessment: benignRecoveryAssessment()})
 		if rec.recordCleanCalls != 1 {
 			t.Fatalf("RecordClean calls = %d, want 1", rec.recordCleanCalls)
 		}

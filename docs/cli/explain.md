@@ -103,6 +103,18 @@ Position, length and match SHA-256 index the named scanner view, not the raw std
 
 Text output includes `Wording assessment: <status> (basic)`; JSON includes `assessment.checker` and `assessment.status`. Status is `off`, `not_assessed`, `benign`, `partial`, `finding` or `incomplete`. `partial` means only the built-in core patterns ran because response scanning is disabled. An allowed response can have wording detection off or a warning finding. A body without an inspectable wording view is not assessed. A scan failure reports incomplete and exits 2. These statuses describe the existing extracted wording views, not image pixels or a live stream.
 
+| Assessment status | Meaning |
+|---|---|
+| `off` | Wording detection is disabled. |
+| `not_assessed` | No wording view was evaluated, including empty input. |
+| `benign` | The configured wording checker completed without findings. |
+| `partial` | Only the built-in core patterns ran; this does not qualify for recovery. |
+| `finding` | Enforcing, warned, observed or suppressed wording findings were recorded. |
+| `incomplete` | Inspection failed. |
+
+Only an explicit `benign` assessment can qualify for adaptive clean-request recovery. Missing or unknown statuses never qualify. Delivery permission is separate from assessment.
+
+
 This isn't a replay of a fetch HTML block. Fetch scans HTML after hidden-content extraction and readability and applies destination-scoped suppressions using the final response URL, so a saved HTML document can disagree with a live fetch verdict. Reconstruct the extracted text when diagnosing a fetch HTML block.
 
 | Exit code | Meaning |

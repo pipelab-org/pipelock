@@ -3195,9 +3195,11 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// Response injection scanning: only runs when the scanner feature
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
+		var recoveryAssessment scanner.InjectionAssessment
 		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
 			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
+			recoveryAssessment = scanResult.RecoveryAssessment()
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
@@ -3375,6 +3377,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
+				assessment: recoveryAssessment,
 				sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
 				scope:      forwardScope,
 				reason:     adaptiveRecoveryClean,

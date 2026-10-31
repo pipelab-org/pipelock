@@ -3,7 +3,40 @@
 
 package scanner
 
-import "github.com/luckyPipewrench/pipelock/internal/config"
+import (
+	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
+)
+
+// IsBlankInjectionView uses the wording checker's matching normalization to
+// identify views with no wording. Blankness alone never establishes a benign
+// assessment: callers must preserve findings, failures and disabled coverage.
+//
+// The scanner itself uses this answer to decide whether text was assessed, so
+// an early "not blank" can grant credit and must be exact. Only ASCII letters
+// and digits take the shortcut: matching normalization never removes them.
+// Other letters do not qualify (Hangul fillers are letters that it strips),
+// so any other text takes the full pass.
+func IsBlankInjectionView(content string) bool {
+	for i := 0; i < len(content); i++ {
+		if c := content[i]; c >= '0' && c <= '9' || c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
+			return false
+		}
+	}
+	return strings.TrimSpace(normalize.ForMatching(content)) == ""
+}
+
+// BlankViewAddsNoCoverage reports whether a view can be skipped when merging
+// assessments: it is blank under matching normalization and its scan produced
+// no failure, match, steganography signal or assessment of its own. Any of
+// those must still reach the merge so it can withhold clean credit.
+func BlankViewAddsNoCoverage(view string, result ResponseScanResult) bool {
+	return result.Clean && !result.Failed() && !result.StegoDetected &&
+		len(result.Matches)+len(result.WarnedMatches)+len(result.SuppressedMatches)+len(result.ObservedCoreMatches) == 0 &&
+		result.Assessment.Status == AssessmentNotAssessed && IsBlankInjectionView(view)
+}
 
 // AssessmentStatus describes wording coverage, independently of delivery policy.
 type AssessmentStatus string
@@ -32,6 +65,39 @@ const (
 type InjectionAssessment struct {
 	Checker string           `json:"checker"`
 	Status  AssessmentStatus `json:"status"`
+}
+
+// IsBenign requires an explicit assessment from the selected checker. Empty,
+// unknown and partial statuses never authorize clean-request recovery.
+func (a InjectionAssessment) IsBenign() bool {
+	return a.Checker != "" && a.Status == AssessmentBenign
+}
+
+// Merge combines assessments of required views or items from one checker.
+// An absent assessment is not an identity element: it is missing evidence.
+// Callers initialize an aggregate from its first actual view.
+func (a InjectionAssessment) Merge(b InjectionAssessment) InjectionAssessment {
+	if a.Checker == "" || a.Checker != b.Checker {
+		return InjectionAssessment{Status: AssessmentNotAssessed}
+	}
+	for _, status := range []AssessmentStatus{AssessmentIncomplete, AssessmentFinding, AssessmentOff, AssessmentPartial} {
+		if a.Status == status || b.Status == status {
+			return InjectionAssessment{Checker: a.Checker, Status: status}
+		}
+	}
+	if a.IsBenign() && b.IsBenign() {
+		return a
+	}
+	return InjectionAssessment{Checker: a.Checker, Status: AssessmentNotAssessed}
+}
+
+// RecoveryAssessment excludes delivery-only success and retained findings,
+// including findings accepted by warn, suppression or observe policy.
+func (r ResponseScanResult) RecoveryAssessment() InjectionAssessment {
+	if !r.Clean || r.Failed() || len(r.Matches)+len(r.WarnedMatches)+len(r.SuppressedMatches)+len(r.ObservedCoreMatches) != 0 || r.StegoDetected {
+		return InjectionAssessment{Checker: r.Assessment.Checker, Status: AssessmentNotAssessed}
+	}
+	return r.Assessment
 }
 
 func (s *Scanner) setInjectionAssessment(result *ResponseScanResult, assessed bool) {

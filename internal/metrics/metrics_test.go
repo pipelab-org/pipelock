@@ -2197,3 +2197,16 @@ func scrapeMetrics(t *testing.T, m *Metrics) string {
 	}
 	return string(body)
 }
+
+func TestRecordAdaptiveResidualExpiration(t *testing.T) {
+	var absent *Metrics
+	absent.RecordAdaptiveResidualExpiration()
+	m := New()
+	m.RecordAdaptiveResidualExpiration()
+	m.RecordAdaptiveResidualExpiration()
+	w := httptest.NewRecorder()
+	m.PrometheusHandler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+	if !strings.Contains(w.Body.String(), "pipelock_adaptive_residual_expirations_total 2\n") {
+		t.Fatal("expiry counter missing")
+	}
+}
