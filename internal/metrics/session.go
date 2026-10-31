@@ -174,6 +174,10 @@ func (m *Metrics) registerSessionMetrics(reg *prometheus.Registry) {
 	}, []string{"from_action", "to_action", "level"})
 
 	m.adaptiveSessionsCurrent = newAdaptiveSessionGauge()
+	m.adaptiveResidualExpirations = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pipelock_adaptive_residual_expirations_total",
+		Help: "Positive level-zero threat scores cleared after the quiet period, including aggregate and destination scores.",
+	})
 
 	m.sessionAutoDeescalations = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "pipelock_session_auto_deescalation_total",
@@ -189,7 +193,7 @@ func (m *Metrics) registerSessionMetrics(reg *prometheus.Registry) {
 	reg.MustRegister(
 		m.sessionAnomalies, m.sessionEscalations, m.sessionsActive, m.sessionsEvicted,
 		m.adaptiveUpgrades, m.adaptiveSessionsCurrent,
-		m.sessionAutoDeescalations,
+		m.sessionAutoDeescalations, m.adaptiveResidualExpirations,
 		m.chainDetections,
 	)
 }
@@ -274,4 +278,11 @@ func (m *Metrics) RecordSessionAutoDeescalation(from, to string) {
 // RecordChainDetection increments the chain detection counter.
 func (m *Metrics) RecordChainDetection(pattern, severity, action string) {
 	m.chainDetections.WithLabelValues(pattern, severity, action).Inc()
+}
+
+// RecordAdaptiveResidualExpiration counts one cleared aggregate or scoped score.
+func (m *Metrics) RecordAdaptiveResidualExpiration() {
+	if m != nil {
+		m.adaptiveResidualExpirations.Inc()
+	}
 }

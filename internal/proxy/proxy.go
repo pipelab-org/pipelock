@@ -852,11 +852,12 @@ type FetchResponse struct {
 const shieldRewriteHeader = "X-Pipelock-Shield-Rewrite"
 
 const (
-	adaptiveEnforcementLayer = "adaptive_enforcement"
-	adaptiveRecoverHint      = "wait for auto-recovery or run pipelock session reset <key>"
-	adaptiveBlockedReason    = "blocked by adaptive enforcement"
-	adaptiveRecoveryTimer    = "time_based_recovery"
-	adaptiveRecoveryClean    = "clean_request_recovery"
+	adaptiveEnforcementLayer        = "adaptive_enforcement"
+	adaptiveRecoverHint             = "wait for auto-recovery or run pipelock session reset <key>"
+	adaptiveBlockedReason           = "blocked by adaptive enforcement"
+	adaptiveRecoveryResidualExpired = "residual_score_expired"
+	adaptiveRecoveryTimer           = "time_based_recovery"
+	adaptiveRecoveryClean           = "clean_request_recovery"
 )
 
 // New creates a new fetch proxy from config.
@@ -4026,6 +4027,35 @@ func emitAdaptiveRecovery(sess *SessionState, from, to int, ctx adaptiveRecovery
 			Type:     reason,
 			Detail:   fromLabel + "->" + toLabel,
 			Severity: "info",
+		})
+	}
+}
+
+// emitAdaptiveResidualExpiries reports captured score changes after unlocking.
+// A residual expiry is not a level transition and does not update level gauges.
+func emitAdaptiveResidualExpiries(sess *SessionState, expired []adaptiveResidualExpiry, ctx adaptiveRecoveryContext) {
+	for _, expiry := range expired {
+		ctx.sessionKey = firstNonEmptyString(ctx.sessionKey, sess.key)
+		logger, m := ctx.logger, ctx.metrics
+		if logger == nil {
+			logger = sess.residualRecovery.logger
+		}
+		if m == nil {
+			m = sess.residualRecovery.metrics
+		}
+		m.RecordAdaptiveResidualExpiration()
+		if logger != nil {
+			logger.LogAdaptiveRecovery(audit.LogAdaptiveRecoveryOptions{
+				SessionKey: ctx.sessionKey, Scope: expiry.scope,
+				From: session.EscalationLabel(0), To: session.EscalationLabel(0),
+				Reason: adaptiveRecoveryResidualExpired, PreviousScore: expiry.previousScore,
+				ClientIP: ctx.clientIP, RequestID: ctx.requestID,
+			})
+		}
+		sess.RecordEvent(SessionEvent{
+			Kind: "adaptive_deescalate", Type: adaptiveRecoveryResidualExpired,
+			Target: expiry.scope, Score: expiry.previousScore,
+			Detail: fmt.Sprintf("residual score %g->0", expiry.previousScore), Severity: "info",
 		})
 	}
 }

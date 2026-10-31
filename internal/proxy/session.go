@@ -163,6 +163,7 @@ type SessionState struct {
 	// expire residual scores before any writer adds points. Nil for sessions
 	// built outside a manager; those rely on the recovery paths alone.
 	adaptiveCfg                *atomic.Pointer[config.AdaptiveEnforcement]
+	residualRecovery           adaptiveRecoveryContext // immutable manager-owned reporting context
 	cleanRequests              int
 	atBlockAll                 bool // true when current level has block_all=true
 	globalSignalsAuthoritative bool
@@ -482,10 +483,14 @@ func adaptiveBlockAllCheck(cfg *config.AdaptiveEnforcement) func(int) bool {
 // Caller must hold no locks on SessionState.
 func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (bool, string, string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var expired []adaptiveResidualExpiry
+	defer func() {
+		s.mu.Unlock()
+		emitAdaptiveResidualExpiries(s, expired, s.residualRecovery)
+	}()
 	if session.SignalPoints[sig] > 0 {
 		now := time.Now()
-		s.expireResidualsBeforePointsLocked("", now)
+		expired = s.expireResidualsBeforePointsLocked("", now)
 		s.lastSignal = now
 	}
 	if sig != session.SignalWarning {
@@ -516,11 +521,15 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var expired []adaptiveResidualExpiry
+	defer func() {
+		s.mu.Unlock()
+		emitAdaptiveResidualExpiries(s, expired, s.residualRecovery)
+	}()
 
 	if session.SignalPoints[sig] > 0 {
 		now := time.Now()
-		s.expireResidualsBeforePointsLocked(scope, now)
+		expired = s.expireResidualsBeforePointsLocked(scope, now)
 		s.lastSignal = now
 	}
 	// Observations must not allocate enforcement lanes: warning-only traffic
@@ -762,17 +771,27 @@ func (s *SessionState) ScopedSnapshots() []AdaptiveScopeSnapshot {
 // levelDuration since the later of the last scored signal and the last level change.
 //
 // Returns (changed, fromLevel, toLevel) for level changes only. Residual expiry
-// does not emit a level transition. The caller is responsible for
-// emitting metrics/logs when changed is true.
+// emits its own reporting after unlocking, without a level transition.
+// The caller is responsible for emitting level-change metrics/logs.
 func (s *SessionState) TryAutoRecover(levelDuration time.Duration, blockAllCheck func(int) bool) (bool, int, int) {
+	return s.tryAutoRecover(levelDuration, blockAllCheck, s.residualRecovery)
+}
+
+func (s *SessionState) tryAutoRecover(levelDuration time.Duration, blockAllCheck func(int) bool, ctx adaptiveRecoveryContext) (bool, int, int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var expired []adaptiveResidualExpiry
+	defer func() {
+		s.mu.Unlock()
+		emitAdaptiveResidualExpiries(s, expired, ctx)
+	}()
 
 	if levelDuration <= 0 {
 		levelDuration = defaultMaxLevelDuration
 	}
 	now := time.Now()
-	expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now)
+	if previous := expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now); previous > 0 {
+		expired = append(expired, adaptiveResidualExpiry{previousScore: previous})
+	}
 	if s.escalationLevel <= 0 || s.lastEscalation.IsZero() {
 		return false, 0, 0
 	}
@@ -787,7 +806,11 @@ func (s *SessionState) TryAutoRecover(levelDuration time.Duration, blockAllCheck
 // to each scoped adaptive lane.
 func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAllCheck func(int) bool) []scopedLevelTransition {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	var expired []adaptiveResidualExpiry
+	defer func() {
+		s.mu.Unlock()
+		emitAdaptiveResidualExpiries(s, expired, s.residualRecovery)
+	}()
 
 	if levelDuration <= 0 {
 		levelDuration = defaultMaxLevelDuration
@@ -798,7 +821,9 @@ func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAl
 	changes := make([]scopedLevelTransition, 0)
 	now := time.Now()
 	for scope, st := range s.scopes {
-		expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now)
+		if previous := expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now); previous > 0 {
+			expired = append(expired, adaptiveResidualExpiry{scope: scope, previousScore: previous})
+		}
 		if st.escalationLevel <= 0 || st.lastEscalation.IsZero() {
 			continue
 		}
@@ -813,45 +838,56 @@ func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAl
 	return changes
 }
 
+type adaptiveResidualExpiry struct {
+	scope         string
+	previousScore float64
+}
+
 // expireResidualsBeforePointsLocked applies residual expiry to the aggregate
 // score and, when scope is set, that destination's score before a writer adds
 // points. Every point writer goes through RecordSignal or RecordScopedSignal,
 // so an expired residual never counts toward a new signal on any transport,
 // whether or not a recovery path ran first. Level changes stay on the existing
 // recovery paths. Callers hold s.mu.
-func (s *SessionState) expireResidualsBeforePointsLocked(scope string, now time.Time) {
+func (s *SessionState) expireResidualsBeforePointsLocked(scope string, now time.Time) []adaptiveResidualExpiry {
 	if s.adaptiveCfg == nil {
-		return
+		return nil
 	}
 	cfg := s.adaptiveCfg.Load()
 	if cfg == nil || !cfg.Enabled {
-		return
+		return nil
 	}
 	levelDuration := adaptiveLevelDuration(cfg)
-	expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now)
-	if scope == "" {
-		return
+	var expired []adaptiveResidualExpiry
+	if previous := expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now); previous > 0 {
+		expired = append(expired, adaptiveResidualExpiry{previousScore: previous})
 	}
-	if st := s.scopes[scope]; st != nil {
-		expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now)
+	if st := s.scopes[scope]; scope != "" && st != nil {
+		if previous := expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now); previous > 0 {
+			expired = append(expired, adaptiveResidualExpiry{scope: scope, previousScore: previous})
+		}
 	}
+	return expired
 }
 
 // expireAdaptiveResidual bounds level-zero score retention without granting
 // traffic credit. A scored signal restarts the quiet period; a level change also
 // starts a full period so the residual it leaves cannot expire immediately.
 // Callers hold the session lock and supply the live configured duration.
-func expireAdaptiveResidual(score *float64, level int, lastSignal, lastEscalation time.Time, levelDuration time.Duration, now time.Time) {
+func expireAdaptiveResidual(score *float64, level int, lastSignal, lastEscalation time.Time, levelDuration time.Duration, now time.Time) float64 {
 	if level != 0 || *score <= 0 {
-		return
+		return 0
 	}
 	anchor := lastSignal
 	if lastEscalation.After(anchor) {
 		anchor = lastEscalation
 	}
 	if !anchor.IsZero() && now.Sub(anchor) >= levelDuration {
+		previous := *score
 		*score = 0
+		return previous
 	}
+	return 0
 }
 
 func deescalateAdaptiveFields(score *float64, level *int, threshold *float64, lastEscalation *time.Time, cleanRequests *int, atBlockAll *bool, blockAllCheck func(int) bool, now time.Time) (bool, int, int) {
@@ -1891,6 +1927,7 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		airlock:          AirlockState{tier: config.AirlockTierNone},
 		task:             newTaskContext("", now),
 		adaptiveCfg:      &sm.adaptiveCfgPtr,
+		residualRecovery: adaptiveRecoveryContext{sessionKey: key, logger: sm.logger, metrics: sm.metrics},
 	}
 	sm.sessions[key] = sess
 	if sm.metrics != nil {
@@ -2931,7 +2968,7 @@ func trySessionRecovery(rec session.Recorder, adaptiveCfg *config.AdaptiveEnforc
 		return false, "", ""
 	}
 	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
-	changed, from, to := ss.TryAutoRecover(adaptiveLevelDuration(adaptiveCfg), blockAllCheck)
+	changed, from, to := ss.tryAutoRecover(adaptiveLevelDuration(adaptiveCfg), blockAllCheck, ctx)
 	if !changed {
 		return false, "", ""
 	}

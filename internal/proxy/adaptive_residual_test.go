@@ -4,9 +4,20 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
@@ -426,6 +437,107 @@ func TestAdaptiveResidualExpiryBeforePointsFollowsReload(t *testing.T) {
 			s.RecordScopedSignal(residualScope, session.SignalBlock, 100)
 			if got := s.ScopedThreatScore(residualScope); got != tt.wantScore {
 				t.Fatalf("scope score = %g, want %g", got, tt.wantScore)
+			}
+		})
+	}
+}
+
+func TestAdaptiveResidualExpiryReporting(t *testing.T) {
+	for _, path := range []string{"sweep", "request_entry", "aggregate_writer", "scoped_writer", "concurrent_writer", "scoped_recovery"} {
+		t.Run(path, func(t *testing.T) {
+			cfg := adaptiveConfig()
+			m := metrics.New()
+			logPath := filepath.Join(t.TempDir(), "audit.jsonl")
+			logger, err := audit.New("json", "file", logPath, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer logger.Close()
+			sm := NewSessionManager(testSessionConfig(), &cfg.AdaptiveEnforcement, m, SessionManagerOptions{Logger: logger})
+			defer sm.Close()
+			s := sm.GetOrCreate("residual-reporting")
+			s.RecordScopedSignal(residualScope, session.SignalBlock, 100)
+			ageAdaptiveResidual(s, 2*defaultMaxLevelDuration)
+			want := 2
+			switch path {
+			case "sweep":
+				sm.sweepDeescalation()
+				sm.sweepDeescalation()
+			case "request_entry":
+				want = 1
+				ctx := adaptiveRecoveryContext{requestID: "expiry-request"}
+				if changed, _, _ := trySessionRecovery(s, &cfg.AdaptiveEnforcement, ctx); changed {
+					t.Fatal("expiry reported a level change")
+				}
+				trySessionRecovery(s, &cfg.AdaptiveEnforcement, ctx)
+			case "aggregate_writer":
+				want = 1
+				s.RecordSignal(session.SignalBlock, 100)
+				s.RecordSignal(session.SignalNearMiss, 100)
+			case "scoped_writer":
+				s.RecordScopedSignal(residualScope, session.SignalBlock, 100)
+				s.RecordScopedSignal(residualScope, session.SignalNearMiss, 100)
+			case "concurrent_writer":
+				var wg sync.WaitGroup
+				for range 4 {
+					wg.Go(func() { s.RecordScopedSignal(residualScope, session.SignalNearMiss, 100) })
+				}
+				wg.Wait()
+			case "scoped_recovery":
+				want = 1
+				if changes := s.TryAutoRecoverScopes(defaultMaxLevelDuration, nil); len(changes) != 0 {
+					t.Fatal("expiry reported a scoped level change")
+				}
+				s.TryAutoRecoverScopes(defaultMaxLevelDuration, nil)
+			}
+			// Reading the timeline here also detects accidentally emitting under s.mu.
+			events := s.RecentEvents()
+			if len(events) != want {
+				t.Fatalf("expiry events = %d, want %d", len(events), want)
+			}
+			scopes := map[string]bool{}
+			for _, event := range events {
+				if event.Kind != "adaptive_deescalate" || event.Type != adaptiveRecoveryResidualExpired || event.Score != 3 || event.Severity != "info" {
+					t.Fatalf("expiry event = %+v", event)
+				}
+				if scopes[event.Target] {
+					t.Fatalf("duplicate scope event: %q", event.Target)
+				}
+				scopes[event.Target] = true
+			}
+			if want == 2 && (!scopes[""] || !scopes[residualScope]) {
+				t.Fatalf("missing expiry scope: %v", scopes)
+			}
+			data, err := os.ReadFile(filepath.Clean(logPath))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+			if len(lines) != want {
+				t.Fatalf("audit entries = %d, want %d: %s", len(lines), want, data)
+			}
+			for _, line := range lines {
+				var entry map[string]any
+				if err := json.Unmarshal(line, &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["event"] != "adaptive_recovery" || entry["reason"] != adaptiveRecoveryResidualExpired || entry["previous_score"] != float64(3) || entry["from"] != "normal" || entry["to"] != "normal" || entry["session"] != s.key {
+					t.Fatalf("audit entry = %s", line)
+				}
+				if path == "request_entry" && entry["request_id"] != "expiry-request" {
+					t.Fatalf("request attribution lost: %s", line)
+				}
+			}
+			w := httptest.NewRecorder()
+			m.PrometheusHandler().ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
+			if !strings.Contains(w.Body.String(), fmt.Sprintf("pipelock_adaptive_residual_expirations_total %d\n", want)) {
+				t.Fatalf("expiry counter missing: %s", w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), `pipelock_session_auto_deescalation_total{`) {
+				t.Fatal("expiry counted as level de-escalation")
+			}
+			if s.EscalationLevel() != 0 || s.EffectiveEscalationLevel(residualScope) != 0 {
+				t.Fatal("reporting changed level")
 			}
 		})
 	}
