@@ -80,7 +80,7 @@ func fileIdent(t *testing.T, path string) (dev, ino uint64) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dev, ino, _, ok := fileIdentity(fi)
+	dev, ino, ok := fileIdentity(fi)
 	if !ok {
 		t.Fatal("no stat identity")
 	}
@@ -296,6 +296,44 @@ func TestVerifyConnFakeProc(t *testing.T) {
 			setup:   func(_ *testing.T, f *fakeProc) { f.writeTables("tcp", f.rows(fakeUID, 0, 1)) },
 			wantErr: ErrSocketNotFound,
 			wantMsg: "no socket inode",
+		},
+		{
+			name: "server row seen queued and then accepted",
+			setup: func(_ *testing.T, f *fakeProc) {
+				local, remote := f.addrs()
+				f.writeTables("tcp", f.rows(fakeUID, 0, 1)+procRow(2, remote, local, 1, fakeUID, fakeInode)+"\n")
+			},
+			wantErr: errServerPending,
+			wantMsg: "being accepted",
+		},
+		{
+			name: "server row seen accepted and then queued",
+			setup: func(_ *testing.T, f *fakeProc) {
+				local, remote := f.addrs()
+				f.writeTables("tcp", f.rows(fakeUID, fakeInode, 1)+procRow(2, remote, local, 1, fakeUID, 0)+"\n")
+			},
+			wantErr: errServerPending,
+			wantMsg: "being accepted",
+		},
+		{
+			name: "two server sockets with a queued row listed first",
+			setup: func(_ *testing.T, f *fakeProc) {
+				local, remote := f.addrs()
+				f.writeTables("tcp", f.rows(fakeUID, 0, 1)+
+					procRow(2, remote, local, 1, fakeUID, fakeInode)+"\n"+
+					procRow(3, remote, local, 1, fakeUID, fakeInode+1)+"\n")
+			},
+			wantErr: ErrMultipleOwners,
+		},
+		{
+			name: "two server sockets with a queued row listed between",
+			setup: func(_ *testing.T, f *fakeProc) {
+				local, remote := f.addrs()
+				f.writeTables("tcp", f.rows(fakeUID, fakeInode, 1)+
+					procRow(2, remote, local, 1, fakeUID, 0)+"\n"+
+					procRow(3, remote, local, 1, fakeUID, fakeInode+1)+"\n")
+			},
+			wantErr: ErrMultipleOwners,
 		},
 		{
 			name: "two distinct server sockets for one tuple",
@@ -715,39 +753,6 @@ func TestVerifyConnFakeProcIPv6(t *testing.T) {
 	}
 }
 
-func TestVerifierExecutableCache(t *testing.T) {
-	t.Parallel()
-	f := newFakeProc(t)
-	for i := 0; i < 2; i++ {
-		if _, err := f.verify(); err != nil {
-			t.Fatalf("verify %d: %v", i, err)
-		}
-	}
-	if len(f.v.exeSums) != 1 || len(f.v.exeOrder) != 1 {
-		t.Fatalf("cache holds %d entries, want 1", len(f.v.exeSums))
-	}
-
-	v := &Verifier{}
-	first := exeKey{dev: 1, ino: 1}
-	v.storeSum(first, "first")
-	v.storeSum(first, "replaced?")
-	if got, ok := v.cachedSum(first); !ok || got != "first" {
-		t.Fatalf("duplicate store must keep the original, got %q %v", got, ok)
-	}
-	for i := 2; i < exeCacheMax+10; i++ {
-		v.storeSum(exeKey{dev: 1, ino: uint64(i)}, "x")
-	}
-	if len(v.exeSums) != exeCacheMax || len(v.exeOrder) != exeCacheMax {
-		t.Fatalf("cache grew to %d/%d, bound is %d", len(v.exeSums), len(v.exeOrder), exeCacheMax)
-	}
-	if _, ok := v.cachedSum(first); ok {
-		t.Fatal("oldest entry was not evicted")
-	}
-	if _, ok := v.cachedSum(exeKey{dev: 1, ino: uint64(exeCacheMax + 9)}); !ok {
-		t.Fatal("newest entry was evicted")
-	}
-}
-
 func TestVerifierPathDefaults(t *testing.T) {
 	t.Parallel()
 	if got := NewVerifier().path("self", "net"); got != filepath.Join("/proc", "self", "net") {
@@ -894,5 +899,73 @@ func TestLoopbackEndpoints(t *testing.T) {
 		addrConn{l: tcp("192.0.2.1", 1), r: tcp("192.0.2.2", 2)}, Pin{ExecutableSHA256: testHashA})
 	if !errors.Is(err, ErrNotLoopback) {
 		t.Fatalf("VerifyConn = %v, want ErrNotLoopback", err)
+	}
+}
+
+// A socket table read while the server accepts can list the server end twice,
+// once still queued (no inode) and once accepted. The verifier must read the
+// table again and succeed, not report two owners.
+func TestVerifyConnRetriesServerRowSeenMidAccept(t *testing.T) {
+	t.Parallel()
+	f := newFakeProc(t)
+	local, remote := f.addrs()
+	f.writeTables("tcp", f.rows(fakeUID, 0, 1)+procRow(2, remote, local, 1, fakeUID, fakeInode)+"\n")
+	attempts := 0
+	f.v.onAttempt = func() {
+		attempts++
+		if attempts == 2 {
+			f.writeTables("tcp", f.rows(fakeUID, fakeInode, 1))
+		}
+	}
+	ev, err := f.verify()
+	if err != nil {
+		t.Fatalf("VerifyConn = %v, want success after the accept settles", err)
+	}
+	if ev.PID != fakePID {
+		t.Fatalf("evidence pid = %d, want %d", ev.PID, fakePID)
+	}
+	if attempts < 2 {
+		t.Fatalf("attempts = %d, want a second read of the socket table", attempts)
+	}
+}
+
+// A server end that stays listed both queued and accepted never settles; the
+// verifier must stop at the retry cap and refuse rather than pick a row.
+func TestVerifyConnRefusesServerRowStuckMidAccept(t *testing.T) {
+	t.Parallel()
+	f := newFakeProc(t)
+	local, remote := f.addrs()
+	f.writeTables("tcp", f.rows(fakeUID, fakeInode, 1)+procRow(2, remote, local, 1, fakeUID, 0)+"\n")
+	f.v.retryCap = 50 * time.Millisecond
+	attempts := 0
+	f.v.onAttempt = func() { attempts++ }
+	type result struct {
+		ev  Evidence
+		err error
+	}
+	done := make(chan result, 1)
+	start := time.Now()
+	go func() {
+		ev, err := f.verify()
+		done <- result{ev, err}
+	}()
+	var res result
+	select {
+	case res = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("VerifyConn still retrying after 5s, want a refusal at the 50ms retry cap")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("VerifyConn took %v, want a refusal near the 50ms retry cap", elapsed)
+	}
+	ev, err := res.ev, res.err
+	if !errors.Is(err, ErrSocketNotFound) || !strings.Contains(err.Error(), "being accepted") {
+		t.Fatalf("VerifyConn = %v, want ErrSocketNotFound for a server end that never settles", err)
+	}
+	if ev.PID != 0 {
+		t.Fatalf("refusal returned evidence %+v", ev)
+	}
+	if attempts < 2 {
+		t.Fatalf("attempts = %d, want the mid-accept state retried before refusing", attempts)
 	}
 }

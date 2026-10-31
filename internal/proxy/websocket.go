@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -1706,6 +1707,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 	}
 
 	bodyReq := BodyScanRequest{
+		AuditMode:       !r.cfg.EnforceEnabled(),
 		Body:            bytes.NewReader(msg),
 		Method:          http.MethodGet,
 		ContentType:     contentType,
@@ -2406,6 +2408,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			closeReason, closeBlockReason = "high entropy content detected", blockreason.BodyEntropy
 		}
 	}
+	if unreadHoldOnly(result) {
+		scannerLabel = scanner.ScannerParser
+		receiptLayer = scanner.ScannerParser
+		closeBlockReason = blockreason.ParseError
+	}
 
 	reason := result.Reason
 	switch {
@@ -2485,7 +2492,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+	if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
@@ -2514,7 +2521,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(decide.UpgradedWarningSignal(originalAction, session.SignalBlock), log, scannerLabel, receiptPattern)
 		}
 		blockReason := reason
@@ -2551,7 +2558,12 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
+		var observeMetrics *metrics.Metrics
+		if r.proxy != nil {
+			observeMetrics = r.proxy.metrics
+		}
+		recordIncompleteFileObservation(observeMetrics, log, newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), action, r.metricAgent, result)
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(session.SignalWarning, log, scannerLabel, receiptPattern)
 		}
 		if len(result.DLPMatches) > 0 {

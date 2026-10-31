@@ -1277,6 +1277,7 @@ func newInterceptHandler(
 				}
 			}
 			bodyReq := BodyScanRequest{
+				AuditMode:        !ic.Config.EnforceEnabled(),
 				Body:             r.Body,
 				Trailer:          r.Trailer,
 				Scheme:           "https",
@@ -1436,6 +1437,9 @@ func newInterceptHandler(
 				if result.RedactionBlockReason == "" {
 					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 				}
+				if unreadHoldOnly(result) {
+					scannerLabel = scanner.ScannerParser
+				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)
 				if promptInjectionHardBlock || dlpHardBlock {
@@ -1488,7 +1492,7 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					setBodyBlockHint(w, scannerLabel)
+					setBodyResultHint(w, scannerLabel, reason)
 					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason, http.StatusForbidden)
 					return
@@ -1515,7 +1519,7 @@ func newInterceptHandler(
 						RequestID: ic.RequestID,
 						Agent:     ic.Agent,
 					}))
-					setBodyBlockHint(w, scannerLabel)
+					setBodyResultHint(w, scannerLabel, reason)
 					writeBlockedError(w, blockInfo(scannerLabel).WithRequestID(ic.RequestID),
 						"blocked: "+reason+" (escalated)", http.StatusForbidden)
 					return
@@ -1523,6 +1527,11 @@ func newInterceptHandler(
 				if action == config.ActionWarn && result.EntropyWarnRoute != nil {
 					interceptEntropyWarningPattern = bodyEntropyReason(result)
 				}
+				observeMetrics := ic.Metrics
+				if observeMetrics == nil && ic.Proxy != nil {
+					observeMetrics = ic.Proxy.metrics
+				}
+				recordIncompleteFileObservation(observeMetrics, ic.Logger, actx, action, ic.Profile, result)
 				// Audit/warn mode: log finding but forward the request.
 				ic.Logger.LogAnomaly(actx, scannerLabel, reason, 0.8)
 			}
