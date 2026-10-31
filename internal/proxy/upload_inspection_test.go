@@ -6,6 +6,7 @@ package proxy
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -179,7 +180,7 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept", "reverse"} {
-		for _, name := range []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "clean.pdf", "seeded.pdf"} {
+		for _, name := range []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"} {
 			for _, carrier := range []string{"raw", "multipart", "json"} {
 				t.Run(surface+"/"+name+"/"+carrier, func(t *testing.T) {
 					data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
@@ -418,6 +419,40 @@ func TestUploadInspectionMultipartBoundaries(t *testing.T) {
 	_, incomplete := inspectUploadTextViews(t.Context(), buf.Bytes(), BodyScanRequest{ContentType: w.FormDataContentType(), MaxBytes: 4096}, texts)
 	if incomplete != "" {
 		t.Fatalf("multipart metadata interpreted as file bytes: %s", incomplete)
+	}
+}
+
+func TestUploadInspectionDeclaredBinaryMember(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	payload := append([]byte{0xff, 0xfe}, []byte("key="+key+strings.Repeat(" ordinary", 80))...)
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	z.RegisterCompressor(zip.Deflate, func(out io.Writer) (io.WriteCloser, error) {
+		return flate.NewWriter(out, flate.BestCompression)
+	})
+	members := map[string][]byte{
+		"[Content_Types].xml":    []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/word/fonts/font1.odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/></Types>`),
+		"word/fonts/font1.odttf": payload,
+	}
+	for name, member := range members {
+		f, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write(member); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data := buf.Bytes()
+	if bytes.Contains(data, []byte(key)) {
+		t.Fatal("compressed font member must not leave the key in the raw archive")
+	}
+	status, hits, _, message := exerciseUpload(t, "intercept", uploadPolicy{config.ActionBlock, false}, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", data)
+	if status != http.StatusForbidden || hits != 0 || strings.Contains(message, "not fully read") {
+		t.Fatalf("declared font must be scanned, not held unread: status=%d hits=%d body=%s", status, hits, message)
 	}
 }
 

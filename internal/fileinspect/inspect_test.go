@@ -495,6 +495,59 @@ func TestInspectZIP64DataDescriptor(t *testing.T) {
 	}
 }
 
+// Declared font, audio, video, and ActiveX binary parts are not text containers.
+// OLE containers stay unread. The raw member bytes stay in the text views.
+func TestInspectDeclaredBinaryMembers(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	payload := append([]byte{0xff, 0xfe}, []byte("key="+key)...)
+	opc := func(part, contentType string) map[string][]byte {
+		return map[string][]byte{
+			"[Content_Types].xml": []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/` + part + `" ContentType="` + contentType + `"/></Types>`),
+			part:                  payload,
+		}
+	}
+	odf := func(part, mediaType string) map[string][]byte {
+		return map[string][]byte{
+			"META-INF/manifest.xml": []byte(`<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0"><manifest:file-entry manifest:full-path="/" manifest:media-type="application/vnd.oasis.opendocument.text"/><manifest:file-entry manifest:full-path="` + part + `" manifest:media-type="` + mediaType + `"/></manifest:manifest>`),
+			part:                    payload,
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		members  map[string][]byte
+		complete bool
+	}{
+		{"obfuscated font", opc("word/fonts/font1.odttf", "application/vnd.openxmlformats-officedocument.obfuscatedFont"), true},
+		{"odf truetype", odf("Fonts/Font_Sample_1.ttf", "application/x-font-ttf"), true},
+		{"font data", opc("word/fonts/font1.fntdata", "application/x-fontdata"), true},
+		{"audio", opc("word/media/audio1.mp3", "audio/mpeg"), true},
+		{"video", opc("ppt/media/video1.mp4", "video/mp4"), true},
+		{"font top-level", odf("Fonts/face.ttf", "font/ttf"), true},
+		{"activex binary", opc("xl/activeX/activeX1.bin", "application/vnd.ms-office.activeX"), true},
+		{"ole object", opc("word/embeddings/oleObject1.bin", "application/vnd.openxmlformats-officedocument.oleObject"), false},
+		{"octet stream", opc("word/embeddings/unknown.bin", "application/octet-stream"), false},
+		{"undeclared", map[string][]byte{"word/fonts/font1.odttf": payload}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), archiveFixture(t, tc.members), Limits{1 << 20, 64})
+			joined := strings.Join(r.Texts, "\n")
+			if r.Complete != tc.complete || !strings.Contains(joined, key) || (!tc.complete && !strings.Contains(r.Reason, "non-text member")) {
+				t.Fatalf("complete=%t reason=%q haskey=%t", r.Complete, r.Reason, strings.Contains(joined, key))
+			}
+		})
+	}
+	// activeX+xml stays an XML part (MS-XLSB 2.1.7.1), so character data is joined.
+	xmlKey := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	members := map[string][]byte{
+		"[Content_Types].xml":     []byte(`<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/xl/activeX/activeX1.xml" ContentType="application/vnd.ms-office.activeX+xml"/></Types>`),
+		"xl/activeX/activeX1.xml": []byte(`<ocx xmlns="http://schemas.microsoft.com/office/2006/activeX"><a>AKIAQ9W8E7</a><b>R6T5Y4U3I2</b></ocx>`),
+	}
+	r := Inspect(t.Context(), archiveFixture(t, members), Limits{1 << 20, 64})
+	if !r.Complete || !strings.Contains(strings.Join(r.Texts, "\n"), xmlKey) {
+		t.Fatalf("activex xml: complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}
+
 // archive/zip Open returns EOF for a directory whose uncompressed size is 0
 // without reading its compressed bytes (APPNOTE directories are zero-length;
 // some writers still store a deflate stream). Those bytes sit inside the

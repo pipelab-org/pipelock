@@ -366,6 +366,11 @@ func (w *walk) archive(data []byte, depth int) error {
 				strings.HasPrefix(f.Name, "ppt/printerSettings/") || strings.HasSuffix(f.Name, "/vbaProject.bin") {
 				continue
 			}
+			// A declared font, media, or ActiveX binary is not a text container.
+			// Its raw bytes were appended above and stay on the request DLP view.
+			if declaredNonTextBinary(contentType) {
+				continue
+			}
 			binary = append(binary, f.Name)
 			continue
 		}
