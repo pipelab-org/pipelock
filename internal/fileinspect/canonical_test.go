@@ -84,10 +84,22 @@ func TestInspectObfuscatedFont(t *testing.T) {
 	}
 }
 
+// APPNOTE 4.4.4 defines bits 1 and 2 for methods 6, 8, 9 and 14 only.
+// Pandoc 3.11 sets bit 1 on the stored mimetype member of an ODT or EPUB.
+func TestInspectStoredOptionFlags(t *testing.T) {
+	plain := []byte("ordinary notes")
+	for _, flags := range []uint16{1 << 1, 1 << 2, 1<<1 | 1<<2, 1<<1 | zipFlagUTF8} {
+		r := Inspect(t.Context(), rawArchive(t, rawMember{name: "notes.txt", data: plain, flags: flags}), Limits{1 << 20, 64})
+		if !r.Complete || !strings.Contains(strings.Join(r.Texts, "\n"), string(plain)) {
+			t.Fatalf("flags 0x%x: complete=%t reason=%q", flags, r.Complete, r.Reason)
+		}
+	}
+}
+
 func TestInspectFlagAndDuplicateName(t *testing.T) {
-	r := Inspect(t.Context(), rawArchive(t, rawMember{name: "notes.txt", data: []byte("ordinary"), flags: 1 << 1}), Limits{1 << 20, 64})
+	r := Inspect(t.Context(), rawArchive(t, rawMember{name: "notes.txt", data: []byte("ordinary"), flags: 1 << 4}), Limits{1 << 20, 64})
 	if r.Complete || !strings.Contains(r.Reason, "unsupported general purpose flag") {
-		t.Fatalf("deflate flag on store: complete=%t reason=%q", r.Complete, r.Reason)
+		t.Fatalf("reserved flag on store: complete=%t reason=%q", r.Complete, r.Reason)
 	}
 	var b bytes.Buffer
 	z := zip.NewWriter(&b)

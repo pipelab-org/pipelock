@@ -32,12 +32,13 @@ type zipArchive struct {
 }
 
 // APPNOTE 6.3.10 4.4.4. Bit 3 is the data descriptor, bit 11 is UTF-8.
-// Bits 1 and 2 are deflate options and are defined only for method 8 (and 9,
-// which this reader does not accept).
+// Bits 1 and 2 are defined for methods 6, 8, 9 and 14. For every other
+// method, including stored, the note leaves them undefined, so they do not
+// change the member bytes.
 const (
 	zipFlagDescriptor = 1 << 3
 	zipFlagUTF8       = 1 << 11
-	zipFlagDeflateOpt = 1<<1 | 1<<2
+	zipFlagOption     = 1<<1 | 1<<2
 	zipMethodStore    = 0
 	zipMethodDeflate  = 8
 	dataDescriptorSig = "PK\x07\x08"
@@ -192,10 +193,7 @@ func canonicalMember(data []byte, p, cd, nameLen, extraLen, commentLen int) (zip
 	if method != zipMethodStore && method != zipMethodDeflate {
 		return zipMember{}, 0, 0, fmt.Errorf("unsupported ZIP compression method %d", method)
 	}
-	allowed := uint16(zipFlagDescriptor | zipFlagUTF8)
-	if method == zipMethodDeflate {
-		allowed |= zipFlagDeflateOpt
-	}
+	allowed := uint16(zipFlagDescriptor | zipFlagUTF8 | zipFlagOption)
 	if flags&^allowed != 0 {
 		return zipMember{}, 0, 0, fmt.Errorf("unsupported general purpose flag")
 	}

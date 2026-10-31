@@ -189,7 +189,7 @@ func exerciseUploadHeaders(t *testing.T, surface string, policy uploadPolicy, he
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept", "reverse"} {
-		for _, name := range []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"} {
+		for _, name := range []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"} {
 			for _, carrier := range []string{"raw", "multipart", "json"} {
 				t.Run(surface+"/"+name+"/"+carrier, func(t *testing.T) {
 					data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
