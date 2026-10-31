@@ -1295,6 +1295,7 @@ func RunHTTPListenerProxy(
 			defer recordMCPBaselineSample(baselineOpts, nil)
 			reqOpts := requestBaseOpts
 			reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
+			reqOpts.responseDenial = w.responseDenial
 			reqOpts.Rec = reqRec
 			reqOpts.BaselineRec = baselineRec
 			reqOpts.AdaptiveCfg = adaptiveCfg
@@ -2146,6 +2147,7 @@ func RunHTTPListenerProxy(
 		bufWriter := &syncWriter{w: &buf}
 		reqOpts := requestBaseOpts
 		reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
+		reqOpts.responseDenial = w.responseDenial
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg

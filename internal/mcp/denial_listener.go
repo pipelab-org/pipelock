@@ -37,6 +37,21 @@ func (w *mcpListenerDenialWriter) setResponseDenial(reason string) {
 }
 
 func (w *mcpListenerDenialWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *mcpListenerDenialWriter) responseDenial(terminal *mcpTerminalDecision) {
+	w.direction = "response"
+	w.terminal = terminal
+	*w.descriptor = terminal.audit
+}
+
+func (w *mcpListenerDenialWriter) pendingAdaptiveRefusal() bool {
+	if w.wroteHeader || w.terminal == nil || w.terminal.audit.keepsOwnRefusal() {
+		return false
+	}
+	_, blocked := adaptiveRefusalMessage(w.opts)
+	return blocked
+}
+
 func (w *mcpListenerDenialWriter) decision(reply []byte) *mcpDenial {
 	if w.descriptor.kind == "" {
 		return nil

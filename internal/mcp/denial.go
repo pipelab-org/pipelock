@@ -109,7 +109,13 @@ func dropMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, direction strin
 }
 
 func writeMCPDenial(opts MCPProxyOpts, descriptor mcpDenialAudit, writer transport.MessageWriter, reply []byte) error {
-	return finishMCPDenial(newMCPDenial(opts, descriptor, "response", reply), mcpDeniedDelivery(func(reply []byte) error { return deliverMCPDeniedMessage(writer, reply) }))
+	d := newMCPDenial(opts, descriptor, "response", reply)
+	return finishMCPDenial(d, mcpDeniedDelivery(func(reply []byte) error {
+		if opts.responseDenial != nil {
+			opts.responseDenial(d.decision)
+		}
+		return deliverMCPDeniedMessage(writer, reply)
+	}))
 }
 
 // sendMCPDenial is the stdio input handoff adapter. Notification suppression is

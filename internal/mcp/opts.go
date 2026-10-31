@@ -134,6 +134,9 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
 	denialTerminal *mcpDeferredTerminal
+	// The listener carries the finalized response denial to its HTTP adapter
+	// before delivery commits headers or adds SSE framing.
+	responseDenial func(*mcpTerminalDecision)
 	// Modern HTTP lists enforce structural contracts independently of drift trust.
 	validateToolHeaders bool
 	// Internal discovery inspects definitions without claiming client delivery.
