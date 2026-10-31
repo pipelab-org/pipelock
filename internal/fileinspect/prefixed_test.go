@@ -82,3 +82,38 @@ func TestInspectBinaryMemberEmbeddedArchive(t *testing.T) {
 		})
 	}
 }
+
+// An embedded font is accepted once its key restores a font signature. The
+// rest of its bytes are unchanged, so an archive signature there leaves it
+// unread, as for any other signature-accepted member. The end record sits
+// beyond the end-record search window, so only the member check sees it.
+func TestInspectObfuscatedFontEmbeddedArchive(t *testing.T) {
+	const guid = "{001B70DC-AA60-4AD5-90EC-18A0948E1EAE}"
+	key, ok := obfuscationKey(guid)
+	if !ok {
+		t.Fatal("font key")
+	}
+	table := `<w:fonts xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:font w:name="Sample"><w:embedRegular r:id="rId1" w:fontKey="` + guid + `"/></w:font></w:fonts>`
+	rels := `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font1.odttf"/></Relationships>`
+	font := append([]byte{0x00, 0x01, 0x00, 0x00}, bytes.Repeat([]byte{0x11}, 28)...)
+	for name, tail := range map[string][]byte{
+		"clean":      nil,
+		"end record": append(append([]byte("PK\x05\x06"), make([]byte, 18)...), make([]byte, 65535+22)...),
+	} {
+		t.Run(name, func(t *testing.T) {
+			plain := append(bytes.Clone(font), tail...)
+			members := map[string][]byte{
+				"word/fontTable.xml":            []byte(table),
+				"word/_rels/fontTable.xml.rels": []byte(rels),
+				"word/fonts/font1.odttf":        deobfuscateEmbeddedFont(plain, key),
+			}
+			if Kind(members["word/fonts/font1.odttf"]) != "" {
+				t.Fatal("the member must not be recognized as an archive")
+			}
+			r := Inspect(t.Context(), archiveFixture(t, members), Limits{1 << 22, 64})
+			if (tail == nil) != r.Complete {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+}

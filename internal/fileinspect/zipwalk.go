@@ -159,6 +159,12 @@ func (w *walk) archive(data []byte, depth int) error {
 			continue
 		}
 		w.result.Texts = append(w.result.Texts, string(plain))
+		// Deobfuscation changes only the first 32 bytes. The member is read
+		// as both forms, so an archive signature in either leaves it unread,
+		// as for any other signature-accepted member.
+		if embeddedArchive(item.payload) || embeddedArchive(plain) {
+			fail(fmt.Errorf("binary member contains an archive signature"))
+		}
 	}
 	if firstErr != nil {
 		return firstErr
