@@ -23,7 +23,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -32,8 +31,6 @@ import (
 
 const (
 	defaultProcRoot = "/proc"
-	// exeCacheMax bounds the executable digest cache.
-	exeCacheMax = 64
 	// environMaxBytes bounds the environment read. A larger environment is
 	// refused rather than truncated, so a variable past the cut cannot hide.
 	environMaxBytes = 16 << 20
@@ -44,7 +41,6 @@ const (
 	statusUIDFields = 5
 	deletedSuffix   = " (deleted)"
 	shortHashLen    = 12
-	nsecPerSec      = int64(1_000_000_000)
 
 	// verifyRetryInterval is the poll period while a server has not accepted.
 	verifyRetryInterval = 3 * time.Millisecond
@@ -67,19 +63,12 @@ type Verifier struct {
 	onAttempt func()
 	// retryCap overrides verifyRetryCap when positive.
 	retryCap time.Duration
-
-	mu       sync.Mutex
-	exeSums  map[exeKey]string
-	exeOrder []exeKey
+	// onHash observes each content read. Tests use it to verify repeated checks.
+	onHash func(string)
 }
 
 // NewVerifier returns a Verifier that reads the live /proc.
 func NewVerifier() *Verifier { return &Verifier{procRoot: defaultProcRoot} }
-
-type exeKey struct {
-	dev, ino               uint64
-	size, mtimeNs, ctimeNs int64
-}
 
 type incarnation struct {
 	startTime uint64
@@ -106,8 +95,6 @@ func (v *Verifier) pidPath(pid int, elem ...string) string {
 }
 
 func toU64[T ~int32 | ~int64 | ~uint32 | ~uint64](v T) uint64 { return uint64(v) }
-
-func toI64[T ~int32 | ~int64](v T) int64 { return int64(v) }
 
 func shortHash(h string) string {
 	if len(h) > shortHashLen {
@@ -302,6 +289,13 @@ func (v *Verifier) readSocketTables() ([]sockRow, error) {
 // findServerRow finds the established row for each end of the connection and
 // returns the server's. The server end is the row whose local address is our
 // remote address.
+//
+// The table is not read atomically, so a connection accepted while it is read
+// can list its server end twice: once still queued (no inode) and once with
+// its socket inode. That is one connection mid-accept and is retried like any
+// server that has not accepted yet. Two distinct socket inodes for the server
+// end are two owners and are refused at once, whatever order the rows appear
+// in and whether or not a queued row is also present.
 func (v *Verifier) findServerRow(local, remote netip.AddrPort) (sockRow, error) {
 	rows, err := v.readSocketTables()
 	if err != nil {
@@ -311,6 +305,7 @@ func (v *Verifier) findServerRow(local, remote netip.AddrPort) (sockRow, error) 
 		clientSeen bool
 		server     sockRow
 		serverSeen bool
+		queuedSeen bool
 	)
 	for _, row := range rows {
 		if row.state != tcpStateEstablished {
@@ -319,21 +314,28 @@ func (v *Verifier) findServerRow(local, remote netip.AddrPort) (sockRow, error) 
 		if row.local == local && row.remote == remote {
 			clientSeen = true
 		}
-		if row.local == remote && row.remote == local {
-			if serverSeen && server.inode != row.inode {
-				return sockRow{}, fmt.Errorf("%s -> %s has two server sockets: %w", local, remote, ErrMultipleOwners)
-			}
-			server, serverSeen = row, true
+		if row.local != remote || row.remote != local {
+			continue
 		}
+		if row.inode == 0 {
+			queuedSeen = true
+			continue
+		}
+		if serverSeen && server.inode != row.inode {
+			return sockRow{}, fmt.Errorf("%s -> %s has two server sockets: %w", local, remote, ErrMultipleOwners)
+		}
+		server, serverSeen = row, true
 	}
 	if !clientSeen {
 		return sockRow{}, fmt.Errorf("client end %s -> %s is not established in this network namespace: %w", local, remote, ErrSocketNotFound)
 	}
-	if !serverSeen {
-		return sockRow{}, fmt.Errorf("server end %s -> %s is not established in this network namespace: %w: %w", remote, local, ErrSocketNotFound, errServerPending)
-	}
-	if server.inode == 0 {
+	switch {
+	case serverSeen && queuedSeen:
+		return sockRow{}, fmt.Errorf("server end %s was being accepted while the socket table was read: %w: %w", remote, ErrSocketNotFound, errServerPending)
+	case queuedSeen:
 		return sockRow{}, fmt.Errorf("server end %s has no socket inode (the server has not accepted the connection yet): %w: %w", remote, ErrSocketNotFound, errServerPending)
+	case !serverSeen:
+		return sockRow{}, fmt.Errorf("server end %s -> %s is not established in this network namespace: %w: %w", remote, local, ErrSocketNotFound, errServerPending)
 	}
 	return server, nil
 }
@@ -473,12 +475,12 @@ func (v *Verifier) effectiveUID(pid int) (uint32, error) {
 }
 
 // fileIdentity returns the device and inode of an open file's fstat.
-func fileIdentity(fi fs.FileInfo) (dev, ino uint64, st *syscall.Stat_t, ok bool) {
-	st, ok = fi.Sys().(*syscall.Stat_t)
+func fileIdentity(fi fs.FileInfo) (dev, ino uint64, ok bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
 	if !ok {
-		return 0, 0, nil, false
+		return 0, 0, false
 	}
-	return toU64(st.Dev), toU64(st.Ino), st, true
+	return toU64(st.Dev), toU64(st.Ino), true
 }
 
 func hashFile(f *os.File) (string, error) {
@@ -506,7 +508,7 @@ func (v *Verifier) checkExecutable(pid int, pin Pin, ev *Evidence) error {
 }
 
 // executableDigest hashes the image the process is running, opened through its
-// exe link, and caches the digest by file identity.
+// exe link. Each check reads the content again.
 func (v *Verifier) executableDigest(pid int) (dev, ino uint64, sum string, err error) {
 	f, err := os.Open(v.pidPath(pid, "exe"))
 	if err != nil {
@@ -517,64 +519,22 @@ func (v *Verifier) executableDigest(pid int) (dev, ino uint64, sum string, err e
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("pid %d executable cannot be inspected: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
-	dev, ino, st, ok := fileIdentity(fi)
+	dev, ino, ok := fileIdentity(fi)
 	if !ok {
 		return 0, 0, "", fmt.Errorf("pid %d executable has no inode identity: %w", pid, ErrOwnerNotVisible)
 	}
-	sum, err = v.digestOpened(f, digestKey(dev, ino, fi.Size(), st))
+	sum, err = v.hashOpened(f)
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("pid %d executable cannot be read: %w: %w", pid, ErrOwnerNotVisible, err)
 	}
 	return dev, ino, sum, nil
 }
 
-// digestKey identifies an opened file's content for the digest cache. Any
-// write changes the change time, which a process cannot set back, so a cached
-// digest never outlives the content it was computed from.
-func digestKey(dev, ino uint64, size int64, st *syscall.Stat_t) exeKey {
-	return exeKey{
-		dev: dev, ino: ino, size: size,
-		mtimeNs: toI64(st.Mtim.Sec)*nsecPerSec + toI64(st.Mtim.Nsec),
-		ctimeNs: toI64(st.Ctim.Sec)*nsecPerSec + toI64(st.Ctim.Nsec),
+func (v *Verifier) hashOpened(f *os.File) (string, error) {
+	if v.onHash != nil {
+		v.onHash(f.Name())
 	}
-}
-
-// digestOpened returns the SHA-256 of an opened file, hashing it only when its
-// key is not already cached.
-func (v *Verifier) digestOpened(f *os.File, key exeKey) (string, error) {
-	if sum, hit := v.cachedSum(key); hit {
-		return sum, nil
-	}
-	sum, err := hashFile(f)
-	if err != nil {
-		return "", err
-	}
-	v.storeSum(key, sum)
-	return sum, nil
-}
-
-func (v *Verifier) cachedSum(k exeKey) (string, bool) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	sum, ok := v.exeSums[k]
-	return sum, ok
-}
-
-func (v *Verifier) storeSum(k exeKey, sum string) {
-	v.mu.Lock()
-	defer v.mu.Unlock()
-	if v.exeSums == nil {
-		v.exeSums = make(map[exeKey]string, exeCacheMax)
-	}
-	if _, ok := v.exeSums[k]; ok {
-		return
-	}
-	for len(v.exeOrder) >= exeCacheMax {
-		delete(v.exeSums, v.exeOrder[0])
-		v.exeOrder = v.exeOrder[1:]
-	}
-	v.exeSums[k] = sum
-	v.exeOrder = append(v.exeOrder, k)
+	return hashFile(f)
 }
 
 // heldFile is a file the owner holds as a descriptor or a memory mapping.
@@ -618,7 +578,7 @@ func mapsIdentityOf(f *os.File, size int64) (heldFile, bool) {
 	if err != nil {
 		return heldFile{}, false
 	}
-	_, ino, _, ok := fileIdentity(fi)
+	_, ino, ok := fileIdentity(fi)
 	if !ok {
 		return heldFile{}, false
 	}
@@ -671,7 +631,7 @@ func (v *Verifier) heldFiles(pid int) ([]heldFile, error) {
 		if err != nil {
 			continue
 		}
-		if dev, ino, _, ok := fileIdentity(fi); ok {
+		if dev, ino, ok := fileIdentity(fi); ok {
 			held = append(held, heldFile{dev: dev, ino: ino, path: strings.TrimSuffix(link, deletedSuffix), special: !fi.Mode().IsRegular()})
 		}
 	}
@@ -757,7 +717,7 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 	if err != nil {
 		return "", fmt.Errorf("%s.path %s cannot be inspected: %w: %w", field, clean, ErrApplicationMismatch, err)
 	}
-	dev, ino, st, ok := fileIdentity(fi)
+	dev, ino, ok := fileIdentity(fi)
 	if !ok || !fi.Mode().IsRegular() {
 		return "", fmt.Errorf("%s.path %s is not a regular file: %w", field, clean, ErrApplicationMismatch)
 	}
@@ -782,9 +742,7 @@ func (v *Verifier) checkOnePinnedFile(pid, i int, pf FilePin, held []heldFile) (
 		return "", fmt.Errorf("%s.path %s is not open or mapped by the owner (pid %d): %w", field, clean, pid, ErrApplicationMismatch)
 	}
 
-	// The held-file identity check above runs on every call; only the content
-	// hash is cached, keyed by the opened descriptor's identity and times.
-	sum, err := v.digestOpened(f, digestKey(dev, ino, fi.Size(), st))
+	sum, err := v.hashOpened(f)
 	if err != nil {
 		return "", fmt.Errorf("%s.path %s cannot be read: %w: %w", field, clean, ErrApplicationMismatch, err)
 	}

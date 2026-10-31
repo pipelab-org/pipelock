@@ -66,7 +66,7 @@ func TestMapsIdentityOfRealFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, ino, _, _ := fileIdentity(fi)
+	_, ino, _ := fileIdentity(fi)
 	link, err := os.Readlink(filepath.Join("/proc/self/fd", strconv.Itoa(int(f.Fd()))))
 	if err != nil {
 		t.Fatal(err)
@@ -195,10 +195,8 @@ func TestVerifyConnPinnedFIFORefusesPromptly(t *testing.T) {
 	}
 }
 
-// TestVerifyConnPinnedFileDigestCacheSeesInPlaceRewrite: pinned-file digests
-// are cached by the opened file's identity and times, so rewriting the same
-// inode in place after a verified dial must still be refused on the next one.
-func TestVerifyConnPinnedFileDigestCacheSeesInPlaceRewrite(t *testing.T) {
+// Rewriting a registered file in place must be refused on the next check.
+func TestVerifyConnPinnedFileInPlaceRewrite(t *testing.T) {
 	t.Parallel()
 	const original, rewritten = "module bytes A", "module bytes B"
 	f := newFakeProc(t)
@@ -221,10 +219,31 @@ func TestVerifyConnPinnedFileDigestCacheSeesInPlaceRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, inoAfter := fileIdent(t, path); inoAfter != inoBefore {
-		t.Fatal("rewrite must keep the inode for this test to exercise the cache")
+		t.Fatal("rewrite must keep the inode for this test")
 	}
 	_, err = f.verify()
 	if !errors.Is(err, ErrApplicationMismatch) || !strings.Contains(err.Error(), "mapped_files[0].sha256") {
 		t.Fatalf("VerifyConn after in-place rewrite = %v, want a mapped_files[0].sha256 mismatch", err)
+	}
+}
+
+func TestVerifyConnReadsContentOnEveryCheck(t *testing.T) {
+	t.Parallel()
+	f := newFakeProc(t)
+	path := f.pinnedFile(pinnedContent)
+	f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
+	f.pin.MappedFiles = []FilePin{{Path: path, SHA256: sha256Hex([]byte(pinnedContent))}}
+	reads := make(map[string]int)
+	f.v.onHash = func(name string) { reads[name]++ }
+	for i := 1; i <= 2; i++ {
+		if _, err := f.verify(); err != nil {
+			t.Fatalf("VerifyConn %d = %v", i, err)
+		}
+		// Initial verification and the final owner recheck each read both files.
+		for _, name := range []string{f.v.pidPath(fakePID, "exe"), path} {
+			if got, want := reads[name], 2*i; got != want {
+				t.Fatalf("content reads of %s after check %d = %d, want %d", name, i, got, want)
+			}
+		}
 	}
 }
