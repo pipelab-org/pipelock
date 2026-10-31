@@ -9,6 +9,7 @@ import (
 	"compress/flate"
 	"context"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -25,10 +26,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/certgen"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
@@ -88,114 +92,171 @@ func exerciseUpload(t *testing.T, surface string, policy uploadPolicy, mediaType
 
 func exerciseUploadHeaders(t *testing.T, surface string, policy uploadPolicy, headers http.Header, body []byte) (int, int32, bool, string, http.Header) {
 	t.Helper()
-	var hits atomic.Int32
-	var intact atomic.Bool
-	original := sha256.Sum256(body)
+	return newUploadHarness(t, surface, policy).exercise(t, headers, body)
+}
+
+// uploadHarness is one proxy surface in front of a real upstream. A test builds
+// it once per surface and policy and may share it across parallel subtests:
+// every request uses its own path, and the upstream records the hash of each
+// body it received on that path, so a subtest sees only its own deliveries.
+type uploadHarness struct {
+	base     string
+	do       func(t *testing.T, req *http.Request) *http.Response
+	seq      atomic.Int64
+	mu       sync.Mutex
+	received map[string][][sha256.Size]byte
+}
+
+func newUploadHarness(t *testing.T, surface string, policy uploadPolicy) *uploadHarness {
+	t.Helper()
+	h := &uploadHarness{received: make(map[string][][sha256.Size]byte)}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
-		hits.Add(1)
-		intact.Store(sha256.Sum256(data) == original)
+		h.mu.Lock()
+		h.received[r.URL.Path] = append(h.received[r.URL.Path], sha256.Sum256(data))
+		h.mu.Unlock()
 		w.Header().Set("Content-Type", contentTypeJSON)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	})
-	var response *http.Response
+	enforce := !policy.audit
 	if surface == "reverse" {
 		cfg := reverseTestConfig()
 		cfg.RequestBodyScanning.Action = policy.action
-		enforce := !policy.audit
 		cfg.Enforce = &enforce
 		cfg.AdaptiveEnforcement.Enabled = false
 		// Isolate file inspection: existing opaque-content entropy independently
 		// blocks base64 attachments, including clean Office documents.
 		cfg.RequestBodyScanning.ContentEntropyEnabled = false
+		// One harness carries many requests to one host. The per-host URL rate
+		// limit is not under test here.
+		cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
 		server := reverseTestSetup(t, cfg, handler)
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, server.URL+"/upload.bin", bytes.NewReader(body))
-		if err != nil {
-			t.Fatal(err)
-		}
-		maps.Copy(req.Header, headers)
-		response, err = server.Client().Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-	} else {
-		cache, pool, cfg, _, _, m := testInterceptSetup(t)
-		cfg.RequestBodyScanning.Enabled = true
-		cfg.RequestBodyScanning.Action = policy.action
-		enforce := !policy.audit
-		cfg.Enforce = &enforce
-		cfg.AdaptiveEnforcement.Enabled = false
-		// Isolate file inspection: existing opaque-content entropy independently
-		// blocks base64 attachments, including clean Office documents.
-		cfg.RequestBodyScanning.ContentEntropyEnabled = false
-		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
-		cfg.Internal = nil
-		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-		cfg.APIAllowlist = nil
-		cfg.ForwardProxy.Enabled = true
-		logger := audit.NewNop()
-		sc := scanner.MustNew(cfg)
-		t.Cleanup(sc.Close)
-		p, err := New(cfg, logger, sc, m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(p.Close)
-		if surface == "intercept" {
-			upstream := httptest.NewTLSServer(handler)
-			defer upstream.Close()
-			req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPut, upstream.URL+"/upload.bin", bytes.NewReader(body))
-			if reqErr != nil {
-				t.Fatal(reqErr)
-			}
-			maps.Copy(req.Header, headers)
-			response = interceptAndRequestWithRecorder(t, interceptRequestOptions{Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Request: req, Proxy: p, Agent: "upload-test", ActorAuth: envelope.ActorAuthBound})
-		} else {
-			upstream := httptest.NewServer(handler)
-			defer upstream.Close()
-			server := httptest.NewServer(p.Handler())
-			defer server.Close()
-			proxyURL, parseErr := url.Parse(server.URL)
-			if parseErr != nil {
-				t.Fatal(parseErr)
-			}
-			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
-			defer transport.CloseIdleConnections()
-			client := &http.Client{Transport: transport}
-			req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPut, upstream.URL+"/upload.bin", bytes.NewReader(body))
-			if reqErr != nil {
-				t.Fatal(reqErr)
-			}
-			maps.Copy(req.Header, headers)
-			response, err = client.Do(req)
+		h.base = server.URL
+		h.do = func(t *testing.T, req *http.Request) *http.Response {
+			t.Helper()
+			response, err := server.Client().Do(req)
 			if err != nil {
 				t.Fatal(err)
 			}
+			return response
 		}
+		return h
 	}
+	ca, caKey, _, err := certgen.GenerateCA("Test", 24*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache, err := certgen.NewCertCache(ca, caKey, time.Hour, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	cfg := config.Defaults()
+	cfg.TLSInterception.Enabled = true
+	cfg.TLSInterception.MaxResponseBytes = 1024 * 1024
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.Action = policy.action
+	cfg.Enforce = &enforce
+	cfg.AdaptiveEnforcement.Enabled = false
+	// Isolate file inspection: existing opaque-content entropy independently
+	// blocks base64 attachments, including clean Office documents.
+	cfg.RequestBodyScanning.ContentEntropyEnabled = false
+	cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	logger := audit.NewNop()
+	m := metrics.New()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	if surface == "intercept" {
+		upstream := httptest.NewTLSServer(handler)
+		t.Cleanup(upstream.Close)
+		h.base = upstream.URL
+		h.do = func(t *testing.T, req *http.Request) *http.Response {
+			t.Helper()
+			return interceptAndRequestWithRecorder(t, interceptRequestOptions{Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Request: req, Proxy: p, Agent: "upload-test", ActorAuth: envelope.ActorAuthBound})
+		}
+		return h
+	}
+	upstream := httptest.NewServer(handler)
+	t.Cleanup(upstream.Close)
+	server := httptest.NewServer(p.Handler())
+	t.Cleanup(server.Close)
+	proxyURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	t.Cleanup(transport.CloseIdleConnections)
+	client := &http.Client{Transport: transport}
+	h.base = upstream.URL
+	h.do = func(t *testing.T, req *http.Request) *http.Response {
+		t.Helper()
+		response, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	return h
+}
+
+func (h *uploadHarness) exercise(t *testing.T, headers http.Header, body []byte) (int, int32, bool, string, http.Header) {
+	t.Helper()
+	path := fmt.Sprintf("/upload-%d.bin", h.seq.Add(1))
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, h.base+path, bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	maps.Copy(req.Header, headers)
+	response := h.do(t, req)
 	defer func() { _ = response.Body.Close() }()
 	message, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return response.StatusCode, hits.Load(), intact.Load(), string(message), response.Header.Clone()
+	h.mu.Lock()
+	got := h.received[path]
+	h.mu.Unlock()
+	var hits int32
+	for range got {
+		hits++
+	}
+	intact := len(got) == 1 && got[0] == sha256.Sum256(body)
+	return response.StatusCode, hits, intact, string(message), response.Header.Clone()
 }
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
+	names := []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"}
+	fixtures := make(map[string][]byte, len(names))
+	for _, name := range names {
+		data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixtures[name] = data
+	}
 	for _, surface := range []string{"forward", "intercept", "reverse"} {
-		for _, name := range []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf", "seeded.pdf"} {
+		h := newUploadHarness(t, surface, uploadPolicy{config.ActionBlock, false})
+		for _, name := range names {
 			for _, carrier := range []string{"raw", "multipart", "json"} {
 				t.Run(surface+"/"+name+"/"+carrier, func(t *testing.T) {
-					data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
-					if err != nil {
-						t.Fatal(err)
-					}
+					t.Parallel()
+					data := fixtures[name]
 					mediaType := "video/mp4"
 					if carrier == "multipart" {
 						mediaType, data = uploadMultipart(t, data)
@@ -205,7 +266,7 @@ func TestUploadInspectionProducerTransports(t *testing.T) {
 						data = []byte(`{"attachments":[{"contentBytes":"` + base64.StdEncoding.EncodeToString(data) + `"}]}`)
 					}
 					wantBlock := (strings.Contains(name, "seeded") || name == "split-run.docx") && !strings.HasSuffix(name, ".pdf")
-					status, hits, intact, reason, _ := exerciseUpload(t, surface, uploadPolicy{config.ActionBlock, false}, mediaType, data)
+					status, hits, intact, reason, _ := h.exercise(t, http.Header{"Content-Type": {mediaType}}, data)
 					if wantBlock {
 						if status != http.StatusForbidden || hits != 0 {
 							t.Fatalf("status=%d hits=%d body=%s", status, hits, reason)
@@ -233,28 +294,31 @@ func TestUploadInspectionUnreadablePolicy(t *testing.T) {
 	for range extractJSONMaxDepth {
 		deep = uploadArchive(t, map[string][]byte{"nested.zip": deep})
 	}
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"encrypted", encrypted},
+		{"CRC", crc},
+		{"method", method},
+		{"trailer", clean[:len(clean)-1]},
+		{"bomb", uploadArchive(t, map[string][]byte{"large.txt": bytes.Repeat([]byte("a"), 2*1024*1024)})},
+		{"depth", deep},
+		{"7z", []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}},
+		{"RAR", []byte("Rar!\x1a\x07\x01\x00")},
+	}
 	for _, surface := range []string{"forward", "intercept", "reverse"} {
 		for _, policy := range []uploadPolicy{{config.ActionBlock, false}, {config.ActionWarn, false}, {config.ActionBlock, true}} {
-			for _, tc := range []struct {
-				name string
-				data []byte
-			}{
-				{"encrypted", encrypted},
-				{"CRC", crc},
-				{"method", method},
-				{"trailer", clean[:len(clean)-1]},
-				{"bomb", uploadArchive(t, map[string][]byte{"large.txt": bytes.Repeat([]byte("a"), 2*1024*1024)})},
-				{"depth", deep},
-				{"7z", []byte{'7', 'z', 0xbc, 0xaf, 0x27, 0x1c}},
-				{"RAR", []byte("Rar!\x1a\x07\x01\x00")},
-			} {
+			h := newUploadHarness(t, surface, policy)
+			for _, tc := range cases {
 				for _, carrier := range []string{"raw", "multipart"} {
 					t.Run(fmt.Sprintf("%s/%s/audit=%t/%s/%s", surface, policy.action, policy.audit, tc.name, carrier), func(t *testing.T) {
+						t.Parallel()
 						mediaType, data := "application/octet-stream", tc.data
 						if carrier == "multipart" {
 							mediaType, data = uploadMultipart(t, data)
 						}
-						status, hits, intact, message, _ := exerciseUpload(t, surface, policy, mediaType, data)
+						status, hits, intact, message, _ := h.exercise(t, http.Header{"Content-Type": {mediaType}}, data)
 						if policy.action == config.ActionBlock && !policy.audit {
 							if status != http.StatusForbidden || hits != 0 {
 								t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
