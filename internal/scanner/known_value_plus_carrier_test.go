@@ -44,8 +44,8 @@ func TestKnownValueURLNestedCarrierKeepsPlus(t *testing.T) {
 			"https://example.test/p#" + encoded,
 			"https://example.test/p?q=" + url.QueryEscape(encoded),
 		} {
-			if got := s.Scan(t.Context(), target); got.Allowed {
-				t.Errorf("%s: nested known value with '+' was allowed", target)
+			if got := s.Scan(t.Context(), target); got.Allowed || got.Scanner != ScannerDLP {
+				t.Errorf("%s: nested known value with '+' not blocked by DLP: allowed=%v scanner=%q", target, got.Allowed, got.Scanner)
 			}
 		}
 	}
@@ -66,11 +66,11 @@ func TestKnownValueDecodedTextViewLabels(t *testing.T) {
 	}
 	plus := nested("\xf8\xf8\xf8")
 	for _, tc := range []struct {
-		name, body, view string
+		name, body, view, encoded string
 	}{
 		// Repeated form decoding turns the escaped '+' into a space; the
 		// RFC 3986 view keeps it.
-		{"percent decoded", "note " + url.QueryEscape(plus), "percent_decoded"},
+		{"percent decoded", "note " + url.QueryEscape(plus), "percent_decoded", "hex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			matches := s.checkSecretsInTextWithDecodes(s.fileSecrets, tc.body, "Known secret", "", &decodingMemo{})
@@ -80,8 +80,8 @@ func TestKnownValueDecodedTextViewLabels(t *testing.T) {
 			if label := matches[0].Span().ViewLabel; !strings.HasPrefix(label, ViewDLPNormalized+":"+tc.view+":") {
 				t.Fatalf("view label = %q, want the %s view", label, tc.view)
 			}
-			if strings.Contains(matches[0].Encoded, "decoded") {
-				t.Fatalf("encoded = %q, want the encoding name only", matches[0].Encoded)
+			if matches[0].Encoded != tc.encoded {
+				t.Fatalf("encoded = %q, want %q", matches[0].Encoded, tc.encoded)
 			}
 		})
 	}
@@ -108,8 +108,8 @@ func TestKnownValueWithPlusEscapedMatchesPercentView(t *testing.T) {
 		"https://example.test/p#" + escaped,
 		"https://example.test/p?q=" + escaped,
 	} {
-		if got := s.Scan(t.Context(), target); got.Allowed {
-			t.Errorf("%s: escaped known value with '+' was allowed", target)
+		if got := s.Scan(t.Context(), target); got.Allowed || got.Scanner != ScannerDLP {
+			t.Errorf("%s: escaped known value with '+' not blocked by DLP: allowed=%v scanner=%q", target, got.Allowed, got.Scanner)
 		}
 	}
 	if got := s.ScanTextForDLP(t.Context(), "note "+escaped); got.Clean {
