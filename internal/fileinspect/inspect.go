@@ -300,15 +300,41 @@ func (w *walk) archive(data []byte, depth int) error {
 		if len(member) != n {
 			return fmt.Errorf("member size does not match ZIP directory")
 		}
+		// APPNOTE treats a directory as a zero-length name ending in slash.
+		// archive/zip Open returns EOF when the uncompressed size is 0 and
+		// does not read CompressedSize64, which is how some writers store an
+		// empty deflate stream. A nonempty payload is still a member body:
+		// scan it, and refuse completion when it disagrees with the claimed size.
+		if f.FileInfo().IsDir() {
+			w.result.Texts = append(w.result.Texts, f.Name, f.Comment)
+			if f.CompressedSize64 == 0 {
+				continue
+			}
+			payload, err := w.directoryPayload(f)
+			if err != nil {
+				return err
+			}
+			if kind := Kind(payload); kind != "" {
+				if kind != "ZIP" {
+					return fmt.Errorf("embedded %s format has no upload reader", kind)
+				}
+				if err := w.archive(payload, depth+1); err != nil {
+					return err
+				}
+			} else if len(payload) > 0 {
+				w.result.Texts = append(w.result.Texts, string(payload))
+			}
+			if uint64(len(payload)) != f.UncompressedSize64 {
+				return fmt.Errorf("directory member has unread data")
+			}
+			continue
+		}
 		if f.Method == zip.Deflate {
 			if err := w.deflateConsumesMember(f); err != nil {
 				return err
 			}
 		}
 		w.result.Texts = append(w.result.Texts, f.Name, f.Comment)
-		if f.FileInfo().IsDir() {
-			continue
-		}
 		if kind := Kind(member); kind != "" {
 			if kind != "ZIP" {
 				return fmt.Errorf("embedded %s format has no upload reader", kind)
@@ -366,6 +392,56 @@ func odfImagePath(part, href string) string {
 		href = decoded
 	}
 	return strings.TrimPrefix(path.Join(path.Dir(part), href), "/")
+}
+
+// directoryPayload reads the compressed bytes Open skips for a zero-length
+// directory. Inflation stops at the remaining byte budget. A deflate stream
+// must consume the listed compressed size, same as a file member.
+func (w *walk) directoryPayload(f *zip.File) ([]byte, error) {
+	raw, err := f.OpenRaw()
+	if err != nil {
+		return nil, fmt.Errorf("opening member: %w", err)
+	}
+	var reader io.Reader
+	var compressed *bufio.Reader
+	switch f.Method {
+	case zip.Store:
+		reader = raw
+	case zip.Deflate:
+		compressed = bufio.NewReader(raw)
+		reader = flate.NewReader(compressed)
+	default:
+		return nil, fmt.Errorf("unsupported ZIP compression method %d", f.Method)
+	}
+	if w.remaining < 0 {
+		return nil, fmt.Errorf("expanded member exceeds max_body_bytes / compression-ratio budget")
+	}
+	payload, err := io.ReadAll(io.LimitReader(&contextReader{w.ctx, reader}, int64(w.remaining)+1))
+	if closer, ok := reader.(io.Closer); ok {
+		closeErr := closer.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading member: %w", err)
+	}
+	if len(payload) > w.remaining {
+		kept := payload[:w.remaining]
+		w.result.Texts = append(w.result.Texts, string(kept))
+		w.remaining = 0
+		return nil, fmt.Errorf("expanded member exceeds max_body_bytes / compression-ratio budget")
+	}
+	w.remaining -= len(payload)
+	if compressed != nil {
+		if _, err = compressed.ReadByte(); !errors.Is(err, io.EOF) {
+			if len(payload) > 0 {
+				w.result.Texts = append(w.result.Texts, string(payload))
+			}
+			return nil, fmt.Errorf("compressed member has data after its deflate stream")
+		}
+	}
+	return payload, nil
 }
 
 // deflateConsumesMember re-reads the member's compressed bytes. archive/zip

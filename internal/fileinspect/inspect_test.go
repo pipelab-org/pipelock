@@ -494,3 +494,101 @@ func TestInspectZIP64DataDescriptor(t *testing.T) {
 		}
 	}
 }
+
+// archive/zip Open returns EOF for a directory whose uncompressed size is 0
+// without reading its compressed bytes (APPNOTE directories are zero-length;
+// some writers still store a deflate stream). Those bytes sit inside the
+// listed member span, so coverage does not see them, and a deflate stream
+// hides plaintext from the raw body.
+func TestInspectDirectoryCompressedPayload(t *testing.T) {
+	key := "AKIA" + "Q9W8E7R6T5Y4U3I2"
+	deflated := func(payload []byte) []byte {
+		t.Helper()
+		var b bytes.Buffer
+		w, err := flate.NewWriter(&b, flate.BestCompression)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write(payload); err != nil {
+			t.Fatal(err)
+		}
+		if err = w.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	build := func(method uint16, payload []byte) []byte {
+		t.Helper()
+		raw := payload
+		uncompressed := uint64(len(payload))
+		if method == zip.Deflate {
+			raw = deflated(payload)
+		}
+		var b bytes.Buffer
+		z := zip.NewWriter(&b)
+		// archive/zip refuses a trailing slash. Write a same-length name, then
+		// mark it as a directory and claim uncompressed size 0.
+		f, err := z.CreateRaw(&zip.FileHeader{
+			Name:               "secretX",
+			Method:             method,
+			CRC32:              crc32.ChecksumIEEE(payload),
+			CompressedSize64:   uint64(len(raw)),
+			UncompressedSize64: uncompressed,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		plain, err := z.Create("visible.txt")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = plain.Write([]byte("ordinary text")); err != nil {
+			t.Fatal(err)
+		}
+		if err = z.Close(); err != nil {
+			t.Fatal(err)
+		}
+		data := b.Bytes()
+		local := bytes.Index(data, []byte("secretX"))
+		central := bytes.LastIndex(data, []byte("secretX"))
+		if local < 0 || central == local {
+			t.Fatal("member name missing")
+		}
+		copy(data[local:], "secret/")
+		copy(data[central:], "secret/")
+		binary.LittleEndian.PutUint32(data[local-8:], 0) // local uncompressed size
+		binary.LittleEndian.PutUint32(data[central-22:], 0)
+		return data
+	}
+	for _, tc := range []struct {
+		name    string
+		data    []byte
+		wantKey bool
+		reason  string
+	}{
+		{"stored secret", build(zip.Store, []byte("key="+key)), true, "directory member has unread data"},
+		{"deflated secret", build(zip.Deflate, []byte("key="+key)), true, "directory member has unread data"},
+		{"empty deflate directory", build(zip.Deflate, nil), false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), tc.data, Limits{1 << 20, 64})
+			joined := strings.Join(r.Texts, "\n")
+			if tc.reason == "" {
+				if !r.Complete || strings.Contains(joined, key) {
+					t.Fatalf("empty directory: complete=%t reason=%q", r.Complete, r.Reason)
+				}
+				return
+			}
+			if r.Complete || !strings.Contains(r.Reason, tc.reason) || !strings.Contains(joined, key) {
+				t.Fatalf("complete=%t reason=%q haskey=%t", r.Complete, r.Reason, strings.Contains(joined, key))
+			}
+		})
+	}
+	bomb := build(zip.Deflate, bytes.Repeat([]byte("A"), 100000))
+	if r := Inspect(t.Context(), bomb, Limits{len(bomb) + 32, 64}); r.Complete || !strings.Contains(r.Reason, "max_body_bytes") {
+		t.Fatalf("directory expansion: complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}
