@@ -1119,6 +1119,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// The secret finding is first. Callers copy Reason into the receipt
 			// Pattern, so this needs no schema change.
 			result.Reason = fmt.Sprintf("request body contains secret: %s; %s", strings.Join(dlpMatchNames(result.DLPMatches), ", "), result.FileInspectionIncomplete)
+		} else if result.FileInspectionIncomplete != "" && len(result.InjectionMatches) > 0 {
+			// The same order holds for an injection finding: the finding is
+			// named first, so an injection block isn't reported as an unread file.
+			result.Reason = fmt.Sprintf("request body contains prompt injection: %s; %s", strings.Join(responseMatchNames(result.InjectionMatches), ", "), result.FileInspectionIncomplete)
 		}
 		if len(result.AddressFindings) > 0 && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 {
 			result.Reason = fmt.Sprintf("address poisoning detected: %s", result.AddressFindings[0].Explanation)

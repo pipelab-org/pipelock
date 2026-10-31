@@ -103,14 +103,27 @@ func IsUnreadBodyReason(reason string) bool {
 	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
 }
 
-// SecretAndUnreadAgentReason names a non-core secret finding and then an
-// unread upload. The reason is free text; an audience note may follow the
-// unread-file suffix, so the suffix is not required to be terminal.
-func SecretAndUnreadAgentReason(reason string) (string, bool) {
-	if !strings.HasPrefix(reason, "request body contains secret:") || !strings.Contains(reason, IncompleteFileGovernedSuffix) {
+// Request-body reasons that name a finding before an unread upload.
+const (
+	secretAndUnreadPrefix    = "request body contains secret:"
+	injectionAndUnreadPrefix = "request body contains prompt injection:"
+)
+
+// FindingAndUnreadAgentReason names a non-core secret or prompt-injection
+// finding and then an unread upload. The reason is free text; an audience
+// note may follow the unread-file suffix, so the suffix is not required to be
+// terminal.
+func FindingAndUnreadAgentReason(reason string) (string, bool) {
+	if !strings.Contains(reason, IncompleteFileGovernedSuffix) {
 		return "", false
 	}
-	return secretAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+	switch {
+	case strings.HasPrefix(reason, secretAndUnreadPrefix):
+		return secretAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
+		return promptInjectionAgentReason + " " + incompleteFileHoldGuidance().AgentReason, true
+	}
+	return "", false
 }
 
 const (
@@ -631,12 +644,13 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// reason already covers input that could not be fully scanned, so this
 	// branch only replaces the operator and agent sentences. A reason that
 	// also names a secret keeps that finding first.
-	if agent, ok := SecretAndUnreadAgentReason(reason); ok {
+	if agent, ok := FindingAndUnreadAgentReason(reason); ok {
 		file := incompleteFileHoldGuidance()
-		return RemediationGuidance{
-			OperatorKnob: "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret. " + file.OperatorKnob,
-			AgentReason:  agent,
-		}, true
+		knob := "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret. "
+		if strings.HasPrefix(reason, injectionAndUnreadPrefix) {
+			knob = "The reason names a prompt-injection finding and then an unread upload. " + bodyPromptInjectionOperatorKnob + " "
+		}
+		return RemediationGuidance{OperatorKnob: knob + file.OperatorKnob, AgentReason: agent}, true
 	}
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true
