@@ -216,6 +216,13 @@ func TestReproduceSpanViewDecodedInputs(t *testing.T) {
 			view:   contractreceipt.NormalizedViewBase64Decoded,
 			errSub: "not valid base64",
 		},
+		// The scanner's spaced view also spaces invisibles produced by
+		// compatibility folding; recheck reproduces the same view.
+		"invisible spaced compatibility folded": {
+			source: "normalizationﾠwitness",
+			view:   contractreceipt.NormalizedViewInvisibleSpaced,
+			want:   "normalization witness",
+		},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {

@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"net/url"
 	"strings"
 	"testing"
@@ -76,4 +77,36 @@ func TestDLPCompatibilityFoldedInvisibles(t *testing.T) {
 		}
 		assertSpanSlice(t, normalize.ForDLP("value="+text), onlyResultSpan(t, result), credential)
 	})
+}
+
+func TestResponseCompatibilityFoldedSeparator(t *testing.T) {
+	// A literal inter-word space has no optional-whitespace variant, so only
+	// the spaced view can restore the boundary a folded separator replaced.
+	cfg := testResponseConfig()
+	cfg.ResponseScanning.Action = config.ActionStrip
+	cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "Normalization witness", Regex: "normalization witness"}}
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	const prefix, suffix, wording = "前 ok ", " 後", "normalizationﾠwitness"
+	input := prefix + wording + suffix
+	result := s.ScanResponse(t.Context(), input)
+	if result.Clean || len(result.Matches) != 1 {
+		t.Fatalf("expected one wording match: %+v", result)
+	}
+	match := result.Matches[0]
+	if span := match.Span(); span.ViewLabel != ViewInvisibleSpaced {
+		t.Fatalf("unexpected span view: %+v", span)
+	}
+	assertSpanSlice(t, normalize.ForMatchingSpaced(input), match.Span(), "normalization witness")
+	start, end, ok := normalizedMatchSourceRange(input, match)
+	if !ok || input[start:end] != wording {
+		t.Fatalf("source mapping = [%d:%d], valid=%v, want original wording", start, end, ok)
+	}
+	if result.TransformedContent != prefix+"[REDACTED: Normalization witness]"+suffix {
+		t.Fatalf("strip result = %q", result.TransformedContent)
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(wording))
+	if s.ScanResponse(t.Context(), encoded).Clean {
+		t.Fatal("expected decoded wording match")
+	}
 }

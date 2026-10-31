@@ -346,7 +346,7 @@ func requireFragmentBoundaryMatch(content string, result ResponseScanResult) Res
 	}
 	views := map[string]string{
 		ViewForMatching:     normalize.ForMatching(content),
-		ViewInvisibleSpaced: normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(content)),
+		ViewInvisibleSpaced: normalize.ForMatchingSpaced(content),
 	}
 	views[ViewLeetspeak] = normalize.Leetspeak(views[ViewForMatching])
 	views[ViewVowelFold] = normalize.FoldVowels(views[ViewForMatching])
@@ -734,7 +734,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// have no other surviving defense because the opt-space pass only relaxes
 	// trailing \s+, not literal spaces inside the alternation.
 	if len(matches) == 0 {
-		spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(preStripContent))
+		spaced := normalize.ForMatchingSpaced(preStripContent)
 		if spaced != content {
 			matches = filterSuppressed(withResponseSpans(filterDefensiveCredentialSolicitationMatches(spaced, memo.match(s.responsePreFilter, s.responsePatterns, spaced)), ViewInvisibleSpaced))
 			if len(matches) > 0 {
@@ -1376,9 +1376,10 @@ func normalizedMatchSourceRanges(decoded string, matches []ResponseMatch) ([][2]
 	label := matches[0].span.ViewLabel
 	transform := func(value string) string {
 		if strings.Contains(label, "invisible_spaced") {
-			value = normalize.ReplaceInvisibleWithSpace(value)
+			value = normalize.ForMatchingSpaced(value)
+		} else {
+			value = normalize.ForMatching(value)
 		}
-		value = normalize.ForMatching(value)
 		if strings.Contains(label, "vowel_fold") {
 			value = normalize.FoldVowels(value)
 		}
@@ -1741,7 +1742,7 @@ func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) respo
 	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized)); len(matches) > 0 {
 		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
 	}
-	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(decoded))
+	spaced := normalize.ForMatchingSpaced(decoded)
 	if spaced != normalized {
 		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, spaced)); len(matches) > 0 {
 			return responseMatchSet{matches: withResponseSpans(matches, spanViewLabel("invisible_spaced", decodedViewLabel)), content: spaced}

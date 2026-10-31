@@ -175,7 +175,7 @@ func reproduceSpanView(source, view string) (string, error) {
 	case view == contractreceipt.NormalizedViewForMatching:
 		return normalize.ForMatching(source), nil
 	case view == contractreceipt.NormalizedViewInvisibleSpaced:
-		return normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(source)), nil
+		return normalize.ForMatchingSpaced(source), nil
 	case view == contractreceipt.NormalizedViewLeetspeak:
 		return normalize.Leetspeak(normalize.ForMatching(source)), nil
 	case view == contractreceipt.NormalizedViewVowelFold:

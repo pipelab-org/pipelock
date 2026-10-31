@@ -10,8 +10,10 @@
 package normalize
 
 import (
+	"bytes"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -603,6 +605,39 @@ func decomposedMatchingFull(s string) string { return matchingNormalizeFull(s, f
 // matchingNormalizeFull is the complete matching pipeline without fast paths.
 func matchingNormalizeFull(s string, recompose bool) string {
 	return matchingPipelineFull(s, recompose, true)
+}
+
+// ForMatchingSpaced is ForMatching with each control and invisible character
+// replaced by a space instead of removed, including invisible characters that
+// compatibility folding produces. Removal rejoins a split word; replacement
+// keeps a word boundary ("ignore​all" → "ignore all"), so response and
+// seed scanning match both views.
+func ForMatchingSpaced(s string) string {
+	if isPrintableASCII(s) {
+		return s
+	}
+	return ForMatching(ReplaceInvisibleWithSpace(norm.NFKC.String(ReplaceInvisibleWithSpace(s))))
+}
+
+// ContainsInvisible reports whether s holds a control or invisible character
+// that ForMatching removes, before or after compatibility folding. Exactly
+// then does ForMatchingSpaced differ from ForMatching.
+func ContainsInvisible(s string) bool {
+	return strings.ContainsFunc(s, func(r rune) bool {
+		return isMatchingStripped(r) || foldsToInvisible(r)
+	})
+}
+
+// foldsToInvisible reports whether the compatibility decomposition of r holds
+// a character in InvisibleRanges. No such character is a canonical composite,
+// so NFKC can produce one only by decomposing a single scalar.
+func foldsToInvisible(r rune) bool {
+	if r < utf8.RuneSelf {
+		return false
+	}
+	var buf [utf8.UTFMax]byte
+	decomposition := norm.NFKC.Properties(buf[:utf8.EncodeRune(buf[:], r)]).Decomposition()
+	return bytes.ContainsFunc(decomposition, func(d rune) bool { return unicode.Is(InvisibleRanges, d) })
 }
 
 // stripFolded is false only for replay of published transform profiles.

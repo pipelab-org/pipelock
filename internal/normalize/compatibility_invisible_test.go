@@ -125,3 +125,41 @@ func TestCompatibilityFoldedInvisibleProfileReplay(t *testing.T) {
 		})
 	}
 }
+
+func TestContainsInvisibleMatchesSpacedView(t *testing.T) {
+	// The predicate gates spaced views, so it must hold exactly when the
+	// spaced view differs, for every scalar.
+	found := 0
+	for r := rune(0); r <= utf8.MaxRune; r++ {
+		if !utf8.ValidRune(r) {
+			continue
+		}
+		s := string(r)
+		differs := ForMatchingSpaced(s) != ForMatching(s)
+		if got := ContainsInvisible(s); got != differs {
+			t.Fatalf("U+%04X: ContainsInvisible = %v, spaced view differs = %v", r, got, differs)
+		}
+		if differs {
+			found++
+		}
+	}
+	if found == 0 || !ContainsInvisible("aﾠz") || ContainsInvisible("a\tz") {
+		t.Fatalf("predicate fixture was vacuous: %d differing scalars", found)
+	}
+}
+
+func TestForMatchingSpacedCompatibilityFoldedSeparator(t *testing.T) {
+	for _, sep := range []string{"​", "ᅠ", "ㅤ", "ﾠ"} {
+		t.Run(fmt.Sprintf("%+q", sep), func(t *testing.T) {
+			if got := ForMatchingSpaced("normalization" + sep + "witness"); got != "normalization witness" {
+				t.Fatalf("got %q", got)
+			}
+		})
+	}
+	// Without compatibility-folded invisibles the view keeps its prior form.
+	for _, input := range []string{"", "plain", "é  x", "ｉｇｎｏｒｅ​all", "\xff\x01a", "ᄀㅤᅡ"} {
+		if got, want := ForMatchingSpaced(input), ForMatching(ReplaceInvisibleWithSpace(input)); got != want {
+			t.Fatalf("%+q: got %q, want %q", input, got, want)
+		}
+	}
+}
