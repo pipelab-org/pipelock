@@ -121,6 +121,19 @@ type findingAndUnread struct {
 	immutable   bool
 }
 
+// guidance appends the unread-file sentences to the finding's own.
+func (f findingAndUnread) guidance() RemediationGuidance {
+	file := incompleteFileHoldGuidance()
+	return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason, Immutable: f.immutable}
+}
+
+// inspectionLimitBeforeUnread is a fixed JSON inspection limit named before an
+// unread upload. Suppression cannot lift the limit.
+func inspectionLimitBeforeUnread() findingAndUnread {
+	limit := jsonInspectionLimitGuidance()
+	return findingAndUnread{limit.AgentReason, "The reason names a JSON inspection limit and then an unread upload. " + limit.OperatorKnob, true}
+}
+
 func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 	if !strings.Contains(reason, IncompleteFileGovernedSuffix) {
 		return findingAndUnread{}, false
@@ -131,8 +144,7 @@ func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 		// fixed JSON inspection limit is not lifted by suppression.
 		names, _, _ := strings.Cut(strings.TrimPrefix(reason, secretAndUnreadPrefix+" "), "; ")
 		if jsonInspectionLimitInNames(names) {
-			limit := jsonInspectionLimitGuidance()
-			return findingAndUnread{limit.AgentReason, "The reason names a JSON inspection limit and then an unread upload. " + limit.OperatorKnob, true}, true
+			return inspectionLimitBeforeUnread(), true
 		}
 		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret.", false}, true
 	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
@@ -552,6 +564,9 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 		}
 		structured = true
 		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
+			if _, combined := findingBeforeUnread(stripNestedURLReasonPrefix(reason)); combined {
+				return inspectionLimitBeforeUnread().guidance(), true
+			}
 			return jsonInspectionLimitGuidance(), true
 		}
 	}
@@ -629,7 +644,10 @@ func jsonInspectionLimitInNames(names string) bool {
 func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// Generic events retain only the emitted reason. Strip client-chosen query
 	// keys before recognizing the closed set of inspection-refusal formats.
-	if isJSONInspectionLimitReason(label, stripNestedURLReasonPrefix(reason)) {
+	// A reason that also names an unread upload is routed by
+	// findingBeforeUnread, whatever order its pattern names take.
+	stripped := stripNestedURLReasonPrefix(reason)
+	if _, combined := findingBeforeUnread(stripped); !combined && isJSONInspectionLimitReason(label, stripped) {
 		return jsonInspectionLimitGuidance(), true
 	}
 	return guidanceForResult(label, reason)
@@ -677,8 +695,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// branch only replaces the operator and agent sentences. A reason that
 	// also names a secret keeps that finding first.
 	if f, ok := findingBeforeUnread(reason); ok {
-		file := incompleteFileHoldGuidance()
-		return RemediationGuidance{OperatorKnob: f.knob + " " + file.OperatorKnob, AgentReason: f.agent + " " + file.AgentReason, Immutable: f.immutable}, true
+		return f.guidance(), true
 	}
 	if strings.HasSuffix(reason, IncompleteFileGovernedSuffix) {
 		return incompleteFileHoldGuidance(), true

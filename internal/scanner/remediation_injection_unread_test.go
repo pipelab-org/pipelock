@@ -65,7 +65,7 @@ func TestAddressAndEntropyUnreadGuidance(t *testing.T) {
 func TestJSONInspectionLimitAndUnreadGuidance(t *testing.T) {
 	unread := "; ZIP upload not fully read: encrypted member; " + IncompleteFileGovernedSuffix
 	limit := jsonInspectionLimitGuidance()
-	for _, names := range []string{UninspectableJSONNumberPattern, "Stripe Key, " + UninspectableJSONNumberPattern} {
+	for _, names := range []string{UninspectableJSONNumberPattern, "Stripe Key, " + UninspectableJSONNumberPattern, UninspectableJSONNumberPattern + ", Stripe Key"} {
 		reason := "request body contains secret: " + names + unread
 		got, ok := GuidanceForResult(ScannerBodyDLP, reason)
 		if !ok || !got.Immutable || !strings.HasPrefix(got.AgentReason, limit.AgentReason) || !strings.Contains(got.AgentReason, "could not be fully read") ||
@@ -81,5 +81,21 @@ func TestJSONInspectionLimitAndUnreadGuidance(t *testing.T) {
 	got, ok := GuidanceForResult(ScannerBodyDLP, "request body contains secret: Stripe Key"+unread)
 	if !ok || got.Immutable || !strings.Contains(got.OperatorKnob, "suppress:") {
 		t.Fatalf("ordinary secret guidance = %+v ok=%t", got, ok)
+	}
+}
+
+// Structured pattern names take the same route: an inspection limit beside an
+// unread upload keeps both the fixed-limit and the unread-file guidance.
+func TestJSONInspectionLimitAndUnreadStructuredGuidance(t *testing.T) {
+	unread := "; ZIP upload not fully read: encrypted member; " + IncompleteFileGovernedSuffix
+	limit := jsonInspectionLimitGuidance()
+	reason := "request body contains secret: Stripe Key" + unread
+	got, ok := GuidanceForResultWithPatterns(ScannerBodyDLP, reason, []string{"Stripe Key", UninspectableJSONNumberPattern})
+	if !ok || !got.Immutable || !strings.HasPrefix(got.AgentReason, limit.AgentReason) || !strings.Contains(got.AgentReason, "could not be fully read") ||
+		strings.Contains(got.OperatorKnob, "suppress:") {
+		t.Fatalf("guidance = %+v ok=%t", got, ok)
+	}
+	if got, ok := GuidanceForResultWithPatterns(ScannerBodyDLP, "request body contains secret: "+UninspectableJSONNumberPattern, []string{UninspectableJSONNumberPattern}); !ok || got != limit {
+		t.Fatalf("limit without unread upload = %+v ok=%t", got, ok)
 	}
 }
