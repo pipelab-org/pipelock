@@ -1822,6 +1822,12 @@ func newInterceptHandler(
 				})
 			}
 
+			// A cross-request warning is a finding for this exchange, as on the
+			// forward and fetch paths, so the clean response earns no credit.
+			if ceeRes.EntropyHit || ceeRes.FragmentHit || ceeRes.Blocked {
+				hasFinding = true
+			}
+
 			ceeRec, ceeBlockAll := ceeRecordSignalsAndBlockAll(ceeSignalParams{
 				Result: ceeRes, Sessions: admission.Sessions, SessionKey: sessionKey,
 				AdaptiveCfg: &admission.AdaptiveConfig, Logger: ic.Logger, Metrics: ic.Metrics,

@@ -3085,6 +3085,76 @@ func TestInterceptTunnel_CEEEntropyDoesNotScore(t *testing.T) {
 	}
 }
 
+// A cross-request warning is a finding for the exchange, so an intercepted
+// request that trips one earns no clean credit even when its response is clean.
+// The control without cross-request detection shows the same exchange is credited.
+func TestInterceptTunnel_CEEWarnWithholdsCleanCredit(t *testing.T) {
+	for _, ceeOn := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cee=%v", ceeOn), func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = fmt.Fprint(w, "clean response")
+			}))
+			defer upstream.Close()
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.1
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			var et *scanner.EntropyTracker
+			if ceeOn {
+				cfg.CrossRequestDetection.Enabled = true
+				cfg.CrossRequestDetection.Action = config.ActionWarn
+				cfg.CrossRequestDetection.EntropyBudget.Enabled = true
+				cfg.CrossRequestDetection.EntropyBudget.BitsPerWindow = 1
+				cfg.CrossRequestDetection.EntropyBudget.WindowMinutes = 5
+				cfg.CrossRequestDetection.EntropyBudget.Action = config.ActionWarn
+				et = scanner.NewEntropyTracker(1, 300)
+				t.Cleanup(et.Close)
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			sm := NewSessionManager(&config.SessionProfiling{MaxSessions: 100, SessionTTLMinutes: 30, CleanupIntervalSeconds: 60}, nil, m)
+			t.Cleanup(sm.Close)
+			rec := &interceptMockRecorder{}
+
+			clientConn, proxyConn := net.Pipe()
+			t.Cleanup(func() { _ = clientConn.Close() })
+			host := upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			port := fmt.Sprintf("%d", upstream.Listener.Addr().(*net.TCPAddr).Port)
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+			ic := &InterceptContext{
+				TargetHost: host, TargetPort: port, Config: cfg, Scanner: sc, CertCache: cache,
+				Logger: logger, Metrics: m, ClientIP: "10.0.0.1", RequestID: "test-cee-credit",
+				UpstreamRT: upstream.Client().Transport, SessionMgr: sm, Recorder: rec,
+			}
+			if et != nil {
+				ic.EntropyTracker = et
+			}
+			go func() { _ = interceptTunnel(ctx, proxyConn, ic) }()
+
+			tlsConn := tls.Client(clientConn, &tls.Config{RootCAs: pool, ServerName: host})
+			t.Cleanup(func() { _ = tlsConn.Close() })
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+upstream.Listener.Addr().String()+"/data?key=value", nil)
+			if err := req.Write(tlsConn); err != nil {
+				t.Fatalf("write request: %v", err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
+			if err != nil {
+				t.Fatalf("read response: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", resp.StatusCode)
+			}
+			if rec.cleanCalled == ceeOn {
+				t.Errorf("RecordClean called=%v, want %v", rec.cleanCalled, !ceeOn)
+			}
+		})
+	}
+}
+
 // TestInterceptTunnel_CEEBlocked verifies that CEE with action=block inside
 // a TLS intercepted tunnel returns 403 when the entropy budget is exceeded.
 // The entropy warning test covers forwarding; this covers the configured
