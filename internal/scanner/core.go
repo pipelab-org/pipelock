@@ -390,7 +390,7 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	}
 
 	// Secondary: replace invisible chars with spaces.
-	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(original))
+	spaced := normalize.ForMatchingSpaced(original)
 	if spaced != content {
 		if matches := filterCoreResponsePass(spaced, "", memo.match(s.core.responsePreFilter, s.core.responsePatterns, spaced), ViewInvisibleSpaced, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
@@ -510,7 +510,7 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
 		return responseMatchSet{matches: matches, content: normalized}
 	}
-	spaced := normalize.ForMatching(normalize.ReplaceInvisibleWithSpace(decoded))
+	spaced := normalize.ForMatchingSpaced(decoded)
 	if spaced != normalized {
 		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
