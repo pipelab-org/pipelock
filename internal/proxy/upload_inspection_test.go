@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -28,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -332,6 +334,178 @@ func TestUploadInspectionProducerHiddenSheet(t *testing.T) {
 			}
 		})
 	}
+}
+
+func bodyDLPHits(t *testing.T, m *metrics.Metrics, action string) float64 {
+	t.Helper()
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var total float64
+	for _, family := range families {
+		if family.GetName() != "pipelock_body_dlp_hits_total" {
+			continue
+		}
+		for _, metric := range family.GetMetric() {
+			matched := action == ""
+			for _, label := range metric.GetLabel() {
+				if label.GetName() == "action" && label.GetValue() == action {
+					matched = true
+				}
+			}
+			if matched && metric.GetCounter() != nil {
+				total += metric.GetCounter().GetValue()
+			}
+		}
+	}
+	return total
+}
+
+func assertIncompleteFileObservation(t *testing.T, m *metrics.Metrics, log string, wantAction string) {
+	t.Helper()
+	if got := bodyDLPHits(t, m, wantAction); got != 1 {
+		t.Fatalf("body DLP counter for %s = %v, want 1\n%s", wantAction, got, log)
+	}
+	var saw bool
+	for line := range strings.SplitSeq(log, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+		if entry["event"] != "body_dlp" {
+			continue
+		}
+		saw = true
+		hint, _ := entry["remediation_hint"].(string)
+		if strings.Contains(hint, "suppress") || !strings.Contains(hint, "request_body_scanning.action") || !strings.Contains(hint, "enforce") {
+			t.Fatalf("observation hint = %q", hint)
+		}
+	}
+	if !saw {
+		t.Fatalf("body_dlp event missing:\n%s", log)
+	}
+}
+
+func TestUploadInspectionIncompleteObservation(t *testing.T) {
+	data := []byte("Rar!\x1a\x07\x01\x00")
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			var log bytes.Buffer
+			logger, err := audit.NewWithStream("json", "stdout", "", true, true, &log)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(logger.Close)
+			status, hits, m := exerciseObservedUpload(t, surface, uploadPolicy{config.ActionWarn, false}, data, logger)
+			if status != http.StatusCreated || hits != 1 {
+				t.Fatalf("warn delivery status=%d hits=%d", status, hits)
+			}
+			assertIncompleteFileObservation(t, m, log.String(), config.ActionWarn)
+		})
+	}
+	var log bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	status, hits, m := exerciseObservedUpload(t, "forward", uploadPolicy{config.ActionBlock, false}, data, logger)
+	if status != http.StatusForbidden || hits != 0 || bodyDLPHits(t, m, "") != 0 {
+		t.Fatalf("hold must not emit a body DLP observation: status=%d hits=%d count=%v log=%s", status, hits, bodyDLPHits(t, m, ""), log.String())
+	}
+}
+
+func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, body []byte, logger *audit.Logger) (int, int32, *metrics.Metrics) {
+	t.Helper()
+	var hits atomic.Int32
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Error(err)
+		}
+		hits.Add(1)
+		w.WriteHeader(http.StatusCreated)
+	})
+	var response *http.Response
+	var observed *metrics.Metrics
+	if surface == "reverse" {
+		cfg := reverseTestConfig()
+		cfg.RequestBodyScanning.Action = policy.action
+		enforce := !policy.audit
+		cfg.Enforce = &enforce
+		cfg.AdaptiveEnforcement.Enabled = false
+		cfg.RequestBodyScanning.ContentEntropyEnabled = false
+		server, rp := reverseTestSetupWithHandler(t, cfg, handler)
+		rp.logger = logger
+		observed = rp.metrics
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPut, server.URL+"/upload.bin", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "video/mp4")
+		response, err = server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		cache, pool, cfg, _, _, m := testInterceptSetup(t)
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = policy.action
+		enforce := !policy.audit
+		cfg.Enforce = &enforce
+		cfg.AdaptiveEnforcement.Enabled = false
+		cfg.RequestBodyScanning.ContentEntropyEnabled = false
+		cfg.RequestBodyScanning.MaxBodyBytes = 1024 * 1024
+		cfg.Internal = nil
+		cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+		cfg.APIAllowlist = nil
+		cfg.ForwardProxy.Enabled = true
+		observed = m
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		p, err := New(cfg, logger, sc, m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(p.Close)
+		if surface == "intercept" {
+			upstream := httptest.NewTLSServer(handler)
+			defer upstream.Close()
+			req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPut, upstream.URL+"/upload.bin", bytes.NewReader(body))
+			if reqErr != nil {
+				t.Fatal(reqErr)
+			}
+			req.Header.Set("Content-Type", "video/mp4")
+			response = interceptAndRequestWithRecorder(t, interceptRequestOptions{Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Request: req, Proxy: p, Agent: "upload-test", ActorAuth: envelope.ActorAuthBound})
+		} else {
+			upstream := httptest.NewServer(handler)
+			defer upstream.Close()
+			server := httptest.NewServer(p.Handler())
+			defer server.Close()
+			proxyURL, parseErr := url.Parse(server.URL)
+			if parseErr != nil {
+				t.Fatal(parseErr)
+			}
+			transport := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+			defer transport.CloseIdleConnections()
+			client := &http.Client{Transport: transport}
+			req, reqErr := http.NewRequestWithContext(t.Context(), http.MethodPut, upstream.URL+"/upload.bin", bytes.NewReader(body))
+			if reqErr != nil {
+				t.Fatal(reqErr)
+			}
+			req.Header.Set("Content-Type", "video/mp4")
+			response, err = client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	defer func() { _ = response.Body.Close() }()
+	_, _ = io.Copy(io.Discard, response.Body)
+	return response.StatusCode, hits.Load(), observed
 }
 
 func TestUploadInspectionFileHoldIdentity(t *testing.T) {

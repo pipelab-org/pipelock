@@ -21,6 +21,41 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
+func TestUploadInspectionWebSocketIncompleteObservation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	enforce := true
+	cfg.Enforce = &enforce
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.AdaptiveEnforcement.Enabled = false
+	var log bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	m := metrics.New()
+	reason := "RAR upload not fully read: no reader; " + scanner.IncompleteFileGovernedSuffix
+	relay := &wsRelay{
+		clientConn:   discardConn{},
+		upstreamConn: discardConn{},
+		proxy:        &Proxy{logger: logger, metrics: m},
+		cfg:          cfg,
+		metricAgent:  "upload-test",
+		hostname:     "upload.vendor.example",
+		targetURL:    "wss://upload.vendor.example/socket",
+	}
+	blocked := relay.handleClientMessageBodyResult(logger, []byte("Rar!"), BodyScanResult{
+		Clean:                    false,
+		Action:                   config.ActionWarn,
+		Reason:                   reason,
+		FileInspectionIncomplete: reason,
+	})
+	if blocked || bodyDLPHits(t, m, config.ActionWarn) != 1 || !strings.Contains(log.String(), `"event":"body_dlp"`) || strings.Contains(log.String(), "suppress") {
+		t.Fatalf("blocked=%t count=%v log=%s", blocked, bodyDLPHits(t, m, config.ActionWarn), log.String())
+	}
+}
+
 func TestUploadInspectionWebSocketFileHoldClose(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

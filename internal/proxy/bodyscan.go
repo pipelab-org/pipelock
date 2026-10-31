@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/fileinspect"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/media"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -572,6 +573,21 @@ func fileHoldOnly(result BodyScanResult) bool {
 		len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
 		len(result.AddressFindings) == 0 && result.EntropyFinding == nil &&
 		result.RedactionBlockReason == ""
+}
+
+// recordIncompleteFileObservation emits the body-DLP audit event and counter
+// an inspection-limit warning already emits. An enforced hold is a block
+// record, and a credential match has already emitted this counter.
+func recordIncompleteFileObservation(m *metrics.Metrics, logger *audit.Logger, ctx audit.LogContext, action, agent string, result BodyScanResult) {
+	if result.FileInspectionIncomplete == "" || result.FileInspectionBlock || len(result.DLPMatches) > 0 {
+		return
+	}
+	if m != nil {
+		m.RecordBodyDLP(action, agent)
+	}
+	if logger != nil {
+		logger.LogBodyDLP(ctx, action, 1, []string{result.FileInspectionIncomplete}, nil)
+	}
 }
 
 func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg *config.Config) bool {

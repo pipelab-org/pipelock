@@ -34,6 +34,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -2557,6 +2558,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
+		var observeMetrics *metrics.Metrics
+		if r.proxy != nil {
+			observeMetrics = r.proxy.metrics
+		}
+		recordIncompleteFileObservation(observeMetrics, log, newHTTPAuditContext(r.auditProvenanceCtx(), log, httpAuditEvent{Method: "WS", TargetURL: r.targetURL, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent}), action, r.metricAgent, result)
 		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() && !result.IsIncompleteFileWarningOnly() {
 			r.recordFinding(session.SignalWarning, log, scannerLabel, receiptPattern)
 		}

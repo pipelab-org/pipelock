@@ -2227,7 +2227,9 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 		return true, config.ActionBlock, nil, true
 	}
 
-	// Warn mode: re-wrap body and continue.
+	// Warn mode: re-wrap body and continue. The observation uses the same
+	// body-DLP event and counter as an inspection-limit warning.
+	recordIncompleteFileObservation(rp.metrics, rp.logger, actx, action, "", result)
 	r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	r.ContentLength = int64(len(bodyBytes))
 	bodyBytesCopy := bodyBytes

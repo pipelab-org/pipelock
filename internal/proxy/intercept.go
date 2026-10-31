@@ -1527,6 +1527,11 @@ func newInterceptHandler(
 				if action == config.ActionWarn && result.EntropyWarnRoute != nil {
 					interceptEntropyWarningPattern = bodyEntropyReason(result)
 				}
+				observeMetrics := ic.Metrics
+				if observeMetrics == nil && ic.Proxy != nil {
+					observeMetrics = ic.Proxy.metrics
+				}
+				recordIncompleteFileObservation(observeMetrics, ic.Logger, actx, action, ic.Profile, result)
 				// Audit/warn mode: log finding but forward the request.
 				ic.Logger.LogAnomaly(actx, scannerLabel, reason, 0.8)
 			}

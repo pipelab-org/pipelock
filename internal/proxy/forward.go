@@ -1815,6 +1815,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if action == config.ActionWarn {
+				recordIncompleteFileObservation(p.metrics, p.logger, actx, action, agentLabel, bodyResult)
 				forwardReceiptVerdict = config.ActionWarn
 				forwardReceiptLayer = scannerLabel
 				forwardReceiptPattern = receiptPattern
