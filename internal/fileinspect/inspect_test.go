@@ -6,8 +6,10 @@ package fileinspect
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/binary"
+	"hash/crc32"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,5 +351,44 @@ func TestInspectUnlistedMemberBytes(t *testing.T) {
 		if r := Inspect(t.Context(), data, Limits{1 << 22, 64}); !r.Complete {
 			t.Fatalf("%s: producer file reported incomplete: %q", entry.Name(), r.Reason)
 		}
+	}
+}
+
+// archive/zip stops at the end of a deflate stream; compressed bytes after it
+// lie inside a listed member's span, so coverage alone can't detect them.
+func TestInspectDeflateTrailingBytes(t *testing.T) {
+	text := []byte("ordinary text")
+	var compressed bytes.Buffer
+	fw, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fw.Write(text); err != nil {
+		t.Fatal(err)
+	}
+	if err = fw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	build := func(raw []byte) []byte {
+		var b bytes.Buffer
+		z := zip.NewWriter(&b)
+		f, createErr := z.CreateRaw(&zip.FileHeader{Name: "data.txt", Method: zip.Deflate, CRC32: crc32.ChecksumIEEE(text), CompressedSize64: uint64(len(raw)), UncompressedSize64: uint64(len(text))})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if _, createErr = f.Write(raw); createErr != nil {
+			t.Fatal(createErr)
+		}
+		if createErr = z.Close(); createErr != nil {
+			t.Fatal(createErr)
+		}
+		return b.Bytes()
+	}
+	if r := Inspect(t.Context(), build(compressed.Bytes()), Limits{4096, 64}); !r.Complete {
+		t.Fatalf("exact deflate member: %q", r.Reason)
+	}
+	trailing := append(bytes.Clone(compressed.Bytes()), "PK\x03\x04 hidden record"...)
+	if r := Inspect(t.Context(), build(trailing), Limits{4096, 64}); r.Complete || !strings.Contains(r.Reason, "after its deflate stream") {
+		t.Fatalf("trailing compressed bytes: complete=%t reason=%q", r.Complete, r.Reason)
 	}
 }

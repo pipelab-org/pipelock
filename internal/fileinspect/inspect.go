@@ -7,7 +7,9 @@ package fileinspect
 
 import (
 	"archive/zip"
+	"bufio"
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/binary"
 	"encoding/xml"
@@ -266,6 +268,11 @@ func (w *walk) archive(data []byte, depth int) error {
 		if len(member) != n {
 			return fmt.Errorf("member size does not match ZIP directory")
 		}
+		if f.Method == zip.Deflate {
+			if err := w.deflateConsumesMember(f); err != nil {
+				return err
+			}
+		}
 		w.result.Texts = append(w.result.Texts, f.Name, f.Comment)
 		if f.FileInfo().IsDir() {
 			continue
@@ -310,6 +317,33 @@ func (w *walk) archive(data []byte, depth int) error {
 			}
 			w.result.Texts = append(w.result.Texts, text)
 		}
+	}
+	return nil
+}
+
+// deflateConsumesMember re-reads the member's compressed bytes. archive/zip
+// stops at the end of the deflate stream, so bytes after it inside the listed
+// compressed size are never read; a streaming reader can treat them as another
+// record. The decompressor reads a bufio.Reader one byte at a time, so anything
+// still readable afterwards follows the stream. The first read already bounded
+// the output to the charged size.
+func (w *walk) deflateConsumesMember(f *zip.File) error {
+	raw, err := f.OpenRaw()
+	if err != nil {
+		return fmt.Errorf("opening member: %w", err)
+	}
+	compressed := bufio.NewReader(raw)
+	inflater := flate.NewReader(compressed)
+	_, err = io.Copy(io.Discard, &contextReader{w.ctx, inflater})
+	closeErr := inflater.Close()
+	if err != nil {
+		return fmt.Errorf("reading member: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing member: %w", closeErr)
+	}
+	if _, err = compressed.ReadByte(); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("compressed member has data after its deflate stream")
 	}
 	return nil
 }
