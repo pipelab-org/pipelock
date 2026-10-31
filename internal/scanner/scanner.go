@@ -2671,35 +2671,55 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 // original input, which is at least as long as every normalized variant.
 func decodeBase64PaddingVariants(value string, padded, raw *base64.Encoding, buffer []byte, minPrefix int) [2]string {
 	var out [2]string
+	if minPrefix > 0 {
+		// Decode skips these bytes but reports error offsets that count
+		// them. Prefix recovery needs one coordinate space, as for base32.
+		value = strings.ReplaceAll(strings.ReplaceAll(value, "\r", ""), "\n", "")
+	}
 	// Copy each result before reusing scratch storage.
 	n, err := padded.Decode(buffer, []byte(value))
-	if (err == nil || minPrefix > 0) && n >= max(minPrefix, 1) {
-		out[0] = string(buffer[:n])
-		if err == nil && !strings.Contains(value, "=") {
-			out[1] = out[0]
-			return out
+	switch {
+	case err == nil:
+		if n >= max(minPrefix, 1) {
+			out[0] = string(buffer[:n])
+			if !strings.Contains(value, "=") {
+				out[1] = out[0]
+				return out
+			}
 		}
-	}
-	if minPrefix > 0 && err != nil {
-		out[0] = recoverKnownValuePrefix(value, out[0], minPrefix, 4, err, padded.DecodeString)
+	case minPrefix > 0:
+		out[0] = recoverKnownValuePrefix(value, buffer[:n], minPrefix, 4, 3, err, padded.DecodeString)
 	}
 	n, err = raw.Decode(buffer, []byte(value))
-	if (err == nil || minPrefix > 0) && n >= max(minPrefix, 1) {
-		out[1] = string(buffer[:n])
-	}
-	if minPrefix > 0 && err != nil {
-		out[1] = recoverKnownValuePrefix(value, out[1], minPrefix, 4, err, raw.DecodeString)
+	switch {
+	case err == nil:
+		if n >= max(minPrefix, 1) {
+			out[1] = string(buffer[:n])
+		}
+	case minPrefix > 0:
+		out[1] = recoverKnownValuePrefix(value, buffer[:n], minPrefix, 4, 3, err, raw.DecodeString)
 	}
 	return out
 }
 
-// recoverKnownValuePrefix completes the group a decoder may discard on error.
+// recoverKnownValuePrefix returns the longest decoded prefix of at least
+// minimum bytes, or "" when none qualifies. complete holds what the decoder
+// wrote before it stopped; value contains no bytes the decoder skips.
 // RFC 4648 sections 4 and 6 define groups of four base64 or eight base32
-// symbols. Library errors can identify the offending byte or the start of an
-// incomplete group, so inspect at most one group on either side of that offset.
-// Retain the longest decoded prefix, including groups silently dropped at EOF.
-// This adds constant work per graph edge, not a search over all input prefixes.
-func recoverKnownValuePrefix(value, decoded string, minimum, quantum int, decodeErr error, decode func(string) ([]byte, error)) string {
+// symbols, each yielding three or five bytes. A decoder may discard the group
+// it stopped in, so try ends at most one group on either side of the reported
+// offset, including the group silently dropped at EOF.
+//
+// Each full group in complete was decoded from a full group of value with no
+// padding, and decoding restarts at every group boundary. Decoding value[:end]
+// therefore equals that clean prefix of complete followed by decoding the
+// rest from the boundary. Each try reads at most three groups instead of
+// re-decoding the whole carrier, so the work per graph edge stays constant.
+func recoverKnownValuePrefix(value string, complete []byte, minimum, quantum, groupBytes int, decodeErr error, decode func(string) ([]byte, error)) string {
+	best := 0
+	if len(complete) >= minimum {
+		best = len(complete)
+	}
 	var offset int
 	var corrupt64 base64.CorruptInputError
 	var corrupt32 base32.CorruptInputError
@@ -2713,15 +2733,27 @@ func recoverKnownValuePrefix(value, decoded string, minimum, quantum int, decode
 	case errors.As(decodeErr, &corrupt32):
 		offset = int(corrupt32)
 	default:
-		return decoded
+		return string(complete[:best])
 	}
-	for end := min(len(value)-1, offset+quantum-1); end >= max(minimum, offset-quantum+1); end-- {
-		prefix, err := decode(value[:end])
-		if err == nil && len(prefix) >= minimum && len(prefix) > len(decoded) {
-			decoded = string(prefix)
+	low := max(minimum, offset-quantum+1)
+	groups := min(low/quantum, len(complete)/groupBytes)
+	start, base := groups*quantum, groups*groupBytes
+	var tail []byte
+	recovered := false
+	for end := min(len(value)-1, offset+quantum-1); end >= low; end-- {
+		suffix, err := decode(value[start:end])
+		if err == nil && base+len(suffix) >= minimum && base+len(suffix) > best {
+			best, tail, recovered = base+len(suffix), suffix, true
 		}
 	}
-	return decoded
+	if !recovered {
+		return string(complete[:best])
+	}
+	var b strings.Builder
+	b.Grow(best)
+	b.Write(complete[:base])
+	b.Write(tail)
+	return b.String()
 }
 
 func appendBase64View(out []decodedResult, text string) []decodedResult {
@@ -2791,11 +2823,13 @@ func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix in
 		paddedText := ""
 		decoded, err := alphabet.padded.DecodeString(value)
 		paddedComplete := err == nil
-		if (err == nil || minPrefix > 0) && len(decoded) >= max(minPrefix, 1) {
-			paddedText = string(decoded)
-		}
-		if minPrefix > 0 && err != nil {
-			paddedText = recoverKnownValuePrefix(value, paddedText, minPrefix, 8, err, alphabet.padded.DecodeString)
+		switch {
+		case err == nil:
+			if len(decoded) >= max(minPrefix, 1) {
+				paddedText = string(decoded)
+			}
+		case minPrefix > 0:
+			paddedText = recoverKnownValuePrefix(value, decoded, minPrefix, 8, 5, err, alphabet.padded.DecodeString)
 		}
 		if paddedText != "" {
 			out = append(out, decodedResult{paddedText, encodingBase32})
@@ -2806,11 +2840,11 @@ func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix in
 		}
 		rawText := ""
 		decoded, err = alphabet.raw.DecodeString(value)
-		if (err == nil || minPrefix > 0) && len(decoded) >= max(minPrefix, 1) {
+		switch {
+		case minPrefix > 0 && (err != nil || len(decoded) < alphabet.raw.DecodedLen(len(value))):
+			rawText = recoverKnownValuePrefix(value, decoded, minPrefix, 8, 5, err, alphabet.raw.DecodeString)
+		case err == nil && len(decoded) >= max(minPrefix, 1):
 			rawText = string(decoded)
-		}
-		if minPrefix > 0 && (err != nil || len(decoded) < alphabet.raw.DecodedLen(len(value))) {
-			rawText = recoverKnownValuePrefix(value, rawText, minPrefix, 8, err, alphabet.raw.DecodeString)
 		}
 		if rawText != "" {
 			out = append(out, decodedResult{rawText, encodingBase32})
