@@ -1763,6 +1763,70 @@ fetch_proxy:
 	}
 }
 
+func TestRunCmd_StatusPostHealthBindCollisionRetries(t *testing.T) {
+	attempts := 0
+	statusRequested := make(chan struct{})
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		attempts++
+		if attempts > 1 {
+			return nil
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		addr := addrs[0]
+		ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", addr)
+		if err != nil {
+			return err
+		}
+		cfgPath := filepath.Join(t.TempDir(), "test.yaml")
+		if err := os.WriteFile(cfgPath, []byte(fmt.Sprintf("version: 1\nmode: balanced\nfetch_proxy:\n  listen: %q\n", addr)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd := rootCmd()
+		cmd.SetContext(ctx)
+		cmd.SetArgs([]string{"run", "--config", cfgPath})
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(&cliTestBuffer{})
+		errCh := make(chan error, 1)
+		var requested, start sync.Once
+		other := &http.Server{
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/api/v1/killswitch/status" {
+					requested.Do(func() {
+						close(statusRequested)
+					})
+				}
+				w.WriteHeader(http.StatusOK)
+			}),
+			ReadHeaderTimeout: time.Second,
+		}
+		go func() { _ = other.Serve(ln) }()
+		defer func() { _ = other.Close() }()
+		client := &http.Client{Timeout: time.Second}
+		if err := waitForRunHTTPResult(ctx, client, errCh, "http://"+addr+"/health", func(resp *http.Response) bool {
+			return resp.StatusCode == http.StatusOK
+		}, "foreign listener health"); err != nil {
+			return err
+		}
+		return waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
+			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, "http://"+addr+"/api/v1/killswitch/status", nil)
+			req.Header.Set("Authorization", "Bearer reload-token")
+			return req
+		}, client, func(resp *http.Response) bool {
+			start.Do(func() { go func() { errCh <- cmd.Execute() }() })
+			return resp.StatusCode == http.StatusServiceUnavailable
+		}, "kill switch status after foreign health")
+	})
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	select {
+	case <-statusRequested:
+	default:
+		t.Fatal("collision occurred before the status request")
+	}
+}
+
 // TestRunExitWaitErrorsKeepCollisionClass checks that the errCh wait helpers
 // keep a bind collision retryable and leave any other run exit fatal.
 func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
