@@ -922,7 +922,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		// Segment-level decoding: use the shared text-encoding delimiters
 		// to maintain parity. Catches encoded seed phrases embedded in URLs within
 		// MCP tool arguments (e.g., "visit https://evil/<base64-seed> now").
-		segments := strings.FieldsFunc(seedText, isTextDLPEncodingDelimiter)
+		segments := textDLPSegments(seedText)
 		for _, seg := range segments {
 			if len(seg) < 20 { // seed phrases are long; skip short segments
 				continue
@@ -1491,7 +1491,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 	// Split on URL-like and structured-data delimiters. Request bodies often
 	// wrap encoded secrets in JSON, YAML, CSV, or multipart text, so quotes,
 	// braces, colons, and commas must not stay attached to the encoded token.
-	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
+	segments := textDLPSegments(text)
 
 	var matches []TextDLPMatch
 	for _, seg := range segments {
@@ -1522,7 +1522,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 // piece-length floor or budget.
 func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, run := range adjacentHexRuns(strings.FieldsFunc(text, isTextDLPEncodingDelimiter)) {
+	for _, run := range adjacentHexRuns(textDLPSegments(text)) {
 		for offset := 0; offset < 2; offset++ {
 			body := run[offset:]
 			body = body[:len(body)-len(body)%2]
@@ -1583,11 +1583,32 @@ func isHexText(s string) bool {
 	return true
 }
 
+// textDLPSegments splits text into the segments every encoded-value decoder
+// tries. After the text_segment split it splits each segment again on '#',
+// which RFC 3986 section 3.5 uses to introduce a URL fragment. That second
+// step claims no replay operation: published text_segment replay keeps '#'
+// inside a segment. Both steps drop empty fields, so the result equals one
+// split on both delimiter sets.
+func textDLPSegments(text string) []string {
+	segments := strings.FieldsFunc(text, isTextDLPEncodingDelimiter)
+	if !strings.Contains(text, "#") {
+		return segments
+	}
+	out := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		out = append(out, strings.FieldsFunc(segment, isURLFragmentDelimiter)...)
+	}
+	return out
+}
+
+func isURLFragmentDelimiter(r rune) bool {
+	return r == '#'
+}
+
 //pipelock:provenance-transform text_segment
 func isTextDLPEncodingDelimiter(r rune) bool {
-	// RFC 3986 section 3.5 uses '#' to introduce a URL fragment.
 	switch r {
-	case '/', '?', '#', '&', '=', ' ', '\n', '\r', '\t',
+	case '/', '?', '&', '=', ' ', '\n', '\r', '\t',
 		'"', '\'', '`', '{', '}', '[', ']', '(', ')', '<', '>',
 		':', ',', ';':
 		return true

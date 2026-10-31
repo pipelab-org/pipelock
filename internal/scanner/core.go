@@ -657,7 +657,7 @@ func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMe
 }
 
 func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
-	for _, seg := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
+	for _, seg := range textDLPSegments(text) {
 		if len(seg) < 10 {
 			continue
 		}

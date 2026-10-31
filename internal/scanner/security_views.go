@@ -54,7 +54,7 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		}
 	}
 	add(text)
-	for _, segment := range strings.FieldsFunc(text, isTextDLPEncodingDelimiter) {
+	for _, segment := range textDLPSegments(text) {
 		if segment != text {
 			add(segment)
 		}

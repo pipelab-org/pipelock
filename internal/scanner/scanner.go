@@ -3013,7 +3013,7 @@ func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
 		targets = append(targets, source)
 		// Preserve the whole fragment alongside its independently encoded pieces.
 		segments := []string{source.text}
-		for _, segment := range strings.FieldsFunc(source.text, isTextDLPEncodingDelimiter) {
+		for _, segment := range textDLPSegments(source.text) {
 			if segment != source.text {
 				segments = append(segments, segment)
 			}
