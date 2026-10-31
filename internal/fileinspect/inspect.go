@@ -182,11 +182,16 @@ func (w *walk) preflight(data []byte) error {
 			end := headerEnd + int(binary.LittleEndian.Uint32(data[p+20:]))
 			if binary.LittleEndian.Uint16(data[p+8:])&8 != 0 {
 				// APPNOTE 4.3.9: a data descriptor follows the data, with an
-				// optional signature; ZIP64 sizes were refused above.
-				end += 12
-				if bytes.HasPrefix(data[end-12:], []byte("PK\x07\x08")) {
-					end += 4
+				// optional signature. Its sizes are 8 bytes when the local
+				// header has a ZIP64 extended information field (4.3.9.2).
+				descriptor := 12
+				if hasZIP64Extra(data[l+30+localNameLen : headerEnd]) {
+					descriptor = 20
 				}
+				if end+4 <= int(offset) && bytes.HasPrefix(data[end:], []byte("PK\x07\x08")) {
+					descriptor += 4
+				}
+				end += descriptor
 			}
 			spans = append(spans, [2]int{l, end})
 			p += n
@@ -212,6 +217,22 @@ func (w *walk) preflight(data []byte) error {
 		return nil
 	}
 	return fmt.Errorf("missing or damaged ZIP trailer")
+}
+
+// hasZIP64Extra walks APPNOTE 4.5.1 extra-field records (2-byte header ID,
+// 2-byte data size) for the ZIP64 extended information ID 0x0001 (4.5.3).
+func hasZIP64Extra(extra []byte) bool {
+	for len(extra) >= 4 {
+		id, size := binary.LittleEndian.Uint16(extra), int(binary.LittleEndian.Uint16(extra[2:]))
+		if id == 0x0001 {
+			return true
+		}
+		if 4+size > len(extra) {
+			return false
+		}
+		extra = extra[4+size:]
+	}
+	return false
 }
 
 func (w *walk) archive(data []byte, depth int) error {

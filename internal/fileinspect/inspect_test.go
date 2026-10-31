@@ -439,3 +439,58 @@ func TestInspectODFReplacementImages(t *testing.T) {
 		})
 	}
 }
+
+// APPNOTE 4.3.9.2: a member whose local header carries a ZIP64 extended
+// information field (header ID 0x0001) has 8-byte data-descriptor sizes,
+// whatever its actual size. Streaming producers may always write this form.
+func TestInspectZIP64DataDescriptor(t *testing.T) {
+	const name, text = "data.txt", "ordinary text"
+	const nameLen, textLen uint32 = 8, 13
+	sum := crc32.ChecksumIEEE([]byte(text))
+	le16 := binary.LittleEndian.AppendUint16
+	le32 := binary.LittleEndian.AppendUint32
+	le64 := binary.LittleEndian.AppendUint64
+	build := func(zip64 bool) []byte {
+		var extra []byte
+		descriptor := uint32(16)
+		if zip64 {
+			extra = le64(le64(le16(le16(nil, 0x0001), 16), 0), 0)
+			descriptor = 24
+		}
+		extraLen := uint16(0)
+		if zip64 {
+			extraLen = 20 // 4-byte record header plus two 8-byte sizes.
+		}
+		var b []byte
+		b = le32(b, 0x04034b50)
+		b = le16(le16(le16(b, 20), 0x0008), 0)
+		b = le32(le16(le16(b, 0), 0), 0)
+		b = le32(le32(b, 0), 0)
+		b = le16(le16(b, uint16(nameLen)), extraLen)
+		b = append(append(append(b, name...), extra...), text...)
+		b = le32(le32(b, 0x08074b50), sum)
+		if zip64 {
+			b = le64(le64(b, uint64(textLen)), uint64(textLen))
+		} else {
+			b = le32(le32(b, textLen), textLen)
+		}
+		directory := 30 + nameLen + uint32(extraLen) + textLen + descriptor
+		b = le32(b, 0x02014b50)
+		b = le16(le16(le16(le16(b, 20), 20), 0x0008), 0)
+		b = le32(le16(le16(b, 0), 0), sum)
+		b = le32(le32(b, textLen), textLen)
+		b = le16(le16(le16(b, uint16(nameLen)), 0), 0)
+		b = le32(le16(le16(b, 0), 0), 0)
+		b = le32(b, 0)
+		b = append(b, name...)
+		b = le32(b, 0x06054b50)
+		b = le16(le16(le16(le16(b, 0), 0), 1), 1)
+		b = le32(le32(b, 46+nameLen), directory)
+		return le16(b, 0)
+	}
+	for _, zip64 := range []bool{false, true} {
+		if r := Inspect(t.Context(), build(zip64), Limits{4096, 64}); !r.Complete {
+			t.Fatalf("zip64=%t: %q", zip64, r.Reason)
+		}
+	}
+}
