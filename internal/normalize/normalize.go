@@ -554,10 +554,13 @@ func dlpNormalizeFull(s string, stripFolded bool) string {
 		}
 		return r
 	}, s)
-	s = norm.NFKC.String(s)
-	if stripFolded {
-		s = StripControlChars(s)
+	// The first stage already removed every rune StripControlChars removes, so
+	// the second strip can change only output that compatibility folding changed.
+	folded := norm.NFKC.String(s)
+	if stripFolded && folded != s {
+		folded = StripControlChars(folded)
 	}
+	s = folded
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	return s
@@ -643,11 +646,13 @@ func foldsToInvisible(r rune) bool {
 // stripFolded is false only for replay of published transform profiles.
 func matchingPipelineFull(s string, recompose, stripFolded bool) string {
 	s = StripZeroWidth(s)
-	s = norm.NFKC.String(s)
-	// Compatibility folding can produce characters in InvisibleRanges.
-	if stripFolded {
-		s = StripZeroWidth(s)
+	// Compatibility folding can produce characters in InvisibleRanges. Output
+	// folding left unchanged has none, because the first strip removed them.
+	folded := norm.NFKC.String(s)
+	if stripFolded && folded != s {
+		folded = StripZeroWidth(folded)
 	}
+	s = folded
 	s = ConfusableToASCII(s)
 	s = StripCombiningMarks(s)
 	if recompose {
