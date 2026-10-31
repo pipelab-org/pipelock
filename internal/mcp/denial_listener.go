@@ -22,6 +22,9 @@ type mcpListenerDenialWriter struct {
 	uniform        bool
 	uniformMessage string
 	replied        bool
+	// notification marks a parsed POST notification. A clean one is refused
+	// with 202 and no body, so block_all gives a caught one the same answer.
+	notification bool
 }
 
 // A withheld upstream reply is a response even when revocation reuses an
@@ -73,7 +76,9 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 			info.SetHeaders(w.Header())
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Cache-Control", "no-store")
-			if status != http.StatusAccepted {
+			if w.notification {
+				status = http.StatusAccepted
+			} else if status != http.StatusAccepted {
 				status = http.StatusForbidden
 			}
 		}
@@ -86,7 +91,7 @@ func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
 		w.WriteHeader(http.StatusOK)
 	}
 	if w.uniform {
-		if w.replied {
+		if w.replied || w.notification {
 			return len(p), nil
 		}
 		w.replied = true

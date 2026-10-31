@@ -293,3 +293,55 @@ func TestAdaptiveUniformRefusalKeepsKillSwitch(t *testing.T) {
 		assertKill(t, out.Bytes())
 	})
 }
+
+// A clean notification refused during block_all gets 202 and no body. A
+// notification caught by header DLP must get the same answer, not a 403 with a
+// JSON-RPC error that only a detector produces.
+func TestAdaptiveUniformRefusalMCPListenerNotifications(t *testing.T) {
+	upstream, calls := countingUpstream(t)
+	cfg := adaptiveCfgEnabled()
+	blockAll := true
+	cfg.Levels.Elevated.BlockAll = &blockAll
+	rec := &listenerDiagnosisRecorder{level: 1}
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), Store: &singleRecorderStore{rec: rec}, AdaptiveCfg: cfg, InputCfg: newHTTPInputCfg(config.ActionBlock)})
+	send := func(text, authorization string) (int, http.Header, []byte) {
+		body := `{"jsonrpc":"2.0","method":"notifications/progress","params":{"text":"` + text + `"}}`
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, baseURL+"/", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("Mcp-Session-Id", "lockdown-session")
+		if authorization != "" {
+			req.Header.Set("Authorization", authorization)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		data, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Header.Del("Date")
+		return resp.StatusCode, resp.Header, data
+	}
+	cleanStatus, cleanHeaders, clean := send("ordinary", "")
+	if cleanStatus != http.StatusAccepted || len(clean) != 0 || cleanHeaders.Get("X-Pipelock-Block-Reason") != "escalation_level" {
+		t.Fatalf("clean notification: %d %v %q", cleanStatus, cleanHeaders, clean)
+	}
+	for name, variant := range map[string][2]string{
+		"body dlp":   {"gh" + "p_" + strings.Repeat("aB3c", 9), ""},
+		"header dlp": {"ordinary", "Bearer " + mcpSyntheticAWSAccessKey()},
+	} {
+		status, headers, body := send(variant[0], variant[1])
+		if status != cleanStatus || !reflect.DeepEqual(headers, cleanHeaders) || !bytes.Equal(body, clean) {
+			t.Errorf("%s notification differs: %d %v %q / clean %d %v %q", name, status, headers, body, cleanStatus, cleanHeaders, clean)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatal("refused notification reached upstream")
+	}
+}

@@ -1506,6 +1506,7 @@ func RunHTTPListenerProxy(
 		// and upstream-error response below reads frame.ID instead of
 		// re-parsing the body bytes.
 		frame := ParseMCPFrame(body)
+		w.notification = frame.Method != "" && isRPCNotification(frame.ID)
 		headerVersion := r.Header.Get(listenerProtocolVersion)
 		if headerVersion > currentMCPVersion || frame.ProtocolVersion > currentMCPVersion {
 			w.Header().Set("Content-Type", "application/json")
