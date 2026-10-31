@@ -82,13 +82,20 @@ func classifyMediaRune(r rune) mediaRuneClass {
 		return mediaRuneDrop
 	case normalize.Whitespace(string(r)) == " ":
 		return mediaRuneSpace
-	case normalize.ContainsInvisible(string(r)), unicode.Is(unicode.Mn, r):
+	case normalize.ContainsInvisible(string(r)), unicode.Is(unicode.Mn, r), scannerDeletes(r):
 		return mediaRuneKeep
 	case unicode.Is(mediaTextRanges, r):
 		return mediaRuneText
 	default:
 		return mediaRuneBreak
 	}
+}
+
+// scannerDeletes reports whether some scanner normalization removes r
+// entirely, for example a halfwidth sound mark that folds to a combining mark.
+func scannerDeletes(r rune) bool {
+	s := string(r)
+	return normalize.ForMatching(s) == "" || normalize.ForDLP(s) == "" || normalize.ForToolText(s) == ""
 }
 
 var mediaBMPClasses = sync.OnceValue(func() *[1 << 16]mediaRuneClass {

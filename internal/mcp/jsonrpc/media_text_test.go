@@ -75,6 +75,7 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 	ctrlUnits := strings.Join(strings.Split(cyr, ""), "\u0001")
 	c1Units := strings.Join(strings.Split(mediaTestPhrase, ""), "\u0085")
 	foldedInvisible := strings.Join(strings.Split(mediaTestPhrase, ""), "\uFFA0")
+	foldedMark := strings.Join(strings.Split(mediaTestPhrase, ""), "\uFF9E")
 
 	tests := []struct {
 		name    string
@@ -106,6 +107,8 @@ func TestNormalizedMediaTextReadsEveryEncoding(t *testing.T) {
 		{"compatibility invisible utf8", []byte(foldedInvisible), foldedInvisible},
 		{"compatibility invisible utf16le", utf16Encode(foldedInvisible, le), foldedInvisible},
 		{"compatibility invisible utf16be", utf16Encode(foldedInvisible, be), foldedInvisible},
+		{"compatibility mark utf8", []byte(foldedMark), foldedMark},
+		{"compatibility mark utf16le", utf16Encode(foldedMark, le), foldedMark},
 		{"astral letters via surrogate pairs le", utf16Encode(bold, le), bold},
 		{"astral letters via surrogate pairs be", utf16Encode(bold, be), bold},
 		{"zero-width characters are kept for the scanner", utf16Encode(zw, le), zw},
@@ -242,6 +245,11 @@ func TestMediaTextRangesCoverNormalizer(t *testing.T) {
 			if out == s {
 				continue
 			}
+			// A scalar the scanner deletes outright can be interleaved to cut
+			// an instruction into short runs.
+			if out == "" {
+				contributes = true
+			}
 			for _, o := range out {
 				if o >= 0x20 && o <= 0x7e {
 					contributes = true
@@ -272,6 +280,8 @@ func TestMediaRuneClasses(t *testing.T) {
 		{"c1 control", 0x85, mediaRuneDrop},
 		{"zero width space", 0x200B, mediaRuneKeep},
 		{"compatibility folded invisible", 0xFFA0, mediaRuneKeep},
+		{"halfwidth voiced sound mark", 0xFF9E, mediaRuneKeep},
+		{"halfwidth semi-voiced sound mark", 0xFF9F, mediaRuneKeep},
 		{"bom", 0xFEFF, mediaRuneKeep},
 		{"tag character", 0xE0041, mediaRuneKeep},
 		{"combining acute", 0x0301, mediaRuneKeep},
