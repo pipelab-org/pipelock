@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -330,4 +331,76 @@ func TestRefusalHostsMatchHandlerParsing(t *testing.T) {
 			t.Errorf("refusalConnectHost(%q) = %q, want %q", authority, got, want)
 		}
 	}
+}
+
+// The kill switch precedes every detector and carries the operator's message,
+// so block_all leaves its refusal intact on every transport that checks it
+// after the refusal projection is installed.
+func TestAdaptiveUniformRefusalKeepsKillSwitch(t *testing.T) {
+	newProxy := func(t *testing.T) (*Proxy, *config.Config, *scanner.Scanner, *SessionState) {
+		cfg := adaptiveConfigBlockAll()
+		cfg.Enforce = ptrBool(true)
+		cfg.DefaultAgentIdentity = ""
+		cfg.BindDefaultAgentIdentity = false
+		cfg.KillSwitch.Enabled = true
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(p.Close)
+		rec := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyHTTPTest)
+		escalateRec(rec, 1)
+		return p, cfg, sc, rec
+	}
+	for _, transport := range []string{"intercept", TransportReverse} {
+		t.Run(transport, func(t *testing.T) {
+			p, cfg, sc, rec := newProxy(t)
+			ks := killswitch.New(cfg)
+			var handle http.HandlerFunc
+			if transport == TransportReverse {
+				upstream, _ := url.Parse("https://api.vendor.example/")
+				rp := NewReverseProxy(upstream, p.ConfigPtr(), p.ScannerPtr(), p.logger, p.metrics, ks, nil, nil)
+				rp.SetOwnerProxy(p)
+				handle = rp.ServeHTTP
+			} else {
+				handle = newInterceptHandler(&InterceptContext{Proxy: p, TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, ClientIP: adaptiveSessionKeyHTTPTest, Agent: agentAnonymous, SessionMgr: p.sessionMgrPtr.Load(), Recorder: rec, KillSwitch: ks}, &interceptMockRT{}).ServeHTTP
+			}
+			w := httptest.NewRecorder()
+			handle(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "https://api.vendor.example/ok", nil))
+			if got := w.Header().Get(blockreason.HeaderReason); got != string(blockreason.KillSwitchActive) {
+				t.Fatalf("kill switch projected during lockdown: %d %v %s", w.Code, w.Header(), w.Body.String())
+			}
+		})
+	}
+	t.Run(TransportWS, func(t *testing.T) {
+		_, cfg, _, rec := newProxy(t)
+		r := &wsRelay{rec: rec, cfg: cfg}
+		a, b := net.Pipe()
+		defer func() { _ = b.Close() }()
+		conn := &adaptiveCloseConn{Conn: a, level: r.escalationLevel, cfg: &cfg.AdaptiveEnforcement}
+		r.clientConn, r.upstreamConn = conn, conn
+		go func() {
+			r.writeKillSwitchClose()
+			_ = a.Close()
+		}()
+		// The client frame is written first, then the masked upstream frame.
+		for _, want := range []string{string(blockreason.KillSwitchActive), "kill switch active"} {
+			hdr, err := ws.ReadHeader(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload := make([]byte, hdr.Length)
+			if _, err := io.ReadFull(b, payload); err != nil {
+				t.Fatal(err)
+			}
+			if hdr.Masked {
+				ws.Cipher(payload, hdr.Mask, 0)
+			}
+			if !bytes.Contains(payload, []byte(want)) {
+				t.Fatalf("kill switch close projected during lockdown: %q", payload)
+			}
+		}
+	})
 }

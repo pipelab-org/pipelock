@@ -3,7 +3,10 @@
 
 package mcp
 
-import "github.com/luckyPipewrench/pipelock/internal/decide"
+import (
+	"github.com/luckyPipewrench/pipelock/internal/decide"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
 
 func adaptiveRefusalMessage(opts MCPProxyOpts) (string, bool) {
 	if opts.Rec == nil {
@@ -11,6 +14,14 @@ func adaptiveRefusalMessage(opts MCPProxyOpts) (string, bool) {
 	}
 	_, message, blocked := decide.AdaptiveRefusal(opts.Rec.EscalationLevel(), opts.adaptiveCfg())
 	return "pipelock: " + message, blocked
+}
+
+// keepsOwnRefusal reports a denial that block_all must not project. The kill
+// switch runs before every detector on each MCP path and answers with the
+// operator's message, so its refusal carries no detector information.
+func (d mcpDenialAudit) keepsOwnRefusal() bool {
+	spec, ok := denialSpec(d.kind)
+	return ok && spec.label == scanner.AuditKillSwitch
 }
 
 // Project only the wire error. The terminal descriptor, receipt intent, logs,
@@ -25,7 +36,10 @@ func adaptiveDeniedReply(opts MCPProxyOpts, reply []byte) []byte {
 	return reply
 }
 
-func adaptiveBlockedRequest(opts MCPProxyOpts, br *BlockedRequest) {
+func adaptiveBlockedRequest(opts MCPProxyOpts, descriptor mcpDenialAudit, br *BlockedRequest) {
+	if descriptor.keepsOwnRefusal() {
+		return
+	}
 	if message, blocked := adaptiveRefusalMessage(opts); blocked {
 		br.ErrorCode = -32001
 		br.ErrorMessage = message

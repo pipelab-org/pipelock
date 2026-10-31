@@ -12,6 +12,7 @@ import (
 
 	"github.com/gobwas/ws"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -121,7 +122,7 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 	}
 	w.wroteHeader = true
 	info, message, blocked := decide.AdaptiveRefusal(w.level(), w.cfg)
-	if status < http.StatusBadRequest || !blocked {
+	if status < http.StatusBadRequest || !blocked || keepsOwnRefusal(w.Header()) {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
@@ -142,6 +143,13 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 	default:
 		http.Error(w.ResponseWriter, message, http.StatusForbidden)
 	}
+}
+
+// keepsOwnRefusal reports a refusal that block_all must not project. The kill
+// switch runs before every detector on each path and carries the operator's
+// message, so its own refusal reveals nothing about a detector.
+func keepsOwnRefusal(header http.Header) bool {
+	return header.Get(blockreason.HeaderReason) == string(blockreason.KillSwitchActive)
 }
 
 func (w *adaptiveRefusalWriter) Write(body []byte) (int, error) {
@@ -175,6 +183,21 @@ func (r *wsRelay) refusalClose(code ws.StatusCode, reason string) (ws.StatusCode
 		return ws.StatusPolicyViolation, info.CloseFramePayload()
 	}
 	return code, reason
+}
+
+// writeKillSwitchClose sends the kill switch's own close in both directions,
+// past the block_all projection; see keepsOwnRefusal.
+func (r *wsRelay) writeKillSwitchClose() {
+	plwsutil.WriteCloseFrame(unprojectedConn(r.clientConn), ws.StatusPolicyViolation,
+		blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
+	plwsutil.WriteClientCloseFrame(unprojectedConn(r.upstreamConn), ws.StatusPolicyViolation, "kill switch active")
+}
+
+func unprojectedConn(conn net.Conn) net.Conn {
+	if projected, ok := conn.(*adaptiveCloseConn); ok {
+		return projected.Conn
+	}
+	return conn
 }
 
 func (r *wsRelay) writeClientClose(code ws.StatusCode, reason string) {

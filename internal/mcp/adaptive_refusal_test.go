@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
@@ -200,4 +201,95 @@ func TestAdaptiveUniformRefusalMCPResponses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The kill switch is checked before any detector and carries the operator's
+// message. Projecting it onto the adaptive refusal reveals nothing extra about
+// detectors but hides the operator's control, so it keeps its own response.
+func TestAdaptiveUniformRefusalKeepsKillSwitch(t *testing.T) {
+	const operatorMessage = "maintenance window: agents paused"
+	killCfg := config.Defaults()
+	killCfg.KillSwitch.Enabled = true
+	killCfg.KillSwitch.Message = operatorMessage
+	cfg := adaptiveCfgEnabled()
+	blockAll := true
+	cfg.Levels.Elevated.BlockAll = &blockAll
+	opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), Rec: &mockRecorder{level: 1}, AdaptiveCfg: cfg, KillSwitch: killswitch.New(killCfg),
+		InputCfg: &InputScanConfig{Enabled: true, Action: config.ActionBlock, OnParseError: config.ActionBlock}}
+	assertKill := func(t *testing.T, reply []byte) {
+		t.Helper()
+		var response rpcError
+		if err := json.Unmarshal(bytes.TrimSpace(reply), &response); err != nil {
+			t.Fatalf("reply %q: %v", reply, err)
+		}
+		if response.Error.Code != -32004 || !strings.Contains(response.Error.Message, operatorMessage) {
+			t.Fatalf("kill switch refusal projected during lockdown: %s", reply)
+		}
+	}
+	msg := `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"echo","arguments":{"text":"ordinary"}}}`
+	t.Run("stdio input", func(t *testing.T) {
+		var upstream, downstream bytes.Buffer
+		blocked := make(chan BlockedRequest, 2)
+		ForwardScannedInput(transport.NewStdioReader(strings.NewReader(msg+"\n")), transport.NewStdioWriter(&upstream), io.Discard, config.ActionBlock, config.ActionBlock, blocked, nil, nil, opts)
+		br, ok := <-blocked
+		if !ok || upstream.Len() != 0 {
+			t.Fatal("kill switch did not refuse")
+		}
+		if err := deliverMCPInputResult(opts, br, transport.NewStdioWriter(&downstream)); err != nil {
+			t.Fatal(err)
+		}
+		assertKill(t, downstream.Bytes())
+	})
+	t.Run("http bridge", func(t *testing.T) {
+		upstream, calls := countingUpstream(t)
+		bridgeOpts := opts
+		bridgeOpts.Rec = nil // the bridge takes its recorder from Store
+		bridgeOpts.Store = &singleRecorderStore{rec: &listenerDiagnosisRecorder{level: 1}}
+		var out bytes.Buffer
+		if err := RunHTTPProxy(t.Context(), strings.NewReader(msg+"\n"), &out, io.Discard, upstream.URL, nil, bridgeOpts); err != nil {
+			t.Fatal(err)
+		}
+		if calls.Load() != 0 {
+			t.Fatal("kill switch request reached upstream")
+		}
+		assertKill(t, out.Bytes())
+	})
+	for _, method := range []string{http.MethodPost, http.MethodGet} {
+		t.Run("listener "+method, func(t *testing.T) {
+			upstream, calls := countingUpstream(t)
+			listenerOpts := opts
+			listenerOpts.Rec = nil
+			listenerOpts.Store = &singleRecorderStore{rec: &listenerDiagnosisRecorder{level: 1}}
+			baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, listenerOpts)
+			var body io.Reader
+			if method == http.MethodPost {
+				body = strings.NewReader(msg)
+			}
+			req, err := http.NewRequestWithContext(t.Context(), method, baseURL+"/", body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json, text/event-stream")
+			req.Header.Set("Mcp-Session-Id", "lockdown-session")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			data, _ := io.ReadAll(resp.Body)
+			if resp.Header.Get("X-Pipelock-Block-Reason") == "escalation_level" || calls.Load() != 0 {
+				t.Fatalf("listener kill switch projected: %d %v %s", resp.StatusCode, resp.Header, data)
+			}
+			assertKill(t, data)
+		})
+	}
+	t.Run("stdio response", func(t *testing.T) {
+		var out bytes.Buffer
+		reader := transport.NewStdioReader(strings.NewReader(`{"jsonrpc":"2.0","id":9,"result":{"content":[{"type":"text","text":"ordinary"}]}}` + "\n"))
+		if _, err := ForwardScanned(reader, transport.NewStdioWriter(&out), io.Discard, nil, opts); err != nil {
+			t.Fatal(err)
+		}
+		assertKill(t, out.Bytes())
+	})
 }

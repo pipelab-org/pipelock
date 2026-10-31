@@ -2680,9 +2680,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			r.writeClientClose(ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
-			r.writeUpstreamClose(ws.StatusPolicyViolation, "kill switch active")
+			r.writeKillSwitchClose()
 			blocked = true
 			return
 		}
@@ -3297,9 +3295,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			r.writeClientClose(ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
-			r.writeUpstreamClose(ws.StatusPolicyViolation, "kill switch active")
+			r.writeKillSwitchClose()
 			blocked = true
 			return
 		}

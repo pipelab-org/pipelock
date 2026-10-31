@@ -63,7 +63,7 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
-	if w.opts.Rec != nil {
+	if w.opts.Rec != nil && !d.decision.audit.keepsOwnRefusal() {
 		if info, message, blocked := decide.AdaptiveRefusal(w.opts.Rec.EscalationLevel(), w.opts.adaptiveCfg()); blocked {
 			w.uniform = true
 			w.uniformMessage = "pipelock: " + message
