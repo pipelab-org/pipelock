@@ -56,6 +56,15 @@ func (w *walk) archive(data []byte, depth int) error {
 		payload []byte
 		dir     bool
 	}
+	// The first failure decides the reason, but every other member is still
+	// read into the text views. An unread member placed first must not hide
+	// a credential in the members after it from request DLP.
+	var firstErr error
+	fail := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
 	got := make([]extracted, 0, len(arch.members))
 	for _, m := range arch.members {
 		if err := w.ctx.Err(); err != nil {
@@ -63,7 +72,9 @@ func (w *walk) archive(data []byte, depth int) error {
 		}
 		payload, dir, err := w.memberBytes(m)
 		if err != nil {
-			return err
+			w.appendMemberLabels(m)
+			fail(err)
+			continue
 		}
 		got = append(got, extracted{member: m, payload: payload, dir: dir})
 	}
@@ -84,10 +95,13 @@ func (w *walk) archive(data []byte, depth int) error {
 		w.appendMemberLabels(m)
 		if kind := Kind(item.payload); kind != "" {
 			if kind != "ZIP" {
-				return fmt.Errorf("embedded %s format has no upload reader", kind)
+				w.result.Texts = append(w.result.Texts, string(item.payload))
+				fail(fmt.Errorf("embedded %s format has no upload reader", kind))
+				continue
 			}
 			if err := w.archive(item.payload, depth+1); err != nil {
-				return err
+				w.result.Texts = append(w.result.Texts, string(item.payload))
+				fail(err)
 			}
 			continue
 		}
@@ -96,17 +110,20 @@ func (w *walk) archive(data []byte, depth int) error {
 		// fragmented, and VBA source is compressed (MS-OVBA). The signature
 		// decides, before any declared type or font deobfuscation.
 		if bytes.HasPrefix(item.payload, compoundFileSignature) {
-			return fmt.Errorf("OLE compound file member has no reader")
+			fail(fmt.Errorf("OLE compound file member has no reader"))
+			continue
 		}
 		if err := parts.metadata(m.name, item.payload); err != nil {
-			return err
+			fail(err)
+			continue
 		}
 		if utf8.Valid(item.payload) {
 			contentType := parts.contentType(m.name)
 			if isXMLPart(m.name, contentType) {
 				text, xmlErr := xmlText(item.payload, w.limits.MaxDepth, nil)
 				if xmlErr != nil {
-					return xmlErr
+					fail(xmlErr)
+					continue
 				}
 				w.result.Texts = append(w.result.Texts, text)
 			}
@@ -131,6 +148,9 @@ func (w *walk) archive(data []byte, depth int) error {
 			continue
 		}
 		w.result.Texts = append(w.result.Texts, string(plain))
+	}
+	if firstErr != nil {
+		return firstErr
 	}
 	if len(still) > 0 {
 		return fmt.Errorf("non-text member has no reader")
@@ -165,9 +185,6 @@ func (w *walk) memberBytes(m zipMember) ([]byte, bool, error) {
 		w.remaining -= int(m.uncompressed)
 	}
 	payload, err := w.inflateMember(m)
-	if err != nil {
-		return nil, false, err
-	}
 	if m.uncompressed == 0 && len(payload) > w.remaining {
 		if w.remaining > 0 {
 			w.result.Texts = append(w.result.Texts, string(payload[:w.remaining]))
@@ -175,24 +192,35 @@ func (w *walk) memberBytes(m zipMember) ([]byte, bool, error) {
 		w.remaining = 0
 		return nil, false, fmt.Errorf("expanded member exceeds max_body_bytes / compression-ratio budget")
 	}
-	if strings.HasSuffix(m.name, "/") && uint64(len(payload)) != m.uncompressed {
-		w.appendMemberLabels(m)
+	// The walk keeps reading after a failed member, so every inflated byte is
+	// charged, read cleanly or not.
+	if m.uncompressed == 0 {
+		w.remaining -= len(payload)
+	}
+	if err != nil {
+		// Go archive/zip, Python zipfile and Info-ZIP unzip stop at the end
+		// of the deflate stream and extract these bytes even when compressed
+		// data follows it.
 		if len(payload) > 0 {
 			w.result.Texts = append(w.result.Texts, string(payload))
 		}
-		if m.uncompressed == 0 {
-			w.remaining -= len(payload)
+		return nil, false, err
+	}
+	if strings.HasSuffix(m.name, "/") && uint64(len(payload)) != m.uncompressed {
+		if len(payload) > 0 {
+			w.result.Texts = append(w.result.Texts, string(payload))
 		}
 		return nil, false, fmt.Errorf("directory member has unread data")
 	}
+	// Info-ZIP unzip still writes a member whose size or CRC is wrong, so the
+	// recovered bytes stay in the text views.
 	if uint64(len(payload)) != m.uncompressed {
+		w.result.Texts = append(w.result.Texts, string(payload))
 		return nil, false, fmt.Errorf("member size does not match ZIP directory")
 	}
 	if crc32.ChecksumIEEE(payload) != m.crc {
+		w.result.Texts = append(w.result.Texts, string(payload))
 		return nil, false, fmt.Errorf("local member checksum or size disagrees with directory")
-	}
-	if m.uncompressed == 0 {
-		w.remaining -= len(payload)
 	}
 	return payload, false, nil
 }
@@ -220,7 +248,7 @@ func (w *walk) inflateMember(m zipMember) ([]byte, error) {
 		payload, err := io.ReadAll(io.LimitReader(&contextReader{w.ctx, inflater}, int64(limit)+1))
 		if err != nil {
 			_ = inflater.Close()
-			return nil, fmt.Errorf("reading member: %w", err)
+			return payload, fmt.Errorf("reading member: %w", err)
 		}
 		// A short read hit the caller's byte ceiling. The trailing-byte check
 		// would also fire, because the stream is not finished, and would hide
@@ -230,10 +258,10 @@ func (w *walk) inflateMember(m zipMember) ([]byte, error) {
 			return payload, nil
 		}
 		if closeErr := inflater.Close(); closeErr != nil {
-			return nil, fmt.Errorf("closing member: %w", closeErr)
+			return payload, fmt.Errorf("closing member: %w", closeErr)
 		}
 		if _, err = compressed.ReadByte(); !errors.Is(err, io.EOF) {
-			return nil, fmt.Errorf("compressed member has data after its deflate stream")
+			return payload, fmt.Errorf("compressed member has data after its deflate stream")
 		}
 		return payload, nil
 	default:

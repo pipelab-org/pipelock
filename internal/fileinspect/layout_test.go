@@ -224,3 +224,91 @@ func TestInspectStoredDescriptorSignature(t *testing.T) {
 		})
 	}
 }
+
+// The first unread member decides the reason. The members after it are still
+// read, so a credential behind it reaches request DLP (and the core floor
+// under warn, where the unread file itself is delivered).
+func TestInspectKeepsTextAfterUnreadMember(t *testing.T) {
+	secret := layoutSecret()
+	brokenZip := archiveFixture(t, map[string][]byte{"inner.txt": []byte("x")})
+	brokenZip = brokenZip[:len(brokenZip)-1]
+	for _, tc := range []struct {
+		name   string
+		first  layoutEntry
+		reason string
+		inText string
+	}{
+		{"compound file", layoutEntry{name: "x.bin", plain: append(append([]byte{}, compoundFileSignature...), make([]byte, 64)...)}, "OLE compound file member has no reader", ""},
+		{"embedded 7z", layoutEntry{name: "x.7z", plain: []byte("7z\xbc\xaf\x27\x1c" + strings.Repeat("copy method data ", 8) + "copy=sk_live_" + strings.Repeat("c", 24))}, "embedded 7z format has no upload reader", "sk_live_cccc"},
+		{"malformed xml", layoutEntry{name: "a.xml", plain: []byte("<a><b></a>")}, "malformed package XML", ""},
+		{"damaged nested zip", layoutEntry{name: "inner.zip", plain: brokenZip}, "missing or damaged ZIP trailer", ""},
+		{"checksum", layoutEntry{name: "c.txt", plain: []byte("bad crc text")}, "local member checksum or size disagrees with directory", "bad crc text"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := tc.first
+			first.method = zipMethodDeflate
+			first.data = huffmanOnly(t, first.plain)
+			second := layoutEntry{name: "notes.txt", method: zipMethodDeflate, data: huffmanOnly(t, secret), plain: secret}
+			firstLocal := layoutLocal(first)
+			central := layoutCentral(first, 0)
+			if tc.name == "checksum" {
+				binary.LittleEndian.PutUint32(firstLocal[14:], crc32.ChecksumIEEE(first.plain)^1)
+				binary.LittleEndian.PutUint32(central[16:], crc32.ChecksumIEEE(first.plain)^1)
+			}
+			body := append(append([]byte{}, firstLocal...), layoutLocal(second)...)
+			central = append(central, layoutCentral(second, len(firstLocal))...)
+			data := append(append(append([]byte{}, body...), central...), layoutEnd(2, len(central), len(body), nil)...)
+			r := Inspect(t.Context(), data, Limits{1 << 20, 64})
+			joined := strings.Join(r.Texts, "\n")
+			if r.Complete || r.Reason != tc.reason || !strings.Contains(joined, "sk_live_bbbb") {
+				t.Fatalf("complete=%t reason=%q later secret kept=%t", r.Complete, r.Reason, strings.Contains(joined, "sk_live_bbbb"))
+			}
+			if tc.inText != "" && !strings.Contains(joined, tc.inText) {
+				t.Fatalf("recovered bytes of the unread member are missing: %q", tc.inText)
+			}
+		})
+	}
+}
+
+// Receivers stop at the end of the deflate stream and extract the member even
+// when compressed bytes follow it. Those bytes stay in the text views.
+func TestInspectKeepsInflatedBytesOnError(t *testing.T) {
+	secret := layoutSecret()
+	e := layoutEntry{name: "a.txt", method: zipMethodDeflate, data: append(huffmanOnly(t, secret), 0, 'x'), plain: secret}
+	local := layoutLocal(e)
+	central := layoutCentral(e, 0)
+	data := append(append(append([]byte{}, local...), central...), layoutEnd(1, len(central), len(local), nil)...)
+	r := Inspect(t.Context(), data, Limits{1 << 20, 64})
+	if r.Complete || r.Reason != "compressed member has data after its deflate stream" || !strings.Contains(strings.Join(r.Texts, "\n"), "sk_live_bbbb") {
+		t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+	}
+}
+
+// Reading on after a failed member must not let failed members escape the
+// byte budget: each one claims no size, expands, and then fails.
+func TestInspectFailedMembersShareBudget(t *testing.T) {
+	plain := bytes.Repeat([]byte("A"), 100_000)
+	var body, central bytes.Buffer
+	for i := range 20 {
+		var compressed bytes.Buffer
+		w, err := flate.NewWriter(&compressed, flate.BestCompression)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write(plain)
+		_ = w.Close()
+		e := layoutEntry{name: "m" + string(rune('a'+i)) + ".txt", method: zipMethodDeflate, data: append(compressed.Bytes(), 0), plain: nil}
+		central.Write(layoutCentral(e, body.Len()))
+		body.Write(layoutLocal(e))
+	}
+	data := append(append(append([]byte{}, body.Bytes()...), central.Bytes()...), layoutEnd(20, central.Len(), body.Len(), nil)...)
+	const budget = 300_000
+	r := Inspect(t.Context(), data, Limits{budget, 64})
+	total := 0
+	for _, text := range r.Texts {
+		total += len(text)
+	}
+	if r.Complete || r.ReadBytes > budget || total > budget+central.Len() {
+		t.Fatalf("complete=%t reason=%q read=%d text bytes=%d", r.Complete, r.Reason, r.ReadBytes, total)
+	}
+}

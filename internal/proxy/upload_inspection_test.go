@@ -878,3 +878,45 @@ func TestUploadInspectionUnscannedEncodingIdentity(t *testing.T) {
 		}
 	}
 }
+
+// An unread member placed first must not hide a core credential in a later
+// member. Under warn the unread file is delivered, so the core floor is the
+// only block, and it needs the later member's inflated text.
+func TestUploadInspectionCredentialAfterUnreadMember(t *testing.T) {
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	z.RegisterCompressor(zip.Deflate, func(w io.Writer) (io.WriteCloser, error) { return flate.NewWriter(w, flate.HuffmanOnly) })
+	for _, m := range []struct {
+		name string
+		data []byte
+	}{
+		{"x.bin", append([]byte{0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1}, make([]byte, 600)...)},
+		{"notes.txt", []byte(strings.Repeat("quarterly notes ", 40) + "id=" + "AKIA" + "Q9W8E7R6T5Y4U3I2")},
+	} {
+		f, err := z.CreateHeader(&zip.FileHeader{Name: m.name, Method: zip.Deflate})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = f.Write(m.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("AKIA")) {
+		t.Fatal("fixture must not carry the credential in plaintext")
+	}
+	contentType, body := uploadMultipart(t, buf.Bytes())
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		t.Run(surface, func(t *testing.T) {
+			status, hits, _, message, hdr := exerciseUpload(t, surface, uploadPolicy{config.ActionWarn, false}, contentType, body)
+			if status != http.StatusForbidden || hits != 0 || !strings.Contains(message, "AWS Access ID") {
+				t.Fatalf("status=%d hits=%d body=%s", status, hits, message)
+			}
+			if got := hdr.Get("X-Pipelock-Block-Reason"); got != "dlp_match" {
+				t.Fatalf("block reason = %q, want dlp_match", got)
+			}
+		})
+	}
+}
