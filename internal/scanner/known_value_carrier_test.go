@@ -10,7 +10,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math/rand/v2"
 	"net/url"
 	"reflect"
 	"runtime"
@@ -152,6 +151,26 @@ func TestKnownValueCarrierMinimumLength(t *testing.T) {
 	}
 }
 
+// knownValueTestRNG is a deterministic splitmix64 source for test corpora.
+type knownValueTestRNG struct{ state uint64 }
+
+func (r *knownValueTestRNG) next() uint64 {
+	r.state += 0x9e3779b97f4a7c15
+	z := r.state
+	z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9
+	z = (z ^ (z >> 27)) * 0x94d049bb133111eb
+	return z ^ (z >> 31)
+}
+
+// IntN returns a value in [0, n) for n > 0; modulo bias does not matter here.
+func (r *knownValueTestRNG) IntN(n int) int {
+	return int(r.next()>>1) % n
+}
+
+func (r *knownValueTestRNG) byte() byte {
+	return byte(r.next() & 0xff)
+}
+
 // recoveryEncoding pairs a decoder with its RFC 4648 group geometry.
 type recoveryEncoding struct {
 	name              string
@@ -204,7 +223,7 @@ func TestKnownValuePrefixRecoveryMatchesFullPrefixDecode(t *testing.T) {
 	// alphabet accepts. Line breaks are excluded: callers strip them first.
 	const symbols = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_"
 	noise := []byte{'=', '=', '!', '~', 0xff, '%'}
-	r := rand.New(rand.NewPCG(1, 2))
+	r := &knownValueTestRNG{state: 1}
 	checked := 0
 	for range 20000 {
 		value := make([]byte, r.IntN(72))
@@ -305,9 +324,9 @@ func TestKnownValuePrefixRecoveryAllocationBound(t *testing.T) {
 	// A one-symbol-short carrier with a trailing invalid byte is the worst
 	// case for prefix recovery: every decoder variant fails at the very end.
 	payload := make([]byte, 3<<18)
-	r := rand.New(rand.NewPCG(3, 4))
+	r := &knownValueTestRNG{state: 3}
 	for i := range payload {
-		payload[i] = byte(r.Uint32())
+		payload[i] = r.byte()
 	}
 	b64 := base64.RawStdEncoding.EncodeToString(payload)
 	b64 = b64[:len(b64)-1] + "!"
@@ -352,7 +371,7 @@ func TestKnownValuePrefixRecoveryAllocationBound(t *testing.T) {
 
 func TestKnownValuePrefixRecoveryIgnoresLineBreaks(t *testing.T) {
 	payload := []byte("label:fixture-Q7m2-X9z4-R8v3-N6p1")
-	r := rand.New(rand.NewPCG(5, 6))
+	r := &knownValueTestRNG{state: 5}
 	wrap := func(s string) string {
 		var b strings.Builder
 		for i := range len(s) {
