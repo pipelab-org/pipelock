@@ -24,6 +24,9 @@ type completenessOptions struct {
 	locationID    string
 	jsonOutput    bool
 	allowUnpinned bool
+	// sessionExplicit records that --session was passed. Without it, a
+	// directory of per-run chains resolves its lone chain of the default base.
+	sessionExplicit bool
 }
 
 func newCompletenessCmd() *cobra.Command {
@@ -46,12 +49,13 @@ Exit-code contract:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runCompleteness(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
 	cmd.SetFlagErrorFunc(usageFlagError)
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
-	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside an evidence directory")
+	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside an evidence directory (default: the directory's only proxy chain)")
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON report on stdout")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -76,6 +80,13 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		}
 		clean = location.Dir
 		resolvedLocation = &location
+		if !opts.sessionExplicit {
+			session, resolveErr := resolveCompletenessSession(location.Dir, opts.sessionID)
+			if resolveErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, resolveErr)
+			}
+			opts.sessionID = session
+		}
 	} else if opts.locationID != "" {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
 	} else {
@@ -120,6 +131,28 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("completeness verification unpinned"))
 	}
 	return nil
+}
+
+// resolveCompletenessSession picks the chain the default --session names. A
+// recorder writes one chain per run ("proxy.run.<id>"), so the plain base
+// usually matches no file. The report covers exactly one chain, so a lone
+// chain of the base is used and several are refused with their names rather
+// than one being chosen silently. No chain keeps the base, which reports
+// no_receipts.
+func resolveCompletenessSession(dir, base string) (string, error) {
+	sessions, err := actionreceipt.ResolveBaseSessions(dir, base)
+	if err != nil {
+		return "", fmt.Errorf("list receipt chains: %w", err)
+	}
+	switch len(sessions) {
+	case 0:
+		return base, nil
+	case 1:
+		return sessions[0], nil
+	default:
+		return "", fmt.Errorf("%s holds %d receipt chains for base %q (%s); pass --session to analyze one",
+			dir, len(sessions), base, strings.Join(sessions, ", "))
+	}
 }
 
 func extractCompletenessReceipts(clean, sessionID string, resolvedLocation *recorder.EvidenceLocation) ([]actionreceipt.Receipt, string, error) {

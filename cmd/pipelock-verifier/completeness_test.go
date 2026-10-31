@@ -801,3 +801,91 @@ func TestChainAcceptsBareV1JSONLWithBlankLines(t *testing.T) {
 		t.Fatalf("blank-line bare v1 chain should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
+
+// A recorder writes one chain per run ("proxy.run.<id>"), so the default
+// --session must resolve a lone run chain instead of reporting no_receipts.
+func TestCompletenessCLIDefaultSessionResolvesRunChains(t *testing.T) {
+	t.Parallel()
+	const (
+		firstRun  = "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
+		secondRun = "proxy.run.f7b327337534352a514bd0a256b1d1c0"
+	)
+	key := readRunChainFixture(t, "signer-key.hex")
+	twoRuns := filepath.Join(runChainFixtures, "valid")
+
+	t.Run("lone_run_chain_is_analyzed", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		name := "evidence-" + firstRun + "-0.jsonl"
+		data, err := os.ReadFile(filepath.Clean(filepath.Join(twoRuns, name)))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", key, dir)
+		if code != cliutil.ExitOK {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusLimited || report.Reason != completeness.ReasonBoundedClosed {
+			t.Fatalf("report=%s/%s, want LIMITED/bounded_closed", report.Status, report.Reason)
+		}
+		if report.ReceiptCount == 0 || !strings.Contains(report.Path, firstRun) {
+			t.Fatalf("receipts=%d path=%q, want the lone run chain analyzed", report.ReceiptCount, report.Path)
+		}
+	})
+
+	t.Run("several_run_chains_are_refused_by_name", func(t *testing.T) {
+		t.Parallel()
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", key, twoRuns)
+		if code != cliutil.ExitConfig {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitConfig, stdout, stderr)
+		}
+		if stdout != "" {
+			t.Fatalf("a refused selection must not print a report: %q", stdout)
+		}
+		for _, want := range []string{firstRun, secondRun, "--session"} {
+			if !strings.Contains(stderr, want) {
+				t.Fatalf("stderr %q does not name %q", stderr, want)
+			}
+		}
+	})
+
+	t.Run("explicit_run_session_selects_that_chain", func(t *testing.T) {
+		t.Parallel()
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", key, "--session", secondRun, twoRuns)
+		if code != cliutil.ExitOK {
+			t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusLimited || !strings.Contains(report.Path, secondRun) {
+			t.Fatalf("report=%s path=%q, want LIMITED for %s", report.Status, report.Path, secondRun)
+		}
+	})
+
+	t.Run("explicit_base_keeps_its_exact_meaning", func(t *testing.T) {
+		t.Parallel()
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", key, "--session", "proxy", twoRuns)
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoReceipts {
+			t.Fatalf("report=%s/%s, want UNVERIFIED/no_receipts", report.Status, report.Reason)
+		}
+	})
+
+	t.Run("directory_without_chains_reports_no_receipts", func(t *testing.T) {
+		t.Parallel()
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", key, t.TempDir())
+		if code != cliutil.ExitGeneral {
+			t.Fatalf("code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
+		}
+		report := parseCompletenessReport(t, stdout)
+		if report.Status != completeness.StatusUnverified || report.Reason != completeness.ReasonNoReceipts {
+			t.Fatalf("report=%s/%s, want UNVERIFIED/no_receipts", report.Status, report.Reason)
+		}
+	})
+}

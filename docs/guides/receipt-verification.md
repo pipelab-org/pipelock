@@ -316,10 +316,17 @@ pipelock-verifier completeness /var/lib/pipelock/evidence \
   --key /etc/pipelock/keys/flight-recorder-signing.key.pub
 ```
 
-Exit code 0 means the analysis ran and the per-writer chain was not classified BROKEN;
-LIMITED and UNVERIFIED are successful analyses. Exit code 1 means broken
-completeness evidence, an unpinned non-empty chain without
-`--allow-unpinned`, or another verifier failure.
+The report covers one chain. A recorder writes one chain per run, named
+`proxy.run.<id>`, so without `--session` the command analyzes the directory's
+only `proxy` chain. When the directory holds several, it lists them and exits
+2 instead of picking one; pass `--session proxy.run.<id>` to choose. An
+explicit `--session` is used exactly as given.
+
+Exit code 0 means a LIMITED result. Exit code 1 means BROKEN or UNVERIFIED
+completeness evidence (UNVERIFIED includes a directory with no matching
+chain), an unpinned non-empty chain without `--allow-unpinned`, or another
+verifier failure. Exit code 2 means a tool, IO, extraction or key-resolution
+error, including a directory with several chains and no `--session`.
 
 ### Receipt groups with multiple chains
 
