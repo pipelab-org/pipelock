@@ -216,3 +216,54 @@ func TestURLTextSegmentsPlusIsData(t *testing.T) {
 		}
 	}
 }
+
+func seedURLScanner(t *testing.T) *Scanner {
+	t.Helper()
+	cfg := testConfig()
+	cfg.Internal = nil // Seed detection runs before DNS; keep the test offline.
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	return sc
+}
+
+func requireSeedVerdict(t *testing.T, sc *Scanner, target string, blocked bool) {
+	t.Helper()
+	got := sc.Scan(t.Context(), target)
+	if got.Allowed == blocked {
+		t.Fatalf("%s allowed=%t want %t: %s", target, got.Allowed, !blocked, got.Reason)
+	}
+	if blocked && !strings.Contains(got.Reason, "Seed Phrase") {
+		t.Fatalf("%s blocked for %q, want a seed phrase", target, got.Reason)
+	}
+}
+
+// Only the fragment carries the seed, so fragment views must reach seed
+// detection on their own.
+func TestURLTextSegmentsSeedPhraseInFragment(t *testing.T) {
+	sc := seedURLScanner(t)
+	ordinary := strings.Repeat("ordinary_", 11) + "words"
+	requireSeedVerdict(t, sc, "https://api.vendor.example/receive#"+ordinary, false)
+	requireSeedVerdict(t, sc, "https://api.vendor.example/receive#"+strings.ReplaceAll(testSeedPhrase12, " ", "_"), true)
+}
+
+// An escaped '#' stays in the parsed path and glues a non-alphabet prefix to
+// the encoded seed, so the segment must also be tried in pieces around it.
+func TestURLTextSegmentsSeedPhraseAfterEscapedFragmentDelimiter(t *testing.T) {
+	sc := seedURLScanner(t)
+	for _, tc := range []struct {
+		name, text string
+		blocked    bool
+	}{
+		{"ordinary", strings.Repeat("ordinary ", 11) + "words", false},
+		{"seed", testSeedPhrase12, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// 'x' is base64 data, so dropping only the '#' misaligns the decode.
+			target := "https://api.vendor.example/x%23" + base64.StdEncoding.EncodeToString([]byte(tc.text))
+			requireSeedVerdict(t, sc, target, tc.blocked)
+		})
+	}
+}
