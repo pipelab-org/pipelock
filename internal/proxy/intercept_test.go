@@ -5054,6 +5054,55 @@ func TestInterceptTunnel_RecordCleanAfterCleanRequest(t *testing.T) {
 	}
 }
 
+// A clean response from a response-scan-exempt host earns no adaptive credit
+// on the intercept path, the same as on the forward and fetch paths. Exempt
+// hosts normally stream unscanned and never reach the credit decision; declared
+// SVG stays on the buffered scan path, so it is the case that exercises it.
+func TestInterceptTunnel_ExemptHostEarnsNoCleanCredit(t *testing.T) {
+	upstream := httptest.NewTLSServer(svgFixtureHandler(`<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1"/></svg>`))
+	defer upstream.Close()
+
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.AdaptiveEnforcement.Enabled = true
+	cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.1
+	cfg.AdaptiveEnforcement.EscalationThreshold = 100.0
+	cfg.BrowserShield.Enabled = true
+	cfg.BrowserShield.MaxShieldBytes = 1 << 20
+	cfg.BrowserShield.OversizeAction = config.ShieldOversizeBlock
+	host, _, err := net.SplitHostPort(upstream.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResponseScanning.ExemptDomains = []string{host}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p, err := New(cfg, logger, sc, m)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(p.Close)
+
+	for _, exempt := range []bool{false, true} {
+		cfg.ResponseScanning.ExemptDomains = nil
+		if exempt {
+			cfg.ResponseScanning.ExemptDomains = []string{host}
+		}
+		rec := &interceptMockRecorder{}
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+upstream.Listener.Addr().String()+"/icon.svg", nil)
+		resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+			Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc,
+			Logger: logger, Metrics: m, Request: req, Recorder: rec, Proxy: p,
+		})
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("exempt=%v: status = %d, want 200 (block reason %q)", exempt, resp.StatusCode, resp.Header.Get("X-Pipelock-Block-Reason"))
+		}
+		if rec.cleanCalled == exempt {
+			t.Errorf("exempt=%v: RecordClean called=%v, want %v", exempt, rec.cleanCalled, !exempt)
+		}
+	}
+}
+
 // TestInterceptContext_ValidateNil verifies that Validate on a nil receiver
 // returns an error instead of panicking.
 func TestInterceptContext_ValidateNil(t *testing.T) {

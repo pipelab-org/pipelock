@@ -3071,8 +3071,9 @@ func newInterceptHandler(
 
 		// Record clean request for adaptive score decay. Only apply decay when no
 		// finding was detected; warn/strip paths indicate suspicious traffic and
-		// must not contribute to score decay.
-		if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && recoveryAssessment.IsBenign() {
+		// must not contribute to score decay. Responses from scan-exempt hosts
+		// earn no credit, matching the forward and fetch paths.
+		if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() {
 			ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 
