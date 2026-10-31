@@ -862,9 +862,11 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	if rawPath == "" {
 		rawPath = parsed.EscapedPath()
 	}
-	decodedPath := IterativeDecode(rawPath)
-	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+	formPath, percentPath := urlComponentDecodes(rawPath)
+	for _, decodedPath := range []string{formPath, percentPath} {
+		if decodedPath != "" && decodedPath != parsed.Path {
+			targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+		}
 	}
 
 	// Path segment decoding (hex/base64/base32).

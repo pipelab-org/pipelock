@@ -267,3 +267,42 @@ func TestURLTextSegmentsSeedPhraseAfterEscapedFragmentDelimiter(t *testing.T) {
 		})
 	}
 }
+
+// The immutable core floor needs the RFC 3986 path view too. Noise stripping
+// removes the '/' a base64 key may contain, and form decoding turns its '+'
+// into a space, so neither of those views holds the whole key.
+func TestURLTextSegmentsCoreFloorPathKeepsPlus(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil // These tests use only loopback destinations, without DNS.
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.IncludeDefaults = new(false)
+	cfg.DLP.Patterns = nil
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	sc.entropyThreshold = 0 // Isolate DLP from the separate entropy policy.
+
+	// A synthetic 40-symbol base64 shape with more '/' than '+'. Noise
+	// stripping drops each '/' but keeps two symbols of each "%2B", so the
+	// stripped view stays shorter than the key.
+	key := "Ab1/Cd2/Ef3+Gh4/Ij5/Kl6Mn7Op8Qr9St0Uv1Wx"
+	if len(key) != 40 || strings.Count(key, "/") <= strings.Count(key, "+") {
+		t.Fatalf("fixture length %d", len(key))
+	}
+	for _, tc := range []struct {
+		name, value string
+		clean       bool
+	}{
+		{"ordinary", "aws_secret_access_key=Ab1/Cd2+Ef3", true},
+		{"key", "aws_secret_access_key=" + key, false},
+	} {
+		for _, prefix := range []string{"http://127.0.0.1/receive/", "http://127.0.0.1/receive#"} {
+			target := prefix + strings.ReplaceAll(tc.value, "+", "%252B")
+			t.Run(tc.name+"/"+prefix[len(prefix)-1:], func(t *testing.T) {
+				if got := sc.Scan(t.Context(), target); got.Allowed != tc.clean || (!tc.clean && got.Scanner != ScannerCoreDLP) {
+					t.Errorf("%s allowed=%t want %t: %s", target, got.Allowed, tc.clean, got.Reason)
+				}
+			})
+		}
+	}
+}
