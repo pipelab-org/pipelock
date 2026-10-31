@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net/url"
+	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -99,6 +101,11 @@ func Inspect(ctx context.Context, data []byte, limits Limits) Result {
 // APPNOTE 4.3.12: fixed central header is 46 bytes. Charging records before
 // zip.NewReader prevents attacker-controlled counts from allocating an index
 // beyond the caller's metadata byte budget. No independent member cap is guessed.
+const (
+	odfDrawingNamespace = "urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"
+	xlinkNamespace      = "http://www.w3.org/1999/xlink"
+)
+
 const (
 	centralHeaderBytes = 46
 	endHeaderBytes     = 22 // APPNOTE 4.3.16.
@@ -233,6 +240,10 @@ func (w *walk) archive(data []byte, depth int) error {
 	}
 	w.result.Texts = append(w.result.Texts, z.Comment)
 	var parts packageParts
+	// Non-text members are decided after every package XML part is read, so a
+	// replacement image referenced later in the archive is still recognized.
+	var binary []string
+	images := make(map[string]bool)
 	sort.SliceStable(z.File, func(i, j int) bool { return declarationPriority(z.File[i].Name) < declarationPriority(z.File[j].Name) })
 	for _, f := range z.File {
 		if err := w.ctx.Err(); err != nil {
@@ -308,17 +319,32 @@ func (w *walk) archive(data []byte, depth int) error {
 				strings.HasPrefix(f.Name, "ppt/printerSettings/") || strings.HasSuffix(f.Name, "/vbaProject.bin") {
 				continue
 			}
-			return fmt.Errorf("non-text member has no reader")
+			binary = append(binary, f.Name)
+			continue
 		}
 		if isXMLPart(f.Name, contentType) {
-			text, xmlErr := xmlText(member, w.limits.MaxDepth)
+			text, xmlErr := xmlText(member, w.limits.MaxDepth, func(href string) { images[odfImagePath(f.Name, href)] = true })
 			if xmlErr != nil {
 				return xmlErr
 			}
 			w.result.Texts = append(w.result.Texts, text)
 		}
 	}
+	for _, name := range binary {
+		if !images[name] {
+			return fmt.Errorf("non-text member has no reader")
+		}
+	}
 	return nil
+}
+
+// odfImagePath resolves a draw:image xlink:href against the directory of the
+// XML part that names it; embedded sub-documents use their own directory.
+func odfImagePath(part, href string) string {
+	if decoded, err := url.PathUnescape(href); err == nil {
+		href = decoded
+	}
+	return strings.TrimPrefix(path.Join(path.Dir(part), href), "/")
 }
 
 // deflateConsumesMember re-reads the member's compressed bytes. archive/zip
@@ -370,7 +396,12 @@ func image(data []byte) bool {
 // row and cell boundaries remain separators (ECMA-376 w:p/a:p and ODF text:p).
 // All XML parts are scanned, including relationships, hidden sheets, notes,
 // comments and metadata; no relationship is fetched and no macro is executed.
-func xmlText(data []byte, maxDepth int) (string, error) {
+//
+// OASIS ODF 1.3 Part 3 gives draw:frame alternative representations of one
+// object; its draw:image is the replacement image for an embedded draw:object.
+// The member an image href names is reported to onImage. Its raw bytes still
+// reach request DLP; only the non-text refusal is lifted for that member.
+func xmlText(data []byte, maxDepth int, onImage func(string)) (string, error) {
 	d := xml.NewDecoder(bytes.NewReader(data))
 	var out strings.Builder
 	depth := 0
@@ -390,6 +421,13 @@ func xmlText(data []byte, maxDepth int) (string, error) {
 			depth++
 			if depth > maxDepth {
 				return "", fmt.Errorf("package XML exceeds extraction depth budget")
+			}
+			if t.Name.Space == odfDrawingNamespace && t.Name.Local == "image" {
+				for _, a := range t.Attr {
+					if a.Name.Space == xlinkNamespace && a.Name.Local == "href" && !strings.Contains(a.Value, ":") {
+						onImage(a.Value)
+					}
+				}
 			}
 		case xml.EndElement:
 			depth--

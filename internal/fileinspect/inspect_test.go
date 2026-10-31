@@ -392,3 +392,50 @@ func TestInspectDeflateTrailingBytes(t *testing.T) {
 		t.Fatalf("trailing compressed bytes: complete=%t reason=%q", r.Complete, r.Reason)
 	}
 }
+
+// ODF draw:frame gives an embedded object a draw:image replacement; that member
+// is an image wherever it appears in the archive. Other binary stays unread.
+func TestInspectODFReplacementImages(t *testing.T) {
+	metafile := []byte("VCLMTF\x01\x00\xff\xfe\x00")
+	frame := func(href string) []byte {
+		return []byte(`<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:xlink="http://www.w3.org/1999/xlink"><draw:frame><draw:object xlink:href="./Object 1"/><draw:image xlink:href="` + href + `"/></draw:frame></office:document-content>`)
+	}
+	ordered := func(members ...[2][]byte) []byte {
+		var b bytes.Buffer
+		z := zip.NewWriter(&b)
+		for _, m := range members {
+			f, err := z.Create(string(m[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = f.Write(m[1]); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := z.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return b.Bytes()
+	}
+	member := func(name string, data []byte) [2][]byte { return [2][]byte{[]byte(name), data} }
+	for _, tc := range []struct {
+		name     string
+		data     []byte
+		complete bool
+	}{
+		{"replacement after image", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", frame("./ObjectReplacements/Object 1"))), true},
+		{"percent-encoded reference", ordered(member("content.xml", frame("./ObjectReplacements/Object%201")), member("ObjectReplacements/Object 1", metafile)), true},
+		{"sub-document reference", ordered(member("Object 1/ObjectReplacements/chart", metafile), member("Object 1/content.xml", frame("./ObjectReplacements/chart"))), true},
+		{"unreferenced binary", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", frame("./ObjectReplacements/Other"))), false},
+		{"other element", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", bytes.ReplaceAll(frame("./ObjectReplacements/Object 1"), []byte("draw:image"), []byte("draw:plugin")))), false},
+		{"other namespace", ordered(member("ObjectReplacements/Object 1", metafile), member("content.xml", bytes.ReplaceAll(frame("./ObjectReplacements/Object 1"), []byte("urn:oasis:names:tc:opendocument:xmlns:drawing:1.0"), []byte("http://www.w3.org/2000/svg")))), false},
+		{"external reference", ordered(member("file:ObjectReplacements/Object 1", metafile), member("content.xml", frame("file:ObjectReplacements/Object 1"))), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Inspect(t.Context(), tc.data, Limits{8192, 64})
+			if r.Complete != tc.complete || (!tc.complete && !strings.Contains(r.Reason, "non-text member")) {
+				t.Fatalf("complete=%t reason=%q", r.Complete, r.Reason)
+			}
+		})
+	}
+}
