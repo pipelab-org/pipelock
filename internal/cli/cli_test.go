@@ -877,7 +877,7 @@ logging:
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected run error: %v", err)
+				return fmt.Errorf("unexpected run error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run command did not shut down within timeout")
@@ -1030,7 +1030,7 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected run error: %v", err)
+				return fmt.Errorf("unexpected run error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run command did not shut down within timeout")
@@ -2784,7 +2784,7 @@ websocket_proxy:
 		select {
 		case err := <-errCh:
 			if err != nil {
-				t.Errorf("unexpected run error: %v", err)
+				return fmt.Errorf("unexpected run error: %w", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("run did not shut down")
