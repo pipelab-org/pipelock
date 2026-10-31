@@ -83,7 +83,7 @@ func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Con
 	if surface.hidden != "" {
 		hidden := sc.ScanResponseWithSuppress(ctx, surface.hidden, target, cfg.Suppress)
 		scanned.hidden = &hidden
-		if hidden.Clean && hidden.Assessment.Status == scanner.AssessmentNotAssessed && strings.TrimSpace(surface.hidden) == "" {
+		if hidden.Clean && hidden.Assessment.Status == scanner.AssessmentNotAssessed && scanner.IsBlankInjectionView(surface.hidden) {
 			// Blank hidden markup with no assessment adds no wording coverage.
 			// Findings from configured blank-text patterns still join below.
 			return scanned

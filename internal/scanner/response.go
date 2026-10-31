@@ -582,7 +582,7 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
-	defer func() { s.setInjectionAssessment(&out, strings.TrimSpace(content) != "") }()
+	defer func() { s.setInjectionAssessment(&out, !IsBlankInjectionView(content)) }()
 	var suppressedMatches []ResponseMatch
 	var observedCoreMatches []ObservedCoreMatch
 	suppressedSeen := make(map[string]struct{})

@@ -3,7 +3,19 @@
 
 package scanner
 
-import "github.com/luckyPipewrench/pipelock/internal/config"
+import (
+	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
+)
+
+// IsBlankInjectionView uses the wording checker's matching normalization to
+// identify views with no wording. Blankness alone never establishes a benign
+// assessment: callers must preserve findings, failures and disabled coverage.
+func IsBlankInjectionView(content string) bool {
+	return strings.TrimSpace(normalize.ForMatching(content)) == ""
+}
 
 // AssessmentStatus describes wording coverage, independently of delivery policy.
 type AssessmentStatus string
