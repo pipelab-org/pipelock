@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -312,5 +313,120 @@ func TestAdaptiveResidualExpiryResetAndEntry(t *testing.T) {
 	s.TryAutoRecover(0, nil)
 	if s.ThreatScore() != 3 {
 		t.Fatal("signal after reset expired early")
+	}
+}
+
+// A residual past its deadline must not count toward the next scored signal on
+// any writer path, even when no recovery path or sweep has run in between. The
+// fresh controls show the same two signals do escalate inside the quiet period,
+// and the disabled case shows expiry only applies with adaptive enforcement on.
+func TestAdaptiveResidualExpiryBeforePointsOnEveryWriter(t *testing.T) {
+	type writer struct {
+		name  string
+		write func(s *SessionState, cfg *config.Config)
+		level func(s *SessionState) int
+		score func(s *SessionState) float64
+	}
+	ep := func(cfg *config.Config) decide.EscalationParams {
+		return decide.EscalationParams{Threshold: cfg.AdaptiveEnforcement.EscalationThreshold}
+	}
+	scopedLevel := func(s *SessionState) int { return s.ScopedEscalationLevel(residualScope) }
+	scopedScore := func(s *SessionState) float64 { return s.ScopedThreatScore(residualScope) }
+	writers := []writer{
+		{
+			name: "scoped_wrapper",
+			write: func(s *SessionState, cfg *config.Config) {
+				recordAdaptiveSignalForScope(s, residualScope, session.SignalBlock, &cfg.AdaptiveEnforcement, &cfg.Airlock, ep(cfg))
+			},
+			level: scopedLevel, score: scopedScore,
+		},
+		{
+			// Request entry writes the scoped lane directly, not through the wrapper.
+			name: "scoped_direct",
+			write: func(s *SessionState, cfg *config.Config) {
+				recordScopedAdaptiveSignal(s, residualScope, session.SignalBlock, ep(cfg))
+			},
+			level: scopedLevel, score: scopedScore,
+		},
+		{
+			// MCP listener headers and aggregate CEE write through decide.RecordSignal.
+			name: "aggregate_decide",
+			write: func(s *SessionState, cfg *config.Config) {
+				decide.RecordSignal(s, session.SignalBlock, ep(cfg))
+			},
+			level: func(s *SessionState) int { return s.EscalationLevel() },
+			score: func(s *SessionState) float64 { return s.ThreatScore() },
+		},
+	}
+	for _, w := range writers {
+		for _, tt := range []struct {
+			name      string
+			enabled   bool
+			aged      bool
+			wantLevel int
+			wantScore float64
+		}{
+			{name: "expired_before_second_signal", enabled: true, aged: true, wantLevel: 0, wantScore: 3},
+			{name: "fresh_residual_still_counts", enabled: true, aged: false, wantLevel: 1},
+			{name: "disabled_keeps_score", enabled: false, aged: true, wantLevel: 1, wantScore: 6},
+		} {
+			t.Run(w.name+"/"+tt.name, func(t *testing.T) {
+				cfg := config.Defaults()
+				cfg.AdaptiveEnforcement.Enabled = true
+				cfg.ApplyDefaults()
+				sm := NewSessionManager(testSessionConfig(), &cfg.AdaptiveEnforcement, nil)
+				t.Cleanup(sm.Close)
+				if !tt.enabled {
+					disabled := cfg.AdaptiveEnforcement
+					disabled.Enabled = false
+					sm.adaptiveCfgPtr.Store(&disabled)
+				}
+				s := sm.GetOrCreate("residual-writer-" + w.name + "-" + tt.name)
+				w.write(s, cfg)
+				if tt.aged {
+					ageAdaptiveResidual(s, 2*adaptiveLevelDuration(&cfg.AdaptiveEnforcement))
+				}
+				w.write(s, cfg)
+				if got := w.level(s); got != tt.wantLevel {
+					t.Fatalf("level = %d, want %d (score %g)", got, tt.wantLevel, w.score(s))
+				}
+				if tt.aged && w.score(s) != tt.wantScore {
+					t.Fatalf("score = %g, want %g", w.score(s), tt.wantScore)
+				}
+			})
+		}
+	}
+}
+
+// Writer-side expiry reads the manager's live configuration, so a reload that
+// shortens or lengthens level_duration_seconds governs the next scored signal
+// on sessions that already exist, without a recovery path running first.
+func TestAdaptiveResidualExpiryBeforePointsFollowsReload(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		seconds   int
+		wantScore float64
+	}{
+		{name: "shortened_expires", seconds: 10, wantScore: 3},
+		{name: "lengthened_keeps", seconds: 60, wantScore: 6},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.ApplyDefaults()
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			sm := NewSessionManager(testSessionConfig(), &cfg.AdaptiveEnforcement, nil)
+			t.Cleanup(sm.Close)
+			s := sm.GetOrCreate("residual-writer-reload-" + tt.name)
+			s.RecordScopedSignal(residualScope, session.SignalBlock, 100)
+			ageAdaptiveResidual(s, 30*time.Second)
+			reloaded := cfg.AdaptiveEnforcement
+			reloaded.LevelDurationSeconds = tt.seconds
+			sm.UpdateConfig(testSessionConfig(), &reloaded, &cfg.Airlock)
+			s.RecordScopedSignal(residualScope, session.SignalBlock, 100)
+			if got := s.ScopedThreatScore(residualScope); got != tt.wantScore {
+				t.Fatalf("scope score = %g, want %g", got, tt.wantScore)
+			}
+		})
 	}
 }

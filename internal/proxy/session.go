@@ -154,11 +154,15 @@ type SessionState struct {
 	lastBurstAt   time.Time // cooldown: fire burst anomaly once per window
 
 	// Adaptive enforcement
-	threatScore                float64
-	escalationLevel            int // 0=normal, 1=first escalation, etc.
-	currentThreshold           float64
-	lastEscalation             time.Time // when the current level was reached
-	lastSignal                 time.Time // latest signal that added score
+	threatScore      float64
+	escalationLevel  int // 0=normal, 1=first escalation, etc.
+	currentThreshold float64
+	lastEscalation   time.Time // when the current level was reached
+	lastSignal       time.Time // latest signal that added score
+	// adaptiveCfg is the owning manager's live adaptive configuration, used to
+	// expire residual scores before any writer adds points. Nil for sessions
+	// built outside a manager; those rely on the recovery paths alone.
+	adaptiveCfg                *atomic.Pointer[config.AdaptiveEnforcement]
 	cleanRequests              int
 	atBlockAll                 bool // true when current level has block_all=true
 	globalSignalsAuthoritative bool
@@ -480,7 +484,9 @@ func (s *SessionState) RecordSignal(sig session.SignalType, threshold float64) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if session.SignalPoints[sig] > 0 {
-		s.lastSignal = time.Now()
+		now := time.Now()
+		s.expireResidualsBeforePointsLocked("", now)
+		s.lastSignal = now
 	}
 	if sig != session.SignalWarning {
 		s.globalSignalsAuthoritative = true
@@ -513,7 +519,9 @@ func (s *SessionState) RecordScopedSignal(scope string, sig session.SignalType, 
 	defer s.mu.Unlock()
 
 	if session.SignalPoints[sig] > 0 {
-		s.lastSignal = time.Now()
+		now := time.Now()
+		s.expireResidualsBeforePointsLocked(scope, now)
+		s.lastSignal = now
 	}
 	// Observations must not allocate enforcement lanes: warning-only traffic
 	// cannot exhaust the scope cap and force later destinations into the
@@ -803,6 +811,30 @@ func (s *SessionState) TryAutoRecoverScopes(levelDuration time.Duration, blockAl
 		}
 	}
 	return changes
+}
+
+// expireResidualsBeforePointsLocked applies residual expiry to the aggregate
+// score and, when scope is set, that destination's score before a writer adds
+// points. Every point writer goes through RecordSignal or RecordScopedSignal,
+// so an expired residual never counts toward a new signal on any transport,
+// whether or not a recovery path ran first. Level changes stay on the existing
+// recovery paths. Callers hold s.mu.
+func (s *SessionState) expireResidualsBeforePointsLocked(scope string, now time.Time) {
+	if s.adaptiveCfg == nil {
+		return
+	}
+	cfg := s.adaptiveCfg.Load()
+	if cfg == nil || !cfg.Enabled {
+		return
+	}
+	levelDuration := adaptiveLevelDuration(cfg)
+	expireAdaptiveResidual(&s.threatScore, s.escalationLevel, s.lastSignal, s.lastEscalation, levelDuration, now)
+	if scope == "" {
+		return
+	}
+	if st := s.scopes[scope]; st != nil {
+		expireAdaptiveResidual(&st.threatScore, st.escalationLevel, st.lastSignal, st.lastEscalation, levelDuration, now)
+	}
 }
 
 // expireAdaptiveResidual bounds level-zero score retention without granting
@@ -1858,6 +1890,7 @@ func (sm *SessionManager) GetOrCreate(key string) *SessionState {
 		currentThreshold: 0, // set by adaptive enforcement when enabled
 		airlock:          AirlockState{tier: config.AirlockTierNone},
 		task:             newTaskContext("", now),
+		adaptiveCfg:      &sm.adaptiveCfgPtr,
 	}
 	sm.sessions[key] = sess
 	if sm.metrics != nil {
