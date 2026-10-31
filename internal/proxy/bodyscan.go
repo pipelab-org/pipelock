@@ -955,18 +955,32 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Extract text strings from body based on content type. The DLP extractor
 	// also returns generic ordered text so JSON bodies are traversed once here.
 	dlpExtracted := extractBodyTextForDLP(buf, req)
-	// A multipart parser skips any preamble before the first boundary (RFC 2046
-	// section 5.1.1), so a body can be a ZIP and a multipart form at once. Keep
-	// the part decoding the receiver will apply; the whole body is also inspected.
-	// The media type is parsed exactly as extractBodyTextForDLP parses it.
-	if mediaType, _, _ := mime.ParseMediaType(req.ContentType); fileinspect.Kind(buf) != "" && mediaType != "multipart/form-data" {
-		dlpExtracted = bodyDLPTextExtraction{GenericTexts: []string{string(buf)}, Texts: []string{string(buf)}}
-	}
+	// Only form and JSON media types report a parse error here; any other
+	// type is scanned as raw text. A receiver parses a structured body as its
+	// declared type whatever its bytes are, so archive bytes keep that error.
 	if dlpExtracted.Err != "" {
 		return nil, BodyScanResult{
 			Clean:  false,
 			Action: config.ActionBlock,
 			Reason: dlpExtracted.Err,
+		}
+	}
+	// An archive reader takes the same bytes as a file. A decoded form keeps
+	// its fields and also gets the raw view that an unstructured body already
+	// has. Multipart parts and preamble are handled by upload inspection. The
+	// media type is parsed exactly as extractBodyTextForDLP parses it.
+	if mediaType, _, _ := mime.ParseMediaType(req.ContentType); mediaType != "multipart/form-data" && fileinspect.Kind(buf) != "" &&
+		!slices.Equal(dlpExtracted.GenericTexts, []string{string(buf)}) {
+		raw := string(buf)
+		// Form extraction returns one slice for both views; clip so neither
+		// append writes into the other.
+		dlpExtracted.GenericTexts = append(slices.Clip(dlpExtracted.GenericTexts), raw)
+		dlpExtracted.Texts = append(slices.Clip(dlpExtracted.Texts), raw)
+		if len(dlpExtracted.CardTexts) > 0 {
+			dlpExtracted.CardTexts = append(dlpExtracted.CardTexts, raw)
+		}
+		if len(dlpExtracted.Atoms) > 0 {
+			dlpExtracted.Atoms = append(dlpExtracted.Atoms, extract.DLPAtom{Text: raw, Card: raw})
 		}
 	}
 	fileTexts, fileIncomplete := inspectUploadTextViews(ctx, buf, req, dlpExtracted)
