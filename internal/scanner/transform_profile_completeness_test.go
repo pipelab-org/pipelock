@@ -63,13 +63,12 @@ func TestScannerTransformProfileCompleteness(t *testing.T) {
 	// blocks the profile offers rather than transforms the scanner performs, so
 	// requiring a production claim for them would force a fake directive.
 	vocabularyOnly := map[string]bool{
-		"identity":       true,
-		"url_component":  true,
-		"percent_decode": true,
-		"hex_decode":     true,
-		"base32_decode":  true,
-		"base64_decode":  true,
-		"lowercase":      true,
+		"identity":      true,
+		"url_component": true,
+		"hex_decode":    true,
+		"base32_decode": true,
+		"base64_decode": true,
+		"lowercase":     true,
 	}
 	for _, kind := range normalize.SupportedOperationKinds() {
 		operation := string(kind)

@@ -2051,6 +2051,37 @@ func IterativeDecode(s string) string {
 	return s
 }
 
+// iterativePercentDecode is IterativeDecode for URL components other than a
+// form-encoded query. RFC 3986 percent-encoding keeps '+' as data; only
+// application/x-www-form-urlencoded maps it to a space. Malformed escapes stay
+// verbatim, as in partial query unescaping.
+//
+//pipelock:provenance-transform percent_decode
+func iterativePercentDecode(s string) string {
+	for range maxDecodeRounds {
+		decoded := normalize.PercentUnescapePartial(s)
+		if decoded == s {
+			break
+		}
+		s = decoded
+	}
+	return s
+}
+
+// urlComponentDecodes returns the form and RFC 3986 decodings of a path or
+// fragment, each empty when it adds nothing. The form view preserves existing
+// coverage for applications that read the component like a query; the
+// percent view keeps '+' as data.
+func urlComponentDecodes(s string) (form, percent string) {
+	if form = IterativeDecode(s); form == s {
+		form = ""
+	}
+	if percent = iterativePercentDecode(s); percent == s || percent == form {
+		percent = ""
+	}
+	return form, percent
+}
+
 // stripURLNoise removes every byte that cannot legitimately appear as DATA in
 // one of pipelock's DLP credential alphabets, so an attacker-chosen delimiter
 // inserted between fragments of a split secret does not survive to break
@@ -2948,8 +2979,11 @@ func decodeEncodingsOnce(s string, includeURL bool, minPrefix int) []decodedResu
 // every view the slash split already produced.
 func urlPathDecodeSegments(path string) []string {
 	segments := strings.Split(path, "/")
-	if decoded := IterativeDecode(path); decoded != path {
-		segments = append(segments, strings.Split(decoded, "/")...)
+	form, percent := urlComponentDecodes(path)
+	for _, decoded := range []string{form, percent} {
+		if decoded != "" {
+			segments = append(segments, strings.Split(decoded, "/")...)
+		}
 	}
 	for _, segment := range segments {
 		if strings.Contains(segment, "#") {
@@ -2968,8 +3002,12 @@ func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
 		return nil
 	}
 	texts := []dlpTarget{{parsed.Fragment, "url_fragment", ""}}
-	if decoded := IterativeDecode(parsed.Fragment); decoded != parsed.Fragment {
-		texts = append(texts, dlpTarget{decoded, spanViewLabel("url_decoded", "url_fragment"), ""})
+	form, percent := urlComponentDecodes(parsed.Fragment)
+	if form != "" {
+		texts = append(texts, dlpTarget{form, spanViewLabel("url_decoded", "url_fragment"), ""})
+	}
+	if percent != "" {
+		texts = append(texts, dlpTarget{percent, spanViewLabel("percent_decoded", "url_fragment"), ""})
 	}
 	var targets []dlpTarget
 	for _, source := range texts {
@@ -3068,9 +3106,11 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	if rawPath == "" {
 		rawPath = parsed.EscapedPath()
 	}
-	decodedPath := IterativeDecode(rawPath)
-	if decodedPath != "" && decodedPath != parsed.Path {
-		targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+	formPath, percentPath := urlComponentDecodes(rawPath)
+	for _, decodedPath := range []string{formPath, percentPath} {
+		if decodedPath != "" && decodedPath != parsed.Path {
+			targets = append(targets, dlpTarget{decodedPath, dlpViewLabel("url_path_decoded"), ""})
+		}
 	}
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
