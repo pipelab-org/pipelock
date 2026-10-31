@@ -83,6 +83,11 @@ func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Con
 	if surface.hidden != "" {
 		hidden := sc.ScanResponseWithSuppress(ctx, surface.hidden, target, cfg.Suppress)
 		scanned.hidden = &hidden
+		if scanner.BlankViewAddsNoCoverage(surface.hidden, hidden) {
+			// Blank hidden markup with no assessment adds no wording coverage.
+			// Findings from configured blank-text patterns still join below.
+			return scanned
+		}
 		visibleSuppressed := scanned.result.SuppressedMatches
 		scanned.result = retainShieldScan(&hidden, scanned.result, []byte(surface.content))
 		// Distinct hidden and visible surfaces each retain suppression counts.
@@ -154,6 +159,8 @@ func retainShieldScan(original *scanner.ResponseScanResult, current scanner.Resp
 	if current.Clean && !current.Failed() && !original.Clean {
 		current.TransformedContent = string(body)
 	}
+	current.Assessment = original.RecoveryAssessment().Merge(current.RecoveryAssessment())
+	current.WarnedMatches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.WarnedMatches...), current.WarnedMatches)
 	current.Clean = original.Clean && current.Clean
 	current.Matches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.Matches...), current.Matches)
 	current.SuppressedMatches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.SuppressedMatches...), current.SuppressedMatches)

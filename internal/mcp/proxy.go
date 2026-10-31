@@ -892,6 +892,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 			// decay on the same message would incorrectly counteract each other.
 			if !opts.toolContractDiscovery && !toolPoisonDetected && !toolAcknowledged {
 				recordCleanSession(rec, adaptiveCfg, true, adaptiveRecoveryContextWithWarnContext(adaptiveRecoveryContext{
+					assessment: verdict.Assessment,
 					sessionKey: opts.adaptiveSessionKey(),
 					reason:     adaptiveRecoveryClean,
 					requestID:  canonicalID(verdict.ID),

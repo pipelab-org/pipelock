@@ -852,11 +852,12 @@ type FetchResponse struct {
 const shieldRewriteHeader = "X-Pipelock-Shield-Rewrite"
 
 const (
-	adaptiveEnforcementLayer = "adaptive_enforcement"
-	adaptiveRecoverHint      = "wait for auto-recovery or run pipelock session reset <key>"
-	adaptiveBlockedReason    = "blocked by adaptive enforcement"
-	adaptiveRecoveryTimer    = "time_based_recovery"
-	adaptiveRecoveryClean    = "clean_request_recovery"
+	adaptiveEnforcementLayer        = "adaptive_enforcement"
+	adaptiveRecoverHint             = "wait for auto-recovery or run pipelock session reset <key>"
+	adaptiveBlockedReason           = "blocked by adaptive enforcement"
+	adaptiveRecoveryResidualExpired = "residual_score_expired"
+	adaptiveRecoveryTimer           = "time_based_recovery"
+	adaptiveRecoveryClean           = "clean_request_recovery"
 )
 
 // New creates a new fetch proxy from config.
@@ -3953,6 +3954,7 @@ func adaptiveBlockSignal(result scanner.Result, adaptiveCfg *config.AdaptiveEnfo
 }
 
 type adaptiveRecoveryContext struct {
+	assessment scanner.InjectionAssessment
 	sessionKey string
 	scope      string
 	reason     string
@@ -3962,26 +3964,22 @@ type adaptiveRecoveryContext struct {
 	metrics    *metrics.Metrics
 }
 
+// recordCleanForAdaptiveScope grants clean-traffic credit only for a response
+// that was eligible (fully scanned, not exempt, not truncated) and assessed
+// benign. A benign assessment of a truncated or exempt response describes only
+// part of what the agent received, so it earns no score reduction either.
 func recordCleanForAdaptiveScope(rec session.Recorder, scope string, adaptiveCfg *config.AdaptiveEnforcement, eligibleForCleanRecovery bool, ctx adaptiveRecoveryContext) {
-	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled {
+	if rec == nil || adaptiveCfg == nil || !adaptiveCfg.Enabled || !eligibleForCleanRecovery || !ctx.assessment.IsBenign() {
 		return
 	}
 	scope = normalizeAdaptiveScope(scope)
 	blockAllCheck := adaptiveBlockAllCheck(adaptiveCfg)
 	if sess, ok := rec.(*SessionState); ok {
-		if !eligibleForCleanRecovery {
-			sess.RecordScopedClean(scope, adaptiveCfg.DecayPerCleanRequest)
-			return
-		}
 		changed, from, to := sess.RecordScopedCleanWithRecovery(scope, adaptiveCfg.DecayPerCleanRequest, adaptiveCfg.CleanRequestsToDeescalate, blockAllCheck)
 		if changed {
 			ctx.scope = firstNonEmptyString(ctx.scope, scope)
 			emitAdaptiveRecovery(sess, from, to, ctx)
 		}
-		return
-	}
-	if !eligibleForCleanRecovery {
-		rec.RecordClean(adaptiveCfg.DecayPerCleanRequest)
 		return
 	}
 	if r, ok := rec.(session.CleanRecoverer); ok {
@@ -4025,6 +4023,35 @@ func emitAdaptiveRecovery(sess *SessionState, from, to int, ctx adaptiveRecovery
 			Type:     reason,
 			Detail:   fromLabel + "->" + toLabel,
 			Severity: "info",
+		})
+	}
+}
+
+// emitAdaptiveResidualExpiries reports captured score changes after unlocking.
+// A residual expiry is not a level transition and does not update level gauges.
+func emitAdaptiveResidualExpiries(sess *SessionState, expired []adaptiveResidualExpiry, ctx adaptiveRecoveryContext) {
+	for _, expiry := range expired {
+		ctx.sessionKey = firstNonEmptyString(ctx.sessionKey, sess.key)
+		logger, m := ctx.logger, ctx.metrics
+		if logger == nil {
+			logger = sess.residualRecovery.logger
+		}
+		if m == nil {
+			m = sess.residualRecovery.metrics
+		}
+		m.RecordAdaptiveResidualExpiration()
+		if logger != nil {
+			logger.LogAdaptiveRecovery(audit.LogAdaptiveRecoveryOptions{
+				SessionKey: ctx.sessionKey, Scope: expiry.scope,
+				From: session.EscalationLabel(0), To: session.EscalationLabel(0),
+				Reason: adaptiveRecoveryResidualExpired, PreviousScore: expiry.previousScore,
+				ClientIP: ctx.clientIP, RequestID: ctx.requestID,
+			})
+		}
+		sess.RecordEvent(SessionEvent{
+			Kind: "adaptive_deescalate", Type: adaptiveRecoveryResidualExpired,
+			Target: expiry.scope, Score: expiry.previousScore,
+			Detail: fmt.Sprintf("residual score %g->0", expiry.previousScore), Severity: "info",
 		})
 	}
 }
@@ -6926,6 +6953,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
 		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
+			assessment: scanned.result.RecoveryAssessment(),
 			sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
 			scope:      fetchScope,
 			reason:     adaptiveRecoveryClean,

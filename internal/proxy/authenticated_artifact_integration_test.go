@@ -333,8 +333,9 @@ func TestForwardHTTPAdaptiveCleanRecordsOnlyScannedResponses(t *testing.T) {
 		name        string
 		contentType string
 		body        []byte
+		assessed    bool
 	}{
-		{name: "buffered response", contentType: "text/plain", body: []byte("clean response")},
+		{name: "buffered response", contentType: "text/plain", body: []byte("clean response"), assessed: true},
 		{name: "SSE response", contentType: "text/event-stream", body: []byte("data: clean response\n\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,8 +364,8 @@ func TestForwardHTTPAdaptiveCleanRecordsOnlyScannedResponses(t *testing.T) {
 			if w.Code != http.StatusOK {
 				t.Fatalf("status=%d body=%q", w.Code, w.Body.String())
 			}
-			if got := rec.ThreatScore(); got >= before {
-				t.Fatalf("clean scanned response did not reduce adaptive score: before=%v after=%v", before, got)
+			if got := rec.ThreatScore(); (got < before) != tc.assessed {
+				t.Fatalf("assessment=%v: score before=%v after=%v", tc.assessed, before, got)
 			}
 		})
 	}

@@ -64,14 +64,15 @@ type Metrics struct {
 	FileSentryFindings          *prometheus.CounterVec
 
 	// Sessions / adaptive enforcement / chain detection (session.go).
-	sessionAnomalies         *prometheus.CounterVec
-	sessionEscalations       *prometheus.CounterVec
-	sessionsActive           prometheus.Gauge
-	sessionsEvicted          prometheus.Counter
-	adaptiveUpgrades         *prometheus.CounterVec
-	adaptiveSessionsCurrent  *adaptiveSessionGauge
-	sessionAutoDeescalations *prometheus.CounterVec
-	chainDetections          *prometheus.CounterVec
+	sessionAnomalies            *prometheus.CounterVec
+	sessionEscalations          *prometheus.CounterVec
+	sessionsActive              prometheus.Gauge
+	sessionsEvicted             prometheus.Counter
+	adaptiveUpgrades            *prometheus.CounterVec
+	adaptiveSessionsCurrent     *adaptiveSessionGauge
+	sessionAutoDeescalations    *prometheus.CounterVec
+	adaptiveResidualExpirations prometheus.Counter
+	chainDetections             *prometheus.CounterVec
 
 	// TLS interception (tls.go).
 	tlsInterceptTotal    *prometheus.CounterVec
