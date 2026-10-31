@@ -8,6 +8,7 @@ tmp="$(mktemp -d)"
 server_pid=""
 cleanup() {
 	if [ -n "${server_pid}" ]; then kill "${server_pid}" 2>/dev/null || true; fi
+	chmod u+w "${tmp}/site/static/playground/demo" 2>/dev/null || true
 	rm -rf -- "${tmp}"
 }
 trap cleanup EXIT
@@ -404,6 +405,7 @@ for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	printf 'stale output\n' > "${PLAYGROUND_UI_DIR}/${generated}"
 	chmod 0444 "${PLAYGROUND_UI_DIR}/${generated}"
 done
+chmod 0555 "${PLAYGROUND_UI_DIR}"
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/generated.out"
 python3 - "${tmp}/capture/build-info.json" <<'CHECK'
 import json
@@ -415,12 +417,14 @@ python3 - "${PLAYGROUND_UI_DIR}" "${tmp}/capture" <<'CHECK'
 import pathlib
 import sys
 source, staged = map(pathlib.Path, sys.argv[1:])
+assert source.stat().st_mode & 0o777 == 0o555
 for name in ("pipelock-verifier.wasm", "wasm_exec.js", "build-info.json"):
     assert (source / name).stat().st_mode & 0o777 == 0o444
     assert (source / name).read_bytes() == b"stale output\n"
 assert (staged / "pipelock-verifier.wasm").read_bytes() == b"fresh wasm"
 assert (staged / "wasm_exec.js").read_bytes() == b"fresh shim"
 CHECK
+chmod 0755 "${PLAYGROUND_UI_DIR}"
 # A verifier build that writes no .wasm fails, even though the staging copy
 # already holds a viewer copy dated in the future.
 python3 -c 'import os, sys, time; t = time.time() + 600; os.utime(sys.argv[1], (t, t))' "${PLAYGROUND_UI_DIR}/pipelock-verifier.wasm"
