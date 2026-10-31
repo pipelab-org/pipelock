@@ -117,7 +117,7 @@ func utilityKey(name string) string {
 // ambiguous prefixes; policy conservatively presents every candidate instead
 // of choosing one. The output is linear in input size: see optionExpander.
 func normalizeCommandOptions(tokens []string) []string {
-	out, _ := normalizeLineOptions(tokens, false, false)
+	out, _ := normalizeLineOptions(tokens, false, nil)
 	return out
 }
 
@@ -138,25 +138,27 @@ func normalizeCommandOptions(tokens []string) []string {
 // carries more than a builtin name, such as status; with its separator, is
 // not that builtin.
 //
-// unknown reports that the line runs a non-builtin subcommand by a reading
-// these tokens can no longer show (see gitSubcommandUnknown).
-func normalizeLineOptions(tokens []string, gitTool, unknown bool) ([]string, bool) {
-	out, unknownHere := normalizeOptions(tokens, false, gitTool)
-	unknown = unknown || unknownHere
+// A builtin subcommand keeps its own reading only where proof grants it (see
+// gitProof). With a nil proof, as for normalizeCommandOptions, the tokens' own
+// reading decides.
+func normalizeLineOptions(tokens []string, gitTool bool, proof *gitProof) ([]string, bool) {
+	out, unknown, judged := normalizeOptions(tokens, false, gitTool)
+	unknown = unknown || proof != nil && !proof.grants(judged)
 	if unknown {
-		out, _ = normalizeOptions(tokens, true, gitTool)
+		out, _, _ = normalizeOptions(tokens, true, gitTool)
 	}
 	return out, unknown
 }
 
 // normalizeOptions presents option interpretations and reports whether the
-// tokens run a non-builtin Git subcommand. strict presents every long option
-// word's destructive Git readings, once each per call. gitTool is as for
-// normalizeLineOptions.
-func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unknownGit bool) {
+// tokens run a non-builtin Git subcommand. judged lists, in order, the builtin
+// subcommand of each other Git command it reads. strict presents every long
+// option word's destructive Git readings, once each per call. gitTool is as
+// for normalizeLineOptions.
+func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unknownGit bool, judged []string) {
 	hasLongOption := slices.ContainsFunc(tokens, func(token string) bool { return strings.Contains(token, "--") })
 	if !hasLongOption {
-		return tokens, false
+		return tokens, false, nil
 	}
 	var activeKey string
 	var candidateKeys []string
@@ -235,7 +237,11 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 					switch {
 					case git && subCommand:
 						active, git, stopped = activate(subKey), false, false
-						unknownGit = unknownGit || gitTool && word != token
+						if gitTool && word != token {
+							unknownGit = true
+						} else {
+							judged = append(judged, word)
+						}
 					case unknown && strings.HasPrefix(word, "-"):
 						// The options may belong to whatever the alias runs.
 						expand = true
@@ -261,6 +267,9 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 						stopped = true
 						unknown = !gitBuiltins[word] || gitTool && word != token
 						unknownGit = unknownGit || unknown
+						if !unknown {
+							judged = append(judged, word)
+						}
 					default:
 						// Bare subcommands still support the MCP git tool.
 						active = activate(utilityKey(name))
@@ -345,7 +354,7 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 			out = append(out, token)
 		}
 	}
-	return out, unknownGit || depth > 0
+	return out, unknownGit || depth > 0, judged
 }
 
 // redirectOperatorRe matches the operator that starts a redirection word; the

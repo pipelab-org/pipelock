@@ -118,15 +118,20 @@ func TestGitUnknownSubcommandPolicy(t *testing.T) {
 		{"git push --tags", ""},
 		{"git log --for=topic", ""},
 		{"git -c alias.r=reset status", ""},
-		{"git -c 'alias.x=reset --ha' status", ""},
+		// A quoted global option value leaves the subcommand unproved, so the
+		// builtin exception is not granted (see proveGitBuiltins).
+		{"git -c 'alias.x=reset --ha' status", ruleGit},
 		{"GIT_CONFIG_GLOBAL=/dev/null git fetch --force", ""},
 		{"git -C project status --short", ""},
 		{"git -c alias.r.command=status r --short", ""},
 		{"cd project && git -c 'alias.a=-p b' -c alias.b=log a --format=%H", ""},
 		{"git -c alias.r.command=reset r --sof HEAD", ""},
 		{"git -c alias.p.command=push p --force-w origin main", ""},
-		{`git -C "$(git rev-parse --show-toplevel)" fetch --force`, ""},
-		{`git -c core.pager=cat -C "$(pwd)" fetch --force`, ""},
+		// A substitution in a global option value leaves the subcommand
+		// unproved; a plain value keeps the exception.
+		{`git -C "$(git rev-parse --show-toplevel)" fetch --force`, ruleGit},
+		{`git -c core.pager=cat -C "$(pwd)" fetch --force`, ruleGit},
+		{"git -c core.pager=cat -C /srv/repo fetch --force", ""},
 		{"git status && ls --for=x", ""},
 		// Unknown subcommands without a destructive option word.
 		{"git st", ""},
@@ -365,12 +370,14 @@ func TestGitSubcommandRawSpelling(t *testing.T) {
 		{"a\u200bdd", true},
 		{"\u0430dd", true}, // Cyrillic a
 		{"FETCH", true},
-		// Spellings the shell itself reduces to the builtin name.
 		{"fetch", false},
 		{"add", false},
-		{"f''etch", false},
-		{`"fetch"`, false},
-		{`fe\tch`, false},
+		// Spellings the shell reduces to the builtin name block too: the
+		// exception needs a plain subcommand word, and in an argument list
+		// these are literal names Git runs as aliases or git-<name> programs.
+		{"f''etch", true},
+		{`"fetch"`, true},
+		{`fe\tch`, true},
 	} {
 		line := tc.subcommand + " --force notes"
 		cases := map[string]func() Verdict{
@@ -380,9 +387,6 @@ func TestGitSubcommandRawSpelling(t *testing.T) {
 			"git argv":  func() Verdict { return pc.CheckToolCall("git", []string{tc.subcommand, "--force", "notes"}) },
 		}
 		for name, check := range cases {
-			if strings.ContainsAny(tc.subcommand, `'"\`) && name != "bash" {
-				continue // shell quoting applies only to a shell command string
-			}
 			t.Run(name+"/"+strconv.Quote(tc.subcommand), func(t *testing.T) {
 				v := check()
 				if blocked := v.Matched && v.Action == config.ActionBlock; blocked != tc.block {

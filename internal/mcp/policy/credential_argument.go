@@ -104,7 +104,7 @@ type candidateViews map[string][]argView
 func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate string, memo candidateViews) bool {
 	views, ok := memo[candidate]
 	if !ok {
-		views = buildArgViews([]string{candidate}, false)
+		views = buildArgViews([]string{candidate}, false, nil)
 		if memo != nil {
 			memo[candidate] = views
 		}

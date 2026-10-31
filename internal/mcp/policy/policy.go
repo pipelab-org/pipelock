@@ -262,10 +262,14 @@ func (pc *Config) CheckToolCall(toolName string, argStrings []string) Verdict {
 //  3. Pairwise token combinations - catches map-ordering evasion where
 //     command and flags land in separate values with non-deterministic order
 func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage) Verdict {
-	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true)
+	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true, argStrings, rawArgs)
 }
 
-func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage, checkInput bool) Verdict {
+// checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
+// submitted values and the JSON that carried them, read for the Git builtin
+// exception (see proveGitBuiltins); a shape is used only where it reproduces
+// proofArgs.
+func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, rawArgs json.RawMessage, checkInput bool, proofArgs []string, proofShape json.RawMessage) Verdict {
 	if pc == nil || len(pc.Rules) == 0 {
 		return Verdict{}
 	}
@@ -313,8 +317,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// The git tool's values are Git's argument list; JSON keys checked with
 	// checkInput false are not (see CheckToolCallJSON).
 	gitTool := checkInput && (gitToolName.MatchString(policyToolName) || gitToolName.MatchString(baselineToolName))
+	// The proof reads the submitted values, before local path identities are
+	// added to the values matched.
+	proof := proveGitBuiltins(proofArgs, jsonArgCarriers(proofShape, proofArgs), gitTool)
 	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
-	views := buildArgViews(matchArgs, gitTool)
+	views := buildArgViews(matchArgs, gitTool, &proof)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -363,7 +370,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViews(scopedStrings, gitTool)
+			ruleViews = buildArgViews(scopedStrings, gitTool, nil)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -373,7 +380,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleViews = buildArgViews(matchStrings, gitTool)
+				ruleViews = buildArgViews(matchStrings, gitTool, nil)
 			}
 		}
 
@@ -517,25 +524,20 @@ func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) strin
 		if preNorm != nil {
 			s = preNorm.Replace(s)
 		}
-		tokens = append(tokens, strings.Fields(resolveShellSpelling(normFn(s)))...)
+		normalized := normFn(s)
+		normalized = decodeShellEscapes(normalized)
+		normalized = backtickCmdSubRe.ReplaceAllString(normalized, "$1")
+		normalized = shellQuoteStripper.Replace(normalized)
+		normalized = shellEscapeRe.ReplaceAllString(normalized, "$1")
+		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
+		normalized = resolveShellConstruction(normalized)
+		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
+		normalized = expandBraces(normalized)
+		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
+		normalized = collapsePathSeparators(normalized)
+		tokens = append(tokens, strings.Fields(normalized)...)
 	}
 	return tokens, strings.Join(tokens, " ")
-}
-
-// resolveShellSpelling applies the shell escape decoding, quote removal and
-// shell construction resolution of normalizeArgTokensUnexpanded, without
-// Unicode normalization.
-func resolveShellSpelling(s string) string {
-	s = decodeShellEscapes(s)
-	s = backtickCmdSubRe.ReplaceAllString(s, "$1")
-	s = shellQuoteStripper.Replace(s)
-	s = shellEscapeRe.ReplaceAllString(s, "$1")
-	s = shellPositionalRe.ReplaceAllString(s, "")
-	s = resolveShellConstruction(s)
-	s = shellHomeSlashRe.ReplaceAllString(s, "/")
-	s = expandBraces(s)
-	s = shellExpansionRe.ReplaceAllString(s, " ")
-	return collapsePathSeparators(s)
 }
 
 // pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem
@@ -1237,7 +1239,9 @@ func (pc *Config) checkSingle(line []byte) Verdict {
 		}
 	}
 
-	return pc.CheckToolCallWithArgs(tc.Name, argStrings, rawArgs)
+	// The arguments' JSON shape is kept for the Git builtin exception even when
+	// no rule reads raw arguments.
+	return pc.checkToolCallWithArgs(tc.Name, argStrings, rawArgs, true, argStrings, tc.Arguments)
 }
 
 // ArgValues returns the string values of JSON arguments, in sorted-key
@@ -1263,7 +1267,9 @@ func (pc *Config) CheckToolCallJSON(toolName string, values, withKeys []string, 
 	// Keys are still scanned for rule matches, but they aren't runtime argv.
 	// Input provenance is assessed on values above; adding JSON keys must not
 	// turn a proved command string into an unknown argument array.
-	return mergeVerdicts(v, pc.checkToolCallWithArgs(toolName, withKeys, rawArgs, false))
+	// The key pass reads no git tool argument list, so its Git commands are
+	// proved from the values read the same way.
+	return mergeVerdicts(v, pc.checkToolCallWithArgs(toolName, withKeys, rawArgs, false, values, rawArgs))
 }
 
 // mergeVerdicts combines two verdicts for one call. The stricter action wins

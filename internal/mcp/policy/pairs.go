@@ -69,10 +69,14 @@ func literalArgTokens(args []string) ([]string, string) {
 // must not erase a spelling that an existing configured rule matches.
 //
 // gitTool reads args as the dedicated git tool's arguments (see
-// normalizeLineOptions).
-func buildArgViews(args []string, gitTool bool) []argView {
+// normalizeLineOptions). proof decides which builtin subcommands keep their own
+// reading (see gitProof); nil reads args themselves without a recorded shape.
+func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	segs, plain := splitCommands(args)
-	rawUnknown := gitSubcommandUnknown(args, gitTool)
+	if proof == nil {
+		p := proveGitBuiltins(args, nil, gitTool)
+		proof = &p
+	}
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
 	norms := []struct {
@@ -119,7 +123,7 @@ func buildArgViews(args []string, gitTool bool) []argView {
 		add(v)
 		expanded := v
 		var unknownGit bool
-		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool, rawUnknown)
+		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool, proof)
 		expanded.joined = strings.Join(expanded.tokens, " ")
 		if v.segments != nil {
 			expanded.segments = make([][]string, 0, len(v.segments))
@@ -130,7 +134,7 @@ func buildArgViews(args []string, gitTool bool) []argView {
 				} else {
 					// A non-builtin Git subcommand anywhere on the line makes every
 					// command's destructive readings visible to the pairs it forms.
-					t, _ := normalizeOptions(seg, unknownGit, gitTool)
+					t, _, _ := normalizeOptions(seg, unknownGit, gitTool)
 					expanded.segments = append(expanded.segments, t)
 				}
 			}
