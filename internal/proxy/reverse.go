@@ -2603,6 +2603,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return confirmReverseDecision(passthroughReceipt)
 	}
 	compressedResponseErr := error(nil)
+	structuredEncodingBlocked := responseencoding.HasNonIdentityContentEncoding(resp.Header)
 	if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 		switch {
 		case HasSingleSSEContentType(resp.Header):
@@ -3165,7 +3166,16 @@ responseScanning:
 	// can pad the first maxBytes and place injection text after the scanning
 	// window. This matches request-side behavior (bodyscan.go blocks oversized
 	// requests) and ensures response scanning cannot be bypassed by size.
-	if len(body) > maxBytes && shieldOnly && revRespSizeExempt {
+	var structured *structuredResponseInspection
+	if len(body) > maxBytes && !shieldOnly && !structuredEncodingBlocked && !revRespSizeExempt {
+		full, inspection, release := rp.sizeExemptScanBudget.readStructuredResponse(resp.Request.Context(), body, resp.Body, cfg, int64(maxBytes))
+		if inspection != nil {
+			body, structured = full, inspection
+			// The buffered body outlives ModifyResponse until delivery ends.
+			defer holdReservationUntilBodyClose(resp, release)
+		}
+	}
+	if structured == nil && len(body) > maxBytes && shieldOnly && revRespSizeExempt {
 		var scanFailure *sizeExemptResponseReadError
 		var releaseSizeExemptScan sizeExemptScanRelease
 		body, releaseSizeExemptScan, scanFailure = rp.sizeExemptScanBudget.readBoundedSizeExemptResponse(revHost, body, resp.Body, admittedScanLimit, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
@@ -3193,8 +3203,8 @@ responseScanning:
 			recordReverseOutcome(http.StatusForbidden, -1, string(scanFailure.Kind))
 			return nil
 		}
-		defer releaseSizeExemptScan()
-	} else if len(body) > maxBytes {
+		defer holdReservationUntilBodyClose(resp, releaseSizeExemptScan)
+	} else if structured == nil && len(body) > maxBytes {
 		if shieldOnly && cfg.BrowserShield.MaxShieldBytes > 0 {
 			// No response scanner, including the core floor, is active on this
 			// path, so Browser Shield alone owns its documented oversize action.
@@ -3307,7 +3317,7 @@ responseScanning:
 				recordReverseOutcome(http.StatusForbidden, -1, string(scanFailure.Kind))
 				return nil
 			}
-			defer releaseSizeExemptScan()
+			defer holdReservationUntilBodyClose(resp, releaseSizeExemptScan)
 		} else {
 			// The reverse ceiling is a compile-time constant, so the only
 			// remedy is the per-host size exemption. Name the size, the
@@ -3466,8 +3476,17 @@ responseScanning:
 	}
 
 	// Scan the response text for injection patterns.
-	result := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress)
-	result = retainShieldScan(preShieldScan, result, body)
+	result := scanStructuredResponse(resp.Request.Context(), sc, cfg, body, resp.Request.URL.String(), structured)
+	result = retainStructuredShieldScan(preShieldScan, result, body, structured)
+	if structured != nil {
+		actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
+		rp.logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
+		evidence := receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: requestActionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: TransportReverse, Method: resp.Request.Method, Target: targetURL, RequestID: requestID, Agent: agent}
+		if !confirmReverseDecision(evidence) {
+			return nil
+		}
+	}
+
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 	// A response injection match is a taint source; the deferred taint
 	// observation above reads this flag when the response completes.
