@@ -73,372 +73,378 @@ func runRequiredResponsePolicyReceipts(t *testing.T, surface string) {
 				continue
 			}
 
-			for _, grouped := range []bool{false, true} {
-				for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
-					t.Run(surface+"/"+shape+"/"+map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
-						t.Parallel()
-						// A grouped run replaces the recorder and source with the
-						// failure group, so the dual-emit fixture (a whole proxy and
-						// scanner) is built only for the single-recorder runs that
-						// use it.
-						var f *dualEmitFixture
-						var source *Proxy
-						var rec *recorder.Recorder
-						if grouped {
-							rec, _, source, _ = newReceiptFailureGroup(t)
-							_ = source.admitReceiptShard()
-						} else {
-							f = newDualEmitFixture(t, false)
-							source, rec = f.p, f.rec
-						}
-						cfg := config.Defaults()
-						cfg.Internal = nil
-						cfg.Taint.Enabled = false
-						if shape == "media relabel" {
-							disabled := false
-							cfg.MediaPolicy.StripImageMetadata = &disabled
-						}
-						cfg.FlightRecorder.RequireReceipts = failure != "optional"
-						cfg.ForwardProxy.Enabled = true
-						cfg.ResponseScanning.Enabled = strings.HasPrefix(shape, "scan") || strings.HasPrefix(shape, "approve") || shape == "sse warn"
-						if shape == "artifact" {
-							cfg.ResponseScanning.AuthenticatedArtifacts = []config.AuthenticatedArtifactEntry{{Host: "api.vendor.example", Path: "/content", BundleName: "pipelock-community"}}
-						}
-						if shape == "passthrough" {
-							cfg.TLSInterception.MaxResponseBytes = 128
-							cfg.ResponseScanning.Enabled = true
-							cfg.ResponseScanning.SizeExemptDomains = []string{"api.vendor.example"}
-							cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{Host: "api.vendor.example", Paths: []string{"/content"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque artifact", Expires: time.Now().AddDate(1, 0, 0).Format(time.DateOnly)}}
-						}
-						cfg.ResponseScanning.Action = config.ActionWarn
-						cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
-						if shape == "scan strip" {
-							cfg.ResponseScanning.Action = config.ActionStrip
-						}
-						if strings.HasPrefix(shape, "approve") {
-							cfg.ResponseScanning.Action = config.ActionAsk
-						}
-						cfg.ResponseScanning.SSEStreaming.Enabled = true
-						cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
-						cfg.BrowserShield.Enabled = strings.HasPrefix(shape, "shield")
-						if shape == "shield head" || shape == "shield warn" {
-							cfg.BrowserShield.MaxShieldBytes = 256
-							cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
-							if shape == "shield warn" {
-								cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+			// One sequential subtest per shape bounds memory: Go keeps a finished
+			// parallel subtest's state until its parent returns, so grouping by shape
+			// releases each shape's fixtures before the next starts. Full names are
+			// unchanged, so shard selectors and recorded timings still match.
+			t.Run(surface+"/"+shape, func(t *testing.T) {
+				for _, grouped := range []bool{false, true} {
+					for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
+						t.Run(map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
+							t.Parallel()
+							// A grouped run replaces the recorder and source with the
+							// failure group, so the dual-emit fixture (a whole proxy and
+							// scanner) is built only for the single-recorder runs that
+							// use it.
+							var f *dualEmitFixture
+							var source *Proxy
+							var rec *recorder.Recorder
+							if grouped {
+								rec, _, source, _ = newReceiptFailureGroup(t)
+								_ = source.admitReceiptShard()
+							} else {
+								f = newDualEmitFixture(t, false)
+								source, rec = f.p, f.rec
 							}
-						}
-						cfg.A2AScanning.Enabled = shape == "a2a" || strings.HasPrefix(shape, "card")
-						cfg.A2AScanning.Action = config.ActionWarn
-						cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.example"}
-						var signedCard []byte
-						if shape == "card signature" {
-							pub, priv, keyErr := ed25519.GenerateKey(nil)
-							if keyErr != nil {
-								t.Fatal(keyErr)
+							cfg := config.Defaults()
+							cfg.Internal = nil
+							cfg.Taint.Enabled = false
+							if shape == "media relabel" {
+								disabled := false
+								cfg.MediaPolicy.StripImageMetadata = &disabled
 							}
-							cfg.A2AScanning.DetectCardDrift = false
-							cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: "k1", PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
-							signedCard = e2eSignedCard(t, priv, false)
-						}
-						sc := scanner.MustNew(cfg)
-						p, err := New(cfg, source.logger, sc, source.metrics, WithRecorder(rec), WithReceiptEmitter(source.receiptEmitterPtr.Load()), WithV2ReceiptEmitter(source.v2EmitterPtr.Load()))
-						if err != nil {
-							t.Fatal(err)
-						}
-						defer p.Close()
-						if shape == "passthrough" {
-							p.responseBodyLimit = 128
-						}
-						p.receiptGroupPtr.Store(source.receiptGroupPtr.Load())
-						if strings.HasPrefix(shape, "approve") {
-							answer := "y\n"
-							if shape == "approve strip" {
-								answer = "s\n"
+							cfg.FlightRecorder.RequireReceipts = failure != "optional"
+							cfg.ForwardProxy.Enabled = true
+							cfg.ResponseScanning.Enabled = strings.HasPrefix(shape, "scan") || strings.HasPrefix(shape, "approve") || shape == "sse warn"
+							if shape == "artifact" {
+								cfg.ResponseScanning.AuthenticatedArtifacts = []config.AuthenticatedArtifactEntry{{Host: "api.vendor.example", Path: "/content", BundleName: "pipelock-community"}}
 							}
-							p.approver = hitl.New(5, hitl.WithInput(strings.NewReader(answer)), hitl.WithOutput(&bytes.Buffer{}), hitl.WithTerminal(true))
-							defer p.approver.Close()
-						}
-
-						var syncs atomic.Int32
-						target := "https://api.vendor.example/content"
-						if strings.HasPrefix(shape, "card") {
-							target = "https://api.vendor.example" + agentCardPath
-							if surface == "intercept" {
-								target = "https://api.vendor.example:443" + agentCardPath
+							if shape == "passthrough" {
+								cfg.TLSInterception.MaxResponseBytes = 128
+								cfg.ResponseScanning.Enabled = true
+								cfg.ResponseScanning.SizeExemptDomains = []string{"api.vendor.example"}
+								cfg.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{Host: "api.vendor.example", Paths: []string{"/content"}, ContentTypes: []string{"application/octet-stream"}, Reason: "opaque artifact", Expires: time.Now().AddDate(1, 0, 0).Format(time.DateOnly)}}
 							}
-						}
-						ctype, payload, marker := "image/png", string(buildValidPNG([]byte("Description\x00metadata-marker"))), "pixel bytes"
-						if shape == "media relabel" {
-							ctype = "image/jpeg"
-						}
-						if strings.HasPrefix(shape, "shield") {
-							ctype, payload, marker = "text/html", `<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a><p>ordinary text</p></body></html>`, "ordinary text"
-						}
-						if shape == "shield head" || shape == "shield warn" {
-							payload += strings.Repeat(" ", 1024)
-						}
-						if shape == "a2a" {
-							ctype, payload, marker = "application/a2a+json", `{"url":"https://blocked.example/content","text":"ordinary text"}`, "ordinary text"
-							result := mcp.ScanA2AResponseBody(t.Context(), []byte(payload), sc, &cfg.A2AScanning)
-							if result.Clean || result.ScanError != "" {
-								t.Fatalf("invalid finding control: %+v", result)
+							cfg.ResponseScanning.Action = config.ActionWarn
+							cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{{Name: "response marker", Regex: "POLICY_MARKER"}}
+							if shape == "scan strip" {
+								cfg.ResponseScanning.Action = config.ActionStrip
 							}
-						}
-						if strings.HasPrefix(shape, "scan") || strings.HasPrefix(shape, "approve") {
-							ctype, payload, marker = "text/plain", "ordinary text POLICY_MARKER rest", "ordinary text"
-						}
-						if shape == "scan hidden" {
-							ctype, payload, marker = "text/html", "<html><body><p>ordinary text</p><!-- POLICY_MARKER --></body></html>", "ordinary text"
-						}
-						if shape == "sse warn" {
-							ctype, payload, marker = "text/event-stream", "data: {\"text\":\"ordinary text POLICY_MARKER rest\"}\n\n", "ordinary text"
-						}
-
-						originalCard := []byte(`{"name":"Document helper","description":"ordinary text","skills":[{"id":"read","name":"Read documents","description":"Read documents"}]}`)
-						if strings.HasPrefix(shape, "card") {
-							ctype, payload, marker = "application/json", string(originalCard), "ordinary text"
-							if shape == "card adopt" {
-								initial := mcp.ScanAgentCard(t.Context(), originalCard, sc, p.a2aCardBaseline, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
-								if !initial.Clean || !initial.FirstSeen {
-									t.Fatalf("invalid initial card: %+v", initial)
+							if strings.HasPrefix(shape, "approve") {
+								cfg.ResponseScanning.Action = config.ActionAsk
+							}
+							cfg.ResponseScanning.SSEStreaming.Enabled = true
+							cfg.ResponseScanning.SSEStreaming.Action = config.ActionWarn
+							cfg.BrowserShield.Enabled = strings.HasPrefix(shape, "shield")
+							if shape == "shield head" || shape == "shield warn" {
+								cfg.BrowserShield.MaxShieldBytes = 256
+								cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+								if shape == "shield warn" {
+									cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
 								}
-								payload = strings.Replace(payload, "ordinary text", "ordinary text with details", 1)
 							}
+							cfg.A2AScanning.Enabled = shape == "a2a" || strings.HasPrefix(shape, "card")
+							cfg.A2AScanning.Action = config.ActionWarn
+							cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.example"}
+							var signedCard []byte
 							if shape == "card signature" {
-								payload, marker = string(signedCard), "Vendor Agent"
-								control := mcp.ScanAgentCard(t.Context(), signedCard, sc, nil, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
-								if !control.Clean || !control.SignatureVerified {
-									t.Fatalf("invalid signed card: %+v", control)
+								pub, priv, keyErr := ed25519.GenerateKey(nil)
+								if keyErr != nil {
+									t.Fatal(keyErr)
 								}
+								cfg.A2AScanning.DetectCardDrift = false
+								cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: "k1", PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
+								signedCard = e2eSignedCard(t, priv, false)
 							}
-						}
-
-						if shape == "artifact" {
-							ctype, payload, marker = "text/plain", string(artifactBundle("ordinary text POLICY_MARKER")), "ordinary text"
-						}
-						if shape == "passthrough" {
-							ctype, payload, marker = "application/octet-stream", strings.Repeat("Z", 1024), strings.Repeat("Z", 32)
-						}
-						admitted := false
-						rt := forwardBoundaryRoundTripper(func(req *http.Request) (*http.Response, error) {
-							if shape == "artifact" && strings.HasSuffix(req.URL.Path, ".sig") {
-								return artifactResponse(req, http.StatusOK, []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(artifactKey, []byte(payload))))), nil
+							sc := scanner.MustNew(cfg)
+							p, err := New(cfg, source.logger, sc, source.metrics, WithRecorder(rec), WithReceiptEmitter(source.receiptEmitterPtr.Load()), WithV2ReceiptEmitter(source.v2EmitterPtr.Load()))
+							if err != nil {
+								t.Fatal(err)
 							}
-							admitted = true
-							rec.SetSyncForTest(func(*os.File) error {
-								n := syncs.Add(1)
-								if failure == "v1 sync" && n == 1 || failure == "v2 sync" && n == 2 {
-									return errors.New("response sync failure")
-								}
-								return nil
-							})
-							e1, e2 := p.receiptEmitterPtr.Load(), p.v2EmitterPtr.Load()
-							if group := p.receiptGroupPtr.Load(); group != nil {
-								// Every transport selected the second admission shard. The process
-								// fallback is deliberately healthy to expose a lost selection.
-								selected := receipt.EmitOpts{ShardSelected: true, ShardIndex: 1}
-								e1, err = group.shards.SelectedEmitter(selected)
-								if err != nil {
-									t.Fatal(err)
-								}
-								e2 = group.v2[selected.ShardIndex]
-							}
-							switch failure {
-							case "missing":
-								p.receiptGroupPtr.Store(nil)
-								p.receiptEmitterPtr.Store(nil)
-								p.v2EmitterPtr.Store(nil)
-							case "v1":
-								e1.MarkUnhealthy(errors.New("response writer failure"))
-							case "v2", "optional":
-								if _, _, retireErr := e2.Retire(); retireErr != nil {
-									t.Fatal(retireErr)
-								}
-							}
-							header := http.Header{"Content-Type": {ctype}}
+							defer p.Close()
 							if shape == "passthrough" {
-								header.Set("Content-Disposition", `attachment; filename="artifact.bin"`)
-								header.Set("Content-Length", strconv.Itoa(len(payload)))
+								p.responseBodyLimit = 128
 							}
-							return &http.Response{StatusCode: http.StatusOK, Header: header, ContentLength: int64(len(payload)), Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
-						})
-						p.client = &http.Client{Transport: rt}
-						requestURL := target
-						if surface == "fetch" {
-							requestURL = "/fetch?url=" + target
-						}
-						req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
-						if shape == "a2a" {
-							req.Header.Set("Content-Type", ctype)
-						}
-						w := &receiptDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), syncs: &syncs}
-						var tracker *reverseOutcomeTracker
-						switch surface {
-						case "fetch":
-							p.handleFetch(w, req)
-						case "forward":
-							p.handleForwardHTTP(w, req)
-						case "intercept":
-							newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt).ServeHTTP(w, req)
-						case "reverse":
-							selected := p.admitReceiptShard()
-							reverseActionID := receipt.NewActionID()
-							req = req.WithContext(context.WithValue(req.Context(), ctxKeyReverseActionID, reverseActionID))
-							tracker = newReverseOutcomeTracker(cfg, receipt.EmitOpts{})
-							req = req.WithContext(context.WithValue(context.WithValue(req.Context(), ctxKeyReceiptShard, selected), ctxKeyReverseOutcome, tracker))
-							if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: reverseActionID, Verdict: config.ActionAllow, Transport: TransportReverse, Method: http.MethodGet, Target: target}, selected)); err != nil {
-								t.Fatal(err)
-							}
-							resp, rtErr := rt.RoundTrip(req)
-							if rtErr != nil {
-								t.Fatal(rtErr)
-							}
-							rp := &ReverseProxyHandler{cfgPtr: &p.cfgPtr, scPtr: &p.scannerPtr, logger: p.logger, metrics: p.metrics, owner: p, shieldEngine: p.shieldEngine, captureObs: p.captureObs, receiptEmitterPtr: &p.receiptEmitterPtr, v2EmitterPtr: &p.v2EmitterPtr, envelopeEmitterPtr: &p.envelopeEmitterPtr, envelopeVerifierPtr: &p.envelopeVerifierPtr}
-							if shape == "passthrough" {
-								rp.responseBodyLimit = 128
-							}
-							if err := rp.modifyResponse(resp); err != nil {
-								t.Fatal(err)
-							}
-							b, readErr := io.ReadAll(resp.Body)
-							_ = resp.Body.Close()
-							if shape == "sse warn" && failure != "healthy" && failure != "optional" && !errors.Is(readErr, mcp.ErrReceiptRequired) {
-								t.Fatalf("receipt failure ended stream without error: %v", readErr)
-							}
-							if readErr != nil && (shape != "sse warn" || !errors.Is(readErr, mcp.ErrReceiptRequired)) {
-								t.Fatal(readErr)
-							}
-							for key, values := range resp.Header {
-								w.Header()[key] = values
-							}
-							w.WriteHeader(resp.StatusCode)
-							_, _ = w.Write(b)
-						}
-						if !admitted {
-							t.Fatal("request never reached admitted upstream")
-						}
-						want := failure == "healthy" || failure == "optional"
-						delivered := strings.Contains(w.Body.String(), marker)
-						if delivered != want {
-							t.Fatalf("delivered=%t want=%t status=%d body=%q", delivered, want, w.Code, w.Body.String())
-						}
-						if !want {
-							if shape != "sse warn" && (w.Code != http.StatusForbidden || w.Header().Get("X-Pipelock-Block-Reason") != "receipt_emission_failed") {
-								t.Fatalf("untruthful failure: status=%d headers=%v", w.Code, w.Header())
-							}
-							statsRecorder := httptest.NewRecorder()
-							p.metrics.StatsHandler()(statsRecorder, req)
-							var stats struct {
-								Receipts struct {
-									RequiredBlocks []struct {
-										Reason, Transport string
-										Count             int
-									} `json:"required_blocks"`
+							p.receiptGroupPtr.Store(source.receiptGroupPtr.Load())
+							if strings.HasPrefix(shape, "approve") {
+								answer := "y\n"
+								if shape == "approve strip" {
+									answer = "s\n"
 								}
-							}
-							if err := json.Unmarshal(statsRecorder.Body.Bytes(), &stats); err != nil {
-								t.Fatal(err)
-							}
-							if len(stats.Receipts.RequiredBlocks) == 0 {
-								t.Fatalf("receipt block absent from operator stats: %s", statsRecorder.Body.String())
+								p.approver = hitl.New(5, hitl.WithInput(strings.NewReader(answer)), hitl.WithOutput(&bytes.Buffer{}), hitl.WithTerminal(true))
+								defer p.approver.Close()
 							}
 
-							if tracker != nil {
-								tracker.mu.Lock()
-								reason := tracker.reason
-								tracker.mu.Unlock()
-								if reason != receiptEmissionFailedLayer {
-									t.Fatalf("outcome=%q", reason)
+							var syncs atomic.Int32
+							target := "https://api.vendor.example/content"
+							if strings.HasPrefix(shape, "card") {
+								target = "https://api.vendor.example" + agentCardPath
+								if surface == "intercept" {
+									target = "https://api.vendor.example:443" + agentCardPath
 								}
 							}
-						}
-						if want && shape == "media relabel" {
-							if surface == "fetch" {
-								if !strings.Contains(w.Body.String(), `"content_type":"image/png"`) {
-									t.Fatalf("relabel missing: %s", w.Body.String())
+							ctype, payload, marker := "image/png", string(buildValidPNG([]byte("Description\x00metadata-marker"))), "pixel bytes"
+							if shape == "media relabel" {
+								ctype = "image/jpeg"
+							}
+							if strings.HasPrefix(shape, "shield") {
+								ctype, payload, marker = "text/html", `<html><head></head><body><a href="chrome-extension://abcdefghijklmnopqrstuvwxyzabcdef/page.html">extension</a><p>ordinary text</p></body></html>`, "ordinary text"
+							}
+							if shape == "shield head" || shape == "shield warn" {
+								payload += strings.Repeat(" ", 1024)
+							}
+							if shape == "a2a" {
+								ctype, payload, marker = "application/a2a+json", `{"url":"https://blocked.example/content","text":"ordinary text"}`, "ordinary text"
+								result := mcp.ScanA2AResponseBody(t.Context(), []byte(payload), sc, &cfg.A2AScanning)
+								if result.Clean || result.ScanError != "" {
+									t.Fatalf("invalid finding control: %+v", result)
 								}
-							} else if w.Header().Get("Content-Type") != "image/png" {
-								t.Fatalf("relabel missing: %v", w.Header())
 							}
-						}
-						if want && shape == "media" && bytes.Contains(w.Body.Bytes(), []byte("metadata-marker")) {
-							t.Fatal("metadata not stripped")
-						}
-						if want && (shape == "shield" || shape == "shield head") && strings.Contains(w.Body.String(), "chrome-extension") {
-							t.Fatal("shield did not rewrite")
-						}
-						if shape == "card first" || shape == "card adopt" {
-							check := originalCard
-							if want {
-								check = []byte(payload)
+							if strings.HasPrefix(shape, "scan") || strings.HasPrefix(shape, "approve") {
+								ctype, payload, marker = "text/plain", "ordinary text POLICY_MARKER rest", "ordinary text"
 							}
-							state := mcp.ScanAgentCard(t.Context(), check, sc, p.a2aCardBaseline, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
-							if shape == "card first" && !want {
-								if !state.FirstSeen {
-									t.Fatal("failed confirmation seeded baseline")
-								}
-							} else if !state.Clean || state.DriftDetected {
-								t.Fatalf("baseline changed before confirmation: %+v", state)
+							if shape == "scan hidden" {
+								ctype, payload, marker = "text/html", "<html><body><p>ordinary text</p><!-- POLICY_MARKER --></body></html>", "ordinary text"
 							}
-						}
-						if want && (shape == "scan strip" || shape == "approve strip") && strings.Contains(w.Body.String(), "POLICY_MARKER") {
-							t.Fatal("strip kept finding")
-						}
+							if shape == "sse warn" {
+								ctype, payload, marker = "text/event-stream", "data: {\"text\":\"ordinary text POLICY_MARKER rest\"}\n\n", "ordinary text"
+							}
 
-						if !grouped && failure == "healthy" {
-							if err := rec.Close(); err != nil {
-								t.Fatal(err)
-							}
-							records := extractReceiptsFromDir(t, f.dir)
-							var requestID string
-							for _, rcpt := range records {
-								if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
-									requestID = rcpt.ActionRecord.ActionID
-									break
+							originalCard := []byte(`{"name":"Document helper","description":"ordinary text","skills":[{"id":"read","name":"Read documents","description":"Read documents"}]}`)
+							if strings.HasPrefix(shape, "card") {
+								ctype, payload, marker = "application/json", string(originalCard), "ordinary text"
+								if shape == "card adopt" {
+									initial := mcp.ScanAgentCard(t.Context(), originalCard, sc, p.a2aCardBaseline, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
+									if !initial.Clean || !initial.FirstSeen {
+										t.Fatalf("invalid initial card: %+v", initial)
+									}
+									payload = strings.Replace(payload, "ordinary text", "ordinary text with details", 1)
 								}
-							}
-							if requestID == "" {
-								t.Fatal("missing request receipt positive control")
-							}
-							for _, rcpt := range records {
-								r := rcpt.ActionRecord
-								if r.DecisionPhase != "" || r.Verdict == config.ActionBlock {
-									continue
-								}
-								if r.ActionID == requestID || r.ParentActionID != requestID {
-									t.Errorf("response decision is not a child of request: %+v", r)
-								}
-							}
-						}
-						if !grouped && surface == "fetch" && !want && failure == "v2" && strings.HasPrefix(shape, "scan") {
-							if err := rec.Close(); err != nil {
-								t.Fatal(err)
-							}
-							records := extractReceiptsFromDir(t, f.dir)
-							found := false
-							for _, rcpt := range records {
-								r := rcpt.ActionRecord
-								if r.DecisionPhase == receipt.DecisionPhaseOutcome {
-									found = true
-									if !strings.Contains(r.Pattern, "reason="+receiptEmissionFailedLayer) || !strings.Contains(r.Pattern, "status=403") {
-										t.Errorf("receipt failure misclassified: %s", r.Pattern)
+								if shape == "card signature" {
+									payload, marker = string(signedCard), "Vendor Agent"
+									control := mcp.ScanAgentCard(t.Context(), signedCard, sc, nil, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
+									if !control.Clean || !control.SignatureVerified {
+										t.Fatalf("invalid signed card: %+v", control)
 									}
 								}
 							}
-							if !found {
-								t.Fatal("missing fetch outcome")
+
+							if shape == "artifact" {
+								ctype, payload, marker = "text/plain", string(artifactBundle("ordinary text POLICY_MARKER")), "ordinary text"
 							}
-						}
-						if failure == "healthy" && w.syncsAtDelivery < 2 {
-							t.Fatalf("both families not synced before delivery: %d", w.syncsAtDelivery)
-						}
-						if failure == "optional" && syncs.Load() != 0 {
-							t.Fatalf("optional forced sync: %d", syncs.Load())
-						}
-					})
+							if shape == "passthrough" {
+								ctype, payload, marker = "application/octet-stream", strings.Repeat("Z", 1024), strings.Repeat("Z", 32)
+							}
+							admitted := false
+							rt := forwardBoundaryRoundTripper(func(req *http.Request) (*http.Response, error) {
+								if shape == "artifact" && strings.HasSuffix(req.URL.Path, ".sig") {
+									return artifactResponse(req, http.StatusOK, []byte(base64.StdEncoding.EncodeToString(ed25519.Sign(artifactKey, []byte(payload))))), nil
+								}
+								admitted = true
+								rec.SetSyncForTest(func(*os.File) error {
+									n := syncs.Add(1)
+									if failure == "v1 sync" && n == 1 || failure == "v2 sync" && n == 2 {
+										return errors.New("response sync failure")
+									}
+									return nil
+								})
+								e1, e2 := p.receiptEmitterPtr.Load(), p.v2EmitterPtr.Load()
+								if group := p.receiptGroupPtr.Load(); group != nil {
+									// Every transport selected the second admission shard. The process
+									// fallback is deliberately healthy to expose a lost selection.
+									selected := receipt.EmitOpts{ShardSelected: true, ShardIndex: 1}
+									e1, err = group.shards.SelectedEmitter(selected)
+									if err != nil {
+										t.Fatal(err)
+									}
+									e2 = group.v2[selected.ShardIndex]
+								}
+								switch failure {
+								case "missing":
+									p.receiptGroupPtr.Store(nil)
+									p.receiptEmitterPtr.Store(nil)
+									p.v2EmitterPtr.Store(nil)
+								case "v1":
+									e1.MarkUnhealthy(errors.New("response writer failure"))
+								case "v2", "optional":
+									if _, _, retireErr := e2.Retire(); retireErr != nil {
+										t.Fatal(retireErr)
+									}
+								}
+								header := http.Header{"Content-Type": {ctype}}
+								if shape == "passthrough" {
+									header.Set("Content-Disposition", `attachment; filename="artifact.bin"`)
+									header.Set("Content-Length", strconv.Itoa(len(payload)))
+								}
+								return &http.Response{StatusCode: http.StatusOK, Header: header, ContentLength: int64(len(payload)), Body: io.NopCloser(strings.NewReader(payload)), Request: req}, nil
+							})
+							p.client = &http.Client{Transport: rt}
+							requestURL := target
+							if surface == "fetch" {
+								requestURL = "/fetch?url=" + target
+							}
+							req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, requestURL, nil)
+							if shape == "a2a" {
+								req.Header.Set("Content-Type", ctype)
+							}
+							w := &receiptDeliveryWriter{ResponseRecorder: httptest.NewRecorder(), syncs: &syncs}
+							var tracker *reverseOutcomeTracker
+							switch surface {
+							case "fetch":
+								p.handleFetch(w, req)
+							case "forward":
+								p.handleForwardHTTP(w, req)
+							case "intercept":
+								newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: p.logger, Metrics: p.metrics, Proxy: p}, rt).ServeHTTP(w, req)
+							case "reverse":
+								selected := p.admitReceiptShard()
+								reverseActionID := receipt.NewActionID()
+								req = req.WithContext(context.WithValue(req.Context(), ctxKeyReverseActionID, reverseActionID))
+								tracker = newReverseOutcomeTracker(cfg, receipt.EmitOpts{})
+								req = req.WithContext(context.WithValue(context.WithValue(req.Context(), ctxKeyReceiptShard, selected), ctxKeyReverseOutcome, tracker))
+								if err := p.emitRequiredReceipt(withReceiptShard(receipt.EmitOpts{ActionID: reverseActionID, Verdict: config.ActionAllow, Transport: TransportReverse, Method: http.MethodGet, Target: target}, selected)); err != nil {
+									t.Fatal(err)
+								}
+								resp, rtErr := rt.RoundTrip(req)
+								if rtErr != nil {
+									t.Fatal(rtErr)
+								}
+								rp := &ReverseProxyHandler{cfgPtr: &p.cfgPtr, scPtr: &p.scannerPtr, logger: p.logger, metrics: p.metrics, owner: p, shieldEngine: p.shieldEngine, captureObs: p.captureObs, receiptEmitterPtr: &p.receiptEmitterPtr, v2EmitterPtr: &p.v2EmitterPtr, envelopeEmitterPtr: &p.envelopeEmitterPtr, envelopeVerifierPtr: &p.envelopeVerifierPtr}
+								if shape == "passthrough" {
+									rp.responseBodyLimit = 128
+								}
+								if err := rp.modifyResponse(resp); err != nil {
+									t.Fatal(err)
+								}
+								b, readErr := io.ReadAll(resp.Body)
+								_ = resp.Body.Close()
+								if shape == "sse warn" && failure != "healthy" && failure != "optional" && !errors.Is(readErr, mcp.ErrReceiptRequired) {
+									t.Fatalf("receipt failure ended stream without error: %v", readErr)
+								}
+								if readErr != nil && (shape != "sse warn" || !errors.Is(readErr, mcp.ErrReceiptRequired)) {
+									t.Fatal(readErr)
+								}
+								for key, values := range resp.Header {
+									w.Header()[key] = values
+								}
+								w.WriteHeader(resp.StatusCode)
+								_, _ = w.Write(b)
+							}
+							if !admitted {
+								t.Fatal("request never reached admitted upstream")
+							}
+							want := failure == "healthy" || failure == "optional"
+							delivered := strings.Contains(w.Body.String(), marker)
+							if delivered != want {
+								t.Fatalf("delivered=%t want=%t status=%d body=%q", delivered, want, w.Code, w.Body.String())
+							}
+							if !want {
+								if shape != "sse warn" && (w.Code != http.StatusForbidden || w.Header().Get("X-Pipelock-Block-Reason") != "receipt_emission_failed") {
+									t.Fatalf("untruthful failure: status=%d headers=%v", w.Code, w.Header())
+								}
+								statsRecorder := httptest.NewRecorder()
+								p.metrics.StatsHandler()(statsRecorder, req)
+								var stats struct {
+									Receipts struct {
+										RequiredBlocks []struct {
+											Reason, Transport string
+											Count             int
+										} `json:"required_blocks"`
+									}
+								}
+								if err := json.Unmarshal(statsRecorder.Body.Bytes(), &stats); err != nil {
+									t.Fatal(err)
+								}
+								if len(stats.Receipts.RequiredBlocks) == 0 {
+									t.Fatalf("receipt block absent from operator stats: %s", statsRecorder.Body.String())
+								}
+
+								if tracker != nil {
+									tracker.mu.Lock()
+									reason := tracker.reason
+									tracker.mu.Unlock()
+									if reason != receiptEmissionFailedLayer {
+										t.Fatalf("outcome=%q", reason)
+									}
+								}
+							}
+							if want && shape == "media relabel" {
+								if surface == "fetch" {
+									if !strings.Contains(w.Body.String(), `"content_type":"image/png"`) {
+										t.Fatalf("relabel missing: %s", w.Body.String())
+									}
+								} else if w.Header().Get("Content-Type") != "image/png" {
+									t.Fatalf("relabel missing: %v", w.Header())
+								}
+							}
+							if want && shape == "media" && bytes.Contains(w.Body.Bytes(), []byte("metadata-marker")) {
+								t.Fatal("metadata not stripped")
+							}
+							if want && (shape == "shield" || shape == "shield head") && strings.Contains(w.Body.String(), "chrome-extension") {
+								t.Fatal("shield did not rewrite")
+							}
+							if shape == "card first" || shape == "card adopt" {
+								check := originalCard
+								if want {
+									check = []byte(payload)
+								}
+								state := mcp.ScanAgentCard(t.Context(), check, sc, p.a2aCardBaseline, mcp.CardCacheKeyFromRequest(target, ""), &cfg.A2AScanning)
+								if shape == "card first" && !want {
+									if !state.FirstSeen {
+										t.Fatal("failed confirmation seeded baseline")
+									}
+								} else if !state.Clean || state.DriftDetected {
+									t.Fatalf("baseline changed before confirmation: %+v", state)
+								}
+							}
+							if want && (shape == "scan strip" || shape == "approve strip") && strings.Contains(w.Body.String(), "POLICY_MARKER") {
+								t.Fatal("strip kept finding")
+							}
+
+							if !grouped && failure == "healthy" {
+								if err := rec.Close(); err != nil {
+									t.Fatal(err)
+								}
+								records := extractReceiptsFromDir(t, f.dir)
+								var requestID string
+								for _, rcpt := range records {
+									if rcpt.ActionRecord.DecisionPhase == receipt.DecisionPhaseIntent {
+										requestID = rcpt.ActionRecord.ActionID
+										break
+									}
+								}
+								if requestID == "" {
+									t.Fatal("missing request receipt positive control")
+								}
+								for _, rcpt := range records {
+									r := rcpt.ActionRecord
+									if r.DecisionPhase != "" || r.Verdict == config.ActionBlock {
+										continue
+									}
+									if r.ActionID == requestID || r.ParentActionID != requestID {
+										t.Errorf("response decision is not a child of request: %+v", r)
+									}
+								}
+							}
+							if !grouped && surface == "fetch" && !want && failure == "v2" && strings.HasPrefix(shape, "scan") {
+								if err := rec.Close(); err != nil {
+									t.Fatal(err)
+								}
+								records := extractReceiptsFromDir(t, f.dir)
+								found := false
+								for _, rcpt := range records {
+									r := rcpt.ActionRecord
+									if r.DecisionPhase == receipt.DecisionPhaseOutcome {
+										found = true
+										if !strings.Contains(r.Pattern, "reason="+receiptEmissionFailedLayer) || !strings.Contains(r.Pattern, "status=403") {
+											t.Errorf("receipt failure misclassified: %s", r.Pattern)
+										}
+									}
+								}
+								if !found {
+									t.Fatal("missing fetch outcome")
+								}
+							}
+							if failure == "healthy" && w.syncsAtDelivery < 2 {
+								t.Fatalf("both families not synced before delivery: %d", w.syncsAtDelivery)
+							}
+							if failure == "optional" && syncs.Load() != 0 {
+								t.Fatalf("optional forced sync: %d", syncs.Load())
+							}
+						})
+					}
 				}
-			}
+			})
 		}
 	}
 }
