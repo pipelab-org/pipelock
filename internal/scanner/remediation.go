@@ -781,6 +781,18 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// reason so hot-path blocks such as URL length do not allocate a lowercase
 	// copy that no branch will inspect.
 	switch label {
+	case ScannerParser:
+		// These prefixes are emitted by request-body inspection when its
+		// configured read ceiling prevents complete scanning.
+		if strings.HasPrefix(reason, "request body exceeds max_body_bytes (") ||
+			strings.HasPrefix(reason, "multipart headers exceed max_body_bytes (") ||
+			strings.HasPrefix(reason, "multipart part exceeds max_body_bytes (") {
+			return RemediationGuidance{
+				OperatorKnob: "Reduce the request body size, or raise `request_body_scanning.max_body_bytes` only to the largest verified body this route needs. Bodies over this ceiling block regardless of `request_body_scanning.action`.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		}
+		return GuidanceFor(label)
 	case AuditKillSwitch:
 		if reason == "conductor_apply_failure" {
 			return RemediationGuidance{
