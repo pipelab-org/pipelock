@@ -40,9 +40,9 @@ pipelock guard --config pipelock.yaml --profile worker --workspace /opt/app --dr
 
 The separator is required. Arguments after `--` belong to the command. Guard
 returns the command's exit code. `--dry-run` validates the declaration and
-checks the kernel isolation primitives without launching the command. The
-REFER errata check and post-restriction access probes run when enforcement is
-applied.
+checks the kernel isolation primitives, including the erratum 3 fix, without
+launching the command. Post-restriction access probes run only when enforcement
+is applied.
 
 The `show` and `explain` subcommands remain read-only. Their human and JSON
 output says that the inspection itself did not enforce anything. Run output

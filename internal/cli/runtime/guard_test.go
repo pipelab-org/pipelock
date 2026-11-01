@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -857,5 +858,25 @@ func TestGuardEvidenceActivationHandlesUnhealthyEmitter(t *testing.T) {
 				t.Fatalf("best-effort activation error=%v stderr=%q", activationErr, stderr.String())
 			}
 		})
+	}
+}
+
+func TestGuardPreflightRefusesKernelWithoutReferErratum(t *testing.T) {
+	original := guardReferErratumMissing
+	t.Cleanup(func() { guardReferErratumMissing = original })
+	workspace := t.TempDir()
+	for _, missing := range []bool{true, false} {
+		guardReferErratumMissing = func() bool { return missing }
+		result, err := GuardPreflight(config.Defaults(), "", workspace, []string{"/usr/bin/true"})
+		if err != nil {
+			t.Fatalf("GuardPreflight: %v", err)
+		}
+		reported := slices.Contains(result.Errors, guardfs.ErrReferErratumUnconfirmed.Error())
+		if reported != missing {
+			t.Fatalf("missing=%v: erratum error reported=%v, errors=%v", missing, reported, result.Errors)
+		}
+		if missing && result.Status != sandbox.StatusError {
+			t.Fatalf("missing erratum preflight status = %q, want %q", result.Status, sandbox.StatusError)
+		}
 	}
 }

@@ -119,6 +119,19 @@ func (p *PreparedManifest) applyMode(getABI func() (int, error), threadSync bool
 	return p.applyWithOperations(ops, threadSync)
 }
 
+// ReferErratumMissing reports whether Landlock is present but cannot confirm
+// erratum 3. Apply then refuses writable directory grants, and every Guard
+// launch grants its workspace writable. An unreadable ABI returns false, so
+// callers must report Landlock availability separately.
+func ReferErratumMissing() bool {
+	return referErratumMissing(llsys.LandlockGetABIVersion, llsys.LandlockGetErrata)
+}
+
+func referErratumMissing(getABI, getErrata func() (int, error)) bool {
+	abi, err := getABI()
+	return err == nil && !landlockcompat.ReferAllowed(abi, getErrata)
+}
+
 type rulesetOperations struct {
 	getABI        func() (int, error)
 	getErrata     func() (int, error)
@@ -225,8 +238,8 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 			continue
 		}
 		if !landlockcompat.ReferAllowed(abi, ops.getErrata) {
-			record.Reason = "writable directory grants require landlock erratum 3 (disconnected directory handling) to be reported fixed; refusing rather than removing cross-directory rename and link support"
-			return record, errors.New(record.Reason)
+			record.Reason = ErrReferErratumUnconfirmed.Error()
+			return record, ErrReferErratumUnconfirmed
 		}
 		break
 	}

@@ -4,6 +4,8 @@
 package guard
 
 import (
+	"bytes"
+	"encoding/json"
 	"slices"
 	"testing"
 )
@@ -109,5 +111,28 @@ func TestExecutionProofBindsEffectiveInvocation(t *testing.T) {
 				t.Fatal("proof verification mutated the command binding")
 			}
 		})
+	}
+}
+
+// Thread retirement bookkeeping must not reach the hashed or encoded proof.
+func TestExecutionProofOmitsThreadTaint(t *testing.T) {
+	opts := ExecControlOptions{PolicyHash: "policy", Workspace: "/w", TempDir: "/t", Binary: "/bin/true"}
+	record := EnforcementRecord{State: EnforcementEnforced, Mechanism: "landlock", Coverage: CoverageFull}
+	clean := NewExecutionProof(record, opts, []string{"/bin/true"})
+	record.threadTainted = true
+	tainted := NewExecutionProof(record, opts, []string{"/bin/true"})
+	if clean.EffectivePolicyHash != tainted.EffectivePolicyHash {
+		t.Fatal("thread taint changed the execution proof hash")
+	}
+	cleanJSON, err := json.Marshal(clean)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taintedJSON, err := json.Marshal(tainted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(cleanJSON, taintedJSON) {
+		t.Fatalf("thread taint changed the encoded proof:\n%s\n%s", cleanJSON, taintedJSON)
 	}
 }

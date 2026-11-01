@@ -71,13 +71,23 @@ func GuardPreflight(cfg *config.Config, profile, workspace string, command []str
 		return sandbox.PreflightResult{}, err
 	}
 	policy.AllowRWDirs = existingGuardPreflightDirs(policy.AllowRWDirs)
-	return sandbox.PreflightWithRequirements(resolved, command, &policy, sandbox.PreflightRequirements{
+	result := sandbox.PreflightWithRequirements(resolved, command, &policy, sandbox.PreflightRequirements{
 		RequireNetNS:        true,
 		RequireProxyHandler: true,
 		RequireLandlock:     true,
 		MinimumLandlockABI:  guardfs.MinimumABI,
-	}), nil
+	})
+	// The workspace is always a writable directory grant, so a launch on this
+	// kernel would be refused when enforcement is applied.
+	if guardReferErratumMissing() {
+		result.Status = sandbox.StatusError
+		result.Errors = append(result.Errors, guardfs.ErrReferErratumUnconfirmed.Error())
+	}
+	return result, nil
 }
+
+// guardReferErratumMissing is a variable so tests can simulate an unpatched kernel.
+var guardReferErratumMissing = guardfs.ReferErratumMissing
 
 // LaunchGuard runs an operator command under the Linux HTTP/HTTPS preview.
 func LaunchGuard(opts GuardLaunchOptions) error {

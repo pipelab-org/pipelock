@@ -488,3 +488,41 @@ func TestApplyWithOperations_ReferErrataGate(t *testing.T) {
 		})
 	}
 }
+
+func TestReferErratumMissing(t *testing.T) {
+	queryFailed := errors.New("query unavailable")
+	for _, tc := range []struct {
+		name     string
+		abiErr   error
+		fixed    int
+		queryErr error
+		want     bool
+	}{
+		{name: "landlock unavailable is reported elsewhere", abiErr: errors.New("ENOSYS"), want: false},
+		{name: "fixed", fixed: 0x4, want: false},
+		{name: "fixed with others", fixed: 0xf, want: false},
+		{name: "missing fix", fixed: 0x3, want: true},
+		{name: "query fails", fixed: 0x4, queryErr: queryFailed, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := referErratumMissing(
+				func() (int, error) { return MinimumABI, tc.abiErr },
+				func() (int, error) { return tc.fixed, tc.queryErr },
+			)
+			if got != tc.want {
+				t.Fatalf("referErratumMissing = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyWithOperations_ReferRefusalUsesSentinel(t *testing.T) {
+	p := &PreparedManifest{complete: true, rules: []preparedRule{{access: rightsWriteDir}}}
+	record, err := p.applyWithOperations(rulesetOperations{
+		getABI:    func() (int, error) { return MinimumABI, nil },
+		getErrata: func() (int, error) { return 0, nil },
+	}, false)
+	if !errors.Is(err, ErrReferErratumUnconfirmed) || record.Reason != ErrReferErratumUnconfirmed.Error() {
+		t.Fatalf("refusal = %v, reason %q", err, record.Reason)
+	}
+}

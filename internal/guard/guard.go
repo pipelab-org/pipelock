@@ -85,6 +85,10 @@ var (
 	// Landlock restrictions stack and cannot be lifted, so a second application
 	// would intersect the policy with itself and narrow it for good.
 	ErrAlreadyApplied = errors.New("guard manifest has already been applied")
+
+	// ErrReferErratumUnconfirmed is returned when a writable directory grant
+	// needs REFER but the kernel does not report Landlock erratum 3 fixed.
+	ErrReferErratumUnconfirmed = errors.New("writable directory grants require landlock erratum 3 (disconnected directory handling) to be reported fixed; refusing rather than removing cross-directory rename and link support")
 )
 
 // AccessKind is the grant a manifest entry asks for.
