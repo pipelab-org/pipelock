@@ -92,6 +92,9 @@ func TestWebSocketTargetURLLength(t *testing.T) {
 func TestBodyParseFailureReceipts(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept", "websocket"} {
 		for _, scanFailure := range []bool{false, true} {
+			if surface == "websocket" && !scanFailure {
+				continue // Malformed JSON frames use the raw-text path, not the JSON parser.
+			}
 			t.Run(fmt.Sprintf("%s/scan_failure=%t", surface, scanFailure), func(t *testing.T) {
 				cfg := testScannerConfig()
 				cfg.AdaptiveEnforcement.Enabled = false
@@ -112,10 +115,16 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 				}
 
 				if surface == "websocket" {
-					relay := &wsRelay{clientConn: discardConn{}, upstreamConn: discardConn{}, proxy: p, cfg: cfg, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket"}
-					body, result := scanRequestBody(ctx, BodyScanRequest{Body: input, ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn})
+					relay := &wsRelay{clientConn: discardConn{}, upstreamConn: discardConn{}, proxy: p, cfg: cfg, scanner: sc, maxMsg: 1024, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket"}
+					frame := []byte(`{"incomplete":`)
+					body, result := relay.scanClientMessageBody(ctx, frame)
+					if !result.Clean || string(body) != string(frame) || relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
+						t.Fatalf("ordinary malformed-JSON frame refused: %+v", result)
+					}
+					cancel()
+					body, result = relay.scanClientMessageBody(ctx, frame)
 					if !relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
-						t.Fatal("malformed frame allowed")
+						t.Fatal("unscanned frame allowed")
 					}
 				} else {
 					req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/submit", input)
