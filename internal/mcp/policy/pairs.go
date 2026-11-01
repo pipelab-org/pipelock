@@ -50,6 +50,7 @@ type argView struct {
 	checkXargs  bool
 	interpreted bool              // added option view; cannot erase original uncertainty
 	ordinary    bool              // ordinary reading kept beside a strict one (see matchArgViews)
+	prior       bool              // interpretation selected without variable-executable uncertainty
 	folded      map[string]string // request-local folds of original tokens and joined views
 	// findPaths caches findPathsOnly(segments) for a plain view; it does not
 	// depend on the pattern. nil means not computed.
@@ -91,6 +92,9 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	}
 	inputKnown := knownXargsInput(args)
 	unsplit := len(args) == 1 && segs == nil
+	priorProof := *proof
+	priorProof.variableExecutable = false
+	retainPrior := proof.variableExecutable && !proof.unproved
 	norms := argViewNorms
 	views := make([]argView, 0, 2*len(norms)+1)
 	// add keeps the first of identical views. matchArgViewSet skips a view the
@@ -126,6 +130,10 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 			continue
 		}
 		add(v)
+		var priorStrict bool
+		if retainPrior {
+			_, priorStrict = normalizeLineOptions(v.tokens, gitTool, &priorProof)
+		}
 		addInterpretation := func(tokens []string, strict, ordinary bool) {
 			expanded := v
 			expanded.tokens = tokens
@@ -145,6 +153,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 			}
 			if !sameArgView(v, expanded) {
 				expanded.interpreted, expanded.ordinary = true, ordinary
+				expanded.prior = retainPrior && strict == priorStrict
 				add(expanded)
 			}
 		}
@@ -439,8 +448,11 @@ func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bo
 	if !slices.ContainsFunc(views, func(v argView) bool { return v.interpreted }) {
 		return matchArgViewSet(pat, memo, views...)
 	}
-	var original, interpreted, ordinary []argView
+	var original, interpreted, ordinary, prior []argView
 	for _, v := range views {
+		if v.prior {
+			prior = append(prior, v)
+		}
 		switch {
 		case v.ordinary:
 			ordinary = append(ordinary, v)
@@ -462,6 +474,12 @@ func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bo
 		// Each reading alone is what an earlier check read, so a match in one
 		// must not clear an incomplete check in the other.
 		m, inc := matchArgViewSet(pat, memo, ordinary...)
+		moreMatched, moreIncomplete = moreMatched || m, moreIncomplete || inc
+	}
+	if len(prior) > 0 {
+		// The pre-existing set may mix strict and ordinary normalizations.
+		// A newly strict normalization must not clear its incomplete check.
+		m, inc := matchArgViewSet(pat, memo, prior...)
 		moreMatched, moreIncomplete = moreMatched || m, moreIncomplete || inc
 	}
 	return moreMatched, incomplete || moreIncomplete
@@ -540,7 +558,7 @@ func cachedFold(text string, folds map[string]string) string {
 // that decides whether command input can be considered known.
 func sameArgView(a, b argView) bool {
 	return a.joined == b.joined && a.unsplit == b.unsplit && a.plain == b.plain &&
-		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.ordinary == b.ordinary &&
+		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.ordinary == b.ordinary && a.prior == b.prior &&
 		(a.segments == nil) == (b.segments == nil) && slices.Equal(a.tokens, b.tokens) &&
 		slices.EqualFunc(a.segments, b.segments, slices.Equal[[]string])
 }

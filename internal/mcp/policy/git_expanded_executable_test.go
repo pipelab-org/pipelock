@@ -229,3 +229,34 @@ func TestStrictReadingKeepsIncompleteCheck(t *testing.T) {
 		}
 	}
 }
+
+// TestVariableCommandNameKeepsMixedReadingIncomplete checks the pre-existing
+// interpretation set, which may read one normalization strictly and another
+// ordinarily. Adding a strict reading to the latter must not clear the former's
+// incomplete check.
+func TestVariableCommandNameKeepsMixedReadingIncomplete(t *testing.T) {
+	words := make([]string, 56)
+	for i := range words {
+		words[i] = fmt.Sprintf("a%d", i)
+	}
+	// The fullwidth separator normalizes to ';'. The invisible character is
+	// removed in one view and becomes a space in another, yielding git or g it.
+	command := "$X chmod long\uff1b g\u200bit ls-files --fo " + strings.Join(words, " ")
+	for _, key := range []string{"", "command"} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{
+				Name: "warn rule", ToolPattern: "bash", ArgKey: key,
+				ArgPattern: `^[a-z] --[a-z]{5}$`, Action: config.ActionWarn,
+			}},
+		})
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{command}, "command") {
+			if key != "" && surface == "CheckToolCall" {
+				continue
+			}
+			if !got.Matched || got.Action != config.ActionBlock || len(got.IncompleteRules) == 0 {
+				t.Errorf("key=%q %s: got %+v, want incomplete check block", key, surface, got)
+			}
+		}
+	}
+}

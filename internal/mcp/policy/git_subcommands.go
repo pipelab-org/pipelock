@@ -136,6 +136,9 @@ const maxArgCarrierDepth = 64
 type gitProof struct {
 	proved   []string
 	unproved bool
+	// Keep executable uncertainty separate so added strict readings cannot
+	// erase incomplete checks in the interpretation set that preceded them.
+	variableExecutable bool
 }
 
 // grants reports whether the proof covers judged, the builtin subcommands a
@@ -145,7 +148,7 @@ type gitProof struct {
 // alias or a git-<name> program. A normalized view keeps the builtin reading
 // only for the Git commands this proof read the same way.
 func (p gitProof) grants(judged []string) bool {
-	return !p.unproved && slices.Equal(p.proved, judged)
+	return !p.unproved && !p.variableExecutable && slices.Equal(p.proved, judged)
 }
 
 // gitWord is one word of a carrier. literal marks an array element, which is
@@ -258,7 +261,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 		if executable && (w.literal || !shellAssignment.MatchString(w.text)) {
 			executable = false
 			if !w.literal && !strings.HasPrefix(w.text, "#") && !plainShellWord(w.text) {
-				p.unproved = true
+				p.variableExecutable = true
 			}
 		}
 		switch state {
