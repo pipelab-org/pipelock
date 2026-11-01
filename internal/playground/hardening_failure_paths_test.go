@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestHardeningLiveRunRejectsMalformedConfiguration(t *testing.T) {
@@ -68,9 +70,7 @@ func TestHardeningLiveRunProbeCancellationStopsProcess(t *testing.T) {
 			marker := filepath.Join(t.TempDir(), "started")
 			script := filepath.Join(t.TempDir(), "probe")
 			body := "#!/bin/sh\n: > \"" + marker + "\"\nexec sleep 30\n"
-			if err := os.WriteFile(script, []byte(body), 0o700); err != nil { // #nosec G306 -- executable test fixture.
-				t.Fatalf("write probe: %v", err)
-			}
+			testexec.WriteExecutable(t, script, []byte(body), 0o700)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()

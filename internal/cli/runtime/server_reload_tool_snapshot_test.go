@@ -6,6 +6,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -102,7 +103,7 @@ logging:
 						t.Error("listener did not stop after cancellation")
 					}
 				}()
-				if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+				if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 					return err
 				}
 
@@ -146,16 +147,28 @@ logging:
 					defer reloader.Done()
 					reloadDone <- s.Reload(next)
 				}()
+				// Report an early reload return as an error rather than
+				// ending the test, so testport.WithRetry can still see a
+				// bind collision.
+				var earlyReloadErr error
+				earlyReload := false
 				testwait.For(t, 5*time.Second, func() bool {
 					select {
 					case <-paused:
 						return true
 					case err := <-reloadDone:
-						t.Fatalf("reload returned before publication hook: %v", err)
+						earlyReloadErr, earlyReload = err, true
+						return true
 					default:
 					}
 					return false
 				}, "reload to publish proxy config")
+				if earlyReload {
+					if earlyReloadErr == nil {
+						return errors.New("reload returned before publication hook")
+					}
+					return fmt.Errorf("reload returned before publication hook: %w", earlyReloadErr)
+				}
 				if testCase.requestDuringReload {
 					// Until server state is published, both reload directions
 					// must keep enforcing the previous tool-rule snapshot.
@@ -166,7 +179,7 @@ logging:
 				select {
 				case err := <-reloadDone:
 					if err != nil {
-						t.Fatalf("reload: %v", err)
+						return fmt.Errorf("reload: %w", err)
 					}
 				case <-time.After(testwait.Deadline(5 * time.Second)):
 					t.Fatal("reload did not finish")
