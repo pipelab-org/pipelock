@@ -151,7 +151,7 @@ func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/" {
-			http.NotFound(w, r)
+			rejectMisroutedMCPBackendRequest(t, w, r)
 			return
 		}
 		upstreamCalls.Add(1)

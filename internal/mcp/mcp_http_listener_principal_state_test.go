@@ -31,7 +31,7 @@ func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" || (r.Method != http.MethodPost && r.Method != http.MethodDelete) {
-			http.NotFound(w, r)
+			rejectMisroutedMCPBackendRequest(t, w, r)
 			return
 		}
 		calls.Add(1)
@@ -70,6 +70,18 @@ func probeMCPTestBackend(t *testing.T, target string) {
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// rejectMisroutedMCPBackendRequest answers a request outside the protocol
+// route with 404. A bodiless request, such as a port-discovery GET, is ignored.
+// One that carries a body fails the test, so a leaked request cannot escape a
+// backend's call count by arriving with a changed method or path.
+func rejectMisroutedMCPBackendRequest(tb testing.TB, w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) != 0 {
+		tb.Errorf("unexpected upstream request with a body: %s %s (%d bytes, read error %v)", r.Method, r.URL.Path, len(body), err)
+	}
+	http.NotFound(w, r)
 }
 
 // principalStateToolCall deliberately sends the current Streamable HTTP shape:

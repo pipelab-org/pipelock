@@ -725,7 +725,7 @@ func testMCPListenerSetupDenials(t *testing.T) {
 			var calls atomic.Int32
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/" {
-					http.NotFound(w, r)
+					rejectMisroutedMCPBackendRequest(t, w, r)
 					return
 				}
 				calls.Add(1)

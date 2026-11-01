@@ -985,13 +985,72 @@ func newForwardA2ATestBackend(t *testing.T, handler http.Handler) *httptest.Serv
 
 func newForwardTestPostBackend(t *testing.T, path string, handler http.Handler) *httptest.Server {
 	t.Helper()
-	return newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != path {
-			http.NotFound(w, r)
+	return newIPv4Server(t, forwardTestPostHandler(t, path, handler))
+}
+
+// forwardTestPostHandler passes only POST requests for path to handler. A
+// bodiless request elsewhere, such as a port-discovery GET, is answered 404
+// and ignored. Any other request that carries a body fails the test: a leaked
+// request must not escape the count by arriving with a changed method or path.
+func forwardTestPostHandler(tb testing.TB, path string, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == path {
+			handler.ServeHTTP(w, r)
 			return
 		}
-		handler.ServeHTTP(w, r)
-	}))
+		body, err := io.ReadAll(r.Body)
+		if err != nil || len(body) != 0 {
+			tb.Errorf("unexpected upstream request with a body: %s %s (%d bytes, read error %v)", r.Method, r.URL.Path, len(body), err)
+		}
+		http.NotFound(w, r)
+	})
+}
+
+type forwardBackendErrorRecorder struct {
+	testing.TB
+	mu   sync.Mutex
+	errs []string
+}
+
+func (r *forwardBackendErrorRecorder) Errorf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+}
+
+func TestForwardTestPostHandlerFlagsMisroutedBodies(t *testing.T) {
+	const protocolBody = `{"jsonrpc":"2.0","id":"req","method":"message/send"}`
+	for _, tc := range []struct {
+		name        string
+		method      string
+		path        string
+		body        io.Reader
+		wantForward bool
+		wantError   bool
+	}{
+		{name: "protocol_request", method: http.MethodPost, path: "/message:send", body: strings.NewReader(protocolBody), wantForward: true},
+		{name: "discovery_probe", method: http.MethodGet, path: "/"},
+		{name: "bodiless_delete", method: http.MethodDelete, path: "/"},
+		{name: "changed_path", method: http.MethodPost, path: "/message:send/", body: strings.NewReader(protocolBody), wantError: true},
+		{name: "changed_method", method: http.MethodPut, path: "/message:send", body: strings.NewReader(protocolBody), wantError: true},
+		{name: "unreadable_body", method: http.MethodPost, path: "/other", body: lifecycleFaultReader{err: io.ErrUnexpectedEOF}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &forwardBackendErrorRecorder{TB: t}
+			var forwarded atomic.Int32
+			handler := forwardTestPostHandler(recorder, "/message:send", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded.Add(1)
+			}))
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, "http://backend.vendor.example"+tc.path, tc.body)
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			if got := forwarded.Load() == 1; got != tc.wantForward {
+				t.Fatalf("forwarded = %v, want %v", got, tc.wantForward)
+			}
+			if got := len(recorder.errs) != 0; got != tc.wantError {
+				t.Fatalf("flagged = %v, want %v; errors=%q", got, tc.wantError, recorder.errs)
+			}
+		})
+	}
 }
 
 func newA2AForwardBodyRequest(t *testing.T, targetURL, body string) *http.Request {
