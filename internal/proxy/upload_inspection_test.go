@@ -498,8 +498,12 @@ func TestUploadInspectionIncompleteObservation(t *testing.T) {
 	}
 }
 
-func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, body []byte, logger *audit.Logger) (int, int32, *metrics.Metrics) {
+func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, body []byte, logger *audit.Logger, mediaTypes ...string) (int, int32, *metrics.Metrics) {
 	t.Helper()
+	mediaType := "video/mp4"
+	if len(mediaTypes) > 0 {
+		mediaType = mediaTypes[0]
+	}
 	var hits atomic.Int32
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.Copy(io.Discard, r.Body); err != nil {
@@ -524,7 +528,7 @@ func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, b
 		if err != nil {
 			t.Fatal(err)
 		}
-		req.Header.Set("Content-Type", "video/mp4")
+		req.Header.Set("Content-Type", mediaType)
 		response, err = server.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
@@ -557,7 +561,7 @@ func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, b
 			if reqErr != nil {
 				t.Fatal(reqErr)
 			}
-			req.Header.Set("Content-Type", "video/mp4")
+			req.Header.Set("Content-Type", mediaType)
 			response = interceptAndRequestWithRecorder(t, interceptRequestOptions{Upstream: upstream, Cache: cache, Pool: pool, Config: cfg, Scanner: sc, Logger: logger, Metrics: m, Request: req, Proxy: p, Agent: "upload-test", ActorAuth: envelope.ActorAuthBound})
 		} else {
 			upstream := httptest.NewServer(handler)
@@ -575,7 +579,7 @@ func exerciseObservedUpload(t *testing.T, surface string, policy uploadPolicy, b
 			if reqErr != nil {
 				t.Fatal(reqErr)
 			}
-			req.Header.Set("Content-Type", "video/mp4")
+			req.Header.Set("Content-Type", mediaType)
 			response, err = client.Do(req)
 			if err != nil {
 				t.Fatal(err)

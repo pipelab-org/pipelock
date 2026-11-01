@@ -998,9 +998,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		dlpExtracted.Texts = append(dlpExtracted.Texts, dnsInspection.DLPTexts...)
 	}
 
-	// A multipart form with no parts can still carry a file in its preamble.
-	// Recovered file text and an unread file decide the result like any field.
-	if len(texts) == 0 && len(fileTexts) == 0 && fileIncomplete == "" {
+	// A multipart form with no parts can still carry text or a file in its
+	// preamble or epilogue. These decide the result like any field.
+	if len(texts) == 0 && len(dlpExtracted.Texts) == 0 && len(fileTexts) == 0 && fileIncomplete == "" {
 		if len(preRedactionDLP) > 0 {
 			return buf, BodyScanResult{
 				Clean:           false,
@@ -1198,7 +1198,24 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		}
 		var files [][]byte
 		texts, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
-		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, FileParts: files, Err: errText}
+		if errText != "" {
+			return bodyDLPTextExtraction{Err: errText}
+		}
+		// RFC 2046 section 5.1.1 excludes preamble and epilogue bytes from
+		// parts, but a raw-body receiver still gets them. Join ordinary text
+		// DLP (including its decoded views) without changing the generic
+		// injection/entropy views or the archive inspection of these regions.
+		preamble := multipartPreamble(body, params["boundary"])
+		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
+		var dlpTexts []string
+		if len(preamble) > 0 {
+			dlpTexts = append(dlpTexts, string(preamble))
+		}
+		dlpTexts = append(dlpTexts, texts...)
+		if len(epilogue) > 0 {
+			dlpTexts = append(dlpTexts, string(epilogue))
+		}
+		return bodyDLPTextExtraction{GenericTexts: texts, Texts: dlpTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
