@@ -195,21 +195,31 @@ type sizeExemptScanRelease func()
 
 func noopSizeExemptScanRelease() {}
 
-func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int, rem sizeRemedies) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
-	ceiling := int64(scanMaxBytes)
-	if ceiling <= 0 {
-		ceiling = int64(config.DefaultSizeExemptScanMaxBytes)
+// sizeExemptScanCeiling is the per-response reservation a bounded read charges.
+func sizeExemptScanCeiling(scanMaxBytes int) int64 {
+	if scanMaxBytes <= 0 {
+		return int64(config.DefaultSizeExemptScanMaxBytes)
 	}
+	return int64(scanMaxBytes)
+}
+
+// sizeExemptScanInflightLimit is the shared budget every reservation draws from.
+func sizeExemptScanInflightLimit(inflightMaxBytes int) int64 {
+	if inflightMaxBytes <= 0 {
+		return int64(config.DefaultSizeExemptScanMaxInflightBytes)
+	}
+	return int64(inflightMaxBytes)
+}
+
+func (b *sizeExemptScanBudget) readBoundedSizeExemptResponse(host string, prefix []byte, body io.Reader, scanMaxBytes, inflightMaxBytes int, rem sizeRemedies) ([]byte, sizeExemptScanRelease, *sizeExemptResponseReadError) {
+	ceiling := sizeExemptScanCeiling(scanMaxBytes)
 	if ceiling == math.MaxInt64 {
 		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureReadError,
 			Reason: "size-exempt response scan ceiling must leave room for one probe byte",
 		}
 	}
-	inflightLimit := int64(inflightMaxBytes)
-	if inflightLimit <= 0 {
-		inflightLimit = int64(config.DefaultSizeExemptScanMaxInflightBytes)
-	}
+	inflightLimit := sizeExemptScanInflightLimit(inflightMaxBytes)
 	if !b.reserveSizeExemptScanBytes(ceiling, inflightLimit) {
 		return nil, noopSizeExemptScanRelease, &sizeExemptResponseReadError{
 			Kind:   sizeExemptReadFailureInflight,

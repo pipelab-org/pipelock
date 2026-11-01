@@ -2790,6 +2790,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		(sc.ResponseScanningEnabled() || cfg.BrowserShield.Enabled || cfg.MediaPolicy.IsEnabled() || responseHeadersDeclareSVG(resp.Header)) {
 		// Some origins ignore Accept-Encoding: identity. Decode supported single-layer
 		// encodings before applying the existing decoded-body cap and scanners.
+		structuredEncodingBlocked := responseencoding.HasNonIdentityContentEncoding(resp.Header)
 		if err := responseencoding.DecodeResponse(resp); err != nil {
 			p.logger.LogBlocked(actx, responseScanLayer, "compressed response cannot be scanned")
 			p.metrics.RecordBlocked(r.URL.Hostname(), responseScanLayer, time.Since(start), agentLabel)
@@ -2817,7 +2818,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeReason = "response_read_error"
 			return
 		}
-		if int64(len(respBody)) > maxBytes {
+		var structured *structuredResponseInspection
+		if int64(len(respBody)) > maxBytes && !budgetLimited && !structuredEncodingBlocked && !fwdRespSizeExempt {
+			full, inspection, release := p.sizeExemptScanBudget.readStructuredResponse(r.Context(), fwdRespHost, respBody, resp.Body, cfg)
+			if inspection != nil && (budgetRemaining < 0 || int64(len(full)) <= budgetRemaining) {
+				respBody, structured = full, inspection
+				defer release()
+			} else {
+				release()
+			}
+		}
+		if int64(len(respBody)) > maxBytes && structured == nil {
 			if budgetLimited {
 				if resp.StatusCode == http.StatusPartialContent {
 					reason := "byte budget cannot truncate a partial response"
@@ -3201,10 +3212,21 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// is enabled. Media policy above always runs when MediaPolicy
 		// is enabled, even if response scanning is off.
 		var recoveryAssessment scanner.InjectionAssessment
-		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
-			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
-			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
+		if sc.ResponseScanningEnabled() && (!fwdAuthenticatedArtifact || structured != nil) {
+			scanResult := scanStructuredResponse(r.Context(), sc, cfg, respBody, resp.Request.URL.String(), structured)
+			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
 			recoveryAssessment = scanResult.RecoveryAssessment()
+			if structured != nil {
+				p.logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
+				evidence := withReceiptShard(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: TransportForward, Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent}, selectedReceiptShard)
+				if err := p.confirmResponseDecision(cfg, evidence); err != nil {
+					p.recordRequiredReceiptBlock(err, TransportForward)
+					writeBlockedError(w, blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(requestID), receiptEmissionBlockReason, http.StatusForbidden)
+					outcomeStatus, outcomeBytes, outcomeReason = strconv.Itoa(http.StatusForbidden), 0, receiptEmissionFailedLayer
+					return
+				}
+			}
+
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)
@@ -3379,7 +3401,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
+		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,

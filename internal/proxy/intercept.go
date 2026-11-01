@@ -2514,6 +2514,7 @@ func newInterceptHandler(
 		// formats now; an unsupported encoding stays fail-closed because it
 		// cannot be inspected as opaque bytes. Everything that returns above
 		// keeps its original bytes.
+		structuredEncodingBlocked := responseencoding.HasNonIdentityContentEncoding(resp.Header)
 		if responseencoding.HasNonIdentityContentEncoding(resp.Header) {
 			if decodeErr := responseencoding.DecodeResponse(resp); decodeErr != nil {
 				ic.Logger.LogBlocked(actx, "tls_response_blocked", "compressed response cannot be scanned")
@@ -2559,7 +2560,15 @@ func newInterceptHandler(
 			emitBlockedPostRoundTripOutcome(http.StatusForbidden, "response_read_error")
 			return
 		}
-		if int64(len(respBody)) > maxResp {
+		var structured *structuredResponseInspection
+		if int64(len(respBody)) > maxResp && !structuredEncodingBlocked && !isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
+			full, inspection, release := interceptSizeExemptScanBudget(ic).readStructuredResponse(r.Context(), ic.TargetHost, respBody, resp.Body, ic.Config)
+			if inspection != nil {
+				respBody, structured = full, inspection
+				defer release()
+			}
+		}
+		if int64(len(respBody)) > maxResp && structured == nil {
 			if isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
 				if match, ok := matchUnscannablePassthrough(unscannablePassthroughRequest{
 					Host:              ic.TargetHost,
@@ -2927,10 +2936,19 @@ func newInterceptHandler(
 			ic.Metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportConnect)
 		}
 		var recoveryAssessment scanner.InjectionAssessment
-		if ic.Scanner.ResponseScanningEnabled() && !interceptAuthenticatedArtifact {
-			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
-			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
+		if ic.Scanner.ResponseScanningEnabled() && (!interceptAuthenticatedArtifact || structured != nil) {
+			scanResult := scanStructuredResponse(r.Context(), ic.Scanner, ic.Config, respBody, r.URL.String(), structured)
+			scanResult = retainStructuredShieldScan(preShieldScan, scanResult, respBody, structured)
 			recoveryAssessment = scanResult.RecoveryAssessment()
+			if structured != nil {
+				ic.Logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
+				evidence := withInterceptRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})
+				if interceptEmitReceiptOrBlock(ic, w, actx, evidence) {
+					emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
+					return
+				}
+			}
+
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 			recordDroppedResponseScanMatches(ic.Metrics, ic.Logger, actx, scanResult.SuppressedMatches, TransportConnect)
 			recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, scanResult.ObservedCoreMatches, TransportConnect)
@@ -3088,7 +3106,7 @@ func newInterceptHandler(
 		// finding was detected; warn/strip paths indicate suspicious traffic and
 		// must not contribute to score decay. Responses from scan-exempt hosts
 		// earn no credit, matching the forward and fetch paths.
-		if ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() {
+		if structured == nil && ic.Recorder != nil && ic.Config.AdaptiveEnforcement.Enabled && !hasFinding && !interceptAuthenticatedArtifact && !interceptRespExempt && recoveryAssessment.IsBenign() {
 			ic.Recorder.RecordClean(ic.Config.AdaptiveEnforcement.DecayPerCleanRequest)
 		}
 
