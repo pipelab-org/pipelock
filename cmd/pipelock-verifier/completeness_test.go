@@ -981,6 +981,9 @@ func TestCompletenessCLIDefaultSessionLegacyAndDamagedChains(t *testing.T) {
 		if code == cliutil.ExitOK {
 			t.Fatalf("damaged chain succeeded: stdout=%q stderr=%q", stdout, stderr)
 		}
+		if code != cliutil.ExitConfig || !strings.Contains(stderr, runSession) || !strings.Contains(stderr, "extract receipts") {
+			t.Fatalf("damaged run chain was not selected for extraction: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		}
 		if strings.Contains(stderr, "receipt-group") || strings.Contains(stdout, "receipt-group") {
 			t.Fatalf("damaged run chain misreported as a group shard: stdout=%q stderr=%q", stdout, stderr)
 		}
