@@ -31,7 +31,10 @@ class ShardDriftTest(unittest.TestCase):
             self.assertEqual(ci_artifact_inputs(root), paths)
             for path in paths:
                 body = path.read_text(encoding="utf-8")
-                for invalid in ("", "not JSON\n", '{"Action":"start"}\n'):
+                for invalid in ("", "not JSON\n", '{"Action":"start"}\n',
+                                '{"Action":"run","Package":"example.test/internal/proxy","Test":"TestPartial"}\n'
+                                '{"Action":"pass","Package":"example.test/internal/proxy","Test":"TestPartial/child","Elapsed":12}\n',
+                                '{"Action":"fail","Package":"example.test/rest","Elapsed":1}\n'):
                     with self.subTest(path=path.name, invalid=invalid):
                         path.write_text(invalid, encoding="utf-8")
                         with self.assertRaises(ValueError):

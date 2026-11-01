@@ -76,12 +76,16 @@ def collect_packages(paths: list[Path]) -> dict[str, float]:
 RACE_PARALLELISM = 2
 
 
-def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
+def collect(
+    paths: list[Path], previous: dict[str, dict[str, float]] | None = None,
+) -> dict[str, dict[str, float]]:
     # Deduplicate retries by package and full test name, keeping the slowest
     # completed event. A started but incomplete leaf contributes no elapsed
     # time; the resulting estimate is a lower bound, not a complete run.
     events: dict[tuple[str, str], float | None] = {}
+    incomplete: set[tuple[str, str]] = set()
     for path in paths:
+        pending: set[tuple[str, str]] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
                 try:
@@ -94,13 +98,21 @@ def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
                 if not isinstance(package, str) or not isinstance(name, str) or tree_for_package(package) is None:
                     continue
                 action = event.get("Action")
-                if action not in ("run", "pass", "fail"):
+                if action not in ("run", "pass", "fail", "skip"):
                     continue
                 key = (package, name)
                 events.setdefault(key, None)
+                if action == "run":
+                    pending.add(key)
+                else:
+                    pending.discard(key)
+                    if action == "fail":
+                        incomplete.add((package, name.split("/", 1)[0]))
                 elapsed = event.get("Elapsed")
                 if action in ("pass", "fail") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
                     events[key] = max(events[key] or 0.0, float(elapsed))
+
+        incomplete.update((pkg, name.split("/", 1)[0]) for pkg, name in pending)
 
     parents = {(pkg, name.rsplit("/", 1)[0]) for pkg, name in events if "/" in name}
     totals: dict[tuple[str, str], float] = {}
@@ -118,6 +130,8 @@ def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
             continue
         weight = max(parent or 0.0, (leaf_total or 0.0) / RACE_PARALLELISM)
         tree = tree_for_package(package)
+        if (package, name) in incomplete:
+            weight = max(weight, (previous or {}).get(tree, {}).get(name, 0.0))
         tests = measured.setdefault(tree, {})
         tests[name] = max(tests.get(name, 0.0), round(weight, 1))
     return measured
@@ -146,6 +160,32 @@ def merge(
     return {"trees": trees}
 
 
+def artifact_complete(path: Path) -> bool:
+    """Require terminal package results and no unfinished tests in a CI stream."""
+    packages: dict[str, str | None] = {}
+    pending: set[tuple[str, str]] = set()
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or not isinstance(event.get("Package"), str):
+                continue
+            package = event["Package"]
+            packages.setdefault(package, None)
+            name, action = event.get("Test"), event.get("Action")
+            if isinstance(name, str):
+                key = (package, name)
+                if action == "run":
+                    pending.add(key)
+                elif action in ("pass", "fail", "skip"):
+                    pending.discard(key)
+            elif action in ("pass", "fail", "skip"):
+                packages[package] = action
+    return bool(packages) and not pending and all(action in ("pass", "skip") for action in packages.values())
+
+
 def ci_artifact_inputs(directory: Path) -> list[Path]:
     """Require every Go 1.26 producer before treating a refresh as CI evidence."""
     inputs: list[Path] = []
@@ -154,6 +194,8 @@ def ci_artifact_inputs(directory: Path) -> list[Path]:
             profile = directory / f"go-test-json-{lane}-go126-{shard}" / f"go-test-{lane}.json"
             if not profile.is_file() or profile.stat().st_size == 0:
                 raise ValueError(f"missing or empty CI timing artifact: {profile}")
+            if not artifact_complete(profile):
+                raise ValueError(f"incomplete or failed CI timing artifact: {profile}")
             if not collect([profile]) and not collect_packages([profile]):
                 raise ValueError(f"CI timing artifact has no measured results: {profile}")
             inputs.append(profile)
@@ -176,13 +218,14 @@ def main() -> int:
     if not inputs:
         parser.error("provide input files or --ci-artifacts")
 
-    measured = collect(inputs)
+    previous = load_durations()
+    measured = collect(inputs, previous)
     packages = collect_packages(inputs)
     if not measured and not packages:
         print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1
     inventory = {tree: set(tree_test_names(ROOT / HEAVY_TREES[tree])) for tree in TEST_SPLITS}
-    result = merge(load_durations(), measured, inventory)
+    result = merge(previous, measured, inventory)
     merged_packages = dict(load_package_durations())
     merged_packages.update(packages)
     if merged_packages:
