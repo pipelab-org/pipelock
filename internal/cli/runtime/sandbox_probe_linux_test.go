@@ -39,8 +39,13 @@ func skipChildWithoutSandboxLaunch(t *testing.T) {
 		if err == nil {
 			err = cmd.Wait()
 		}
-		if err != nil {
+		switch {
+		case err != nil:
 			reason = fmt.Sprintf("%v: %s", err, strings.TrimSpace(stderr.String()))
+		case strings.Contains(stderr.String(), "[sandbox] loopback:"):
+			// The child reports a loopback failure and keeps running; these
+			// tests reach the proxy over loopback, so they cannot pass.
+			reason = strings.TrimSpace(stderr.String())
 		}
 	}
 	if reason != "" {
