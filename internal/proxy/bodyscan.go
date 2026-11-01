@@ -1198,7 +1198,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 			return bodyDLPTextExtraction{Err: "multipart/form-data missing boundary"}
 		}
 		var files [][]byte
-		texts, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
+		texts, headerTexts, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
 		if errText != "" {
 			return bodyDLPTextExtraction{Err: errText}
 		}
@@ -1222,7 +1222,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(epilogue) > 0 {
 			regionTexts = append(regionTexts, string(epilogue))
 		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, Texts: regionTexts, FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, Texts: append(slices.Clip(regionTexts), headerTexts...), FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
@@ -2207,14 +2207,21 @@ func extractFormURLEncoded(body []byte) ([]string, string) {
 // Returns extracted strings and an error message if any limit is exceeded.
 // On limit violation: fail-closed (returns error, caller blocks).
 func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, string) {
-	return extractMultipartWithFiles(body, boundary, maxBytes, nil)
+	texts, headerTexts, errText := extractMultipartWithFiles(body, boundary, maxBytes, nil)
+	return append(texts, headerTexts...), errText
 }
 
-func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) ([]string, string) {
+// extractMultipartWithFiles returns the field texts every request scanner
+// reads, and separately the wire header texts that only request DLP reads.
+// Raw header sections are structural MIME text whose whole-string entropy
+// exceeds the default content-entropy threshold for ordinary file uploads, and
+// their field names and media-type tokens cannot hold a spaced injection
+// phrase, so they stay out of the generic injection, entropy and address views.
+func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) ([]string, []string, string) {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	remaining := body
 
-	var result []string
+	var result, headerTexts []string
 	partCount := 0
 
 	for {
@@ -2224,11 +2231,11 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		}
 		if err != nil {
 			// Parse error in multipart: fail-closed block.
-			return nil, fmt.Sprintf("multipart parse error: %v", err)
+			return nil, nil, fmt.Sprintf("multipart parse error: %v", err)
 		}
 		partCount++
 		if partCount > maxMultipartParts {
-			return nil, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
+			return nil, nil, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
 		}
 
 		// Keep the wire spelling: textproto canonicalizes field names and
@@ -2236,12 +2243,12 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		// separates each field into its name, colon and value.
 		rawHeaders, partBytes, ok := rawMultipartHeaders(remaining, boundary)
 		if !ok {
-			return nil, "multipart parse error: cannot locate part headers"
+			return nil, nil, "multipart parse error: cannot locate part headers"
 		}
 		if len(rawHeaders) > maxBytes {
-			return nil, fmt.Sprintf("multipart headers exceed max_body_bytes (%d)", maxBytes)
+			return nil, nil, fmt.Sprintf("multipart headers exceed max_body_bytes (%d)", maxBytes)
 		}
-		result = append(result, string(rawHeaders))
+		headerTexts = append(headerTexts, string(rawHeaders))
 		// As with outer request headers, also scan name+value without the
 		// field separator, so a credential split at the colon is inspected.
 		wire := textproto.NewReader(bufio.NewReader(bytes.NewReader(rawHeaders)))
@@ -2252,10 +2259,10 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				break
 			}
 			if err != nil {
-				return nil, fmt.Sprintf("multipart header read error: %v", err)
+				return nil, nil, fmt.Sprintf("multipart header read error: %v", err)
 			}
 			if name, value, found := strings.Cut(line, ":"); found {
-				result = append(result, name+strings.TrimSpace(value))
+				headerTexts = append(headerTexts, name+strings.TrimSpace(value))
 			}
 		}
 		// RFC 2045 section 6 defines one transfer mechanism per entity.
@@ -2263,14 +2270,14 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		// when both values agree. RFC 7578 section 4.7 deprecates this field
 		// in forms, but a single legacy encoding remains supported.
 		if len(part.Header.Values("Content-Transfer-Encoding")) > 1 {
-			return nil, "multipart parse error: multiple Content-Transfer-Encoding headers"
+			return nil, nil, "multipart parse error: multiple Content-Transfer-Encoding headers"
 		}
 
 		// Extract metadata before closing the part.
 		formName := part.FormName()
 		filename := part.FileName()
 		if len(filename) > maxFilenameBytes {
-			return nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
+			return nil, nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
 		}
 
 		// Retain parsed values as well as wire headers, including decoded
@@ -2307,10 +2314,10 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		_ = part.Close()
 
 		if readErr != nil {
-			return nil, fmt.Sprintf("error reading multipart part: %v", readErr)
+			return nil, nil, fmt.Sprintf("error reading multipart part: %v", readErr)
 		}
 		if len(partBody) > maxBytes {
-			return nil, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
+			return nil, nil, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
 		}
 		// NextRawPart does not transfer-decode, so its consumed body length
 		// identifies the next delimiter in the original bytes exactly.
@@ -2333,7 +2340,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			}, rawBody)
 			decoded, err := base64.StdEncoding.DecodeString(cleaned)
 			if err != nil {
-				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			// Scan BOTH decoded (catches actual secrets) and raw
 			// (catches patterns visible in encoded form).
@@ -2344,11 +2351,11 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			result = append(result, rawBody)
 		case "quoted-printable":
 			if err := validateQuotedPrintable(partBody); err != nil {
-				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(partBody)))
 			if err != nil {
-				return nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			result = append(result, string(decoded))
 			if onPart != nil {
@@ -2363,7 +2370,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				result = append(result, rawBody)
 			}
 		default:
-			return nil, fmt.Sprintf("unsupported multipart part content-transfer-encoding %q", cte)
+			return nil, nil, fmt.Sprintf("unsupported multipart part content-transfer-encoding %q", cte)
 		}
 
 		// Include field name and filename in extracted text (can carry exfil data).
@@ -2375,7 +2382,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		}
 	}
 
-	return result, ""
+	return result, headerTexts, ""
 }
 
 // rawMultipartHeaders locates the header section of a part already accepted by

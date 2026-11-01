@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
@@ -258,6 +259,98 @@ func TestMultipartHeaderDuplicateEncoding(t *testing.T) {
 						t.Fatalf("status=%d hits=%d reason=%q response=%s", status, hits, hdr.Get("X-Pipelock-Block-Reason"), message)
 					}
 				})
+			}
+		})
+	}
+}
+
+func multipartHeaderEntropyRequest(t *testing.T, sc *scanner.Scanner, action string, body []byte) BodyScanResult {
+	t.Helper()
+	cfg := config.Defaults()
+	req := BodyScanRequest{Body: bytes.NewReader(body), ContentType: multipartHeaderType, MaxBytes: 1 << 20, Scanner: sc, Action: config.ActionBlock}
+	applyContentEntropyConfig(&req, cfg)
+	if !req.ContentEntropyEnabled || req.ContentEntropyThreshold != 4.5 || req.ContentEntropyMinLength != 32 {
+		t.Fatalf("content entropy defaults changed: %+v", req)
+	}
+	req.ContentEntropyAction = action
+	_, result := scanRequestBody(t.Context(), req)
+	return result
+}
+
+func TestMultipartHeaderEntropyView(t *testing.T) {
+	sc := scanner.MustNew(testScannerConfig())
+	defer sc.Close()
+	upload := func(disposition, mediaType string) []byte {
+		return []byte("--B\r\nContent-Disposition: " + disposition + "\r\nContent-Type: " + mediaType + "\r\n\r\nhello\r\n--B--\r\n")
+	}
+	// Header sections in the shape browsers, curl -F and Python requests emit.
+	// Each one alone scores above the default 4.5 threshold.
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"browser image", upload(`form-data; name="file"; filename="IMG_20261031_142233.jpg"`, "image/jpeg")},
+		{"curl image", upload(`form-data; name="photo"; filename="IMG_20261031_142233.jpg"`, "image/jpeg")},
+		{"office document", upload(`form-data; name="document"; filename="Quarterly Planning Notes.docx"`, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+	} {
+		for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+			t.Run(tc.name+"/"+action, func(t *testing.T) {
+				result := multipartHeaderEntropyRequest(t, sc, action, tc.body)
+				if !result.Clean || result.EntropyFinding != nil {
+					t.Fatalf("ordinary upload header raised content entropy: %+v", result)
+				}
+			})
+		}
+	}
+
+	t.Run("header value keeps generic view", func(t *testing.T) {
+		// Parsed header values were generic text before wire headers were
+		// added, so opaque content in a value still reaches content entropy.
+		opaque := "Qm9Xk2Lp7Rt4Zw8Yv1Nc6Hd3Js5Fg0Ub9Ae2Oi7Ky4Tx1Mr8Sq6Wn3Pl5Vj0Gh"
+		result := multipartHeaderEntropyRequest(t, sc, config.ActionBlock, multipartHeaderForm("X-Data: "+opaque+"\r\n", "hello"))
+		if result.Clean || result.EntropyFinding == nil || result.Action != config.ActionBlock {
+			t.Fatalf("opaque header value skipped content entropy: %+v", result)
+		}
+	})
+
+	t.Run("header name still reaches DLP", func(t *testing.T) {
+		result := multipartHeaderEntropyRequest(t, sc, config.ActionBlock, multipartHeaderForm(fakeGitHubToken()+": x\r\n", "hello"))
+		if result.Clean || len(result.DLPMatches) == 0 {
+			t.Fatalf("header name credential missed with entropy enabled: %+v", result)
+		}
+	})
+
+	t.Run("views", func(t *testing.T) {
+		body := upload(`form-data; name="file"; filename="IMG_20261031_142233.jpg"`, "image/jpeg")
+		got := extractBodyTextForDLP(body, BodyScanRequest{ContentType: multipartHeaderType, MaxBytes: 1 << 20})
+		section := "Content-Disposition: form-data; name=\"file\"; filename=\"IMG_20261031_142233.jpg\"\r\nContent-Type: image/jpeg\r\n"
+		if slices.Contains(got.GenericTexts, section) || !slices.Contains(got.Texts, section) {
+			t.Fatalf("raw header section in wrong view: generic=%q dlp=%q", got.GenericTexts, got.Texts)
+		}
+		if !slices.Contains(got.Texts, "Content-Typeimage/jpeg") || slices.Contains(got.GenericTexts, "Content-Typeimage/jpeg") {
+			t.Fatalf("name+value join in wrong view: generic=%q dlp=%q", got.GenericTexts, got.Texts)
+		}
+	})
+}
+
+func TestMultipartHeaderOnlyPart(t *testing.T) {
+	// No parsed parameter, header value or body reaches the generic view, so
+	// DLP must not be skipped as an empty body.
+	secret := fakeGitHubToken()
+	for name, body := range map[string][]byte{
+		"media type":       []byte("--B\r\nContent-Type: " + secret + "/x\r\n\r\n\r\n--B--\r\n"),
+		"disposition type": []byte("--B\r\nContent-Disposition: " + secret + "\r\n\r\n\r\n--B--\r\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := extractBodyTextForDLP(body, BodyScanRequest{ContentType: multipartHeaderType, MaxBytes: 1 << 20})
+			if len(got.GenericTexts) != 0 {
+				t.Fatalf("fixture no longer exercises an empty generic view: %q", got.GenericTexts)
+			}
+			sc := scanner.MustNew(testScannerConfig())
+			defer sc.Close()
+			_, result := scanRequestBody(t.Context(), BodyScanRequest{Body: bytes.NewReader(body), ContentType: multipartHeaderType, MaxBytes: 1 << 20, Scanner: sc, Action: config.ActionBlock})
+			if result.Clean || len(result.DLPMatches) == 0 {
+				t.Fatalf("header-only credential missed: %+v", result)
 			}
 		})
 	}
