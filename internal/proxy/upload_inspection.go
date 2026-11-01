@@ -7,7 +7,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -33,7 +35,7 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 			incomplete = fmt.Sprintf("%s upload not fully read: %s; %s", r.Type, r.Reason, scanner.IncompleteFileGovernedSuffix)
 		}
 	}
-	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
+	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
 	switch {
 	case mediaType == "multipart/form-data":
 		// A multipart reader skips the preamble and the epilogue, but an
@@ -43,8 +45,9 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 		// An archive inside a part is that part, below; the body of an
 		// ordinary form whose last part is a document is not read as a
 		// damaged archive.
-		preamble := multipartPreamble(body, params["boundary"])
-		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
+		// Request extraction located both regions in these same bytes and
+		// refused the body when it could not find the closing delimiter.
+		preamble, epilogue := extracted.MultipartPreamble, extracted.MultipartEpilogue
 		if fileinspect.Kind(preamble) != "" || fileinspect.Kind(epilogue) != "" {
 			inspect(body)
 		}
@@ -105,26 +108,64 @@ func multipartPreamble(body []byte, boundary string) []byte {
 	return body
 }
 
-// multipartEpilogue returns the bytes after the final delimiter line, which a
-// multipart reader ignores (RFC 2046 section 5.1.1). Go's reader ends the form
-// at the first line after the preamble that starts with "--" boundary "--";
-// a request that parsed has one. Taking the first such line, whether or not
-// the reader treated it as final, can only start the epilogue earlier, so it
-// checks more bytes, never fewer.
-func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
-	final := []byte("--" + boundary + "--")
-	rest := body[preamble:]
-	start := 0
-	if !bytes.HasPrefix(rest, final) {
-		i := bytes.Index(rest, append([]byte("\n"), final...))
-		if i < 0 {
-			return nil
+// multipartEpilogue returns the bytes after the final delimiter of a complete
+// form. The same reader that extracts parts decides where the form ends,
+// including its accepted line endings and empty parts. Limiting each input
+// read to one line keeps its buffer from reading ahead into the epilogue. It
+// reports false when the form does not parse or the consumed input does not
+// end with a final delimiter line; callers must then fail closed rather than
+// treat the epilogue as empty.
+func multipartEpilogue(body []byte, boundary string, preamble int) ([]byte, bool) {
+	source := &multipartLineReader{body: body[preamble:]}
+	reader := multipart.NewReader(source, boundary)
+	for {
+		part, err := reader.NextRawPart()
+		if err == io.EOF {
+			if !endsWithFinalDelimiter(source.body[:source.offset], boundary) {
+				return nil, false
+			}
+			return source.body[source.offset:], true
 		}
-		start = i + 1
+		if err != nil {
+			return nil, false
+		}
+		if _, err := io.Copy(io.Discard, part); err != nil {
+			return nil, false
+		}
 	}
-	line := rest[start:]
-	if i := bytes.IndexByte(line, '\n'); i >= 0 {
-		return line[i+1:]
+}
+
+// endsWithFinalDelimiter reports whether consumed ends with a final delimiter
+// line: "--" boundary "--", optional spaces or tabs, then CRLF, LF or the end
+// of the input (RFC 2046 section 5.1.1). It guards the line-capped reader
+// assumption: a reader that buffered past that line would fail this check
+// instead of hiding epilogue bytes.
+func endsWithFinalDelimiter(consumed []byte, boundary string) bool {
+	line := bytes.TrimSuffix(bytes.TrimSuffix(consumed, []byte("\n")), []byte("\r"))
+	if i := bytes.LastIndexByte(line, '\n'); i >= 0 {
+		line = line[i+1:]
 	}
-	return nil
+	line = bytes.TrimRight(line, " \t")
+	return bytes.Equal(line, []byte("--"+boundary+"--"))
+}
+
+// multipartLineReader never returns bytes past the next LF. Go's multipart
+// reader consumes the final delimiter line without needing the next line, so
+// offset identifies the epilogue even though that reader buffers its input.
+type multipartLineReader struct {
+	body   []byte
+	offset int
+}
+
+func (r *multipartLineReader) Read(p []byte) (int, error) {
+	if r.offset == len(r.body) {
+		return 0, io.EOF
+	}
+	n := min(len(p), len(r.body)-r.offset)
+	if i := bytes.IndexByte(r.body[r.offset:r.offset+n], '\n'); i >= 0 {
+		n = i + 1
+	}
+	copy(p, r.body[r.offset:r.offset+n])
+	r.offset += n
+	return n, nil
 }
