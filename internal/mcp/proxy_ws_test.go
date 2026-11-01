@@ -95,6 +95,11 @@ func waitForResponseNumber(t *testing.T, ch <-chan int, want int) {
 func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A probe is not a WebSocket handshake from the client under test.
+		if r.Header.Get("Upgrade") == "" {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			t.Errorf("ws upgrade: %v", err)
@@ -112,6 +117,35 @@ func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}
 	}))
 }
 
+func TestWSRespondServerIgnoresUnrelatedHTTPProbe(t *testing.T) {
+	response := []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)
+	sent := make(chan struct{})
+	srv := wsRespondServer(t, response, sent)
+	defer srv.Close()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probe, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = probe.Body.Close()
+	conn, _, _, err := ws.Dial(t.Context(), wsURL(srv))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := gobwasutil.WriteClientMessage(conn, ws.OpText, []byte(jsonToolsCallEcho)); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := gobwasutil.ReadServerData(conn)
+	if err != nil || !bytes.Equal(got, response) {
+		t.Fatalf("response = %s, error = %v", got, err)
+	}
+	waitForResponse(t, sent)
+}
+
 func wsDrainServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
 	srv, frames, _ := wsDrainServerObserved(t)
@@ -124,6 +158,10 @@ func wsDrainServerObserved(t *testing.T) (*httptest.Server, *atomic.Int64, <-cha
 	var closeOnce sync.Once
 	closed := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Upgrade") == "" {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
 		conn, _, _, err := ws.UpgradeHTTP(r, w)
 		if err != nil {
 			t.Errorf("ws upgrade: %v", err)

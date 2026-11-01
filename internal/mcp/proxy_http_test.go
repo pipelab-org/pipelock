@@ -2835,14 +2835,15 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 	t.Helper()
 
 	// Bind a free port and pass the listener directly.
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newListenerProxyTestListener(t)
 	addr := ln.Addr().String()
 
 	var logBuf bytes.Buffer
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancelContext := context.WithCancel(context.Background())
+	cancel := func() {
+		cancelContext()
+		ln.closeConnections()
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -2851,14 +2852,14 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 		})
 	}()
 
-	// Wait for server to accept connections.
-	baseURL := "http://" + addr
-	waitForHTTPHealth(t, baseURL)
-
 	t.Cleanup(func() {
 		cancel()
 		waitForListenerProxyStop(t, done)
 	})
+
+	// Register cleanup before readiness can fail.
+	baseURL := "http://" + addr
+	waitForHTTPHealth(t, baseURL)
 
 	return baseURL, cancel, &logBuf
 }
@@ -2866,10 +2867,7 @@ func startListenerProxyWithStateMode(t *testing.T, testOpts listenerProxyTestOpt
 func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyOpts) (string, *bytes.Buffer) {
 	t.Helper()
 
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newListenerProxyTestListener(t)
 	addr := ln.Addr().String()
 
 	var logBuf bytes.Buffer
@@ -2879,13 +2877,14 @@ func startListenerProxyWithOpts(t *testing.T, upstreamURL string, opts MCPProxyO
 		done <- RunHTTPListenerProxy(ctx, ln, upstreamURL, &logBuf, opts)
 	}()
 
-	baseURL := "http://" + addr
-	waitForHTTPHealth(t, baseURL)
-
 	t.Cleanup(func() {
 		cancel()
+		ln.closeConnections()
 		waitForListenerProxyStop(t, done)
 	})
+
+	baseURL := "http://" + addr
+	waitForHTTPHealth(t, baseURL)
 
 	return baseURL, &logBuf
 }
@@ -4802,6 +4801,24 @@ func TestHTTPListener_UpstreamError(t *testing.T) {
 	}
 }
 
+func TestHTTPListener_TestCleanupClosesUnstartedConnections(t *testing.T) {
+	baseURL, cancel, _ := startListenerProxy(t, "http://upstream.vendor.example", testScannerForHTTP(t), nil, nil, nil)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", strings.TrimPrefix(baseURL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	// A later health response proves Accept has returned the silent connection.
+	waitForHTTPHealth(t, baseURL)
+	cancel()
+	if err := conn.SetReadDeadline(time.Now().Add(testwait.Deadline(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("test cleanup left an accepted connection open: %v", err)
+	}
+}
+
 func TestHTTPListener_GracefulShutdownNewConnection(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
@@ -5365,10 +5382,7 @@ func startListenerProxyFull(
 ) (string, *bytes.Buffer) {
 	t.Helper()
 
-	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newListenerProxyTestListener(t)
 	addr := ln.Addr().String()
 
 	var logBuf bytes.Buffer
@@ -5382,13 +5396,14 @@ func startListenerProxyFull(
 		})
 	}()
 
-	baseURL := "http://" + addr
-	waitForHTTPHealth(t, baseURL)
-
 	t.Cleanup(func() {
 		cancel()
+		ln.closeConnections()
 		waitForListenerProxyStop(t, done)
 	})
+
+	baseURL := "http://" + addr
+	waitForHTTPHealth(t, baseURL)
 
 	return baseURL, &logBuf
 }

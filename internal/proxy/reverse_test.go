@@ -504,15 +504,32 @@ func TestReverseLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
 
 func TestReverseLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 	var hits atomic.Int32
+	upstreamHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/chat" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		hits.Add(1)
+		_, _ = w.Write([]byte("unexpected"))
+	})
+	// Reproduce an unrelated local probe before the denied request. Only the
+	// request under test may contribute to its upstream-call assertion.
+	probeServer := newIPv4Server(t, upstreamHandler)
+	defer probeServer.Close()
+	probeReq, err := http.NewRequestWithContext(t.Context(), http.MethodGet, probeServer.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	probeResp, err := probeServer.Client().Do(probeReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = probeResp.Body.Close()
 	cfg := reverseTestConfig()
 	ks := killswitch.New(cfg)
 	ks.SetAPI(true)
 	rule := contractruntimetest.HTTPEnforceRule("r-chat", "api.example.com", "/v1/chat", http.MethodPost)
-	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), ks,
-		func(w http.ResponseWriter, _ *http.Request) {
-			hits.Add(1)
-			_, _ = w.Write([]byte("unexpected"))
-		})
+	proxy := reverseLiveLockSetup(t, "api.example.com", testContractLoader(t, contractruntime.ModeLive, rule), ks, upstreamHandler)
 
 	resp := testAgentPost(t, proxy.URL+"/v1/chat", "{}")
 	defer func() { _ = resp.Body.Close() }()
