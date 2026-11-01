@@ -1,0 +1,92 @@
+name: Go native fuzzing
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'go.work'
+      - 'go.work.sum'
+      - '**/testdata/fuzz/**'
+      - '.github/fuzz-targets.json'
+      - '.github/workflows/go-fuzz.yaml'
+      - 'scripts/fuzz-targets.py'
+      - 'scripts/test_go_fuzz_workflow.py'
+      - 'scripts/test_specialist_workflow_triggers.py'
+      - 'Makefile'
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  targets:
+    runs-on: ubuntu-latest
+    # Same bounded metadata-job budget as ci.yaml.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.targets.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read checked-in targets
+        id: targets
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_go_fuzz_workflow.py'
+          python3 -c 'import json; print("matrix=" + json.dumps(json.load(open(".github/fuzz-targets.json")), separators=(",", ":")))' >> "$GITHUB_OUTPUT"
+
+  fuzz:
+    needs: targets
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    # Budget: 30s mutations (make fuzz) + 77s measured cold MCP build/seed replay
+    # leaves 193s for checkout, toolchain setup, worker shutdown and crash upload.
+    # Retain ci.yaml's 5-minute small-job ceiling; hosted queue time is separate.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    env:
+      GOTOOLCHAIN: local
+      FUZZ_TARGET: ${{ matrix.target }}
+      FUZZ_PACKAGE: ${{ matrix.package }}
+      # Same duration as make fuzz; checked by test_go_fuzz_workflow.py.
+      FUZZTIME: 30s
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          # Newest supported release, not the compatibility floor: Go 1.26's fuzz
+          # coordinator can report its own -fuzztime deadline as a failure
+          # (go.dev/issue/75804), which Go 1.27 fixes.
+          go-version: '1.27'
+          cache: false
+      - name: Fuzz
+        id: fuzz
+        env:
+          # Fresh per job: neither build nor generated fuzz corpora cross runs.
+          # Step-level because job-level env cannot read the runner context.
+          GOCACHE: ${{ runner.temp }}/native-go-fuzz
+        # Go can exit zero for missing or skipped targets. The shared runner
+        # requires target completion and positive fuzz-engine executions.
+        run: |
+          python3 scripts/fuzz-targets.py --package "$FUZZ_PACKAGE" --target "$FUZZ_TARGET" --fuzztime "$FUZZTIME"
+      - name: Upload failing inputs
+        if: ${{ failure() && steps.fuzz.outcome == 'failure' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: ${{ matrix.package }}/testdata/fuzz/${{ matrix.target }}/
+          if-no-files-found: ignore
