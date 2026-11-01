@@ -123,8 +123,15 @@ func TestAdaptiveUniformRefusalMCPListenerKeepsCORSHeaders(t *testing.T) {
 	for i := range exposed {
 		exposed[i] = strings.TrimSpace(exposed[i])
 	}
-	if !slices.Contains(exposed, blockreason.HeaderReason) {
-		t.Fatalf("Access-Control-Expose-Headers = %v, want %s", exposed, blockreason.HeaderReason)
+	// The block-reason contract has clients read the version before the
+	// reason, so every header the refusal sets must be readable.
+	for _, name := range []string{blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer} {
+		if resp.Header.Get(name) == "" {
+			t.Fatalf("refused notification lacks %s: %v", name, resp.Header)
+		}
+		if !slices.Contains(exposed, name) {
+			t.Fatalf("Access-Control-Expose-Headers = %v, want %s", exposed, name)
+		}
 	}
 }
 

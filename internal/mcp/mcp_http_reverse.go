@@ -2680,7 +2680,7 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Pipelock-Session-Token, X-Pipelock-Receipt, "+blockreason.HeaderReason)
+	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
