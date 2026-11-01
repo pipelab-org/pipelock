@@ -71,6 +71,8 @@ func TestMultipartEpilogueMatchesReader(t *testing.T) {
 		{"nothing after", part + "--B--", ""},
 		{"bare LF final inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--extra\r\nmore\r\n--B--\r\nafter", "after"},
 		{"bare LF final line inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\nafter", "after"},
+		{"empty part with bare LF headers in CRLF form", "--B\r\nContent-Disposition: form-data; name=\"a\"\n\n--B--\r\nafter", "after"},
+		{"empty part with no headers in CRLF form", "--B\r\n\n--B--\r\nafter", "after"},
 		{"bare LF final inside CRLF part, no epilogue", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

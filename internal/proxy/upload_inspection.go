@@ -111,9 +111,12 @@ func multipartPreamble(body []byte, boundary string) []byte {
 // line fixes the line ending (CRLF, or LF when that line ends in a bare LF), a
 // part ends only at that line ending followed by "--" and the boundary, and the
 // form ends at the first such line that is "--" boundary "--", optional spaces
-// or tabs, then that line ending or the end of the body. A bare LF before
-// "--" boundary "--" inside a CRLF form is part content, not the epilogue, so
-// starting there would scan part bytes twice and invent an epilogue.
+// or tabs, then that line ending or the end of the body. The reader also ends
+// an empty part when its body starts with "--" boundary directly after the
+// header section's blank line, which needs no line ending in front of it. A
+// bare LF before "--" boundary "--" elsewhere inside a CRLF form is part
+// content, not the epilogue, so starting there would scan part bytes twice and
+// invent an epilogue.
 func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
 	dash := []byte("--" + boundary)
 	final := append(append([]byte(nil), dash...), "--"...)
@@ -141,19 +144,27 @@ func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
 	if isFinal(first) {
 		return rest[len(first):]
 	}
-	sep := append(append([]byte(nil), nl...), dash...)
-	for off := 0; ; {
-		i := bytes.Index(rest[off:], sep)
+	// afterBlankLine reports whether off starts a part body: the line before
+	// it is empty, which ends a part's header section in either line ending.
+	afterBlankLine := func(off int) bool {
+		return off >= 2 && rest[off-1] == '\n' &&
+			(rest[off-2] == '\n' || (off >= 3 && rest[off-2] == '\r' && rest[off-3] == '\n'))
+	}
+	for off := 1; off < len(rest); {
+		i := bytes.Index(rest[off:], final)
 		if i < 0 {
 			return nil
 		}
-		off += i + len(nl)
-		line := lineAt(off)
-		if isFinal(line) {
-			if !bytes.HasSuffix(line, []byte("\n")) {
-				return nil
+		off += i
+		if bytes.HasSuffix(rest[:off], nl) || afterBlankLine(off) {
+			if line := lineAt(off); isFinal(line) {
+				if !bytes.HasSuffix(line, []byte("\n")) {
+					return nil
+				}
+				return rest[off+len(line):]
 			}
-			return rest[off+len(line):]
 		}
+		off++
 	}
+	return nil
 }
