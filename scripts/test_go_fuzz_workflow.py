@@ -86,15 +86,14 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         self.assertEqual(recipe, "\t@python3 scripts/fuzz-targets.py")
         runner = load_runner()
         with mock.patch("sys.argv", ["fuzz-targets.py"]), mock.patch.object(
-            runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
+            runner, "run_target", return_value=0
         ) as run, mock.patch("builtins.print"):
             self.assertEqual(runner.main(), 0)
         self.assertEqual(run.call_count, len(self.manifest["include"]))
         for call, row in zip(run.call_args_list, self.manifest["include"]):
-            self.assertEqual(call.args[0], ["go", "test", "-run=^$", f"-fuzz=^{row['target']}$",
-                                           "-fuzztime=30s", row["package"]])
+            self.assertEqual(call.args, (row, "30s"))
         with mock.patch("sys.argv", ["fuzz-targets.py"]), mock.patch.object(
-            runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)
+            runner, "run_target", return_value=1
         ) as run, mock.patch("builtins.print"):
             self.assertEqual(runner.main(), 1)
             self.assertEqual(run.call_count, 1)
@@ -108,7 +107,7 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
             for rows in ([{"package": "./.", "target": "FuzzGone"}], [known, known]):
                 (root / MANIFEST).write_text(json.dumps({"include": rows}))
                 with mock.patch.object(runner, "ROOT", root), mock.patch("sys.argv", ["fuzz-targets.py"]), \
-                        mock.patch.object(runner.subprocess, "run") as run, mock.patch("sys.stderr"):
+                        mock.patch.object(runner, "run_target") as run, mock.patch("sys.stderr"):
                     self.assertEqual(runner.main(), 1)
                     run.assert_not_called()
 
@@ -116,22 +115,56 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         fuzz = job_block(self.workflow, "fuzz")
         self.assertNotIn("continue-on-error", fuzz)
         self.assertIn("FUZZTIME: 30s", fuzz)
-        self.assertIn('go test -run=\'^$\' -fuzz="^${FUZZ_TARGET}$" -fuzztime="$FUZZTIME" "$FUZZ_PACKAGE"', fuzz)
+        self.assertIn('python3 scripts/fuzz-targets.py --package "$FUZZ_PACKAGE" --target "$FUZZ_TARGET" --fuzztime "$FUZZTIME"', fuzz)
         self.assertIn("if: ${{ failure() && steps.fuzz.outcome == 'failure' }}", fuzz)
         self.assertIn("path: ${{ matrix.package }}/testdata/fuzz/${{ matrix.target }}/", fuzz)
         self.assertIn("name: fuzz-crash-${{ matrix.target }}", fuzz)
         self.assertIn("if-no-files-found: ignore", fuzz)
 
-    def test_unbuilt_target_fails_before_fuzzing(self):
-        # go test exits 0 when -fuzz matches nothing, so the step must prove the
-        # target is built for this runner before fuzzing.
-        fuzz = job_block(self.workflow, "fuzz")
-        listing = fuzz.index('-list="^${FUZZ_TARGET}\\$" "$FUZZ_PACKAGE"')
-        check = fuzz.index('grep -qxF "$FUZZ_TARGET"')
-        refuse = fuzz.index("exit 1", check)
-        run = fuzz.index('-fuzz="^${FUZZ_TARGET}$"')
-        self.assertLess(listing, check)
-        self.assertLess(refuse, run)
+    def test_runner_requires_target_completion_and_positive_executions(self):
+        runner = load_runner()
+        row = {"package": "./fixture", "target": "FuzzExample"}
+        output = {"Action": "output", "Test": row["target"],
+                  "Output": "fuzz: elapsed: 1s, execs: 10 (10/sec)\n"}
+        passed = {"Action": "pass", "Test": row["target"]}
+        cases = (
+            ("fuzzed", [output, passed], 0, 0),
+            ("missing", [{"Action": "pass"}], 0, 1),
+            ("skipped", [{"Action": "skip", "Test": row["target"]}], 0, 1),
+            ("no-executions", [passed], 0, 1),
+            ("zero-executions", [output | {"Output": output["Output"].replace("execs: 10", "execs: 0")}, passed], 0, 1),
+            ("other-target", [output | {"Test": "FuzzOther"}, passed], 0, 1),
+            ("no-completion", [output], 0, 1),
+            ("crash", [output, {"Action": "fail", "Test": row["target"]}], 1, 1),
+            ("compile-error", [], 1, 1),
+            ("signal", [output, passed], -15, -15),
+            ("malformed", [output, passed, "not-json"], 0, 1),
+        )
+        for name, events, exit_code, expected in cases:
+            with self.subTest(name=name), mock.patch.object(runner.subprocess, "Popen") as popen, \
+                    mock.patch("builtins.print"), mock.patch("sys.stderr"):
+                process = popen.return_value.__enter__.return_value
+                process.stdout = iter(json.dumps(event) + "\n" if isinstance(event, dict) else event for event in events)
+                process.wait.return_value = exit_code
+                self.assertEqual(runner.run_target(row, "30s"), expected)
+                self.assertEqual(popen.call_args.args[0], ["go", "test", "-json", "-run=^$",
+                                 "-fuzz=^FuzzExample$", "-fuzztime=30s", "./fixture"])
+
+    def test_runner_selects_only_the_requested_manifest_target(self):
+        runner = load_runner()
+        row = self.manifest["include"][0]
+        with mock.patch("sys.argv", ["fuzz-targets.py", "--package", row["package"],
+                                     "--target", row["target"]]), \
+                mock.patch.object(runner, "run_target", return_value=0) as run:
+            self.assertEqual(runner.main(), 0)
+            run.assert_called_once_with(row, "30s")
+        for args in (["--target", row["target"]],
+                     ["--package", row["package"], "--target", "FuzzMissing"]):
+            with self.subTest(args=args), mock.patch("sys.argv", ["fuzz-targets.py", *args]), \
+                    mock.patch.object(runner, "run_target") as run, mock.patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    runner.main()
+                run.assert_not_called()
 
     def test_unprivileged_pr_workflow_never_restores_cross_run_state(self):
         self.assertIn("\npermissions: {}\n", self.workflow)
