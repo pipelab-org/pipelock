@@ -51,7 +51,7 @@ func TestStructuredResponseSlowCandidatesLeaveSizeExemptCapacity(t *testing.T) {
 	for range 4 {
 		started := make(chan struct{})
 		wg.Go(func() {
-			body, view, release := budget.readStructuredResponse(ctx, "data.vendor.example", []byte("1"), structuredPausedReader{ctx: ctx, started: started, resume: resume}, cfg)
+			body, view, release := budget.readStructuredResponse(ctx, []byte("1"), structuredPausedReader{ctx: ctx, started: started, resume: resume}, cfg, 0)
 			release()
 			if body != nil || view != nil {
 				t.Error("non-JSON candidate delivered payload")
@@ -84,7 +84,7 @@ func TestStructuredResponseIncrementalCancellationReturnsBudget(t *testing.T) {
 	defer func() { cancel(); <-done }()
 	go func() {
 		defer close(done)
-		body, view, release := budget.readStructuredResponse(ctx, "data.vendor.example", []byte(`{"data":"garden"}`), structuredPausedReader{ctx: ctx, started: started}, cfg)
+		body, view, release := budget.readStructuredResponse(ctx, []byte(`{"data":"garden"}`), structuredPausedReader{ctx: ctx, started: started}, cfg, 0)
 		release()
 		if body != nil || view != nil {
 			t.Error("cancelled response retained payload or views")
@@ -115,7 +115,7 @@ func TestStructuredResponseIncrementalChargeFailure(t *testing.T) {
 			configureStructuredTest(cfg)
 			cfg.ResponseScanning.SizeExemptScanMaxInflightBytes = tc.limit
 			var budget sizeExemptScanBudget
-			body, view, release := budget.readStructuredResponse(t.Context(), "data.vendor.example", []byte(tc.prefix), tc.body, cfg)
+			body, view, release := budget.readStructuredResponse(t.Context(), []byte(tc.prefix), tc.body, cfg, 0)
 			release()
 			if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 				t.Fatal("failed body charge retained payload or leaked its reservation")
@@ -130,7 +130,7 @@ func TestStructuredResponseInvalidPrefixStopsRead(t *testing.T) {
 	for _, prefix := range []string{"tx", "fx", "nx", "-x", "1x", `"bad` + string(byte(0)), `{"a":]}`} {
 		t.Run(prefix, func(t *testing.T) {
 			var budget sizeExemptScanBudget
-			body, view, release := budget.readStructuredResponse(t.Context(), "data.vendor.example", []byte(prefix), structuredForbiddenReader{t}, cfg)
+			body, view, release := budget.readStructuredResponse(t.Context(), []byte(prefix), structuredForbiddenReader{t}, cfg, 0)
 			release()
 			if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 				t.Fatal("invalid prefix retained payload or reservation")
@@ -157,7 +157,7 @@ func TestStructuredResponseIncrementalAccountingLifecycle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var budget sizeExemptScanBudget
-			body, view, release := budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, tc.reader, cfg)
+			body, view, release := budget.readStructuredResponse(t.Context(), nil, tc.reader, cfg, 0)
 			if tc.allowed {
 				if view == nil || len(body) == 0 || budget.inflightBytes.Load() != view.account.reserved || budget.inflightBytes.Load() < int64(cap(body)) {
 					t.Fatal("successful admission lacks exact retained accounting")

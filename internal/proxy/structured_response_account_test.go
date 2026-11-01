@@ -47,14 +47,14 @@ func TestStructuredResponseAccountReturnsBudget(t *testing.T) {
 	many := structuredDistinctStrings(3000)
 
 	var budget sizeExemptScanBudget
-	body, view, release := budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(many), cfg)
+	body, view, release := budget.readStructuredResponse(t.Context(), nil, strings.NewReader(many), cfg, 0)
 	release()
 	if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 		t.Fatalf("over-budget views admitted or leaked %d bytes", budget.inflightBytes.Load())
 	}
 
 	// A small body and its views charge only their retained memory.
-	body, view, release = budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{"data":"garden"}`), cfg)
+	body, view, release = budget.readStructuredResponse(t.Context(), nil, strings.NewReader(`{"data":"garden"}`), cfg, 0)
 	if view == nil || view.account == nil || budget.inflightBytes.Load() <= int64(cap(body)) || budget.inflightBytes.Load() >= structuredTestCeiling {
 		t.Fatalf("view=%v reserved=%d, want body capacity plus retained views below the ceiling", view, budget.inflightBytes.Load())
 	}
@@ -79,7 +79,7 @@ func TestStructuredResponseAccountReturnsBudget(t *testing.T) {
 	}
 
 	// Larger views draw on the shared budget and return it.
-	body, view, release = budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{"data":"`+strings.Repeat("garden ", 150)+`"}`), cfg)
+	body, view, release = budget.readStructuredResponse(t.Context(), nil, strings.NewReader(`{"data":"`+strings.Repeat("garden ", 150)+`"}`), cfg, 0)
 	if view == nil || budget.inflightBytes.Load() <= structuredTestCeiling {
 		t.Fatalf("view=%v reserved=%d, want a shared-budget draw", view != nil, budget.inflightBytes.Load())
 	}
@@ -102,7 +102,7 @@ func TestStructuredJSONStartRefusesWithoutReservation(t *testing.T) {
 	configureStructuredTest(cfg)
 	for _, prefix := range []string{"<html>", " \t\r\n<", "PK\x03\x04", "\xef\xbb\xbf{", "garden", "\x00"} {
 		var budget sizeExemptScanBudget
-		body, view, release := budget.readStructuredResponse(t.Context(), "data.vendor.example", []byte(prefix), structuredForbiddenReader{t}, cfg)
+		body, view, release := budget.readStructuredResponse(t.Context(), []byte(prefix), structuredForbiddenReader{t}, cfg, 0)
 		release()
 		if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 			t.Fatalf("%q: non-JSON start was admitted or reserved", prefix)

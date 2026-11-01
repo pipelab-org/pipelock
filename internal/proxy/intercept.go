@@ -2563,7 +2563,7 @@ func newInterceptHandler(
 		}
 		var structured *structuredResponseInspection
 		if int64(len(respBody)) > maxResp && !structuredEncodingBlocked && !isResponseSizeExempt(ic.TargetHost, ic.Config.ResponseScanning.SizeExemptDomains) {
-			full, inspection, release := interceptSizeExemptScanBudget(ic).readStructuredResponse(r.Context(), ic.TargetHost, respBody, resp.Body, ic.Config)
+			full, inspection, release := interceptSizeExemptScanBudget(ic).readStructuredResponse(r.Context(), respBody, resp.Body, ic.Config, maxResp)
 			if inspection != nil {
 				respBody, structured = full, inspection
 				defer release()

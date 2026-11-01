@@ -2822,7 +2822,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		var structured *structuredResponseInspection
 		if int64(len(respBody)) > maxBytes && !budgetLimited && !structuredEncodingBlocked && !fwdRespSizeExempt {
-			full, inspection, release := p.sizeExemptScanBudget.readStructuredResponse(r.Context(), fwdRespHost, respBody, resp.Body, cfg)
+			full, inspection, release := p.sizeExemptScanBudget.readStructuredResponse(r.Context(), respBody, resp.Body, cfg, maxBytes)
 			if inspection != nil && (budgetRemaining < 0 || int64(len(full)) <= budgetRemaining) {
 				respBody, structured = full, inspection
 				defer release()

@@ -199,7 +199,9 @@ func TestStructuredResponseKnownCrossFieldGaps(t *testing.T) {
 		t.Run(transport, func(t *testing.T) {
 			for _, tc := range cases {
 				t.Run(tc.name, func(t *testing.T) {
-					body := []byte(strings.Repeat(" ", structuredTestCap+1) + tc.body)
+					// A filler string survives whitespace removal, so only the
+					// partial views inspect this body.
+					body := []byte(`["` + strings.Repeat("a", structuredTestCap) + `",` + tc.body[1:])
 					rph := newReceiptProxyHelper(t)
 					status, got := structuredTransport(t, transport, body, nil, "", structuredTransportOptions{Evidence: rph})
 					switch status {
@@ -302,7 +304,7 @@ func TestStructuredResponseReadAdmission(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var budget sizeExemptScanBudget
-			body, view, release := budget.readStructuredResponse(tc.ctx, "data.vendor.example", nil, tc.body, cfg)
+			body, view, release := budget.readStructuredResponse(tc.ctx, nil, tc.body, cfg, 0)
 			release()
 			if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 				t.Fatal("failed admission retained payload, partial extraction or reservation")
@@ -312,12 +314,12 @@ func TestStructuredResponseReadAdmission(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	var budget sizeExemptScanBudget
-	body, view, release := budget.readStructuredResponse(ctx, "data.vendor.example", nil, strings.NewReader(`{}`), cfg)
+	body, view, release := budget.readStructuredResponse(ctx, nil, strings.NewReader(`{}`), cfg, 0)
 	release()
 	if body != nil || view != nil || budget.inflightBytes.Load() != 0 {
 		t.Fatal("cancelled admission retained bytes")
 	}
-	body, view, release = budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{}`), cfg)
+	body, view, release = budget.readStructuredResponse(t.Context(), nil, strings.NewReader(`{}`), cfg, 0)
 	if view == nil || budget.inflightBytes.Load() < int64(cap(body)) || budget.inflightBytes.Load() != view.account.reserved {
 		t.Fatal("clean body has no live reservation")
 	}
@@ -515,7 +517,7 @@ func TestStructuredResponseConfigAndReload(t *testing.T) {
 	_, p, cleanup := setupForwardProxyWithInstance(t, configureStructuredTest)
 	defer cleanup()
 	cfg := p.CurrentConfig()
-	_, view, release := p.sizeExemptScanBudget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{}`), cfg)
+	_, view, release := p.sizeExemptScanBudget.readStructuredResponse(t.Context(), nil, strings.NewReader(`{}`), cfg, 0)
 	if view == nil {
 		t.Fatal("initial reservation failed")
 	}
@@ -539,7 +541,7 @@ func TestStructuredResponseConfigAndReload(t *testing.T) {
 	}
 	reload(false)
 	reload(true)
-	body, view, refund := p.sizeExemptScanBudget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{}`), p.CurrentConfig())
+	body, view, refund := p.sizeExemptScanBudget.readStructuredResponse(t.Context(), nil, strings.NewReader(`{}`), p.CurrentConfig(), 0)
 	refund()
 	if body != nil || view != nil {
 		t.Fatal("new admission ignored lowered live budget")
@@ -553,7 +555,7 @@ func TestStructuredResponseConfigAndReload(t *testing.T) {
 	if !p.Reload(next, scanner.MustNew(next)) {
 		t.Fatal("ceiling reload rejected")
 	}
-	body, view, refund = p.sizeExemptScanBudget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(strings.Repeat(" ", structuredTestCeiling)+`{}`), p.CurrentConfig())
+	body, view, refund = p.sizeExemptScanBudget.readStructuredResponse(t.Context(), nil, strings.NewReader(strings.Repeat(" ", structuredTestCeiling)+`{}`), p.CurrentConfig(), 0)
 	refund()
 	if body != nil || view != nil {
 		t.Fatal("new admission ignored lowered per-response ceiling")
@@ -577,6 +579,49 @@ func TestStructuredResponseUnderCapAndSizeExemptKeepRaw(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Whitespace padding can't select partial inspection: a body that fits the
+// ordinary cap once insignificant JSON whitespace is removed also gets the raw
+// whole-document scan, which blocks this cross-field payload.
+func TestStructuredResponseWhitespacePaddingKeepsRawScan(t *testing.T) {
+	miss := `["instructions","orchard","previous","meadow","ignore all","previous","instructions"]`
+	for _, transport := range []string{TransportForward, TransportConnect, TransportReverse} {
+		t.Run(transport, func(t *testing.T) {
+			for name, body := range map[string]string{
+				"leading":     strings.Repeat(" ", structuredTestCap+1) + miss,
+				"trailing":    miss + strings.Repeat("\n", structuredTestCap+1),
+				"inter-token": strings.ReplaceAll(miss, ",", ","+strings.Repeat("\t", structuredTestCap/6+1)),
+			} {
+				t.Run(name, func(t *testing.T) {
+					status, got := structuredTransport(t, transport, []byte(body), nil, "")
+					if status != http.StatusForbidden || bytes.Contains(got, []byte(body)) {
+						t.Fatalf("status=%d: whitespace padding avoided the raw whole-document scan", status)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestStructuredResponseScanStopsOnCancel(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(sc.Close)
+	body := []byte(`["garden","orchard","meadow"]`)
+	inspection, err := extractStructuredResponseAccounted(body, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := scanStructuredResponse(ctx, sc, cfg, body, "", inspection); !got.Failed() || got.Clean {
+		t.Fatalf("canceled structured scan = %+v, want fail-closed scan error", got)
 	}
 }
 

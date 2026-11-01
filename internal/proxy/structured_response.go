@@ -53,6 +53,11 @@ type structuredResponseInspection struct {
 	Completeness   checker.Completeness
 	sourceHash     [sha256.Size]byte
 	account        *structuredResponseAccount
+	// ordinaryCap is the transport's ordinary scan cap. A body that fits it
+	// once insignificant JSON whitespace is removed also gets the raw
+	// whole-document scan, so whitespace padding alone can't select partial
+	// inspection. Zero disables the check (offline replay only).
+	ordinaryCap int64
 }
 
 // structuredResponseAccount charges retained body capacity, decoded strings,
@@ -299,7 +304,7 @@ func (r *structuredResponseReader) Read(p []byte) (int, error) {
 // readStructuredResponse validates JSON while buffering it. Invalid syntax,
 // failed reads and failed body/view charges discard every retained byte and
 // view, release the shared budget, and retain the ordinary refusal.
-func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, _ string, prefix []byte, body io.Reader, cfg *config.Config) ([]byte, *structuredResponseInspection, sizeExemptScanRelease) {
+func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, prefix []byte, body io.Reader, cfg *config.Config, ordinaryCap int64) ([]byte, *structuredResponseInspection, sizeExemptScanRelease) {
 	if ctx.Err() != nil || !structuredJSONStartPossible(prefix) {
 		return nil, nil, noopSizeExemptScanRelease
 	}
@@ -318,6 +323,7 @@ func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, _ str
 		account.release()
 		return nil, nil, noopSizeExemptScanRelease
 	}
+	inspection.ordinaryCap = ordinaryCap
 	return reader.body, inspection, account.release
 }
 
@@ -334,21 +340,24 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 		if err != nil {
 			return scanner.ResponseScanResult{ScanError: err.Error()}
 		}
+		current.ordinaryCap = inspection.ordinaryCap
 		inspection = current
 	}
 	result := scanner.ResponseScanResult{Clean: true}
+	if size := compactStructuredLen(body); inspection.ordinaryCap > 0 && size <= inspection.ordinaryCap {
+		compact, err := compactStructuredBody(body, size, inspection.account)
+		if err != nil {
+			return scanner.ResponseScanResult{ScanError: err.Error()}
+		}
+		if mergeStructuredScan(&result, sc.ScanResponseBodyWithSuppress(ctx, compact, target, cfg.Suppress)) {
+			return result
+		}
+	}
 	for _, part := range inspection.Parts {
-		scanned := sc.ScanResponseWithSuppress(ctx, part.Text, target, cfg.Suppress)
-		result.Clean = result.Clean && scanned.Clean
-		result.Matches = append(result.Matches, scanned.Matches...)
-		result.WarnedMatches = append(result.WarnedMatches, scanned.WarnedMatches...)
-		result.SuppressedMatches = append(result.SuppressedMatches, scanned.SuppressedMatches...)
-		result.ObservedCoreMatches = append(result.ObservedCoreMatches, scanned.ObservedCoreMatches...)
-		result.StegoDetected = result.StegoDetected || scanned.StegoDetected
-		result.StegoDensity = max(result.StegoDensity, scanned.StegoDensity)
-		if scanned.Failed() {
-			result.ScanError = scanned.ScanError
-			result.Clean = false
+		if err := ctx.Err(); err != nil {
+			return scanner.ResponseScanResult{ScanError: err.Error()}
+		}
+		if mergeStructuredScan(&result, sc.ScanResponseWithSuppress(ctx, part.Text, target, cfg.Suppress)) {
 			return result
 		}
 	}
@@ -361,6 +370,63 @@ func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *confi
 	// No benign assessment is granted; the signed diagnostic names the partial
 	// representation contract, independently of this delivery result.
 	return result
+}
+
+// mergeStructuredScan folds one scan into result and reports whether the scan
+// failed, in which case result is a fail-closed scan error.
+func mergeStructuredScan(result *scanner.ResponseScanResult, scanned scanner.ResponseScanResult) bool {
+	result.Clean = result.Clean && scanned.Clean
+	result.Matches = append(result.Matches, scanned.Matches...)
+	result.WarnedMatches = append(result.WarnedMatches, scanned.WarnedMatches...)
+	result.SuppressedMatches = append(result.SuppressedMatches, scanned.SuppressedMatches...)
+	result.ObservedCoreMatches = append(result.ObservedCoreMatches, scanned.ObservedCoreMatches...)
+	result.StegoDetected = result.StegoDetected || scanned.StegoDetected
+	result.StegoDensity = max(result.StegoDensity, scanned.StegoDensity)
+	if scanned.Failed() {
+		result.ScanError = scanned.ScanError
+		result.Clean = false
+		return true
+	}
+	return false
+}
+
+// compactStructuredLen returns the length of body with insignificant JSON
+// whitespace removed. RFC 8259 section 2 allows only space, tab, line feed
+// and carriage return between tokens; whitespace inside strings is kept. body
+// is already a validated JSON value, so tracking strings is enough.
+func compactStructuredLen(body []byte) int64 {
+	n := int64(len(body))
+	inString, escaped := false, false
+	for _, c := range body {
+		switch {
+		case inString && escaped:
+			escaped = false
+		case inString && c == '\\':
+			escaped = true
+		case c == '"':
+			inString = !inString
+		case !inString && (c == ' ' || c == '\t' || c == '\n' || c == '\r'):
+			n--
+		}
+	}
+	return n
+}
+
+// compactStructuredBody builds the compacted copy with encoding/json.Compact
+// after charging its exact length to the admission's account.
+func compactStructuredBody(body []byte, size int64, account *structuredResponseAccount) ([]byte, error) {
+	if err := account.charge(size); err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	buf.Grow(int(size))
+	if err := json.Compact(&buf, body); err != nil {
+		return nil, fmt.Errorf("compacting structured response: %w", err)
+	}
+	if int64(buf.Len()) != size {
+		return nil, errors.New("compacted structured response length mismatch")
+	}
+	return buf.Bytes(), nil
 }
 
 // retainStructuredShieldScan merges the pre-Shield scan like retainShieldScan,

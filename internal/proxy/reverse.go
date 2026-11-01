@@ -3168,7 +3168,7 @@ responseScanning:
 	// requests) and ensures response scanning cannot be bypassed by size.
 	var structured *structuredResponseInspection
 	if len(body) > maxBytes && !shieldOnly && !structuredEncodingBlocked && !revRespSizeExempt {
-		full, inspection, release := rp.sizeExemptScanBudget.readStructuredResponse(resp.Request.Context(), revHost, body, resp.Body, cfg)
+		full, inspection, release := rp.sizeExemptScanBudget.readStructuredResponse(resp.Request.Context(), body, resp.Body, cfg, int64(maxBytes))
 		if inspection != nil {
 			body, structured = full, inspection
 			// The buffered body outlives ModifyResponse until delivery ends.
