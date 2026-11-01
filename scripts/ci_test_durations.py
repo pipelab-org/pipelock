@@ -124,6 +124,11 @@ def collect(
                 events.setdefault(key, None)
                 if action == "run":
                     pending.add(key)
+                    if "/" not in name:
+                        # A new attempt of a top-level test (a retry appended to
+                        # the same stream) ends everything its last attempt left
+                        # running, so a stale subtest cannot claim a new child.
+                        active = {item for item in active if item[0] != package or item[1].split("/", 1)[0] != name}
                     # Only an active prefix can have started this subtest.
                     prefix = name
                     while "/" in prefix:

@@ -149,6 +149,24 @@ class DurationTest(unittest.TestCase):
         ]
         self.assertGreaterEqual(self.collect_events(nested, sibling)["TestRetry"], 1)
 
+    def test_retry_in_same_stream_does_not_inherit_stale_active_subtest(self):
+        # Event order follows a real Go producer: the first attempt timed out in
+        # the sequential subtest "a", and the retry, appended to the same
+        # artifact as CI does, ran the parallel slash-named sibling "a/b" first.
+        events = [
+            {"Action": "run", "Test": "TestR"},
+            {"Action": "run", "Test": "TestR/a"},
+            {"Action": "run", "Test": "TestR"},
+            {"Action": "run", "Test": "TestR/a/b"},
+            {"Action": "pause", "Test": "TestR/a/b"},
+            {"Action": "run", "Test": "TestR/a"},
+            {"Action": "pass", "Test": "TestR/a", "Elapsed": 0},
+            {"Action": "cont", "Test": "TestR/a/b"},
+            {"Action": "pass", "Test": "TestR/a/b", "Elapsed": 1},
+            {"Action": "pass", "Test": "TestR", "Elapsed": 0},
+        ]
+        self.assertEqual(self.collect_events(events)["TestR"], 0.5)
+
     def test_failed_or_incomplete_package_does_not_replace_prior(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events"
