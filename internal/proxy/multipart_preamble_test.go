@@ -56,8 +56,9 @@ func TestMultipartPreambleMatchesReader(t *testing.T) {
 	}
 }
 
-// multipartEpilogue must start no later than where Go's mime/multipart reader
-// stops. Bytes after the reader's final delimiter are never a part.
+// multipartEpilogue must start exactly where Go's mime/multipart reader stops.
+// Bytes after the reader's final delimiter are never a part, and part bytes
+// that only look like a final delimiter are never the epilogue.
 func TestMultipartEpilogueMatchesReader(t *testing.T) {
 	part := "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue\r\n"
 	for _, tc := range []struct {
@@ -68,6 +69,9 @@ func TestMultipartEpilogueMatchesReader(t *testing.T) {
 		{"LF form", "--B\nContent-Disposition: form-data; name=\"a\"\n\nv\n--B--\nafter", "after"},
 		{"no parts", "preamble\r\n--B--\r\nafter", "after"},
 		{"nothing after", part + "--B--", ""},
+		{"bare LF final inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--extra\r\nmore\r\n--B--\r\nafter", "after"},
+		{"bare LF final line inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\nafter", "after"},
+		{"bare LF final inside CRLF part, no epilogue", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			preamble := multipartPreamble([]byte(tc.body), "B")

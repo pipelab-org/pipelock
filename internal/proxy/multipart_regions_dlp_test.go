@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -266,5 +268,50 @@ func TestMultipartRegionsGenericViews(t *testing.T) {
 	// Ordinary preamble and epilogue text stays clean in both views.
 	if result := scan(multipartRegionsBody("This is a multi-part message in MIME format.\r\n", "ordinary text", "\r\n", "\r\n")); !result.Clean {
 		t.Fatalf("ordinary regions must stay clean: %+v", result)
+	}
+}
+
+// A bare LF before the final delimiter text inside a CRLF part is part
+// content. Treating it as the start of the epilogue would score the closing
+// delimiter as epilogue text and refuse a valid form.
+func TestMultipartRegionsEarlyEpilogueMarker(t *testing.T) {
+	sc := newBodyDLPScanner(t)
+	const boundary = "aA0bB1cC2dD3eE4fF5gG6hH7iI8jJ9kK+lL/mM_nN"
+	for _, marker := range []string{"--", "-x-"} {
+		t.Run(marker, func(t *testing.T) {
+			part := strings.Repeat("x", 1024) + "\n--" + boundary + marker + "extra\r\nordinary"
+			body := []byte("--" + boundary + "\r\nContent-Disposition: form-data; name=field\r\n\r\n" + part + "\r\n--" + boundary + "--\r\n")
+			contentType := "multipart/form-data; boundary=\"" + boundary + "\""
+			_, r := scanRequestBody(t.Context(), BodyScanRequest{Body: bytes.NewReader(body), ContentType: contentType, MaxBytes: 4096, Scanner: sc, Action: config.ActionWarn, ContentEntropyEnabled: true, ContentEntropyAction: config.ActionBlock, ContentEntropyThreshold: 4.5, ContentEntropyMinLength: 32})
+			if !r.Clean {
+				t.Fatalf("valid form refused: action=%q reason=%q entropy=%+v", r.Action, r.Reason, r.EntropyFinding)
+			}
+			cfg := reverseTestConfig()
+			cfg.RequestBodyScanning.Action = config.ActionWarn
+			cfg.RequestBodyScanning.ContentEntropyEnabled = true
+			cfg.RequestBodyScanning.ContentEntropyAction = config.ActionBlock
+			cfg.RequestBodyScanning.ContentEntropyThreshold = 4.5
+			cfg.RequestBodyScanning.ContentEntropyMinLength = 32
+			var hits atomic.Int32
+			server := reverseTestSetup(t, cfg, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				hits.Add(1)
+				_, _ = io.Copy(io.Discard, req.Body)
+				w.WriteHeader(http.StatusCreated)
+			}))
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, server.URL+"/upload", bytes.NewReader(body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Content-Type", contentType)
+			resp, err := server.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			message, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusCreated || hits.Load() != 1 {
+				t.Fatalf("valid form refused: status=%d hits=%d reason=%q body=%s", resp.StatusCode, hits.Load(), resp.Header.Get("X-Pipelock-Block-Reason"), message)
+			}
+		})
 	}
 }

@@ -106,25 +106,54 @@ func multipartPreamble(body []byte, boundary string) []byte {
 }
 
 // multipartEpilogue returns the bytes after the final delimiter line, which a
-// multipart reader ignores (RFC 2046 section 5.1.1). Go's reader ends the form
-// at the first line after the preamble that starts with "--" boundary "--";
-// a request that parsed has one. Taking the first such line, whether or not
-// the reader treated it as final, can only start the epilogue earlier, so it
-// checks more bytes, never fewer.
+// multipart reader ignores (RFC 2046 section 5.1.1). It follows Go's
+// mime/multipart reader, which the request parser uses: the first delimiter
+// line fixes the line ending (CRLF, or LF when that line ends in a bare LF), a
+// part ends only at that line ending followed by "--" and the boundary, and the
+// form ends at the first such line that is "--" boundary "--", optional spaces
+// or tabs, then that line ending or the end of the body. A bare LF before
+// "--" boundary "--" inside a CRLF form is part content, not the epilogue, so
+// starting there would scan part bytes twice and invent an epilogue.
 func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
-	final := []byte("--" + boundary + "--")
+	dash := []byte("--" + boundary)
+	final := append(append([]byte(nil), dash...), "--"...)
 	rest := body[preamble:]
-	start := 0
-	if !bytes.HasPrefix(rest, final) {
-		i := bytes.Index(rest, append([]byte("\n"), final...))
+	lineAt := func(off int) []byte {
+		line := rest[off:]
+		if i := bytes.IndexByte(line, '\n'); i >= 0 {
+			line = line[:i+1]
+		}
+		return line
+	}
+	first := lineAt(0)
+	nl := []byte("\r\n")
+	if !bytes.HasSuffix(first, nl) {
+		nl = nl[1:]
+	}
+	isFinal := func(line []byte) bool {
+		tail, ok := bytes.CutPrefix(line, final)
+		if !ok {
+			return false
+		}
+		tail = bytes.TrimLeft(tail, " \t")
+		return len(tail) == 0 || bytes.Equal(tail, nl)
+	}
+	if isFinal(first) {
+		return rest[len(first):]
+	}
+	sep := append(append([]byte(nil), nl...), dash...)
+	for off := 0; ; {
+		i := bytes.Index(rest[off:], sep)
 		if i < 0 {
 			return nil
 		}
-		start = i + 1
+		off += i + len(nl)
+		line := lineAt(off)
+		if isFinal(line) {
+			if !bytes.HasSuffix(line, []byte("\n")) {
+				return nil
+			}
+			return rest[off+len(line):]
+		}
 	}
-	line := rest[start:]
-	if i := bytes.IndexByte(line, '\n'); i >= 0 {
-		return line[i+1:]
-	}
-	return nil
 }
