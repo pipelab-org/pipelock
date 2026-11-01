@@ -227,6 +227,13 @@ func splitPlainFields(s string) []string {
 // (see commandLongOptions) starts the command instead. inGit seeds the first
 // command as the git tool's arguments; noShell keeps separators inside the
 // git tool's words, where no shell reads them.
+//
+// A scalar word that is not plain (see plainShellWord) before the executable
+// may expand to another executable, such as $CMD git fetch, where Git would
+// read git as an alias and fetch as its argument. Git met after such a word in
+// the same command is unproved. A shell's command string in an argument list,
+// such as bash -c's, is not read: the shell's environment, startup files and
+// aliases can redefine git there, so its Git commands stay unproved.
 func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	const (
 		seeking = iota
@@ -238,6 +245,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	if inGit {
 		state = global
 	}
+	// expanded marks a scalar word in the current command, before its
+	// executable, that is not plain.
+	expanded := false
 	word := func(w gitWord) {
 		switch state {
 		case seeking:
@@ -253,13 +263,23 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 				p.unproved, state = true, done
 			case name == "git":
 				state = global
-				if !w.literal && !plainShellWord(w.text) {
+				if expanded || !w.literal && !plainShellWord(w.text) {
 					p.unproved, state = true, done
 				}
 			case !strings.HasPrefix(w.text, "-"):
 				if _, covered := commandLongOptions[utilityKey(name)]; covered {
 					state = done
 				}
+			}
+			if !w.literal && !plainShellWord(w.text) {
+				expanded = true
+			}
+			if (strings.HasPrefix(w.text, "-") || strings.Contains(w.text, "=")) && strings.Contains(w.text, "git-") {
+				// An option or assignment value naming git-<name>, such as
+				// exec -agit-push, env --argv0=git-push or zsh's ARGV0, may
+				// become Git's argv[0], from which Git runs builtin <name>
+				// whatever subcommand word follows.
+				expanded = true
 			}
 		case global, value:
 			switch {
@@ -298,10 +318,22 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			if i == len(w.text) {
 				break
 			}
+			if state == seeking && w.text[i] == '`' {
+				// A backquote is the older spelling of $(, whose $ marks the
+				// prefix as expanded: the substitution's output may become
+				// the executable of the command it appears in.
+				expanded = true
+			}
+			if expanded && (strings.ContainsRune("()`", rune(w.text[i])) || i > 0 && w.text[i-1] == '\\') {
+				// A substitution or escaped separator need not end the outer
+				// command. Its uncertain prefix must not grant a later Git
+				// word a builtin reading.
+				p.unproved = true
+			}
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state = seeking
+			state, expanded = seeking, false
 			start = i + 1
 		}
 	}
