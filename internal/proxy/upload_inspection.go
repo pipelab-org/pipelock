@@ -46,7 +46,12 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 		// ordinary form whose last part is a document is not read as a
 		// damaged archive.
 		preamble := multipartPreamble(body, params["boundary"])
-		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
+		epilogue, ok := multipartEpilogue(body, params["boundary"], len(preamble))
+		if !ok {
+			// Unreachable after a successful extraction; inspect everything
+			// after the preamble rather than skip it.
+			epilogue = body[len(preamble):]
+		}
 		if fileinspect.Kind(preamble) != "" || fileinspect.Kind(epilogue) != "" {
 			inspect(body)
 		}
@@ -110,22 +115,42 @@ func multipartPreamble(body []byte, boundary string) []byte {
 // multipartEpilogue returns the bytes after the final delimiter of a complete
 // form. The same reader that extracts parts decides where the form ends,
 // including its accepted line endings and empty parts. Limiting each input
-// read to one line keeps its buffer from reading ahead into the epilogue.
-func multipartEpilogue(body []byte, boundary string, preamble int) []byte {
+// read to one line keeps its buffer from reading ahead into the epilogue. It
+// reports false when the form does not parse or the consumed input does not
+// end with a final delimiter line; callers must then fail closed rather than
+// treat the epilogue as empty.
+func multipartEpilogue(body []byte, boundary string, preamble int) ([]byte, bool) {
 	source := &multipartLineReader{body: body[preamble:]}
 	reader := multipart.NewReader(source, boundary)
 	for {
 		part, err := reader.NextRawPart()
 		if err == io.EOF {
-			return source.body[source.offset:]
+			if !endsWithFinalDelimiter(source.body[:source.offset], boundary) {
+				return nil, false
+			}
+			return source.body[source.offset:], true
 		}
 		if err != nil {
-			return nil
+			return nil, false
 		}
 		if _, err := io.Copy(io.Discard, part); err != nil {
-			return nil
+			return nil, false
 		}
 	}
+}
+
+// endsWithFinalDelimiter reports whether consumed ends with a final delimiter
+// line: "--" boundary "--", optional spaces or tabs, then CRLF, LF or the end
+// of the input (RFC 2046 section 5.1.1). It guards the line-capped reader
+// assumption: a reader that buffered past that line would fail this check
+// instead of hiding epilogue bytes.
+func endsWithFinalDelimiter(consumed []byte, boundary string) bool {
+	line := bytes.TrimSuffix(bytes.TrimSuffix(consumed, []byte("\n")), []byte("\r"))
+	if i := bytes.LastIndexByte(line, '\n'); i >= 0 {
+		line = line[i+1:]
+	}
+	line = bytes.TrimRight(line, " \t")
+	return bytes.Equal(line, []byte("--"+boundary+"--"))
 }
 
 // multipartLineReader never returns bytes past the next LF. Go's multipart

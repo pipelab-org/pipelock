@@ -351,8 +351,8 @@ func TestMultipartRegionsEarlyEpilogueMarker(t *testing.T) {
 					t.Fatal(err)
 				}
 				body = form.Bytes()
-				if got := multipartEpilogue(body, boundary, len(multipartPreamble(body, boundary))); len(got) != 0 {
-					t.Errorf("field content was treated as epilogue: %q", got)
+				if got, ok := multipartEpilogue(body, boundary, len(multipartPreamble(body, boundary))); !ok || len(got) != 0 {
+					t.Errorf("field content was treated as epilogue: %q ok=%t", got, ok)
 				}
 			}
 			contentType := "multipart/form-data; boundary=\"" + boundary + "\""

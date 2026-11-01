@@ -1209,7 +1209,10 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		// that the same body sent as text/plain could not. Archive inspection
 		// of these regions is separate (inspectUploadTextViews).
 		preamble := multipartPreamble(body, params["boundary"])
-		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
+		epilogue, ok := multipartEpilogue(body, params["boundary"], len(preamble))
+		if !ok {
+			return bodyDLPTextExtraction{Err: "multipart parse error: cannot locate the closing delimiter"}
+		}
 		var regionTexts []string
 		if len(preamble) > 0 {
 			regionTexts = append(regionTexts, string(preamble))
