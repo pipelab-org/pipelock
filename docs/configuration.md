@@ -91,6 +91,8 @@ When enabled, Pipelock prints a startup disclosure. Crash payloads are rebuilt t
 
 When enabled, blocked responses include a hint explaining why the request was blocked and how to fix it. Fetch proxy responses get a `hint` field in the JSON body. CONNECT and WebSocket rejections get an `X-Pipelock-Hint` response header.
 
+While adaptive `block_all` applies to the request's session and destination scope, refusals use the fixed adaptive message and omit detector hints, even with `explain_blocks: true`. Scanner details remain in operator logs, metrics and receipts.
+
 ```yaml
 explain_blocks: true
 ```
@@ -2154,6 +2156,10 @@ Profiles persist as one JSON file per agent key in `profile_dir`. A learned prof
 The baseline admin endpoints (list, show, ratify, forget) are only mounted on the dedicated admin API listener. Set both `kill_switch.api_token` and `kill_switch.api_listen`; the endpoints are not registered on the agent-facing main proxy port.
 
 ## Adaptive Enforcement
+
+At a level with `block_all: true`, every refusal on the applicable transport has the same status, block reason and body, whether a scanner found a problem or the request was clean. HTTP refusals use status `403`, reason `escalation_level` and layer `session_deny`. Fetch and reverse proxy keep their JSON response formats but omit request-specific content. Detector hints and optional correlation and receipt headers are omitted. WebSocket relay closes use code `1008` with the same `escalation_level` payload in both directions. MCP refusals use JSON-RPC error `-32001` with a fixed session-deny message and no detector data; the request ID is preserved and notifications receive no response. An MCP SSE stream that has already started keeps its HTTP status and carries the `-32001` error as an event. The response that first raises a session to `block_all` is uniform on the HTTP proxies, for withheld MCP replies, and for buffered MCP HTTP-listener JSON replies. Ordinary MCP responses are scored after the message writer accepts them. The HTTP listener buffers JSON replies and projects the refusal after scoring; stdio and SSE writers have already delivered the refusal, so those threshold-crossing replies keep their detector reason. Below `block_all`, scanner-specific refusals are unchanged. The kill switch keeps its own refusal and operator message on every transport: it runs before any scanner, so its answer says nothing about a detector.
+
+This changes the answer delivered to the caller, without moving scanner checks ahead of or behind other controls. Findings keep their existing operator evidence and adaptive signal contributions, including denial deduplication. Scanners already skipped by a transport's session-deny check remain skipped. This is a refusal-format guarantee, not a timing guarantee; operator logs, receipts, metrics and stats must remain inaccessible to untrusted callers.
 
 **Audit deployments:** enabling adaptive enforcement allows eligible warnings to be refused after independent enforced findings elevate the session. Set `adaptive_enforcement.enabled: false` to disable adaptive upgrades. Immutable security floors still apply.
 

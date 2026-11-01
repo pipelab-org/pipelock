@@ -14,9 +14,12 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -697,12 +700,12 @@ func TestRunHTTPProxy_UpstreamStatusReachesStdioClient(t *testing.T) {
 	}
 }
 
-// A withheld refusal records a block signal, and once that escalates the
-// session to block every response, later refusals on the same session are
-// withheld too. GET carries no message for request scanning to refuse, so
-// this is the gate that keeps an escalated session from reading the reply.
+// A withheld response can itself reach block_all. Both that refusal and later
+// requests use the fixed adaptive error, while operator logs keep the finding.
 func TestHTTPListener_WithheldClientErrorEscalatesSession(t *testing.T) {
+	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
 		if r.Method == http.MethodGet {
 			w.Header().Set("Allow", "POST")
 			w.WriteHeader(http.StatusMethodNotAllowed)
@@ -735,23 +738,41 @@ func TestHTTPListener_WithheldClientErrorEscalatesSession(t *testing.T) {
 	})
 	token := listenerSetupToken(t, baseURL)
 	header := http.Header{listenerSessionTokenHeader: {token}, "Mcp-Session-Id": {"escalating-session"}}
-
-	resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
-	if resp.StatusCode != http.StatusBadGateway || bytes.Contains(body, []byte(upstreamStatusInjection)) {
-		t.Fatalf("hostile refusal: status=%d body=%s, want withheld 502", resp.StatusCode, body)
+	assertRefusal := func(resp listenerReply, body []byte, id string) {
+		t.Helper()
+		var reply rpcError
+		if err := json.Unmarshal(body, &reply); err != nil {
+			t.Fatalf("decode refusal %q: %v", body, err)
+		}
+		if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) ||
+			string(reply.ID) != id || reply.Error.Code != -32001 || len(reply.Error.Data) != 0 ||
+			reply.Error.Message != "pipelock: "+decide.AdaptiveBlockMessage("session_deny") {
+			t.Fatalf("nonuniform refusal: status=%d header=%v body=%s", resp.StatusCode, resp.Header, body)
+		}
 	}
 
+	// The withheld reply's own finding reaches block_all, so the refusal is the
+	// uniform adaptive one rather than the detector-specific 502.
+	resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
+	assertRefusal(resp, body, "2")
+	before := calls.Load()
+
+	// block_all refuses the GET stream before the upstream is contacted.
 	getHeader := header.Clone()
 	getHeader.Set("Accept", "text/event-stream")
 	resp, body = doListenerRequest(t, http.MethodGet, baseURL+"/", "", getHeader)
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("GET after escalation: status=%d body=%s, want withheld 502; log=%s", resp.StatusCode, body, logBuf.String())
+	assertRefusal(resp, body, "null")
+	if got := calls.Load(); got != before {
+		t.Fatalf("GET reached upstream after escalation: calls=%d, before=%d", got, before)
 	}
 	if got := resp.Header.Get("Allow"); got != "" {
 		t.Fatalf("Allow relayed to an escalated session: %q", got)
 	}
-	if !strings.Contains(logBuf.String(), "session escalation blocks responses") {
-		t.Fatalf("log = %q, want the escalation reason", logBuf.String())
+	// Operator evidence keeps the finding and the escalation it caused.
+	for _, want := range []string{"reply withheld: injection pattern Prompt Injection", "session escalated normal -> elevated"} {
+		if !strings.Contains(logBuf.String(), want) {
+			t.Fatalf("log = %q, want %q", logBuf.String(), want)
+		}
 	}
 }
 

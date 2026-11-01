@@ -335,7 +335,8 @@ func TestHTTPListener_PrincipalControls_AdaptiveAirlockPersistsAndIsolatesVerifi
 	airlockCfg.Enabled = true
 	airlockCfg.Triggers.OnElevated = config.AirlockTierHard
 	opts := principalControlOpts(t)
-	opts.Store = &principalControlAirlockStore{}
+	store := &principalControlAirlockStore{}
+	opts.Store = store
 	opts.AdaptiveCfg = &config.AdaptiveEnforcement{
 		Enabled:             true,
 		EscalationThreshold: 1,
@@ -354,12 +355,28 @@ func TestHTTPListener_PrincipalControls_AdaptiveAirlockPersistsAndIsolatesVerifi
 	}
 
 	secret := "sk-ant-" + strings.Repeat("x", 25)
-	if status, body := request("alice", principalControlToolCall(1, "echo", fmt.Sprintf(`{"value":%q}`, secret))); status != http.StatusOK || !strings.Contains(body, "MCP input scanning") {
-		t.Fatalf("alice adaptive signal = status %d body %s, want input block", status, body)
+	status, body := request("alice", principalControlToolCall(1, "echo", fmt.Sprintf(`{"value":%q}`, secret)))
+	if status != http.StatusForbidden || !strings.Contains(body, "session_deny") {
+		t.Fatalf("alice adaptive signal = status %d body %s, want uniform session block", status, body)
 	}
-	if status, body := request("alice", principalControlToolCall(2, "read_file", `{"path":"/tmp/blocked"}`)); status != http.StatusOK || !strings.Contains(body, "airlock") {
-		t.Fatalf("alice contained follow-up = status %d body %s, want airlock block", status, body)
+	aliceMessage := principalControlRPCError(t, body)
+	if status, body := request("alice", principalControlToolCall(2, "read_file", `{"path":"/tmp/blocked"}`)); status != http.StatusForbidden || principalControlRPCError(t, body) != aliceMessage {
+		t.Fatalf("alice contained follow-up = status %d body %s, want uniform session block", status, body)
 	}
+	// The caller cannot distinguish the airlock from the scanner refusal,
+	// but the principal's quarantine state must still persist.
+	store.mu.Lock()
+	if len(store.recs) != 1 {
+		store.mu.Unlock()
+		t.Fatal("alice has no unique principal state")
+	}
+	for _, rec := range store.recs {
+		if rec.AirlockTier() != config.AirlockTierHard {
+			store.mu.Unlock()
+			t.Fatal("alice lost her quarantine state")
+		}
+	}
+	store.mu.Unlock()
 	if status, body := request("bob", principalControlToolCall(3, "read_file", `{"path":"/tmp/other"}`)); status != http.StatusOK || strings.Contains(body, "airlock") {
 		t.Fatalf("bob inherited alice containment = status %d body %s", status, body)
 	}
