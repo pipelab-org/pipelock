@@ -629,17 +629,9 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	cfg.ResponseScanning.Enabled = false
 	cfg.FlightRecorder.RequireReceipts = true
 
-	var lc net.ListenConfig
-	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	upstreamURL, err := url.Parse("http://" + ln.Addr().String())
+	upstreamURL, err := url.Parse("http://upstream.vendor.example")
 	if err != nil {
 		t.Fatalf("parse upstream URL: %v", err)
-	}
-	if err := ln.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
 	}
 
 	sc := scanner.MustNew(cfg)
@@ -651,6 +643,11 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	scPtr.Store(sc)
 
 	handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+	var upstreamCalls atomic.Int32
+	handler.proxy.Transport = roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("upstream connection refused")}
+	})
 	dir := t.TempDir()
 	emitter, rec, _ := newCoverageEmitter(t, dir)
 	var emPtr atomic.Pointer[receipt.Emitter]
@@ -674,6 +671,9 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream transport calls = %d, want 1", got)
 	}
 
 	waitForReceiptOrTimeout(t, dir)
@@ -957,17 +957,9 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 			setup: func(t *testing.T, cfg *config.Config) (*httptest.Server, string, func()) {
 				t.Helper()
 				cfg.ResponseScanning.Enabled = false
-				var lc net.ListenConfig
-				ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatalf("listen: %v", err)
-				}
-				upstreamURL, err := url.Parse("http://" + ln.Addr().String())
+				upstreamURL, err := url.Parse("http://upstream.vendor.example")
 				if err != nil {
 					t.Fatalf("parse upstream URL: %v", err)
-				}
-				if err := ln.Close(); err != nil {
-					t.Fatalf("close listener: %v", err)
 				}
 
 				sc := scanner.MustNew(cfg)
@@ -979,6 +971,11 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 				scPtr.Store(sc)
 
 				handler := NewReverseProxy(upstreamURL, &cfgPtr, &scPtr, audit.NewNop(), metrics.New(), killswitch.New(cfg), nil, nil)
+				var upstreamCalls atomic.Int32
+				handler.proxy.Transport = roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+					upstreamCalls.Add(1)
+					return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("upstream connection refused")}
+				})
 				dir := t.TempDir()
 				emitter, rec, _ := newCoverageEmitter(t, dir)
 				var emPtr atomic.Pointer[receipt.Emitter]
@@ -988,6 +985,9 @@ func TestReverseProxy_RequireReceiptsStructuralOutcomeCoverage(t *testing.T) {
 				proxySrv := newIPv4Server(t, handler)
 				t.Cleanup(proxySrv.Close)
 				return proxySrv, dir, func() {
+					if got := upstreamCalls.Load(); got != 1 {
+						t.Errorf("upstream transport calls = %d, want 1", got)
+					}
 					if err := rec.Close(); err != nil {
 						t.Fatalf("recorder close: %v", err)
 					}
