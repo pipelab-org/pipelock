@@ -903,7 +903,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			for _, view := range bodyDLPExtractionViews(buf, extracted) {
+			for _, view := range bodyDLPExtractionViews(buf, extracted, nil) {
 				preRedactionDLP = append(preRedactionDLP, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 			}
 			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
@@ -1034,7 +1034,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
 	var matches []scanner.TextDLPMatch
-	for _, view := range bodyDLPExtractionViews(buf, dlpExtracted) {
+	for _, view := range bodyDLPExtractionViews(buf, dlpExtracted, fileTexts) {
 		matches = append(matches, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	}
 	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
@@ -1218,6 +1218,7 @@ type bodyDLPTextExtraction struct {
 	Atoms               []extract.DLPAtom
 	GenericTexts        []string
 	MultipartFields     []string
+	MultipartRegions    bool
 	DLPFieldGroups      [][]string
 	HeaderTokens        []string
 	Texts               []string
@@ -1270,10 +1271,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(m.Wire) > 0 {
 			fieldGroups = append(fieldGroups, m.Wire)
 		}
-		if hasRegions && len(m.Fields) > 1 {
-			fieldGroups = append(fieldGroups, m.Fields)
-		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, MultipartFields: multipartFields, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, MultipartFields: multipartFields, MultipartRegions: hasRegions, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
@@ -1647,10 +1645,18 @@ type bodyDLPViews struct {
 	rawJSON      string
 }
 
-func bodyDLPExtractionViews(body []byte, extracted bodyDLPTextExtraction) []bodyDLPViews {
+func bodyDLPExtractionViews(body []byte, extracted bodyDLPTextExtraction, fileTexts []string) []bodyDLPViews {
 	views := []bodyDLPViews{{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(body, extracted.Atoms)}}
 	for _, fields := range extracted.DLPFieldGroups {
 		views = append(views, bodyDLPViews{texts: fields})
+	}
+	// Multipart regions supplement the part reading: its fields and the text
+	// recovered from uploaded files. Keep that join without the regions so a
+	// preamble or epilogue cannot interrupt a split it detects.
+	if extracted.MultipartRegions {
+		if partTexts := slices.Concat(extracted.MultipartFields, fileTexts); len(partTexts) > 1 {
+			views = append(views, bodyDLPViews{texts: partTexts})
+		}
 	}
 	return views
 }
