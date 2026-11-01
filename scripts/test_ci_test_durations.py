@@ -167,6 +167,34 @@ class DurationTest(unittest.TestCase):
         ]
         self.assertEqual(self.collect_events(events)["TestR"], 0.5)
 
+    def test_completed_retry_keeps_weight_of_interrupted_attempt(self):
+        events = [
+            {"Action": "run", "Test": "TestRetry"},
+            {"Action": "run", "Test": "TestRetry/a"},
+            {"Action": "run", "Test": "TestRetry"},
+            {"Action": "run", "Test": "TestRetry/a"},
+            {"Action": "pass", "Test": "TestRetry/a", "Elapsed": 1},
+            {"Action": "pass", "Test": "TestRetry", "Elapsed": 1},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events"
+            path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
+                                    for event in events), encoding="utf-8")
+            self.assertEqual(collect([path], {"proxy": {"TestRetry": 10}})["proxy"]["TestRetry"], 10)
+
+    def test_completed_repetition_can_reduce_weight(self):
+        events = [
+            {"Action": "run", "Test": "TestRepeat"},
+            {"Action": "pass", "Test": "TestRepeat", "Elapsed": 1},
+            {"Action": "run", "Test": "TestRepeat"},
+            {"Action": "pass", "Test": "TestRepeat", "Elapsed": 2},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "events"
+            path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
+                                    for event in events), encoding="utf-8")
+            self.assertEqual(collect([path], {"proxy": {"TestRepeat": 10}})["proxy"]["TestRepeat"], 2)
+
     def test_failed_or_incomplete_package_does_not_replace_prior(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events"

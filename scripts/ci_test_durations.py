@@ -123,6 +123,8 @@ def collect(
                 key = (package, name)
                 events.setdefault(key, None)
                 if action == "run":
+                    if "/" not in name and key in pending:
+                        incomplete.add(key)
                     pending.add(key)
                     if "/" not in name:
                         # A new attempt of a top-level test (a retry appended to
