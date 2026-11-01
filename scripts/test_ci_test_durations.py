@@ -147,7 +147,7 @@ class DurationTest(unittest.TestCase):
             {"Action": "pass", "Test": "TestRetry/a/b", "Elapsed": 2},
             {"Action": "pass", "Test": "TestRetry", "Elapsed": 0},
         ]
-        self.assertGreaterEqual(self.collect_events(nested, sibling)["TestRetry"], 1)
+        self.assertEqual(self.collect_events(nested, sibling)["TestRetry"], 1.0)
 
     def test_retry_in_same_stream_does_not_inherit_stale_active_subtest(self):
         # Event order follows a real Go producer: the first attempt timed out in

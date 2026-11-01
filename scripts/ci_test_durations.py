@@ -178,8 +178,12 @@ def collect(
         package, name = key
         if key in paused and "/" in name:
             work = (events[key] or 0.0) + paused_work.get(key, 0.0)
-            for parent in parents.get(key, {parent_of(package, name)}):
-                paused_work[parent] = paused_work.get(parent, 0.0) + work
+            # Retries can record more than one parent for the same subtest, and
+            # every candidate is a prefix of its name. Charge its work once,
+            # through the deepest (longest) candidate, so the attempts are not
+            # added together and a later attempt cannot drop an earlier path.
+            parent = max(parents[key], key=lambda item: len(item[1])) if key in parents else parent_of(package, name)
+            paused_work[parent] = paused_work.get(parent, 0.0) + work
 
     measured: dict[str, dict[str, float]] = {}
     keys = {(pkg, name.split("/", 1)[0]) for pkg, name in events}
