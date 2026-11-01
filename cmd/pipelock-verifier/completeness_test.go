@@ -937,3 +937,52 @@ func TestCompletenessCLIGroupedDirectoryNamesTheGroupVerifier(t *testing.T) {
 		t.Fatalf("mixed directory: code=%d stderr=%q", code, stderr)
 	}
 }
+
+// An upgraded directory keeps the earlier default for its legacy proxy chain,
+// and a damaged run chain is analyzed rather than reported as a group shard.
+func TestCompletenessCLIDefaultSessionLegacyAndDamagedChains(t *testing.T) {
+	t.Parallel()
+	const runSession = "proxy.run.03b13ee13e01e7f770480f62ea42f1fe"
+	runFile := "evidence-" + runSession + "-0.jsonl"
+	runData, err := os.ReadFile(filepath.Clean(filepath.Join(runChainFixtures, "valid", runFile)))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	t.Run("legacy_chain_beside_run_chain_keeps_the_legacy_default", func(t *testing.T) {
+		t.Parallel()
+		pub, key, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		addLegacyChainRun(t, dir, key)
+		if err := os.WriteFile(filepath.Join(dir, runFile), runData, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, _ := runRoot(t, "completeness", "--json", "--key", hex.EncodeToString(pub), dir)
+		report := parseCompletenessReport(t, stdout)
+		if !strings.HasSuffix(report.Path, "(session proxy)") || report.ReceiptCount == 0 {
+			t.Fatalf("path=%q receipts=%d, want the legacy proxy chain analyzed; stderr=%q", report.Path, report.ReceiptCount, stderr)
+		}
+		if !strings.Contains(stderr, runSession) || !strings.Contains(stderr, "--session") {
+			t.Fatalf("stderr %q must name the run chain and --session", stderr)
+		}
+	})
+
+	t.Run("torn_lone_run_chain_is_not_reported_as_a_group_shard", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// Keep only part of the first entry so its seq-0 shard cannot be read.
+		if err := os.WriteFile(filepath.Join(dir, runFile), runData[:40], 0o600); err != nil {
+			t.Fatal(err)
+		}
+		stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", readRunChainFixture(t, "signer-key.hex"), dir)
+		if code == cliutil.ExitOK {
+			t.Fatalf("damaged chain succeeded: stdout=%q stderr=%q", stdout, stderr)
+		}
+		if strings.Contains(stderr, "receipt-group") || strings.Contains(stdout, "receipt-group") {
+			t.Fatalf("damaged run chain misreported as a group shard: stdout=%q stderr=%q", stdout, stderr)
+		}
+	})
+}
