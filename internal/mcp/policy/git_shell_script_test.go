@@ -27,6 +27,7 @@ func TestGitShellScriptOperand(t *testing.T) {
 		{"expanded command prefix", []string{"bash", "-c", "$0 git fetch --force", "git"}, false},
 		{"expanded later command", []string{"bash", "-c", "git ls-files --for=x; $0 --for", "git-push"}, false},
 		{"glob command prefix", []string{"bash", "-c", "* git fetch --force"}, false},
+		{"substituted command prefix", []string{"bash", "-c", "`basename gitx x` git ls-files --for"}, false},
 		// Environment given to the shell may define git as a function.
 		{"imported git function", []string{"env", "BASH_FUNC_git%%=() { shift; command $G $P \"$@\"; }", "bash", "-c", "git ls-files --for origin main"}, false},
 		{"startup file", []string{"env", "BASH_ENV=/tmp/f", "bash", "-c", "git ls-files --for"}, false},
@@ -77,6 +78,9 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		{"$CMD`true` git fetch --force", false},
 		{"$CMD$(true) git fetch --force", false},
 		{"$CMD\\; git fetch --force", false},
+		// A command substitution's output may be the executable.
+		{"`basename gitx x` git ls-files --for", false},
+		{"git status; `basename gitx x` git ls-files --for", false},
 		{`cd "/srv/repo" && git fetch --force`, true},
 		{"env -u reset git -c alias.a=rm ls-files --for=x", true},
 		{"env -u push git push --for", false},

@@ -346,6 +346,12 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			if i == len(w.text) {
 				break
 			}
+			if state == seeking && w.text[i] == '`' {
+				// A backquote is the older spelling of $(, whose $ marks the
+				// prefix as expanded: the substitution's output may become
+				// the executable of the command it appears in.
+				expanded = true
+			}
 			if expanded && (strings.ContainsRune("()`", rune(w.text[i])) || i > 0 && w.text[i-1] == '\\') {
 				// A substitution or escaped separator need not end the outer
 				// command. Its uncertain prefix must not grant a later Git
