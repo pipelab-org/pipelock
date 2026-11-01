@@ -994,7 +994,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			dlpExtracted.Atoms = append(dlpExtracted.Atoms, extract.DLPAtom{Text: text, Card: text})
 		}
 	}
-	texts := dlpExtracted.GenericTexts
+	// Multipart header tokens join the injection and address views; content
+	// entropy scores them one at a time below.
+	entropyTexts := dlpExtracted.GenericTexts
+	texts := append(slices.Clip(dlpExtracted.GenericTexts), dlpExtracted.HeaderTokens...)
 	if dnsInspection.Parsed {
 		dlpExtracted.Texts = append(dlpExtracted.Texts, dnsInspection.DLPTexts...)
 	}
@@ -1042,11 +1045,16 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			action = config.StrongestAction(action, requestBodyDLPAction(preRedactionDLP, req.Action, req.PatternActions))
 		}
 	}
-	entropyTexts := texts
 	if dnsInspection.Parsed {
 		entropyTexts = dnsInspection.EntropyTexts
 	}
 	finding := scanBodyTextsForContentEntropy(entropyTexts, req)
+	for _, token := range dlpExtracted.HeaderTokens {
+		if finding != nil {
+			break
+		}
+		finding = scanBodyTextsForContentEntropy([]string{token}, req)
+	}
 	if finding != nil {
 		result.EntropyFinding = finding
 		result.EntropyAction = req.ContentEntropyAction
@@ -1186,6 +1194,7 @@ type bodyDLPTextExtraction struct {
 	CardTexts           []string
 	Atoms               []extract.DLPAtom
 	GenericTexts        []string
+	HeaderTokens        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
 	Err                 string
@@ -1198,7 +1207,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 			return bodyDLPTextExtraction{Err: "multipart/form-data missing boundary"}
 		}
 		var files [][]byte
-		texts, headerTexts, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
+		m, errText := extractMultipartWithFiles(body, params["boundary"], req.MaxBytes, func(part []byte) { files = append(files, part) })
 		if errText != "" {
 			return bodyDLPTextExtraction{Err: errText}
 		}
@@ -1218,11 +1227,11 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(preamble) > 0 {
 			regionTexts = append(regionTexts, string(preamble))
 		}
-		regionTexts = append(regionTexts, texts...)
+		regionTexts = append(regionTexts, m.Fields...)
 		if len(epilogue) > 0 {
 			regionTexts = append(regionTexts, string(epilogue))
 		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, Texts: append(slices.Clip(regionTexts), headerTexts...), FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, HeaderTokens: m.Tokens, Texts: append(slices.Clip(regionTexts), m.Wire...), FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
@@ -2207,21 +2216,29 @@ func extractFormURLEncoded(body []byte) ([]string, string) {
 // Returns extracted strings and an error message if any limit is exceeded.
 // On limit violation: fail-closed (returns error, caller blocks).
 func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, string) {
-	texts, headerTexts, errText := extractMultipartWithFiles(body, boundary, maxBytes, nil)
-	return append(texts, headerTexts...), errText
+	m, errText := extractMultipartWithFiles(body, boundary, maxBytes, nil)
+	return slices.Concat(m.Fields, m.Tokens, m.Wire), errText
 }
 
-// extractMultipartWithFiles returns the field texts every request scanner
-// reads, and separately the wire header texts that only request DLP reads.
-// Raw header sections are structural MIME text whose whole-string entropy
-// exceeds the default content-entropy threshold for ordinary file uploads, and
-// their field names and media-type tokens cannot hold a spaced injection
-// phrase, so they stay out of the generic injection, entropy and address views.
-func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) ([]string, []string, string) {
+// multipartText separates multipart texts by the request checks that read
+// them. Whole raw header sections and name+value joins are DLP-only: as one
+// string, ordinary upload headers exceed the default content-entropy
+// threshold. Header names, media or disposition types and parameter names
+// are tokens that injection and address checks read with the fields, because
+// injection scanning reads a phrase joined by hyphens or underscores. Content
+// entropy scores each token alone, since short structural tokens raise the
+// entropy of a joined view of ordinary form fields.
+type multipartText struct {
+	Fields []string
+	Tokens []string
+	Wire   []string
+}
+
+func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) (multipartText, string) {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
 	remaining := body
 
-	var result, headerTexts []string
+	var result, tokens, headerTexts []string
 	partCount := 0
 
 	for {
@@ -2231,11 +2248,11 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		}
 		if err != nil {
 			// Parse error in multipart: fail-closed block.
-			return nil, nil, fmt.Sprintf("multipart parse error: %v", err)
+			return multipartText{}, fmt.Sprintf("multipart parse error: %v", err)
 		}
 		partCount++
 		if partCount > maxMultipartParts {
-			return nil, nil, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
+			return multipartText{}, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
 		}
 
 		// Keep the wire spelling: textproto canonicalizes field names and
@@ -2243,10 +2260,10 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		// separates each field into its name, colon and value.
 		rawHeaders, partBytes, ok := rawMultipartHeaders(remaining, boundary)
 		if !ok {
-			return nil, nil, "multipart parse error: cannot locate part headers"
+			return multipartText{}, "multipart parse error: cannot locate part headers"
 		}
 		if len(rawHeaders) > maxBytes {
-			return nil, nil, fmt.Sprintf("multipart headers exceed max_body_bytes (%d)", maxBytes)
+			return multipartText{}, fmt.Sprintf("multipart headers exceed max_body_bytes (%d)", maxBytes)
 		}
 		headerTexts = append(headerTexts, string(rawHeaders))
 		// As with outer request headers, also scan name+value without the
@@ -2259,9 +2276,10 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				break
 			}
 			if err != nil {
-				return nil, nil, fmt.Sprintf("multipart header read error: %v", err)
+				return multipartText{}, fmt.Sprintf("multipart header read error: %v", err)
 			}
 			if name, value, found := strings.Cut(line, ":"); found {
+				tokens = append(tokens, name)
 				headerTexts = append(headerTexts, name+strings.TrimSpace(value))
 			}
 		}
@@ -2270,14 +2288,14 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		// when both values agree. RFC 7578 section 4.7 deprecates this field
 		// in forms, but a single legacy encoding remains supported.
 		if len(part.Header.Values("Content-Transfer-Encoding")) > 1 {
-			return nil, nil, "multipart parse error: multiple Content-Transfer-Encoding headers"
+			return multipartText{}, "multipart parse error: multiple Content-Transfer-Encoding headers"
 		}
 
 		// Extract metadata before closing the part.
 		formName := part.FormName()
 		filename := part.FileName()
 		if len(filename) > maxFilenameBytes {
-			return nil, nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
+			return multipartText{}, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
 		}
 
 		// Retain parsed values as well as wire headers, including decoded
@@ -2289,12 +2307,14 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				// On parse failure, fall back to scanning raw value
 				// so malformed headers don't bypass inspection.
 				for _, v := range values {
-					_, params, parseErr := mime.ParseMediaType(v)
+					mediaType, params, parseErr := mime.ParseMediaType(v)
 					if parseErr != nil {
 						result = append(result, v)
 						continue
 					}
-					for _, pv := range params {
+					tokens = append(tokens, mediaType)
+					for pn, pv := range params {
+						tokens = append(tokens, pn)
 						result = append(result, pv)
 					}
 				}
@@ -2314,10 +2334,10 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		_ = part.Close()
 
 		if readErr != nil {
-			return nil, nil, fmt.Sprintf("error reading multipart part: %v", readErr)
+			return multipartText{}, fmt.Sprintf("error reading multipart part: %v", readErr)
 		}
 		if len(partBody) > maxBytes {
-			return nil, nil, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
+			return multipartText{}, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
 		}
 		// NextRawPart does not transfer-decode, so its consumed body length
 		// identifies the next delimiter in the original bytes exactly.
@@ -2340,7 +2360,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			}, rawBody)
 			decoded, err := base64.StdEncoding.DecodeString(cleaned)
 			if err != nil {
-				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return multipartText{}, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			// Scan BOTH decoded (catches actual secrets) and raw
 			// (catches patterns visible in encoded form).
@@ -2351,11 +2371,11 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			result = append(result, rawBody)
 		case "quoted-printable":
 			if err := validateQuotedPrintable(partBody); err != nil {
-				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return multipartText{}, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			decoded, err := io.ReadAll(quotedprintable.NewReader(bytes.NewReader(partBody)))
 			if err != nil {
-				return nil, nil, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
+				return multipartText{}, fmt.Sprintf("error decoding multipart part content-transfer-encoding %q: %v", cte, err)
 			}
 			result = append(result, string(decoded))
 			if onPart != nil {
@@ -2370,7 +2390,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				result = append(result, rawBody)
 			}
 		default:
-			return nil, nil, fmt.Sprintf("unsupported multipart part content-transfer-encoding %q", cte)
+			return multipartText{}, fmt.Sprintf("unsupported multipart part content-transfer-encoding %q", cte)
 		}
 
 		// Include field name and filename in extracted text (can carry exfil data).
@@ -2382,7 +2402,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		}
 	}
 
-	return result, headerTexts, ""
+	return multipartText{Fields: result, Tokens: tokens, Wire: headerTexts}, ""
 }
 
 // rawMultipartHeaders locates the header section of a part already accepted by
