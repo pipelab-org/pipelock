@@ -186,7 +186,9 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         self.assertIn("cache: false", self.workflow)
         self.assertIn("GOCACHE: ${{ runner.temp }}/native-go-fuzz", self.workflow)
         self.assertIn("GOTOOLCHAIN: local", self.workflow)
-        self.assertIn("go-version: '1.26'", self.workflow)
+        # Go 1.26's fuzz coordinator can fail a clean run when -fuzztime expires
+        # (go.dev/issue/75804); the fix ships in Go 1.27.
+        self.assertIn("go-version: '1.27'", self.workflow)
         # Pin to the same revisions the main CI workflow already uses.
         main = (ROOT / ".github/workflows/ci.yaml").read_text()
         for action in re.findall(r"uses: (\S+)", self.workflow):

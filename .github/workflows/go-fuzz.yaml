@@ -68,8 +68,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
-          # Same floor-version policy as ci.yaml's PR test producers.
-          go-version: '1.26'
+          # Newest supported release, not the compatibility floor: Go 1.26's fuzz
+          # coordinator can report its own -fuzztime deadline as a failure
+          # (go.dev/issue/75804), which Go 1.27 fixes.
+          go-version: '1.27'
           cache: false
       - name: Fuzz
         id: fuzz
