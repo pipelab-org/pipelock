@@ -200,8 +200,10 @@ def merge(
 ) -> dict:
     """Overlay new measurements per test name onto the previous weights.
 
-    A re-measured name takes its new time, so a test that got faster stops
-    being charged its old cost. A name absent from the inputs keeps its old
+    A completely re-measured name takes its new time, so a test that got faster
+    stops being charged its old cost. collect() charges a name whose run failed,
+    never finished, or skipped any subtest at least its previous weight, so such
+    a run can raise a weight but never lower it. A name absent from the inputs keeps its old
     time, so refreshing from a few shards never erases the rest of a tree.
     When an inventory is given, names no longer present in the tree are dropped.
     """
