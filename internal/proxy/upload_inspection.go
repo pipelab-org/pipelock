@@ -35,7 +35,7 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 			incomplete = fmt.Sprintf("%s upload not fully read: %s; %s", r.Type, r.Reason, scanner.IncompleteFileGovernedSuffix)
 		}
 	}
-	mediaType, params, _ := mime.ParseMediaType(req.ContentType)
+	mediaType, _, _ := mime.ParseMediaType(req.ContentType)
 	switch {
 	case mediaType == "multipart/form-data":
 		// A multipart reader skips the preamble and the epilogue, but an
@@ -45,13 +45,9 @@ func inspectUploadTextViews(ctx context.Context, body []byte, req BodyScanReques
 		// An archive inside a part is that part, below; the body of an
 		// ordinary form whose last part is a document is not read as a
 		// damaged archive.
-		preamble := multipartPreamble(body, params["boundary"])
-		epilogue, ok := multipartEpilogue(body, params["boundary"], len(preamble))
-		if !ok {
-			// Unreachable after a successful extraction; inspect everything
-			// after the preamble rather than skip it.
-			epilogue = body[len(preamble):]
-		}
+		// Request extraction located both regions in these same bytes and
+		// refused the body when it could not find the closing delimiter.
+		preamble, epilogue := extracted.MultipartPreamble, extracted.MultipartEpilogue
 		if fileinspect.Kind(preamble) != "" || fileinspect.Kind(epilogue) != "" {
 			inspect(body)
 		}

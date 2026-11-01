@@ -1219,6 +1219,8 @@ type bodyDLPTextExtraction struct {
 	GenericTexts        []string
 	MultipartFields     []string
 	MultipartRegions    bool
+	MultipartPreamble   []byte
+	MultipartEpilogue   []byte
 	DLPFieldGroups      [][]string
 	HeaderTokens        []string
 	Texts               []string
@@ -1271,7 +1273,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(m.Wire) > 0 {
 			fieldGroups = append(fieldGroups, m.Wire)
 		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, MultipartFields: multipartFields, MultipartRegions: hasRegions, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, MultipartFields: multipartFields, MultipartRegions: hasRegions, MultipartPreamble: preamble, MultipartEpilogue: epilogue, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
