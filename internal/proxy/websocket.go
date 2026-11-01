@@ -418,7 +418,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		RequestID: requestID, Agent: agent, Transport: TransportWS, PolicyHash: cfg.CanonicalPolicyHash(),
 	})
 	r = r.WithContext(wsScanCtx)
-	result := sc.Scan(wsScanCtx, scanURL)
+	result := sc.ScanWebSocket(wsScanCtx, targetURL)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -2412,10 +2412,11 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			closeReason, closeBlockReason = "high entropy content detected", blockreason.BodyEntropy
 		}
 	}
-	if unreadHoldOnly(result) {
+	if bodyParserFailureOnly(result, bodyBytes) {
 		scannerLabel = scanner.ScannerParser
 		receiptLayer = scanner.ScannerParser
 		closeBlockReason = blockreason.ParseError
+		closeReason = "body could not be inspected"
 	}
 
 	reason := result.Reason

@@ -250,7 +250,7 @@ const (
 		"There is no allow knob — reach the intended service by its ordinary routable or private address instead."
 
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
-	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
+	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the input could not be parsed or fully scanned. Correct the input or unreadable body and retry."
 
 	// Query entropy shares the ScannerEntropy label with path entropy
 	// but is a distinct gate with a distinct knob. The table is keyed by label
@@ -394,7 +394,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 	},
 	ScannerParser: {
 		OperatorKnob: parseContextOperatorKnob,
-		AgentReason:  "Request blocked: the URL could not be parsed.",
+		AgentReason:  "Request blocked: the input could not be parsed or fully scanned.",
 	},
 	ScannerBodyDLP: {
 		OperatorKnob: bodyDLPOperatorKnob,

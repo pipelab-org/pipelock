@@ -34,7 +34,7 @@ func multipartHeaderCases(secret string) []struct {
 	}{
 		{"field name", multipartHeaderForm(secret+": x\r\n", "clean"), "dlp_match"},
 		{"parameter name", []byte("--B\r\nContent-Disposition: form-data; name=f; " + secret + "=1\r\n\r\nclean\r\n--B--\r\n"), "dlp_match"},
-		{"second transfer encoding", multipartHeaderForm("Content-Transfer-Encoding: 7bit\r\nContent-Transfer-Encoding: "+secret+"\r\n", "clean"), "dlp_match"},
+		{"second transfer encoding", multipartHeaderForm("Content-Transfer-Encoding: 7bit\r\nContent-Transfer-Encoding: "+secret+"\r\n", "clean"), "parse_error"},
 		{"body control", multipartHeaderForm("", secret), "dlp_match"},
 	}
 }
@@ -255,7 +255,7 @@ func TestMultipartHeaderDuplicateEncoding(t *testing.T) {
 			for _, surface := range []string{"forward", "intercept", "reverse"} {
 				t.Run(surface, func(t *testing.T) {
 					status, hits, _, message, hdr := exerciseUpload(t, surface, uploadPolicy{config.ActionWarn, true}, multipartHeaderType, body)
-					if status != http.StatusForbidden || hits != 0 || hdr.Get("X-Pipelock-Block-Reason") != "dlp_match" || !strings.Contains(message, "multiple Content-Transfer-Encoding") {
+					if status != http.StatusForbidden || hits != 0 || hdr.Get("X-Pipelock-Block-Reason") != "parse_error" || !strings.Contains(message, "multiple Content-Transfer-Encoding") {
 						t.Fatalf("status=%d hits=%d reason=%q response=%s", status, hits, hdr.Get("X-Pipelock-Block-Reason"), message)
 					}
 				})

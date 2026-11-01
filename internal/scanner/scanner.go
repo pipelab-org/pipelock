@@ -1207,7 +1207,14 @@ func HintForBlock(r *Result) string {
 // reject is still progress and must register so a flood of cancelled-
 // context probes does not falsely trip the wedge detector.
 func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
-	return s.scanWithRateRecording(ctx, rawURL, true)
+	return s.scanWithRateRecording(ctx, rawURL, true, false)
+}
+
+// ScanWebSocket runs the URL pipeline on the client-supplied ws/wss target.
+// The byte ceiling applies before the handshake scheme is mapped to HTTP(S),
+// so normalization cannot consume part of the configured URL allowance.
+func (s *Scanner) ScanWebSocket(ctx context.Context, rawURL string) Result {
+	return s.scanWithRateRecording(ctx, rawURL, true, true)
 }
 
 // ScanPreflight runs the same URL checks as Scan, including the current rate
@@ -1216,10 +1223,10 @@ func (s *Scanner) Scan(ctx context.Context, rawURL string) Result {
 // The actual request must still call Scan to atomically check and consume its
 // rate-limit slot; this result neither reserves a slot nor authorizes dispatch.
 func (s *Scanner) ScanPreflight(ctx context.Context, rawURL string) Result {
-	return s.scanWithRateRecording(ctx, rawURL, false)
+	return s.scanWithRateRecording(ctx, rawURL, false, false)
 }
 
-func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate bool) Result {
+func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate, websocket bool) Result {
 	defer func() {
 		if h := s.heartbeat.Load(); h != nil {
 			h.fn()
@@ -1234,7 +1241,7 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 			Hint:    HintForScanner(ScannerContext),
 		}
 	}
-	r := s.scan(ctx, rawURL, recordRate)
+	r := s.scan(ctx, rawURL, recordRate, websocket)
 	if !r.Allowed && r.Hint == "" {
 		if r.Scanner == ScannerLength {
 			// The length gate formats only byte counts into its reason. It
@@ -1250,7 +1257,7 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 // scan checks a URL against all scanners and returns the result.
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
-func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (result Result) {
+func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket bool) (result Result) {
 	now := s.currentTime()
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
 		return Result{
@@ -1264,6 +1271,21 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate bool) (res
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
+	}
+
+	if websocket {
+		// RFC 6455 section 3 defines ws/wss handshakes over HTTP/HTTPS.
+		switch parsed.Scheme {
+		case "ws":
+			parsed.Scheme = "http"
+		case "wss":
+			parsed.Scheme = "https"
+		default:
+			return Result{Allowed: false, Reason: "invalid URL: must be ws or wss", Scanner: ScannerScheme, Score: 1.0}
+		}
+		if parsed.Path == "" {
+			parsed.Path = "/"
+		}
 	}
 
 	// Normalize hostname for consistent matching

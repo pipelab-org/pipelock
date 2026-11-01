@@ -2179,7 +2179,7 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if signalScanner == "" {
 		signalScanner = layer
 	}
-	if unreadHoldOnly(result) {
+	if bodyParserFailureOnly(result, bodyBytes) {
 		layer = scanner.ScannerParser
 		bodyBlockReason = blockreason.ParseError
 		signalScanner = scanner.ScannerParser

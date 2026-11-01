@@ -575,13 +575,12 @@ func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
 	return current
 }
 
-// unreadHoldOnly is an enforced unread-file hold, or a body withheld for its
-// Content-Encoding, with no credential, injection, entropy, address, or
-// redaction finding. Those findings keep their own labels. The hold reuses the
-// parser layer, whose block reason is parse_error: the published code for input
-// that could not be fully scanned.
-func unreadHoldOnly(result BodyScanResult) bool {
-	unread := result.UnscannedEncoding || (result.FileInspectionBlock && result.FileInspectionIncomplete != "")
+// bodyParserFailureOnly identifies input that could not be fully scanned,
+// without a credential, injection, entropy, address, or redaction finding. A nil
+// body is the fail-closed scanRequestBody contract for unreadable, oversized,
+// or malformed input. These failures use the existing parser/parse_error labels.
+func bodyParserFailureOnly(result BodyScanResult, bodyBytes []byte) bool {
+	unread := !result.Clean && bodyBytes == nil || result.UnscannedEncoding || (result.FileInspectionBlock && result.FileInspectionIncomplete != "")
 	return unread && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
 		len(result.AddressFindings) == 0 && result.EntropyFinding == nil &&
 		result.RedactionBlockReason == ""

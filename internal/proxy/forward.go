@@ -1677,7 +1677,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			if bodyResult.RedactionBlockReason == "" {
 				scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 			}
-			if unreadHoldOnly(bodyResult) {
+			if bodyParserFailureOnly(bodyResult, buf) {
 				scannerLabel = scanner.ScannerParser
 			}
 			dlpHardBlock := shouldHardBlockBodyCriticalDLP(bodyResult, r.URL.Hostname(), cfg)
