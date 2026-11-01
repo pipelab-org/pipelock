@@ -56,7 +56,7 @@ golangci-lint run --build-tags enterprise ./...
 
 `make fuzz` runs the targets in [`.github/fuzz-targets.json`](.github/fuzz-targets.json) for 30 seconds each. Add new native Go fuzz functions to that manifest; `python3 -m unittest scripts.test_go_fuzz_workflow` checks that every function is listed and that the Makefile and workflow use the same list.
 
-The advisory pull-request workflow runs each target in a separate job on the CI floor Go version. Each job starts from checked-in `testdata/fuzz` corpora and `f.Add` seeds, with fresh Go cache storage and no downloads from earlier runs. A crash fails the job and uploads the target's corpus directory for debugging. Debug artifacts are never restored as input, and newly discovered interesting inputs do not persist between CI runs. This uses Go's native fuzz engine without libFuzzer or sanitizer instrumentation.
+The advisory pull-request workflow runs each target in a separate job on Go 1.27, because Go 1.26's fuzzer can report a clean run as failed when `-fuzztime` expires ([go.dev/issue/75804](https://go.dev/issue/75804)). Use Go 1.27 or later to reproduce CI results. Each job starts from checked-in `testdata/fuzz` corpora and `f.Add` seeds, with fresh Go cache storage and no downloads from earlier runs. A crash fails the job and uploads the target's corpus directory for debugging. Debug artifacts are never restored as input, and newly discovered interesting inputs do not persist between CI runs. This uses Go's native fuzz engine without libFuzzer or sanitizer instrumentation.
 
 ## Pull Requests
 
