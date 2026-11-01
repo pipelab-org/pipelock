@@ -323,12 +323,13 @@ func TestMultipartHeaderEntropyView(t *testing.T) {
 	t.Run("views", func(t *testing.T) {
 		body := upload(`form-data; name="file"; filename="IMG_20261031_142233.jpg"`, "image/jpeg")
 		got := extractBodyTextForDLP(body, BodyScanRequest{ContentType: multipartHeaderType, MaxBytes: 1 << 20})
+		wire := slices.Concat(got.DLPFieldGroups...)
 		section := "Content-Disposition: form-data; name=\"file\"; filename=\"IMG_20261031_142233.jpg\"\r\nContent-Type: image/jpeg\r\n"
-		if slices.Contains(got.GenericTexts, section) || !slices.Contains(got.Texts, section) {
-			t.Fatalf("raw header section in wrong view: generic=%q dlp=%q", got.GenericTexts, got.Texts)
+		if slices.Contains(got.GenericTexts, section) || slices.Contains(got.Texts, section) || !slices.Contains(wire, section) {
+			t.Fatalf("raw header section in wrong view: generic=%q dlp=%q wire=%q", got.GenericTexts, got.Texts, wire)
 		}
-		if !slices.Contains(got.Texts, "Content-Typeimage/jpeg") || slices.Contains(got.GenericTexts, "Content-Typeimage/jpeg") {
-			t.Fatalf("name+value join in wrong view: generic=%q dlp=%q", got.GenericTexts, got.Texts)
+		if !slices.Contains(wire, "Content-Typeimage/jpeg") || slices.Contains(got.GenericTexts, "Content-Typeimage/jpeg") || slices.Contains(got.Texts, "Content-Typeimage/jpeg") {
+			t.Fatalf("name+value join in wrong view: generic=%q dlp=%q wire=%q", got.GenericTexts, got.Texts, wire)
 		}
 	})
 }

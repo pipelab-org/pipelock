@@ -903,7 +903,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			preRedactionDLP = scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(buf, extracted.Atoms)}, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
+			for _, view := range bodyDLPExtractionViews(buf, extracted) {
+				preRedactionDLP = append(preRedactionDLP, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
+			}
 			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 		}
 	}
@@ -1031,7 +1033,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{texts: dlpExtracted.Texts, cards: dlpExtracted.CardTexts, atoms: dlpExtracted.Atoms, rawJSON: bodyJSONCardView(buf, dlpExtracted.Atoms)}, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
+	var matches []scanner.TextDLPMatch
+	for _, view := range bodyDLPExtractionViews(buf, dlpExtracted) {
+		matches = append(matches, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
+	}
 	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
@@ -1194,6 +1199,7 @@ type bodyDLPTextExtraction struct {
 	CardTexts           []string
 	Atoms               []extract.DLPAtom
 	GenericTexts        []string
+	DLPFieldGroups      [][]string
 	HeaderTokens        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
@@ -1231,7 +1237,18 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(epilogue) > 0 {
 			regionTexts = append(regionTexts, string(epilogue))
 		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, HeaderTokens: m.Tokens, Texts: append(slices.Clip(regionTexts), m.Wire...), FileParts: files}
+		hasRegions := len(preamble) > 0 || len(epilogue) > 0
+		// Wire headers have their own DLP pass so they cannot interrupt the
+		// existing region-and-field join. Keep each group as fields until the
+		// scanner applies URL exceptions, before adding synthetic separators.
+		var fieldGroups [][]string
+		if len(m.Wire) > 0 {
+			fieldGroups = append(fieldGroups, m.Wire)
+		}
+		if hasRegions && len(m.Fields) > 1 {
+			fieldGroups = append(fieldGroups, m.Fields)
+		}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
@@ -1603,6 +1620,14 @@ type bodyDLPViews struct {
 	texts, cards []string
 	atoms        []extract.DLPAtom
 	rawJSON      string
+}
+
+func bodyDLPExtractionViews(body []byte, extracted bodyDLPTextExtraction) []bodyDLPViews {
+	views := []bodyDLPViews{{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(body, extracted.Atoms)}}
+	for _, fields := range extracted.DLPFieldGroups {
+		views = append(views, bodyDLPViews{texts: fields})
+	}
+	return views
 }
 
 func bodyJSONCardView(body []byte, atoms []extract.DLPAtom) string {
