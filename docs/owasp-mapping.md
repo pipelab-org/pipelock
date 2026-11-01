@@ -62,7 +62,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 - **MCP tool scanning:** `tools/list` responses are scanned for poisoned descriptions containing hidden instructions. SHA256 baseline per session detects rug-pull definition changes.
 - **Input validation:** URLs are validated, parsed, and scanned before any HTTP request is made. Malformed URLs are rejected.
 
-**Gap:** Pipelock controls the HTTP fetch tool, scans MCP traffic bidirectionally (requests, responses, and tool definitions), and with sandbox mode restricts filesystem and network access at the OS level (Landlock + network namespaces, plus seccomp on linux/amd64). Shell command content is inspected via tool policy rules with obfuscation detection. Pipelock does not monitor in-process agent memory or context window manipulation.
+**Gap:** Pipelock controls the HTTP fetch tool, scans MCP traffic bidirectionally (requests, responses, and tool definitions), and with sandbox mode restricts filesystem and network access at the OS level (Landlock + network namespaces, plus seccomp on linux/amd64). Shell command content is inspected via tool policy rules with obfuscation detection; values that only exist when the command runs, such as a program name held in a variable, aren't resolved ([limits](bypass-resistance.md#architectural-limits)). Pipelock does not monitor in-process agent memory or context window manipulation.
 
 ---
 
