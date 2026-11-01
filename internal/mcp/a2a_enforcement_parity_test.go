@@ -149,7 +149,11 @@ func TestScanHTTPInput_A2AChainNonMatchAllows(t *testing.T) {
 
 func TestRunHTTPListenerProxy_A2ASessionBindingBlocksNoBaseline(t *testing.T) {
 	var upstreamCalls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
 		upstreamCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`))

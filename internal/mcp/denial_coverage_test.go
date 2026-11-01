@@ -723,7 +723,11 @@ func testMCPListenerSetupDenials(t *testing.T) {
 			logger, events := newListenerEventLogger(t)
 			store := &setupCapacityStore{}
 			var calls atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/" {
+					http.NotFound(w, r)
+					return
+				}
 				calls.Add(1)
 				w.Header().Set("Content-Type", tc.contentType)
 				if tc.contentType == "application/json" {
@@ -734,6 +738,7 @@ func testMCPListenerSetupDenials(t *testing.T) {
 				}
 			}))
 			t.Cleanup(upstream.Close)
+			probeMCPTestBackend(t, upstream.URL)
 			required := true
 			opts := MCPProxyOpts{Scanner: testScannerForHTTP(t), AuditLogger: logger, listenerStateTokenRequired: &required}
 			if tc.name == "capacity" {

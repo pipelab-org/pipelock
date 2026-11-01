@@ -23,13 +23,17 @@ import (
 
 const principalStateTestBearer = "shared-listener-credential"
 
-// principalStateUpstream records the requests that Pipelock actually forwards.
+// principalStateUpstream records protocol POSTs and session DELETEs at the root.
 // A block must be visible here as an absent request, not merely as a JSON-RPC
 // error generated after forwarding.
 func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" || (r.Method != http.MethodPost && r.Method != http.MethodDelete) {
+			http.NotFound(w, r)
+			return
+		}
 		calls.Add(1)
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusNoContent)
@@ -48,6 +52,24 @@ func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	}))
 	t.Cleanup(upstream.Close)
 	return upstream, &calls
+}
+
+// probeMCPTestBackend exercises an unrelated HTTP discovery request directly
+// against a protocol backend. It must not change that backend's call count.
+func probeMCPTestBackend(t *testing.T, target string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // principalStateToolCall deliberately sends the current Streamable HTTP shape:
@@ -435,6 +457,7 @@ func TestHTTPListener_PrincipalState_VerifierSeparatesAuthenticatedSubjects(t *t
 
 func TestHTTPListener_PrincipalState_ResolverCannotSeeConsumedListenerCredential(t *testing.T) {
 	upstream, calls := principalStateUpstream(t)
+	probeMCPTestBackend(t, upstream.URL)
 	opts := principalStateOpts(t, principalStateTestBearer)
 	opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
 		if r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("Authorization") != "" {

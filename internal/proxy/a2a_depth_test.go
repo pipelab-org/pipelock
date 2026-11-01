@@ -57,7 +57,7 @@ func TestProxyA2ADepthParity(t *testing.T) {
 						cfg.ResponseScanning.Enabled = false
 						w := httptest.NewRecorder()
 						if transport == "forward" {
-							upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							upstream := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 								hits.Add(1)
 								w.Header().Set("Content-Type", contentType)
 								_, _ = io.WriteString(w, responseBody)
