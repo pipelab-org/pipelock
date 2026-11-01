@@ -435,35 +435,6 @@ func startDeferredOperatorAPIOrReport(
 	return stop, nil
 }
 
-func startMCPMetricsServer(ctx context.Context, listenAddr string, m *metrics.Metrics, stderr io.Writer) (func(), error) {
-	if listenAddr == "" {
-		return func() {}, nil
-	}
-	if m == nil {
-		return func() {}, fmt.Errorf("start MCP metrics server: metrics collector is nil")
-	}
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", m.PrometheusHandler())
-	mux.HandleFunc("/stats", m.StatsHandler())
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
-	if err != nil {
-		return func() {}, wrapBindError("metrics_listen", listenAddr, err)
-	}
-	srv := newHTTPServer(mux)
-	go func() {
-		if serveErr := srv.Serve(ln); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			_, _ = fmt.Fprintf(stderr, "pipelock: MCP metrics server stopped: %v\n", serveErr)
-		}
-	}()
-	_, _ = fmt.Fprintf(stderr, "pipelock: metrics listening on %s\n", ln.Addr())
-	stop := func() {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
-		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
-	}
-	return stop, nil
-}
-
 func resolvedMCPDoWAgentName(requested, resolved string, found bool) string {
 	if found || resolved == "" {
 		return requested
@@ -1415,7 +1386,7 @@ Key-free evidence capture:
 				}
 				defer func() { _ = mcpLn.Close() }()
 			}
-			stopMetrics, metricsErr := startMCPMetricsServer(heartbeatCtx, cfg.MetricsListen, mcpMetrics, cmd.ErrOrStderr())
+			stopMetrics, metricsErr := startDedicatedMetricsServer(heartbeatCtx, cfg.MetricsListen, mcpMetrics, cmd.ErrOrStderr())
 			if metricsErr != nil {
 				if hasListen {
 					return fmt.Errorf("start metrics listener after reserving MCP --listen %q: %w", listenAddr, metricsErr)

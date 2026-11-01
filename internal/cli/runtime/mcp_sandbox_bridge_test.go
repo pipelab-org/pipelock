@@ -442,3 +442,54 @@ func TestStartMCPSandboxBridge_KillSwitchBlocks(t *testing.T) {
 		t.Fatalf("body = %q, want kill_switch_active", got)
 	}
 }
+
+func TestMCPSandboxBridgeNeverServesMetrics(t *testing.T) {
+	for _, address := range []string{"", "127.0.0.1:9091"} {
+		for _, active := range []bool{false, true} {
+			t.Run(fmt.Sprintf("address=%s/kill=%t", address, active), func(t *testing.T) {
+				cfg := config.Defaults()
+				cfg.Internal = nil
+				cfg.MetricsListen = address
+				cfg.KillSwitch.Enabled = active
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+					Context: ctx, Config: cfg, KillSwitch: killswitch.New(cfg), AuditLogger: audit.NewNop(),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer bridge.Close()
+				for _, route := range []string{"/health", "/metrics", "/stats"} {
+					conn, err := (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: proxy.example\r\nConnection: close\r\n\r\n", route); err != nil {
+						t.Fatal(err)
+					}
+					resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+					if err != nil {
+						_ = conn.Close()
+						t.Fatal(err)
+					}
+					_ = resp.Body.Close()
+					_ = conn.Close()
+					want := http.StatusNotFound
+					if route == "/health" {
+						want = http.StatusOK
+					}
+					if route == "/stats" && active {
+						want = http.StatusServiceUnavailable
+					}
+					if resp.StatusCode != want {
+						t.Fatalf("bridge %s = %d, want %d", route, resp.StatusCode, want)
+					}
+				}
+			})
+		}
+	}
+}

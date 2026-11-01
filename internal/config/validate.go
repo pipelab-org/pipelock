@@ -4885,22 +4885,12 @@ func (c *Config) validateScanAPI() error {
 	return nil
 }
 
-// validateListenWarnings emits advisories when the listen address is not
-// loopback. It returns no error because the condition is advisory only -
-// the proxy startup also logs non-loopback warnings via the audit logger
-// (proxy.go Start); these warnings are duplicative but surface at config
-// load time so operators see them during pipelock diag verify-install.
+// validateListenWarnings emits an advisory for wildcard proxy listeners.
+// Metrics have their own explicitly configured listener.
 func (c *Config) validateListenWarnings(warnings *[]Warning) {
 	host, _, err := net.SplitHostPort(c.FetchProxy.Listen)
 	if err != nil {
 		return
-	}
-	ip := net.ParseIP(host)
-	if ip != nil && !ip.IsLoopback() {
-		*warnings = append(*warnings, Warning{
-			Field:   "fetch_proxy.listen",
-			Message: fmt.Sprintf("listen address %s is not loopback - proxy endpoints (/metrics, /stats) will be exposed to the network", c.FetchProxy.Listen),
-		})
 	}
 	if host == "" || host == "0.0.0.0" || host == "::" {
 		*warnings = append(*warnings, Warning{

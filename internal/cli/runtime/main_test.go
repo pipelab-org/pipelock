@@ -7,6 +7,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/testposture"
 )
 
@@ -14,6 +15,13 @@ import (
 // state. Server and guard construction here call posturebinding.LoadRuntime;
 // testposture.PinAbsent documents why an absent proof is the state under test.
 func TestMain(m *testing.M) {
+	// Real standalone sandbox tests re-execute this binary as the sandbox init.
+	// Handle that entry before test setup, as the CLI entry point does.
+	if sandbox.IsStandaloneInitMode() {
+		sandbox.RunStandaloneInit()
+		return
+	}
+
 	cleanup, err := testposture.PinAbsent()
 	if err != nil {
 		cleanup()

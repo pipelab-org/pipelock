@@ -66,6 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `metrics_listen` | string | `""` | Dedicated listener for `/metrics` and `/stats`; omitted, null, or blank exposes neither route. Never served on the proxy port. Requires restart; restrict agent network access. |
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
@@ -2283,7 +2284,7 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.
 
-Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
+Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. Omitted, YAML null, or blank values expose neither route, while counters still collect internally. The proxy listener never serves these routes. Address changes require restart. The dedicated listener has no authentication, so use network controls to deny direct agent access.
 
 Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
 

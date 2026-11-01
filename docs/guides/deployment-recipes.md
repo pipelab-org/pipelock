@@ -339,7 +339,9 @@ spec:
 
 ### PodMonitor (Prometheus Scraping)
 
-If you use the Prometheus Operator, add a PodMonitor to scrape pipelock metrics:
+Configure `metrics_listen: "0.0.0.0:9091"` in the proxy config and declare a container port named `metrics` with `containerPort: 9091`. If you use the Prometheus Operator, add a PodMonitor for that dedicated port:
+
+The metrics listener has no authentication. Restrict it to the monitoring namespace with NetworkPolicy and deny agent pods access. Containers in the same pod share networking, so a sidecar's metrics port remains directly reachable by its agent; use a separate proxy pod for network isolation.
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -354,7 +356,7 @@ spec:
     matchLabels:
       app: my-agent
   podMetricsEndpoints:
-    - port: proxy
+    - port: metrics
       path: /metrics
       interval: 30s
       metricRelabelings:

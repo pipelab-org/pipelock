@@ -5007,6 +5007,11 @@ func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 	if err != nil {
 		t.Errorf("non-loopback listen should validate: %v", err)
 	}
+	for _, warning := range warnings {
+		if strings.Contains(warning.Message, "/metrics") || strings.Contains(warning.Message, "/stats") {
+			t.Fatalf("agent listener warning claims counter exposure: %+v", warning)
+		}
+	}
 	if !hasConfigWarning(warnings, "fetch_proxy.listen") {
 		t.Fatalf("expected fetch_proxy.listen warning, got %+v", warnings)
 	}
