@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 )
 
 func blockAllAdaptiveConfig() *config.AdaptiveEnforcement {
@@ -48,6 +50,17 @@ func TestAdaptiveRefusalWriterPassThrough(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
 			t.Fatalf("final response after 1xx = %d %v, want projected 403", resp.StatusCode, resp.Header)
+		}
+		if got := resp.Header.Get("Link"); got != "" {
+			t.Fatalf("final refusal kept the early-hints Link header: %q", got)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, message, _ := decide.AdaptiveRefusal(1, cfg)
+		if string(body) != message+"\n" {
+			t.Fatalf("final refusal body = %q, want the fixed refusal %q", body, message)
 		}
 	})
 	t.Run("write before header passes a success through", func(t *testing.T) {
