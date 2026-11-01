@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -94,13 +95,16 @@ func TestWebSocketTargetURLLength(t *testing.T) {
 
 func TestBodyParseFailureReceipts(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept"} {
-		for _, scanFailure := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/scan_failure=%t", surface, scanFailure), func(t *testing.T) {
+		for _, failure := range []string{"parser", "context", "redaction"} {
+			t.Run(surface+"/"+failure, func(t *testing.T) {
 				cfg := testScannerConfig()
 				cfg.AdaptiveEnforcement.Enabled = false
 				cfg.RequestBodyScanning.Action = config.ActionWarn
 				enforce := false
 				cfg.Enforce = &enforce
+				if failure == scannerLabelRedaction {
+					applyRedactionTestProfile(cfg)
+				}
 				p := newTestProxyWithConfig(t, cfg)
 				rph := newReceiptProxyHelper(t)
 				p.receiptEmitterPtr.Store(rph.emitter)
@@ -109,9 +113,14 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 				defer cancel()
 				var input io.Reader = strings.NewReader(`{"incomplete":`)
 				wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"
-				if scanFailure {
+				wantReason := "parse_error"
+				if failure == scanner.ScannerContext {
 					input = &cancelAfterFirstResponseRead{Reader: strings.NewReader(`{"message":"ordinary text"}`), cancel: cancel}
 					wantLayer, wantPattern = scanner.ScannerContext, "request body scan failed:"
+				}
+				if failure == scannerLabelRedaction {
+					wantLayer, wantPattern = scannerLabelRedaction, string(redact.ReasonBodyUnparseable)
+					wantReason = "redaction_failure"
 				}
 
 				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/submit", input)
@@ -126,10 +135,14 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 				if rec.Code != http.StatusForbidden {
 					t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 				}
-				if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
+				if rec.Header().Get("X-Pipelock-Block-Reason") != wantReason || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
 					t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
 				}
-				got := rph.requireReceipt(t, wantLayer).ActionRecord
+				gotReceipt := rph.requireReceipt(t, wantLayer)
+				if err := receipt.VerifyWithKey(gotReceipt, rph.pubHex); err != nil {
+					t.Fatal(err)
+				}
+				got := gotReceipt.ActionRecord
 				if got.Verdict != config.ActionBlock || !strings.Contains(got.Pattern, wantPattern) || strings.Contains(got.Pattern, "secret") {
 					t.Fatalf("receipt=%+v", got)
 				}
@@ -221,23 +234,32 @@ func TestBodyParseFailureWebSocketRelayReceipts(t *testing.T) {
 }
 
 func TestBodyParseFailureReverseReceipt(t *testing.T) {
-	for _, scanFailure := range []bool{false, true} {
-		t.Run(fmt.Sprint(scanFailure), func(t *testing.T) {
+	for _, failure := range []string{"parser", "context", "redaction"} {
+		t.Run(failure, func(t *testing.T) {
 			cfg := reverseParityBaseConfig(t)
 			cfg.RequestBodyScanning.Enabled = true
 			cfg.RequestBodyScanning.Action = config.ActionWarn
 			enforce := false
 			cfg.Enforce = &enforce
 			cfg.AdaptiveEnforcement.Enabled = false
-			rp, _, _, dir, closeRecorder, key := newReverseParityHarnessWithReceipts(t, cfg, func(_ http.ResponseWriter, _ *http.Request) { t.Error("malformed body reached upstream") })
+			if failure == scannerLabelRedaction {
+				applyRedactionTestProfile(cfg)
+			}
+			rp, owner, _, dir, closeRecorder, key := newReverseParityHarnessWithReceipts(t, cfg, func(_ http.ResponseWriter, _ *http.Request) { t.Error("malformed body reached upstream") })
+			rp.SetRedactionRuntimePtr(owner.RedactionRuntimePtr())
 
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			var input io.Reader = strings.NewReader(`{"incomplete":`)
 			wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"
-			if scanFailure {
+			wantReason := "parse_error"
+			if failure == scanner.ScannerContext {
 				input = &cancelAfterFirstResponseRead{Reader: strings.NewReader(`{"message":"ordinary text"}`), cancel: cancel}
 				wantLayer, wantPattern = scanner.ScannerContext, "request body scan failed:"
+			}
+			if failure == scannerLabelRedaction {
+				wantLayer, wantPattern = scannerLabelRedaction, string(redact.ReasonBodyUnparseable)
+				wantReason = "redaction_failure"
 			}
 
 			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://proxy.vendor.example/submit", input)
@@ -247,7 +269,7 @@ func TestBodyParseFailureReverseReceipt(t *testing.T) {
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 			}
-			if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
+			if rec.Header().Get("X-Pipelock-Block-Reason") != wantReason || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
 				t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
 			}
 			closeRecorder()
