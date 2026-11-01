@@ -25,15 +25,29 @@ func blockAllAdaptiveConfig() *config.AdaptiveEnforcement {
 func TestAdaptiveRefusalWriterPassThrough(t *testing.T) {
 	cfg := blockAllAdaptiveConfig()
 	t.Run("informational status does not commit", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		w := &adaptiveRefusalWriter{ResponseWriter: rec, cfg: cfg, level: func() int { return 1 }}
-		w.WriteHeader(http.StatusEarlyHints)
-		if w.wroteHeader {
-			t.Fatal("1xx committed the final response")
+		srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+			w := &adaptiveRefusalWriter{ResponseWriter: rw, cfg: cfg, level: func() int { return 1 }}
+			w.Header().Set("Link", "</style.css>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			if w.wroteHeader {
+				t.Error("1xx committed the final response")
+			}
+			w.Header().Set(blockreason.HeaderReason, "detector_specific")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte("detector reason"))
+		}))
+		defer srv.Close()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
 		}
-		w.WriteHeader(http.StatusForbidden)
-		if !w.refused || rec.Header().Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
-			t.Fatalf("final refusal after 1xx not projected: refused=%v headers=%v", w.refused, rec.Header())
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
+			t.Fatalf("final response after 1xx = %d %v, want projected 403", resp.StatusCode, resp.Header)
 		}
 	})
 	t.Run("write before header passes a success through", func(t *testing.T) {
