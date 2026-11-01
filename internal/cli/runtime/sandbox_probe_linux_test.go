@@ -39,17 +39,19 @@ func skipChildWithoutSandboxLaunch(t *testing.T) {
 		if err == nil {
 			err = cmd.Wait()
 		}
-		switch {
-		case err != nil:
-			reason = fmt.Sprintf("%v: %s", err, strings.TrimSpace(stderr.String()))
-		case strings.Contains(stderr.String(), "[sandbox] loopback:"):
+		if err != nil {
+			// Only the conditions below are known runner limits. Any other
+			// launch failure is a regression and must fail, not skip.
+			t.Fatalf("sandbox probe launch failed: %v: %s", err, strings.TrimSpace(stderr.String()))
+		}
+		if strings.Contains(stderr.String(), "[sandbox] loopback:") {
 			// The child reports a loopback failure and keeps running; these
 			// tests reach the proxy over loopback, so they cannot pass.
 			reason = strings.TrimSpace(stderr.String())
 		}
 	}
 	if reason != "" {
-		fmt.Println(sandboxUnavailableMarker + strings.ReplaceAll(reason, "\n", " "))
+		fmt.Printf("%s%s\n", sandboxUnavailableMarker, strings.ReplaceAll(reason, "\n", " "))
 		t.Skip("sandbox launch unavailable: " + reason)
 	}
 }
