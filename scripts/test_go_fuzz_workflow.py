@@ -122,6 +122,17 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         self.assertIn("name: fuzz-crash-${{ matrix.target }}", fuzz)
         self.assertIn("if-no-files-found: ignore", fuzz)
 
+    def test_unbuilt_target_fails_before_fuzzing(self):
+        # go test exits 0 when -fuzz matches nothing, so the step must prove the
+        # target is built for this runner before fuzzing.
+        fuzz = job_block(self.workflow, "fuzz")
+        listing = fuzz.index('-list="^${FUZZ_TARGET}\\$" "$FUZZ_PACKAGE"')
+        check = fuzz.index('grep -qxF "$FUZZ_TARGET"')
+        refuse = fuzz.index("exit 1", check)
+        run = fuzz.index('-fuzz="^${FUZZ_TARGET}$"')
+        self.assertLess(listing, check)
+        self.assertLess(refuse, run)
+
     def test_unprivileged_pr_workflow_never_restores_cross_run_state(self):
         self.assertIn("\npermissions: {}\n", self.workflow)
         self.assertIn("group: ${{ github.workflow }}-${{ github.event.pull_request.number }}", self.workflow)

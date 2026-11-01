@@ -77,7 +77,16 @@ jobs:
           # Fresh per job: neither build nor generated fuzz corpora cross runs.
           # Step-level because job-level env cannot read the runner context.
           GOCACHE: ${{ runner.temp }}/native-go-fuzz
-        run: go test -run='^$' -fuzz="^${FUZZ_TARGET}$" -fuzztime="$FUZZTIME" "$FUZZ_PACKAGE"
+        # go test exits 0 when -fuzz matches nothing, for example a target in a
+        # file this runner's build constraints exclude. Require the target to be
+        # listed for this build before fuzzing so that case fails instead.
+        run: |
+          listed="$(go test -run='^$' -list="^${FUZZ_TARGET}\$" "$FUZZ_PACKAGE")"
+          if ! grep -qxF "$FUZZ_TARGET" <<<"$listed"; then
+            echo "::error::$FUZZ_TARGET is not built in $FUZZ_PACKAGE on this runner"
+            exit 1
+          fi
+          go test -run='^$' -fuzz="^${FUZZ_TARGET}$" -fuzztime="$FUZZTIME" "$FUZZ_PACKAGE"
       - name: Upload failing inputs
         if: ${{ failure() && steps.fuzz.outcome == 'failure' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
