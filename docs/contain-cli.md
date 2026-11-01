@@ -304,7 +304,7 @@ These limits remain. A process that can create a user namespace can remount file
 
 ### Managed metrics invariant
 
-Containment keeps `metrics_listen` on a numeric loopback address and a port other than the agent-accessible proxy port by default. Removing or blanking the key disables metrics exposure and is reported as managed-config drift; neither `/metrics` nor `/stats` is served on the agent-accessible proxy listener. Counters still collect internally.
+Containment keeps `metrics_listen` on a numeric loopback address and a port other than the agent-accessible proxy port by default. Removing or blanking the key disables metrics exposure and is reported as managed-config drift; neither `/metrics` nor `/stats` is served on the agent-accessible proxy listener. A running service applies the removal only after restart; until then the existing loopback listener keeps serving. Counters still collect internally.
 
 Repair the managed config with a dedicated loopback listener such as:
 
@@ -312,7 +312,7 @@ Repair the managed config with a dedicated loopback listener such as:
 metrics_listen: 127.0.0.1:9091
 ```
 
-Choose another unused non-proxy port if `9091` is unavailable. Keep `metrics_listen` configured to avoid managed-config drift. Removing it disables exposure while counters still collect internally.
+Choose another unused non-proxy port if `9091` is unavailable. Keep `metrics_listen` configured to avoid managed-config drift. Removing it disables exposure after a restart, while counters still collect internally.
 
 When a Prometheus server must scrape from another host, declare a short-lived exception with the listener's assigned numeric address and the exact source CIDRs that may scrape it. `allow_full_metrics` is deliberately explicit because `/metrics` contains live enforcement data. `owner` and `reason` record who accepted that exposure and why. `expires_at` uses RFC3339 and must remain in the future.
 

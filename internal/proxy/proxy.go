@@ -815,13 +815,6 @@ func WithHealthWatchdog(wd *health.Watchdog) Option {
 	return func(p *Proxy) { p.wd = wd }
 }
 
-// WithMetricsSuppressed retains compatibility for callers that suppress metrics.
-// The proxy listener never publishes metrics; dedicated listeners are owned by
-// the calling runtime.
-func WithMetricsSuppressed() Option {
-	return func(_ *Proxy) {}
-}
-
 // FetchResponse is the JSON response returned by the /fetch endpoint.
 type FetchResponse struct {
 	URL         string `json:"url"`

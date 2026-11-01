@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -497,6 +498,9 @@ func TestMCPSandboxBridgeNeverServesMetrics(t *testing.T) {
 }
 
 func TestMCPSandboxBridgeMetricsUsesBoundAddress(t *testing.T) {
+	if goruntime.GOOS == "darwin" {
+		t.Skip("127.0.0.2 is not a configured loopback alias by default on macOS")
+	}
 	// The configured target represents an earlier resolution. The listener's
 	// numeric address must win even when that snapshot names another local IP.
 	var output bytes.Buffer

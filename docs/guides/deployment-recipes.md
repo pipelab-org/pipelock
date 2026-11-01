@@ -325,14 +325,14 @@ spec:
     # The sidecar pattern works because they share the same network namespace.
 
   ingress:
-    # Allow monitoring (Prometheus scrape)
+    # Allow monitoring (Prometheus scrape of the dedicated metrics port)
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
-          port: 8888
+          port: 9091
 ```
 
 **Important:** K8s NetworkPolicy controls traffic between pods, not between containers within a pod. In the sidecar pattern, the agent container shares the pod's network namespace and can reach the internet directly (same egress rules as pipelock). The `HTTPS_PROXY` env var tells the agent to route through pipelock, but nothing at the network level enforces it. For enforced isolation, run pipelock as a separate pod and restrict the agent pod's egress to only the pipelock Service.
