@@ -431,14 +431,21 @@ if [ "${build_broker}" -eq 1 ]; then
 		echo "[build-images] ERROR: viewer contains symlinks; refusing incomplete provenance" >&2
 		exit 1
 	fi
+	find "${stage}/ui" -type d -exec chmod u+w {} +
+	for staged_file in "${stage}/ui/"*; do
+		if viewer_file_is_generated "${staged_file##*/}"; then
+			rm -f -- "${staged_file}"
+		fi
+	done
 	echo "[build-images] building browser-verifier WASM into private staging copy"
-	wasm_stamp="${stage}/wasm-stamp"
-	: > "${wasm_stamp}"
-	GOWORK=off deploy/wasm-verify/build.sh "${stage}/ui"
-	if [ -z "$(find "${stage}/ui" -type f -name '*.wasm' -newer "${wasm_stamp}" -print -quit)" ]; then
+	wasm_stage="${stage}/wasm"
+	mkdir "${wasm_stage}"
+	GOWORK=off deploy/wasm-verify/build.sh "${wasm_stage}"
+	if [ ! -s "${wasm_stage}/pipelock-verifier.wasm" ]; then
 		echo "[build-images] ERROR: browser-verifier build produced no .wasm in staging; refusing to ship unwired inline verify UI" >&2
 		exit 1
 	fi
+	cp "${wasm_stage}/pipelock-verifier.wasm" "${wasm_stage}/wasm_exec.js" "${stage}/ui/"
 
 	# Quote JSON without a runtime parser dependency. Paths are sorted bytewise.
 	json_quote() {

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -24,6 +25,9 @@ type completenessOptions struct {
 	locationID    string
 	jsonOutput    bool
 	allowUnpinned bool
+	// sessionExplicit records that --session was passed. Without it, a
+	// directory of per-run chains resolves its lone chain of the default base.
+	sessionExplicit bool
 }
 
 func newCompletenessCmd() *cobra.Command {
@@ -46,12 +50,13 @@ Exit-code contract:
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.sessionExplicit = cmd.Flags().Changed("session")
 			return runCompleteness(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
 	cmd.SetFlagErrorFunc(usageFlagError)
 	cmd.Flags().StringVar(&opts.signerKey, "key", "", "expected signer public key (hex, public-key text, or file path)")
-	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside an evidence directory")
+	cmd.Flags().StringVar(&opts.sessionID, "session", "proxy", "session ID inside an evidence directory (default: the directory's only proxy chain)")
 	cmd.Flags().StringVar(&opts.locationID, "location", "", "location path relative to the evidence directory")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON report on stdout")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -76,6 +81,17 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		}
 		clean = location.Dir
 		resolvedLocation = &location
+		if !opts.sessionExplicit {
+			session, others, resolveErr := resolveCompletenessSession(location.Dir, opts.sessionID)
+			if resolveErr != nil {
+				return cliutil.ExitCodeError(cliutil.ExitConfig, resolveErr)
+			}
+			if len(others) > 0 {
+				_, _ = fmt.Fprintf(stderr, "NOTE: analyzing the legacy %s chain; this directory also holds %s; pass --session to analyze one of them\n",
+					session, strings.Join(others, ", "))
+			}
+			opts.sessionID = session
+		}
 	} else if opts.locationID != "" {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("--location requires an evidence directory"))
 	} else {
@@ -120,6 +136,51 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("completeness verification unpinned"))
 	}
 	return nil
+}
+
+// resolveCompletenessSession picks the chain the default --session names. A
+// recorder writes one chain per run ("proxy.run.<id>"), so the plain base
+// usually matches no file. The report covers exactly one chain:
+//   - a legacy chain named exactly base keeps its earlier default, and the
+//     other chains of the base are returned so the caller can name them;
+//   - otherwise a lone chain is used and several are refused by name rather
+//     than one being chosen silently;
+//   - no chain keeps the base, which reports no_receipts.
+//
+// Receipt-group shards are named separately: completeness cannot read them,
+// so --session would not help and the group verifier is the remedy.
+func resolveCompletenessSession(dir, base string) (string, []string, error) {
+	sessions, err := actionreceipt.ResolveBaseSessions(dir, base)
+	if err != nil {
+		return "", nil, fmt.Errorf("list receipt chains: %w", err)
+	}
+	legacy, err := actionreceipt.ResolveBaseSessionsExcludingReceiptGroups(dir, base)
+	if err != nil {
+		return "", nil, fmt.Errorf("list receipt chains: %w", err)
+	}
+	if grouped := len(sessions) - len(legacy); grouped > 0 {
+		msg := fmt.Sprintf("%s holds %d receipt-group shard(s) for base %q, which completeness analysis does not read; verify them with pipelock-verifier chain %s --dir --key <trusted signer key>",
+			dir, grouped, base, dir)
+		if len(legacy) > 0 {
+			msg += fmt.Sprintf("; pass --session to analyze one of the ungrouped chains (%s)", strings.Join(legacy, ", "))
+		}
+		return "", nil, errors.New(msg)
+	}
+	for i, session := range sessions {
+		if session == base {
+			others := append(append([]string{}, sessions[:i]...), sessions[i+1:]...)
+			return base, others, nil
+		}
+	}
+	switch len(sessions) {
+	case 0:
+		return base, nil, nil
+	case 1:
+		return sessions[0], nil, nil
+	default:
+		return "", nil, fmt.Errorf("%s holds %d receipt chains for base %q (%s); pass --session to analyze one",
+			dir, len(sessions), base, strings.Join(sessions, ", "))
+	}
 }
 
 func extractCompletenessReceipts(clean, sessionID string, resolvedLocation *recorder.EvidenceLocation) ([]actionreceipt.Receipt, string, error) {

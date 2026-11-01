@@ -180,7 +180,7 @@ logging:
 				t.Errorf("listener did not stop after cancellation\n%s", stack[:goruntime.Stack(stack, true)])
 			}
 		}()
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 			return err
 		}
 
@@ -297,7 +297,7 @@ logging:
 				t.Error("listener did not stop after cancellation")
 			}
 		}()
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 			return err
 		}
 
@@ -419,7 +419,7 @@ logging:
 				t.Error("listener did not stop after cancellation")
 			}
 		}()
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 			return err
 		}
 
@@ -618,7 +618,7 @@ logging:
 			t.Error("listener did not stop after cancellation")
 		}
 	}()
-	if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+	if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 		return err
 	}
 	id := 1
