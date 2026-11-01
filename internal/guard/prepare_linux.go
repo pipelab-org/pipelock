@@ -106,11 +106,11 @@ func (p *PreparedManifest) Close() error {
 //
 // Two deliberate departures from the library's defaults:
 //
-//   - Refer IS granted on writable directories. Without it rename(2) between
-//     directories fails, which breaks write-to-temp-then-rename -- the standard
-//     way careful software avoids leaving a half-written file behind. Omitting
-//     it would push workloads toward writing in place, which is worse for the
-//     operator and no safer for us.
+//   - Refer permits cross-directory rename and hard-link operations beneath
+//     writable grants. Unless the kernel reports erratum 3 fixed, Apply keeps
+//     Refer handled but removes it from every grant and names the denied
+//     operations in the record's Withheld list; enforcement continues.
+//     Same-directory rename does not require Refer.
 //   - ResolveUnix is NOT granted, so connect(2) on a pathname Unix socket
 //     inside a writable directory is denied. A writable state directory is not
 //     a statement that the workload may speak to whatever is listening there.

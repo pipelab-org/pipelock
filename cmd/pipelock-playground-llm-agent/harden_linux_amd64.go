@@ -14,9 +14,8 @@ import (
 )
 
 type hardenOps struct {
-	setDumpable   func() error
-	setNoNewPrivs func() error
-	applySeccomp  func() error
+	setDumpable  func() error
+	applySeccomp func() error
 }
 
 func realHardenOps() hardenOps {
@@ -24,7 +23,6 @@ func realHardenOps() hardenOps {
 		setDumpable: func() error {
 			return unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0)
 		},
-		setNoNewPrivs: sandbox.SetNoNewPrivs,
 		applySeccomp: func() error {
 			_, err := sandbox.ApplySeccomp(false)
 			return err
@@ -42,9 +40,6 @@ func hardenProcess() error {
 func hardenProcessWithOps(ops hardenOps) error {
 	if err := ops.setDumpable(); err != nil {
 		return fmt.Errorf("set non-dumpable: %w", err)
-	}
-	if err := ops.setNoNewPrivs(); err != nil {
-		return fmt.Errorf("set no_new_privs: %w", err)
 	}
 	if err := ops.applySeccomp(); err != nil {
 		return fmt.Errorf("install seccomp: %w", err)

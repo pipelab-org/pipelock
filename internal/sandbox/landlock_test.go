@@ -131,6 +131,15 @@ func runLandlockTestChild(op string) {
 		os.Exit(1)
 	}
 
+	switch op {
+	case landlockNNPOp:
+		runLandlockNoNewPrivsChild(workspace)
+		return
+	case landlockNNPReportOp:
+		reportNoNewPrivs()
+		return
+	}
+
 	policy := DefaultPolicy(workspace)
 	if op == "reparent" {
 		root := os.Getenv("PIPELOCK_TEST_REFER_ROOT")

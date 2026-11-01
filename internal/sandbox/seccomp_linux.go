@@ -45,8 +45,11 @@ func seccompFilterSupportedByBuild() bool {
 // for CLONE_NEW* flags. ENOSYS lets libc retry with the argument-filtered clone
 // syscall; EPERM prevents that compatibility fallback and breaks pthreads.
 func ApplySeccomp(strict ...bool) (LayerStatus, error) {
+	return applySeccompWith(len(strict) > 0 && strict[0], SetNoNewPrivs, installSeccompFilter)
+}
+
+func applySeccompWith(isStrict bool, setNoNewPrivs func() error, install func(*unix.SockFprog) (uintptr, unix.Errno)) (LayerStatus, error) {
 	status := LayerStatus{Name: LayerSeccomp}
-	isStrict := len(strict) > 0 && strict[0]
 
 	filter := buildSeccompFilter(isStrict)
 
@@ -59,21 +62,25 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 	// to a different runtime thread after goroutine migration; TSYNC only
 	// synchronizes the filter after the installing thread passes this check.
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	if err := SetNoNewPrivs(); err != nil {
+	threadTainted := false
+	defer func() {
+		if !threadTainted {
+			runtime.UnlockOSThread()
+		}
+	}()
+	if err := setNoNewPrivs(); err != nil {
 		status.Reason = fmt.Sprintf("no_new_privs failed: %v", err)
 		return status, fmt.Errorf("setting no_new_privs before seccomp filter: %w", err)
 	}
 
+	// Failed installation leaves per-thread NNP behind. Retire that thread
+	// when this goroutine exits instead of returning it to the scheduler.
+	threadTainted = true
+
 	// Install the BPF filter. Requires no_new_privs already set.
 	// TSYNC synchronizes the filter across all threads in the thread group.
 	// Without this, Go's runtime threads could remain unfiltered.
-	failedThread, _, errno := unix.RawSyscall(
-		unix.SYS_SECCOMP,
-		unix.SECCOMP_SET_MODE_FILTER,
-		unix.SECCOMP_FILTER_FLAG_TSYNC,
-		uintptr(unsafe.Pointer(&prog)), //nolint:gosec // G103: required by seccomp syscall ABI
-	)
+	failedThread, errno := install(&prog)
 	if errno != 0 {
 		status.Reason = fmt.Sprintf("seccomp install failed: %v", errno)
 		return status, fmt.Errorf("installing seccomp filter: %w", errno)
@@ -83,9 +90,21 @@ func ApplySeccomp(strict ...bool) (LayerStatus, error) {
 		return status, fmt.Errorf("installing seccomp filter: thread synchronization failed at thread %d", failedThread)
 	}
 
+	// Successful TSYNC propagates both the filter and NNP to all threads.
+	threadTainted = false
 	status.Active = true
 	status.Version = len(filter) // report filter size as "version" for diagnostics
 	return status, nil
+}
+
+func installSeccompFilter(prog *unix.SockFprog) (uintptr, unix.Errno) {
+	failedThread, _, errno := unix.RawSyscall(
+		unix.SYS_SECCOMP,
+		unix.SECCOMP_SET_MODE_FILTER,
+		unix.SECCOMP_FILTER_FLAG_TSYNC,
+		uintptr(unsafe.Pointer(prog)), //nolint:gosec // G103: required by seccomp syscall ABI
+	)
+	return failedThread, errno
 }
 
 // SetNoNewPrivs sets PR_SET_NO_NEW_PRIVS on the calling OS thread. The flag is

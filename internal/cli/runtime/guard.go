@@ -71,13 +71,22 @@ func GuardPreflight(cfg *config.Config, profile, workspace string, command []str
 		return sandbox.PreflightResult{}, err
 	}
 	policy.AllowRWDirs = existingGuardPreflightDirs(policy.AllowRWDirs)
-	return sandbox.PreflightWithRequirements(resolved, command, &policy, sandbox.PreflightRequirements{
+	result := sandbox.PreflightWithRequirements(resolved, command, &policy, sandbox.PreflightRequirements{
 		RequireNetNS:        true,
 		RequireProxyHandler: true,
 		RequireLandlock:     true,
 		MinimumLandlockABI:  guardfs.MinimumABI,
-	}), nil
+	})
+	// The workspace is always writable. A missing erratum fix withholds
+	// cross-directory rename/link without making an otherwise ready launch fail.
+	if guardReferErratumMissing() {
+		result.Warnings = append(result.Warnings, guardfs.ReferWithheldReason)
+	}
+	return result, nil
 }
+
+// guardReferErratumMissing is a variable so tests can simulate an unpatched kernel.
+var guardReferErratumMissing = guardfs.ReferErratumMissing
 
 // LaunchGuard runs an operator command under the Linux HTTP/HTTPS preview.
 func LaunchGuard(opts GuardLaunchOptions) error {

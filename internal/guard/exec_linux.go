@@ -187,13 +187,19 @@ func runExecWith(
 		}
 	}()
 	// Keep this goroutine on the exact thread that enters the Landlock domain
-	// until exec replaces the process image. ApplyForExec pins internally while
-	// issuing the syscalls, but unpins when it returns; without this outer pin,
-	// the Go scheduler could migrate us to an unrestricted runtime thread in the
+	// until exec replaces the process image. ApplyForExec retains its own pin
+	// after changing thread state; this outer pin also covers early failures.
+	// Without a pin, the scheduler could migrate us to an unrestricted thread in the
 	// small gap before syscall.Exec and the workload would inherit no policy.
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	threadTainted := false
+	defer func() {
+		if !threadTainted {
+			runtime.UnlockOSThread()
+		}
+	}()
 	record, err := apply(prepared)
+	threadTainted = record.threadTainted
 	if err != nil {
 		return fmt.Errorf("%s: %w", record.Describe(), err)
 	}
