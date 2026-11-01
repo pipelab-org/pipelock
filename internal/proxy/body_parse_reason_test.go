@@ -13,6 +13,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -90,11 +93,8 @@ func TestWebSocketTargetURLLength(t *testing.T) {
 }
 
 func TestBodyParseFailureReceipts(t *testing.T) {
-	for _, surface := range []string{"forward", "intercept", "websocket"} {
+	for _, surface := range []string{"forward", "intercept"} {
 		for _, scanFailure := range []bool{false, true} {
-			if surface == "websocket" && !scanFailure {
-				continue // Malformed JSON frames use the raw-text path, not the JSON parser.
-			}
 			t.Run(fmt.Sprintf("%s/scan_failure=%t", surface, scanFailure), func(t *testing.T) {
 				cfg := testScannerConfig()
 				cfg.AdaptiveEnforcement.Enabled = false
@@ -114,34 +114,20 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 					wantLayer, wantPattern = scanner.ScannerContext, "request body scan failed:"
 				}
 
-				if surface == "websocket" {
-					relay := &wsRelay{clientConn: discardConn{}, upstreamConn: discardConn{}, proxy: p, cfg: cfg, scanner: sc, maxMsg: 1024, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket"}
-					frame := []byte(`{"incomplete":`)
-					body, result := relay.scanClientMessageBody(ctx, frame)
-					if !result.Clean || string(body) != string(frame) || relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
-						t.Fatalf("ordinary malformed-JSON frame refused: %+v", result)
-					}
-					cancel()
-					body, result = relay.scanClientMessageBody(ctx, frame)
-					if !relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
-						t.Fatal("unscanned frame allowed")
-					}
+				req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/submit", input)
+				req.Header.Set("Content-Type", "application/json")
+				rec := httptest.NewRecorder()
+				if surface == "forward" {
+					p.handleForwardHTTP(rec, req)
 				} else {
-					req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/submit", input)
-					req.Header.Set("Content-Type", "application/json")
-					rec := httptest.NewRecorder()
-					if surface == "forward" {
-						p.handleForwardHTTP(rec, req)
-					} else {
-						handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Proxy: p}, http.DefaultTransport)
-						handler.ServeHTTP(rec, req)
-					}
-					if rec.Code != http.StatusForbidden {
-						t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
-					}
-					if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
-						t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
-					}
+					handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Proxy: p}, http.DefaultTransport)
+					handler.ServeHTTP(rec, req)
+				}
+				if rec.Code != http.StatusForbidden {
+					t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+				}
+				if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
+					t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
 				}
 				got := rph.requireReceipt(t, wantLayer).ActionRecord
 				if got.Verdict != config.ActionBlock || !strings.Contains(got.Pattern, wantPattern) || strings.Contains(got.Pattern, "secret") {
@@ -149,6 +135,88 @@ func TestBodyParseFailureReceipts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBodyParseFailureWebSocketRelayReceipts(t *testing.T) {
+	for _, cancelSession := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cancel=%t", cancelSession), func(t *testing.T) {
+			backend, closeBackend := wsEchoServer(t)
+			defer closeBackend()
+			cfg := testScannerConfig()
+			cfg.WebSocketProxy.Enabled = true
+			cfg.WebSocketProxy.IdleTimeoutSeconds = 5
+			cfg.RequestBodyScanning.MaxBodyBytes = 1024
+			cfg.RequestBodyScanning.Action = config.ActionWarn
+			cfg.Enforce = ptrBool(false)
+			cfg.AdaptiveEnforcement.Enabled = false
+			p := newTestProxyWithConfig(t, cfg)
+			rph := newReceiptProxyHelper(t)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			done := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				defer close(done)
+				p.Handler().ServeHTTP(w, req.WithContext(ctx))
+			}))
+			defer server.Close()
+			conn, err := dialWSConn(strings.TrimPrefix(server.URL, "http://"), backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = conn.Close() }()
+			timeout := time.Duration(cfg.WebSocketProxy.IdleTimeoutSeconds) * time.Second
+			_ = conn.SetReadDeadline(time.Now().Add(timeout))
+			const ordinaryFrame = `{"incomplete":`
+			if err := wsutil.WriteClientText(conn, []byte(ordinaryFrame)); err != nil {
+				t.Fatal(err)
+			}
+			body, _, err := wsutil.ReadServerData(conn)
+			if err != nil || string(body) != ordinaryFrame {
+				t.Fatalf("ordinary raw-text frame: body=%q err=%v", body, err)
+			}
+			if cancelSession {
+				cancel()
+			} else if err := wsutil.WriteClientText(conn, []byte(strings.Repeat("a", cfg.RequestBodyScanning.MaxBodyBytes+1))); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := wsutil.ReadServerData(conn); err == nil {
+				t.Fatal("relay forwarded data after cancellation or size refusal")
+			}
+			select {
+			case <-done:
+			case <-time.After(timeout):
+				t.Fatal("relay did not terminate")
+			}
+			foundParser, foundClose := false, false
+			for _, got := range rph.findReceipts(t) {
+				if err := receipt.VerifyWithKey(got, rph.pubHex); err != nil {
+					t.Fatal(err)
+				}
+				switch got.ActionRecord.Layer {
+				case scanner.ScannerParser:
+					foundParser = true
+					if cancelSession || got.ActionRecord.Verdict != config.ActionBlock || !strings.Contains(got.ActionRecord.Pattern, "max_body_bytes") {
+						t.Fatalf("unexpected body refusal: %+v", got.ActionRecord)
+					}
+				case scanner.ScannerContext:
+					t.Fatal("relay cancellation emitted a per-body context receipt")
+				case "session_close":
+					foundClose = true
+					want := config.ActionBlock
+					if cancelSession {
+						want = config.ActionAllow
+					}
+					if got.ActionRecord.Verdict != want {
+						t.Fatalf("session-close verdict=%q, want %q", got.ActionRecord.Verdict, want)
+					}
+				}
+			}
+			if !foundClose || foundParser == cancelSession {
+				t.Fatalf("parser=%t session_close=%t cancel=%t", foundParser, foundClose, cancelSession)
+			}
+		})
 	}
 }
 
