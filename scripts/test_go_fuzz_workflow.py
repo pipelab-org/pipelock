@@ -53,10 +53,11 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
             row = {"package": "./.", "target": "FuzzExample"}
             manifest = {"include": [row]}
             check_targets(root, manifest)
-            with self.assertRaisesRegex(AssertionError, "missing"):
+            # Match both sides so a swapped set difference cannot pass.
+            with self.assertRaisesRegex(AssertionError, r"unlisted=set\(\), missing=\{\('\./\.', 'FuzzAdded'\)\}$"):
                 check_targets(root, {"include": [row, {"package": "./.", "target": "FuzzAdded"}]})
             source.write_text(source.read_text() + "func FuzzAdded(f *testing.F) {}\n")
-            with self.assertRaisesRegex(AssertionError, "unlisted"):
+            with self.assertRaisesRegex(AssertionError, r"unlisted=\{\('\./\.', 'FuzzAdded'\)\}, missing=set\(\)$"):
                 check_targets(root, manifest)
             source.write_text("package fixture\nfunc FuzzExample(f *testing.F) {}\n")
             with self.assertRaisesRegex(AssertionError, "duplicate"):
