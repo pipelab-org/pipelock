@@ -80,6 +80,11 @@ func runLandlockNoNewPrivsChild(workspace string) {
 	}
 	policy := DefaultPolicy(workspace)
 	policy.AllowReadDirs = append(policy.AllowReadDirs, filepath.Dir(self))
+	// A coverage build writes counters at exit from this child and from the
+	// re-exec'd workload; both run inside the domain.
+	if dir := os.Getenv("GOCOVERDIR"); dir != "" {
+		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Clean(dir))
+	}
 	status, err := ApplyLandlock(policy)
 	if err != nil || !status.Active {
 		_, _ = fmt.Fprintf(os.Stderr, "landlock: active=%v err=%v reason=%s\n", status.Active, err, status.Reason)
