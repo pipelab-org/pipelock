@@ -135,21 +135,34 @@ def collect(
         incomplete.update((pkg, name.split("/", 1)[0]) for pkg, name in pending)
 
     # cmd/test2json documents pause and cont; testing.T.Run documents that
-    # parallel children resume only after their parent test function returns.
+    # parallel children resume only after their parent test function returns,
+    # and a test's elapsed time excludes the wall time of its paused children.
     # Non-paused children are already included in their parent's elapsed time.
-    costs: dict[tuple[str, str], float] = {}
+    # The go test -parallel flag is one limit for the whole test binary, so the
+    # running time of a paused subtree is divided by it once, where the subtree
+    # joins a test that is not itself paused, never again at each nested level.
+    def parent_of(package: str, name: str) -> tuple[str, str]:
+        # A t.Run name may itself contain "/", so the parent is the longest
+        # prefix that ran as a test, not the name minus its last segment.
+        prefix = name
+        while "/" in prefix:
+            prefix = prefix.rsplit("/", 1)[0]
+            if (package, prefix) in events:
+                return package, prefix
+        return package, name.split("/", 1)[0]
+
+    paused_work: dict[tuple[str, str], float] = {}
     for key in sorted(events, key=lambda item: item[1].count("/"), reverse=True):
         package, name = key
-        cost = (events[key] or 0.0) + costs.get(key, 0.0)
-        costs[key] = cost
         if key in paused and "/" in name:
-            parent = (package, name.rsplit("/", 1)[0])
-            costs[parent] = costs.get(parent, 0.0) + cost / RACE_PARALLELISM
+            parent = parent_of(package, name)
+            work = (events[key] or 0.0) + paused_work.get(key, 0.0)
+            paused_work[parent] = paused_work.get(parent, 0.0) + work
 
     measured: dict[str, dict[str, float]] = {}
     keys = {(pkg, name.split("/", 1)[0]) for pkg, name in events}
     for package, name in keys:
-        weight = costs.get((package, name), 0.0)
+        weight = (events.get((package, name)) or 0.0) + paused_work.get((package, name), 0.0) / RACE_PARALLELISM
         if (package, name) not in events and not weight:
             continue
         tree = tree_for_package(package)

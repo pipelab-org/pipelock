@@ -79,7 +79,31 @@ class DurationTest(unittest.TestCase):
             {"Action": "skip", "Test": "TestNested/group/skipped", "Elapsed": 2},
             {"Action": "pass", "Test": "TestNested/group", "Elapsed": 4},
             {"Action": "pass", "Test": "TestNested", "Elapsed": 1},
-        ])["TestNested"], 6.5)
+        ])["TestNested"], 10)  # 1 + (4 + 12 + 2) / 2: -parallel divides a paused subtree once
+
+    @staticmethod
+    def paused_tree(root, children, leaf_elapsed):
+        # Mirrors the events of a real Go producer whose every subtest calls
+        # t.Parallel: run, pause, cont and pass per test, parents passing with
+        # 0 s because their elapsed time excludes paused children.
+        events = [{"Action": "run", "Test": root}]
+        for name, elapsed in [(name, leaf_elapsed if leaf else 0) for name, leaf in children]:
+            events += [{"Action": action, "Test": f"{root}/{name}"} for action in ("run", "pause", "cont")]
+            events.append({"Action": "pass", "Test": f"{root}/{name}", "Elapsed": elapsed})
+        return events + [{"Action": "pass", "Test": root, "Elapsed": 0}]
+
+    def test_three_paused_levels_divide_once(self):
+        # Real producer: 2x2x2 paused leaves of 0.2 s ran in 0.802 s at -parallel=2.
+        children = [(f"a{i}", False) for i in range(2)]
+        children += [(f"a{i}/b{j}", False) for i in range(2) for j in range(2)]
+        children += [(f"a{i}/b{j}/c{k}", True) for i in range(2) for j in range(2) for k in range(2)]
+        self.assertEqual(self.collect_events(self.paused_tree("TestThree", children, 0.2))["TestThree"], 0.8)
+
+    def test_slash_in_subtest_name_is_one_level(self):
+        # t.Run("a/b0/c") under the top-level test, as the upload transport
+        # tests do. Real producer: four 0.2 s paused leaves ran in 0.402 s.
+        children = [(f"a/b{i}/c", True) for i in range(4)]
+        self.assertEqual(self.collect_events(self.paused_tree("TestSlash", children, 0.2))["TestSlash"], 0.4)
 
     def test_failed_or_incomplete_package_does_not_replace_prior(self):
         with tempfile.TemporaryDirectory() as directory:
