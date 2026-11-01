@@ -21,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
@@ -1916,8 +1917,14 @@ func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
 // TestPrepareConfigReloadResultWaitsForStartupBanner checks that reload
 // preparation stays blocked while the run is alive until this config path's
 // startup banner appears. Earlier startup output and the banner for another
-// path must not release a config rewrite.
+// path must not release a config rewrite. It runs on synctest's fake clock so
+// the negative check happens only after the output poller has observed the
+// other path's banner, not after a wall-clock window it may never have used.
 func TestPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
+	synctest.Test(t, checkPrepareConfigReloadResultWaitsForStartupBanner)
+}
+
+func checkPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "test.yaml")
 	buf := &cliTestBuffer{}
 	errCh := make(chan error, 1)
@@ -1932,10 +1939,14 @@ func TestPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
 	}()
 
 	_, _ = fmt.Fprintf(buf, "  Listen: 127.0.0.1:0\n  Config: %s.other (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
+	// Advance past several poll ticks, then let every goroutine settle, so the
+	// poller has read the buffer before the negative check.
+	<-time.After(50 * time.Millisecond)
+	synctest.Wait()
 	select {
 	case got := <-done:
 		t.Fatalf("reload preparation returned before the startup banner: %+v", got)
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	_, _ = fmt.Fprintf(buf, "  Config: %s (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
