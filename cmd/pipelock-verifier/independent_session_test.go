@@ -137,13 +137,18 @@ func TestCompleteness_PerRunDirectoryRequiresSession(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"completeness", evidence, "--key", key, "--json"}, tc.args...)
 			stdout, stderr, code := runRoot(t, args...)
+			if !tc.wantReceipts {
+				// Two run chains and no --session: the selection is refused
+				// before any report, never answered from an empty session.
+				if code != cliutil.ExitConfig || stdout != "" || !strings.Contains(stderr, "--session") {
+					t.Fatalf("default over two runs: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+				}
+				return
+			}
 			report := parseCompletenessReport(t, stdout)
 			t.Logf("code=%d status=%s reason=%s receipts=%d stderr=%s", code, report.Status, report.Reason, report.ReceiptCount, stderr)
 			if (report.ReceiptCount > 0) != tc.wantReceipts {
 				t.Fatalf("unexpected receipt count %d", report.ReceiptCount)
-			}
-			if !tc.wantReceipts && code == cliutil.ExitOK {
-				t.Fatal("empty default session succeeded")
 			}
 		})
 	}
