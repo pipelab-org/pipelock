@@ -6,10 +6,9 @@
 
 The sub-shard split in scripts/ci_test_packages.py balances by these measured
 seconds. Feed it the JSON of race runs that cover a split tree (CI keeps each
-shard's stream as a workflow artifact). Each test's weight is the larger of
-its top-level elapsed time and its completed leaf times summed and divided by
-the race parallelism. Repeated events keep the slowest value per test name.
-Incomplete leaves have no elapsed time and make that estimate a lower bound.
+shard's stream as a workflow artifact). Each weight includes elapsed time plus
+the recursive costs of directly paused children divided by race parallelism.
+Incomplete runs are lower bounds.
 
     python3 scripts/ci_test_durations.py --write shard-a.json shard-b.json ...
 
@@ -55,20 +54,38 @@ def collect_packages(paths: list[Path]) -> dict[str, float]:
     """
     measured: dict[str, float] = {}
     for path in paths:
+        packages: dict[str, float | None] = {}
+        pending: set[tuple[str, str]] = set()
+        failed: set[str] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(event, dict) or event.get("Action") not in ("pass", "fail"):
+                if not isinstance(event, dict):
                     continue
-                if event.get("Test") is not None or not isinstance(event.get("Elapsed"), (int, float)):
-                    continue
-                package = event.get("Package")
+                package, action = event.get("Package"), event.get("Action")
                 if not isinstance(package, str) or tree_for_package(package) is not None:
                     continue
-                measured[package] = max(measured.get(package, 0.0), round(float(event["Elapsed"]), 1))
+                name = event.get("Test")
+                if isinstance(name, str):
+                    key = (package, name)
+                    if action == "run":
+                        pending.add(key)
+                    elif action in ("pass", "fail", "skip"):
+                        pending.discard(key)
+                        if action == "fail":
+                            failed.add(package)
+                elif name is None:
+                    if action in ("start", "run", "fail"):
+                        packages[package] = None
+                    elif action == "pass":
+                        elapsed = event.get("Elapsed")
+                        packages[package] = float(elapsed) if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) else None
+        for package, elapsed in packages.items():
+            if elapsed is not None and package not in failed and not any(pkg == package for pkg, _ in pending):
+                measured[package] = max(measured.get(package, 0.0), round(elapsed, 1))
     return measured
 
 
@@ -84,6 +101,7 @@ def collect(
     # time; the resulting estimate is a lower bound, not a complete run.
     events: dict[tuple[str, str], float | None] = {}
     incomplete: set[tuple[str, str]] = set()
+    paused: set[tuple[str, str]] = set()
     for path in paths:
         pending: set[tuple[str, str]] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
@@ -98,37 +116,42 @@ def collect(
                 if not isinstance(package, str) or not isinstance(name, str) or tree_for_package(package) is None:
                     continue
                 action = event.get("Action")
-                if action not in ("run", "pass", "fail", "skip"):
+                if action not in ("run", "pause", "cont", "pass", "fail", "skip"):
                     continue
                 key = (package, name)
                 events.setdefault(key, None)
                 if action == "run":
                     pending.add(key)
-                else:
+                elif action == "pause":
+                    paused.add(key)
+                elif action in ("pass", "fail", "skip"):
                     pending.discard(key)
                     if action == "fail":
                         incomplete.add((package, name.split("/", 1)[0]))
                 elapsed = event.get("Elapsed")
-                if action in ("pass", "fail") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+                if action in ("pass", "fail", "skip") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
                     events[key] = max(events[key] or 0.0, float(elapsed))
 
         incomplete.update((pkg, name.split("/", 1)[0]) for pkg, name in pending)
 
-    parents = {(pkg, name.rsplit("/", 1)[0]) for pkg, name in events if "/" in name}
-    totals: dict[tuple[str, str], float] = {}
-    for (package, name), elapsed in events.items():
-        if "/" in name and (package, name) not in parents and elapsed is not None:
-            key = (package, name.split("/", 1)[0])
-            totals[key] = totals.get(key, 0.0) + elapsed
+    # cmd/test2json documents pause and cont; testing.T.Run documents that
+    # parallel children resume only after their parent test function returns.
+    # Non-paused children are already included in their parent's elapsed time.
+    costs: dict[tuple[str, str], float] = {}
+    for key in sorted(events, key=lambda item: item[1].count("/"), reverse=True):
+        package, name = key
+        cost = (events[key] or 0.0) + costs.get(key, 0.0)
+        costs[key] = cost
+        if key in paused and "/" in name:
+            parent = (package, name.rsplit("/", 1)[0])
+            costs[parent] = costs.get(parent, 0.0) + cost / RACE_PARALLELISM
 
     measured: dict[str, dict[str, float]] = {}
     keys = {(pkg, name.split("/", 1)[0]) for pkg, name in events}
     for package, name in keys:
-        parent = events.get((package, name))
-        leaf_total = totals.get((package, name))
-        if parent is None and leaf_total is None:
+        weight = costs.get((package, name), 0.0)
+        if (package, name) not in events and not weight:
             continue
-        weight = max(parent or 0.0, (leaf_total or 0.0) / RACE_PARALLELISM)
         tree = tree_for_package(package)
         if (package, name) in incomplete:
             weight = max(weight, (previous or {}).get(tree, {}).get(name, 0.0))
