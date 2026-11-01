@@ -304,7 +304,7 @@ These limits remain. A process that can create a user namespace can remount file
 
 ### Managed metrics invariant
 
-Containment keeps `metrics_listen` on a numeric loopback address and a port other than the agent-accessible proxy port by default. Removing or blanking the key disables metrics exposure and is reported as managed-config drift; neither `/metrics` nor `/stats` is served on the agent-accessible proxy listener. A running service rejects a reload that removes or blanks the key: the existing loopback listener stays bound, `/metrics` returns `403` until a later valid reload clears the denial, and `/stats` keeps serving loopback clients. A restart with the key removed or blank disables the listener. Counters still collect internally.
+Containment keeps `metrics_listen` on a numeric loopback address and a port other than the agent-accessible proxy port by default. Removing or blanking the key disables metrics exposure and is reported as managed-config drift; neither `/metrics` nor `/stats` is served on the agent-accessible proxy listener. A running service rejects a reload that removes or blanks the key: the existing metrics listener stays bound, `/metrics` returns `403` until a later valid reload clears the denial, and `/stats` keeps serving loopback clients. A restart with the key removed or blank disables the listener. Counters still collect internally.
 
 Repair the managed config with a dedicated loopback listener such as:
 
