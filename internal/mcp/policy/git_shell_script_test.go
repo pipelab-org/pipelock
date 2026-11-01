@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -43,6 +44,8 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		allow   bool
 	}{
 		{"env -u push git ls-files --for=x", true},
+		{"env --unset push git ls-files --for=x", true},
+		{"env -u push -u reset git ls-files --for=x", true},
 		// An expansion before git may be the executable itself.
 		{"$CMD git fetch --force", false},
 		{`"$CMD" git fetch --force`, false},
@@ -71,5 +74,55 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestGitSubcommandWordAsExecutable checks that a bare subcommand word may
+// itself be the executable. It must not lend a later Git operand a proof.
+func TestGitSubcommandWordAsExecutable(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, words := range [][]string{
+		{"push", "--for"},
+		{"reset", "--ha"},
+		{"clean", "-d", "--fo"},
+		{"push", "git", "ls-files", "--for"},
+		{"reset", "git", "ls-files", "--ha"},
+		{"clean", "-d", "git", "ls-files", "--fo"},
+		{"env", "-u", "push", "-Sgit", "git", "ls-files", "--for"},
+		{"env", "--unset", "reset", "--split-string=git", "git", "ls-files", "--ha"},
+		{"env", "push", "git", "ls-files", "--for"},
+		{"env", "-u", "NAME", "push", "git", "ls-files", "--for"},
+		{"env", "--", "push", "git", "ls-files", "--for"},
+		{"sudo", "push", "git", "ls-files", "--for"},
+		{"env", "-u", "push", "push", "git", "ls-files", "--for"},
+	} {
+		for _, key := range []string{"command", "argv"} {
+			args := words
+			if key == "command" {
+				args = []string{strings.Join(words, " ")}
+			}
+			for surface, got := range gitProofVerdicts(t, pc, "bash", args, key) {
+				if !got.Matched || got.Action != config.ActionBlock {
+					t.Errorf("%q %s %s: got %+v, want block", words, key, surface, got)
+				}
+			}
+		}
+	}
+	for _, command := range []string{
+		`env -u push git ls-files --for=x; $X --for`,
+		`env -u push git ls-files --for=x && $X --for`,
+		`env -u push git ls-files --for=x | $X --for`,
+		`G=git; P=git; clean(){ command "$G" "$P" "$@"; }; clean -d --fo`,
+		`G=git; env(){ shift; shift; command "$G" "$@"; }; env -u push git ls-files --for`,
+		`G=git; function env { shift; shift; command "$G" "$@"; }; env --unset push git ls-files --for`,
+		`G=git; push(){ command "$G" "$@"; }; push git ls-files --for`,
+		`G=git; reset(){ command "$G" "$@"; }; reset git ls-files --ha`,
+		`G=git; clean(){ command "$G" "$@"; }; clean -d git ls-files --fo`,
+	} {
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{command}, "command") {
+			if !got.Matched || got.Action != config.ActionBlock {
+				t.Errorf("%q %s: got %+v, want block", command, surface, got)
+			}
+		}
 	}
 }
