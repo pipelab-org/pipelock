@@ -141,7 +141,7 @@ def collect(
                 elif action in ("pass", "fail", "skip"):
                     active.discard(key)
                     pending.discard(key)
-                    if action == "fail":
+                    if action in ("fail", "skip"):
                         incomplete.add((package, name.split("/", 1)[0]))
                 elapsed = event.get("Elapsed")
                 if action in ("pass", "fail", "skip") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
