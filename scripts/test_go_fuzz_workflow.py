@@ -17,27 +17,20 @@ from unittest import mock
 from scripts.test_specialist_workflow_triggers import job_block, step_run_script
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST = ".github/fuzz-targets.json"
 WORKFLOW = ".github/workflows/go-fuzz.yaml"
-# Go's native fuzz declaration: https://go.dev/doc/security/fuzz/ (Writing a fuzz test).
-# Limit discovery to Go test source; strings in policy-test fixtures aren't targets.
-FUZZ_DECLARATION = re.compile(r"(?m)^func\s+(Fuzz\w+)\s*\(\s*\w+\s+\*testing\.F\s*\)")
 
 
-def check_targets(root, manifest):
-    declared = {
-        ("./" + path.parent.relative_to(root).as_posix(), target)
-        for path in root.rglob("*_test.go")
-        for target in FUZZ_DECLARATION.findall(path.read_text(encoding="utf-8"))
-    }
-    rows = manifest["include"]
-    listed = {(row["package"], row["target"]) for row in rows}
-    if not declared or not listed:
-        raise AssertionError("empty fuzz inventory")
-    if len(listed) != len(rows) or len({row["target"] for row in rows}) != len(rows):
-        raise AssertionError("duplicate fuzz target or artifact name")
-    if declared != listed:
-        raise AssertionError(f"fuzz target drift: unlisted={declared - listed}, missing={listed - declared}")
+def load_runner():
+    spec = importlib.util.spec_from_file_location("fuzz_targets", ROOT / "scripts/fuzz-targets.py")
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    return runner
+
+
+# One parity check shared by make fuzz and the workflow's matrix job.
+_RUNNER = load_runner()
+MANIFEST = _RUNNER.MANIFEST
+check_targets = _RUNNER.check_targets
 
 
 class NativeFuzzWorkflowTest(unittest.TestCase):
@@ -91,9 +84,7 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         makefile = (ROOT / "Makefile").read_text()
         recipe = makefile.split("\nfuzz:\n", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(recipe, "\t@python3 scripts/fuzz-targets.py")
-        spec = importlib.util.spec_from_file_location("fuzz_targets", ROOT / "scripts/fuzz-targets.py")
-        runner = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(runner)
+        runner = load_runner()
         with mock.patch("sys.argv", ["fuzz-targets.py"]), mock.patch.object(
             runner.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)
         ) as run, mock.patch("builtins.print"):
@@ -107,6 +98,19 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
         ) as run, mock.patch("builtins.print"):
             self.assertEqual(runner.main(), 1)
             self.assertEqual(run.call_count, 1)
+        # go test exits 0 for an unmatched -fuzz, so the runner itself must refuse
+        # unknown and duplicate rows before invoking Go.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / ".github").mkdir()
+            (root / "fuzz_test.go").write_text("package fixture\nfunc FuzzExample(f *testing.F) {}\n")
+            known = {"package": "./.", "target": "FuzzExample"}
+            for rows in ([{"package": "./.", "target": "FuzzGone"}], [known, known]):
+                (root / MANIFEST).write_text(json.dumps({"include": rows}))
+                with mock.patch.object(runner, "ROOT", root), mock.patch("sys.argv", ["fuzz-targets.py"]), \
+                        mock.patch.object(runner.subprocess, "run") as run, mock.patch("sys.stderr"):
+                    self.assertEqual(runner.main(), 1)
+                    run.assert_not_called()
 
     def test_fuzz_failure_stays_red_and_uploads_target_inputs(self):
         fuzz = job_block(self.workflow, "fuzz")
@@ -128,6 +132,12 @@ class NativeFuzzWorkflowTest(unittest.TestCase):
             self.assertIn("permissions:\n      contents: read\n", block)
             self.assertEqual(block.count("uses: actions/checkout@"), block.count("persist-credentials: false"))
             self.assertIn("timeout-minutes: 5", block)
+            # Job-level env expressions: contexts allowed by GitHub's availability table,
+            # https://docs.github.com/en/actions/reference/workflows-and-actions/contexts
+            # (jobs.<job_id>.env). Any other context invalidates the whole workflow file.
+            env = re.search(r"(?m)^    env:\n((?:      .*\n)+)", block)
+            for root in re.findall(r"\$\{\{\s*([A-Za-z_]+)", env.group(1) if env else ""):
+                self.assertIn(root, {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"})
         self.assertIn("cache: false", self.workflow)
         self.assertIn("GOCACHE: ${{ runner.temp }}/native-go-fuzz", self.workflow)
         self.assertIn("GOTOOLCHAIN: local", self.workflow)

@@ -56,8 +56,6 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     env:
-      # Fresh per job: neither build nor generated fuzz corpora cross runs.
-      GOCACHE: ${{ runner.temp }}/native-go-fuzz
       GOTOOLCHAIN: local
       FUZZ_TARGET: ${{ matrix.target }}
       FUZZ_PACKAGE: ${{ matrix.package }}
@@ -75,6 +73,10 @@ jobs:
           cache: false
       - name: Fuzz
         id: fuzz
+        env:
+          # Fresh per job: neither build nor generated fuzz corpora cross runs.
+          # Step-level because job-level env cannot read the runner context.
+          GOCACHE: ${{ runner.temp }}/native-go-fuzz
         run: go test -run='^$' -fuzz="^${FUZZ_TARGET}$" -fuzztime="$FUZZTIME" "$FUZZ_PACKAGE"
       - name: Upload failing inputs
         if: ${{ failure() && steps.fuzz.outcome == 'failure' }}
