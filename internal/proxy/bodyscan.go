@@ -1202,20 +1202,23 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 			return bodyDLPTextExtraction{Err: errText}
 		}
 		// RFC 2046 section 5.1.1 excludes preamble and epilogue bytes from
-		// parts, but a raw-body receiver still gets them. Join ordinary text
-		// DLP (including its decoded views) without changing the generic
-		// injection/entropy views or the archive inspection of these regions.
+		// parts, but a raw-body receiver still gets them. They are scanned
+		// like a part body, in wire order, by DLP (including its decoded
+		// views) and by the injection, entropy and address checks. Leaving
+		// either view out would let a one-line multipart envelope carry text
+		// that the same body sent as text/plain could not. Archive inspection
+		// of these regions is separate (inspectUploadTextViews).
 		preamble := multipartPreamble(body, params["boundary"])
 		epilogue := multipartEpilogue(body, params["boundary"], len(preamble))
-		var dlpTexts []string
+		var regionTexts []string
 		if len(preamble) > 0 {
-			dlpTexts = append(dlpTexts, string(preamble))
+			regionTexts = append(regionTexts, string(preamble))
 		}
-		dlpTexts = append(dlpTexts, texts...)
+		regionTexts = append(regionTexts, texts...)
 		if len(epilogue) > 0 {
-			dlpTexts = append(dlpTexts, string(epilogue))
+			regionTexts = append(regionTexts, string(epilogue))
 		}
-		return bodyDLPTextExtraction{GenericTexts: texts, Texts: dlpTexts, FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, Texts: regionTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
