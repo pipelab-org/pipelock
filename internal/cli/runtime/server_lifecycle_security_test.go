@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestServer_StartLaterBindFailureReleasesEarlierMetricsListener(t *testing.T
 
 		err = s.Start(context.Background())
 		if err == nil {
-			t.Fatal("Start returned nil, want scan API bind failure")
+			return errors.New("Start returned nil, want scan API bind failure")
 		}
 		if !strings.Contains(err.Error(), "scan_api.listen bind") {
 			if testport.IsBindCollision(err) && strings.Contains(err.Error(), "metrics_listen bind") {

@@ -8,6 +8,7 @@ tmp="$(mktemp -d)"
 server_pid=""
 cleanup() {
 	if [ -n "${server_pid}" ]; then kill "${server_pid}" 2>/dev/null || true; fi
+	find "${tmp}" -type d -exec chmod u+w {} + 2>/dev/null || true
 	rm -rf -- "${tmp}"
 }
 trap cleanup EXIT
@@ -26,6 +27,9 @@ SCRIPT
 cat > "${tmp}/source/deploy/wasm-verify/build.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 set -eu
+if [ "${PROVENANCE_WASM_NOOP:-}" = 1 ]; then
+	exit 0
+fi
 if [ "${PROVENANCE_VERSION_PROBE:-}" = 1 ]; then
 	go list -m -f '{{.Version}}' version.example/dep > "$1/pipelock-verifier.wasm"
 else
@@ -60,6 +64,9 @@ if [ "$1" = build ]; then
 	while [ "$#" -gt 0 ]; do
 		if [ "$1" = --build-context ]; then
 			shift
+			if [ -n "${STAGED_UI_PATH_FILE:-}" ]; then
+				printf '%s\n' "${1#ui=}" > "${STAGED_UI_PATH_FILE}"
+			fi
 			cp -a "${1#ui=}/." "${CAPTURE_DIR}/"
 			break
 		fi
@@ -70,6 +77,8 @@ SCRIPT
 chmod +x "${tmp}/source/scripts/git-version.sh" "${tmp}/source/deploy/wasm-verify/build.sh" "${tmp}/bin/docker"
 printf '<!doctype html><title>viewer</title>\n' > "${tmp}/site/static/playground/demo/index.html"
 printf 'viewer asset\n' > "${tmp}/site/static/playground/demo/asset file.txt"
+mkdir -p "${tmp}/site/static/playground/demo/assets/icons"
+printf 'nested viewer asset\n' > "${tmp}/site/static/playground/demo/assets/icons/asset.txt"
 mkdir -p "${tmp}/source/cmd/pipelock-verifier-wasm"
 printf 'module fixture.example\n\ngo 1.26\n' > "${tmp}/source/go.mod"
 printf 'package main\nfunc main() {}\n' > "${tmp}/source/cmd/pipelock-verifier-wasm/main.go"
@@ -399,14 +408,48 @@ mv "${PLAYGROUND_UI_DIR}/test-bundle.tar.gz" "${tmp}/ignored-bundle.tar.gz"
 for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	printf '/static/playground/demo/%s\n' "${generated}" >> "${tmp}/site/.git/info/exclude"
 	printf 'stale output\n' > "${PLAYGROUND_UI_DIR}/${generated}"
+	chmod 0444 "${PLAYGROUND_UI_DIR}/${generated}"
 done
-"${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/generated.out"
+chmod 0555 "${PLAYGROUND_UI_DIR}" "${PLAYGROUND_UI_DIR}/assets" "${PLAYGROUND_UI_DIR}/assets/icons"
+STAGED_UI_PATH_FILE="${tmp}/staged-ui-path" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/generated.out"
+if [ -e "$(cat "${tmp}/staged-ui-path")" ]; then
+	echo 'private viewer staging directory survived cleanup' >&2
+	exit 1
+fi
 python3 - "${tmp}/capture/build-info.json" <<'CHECK'
 import json
 import sys
 info = json.load(open(sys.argv[1], encoding="utf-8"))
 assert info["dirty"] is False and info["site_dirty"] is False
 CHECK
+python3 - "${PLAYGROUND_UI_DIR}" "${tmp}/capture" <<'CHECK'
+import pathlib
+import sys
+source, staged = map(pathlib.Path, sys.argv[1:])
+assert source.stat().st_mode & 0o777 == 0o555
+for name in ("assets", "assets/icons"):
+    assert (source / name).stat().st_mode & 0o777 == 0o555
+assert (source / "assets/icons/asset.txt").read_bytes() == b"nested viewer asset\n"
+assert (staged / "assets/icons/asset.txt").read_bytes() == b"nested viewer asset\n"
+for name in ("pipelock-verifier.wasm", "wasm_exec.js", "build-info.json"):
+    assert (source / name).stat().st_mode & 0o777 == 0o444
+    assert (source / name).read_bytes() == b"stale output\n"
+assert (staged / "pipelock-verifier.wasm").read_bytes() == b"fresh wasm"
+assert (staged / "wasm_exec.js").read_bytes() == b"fresh shim"
+CHECK
+chmod 0755 "${PLAYGROUND_UI_DIR}" "${PLAYGROUND_UI_DIR}/assets" "${PLAYGROUND_UI_DIR}/assets/icons"
+# A verifier build that writes no .wasm fails, even though the staging copy
+# already holds a viewer copy dated in the future.
+python3 -c 'import os, sys, time; t = time.time() + 600; os.utime(sys.argv[1], (t, t))' "${PLAYGROUND_UI_DIR}/pipelock-verifier.wasm"
+if PROVENANCE_WASM_NOOP=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/no-wasm.out" 2>&1; then
+	echo 'a verifier build that wrote no .wasm was accepted with an older .wasm in the viewer' >&2
+	exit 1
+fi
+if ! grep -q 'browser-verifier build produced no .wasm in staging' "${tmp}/no-wasm.out"; then
+	echo 'a verifier build that wrote no .wasm failed for the wrong reason' >&2
+	cat "${tmp}/no-wasm.out" >&2
+	exit 1
+fi
 for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	mv "${PLAYGROUND_UI_DIR}/${generated}" "${tmp}/${generated}"
 done
