@@ -4802,6 +4802,27 @@ func TestHTTPListener_UpstreamError(t *testing.T) {
 }
 
 func TestHTTPListener_TestCleanupClosesUnstartedConnections(t *testing.T) {
+	t.Run("without_shutdown", func(t *testing.T) {
+		ln := newListenerProxyTestListener(t)
+		conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		accepted, err := ln.Accept()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = accepted.Close() }()
+		ln.closeConnections()
+		if err := conn.SetReadDeadline(time.Now().Add(testwait.Deadline(time.Second))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := conn.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+			t.Fatalf("connection cleanup without server shutdown: %v", err)
+		}
+	})
+
 	baseURL, cancel, _ := startListenerProxy(t, "http://upstream.vendor.example", testScannerForHTTP(t), nil, nil, nil)
 	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", strings.TrimPrefix(baseURL, "http://"))
 	if err != nil {

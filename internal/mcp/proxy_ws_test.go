@@ -131,6 +131,9 @@ func TestWSRespondServerIgnoresUnrelatedHTTPProbe(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = probe.Body.Close()
+	if probe.StatusCode != http.StatusUpgradeRequired {
+		t.Fatalf("probe status = %d, want %d", probe.StatusCode, http.StatusUpgradeRequired)
+	}
 	conn, _, _, err := ws.Dial(t.Context(), wsURL(srv))
 	if err != nil {
 		t.Fatal(err)
