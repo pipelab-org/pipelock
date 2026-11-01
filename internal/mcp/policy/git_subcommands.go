@@ -151,25 +151,10 @@ func (p gitProof) grants(judged []string) bool {
 // gitWord is one word of a carrier. literal marks an array element, which is
 // one argument exactly as written. ambiguous marks a word from a value that
 // may be either a literal argument or text a tool splits into words, when
-// those readings give the word different boundaries. script marks a shell's
-// command string given as one whole value (see shellScriptOperand).
+// those readings give the word different boundaries.
 type gitWord struct {
-	text                       string
-	literal, ambiguous, script bool
-}
-
-// scriptShells are shells whose -c option reads commands from the next
-// argument, as POSIX sh -c reads its command_string operand.
-var scriptShells = map[string]bool{"sh": true, "bash": true, "dash": true, "ksh": true, "zsh": true}
-
-// shellScriptOperand reports whether values[i] directly follows a shell and
-// its -c, each a whole plain value, so the shell reads values[i] as commands.
-// A value that may instead be text a tool splits into words reads the same way
-// after the shell: words after a separator run as written, and the first
-// command's later words become positional parameters, so it runs no Git
-// subcommand.
-func shellScriptOperand(values []string, i int) bool {
-	return i >= 2 && values[i-1] == "-c" && plainShellWord(values[i-2]) && scriptShells[commandName(values[i-2])]
+	text               string
+	literal, ambiguous bool
 }
 
 // proveGitBuiltins reads args for gitProof. carriers is the shape of args
@@ -200,17 +185,13 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 	var proof gitProof
 	if carriers == nil {
 		var words []gitWord
-		for i, arg := range args {
-			if !gitTool && shellScriptOperand(args, i) {
-				words = append(words, gitWord{text: arg, script: true})
-				continue
-			}
+		for _, arg := range args {
 			fields := splitPlainFields(arg)
 			for _, field := range fields {
 				words = append(words, gitWord{text: field, ambiguous: len(args) > 1 && len(fields) > 1})
 			}
 		}
-		proof.read(words, gitTool, gitTool, false)
+		proof.read(words, gitTool, gitTool)
 		return proof
 	}
 	if gitTool && len(carriers) != 1 {
@@ -219,11 +200,7 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 	}
 	for _, carrier := range carriers {
 		var words []gitWord
-		for i, value := range carrier.values {
-			if carrier.array && !gitTool && shellScriptOperand(carrier.values, i) {
-				words = append(words, gitWord{text: value, literal: true, script: true})
-				continue
-			}
+		for _, value := range carrier.values {
 			if carrier.array {
 				words = append(words, gitWord{text: value, literal: true})
 				continue
@@ -232,7 +209,7 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 				words = append(words, gitWord{text: field})
 			}
 		}
-		proof.read(words, gitTool, gitTool, false)
+		proof.read(words, gitTool, gitTool)
 	}
 	return proof
 }
@@ -253,12 +230,11 @@ func splitPlainFields(s string) []string {
 //
 // A scalar word that is not plain (see plainShellWord) before the executable
 // may expand to another executable, such as $CMD git fetch, where Git would
-// read git as an alias and fetch as its argument. Git, or a shell command
-// string, met after such a word in the same command is unproved. In a shell's
-// command string (script), any such word while seeking the executable leaves
-// the proof unproved, since it may itself expand to Git or a git-<name>
-// program.
-func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
+// read git as an alias and fetch as its argument. Git met after such a word in
+// the same command is unproved. A shell's command string in an argument list,
+// such as bash -c's, is not read: the shell's environment, startup files and
+// aliases can redefine git there, so its Git commands stay unproved.
+func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	const (
 		seeking = iota
 		global  // after the executable, before the subcommand
@@ -272,11 +248,6 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
-	// assigned marks a name=value word in the current command before its
-	// executable. Git's builtins ignore its environment, but a shell's does
-	// not: bash imports a function named git from BASH_FUNC_git%% and reads
-	// BASH_ENV first, so a shell command string after it is unproved.
-	assigned := false
 	word := func(w gitWord) {
 		switch state {
 		case seeking:
@@ -285,8 +256,6 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			case !w.literal && strings.HasPrefix(w.text, "#"):
 				// The shell reads the rest of this command as a comment.
 				state = done
-			case script && !plainShellWord(w.text):
-				p.unproved, state = true, done
 			case !w.literal && name != "git" && viewsReadGit(w.text):
 				// A rule view reads this word as Git, but its spelling is not
 				// git, so the proof cannot say which Git command a later word
@@ -304,9 +273,6 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			}
 			if !w.literal && !plainShellWord(w.text) {
 				expanded = true
-			}
-			if !strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "=") {
-				assigned = true
 			}
 			if (strings.HasPrefix(w.text, "-") || strings.Contains(w.text, "=")) && strings.Contains(w.text, "git-") {
 				// An option or assignment value naming git-<name>, such as
@@ -368,33 +334,12 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state, expanded, assigned = seeking, false, false
+			state, expanded = seeking, false
 			start = i + 1
 		}
 	}
 	for _, w := range words {
-		switch {
-		case w.script && state == seeking && (expanded || assigned):
-			p.unproved, state = true, done
-		case w.script && state == seeking:
-			// The shell runs the commands in its command string; the words
-			// after it are positional parameters.
-			fields := splitPlainFields(w.text)
-			commands := make([]gitWord, 0, len(fields))
-			for _, field := range fields {
-				commands = append(commands, gitWord{text: field})
-			}
-			p.read(commands, false, false, true)
-			state = done
-		case w.script && !w.literal:
-			// Elsewhere the value reads as it would without a shell.
-			fields := splitPlainFields(w.text)
-			for _, field := range fields {
-				feed(gitWord{text: field, ambiguous: len(fields) > 1})
-			}
-		default:
-			feed(w)
-		}
+		feed(w)
 	}
 	if state == global || state == value {
 		p.unproved = true
