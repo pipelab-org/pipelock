@@ -47,6 +47,15 @@ func TestGitShellScriptOperand(t *testing.T) {
 	}
 }
 
+// An argument list element is a literal argument, so "$X" there is not
+// expanded; with no recorded shape it may be shell text that expands to Git.
+func TestGitShellScriptAfterExpansionWithoutShape(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	if got := pc.CheckToolCall("bash", []string{"$X", "bash", "-c", "git fetch --force"}); !got.Matched {
+		t.Fatalf("expansion before a shell command string was allowed: %+v", got)
+	}
+}
+
 // TestGitSubcommandNameAsWrapperValue checks that a bare Git subcommand name
 // outside Git, such as env -u's value, does not lend Git's options to the
 // command that follows.
@@ -57,6 +66,10 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		allow   bool
 	}{
 		{"env -u push git ls-files --for=x", true},
+		// An expansion before git may be the executable itself.
+		{"$CMD git fetch --force", false},
+		{`"$CMD" git fetch --force`, false},
+		{`cd "/srv/repo" && git fetch --force`, true},
 		{"env -u reset git -c alias.a=rm ls-files --for=x", true},
 		{"env -u push git push --for", false},
 		{"env -u push git l --for=x", false},

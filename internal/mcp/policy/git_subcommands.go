@@ -249,11 +249,16 @@ func splitPlainFields(s string) []string {
 // wrappers, assignments and options, until a covered utility other than Git
 // (see commandLongOptions) starts the command instead. inGit seeds the first
 // command as the git tool's arguments; noShell keeps separators inside the
-// git tool's words, where no shell reads them. scriptPrefix requires plain
-// words while seeking a command in a shell script and in any scalar prefix
-// leading to that script.
-func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
-	scriptPrefix = scriptPrefix || slices.ContainsFunc(words, func(w gitWord) bool { return w.script })
+// git tool's words, where no shell reads them.
+//
+// A scalar word that is not plain (see plainShellWord) before the executable
+// may expand to another executable, such as $CMD git fetch, where Git would
+// read git as an alias and fetch as its argument. Git, or a shell command
+// string, met after such a word in the same command is unproved. In a shell's
+// command string (script), any such word while seeking the executable leaves
+// the proof unproved, since it may itself expand to Git or a git-<name>
+// program.
+func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 	const (
 		seeking = iota
 		global  // after the executable, before the subcommand
@@ -264,6 +269,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
 	if inGit {
 		state = global
 	}
+	// expanded marks a scalar word in the current command, before its
+	// executable, that is not plain.
+	expanded := false
 	word := func(w gitWord) {
 		switch state {
 		case seeking:
@@ -272,10 +280,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
 			case !w.literal && strings.HasPrefix(w.text, "#"):
 				// The shell reads the rest of this command as a comment.
 				state = done
-			case scriptPrefix && !w.literal && !plainShellWord(w.text):
-				// A shell expansion before the apparent executable can supply
-				// another executable and shift Git's subcommand. Script
-				// prefixes use the same plain-word contract as Git's prefix.
+			case script && !plainShellWord(w.text):
 				p.unproved, state = true, done
 			case !w.literal && name != "git" && viewsReadGit(w.text):
 				// A rule view reads this word as Git, but its spelling is not
@@ -284,13 +289,16 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
 				p.unproved, state = true, done
 			case name == "git":
 				state = global
-				if !w.literal && !plainShellWord(w.text) {
+				if expanded || !w.literal && !plainShellWord(w.text) {
 					p.unproved, state = true, done
 				}
 			case !strings.HasPrefix(w.text, "-"):
 				if _, covered := utilityOptionKey(name); covered {
 					state = done
 				}
+			}
+			if !w.literal && !plainShellWord(w.text) {
+				expanded = true
 			}
 		case global, value:
 			switch {
@@ -333,21 +341,23 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state = seeking
+			state, expanded = seeking, false
 			start = i + 1
 		}
 	}
 	for _, w := range words {
 		switch {
+		case w.script && state == seeking && expanded:
+			p.unproved, state = true, done
 		case w.script && state == seeking:
 			// The shell runs the commands in its command string; the words
 			// after it are positional parameters.
 			fields := splitPlainFields(w.text)
-			script := make([]gitWord, 0, len(fields))
+			commands := make([]gitWord, 0, len(fields))
 			for _, field := range fields {
-				script = append(script, gitWord{text: field})
+				commands = append(commands, gitWord{text: field})
 			}
-			p.read(script, false, false, true)
+			p.read(commands, false, false, true)
 			state = done
 		case w.script && !w.literal:
 			// Elsewhere the value reads as it would without a shell.
