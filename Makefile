@@ -59,7 +59,7 @@ test-runtime-critical:
 # to run the full suite in scoped chunks instead of the single monolithic
 # `go test ./...` invocation that becomes a long pole if reused in one CI step.
 # `make test` stays the canonical full local run.
-TEST_SHARDS := proxy-0 proxy-1 proxy-2 proxy-3 proxy-4 proxy-5 scanner-0 scanner-1 scanner-2 scanner-3 mcp-0 mcp-1 mcp-2 mcp-3 mcp-4 mcp-5 runtime-0 runtime-1 rest-0 rest-1 rest-2 rest-3
+TEST_SHARDS := proxy-0 proxy-1 proxy-2 proxy-3 proxy-4 proxy-5 proxy-6 scanner-0 scanner-1 scanner-2 scanner-3 mcp-0 mcp-1 mcp-2 mcp-3 mcp-4 mcp-5 mcp-6 mcp-7 runtime-0 runtime-1 rest-0 rest-1 rest-2 rest-3
 .PHONY: FORCE
 FORCE:
 
@@ -186,17 +186,7 @@ docker:
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .
 
 fuzz:
-	@echo "Running all fuzz targets (30s each)..."
-	@go test -run=^$$ -fuzz=FuzzScanURL -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzMatchDomain -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzShannonEntropy -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzScanResponseContent -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzSanitizeString -fuzztime=30s ./internal/audit/
-	@go test -run=^$$ -fuzz=FuzzParseDiff -fuzztime=30s ./internal/gitprotect/
-	@go test -run=^$$ -fuzz=FuzzScanDiff -fuzztime=30s ./internal/gitprotect/
-	@go test -run=^$$ -fuzz=FuzzScanResponse -fuzztime=30s ./internal/mcp/
-	@go test -run=^$$ -fuzz=FuzzDetect -fuzztime=30s ./internal/seedprotect/
-	@echo "All fuzz targets complete."
+	@python3 scripts/fuzz-targets.py
 
 stats: ## Print canonical stats
 	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'DLP patterns|Response patterns|Chain patterns|Preset files|Direct deps|PASS|FAIL|---'
