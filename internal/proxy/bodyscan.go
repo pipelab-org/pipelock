@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -2211,15 +2212,12 @@ func extractMultipart(body []byte, boundary string, maxBytes int) ([]string, str
 
 func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPart func([]byte)) ([]string, string) {
 	reader := multipart.NewReader(bytes.NewReader(body), boundary)
+	remaining := body
 
 	var result []string
 	partCount := 0
 
 	for {
-		if partCount >= maxMultipartParts {
-			return nil, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
-		}
-
 		part, err := reader.NextRawPart()
 		if err == io.EOF {
 			break
@@ -2229,6 +2227,44 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			return nil, fmt.Sprintf("multipart parse error: %v", err)
 		}
 		partCount++
+		if partCount > maxMultipartParts {
+			return nil, fmt.Sprintf("multipart body exceeds %d parts limit", maxMultipartParts)
+		}
+
+		// Keep the wire spelling: textproto canonicalizes field names and
+		// mime.ParseMediaType lowercases parameter names. RFC 5322 section 2.2
+		// separates each field into its name, colon and value.
+		rawHeaders, partBytes, ok := rawMultipartHeaders(remaining, boundary)
+		if !ok {
+			return nil, "multipart parse error: cannot locate part headers"
+		}
+		if len(rawHeaders) > maxBytes {
+			return nil, fmt.Sprintf("multipart headers exceed max_body_bytes (%d)", maxBytes)
+		}
+		result = append(result, string(rawHeaders))
+		// As with outer request headers, also scan name+value without the
+		// field separator, so a credential split at the colon is inspected.
+		wire := textproto.NewReader(bufio.NewReader(bytes.NewReader(rawHeaders)))
+		for {
+			// ReadContinuedLine unfolds values without canonicalizing names.
+			line, err := wire.ReadContinuedLine()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Sprintf("multipart header read error: %v", err)
+			}
+			if name, value, found := strings.Cut(line, ":"); found {
+				result = append(result, name+strings.TrimSpace(value))
+			}
+		}
+		// RFC 2045 section 6 defines one transfer mechanism per entity.
+		// Refuse receiver-dependent first/last-value interpretations, even
+		// when both values agree. RFC 7578 section 4.7 deprecates this field
+		// in forms, but a single legacy encoding remains supported.
+		if len(part.Header.Values("Content-Transfer-Encoding")) > 1 {
+			return nil, "multipart parse error: multiple Content-Transfer-Encoding headers"
+		}
 
 		// Extract metadata before closing the part.
 		formName := part.FormName()
@@ -2237,11 +2273,8 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 			return nil, fmt.Sprintf("multipart filename exceeds %d bytes", maxFilenameBytes)
 		}
 
-		// Scan ALL part headers for secret exfiltration.
-		// Custom headers (X-Secret, etc.) are scanned as raw values.
-		// Structural headers (Content-Type, Content-Disposition) are parsed
-		// for parameter values - an attacker can hide secrets in non-standard
-		// params like Content-Disposition: form-data; x-data="<credential>".
+		// Retain parsed values as well as wire headers, including decoded
+		// MIME parameter values that may not appear verbatim on the wire.
 		for name, values := range part.Header {
 			canonical := textproto.CanonicalMIMEHeaderKey(name)
 			if canonical == headerContentType || canonical == "Content-Disposition" {
@@ -2261,7 +2294,7 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				continue
 			}
 			if canonical == "Content-Transfer-Encoding" {
-				continue // Pure token (base64/7bit), no params, no exfil surface.
+				continue // The raw field is already included above.
 			}
 			result = append(result, values...)
 		}
@@ -2279,6 +2312,9 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 		if len(partBody) > maxBytes {
 			return nil, fmt.Sprintf("multipart part exceeds max_body_bytes (%d)", maxBytes)
 		}
+		// NextRawPart does not transfer-decode, so its consumed body length
+		// identifies the next delimiter in the original bytes exactly.
+		remaining = partBytes[len(partBody):]
 
 		// Decode Content-Transfer-Encoding before scanning. NextRawPart
 		// keeps CTE visible instead of transparently decoding quoted-printable,
@@ -2340,6 +2376,30 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 	}
 
 	return result, ""
+}
+
+// rawMultipartHeaders locates the header section of a part already accepted by
+// mime/multipart. The caller advances past exactly the raw body bytes read from
+// that part. Reuse the delimiter rules in multipartPreamble (RFC 2046 section
+// 5.1.1), including transport padding and Go's LF-only compatibility mode.
+func rawMultipartHeaders(body []byte, boundary string) (headers, partBody []byte, ok bool) {
+	body = body[len(multipartPreamble(body, boundary)):]
+	_, body, found := bytes.Cut(body, []byte("\n"))
+	if !found {
+		return nil, nil, false
+	}
+	headers = body
+	for len(body) > 0 {
+		line, rest, found := bytes.Cut(body, []byte("\n"))
+		if !found {
+			break
+		}
+		if len(bytes.TrimSuffix(line, []byte("\r"))) == 0 {
+			return headers[:len(headers)-len(body)], rest, true
+		}
+		body = rest
+	}
+	return nil, nil, false
 }
 
 func validateQuotedPrintable(body []byte) error {
