@@ -21,6 +21,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cli/diag"
@@ -98,14 +99,23 @@ func runExitedError(when string, cmdErr error, buf *cliTestBuffer) error {
 	return fmt.Errorf("run exited %s: %w%s", when, cmdErr, dump)
 }
 
-// reloadWaitBackstop is a generous safety deadline for waitForReloadCycle. It is
-// NOT the gating mechanism (the reload-completed signal fires as soon as the
-// cycle runs); it only guards a genuinely broken fsnotify watcher, so it is set
-// far above any realistic CI reload latency. This is the fix for the
-// reload-test-family flakiness: the old 5s stderr poll made fsnotify delivery
-// latency the failure threshold; an event signal plus a large backstop removes
-// the guess.
+// reloadWaitBackstop bounds a missing reload-completion event. The event,
+// rather than elapsed time, releases the post-reload assertions.
 const reloadWaitBackstop = 30 * time.Second
+
+// prepareConfigReloadResult waits for this command's post-bind config banner
+// before arming the reload waiter. A health response can come from a foreign
+// listener while the command is still loading its initial config. Rewriting
+// the file then can feed startup a truncated config, and a write before the
+// watcher starts produces no reload event. Start establishes the watch and
+// binds the fetch listener before printing this banner.
+func prepareConfigReloadResult(t *testing.T, buf *cliTestBuffer, errCh <-chan error, cfgPath string) (<-chan struct{}, error) {
+	t.Helper()
+	if err := waitForCLIOutputResult(buf, errCh, "  Config: "+cfgPath+" (hot-reload enabled"); err != nil {
+		return nil, err
+	}
+	return installReloadWaiter(t), nil
+}
 
 // installReloadWaiter registers a process-global reload-completion hook and
 // returns a channel that receives once per completed config reload cycle. Call
@@ -1360,6 +1370,12 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
+
 		// Modify the config to trigger hot-reload via fsnotify.
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
@@ -1373,6 +1389,10 @@ fetch_proxy:
 			t.Fatal(err)
 		}
 
+		if err := awaitReloadCycleResult(reloaded, stderr, errCh); err != nil {
+			cancel()
+			return err
+		}
 		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
@@ -1465,7 +1485,11 @@ fetch_proxy:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Reload config to action: ask and audit mode. The mode change is the
 		// observable signal that the reload carrying ask-mode config landed.
@@ -1651,8 +1675,9 @@ forward_proxy:
 
 // TestRunCmd_ReloadPostHealthBindCollisionRetries reproduces the order behind
 // a reload-test flake: another listener on the chosen port answers the health
-// gate, then the run exits with "address already in use". The reload wait must
-// return that error so testport.WithRetry reruns the attempt on a fresh port.
+// gate, then the run exits with "address already in use". Reload preparation
+// must return that error before rewriting the startup config, so
+// testport.WithRetry reruns the attempt on a fresh port.
 // The first attempt starts the run only after the gate has passed, which pins
 // that order instead of leaving it to scheduling.
 func TestRunCmd_ReloadPostHealthBindCollisionRetries(t *testing.T) {
@@ -1721,7 +1746,11 @@ fetch_proxy:
 			start()
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
@@ -1845,6 +1874,10 @@ func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
 		name string
 		wait func(errCh <-chan error) error
 	}{
+		{"reload startup", func(errCh <-chan error) error {
+			_, err := prepareConfigReloadResult(t, &cliTestBuffer{}, errCh, "config.yaml")
+			return err
+		}},
 		{"reload cycle", func(errCh <-chan error) error {
 			return awaitReloadCycleResult(make(chan struct{}), &cliTestBuffer{}, errCh)
 		}},
@@ -1881,6 +1914,52 @@ func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
 	}
 }
 
+// TestPrepareConfigReloadResultWaitsForStartupBanner checks that reload
+// preparation stays blocked while the run is alive until this config path's
+// startup banner appears. Earlier startup output and the banner for another
+// path must not release a config rewrite. It runs on synctest's fake clock so
+// the negative check happens only after the output poller has observed the
+// other path's banner, not after a wall-clock window it may never have used.
+func TestPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
+	synctest.Test(t, checkPrepareConfigReloadResultWaitsForStartupBanner)
+}
+
+func checkPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "test.yaml")
+	buf := &cliTestBuffer{}
+	errCh := make(chan error, 1)
+	type prepared struct {
+		reloaded <-chan struct{}
+		err      error
+	}
+	done := make(chan prepared, 1)
+	go func() {
+		reloaded, err := prepareConfigReloadResult(t, buf, errCh, cfgPath)
+		done <- prepared{reloaded, err}
+	}()
+
+	_, _ = fmt.Fprintf(buf, "  Listen: 127.0.0.1:0\n  Config: %s.other (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
+	// Advance past several poll ticks, then let every goroutine settle, so the
+	// poller has read the buffer before the negative check.
+	<-time.After(50 * time.Millisecond)
+	synctest.Wait()
+	select {
+	case got := <-done:
+		t.Fatalf("reload preparation returned before the startup banner: %+v", got)
+	default:
+	}
+
+	_, _ = fmt.Fprintf(buf, "  Config: %s (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
+	select {
+	case got := <-done:
+		if got.err != nil || got.reloaded == nil {
+			t.Fatalf("reload preparation after the startup banner = %+v, want an armed waiter", got)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("reload preparation did not return after the startup banner")
+	}
+}
+
 // TestRunCmd_ReloadRejectsForwardProxyEnable verifies that enabling forward_proxy
 // via hot reload is rejected and the proxy keeps it disabled.
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
@@ -1913,7 +1992,8 @@ logging:
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--config", cfgPath})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1930,7 +2010,11 @@ logging:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Hot-reload: enable forward_proxy (should be rejected)
 		updatedCfg := fmt.Sprintf(`version: 1
@@ -2219,7 +2303,11 @@ fetch_proxy:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
@@ -2301,8 +2389,8 @@ fetch_proxy:
 			"--mcp-upstream", "http://localhost:19999",
 		})
 		cmd.SetOut(io.Discard)
-		var stderr bytes.Buffer
-		cmd.SetErr(&stderr)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -2330,6 +2418,12 @@ fetch_proxy:
 			return err
 		}
 
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
+
 		updatedCfg := fmt.Sprintf(`version: 1
 mode: strict
 api_allowlist:
@@ -2344,26 +2438,16 @@ kill_switch:
 			t.Fatal(err)
 		}
 
-		lastReloadWrite := time.Now()
+		if err := awaitReloadCycleResult(reloaded, stderr, errCh); err != nil {
+			cancel()
+			return err
+		}
 		if err := waitForRunRequestWithinResult(ctx, 15*time.Second, errCh, func(reqCtx context.Context) *http.Request {
 			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, statusURL, nil)
 			req.Header.Set("Authorization", "Bearer reload-token")
 			return req
 		}, client, func(resp *http.Response) bool {
-			if resp.StatusCode == http.StatusOK {
-				return true
-			}
-			// /health can become reachable before the config watcher has armed.
-			// Rewriting the same target config gives the watcher another observable
-			// event without weakening the reload assertion.
-			if time.Since(lastReloadWrite) >= 250*time.Millisecond {
-				if err := os.WriteFile(cfgPath, []byte(updatedCfg), 0o600); err != nil {
-					cancel()
-					t.Fatalf("rewrite updated config: %v", err)
-				}
-				lastReloadWrite = time.Now()
-			}
-			return false
+			return resp.StatusCode == http.StatusOK
 		}, "kill switch API token after strict-mode reload"); err != nil {
 			cancel()
 			return err
@@ -2499,7 +2583,11 @@ fetch_proxy:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Hot-reload: change metrics_listen (should be rejected).
 		updatedCfg := fmt.Sprintf(`version: 1
@@ -2578,7 +2666,11 @@ fetch_proxy:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Hot-reload: change license_key (should warn).
 		updatedCfg := fmt.Sprintf(`version: 1
@@ -2657,7 +2749,11 @@ fetch_proxy:
 			return err
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Hot-reload: same license_key, change something else (mode).
 		updatedCfg := fmt.Sprintf(`version: 1
@@ -2741,7 +2837,11 @@ fetch_proxy:
 			t.Fatal(writeErr)
 		}
 
-		reloaded := installReloadWaiter(t)
+		reloaded, err := prepareConfigReloadResult(t, stderr, errCh, cfgPath)
+		if err != nil {
+			cancel()
+			return err
+		}
 
 		// Hot-reload: add license_file (should warn about license inputs change).
 		updatedCfg := fmt.Sprintf(`version: 1
