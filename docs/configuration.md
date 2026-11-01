@@ -934,7 +934,7 @@ dlp:
 | `min_env_secret_length` | `16` | Min env var value length to consider |
 | `include_defaults` | `true` | Merge your patterns with the 65 built-in patterns |
 | `patterns` | 65 built-in | DLP credential detection patterns |
-| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, or `wif` |
+| `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, `wif`, `dea`, or `npi` |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 | `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches allow traffic through without enforcement. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
 
@@ -945,9 +945,17 @@ There is no top-level `dlp.action` setting. DLP enforcement is transport-specifi
 - MCP input scanning uses `mcp_input_scanning.action`.
 - `response_scanning.action: strip` is for inbound prompt-injection response rewriting, not DLP.
 
-### Validated Patterns (Financial DLP)
+### Validated Patterns
 
 Some patterns include a `validator` field for post-match checksum verification. When set, regex matches are passed through a checksum algorithm before being flagged. This eliminates false positives from random numbers that happen to match the pattern format.
+
+The `dea` validator checks the seven-digit [DEA checksum](https://terminology.hl7.org/NamingSystem-USDEANumber.html). The regex selects the registrant prefix and must include the two-character prefix plus seven digits. The validator extracts DEA tokens from the whole regex match, so a match can also include a label. It checks every token until one passes, preserving detection after an invalid decoy. The `npi` validator checks exactly ten digits using the [CMS NPI check-digit algorithm](https://www.cms.gov/Regulations-and-Guidance/Administrative-Simplification/NationalProvIdentStand/Downloads/NPIcheckdigit.pdf), including the implied `80840` prefix. Like `aba`, `npi` extracts digits from the regex match, so the regex can include a label. These validators apply only when explicitly selected on a rule; adding support doesn't change existing patterns or installed bundles.
+
+A checksum verifies structure, not registration, ownership, or confidentiality. A rule using a checksum validator won't flag a checksum-invalid value, including a mistyped identifier after an explicit label. Case folding and decoded scans still validate candidates, and a rejected candidate doesn't stop the search for later valid matches. Use a shape-only pattern if malformed identifiers must also be detected. An older engine rejects an unknown validator name by refusing the whole bundle at parse time with an integrity-class error, before it reads `min_pipelock` or `required_features`, so none of that bundle's rules load there. A bundle using `dea` or `npi` must therefore declare the first release that supports them in `min_pipelock` for newer engines and be published as a new bundle version; `required_features: ["checksum"]` does not gate these values because older engines already list it.
+
+A local install validates the candidate before replacing an installed bundle. If an older engine rejects the validator, that install leaves the existing bundle in place. Upgrade engines before activating bundles that use new validator values, and use the installer rather than copying incompatible files into the rules directory.
+
+Adding or changing a validator on an existing pattern produces a potential-downgrade warning on reload, even when its name and regex stay the same. Strict mode and required-receipt reloads reject that warning. Removing a validator restores shape-only matching and doesn't produce this warning.
 
 Built-in validated patterns:
 - **Credit Card Number** (`validator: luhn`) — Visa, Mastercard (including 2-series), Amex, Discover, JCB. Luhn checksum rejects ~90% of false positives. The shipped regex is greedy, so a card followed by a space or hyphen and another short number (an unlabelled expiry such as `12/27`, a quantity, or `-3`) first produces one longer match that fails validation. When that happens, Pipelock keeps the match's start and retries shorter candidates that end just before a space or hyphen already inside the match, longest first, and reports the first one that passes the issuer and Luhn checks. A retry never splits a run of contiguous digits, never moves the start, and keeps at least the rule's 15-digit floor. This retry applies only to the built-in rule; a custom pattern that sets `validator: luhn` keeps whole-match validation. It can still miss a card that begins inside a longer failed match, such as one preceded by an unrelated four-digit group, and it adds false positives where a separated prefix of a longer reference number happens to pass the card checks.

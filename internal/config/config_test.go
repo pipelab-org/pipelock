@@ -922,6 +922,8 @@ func TestValidate_DLPValidValidator(t *testing.T) {
 		{Name: "test-luhn", Regex: `\d{16}`, Severity: "medium", Validator: ValidatorLuhn},
 		{Name: "test-mod97", Regex: `[A-Z]{2}\d{2}[A-Z0-9]+`, Severity: "medium", Validator: ValidatorMod97},
 		{Name: "test-aba", Regex: `\d{9}`, Severity: "low", Validator: ValidatorABA},
+		{Name: "test-dea", Regex: `\b[ABFMPRSX][A-Z9]\d{7}\b`, Severity: SeverityHigh, Validator: ValidatorDEA},
+		{Name: "test-npi", Regex: `\b[12]\d{9}\b`, Severity: SeverityHigh, Validator: ValidatorNPI},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("valid validator names should not error: %v", err)

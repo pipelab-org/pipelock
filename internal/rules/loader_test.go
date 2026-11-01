@@ -71,13 +71,22 @@ func testDLPRule(id, confidence, status string) Rule {
 }
 
 func TestLoadBundles_PropagatesDLPValidator(t *testing.T) {
+	for _, validator := range []string{config.ValidatorABA, config.ValidatorDEA, config.ValidatorNPI} {
+		t.Run(validator, func(t *testing.T) {
+			testLoadBundleValidator(t, validator)
+		})
+	}
+}
+
+func testLoadBundleValidator(t *testing.T, validator string) {
+	t.Helper()
 	dir := t.TempDir()
 	bundleDir := filepath.Join(dir, testBundleName)
 	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	rule := testDLPRule("dlp-aba", confidenceHigh, StatusStable)
-	rule.Pattern.Validator = config.ValidatorABA
+	rule.Pattern.Validator = validator
 	bundle := testBundle(testBundleName, []Rule{rule})
 	writeUnsignedBundle(t, bundleDir, bundle)
 
@@ -85,9 +94,44 @@ func TestLoadBundles_PropagatesDLPValidator(t *testing.T) {
 	if len(result.DLP) != 1 {
 		t.Fatalf("DLP patterns = %d, errors=%v", len(result.DLP), result.Errors)
 	}
-	if result.DLP[0].Validator != config.ValidatorABA {
-		t.Fatalf("validator = %q, want %q", result.DLP[0].Validator, config.ValidatorABA)
+	if result.DLP[0].Validator != validator {
+		t.Fatalf("validator = %q, want %q", result.DLP[0].Validator, validator)
 	}
+}
+
+func TestBundleValidatorReload(t *testing.T) {
+	dir := t.TempDir()
+	bundleDir := filepath.Join(dir, testBundleName)
+	if err := os.MkdirAll(bundleDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	rule := testDLPRule("dlp-dea", confidenceHigh, StatusStable)
+	rule.Pattern.Regex = `\b[ABFMPRSX][A-Z9]\d{7}\b`
+	load := func(validator string) *config.Config {
+		t.Helper()
+		rule.Pattern.Validator = validator
+		bundle := testBundle(testBundleName, []Rule{rule})
+		if validator != "" {
+			bundle.Version = "2026.03.1"
+		}
+		writeUnsignedBundle(t, bundleDir, bundle)
+		cfg := config.Defaults()
+		cfg.Rules.RulesDir = dir
+		result := MergeIntoConfig(cfg, testPipelockVersion)
+		if len(result.Errors) != 0 {
+			t.Fatalf("bundle merge errors: %v", result.Errors)
+		}
+		return cfg
+	}
+	before := load("")
+	after := load(config.ValidatorDEA)
+	wantName := NamespacedID(testBundleName, rule.ID)
+	for _, warning := range config.ValidateReload(before, after) {
+		if warning.Field == "dlp.patterns" && strings.Contains(warning.Message, wantName+" (validator changed)") && warning.Disposition != config.ReloadWarningDispositionAdvisory {
+			return
+		}
+	}
+	t.Fatal("bundle-sourced validator addition did not produce a rejectable reload warning")
 }
 
 func TestLoadBundles_ExemptDomainsParseAndWarn(t *testing.T) {

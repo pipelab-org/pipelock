@@ -97,6 +97,8 @@ const (
 	ValidatorMod97 = "mod97"
 	ValidatorABA   = "aba"
 	ValidatorWIF   = "wif"
+	ValidatorDEA   = "dea"
+	ValidatorNPI   = "npi"
 )
 
 // Confidence constants for community rule minimum confidence filtering.
@@ -1324,7 +1326,7 @@ type DLPPattern struct {
 	Name                                string   `yaml:"name"`
 	Regex                               string   `yaml:"regex"`
 	Severity                            string   `yaml:"severity"`            // critical, high, medium, low
-	Validator                           string   `yaml:"validator,omitempty"` // post-match checksum: "luhn", "mod97", "aba"
+	Validator                           string   `yaml:"validator,omitempty"` // post-match checksum; see Validator* constants
 	ExemptDomains                       []string `yaml:"exempt_domains"`      // domains where this pattern is not enforced
 	Action                              string   `yaml:"action,omitempty"`    // "" or "warn"; warn is refused for built-in patterns
 	Bundle                              string   `yaml:"-"`                   // set by rules loader, not from YAML

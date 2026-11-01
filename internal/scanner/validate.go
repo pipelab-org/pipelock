@@ -15,14 +15,16 @@ import (
 
 // DLPValidators maps validator names from config.DLPPattern.Validator to
 // post-match validation functions. Each function receives the regex-matched
-// text and returns true only if the match is a genuine financial identifier.
-// This eliminates ~90-99% of regex false positives depending on the checksum.
+// text and checks its structure and checksum. Passing does not establish that
+// an identifier is assigned, active, or owned by the person presenting it.
 // Exported for use by gitprotect (scan-diff) to maintain parity with runtime DLP.
 var DLPValidators = map[string]func(string) bool{
 	config.ValidatorLuhn:  validateLuhn,
 	config.ValidatorMod97: validateMod97,
 	config.ValidatorABA:   validateABA,
 	config.ValidatorWIF:   validateWIF,
+	config.ValidatorDEA:   validateDEA,
+	config.ValidatorNPI:   validateNPI,
 }
 
 // awsCredentialPrefixRe finds an access-key-shaped run with one of the two
