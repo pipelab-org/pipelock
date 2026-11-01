@@ -181,6 +181,10 @@ func TestExecutionProofWithheldIsBoundAndOlderVerifierRejects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A round trip through one struct cannot catch a renamed JSON tag.
+	if !bytes.Contains(encoded, []byte(`"withheld":`)) {
+		t.Fatalf("encoded proof lacks the withheld key: %s", encoded)
+	}
 	var decoded ExecutionProof
 	if err := json.Unmarshal(encoded, &decoded); err != nil {
 		t.Fatal(err)

@@ -7,6 +7,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -19,10 +20,11 @@ import (
 )
 
 const (
-	landlockNNPOp            = "no-new-privs-all-threads"
-	landlockNNPReportOp      = "no-new-privs-report"
-	landlockNNPInheritedExit = 3
-	landlockNNPThreads       = 8
+	landlockNNPOp              = "no-new-privs-all-threads"
+	landlockNNPReportOp        = "no-new-privs-report"
+	landlockNNPInheritedExit   = 3
+	landlockNNPUnavailableExit = 4
+	landlockNNPThreads         = 8
 )
 
 // runLandlockNoNewPrivsChild proves that ApplyLandlock alone leaves
@@ -86,6 +88,10 @@ func runLandlockNoNewPrivsChild(workspace string) {
 		policy.AllowRWDirs = append(policy.AllowRWDirs, filepath.Clean(dir))
 	}
 	status, err := ApplyLandlock(policy)
+	if errors.Is(err, ErrUnavailable) {
+		_, _ = fmt.Fprintf(os.Stderr, "landlock unavailable: %s\n", status.Reason)
+		os.Exit(landlockNNPUnavailableExit)
+	}
 	if err != nil || !status.Active {
 		_, _ = fmt.Fprintf(os.Stderr, "landlock: active=%v err=%v reason=%s\n", status.Active, err, status.Reason)
 		os.Exit(2)
@@ -125,7 +131,7 @@ func runLandlockNoNewPrivsChild(workspace string) {
 
 func TestApplyLandlock_SetsNoNewPrivsOnEveryThread(t *testing.T) {
 	out, code := runSandboxedChild(t, landlockNNPOp, t.TempDir())
-	if code == landlockNNPInheritedExit {
+	if code == landlockNNPInheritedExit || code == landlockNNPUnavailableExit {
 		t.Skip(strings.TrimSpace(out))
 	}
 	want := fmt.Sprintf("no_new_privs on %d threads and the workload", landlockNNPThreads+1)
