@@ -57,7 +57,10 @@ from unittest import mock
 
 import yaml
 
-from yaml_contracts import WorkflowLoader
+if __package__:
+    from .yaml_contracts import WorkflowLoader
+else:
+    from yaml_contracts import WorkflowLoader
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
