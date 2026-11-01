@@ -69,6 +69,10 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		// An expansion before git may be the executable itself.
 		{"$CMD git fetch --force", false},
 		{`"$CMD" git fetch --force`, false},
+		{"$CMD\\\n git fetch --force", false},
+		{"$CMD`true` git fetch --force", false},
+		{"$CMD$(true) git fetch --force", false},
+		{"$CMD\\; git fetch --force", false},
 		{`cd "/srv/repo" && git fetch --force`, true},
 		{"env -u reset git -c alias.a=rm ls-files --for=x", true},
 		{"env -u push git push --for", false},

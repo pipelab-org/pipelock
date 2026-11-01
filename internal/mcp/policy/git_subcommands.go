@@ -338,6 +338,12 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			if i == len(w.text) {
 				break
 			}
+			if expanded && (strings.ContainsRune("()`", rune(w.text[i])) || i > 0 && w.text[i-1] == '\\') {
+				// A substitution or escaped separator need not end the outer
+				// command. Its uncertain prefix must not grant a later Git
+				// word a builtin reading.
+				p.unproved = true
+			}
 			if state == global || state == value {
 				p.unproved = true
 			}
