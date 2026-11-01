@@ -6,7 +6,6 @@
 package guard
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,7 +142,8 @@ func TestEnforcementRecord_DescribeWithheldAndUnverified(t *testing.T) {
 				if !strings.HasPrefix(line, "ENFORCED via") || strings.Contains(line, "\n") {
 					t.Fatalf("invalid enforced headline: %q", line)
 				}
-				if n > 0 && !strings.Contains(line, fmt.Sprintf("; %d grants unverified", n)) ||
+				if n == 1 && !strings.Contains(line, "; 1 grant unverified") ||
+					n == 2 && !strings.Contains(line, "; 2 grants unverified") ||
 					n == 0 && strings.Contains(line, "unverified") {
 					t.Fatalf("unverified=%d: %q", n, line)
 				}

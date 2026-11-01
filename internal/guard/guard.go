@@ -258,7 +258,11 @@ func (r EnforcementRecord) Describe() string {
 			mediation = "PARTIAL mediation"
 		}
 		if len(r.Unverified) > 0 {
-			mediation += fmt.Sprintf("; %d grants unverified", len(r.Unverified))
+			noun := "grants"
+			if len(r.Unverified) == 1 {
+				noun = "grant"
+			}
+			mediation += fmt.Sprintf("; %d %s unverified", len(r.Unverified), noun)
 		}
 		line := fmt.Sprintf("ENFORCED via %s, %s (ABI %s)", r.Mechanism, mediation, observed)
 		if r.Coverage != CoverageFull {
