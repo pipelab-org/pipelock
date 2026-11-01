@@ -227,6 +227,44 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
         self.assertIn("exit 0", step)
         self.assertNotIn("continue-on-error", step)
 
+    def test_quickstart_blocks_require_status_and_named_reason(self):
+        # BusyBox wget hides headers on a 4xx, so the quickstart reads the raw
+        # response. Only a 403 header naming the expected check passes.
+        source = (ROOT / "examples" / "quickstart" / "verify.sh").read_text(encoding="utf-8")
+        function = re.search(r"^fetch_block\(\) \{.*?^\}$", source, re.M | re.S).group()
+        checks = source[source.index("# -- Test 3") : source.index("# -- Test 5")]
+        stub = (
+            "set -eu\nPIPELOCK_HOST=pipelock\nPIPELOCK_PORT=8888\n"
+            "ATTACKER=http://attacker:9999\n"
+            "pass() { echo PASS; }\nfail() { echo FAIL; }\nstep() { :; }\n"
+            "sleep() { :; }\nnc() { printf '%b' \"$CANNED\"; }\n"
+        )
+        head = "HTTP/1.1 403 Forbidden\\r\\n"
+        cases = {
+            "dlp": (head + "X-Pipelock-Block-Reason: dlp_match\\r\\n"
+                    "X-Pipelock-Block-Reason-Layer: core_dlp\\r\\n\\r\\n{}", "PASS FAIL"),
+            "injection": (head + "X-Pipelock-Block-Reason: prompt_injection\\r\\n\\r\\n{}",
+                          "FAIL PASS"),
+            "unrelated 403": (head + "X-Pipelock-Block-Reason: parse_error\\r\\n\\r\\n{}",
+                              "FAIL FAIL"),
+            "near-miss reason": (head + "X-Pipelock-Block-Reason: dlp_match_extra\\r\\n\\r\\n",
+                                 "FAIL FAIL"),
+            "reason only in body": (head + "\\r\\nX-Pipelock-Block-Reason: dlp_match\\r\\n",
+                                    "FAIL FAIL"),
+            "allowed": ("HTTP/1.1 200 OK\\r\\nX-Pipelock-Block-Reason: dlp_match\\r\\n\\r\\n",
+                        "FAIL FAIL"),
+            "no response": ("", "FAIL FAIL"),
+        }
+        for name, (canned, want) in cases.items():
+            with self.subTest(case=name):
+                result = subprocess.run(
+                    ["sh", "-c", stub + function + "\n" + checks],
+                    capture_output=True, text=True, timeout=10, check=False,
+                    env={**os.environ, "CANNED": canned},
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(" ".join(result.stdout.split()), want)
+
 
 if __name__ == "__main__":
     unittest.main()
