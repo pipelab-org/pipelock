@@ -400,7 +400,7 @@ func BuildSimScenarios(cfg *config.Config, sc *scanner.Scanner) []simScenario {
 	scenarios = append(scenarios, simScenario{
 		name: "Overlong URL", category: catEvasion,
 		run: func() (bool, string) {
-			// Generate URL exceeding default max_url_length (16384).
+			// Generate a URL longer than the default max_url_length (8000 octets).
 			// Use an IP address to avoid DNS lookups.
 			longPath := strings.Repeat("a", 17000)
 			r := sc.Scan(ctx, "https://192.0.2.1/"+longPath)
