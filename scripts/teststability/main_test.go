@@ -34,6 +34,44 @@ func findingLines(t *testing.T, src string) []int {
 	return lines
 }
 
+func TestAnalyzeDiscardedExitReceive(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, declaration, receive string
+		want                       int
+	}{
+		{"bare error", "errCh := make(chan error)", "<-errCh", 1},
+		{"parenthesized error", "errCh := make(chan error)", "(<-errCh)", 1},
+		{"parenthesized channel", "errCh := make(chan error)", "<-(errCh)", 1},
+		{"member error", "type holder struct { exit chan error }; var h holder", "<-h.exit", 1},
+		{"result error", "type result struct { err error }; results := make(chan result)", "<-results", 1},
+		{"discarded error", "errCh := make(chan error)", "_ = <-errCh", 1},
+		{"discarded comma ok error", "errCh := make(chan error)", "_, ok := <-errCh", 1},
+		{"bare data", "data := make(chan string)", "<-data", 0},
+		{"bare cancellation", "done := make(chan struct{})", "<-done", 0},
+		{"unknown readiness", "", "<-ready", 0},
+		{"context cancellation", "", "<-ctx.Done()", 0},
+		{"timer", "", "<-time.After(time.Second)", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "package x\nfunc TestA(t *testing.T) {\n" + tc.declaration + `
+	testport.WithRetry(t, 2, func(addrs []string) error {
+		select {
+		case ` + tc.receive + `:
+			t.Fatal("run stopped")
+		default:
+		}
+		return nil
+	})
+}
+`
+			if got := findingLines(t, src); len(got) != tc.want {
+				t.Fatalf("findings = %v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAnalyzeFindings(t *testing.T) {
 	t.Parallel()
 

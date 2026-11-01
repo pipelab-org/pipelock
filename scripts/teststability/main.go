@@ -15,7 +15,9 @@
 // callbacks, and uses channel and server declarations it can see in the
 // package. Shapes it cannot see through (callbacks or helpers from other
 // packages, channels it cannot find a declaration for) are treated
-// conservatively: an undeclared channel counts as a run-exit channel.
+// conservatively for value-binding receives. Bare receives require a visible
+// channel declaration, so readiness, timer, and cancellation backstops remain
+// outside the run-exit check.
 package main
 
 import (
@@ -331,7 +333,7 @@ func (pi *pkgInfo) recordValue(name string, v ast.Expr) {
 // field. A channel with no visible declaration counts as one.
 func (pi *pkgInfo) isExitChannel(ch ast.Expr) bool {
 	var name string
-	switch x := ch.(type) {
+	switch x := ast.Unparen(ch).(type) {
 	case *ast.Ident:
 		name = x.Name
 	case *ast.SelectorExpr:
@@ -764,16 +766,26 @@ func (pi *pkgInfo) markExitPathStops(f *ast.File) {
 	})
 }
 
-// isReceive reports whether a select case receives a value it names from a
-// run-exit channel, as in "case err := <-errCh". A bare "case <-done" or
-// "case <-ctx.Done()" carries no run error, and a channel declared with a
-// data element type ("msgs := make(chan string)") is not a run-exit path.
+// isReceive reports whether a select case receives from a run-exit channel,
+// including cases that discard its value. A bare receive needs a visible
+// channel declaration to distinguish it from readiness and hang backstops.
 func (pi *pkgInfo) isReceive(comm ast.Stmt) bool {
+	if es, ok := comm.(*ast.ExprStmt); ok {
+		if !pi.exitReceive(es.X) {
+			return false
+		}
+		u := ast.Unparen(es.X).(*ast.UnaryExpr)
+		var name string
+		switch ch := ast.Unparen(u.X).(type) {
+		case *ast.Ident:
+			name = ch.Name
+		case *ast.SelectorExpr:
+			name = ch.Sel.Name
+		}
+		return len(pi.chanElems[name]) > 0
+	}
 	assign, ok := comm.(*ast.AssignStmt)
 	if !ok || len(assign.Rhs) != 1 || len(assign.Lhs) == 0 {
-		return false
-	}
-	if id, ok := assign.Lhs[0].(*ast.Ident); ok && id.Name == "_" {
 		return false
 	}
 	return pi.exitReceive(assign.Rhs[0])
