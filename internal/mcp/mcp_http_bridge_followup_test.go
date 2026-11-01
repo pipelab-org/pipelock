@@ -166,6 +166,13 @@ func assertBridgeIntentsPaired(t *testing.T, dir string) {
 			t.Errorf("intent %s has %d outcomes, want 1", id, outcomes[id])
 		}
 	}
+	// A held call writes defer and resolution receipts, never an intent, so a
+	// terminal outcome emitted under its tracker entry would be an orphan.
+	for id := range outcomes {
+		if !intents[id] {
+			t.Errorf("outcome %s has no matching intent", id)
+		}
+	}
 }
 
 func TestHTTPBridgeLegacyReinitializeSessionHeader(t *testing.T) {
