@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestMCPSandboxMetricsDialUsesBoundAddress drives `mcp proxy --sandbox` end
@@ -38,15 +39,18 @@ func TestMCPSandboxMetricsDialUsesBoundAddress(t *testing.T) {
 	// process as a separate CLI invocation would.
 	const helperEnv = "PIPELOCK_TEST_MCP_SANDBOX_METRICS"
 	if os.Getenv(helperEnv) != "1" {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(time.Minute))
 		defer cancel()
 		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestMCPSandboxMetricsDialUsesBoundAddress$", "-test.timeout=50s") // #nosec G204 G702 -- test re-execs its own binary with fixed arguments
 		child.Env = append(os.Environ(), helperEnv+"=1")
-		if output, err := child.CombinedOutput(); err != nil {
+		output, err := child.CombinedOutput()
+		skipParentIfChildLacksSandbox(t, output)
+		if err != nil {
 			t.Fatalf("MCP sandbox invocation: %v\n%s", err, output)
 		}
 		return
 	}
+	skipChildWithoutSandboxLaunch(t)
 	_, port, err := net.SplitHostPort(testport.ListenAddrs(t, 1)[0])
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +81,7 @@ done
 	// The bridge and the sandboxed child both write diagnostics concurrently,
 	// so capture them through a synchronized buffer.
 	var output syncBuffer
-	ctx, cancel := context.WithTimeout(t.Context(), 40*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(40*time.Second))
 	defer cancel()
 	cmd := McpCmd()
 	cmd.SetOut(&output)

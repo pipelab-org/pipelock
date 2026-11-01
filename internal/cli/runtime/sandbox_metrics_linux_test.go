@@ -23,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"golang.org/x/net/dns/dnsmessage"
 )
 
@@ -65,15 +66,18 @@ func TestSandboxMetricsListenerAndAgentRoutes(t *testing.T) {
 	// would run, so earlier MCP tests cannot affect user-namespace re-execution.
 	const helperEnv = "PIPELOCK_TEST_SANDBOX_METRICS"
 	if os.Getenv(helperEnv) != "1" {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
+		ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(time.Minute))
 		defer cancel()
 		child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSandboxMetricsListenerAndAgentRoutes$", "-test.timeout=50s") // #nosec G204 G702 -- test re-execs its own binary with fixed arguments
 		child.Env = append(os.Environ(), helperEnv+"=1")
-		if output, err := child.CombinedOutput(); err != nil {
+		output, err := child.CombinedOutput()
+		skipParentIfChildLacksSandbox(t, output)
+		if err != nil {
 			t.Fatalf("standalone invocation: %v\n%s", err, output)
 		}
 		return
 	}
+	skipChildWithoutSandboxLaunch(t)
 	for _, mode := range []string{"off", "numeric", "hostname-drift"} {
 		t.Run(mode, func(t *testing.T) {
 			configured := mode != "off"
