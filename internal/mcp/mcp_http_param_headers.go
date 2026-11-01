@@ -204,8 +204,7 @@ func synthesizeMCPRequestHeaders(frame MCPFrame, baseline *tools.ToolBaseline) (
 		return nil, fmt.Errorf("invalid request metadata")
 	}
 	headers.Set(listenerMCPMethod, frame.Method)
-	switch frame.Method {
-	case methodToolsCall, methodResourcesRead, methodPromptsGet:
+	if routingFieldForMethod(frame.Method) != "" {
 		if frame.RoutingNameErr != nil || !frame.RoutingNamePresent || frame.RoutingName == "" {
 			return nil, fmt.Errorf("missing request routing name")
 		}

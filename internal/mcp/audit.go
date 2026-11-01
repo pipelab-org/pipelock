@@ -417,6 +417,14 @@ func mcpListenerProtocolDenialAudit() mcpDenialAudit {
 	return mcpDenialAudit{kind: "listener_protocol"}
 }
 
+func mcpBridgeNotificationDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "bridge_notification"}
+}
+
+func mcpBridgeInitializeDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "bridge_initialize"}
+}
+
 func mcpMediaInspectionDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "media_inspection"} }
 
 func mcpMediaPolicyDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "media_policy"} }

@@ -60,6 +60,8 @@ var mcpDenialCatalog = [...]mcpDenialSpec{
 	{"a2a_url_infrastructure", scanner.AuditA2AScan, audit.BlockClassInfrastructureError, mcpResourceInput, "A2A input URL check refused"},
 	{"a2a_url_protective", scanner.AuditA2AScan, audit.BlockClassProtective, mcpResourceInput, "A2A input URL check refused"},
 	{"batch", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceInput, "MCP batch requests are unsupported"},
+	{"bridge_notification", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceInput, "MCP bridge routed notification refused"},
+	{"bridge_initialize", scanner.AuditMCPProtocol, audit.BlockClassProtective, mcpResourceInput, "MCP bridge re-initialize refused"},
 	{"redaction_error", scanner.AuditRedaction, audit.BlockClassInfrastructureError, mcpResourceInput, "MCP redaction blocked the request"},
 	{"redaction_limit", scanner.AuditRedaction, audit.BlockClassProtective, mcpResourceInput, "MCP redaction blocked the request"},
 	{"contract_eval", scanner.AuditContract, audit.BlockClassInfrastructureError, mcpResourceInput, "MCP contract evaluation failed"},

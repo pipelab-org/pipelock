@@ -225,7 +225,7 @@ func ParseMCPFrame(msg []byte) MCPFrame {
 			frame.Args = params.Arguments
 		}
 	}
-	if field := routingFieldForMethod(frame.Method); field != "" {
+	if field := routingFieldForMethod(frame.Method); field != "" && frame.Method != methodToolsCall {
 		var params map[string]json.RawMessage
 		if err := json.Unmarshal(decoded.Params, &params); err != nil {
 			frame.RoutingNameErr = err
@@ -264,7 +264,7 @@ func routingFieldForMethod(method string) string {
 	switch method {
 	case methodResourcesRead:
 		return "uri"
-	case methodPromptsGet:
+	case methodToolsCall, methodPromptsGet:
 		return "name"
 	default:
 		return ""

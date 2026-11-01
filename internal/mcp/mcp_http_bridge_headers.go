@@ -5,13 +5,31 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 )
+
+var (
+	errBridgeRoutedNotification = errors.New("routed MCP method requires a non-null request ID")
+	errBridgeAlreadyInitialized = errors.New("modern bridge is already initialized")
+)
+
+func bridgeHeaderRefusal(err error) (mcpDenialAudit, string, string) {
+	switch {
+	case errors.Is(err, errBridgeRoutedNotification):
+		return mcpBridgeNotificationDenialAudit(), "pipelock: " + errBridgeRoutedNotification.Error(), "bridge_routed_notification"
+	case errors.Is(err, errBridgeAlreadyInitialized):
+		return mcpBridgeInitializeDenialAudit(), "pipelock: " + errBridgeAlreadyInitialized.Error(), "bridge_already_initialized"
+	default:
+		return mcpListenerInspectionDenialAudit(), "pipelock: cannot establish tool header contract", "tool_header_contract_unavailable"
+	}
+}
 
 // mcpBridgeHeaders joins the listener's contract acquisition/serialization and
 // the bridge's per-process tool baseline. Only the contract portion of state is
@@ -76,16 +94,13 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 		// second handshake would clear the transport's negotiated version,
 		// including while deferred calls can be released. Refuse it before
 		// that reset rather than let those calls take the legacy path.
-		return nil, fmt.Errorf("modern bridge is already initialized")
+		return nil, errBridgeAlreadyInitialized
 	}
-	if isRPCNotification(frame.ID) {
-		switch frame.Method {
-		case methodToolsCall, methodResourcesRead, methodPromptsGet:
-			// MCP defines these methods only as requests, which must carry
-			// Mcp-Name and parameter mirrors. A notification form would leave
-			// unmirrored, so it is refused like an unavailable contract.
-			return nil, fmt.Errorf("%s cannot be sent as a notification", frame.Method)
-		}
+	if isRPCNotification(frame.ID) && routingFieldForMethod(frame.Method) != "" {
+		// MCP defines these methods only as requests, which must carry
+		// Mcp-Name and parameter mirrors. A notification form would leave
+		// unmirrored, so it is refused like an unavailable contract.
+		return nil, errBridgeRoutedNotification
 	}
 	if frame.Method == methodToolsCall {
 		if frame.RoutingNameErr != nil || frame.RoutingName == "" {
@@ -110,4 +125,37 @@ func (b *mcpBridgeHeaders) prepare(ctx context.Context, msg []byte) (http.Header
 	}
 	headers.Set(listenerProtocolVersion, version)
 	return headers, nil
+}
+
+// prepareForRelease uses the held-call kill-switch epoch and polling cadence
+// while waiting for discovery or the inventory lock. The send claim remains
+// the final authority; cancellation only shortens an already refused release.
+func (b *mcpBridgeHeaders) prepareForRelease(ctx context.Context, msg []byte, generation uint64) (http.Header, error) {
+	ks := b.opts.KillSwitch
+	if ks == nil {
+		return b.prepare(ctx, msg)
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(deferKillSwitchPollInterval)
+		defer ticker.Stop()
+		for {
+			if ks.DeferredGeneration() != generation || ks.IsActive() {
+				cancel()
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	return b.prepare(ctx, msg)
 }
