@@ -169,7 +169,7 @@ func driveProxyA2AHardening(t *testing.T, transport, request, response, contentT
 	var met *metrics.Metrics
 	w := httptest.NewRecorder()
 	if transport == "forward" {
-		upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstream := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			hits.Add(1)
 			w.Header().Set("Content-Type", contentType)
 			_, _ = io.WriteString(w, response)
