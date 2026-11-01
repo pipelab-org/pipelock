@@ -125,28 +125,36 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 			continue
 		}
 		add(v)
-		expanded := v
-		var unknownGit bool
-		expanded.tokens, unknownGit = normalizeLineOptions(v.tokens, gitTool, proof)
-		expanded.joined = strings.Join(expanded.tokens, " ")
-		if v.segments != nil {
-			expanded.segments = make([][]string, 0, len(v.segments))
-			for _, seg := range v.segments {
-				if len(v.segments) == 1 {
-					// The only segment is the token list just interpreted.
-					expanded.segments = append(expanded.segments, expanded.tokens)
-				} else {
-					// A non-builtin Git subcommand anywhere on the line makes every
-					// command's destructive readings visible to the pairs it forms.
-					t, _, _ := normalizeOptions(seg, unknownGit, gitTool)
-					expanded.segments = append(expanded.segments, t)
+		addInterpretation := func(tokens []string, strict bool) {
+			expanded := v
+			expanded.tokens = tokens
+			expanded.joined = strings.Join(tokens, " ")
+			if v.segments != nil {
+				expanded.segments = make([][]string, 0, len(v.segments))
+				for _, seg := range v.segments {
+					if len(v.segments) == 1 {
+						// The only segment is the token list just interpreted.
+						expanded.segments = append(expanded.segments, tokens)
+					} else {
+						// Strict readings apply throughout an unproved line.
+						t, _, _ := normalizeOptions(seg, strict, gitTool)
+						expanded.segments = append(expanded.segments, t)
+					}
 				}
 			}
+			if !sameArgView(v, expanded) {
+				expanded.interpreted = true
+				add(expanded)
+			}
 		}
-		if !sameArgView(v, expanded) {
-			expanded.interpreted = true
-			add(expanded)
+		tokens, unknownGit := normalizeLineOptions(v.tokens, gitTool, proof)
+		if unknownGit {
+			// Strict readings add tokens. Keep the ordinary interpretation too,
+			// so an anchored configured deny cannot lose its earlier match.
+			ordinary, _, _ := normalizeOptions(v.tokens, false, gitTool)
+			addInterpretation(ordinary, false)
 		}
+		addInterpretation(tokens, unknownGit)
 	}
 	tokens, joined := literalArgTokens(args)
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})

@@ -165,3 +165,31 @@ func TestVariableCommandName(t *testing.T) {
 		}
 	}
 }
+
+func TestVariableCommandNamePreservesConfiguredMatch(t *testing.T) {
+	for _, tc := range []struct {
+		command, pattern string
+	}{
+		{`$X --for; rm --rec work`, `^\$X --for; rm --recursive work$`},
+		{`$X --ha; chmod --rec 755 work`, `^\$X --ha; chmod --recursive 755 work$`},
+	} {
+		for _, key := range []string{"", "command"} {
+			pc := New(config.MCPToolPolicy{
+				Enabled: true,
+				Action:  config.ActionBlock,
+				Rules: []config.ToolPolicyRule{{
+					Name: "configured deny", ToolPattern: "bash", ArgKey: key, ArgPattern: tc.pattern,
+				}},
+			})
+			for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+				if key != "" && surface == "CheckToolCall" {
+					// This API has no JSON keys for a scoped rule to inspect.
+					continue
+				}
+				if !got.Matched || got.Action != config.ActionBlock {
+					t.Errorf("%q key=%q %s: got %+v, want configured deny", tc.command, key, surface, got)
+				}
+			}
+		}
+	}
+}
