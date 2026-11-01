@@ -1913,6 +1913,42 @@ func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
 	}
 }
 
+// TestPrepareConfigReloadResultWaitsForStartupBanner checks that reload
+// preparation stays blocked while the run is alive until this config path's
+// startup banner appears. Earlier startup output and the banner for another
+// path must not release a config rewrite.
+func TestPrepareConfigReloadResultWaitsForStartupBanner(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "test.yaml")
+	buf := &cliTestBuffer{}
+	errCh := make(chan error, 1)
+	type prepared struct {
+		reloaded <-chan struct{}
+		err      error
+	}
+	done := make(chan prepared, 1)
+	go func() {
+		reloaded, err := prepareConfigReloadResult(t, buf, errCh, cfgPath)
+		done <- prepared{reloaded, err}
+	}()
+
+	_, _ = fmt.Fprintf(buf, "  Listen: 127.0.0.1:0\n  Config: %s.other (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
+	select {
+	case got := <-done:
+		t.Fatalf("reload preparation returned before the startup banner: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	_, _ = fmt.Fprintf(buf, "  Config: %s (hot-reload enabled; rejected security downgrades require restart)\n", cfgPath)
+	select {
+	case got := <-done:
+		if got.err != nil || got.reloaded == nil {
+			t.Fatalf("reload preparation after the startup banner = %+v, want an armed waiter", got)
+		}
+	case <-time.After(testwait.Deadline(5 * time.Second)):
+		t.Fatal("reload preparation did not return after the startup banner")
+	}
+}
+
 // TestRunCmd_ReloadRejectsForwardProxyEnable verifies that enabling forward_proxy
 // via hot reload is rejected and the proxy keeps it disabled.
 func TestRunCmd_ReloadRejectsForwardProxyEnable(t *testing.T) {
