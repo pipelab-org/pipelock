@@ -325,21 +325,23 @@ spec:
     # The sidecar pattern works because they share the same network namespace.
 
   ingress:
-    # Allow monitoring (Prometheus scrape)
+    # Allow monitoring (Prometheus scrape of the dedicated metrics port)
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
       ports:
         - protocol: TCP
-          port: 8888
+          port: 9091
 ```
 
 **Important:** K8s NetworkPolicy controls traffic between pods, not between containers within a pod. In the sidecar pattern, the agent container shares the pod's network namespace and can reach the internet directly (same egress rules as pipelock). The `HTTPS_PROXY` env var tells the agent to route through pipelock, but nothing at the network level enforces it. For enforced isolation, run pipelock as a separate pod and restrict the agent pod's egress to only the pipelock Service.
 
 ### PodMonitor (Prometheus Scraping)
 
-If you use the Prometheus Operator, add a PodMonitor to scrape pipelock metrics:
+Configure `metrics_listen: "0.0.0.0:9091"` in the proxy config and declare a container port named `metrics` with `containerPort: 9091`. If you use the Prometheus Operator, add a PodMonitor for that dedicated port:
+
+The metrics listener has no authentication. Restrict it to the monitoring namespace with NetworkPolicy and deny agent pods access. Containers in the same pod share networking, so a sidecar's metrics port remains directly reachable by its agent; use a separate proxy pod for network isolation.
 
 ```yaml
 apiVersion: monitoring.coreos.com/v1
@@ -354,7 +356,7 @@ spec:
     matchLabels:
       app: my-agent
   podMetricsEndpoints:
-    - port: proxy
+    - port: metrics
       path: /metrics
       interval: 30s
       metricRelabelings:

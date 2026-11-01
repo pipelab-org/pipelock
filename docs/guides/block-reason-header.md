@@ -69,7 +69,7 @@ Pipelock's block reasons are grouped by layer. The values are stable strings; ag
 | `receipt_emission_failed` | `flight_recorder.require_receipts` is enabled and the required allow-path receipt could not be emitted before forwarding. |
 | `redirect_scan_denied` | A followed redirect target was denied by the scanner pipeline. |
 | `authority_mismatch` | Operator authority for the requested action is missing or below threshold. |
-| `escalation_level` | Adaptive enforcement raised an escalation tier that blocks the requested action class. |
+| `escalation_level` | Adaptive enforcement raised an escalation tier that blocks the requested action class. At a `block_all` level every refusal uses this reason, even when a scanner also found a problem. The kill switch keeps `kill_switch_active`. |
 | `session_anomaly` | Session profiling rejected the request because anomaly action is `block`. |
 | `cross_request_deny` | Cross-request entropy or fragment reassembly denied the request as exfiltration. |
 

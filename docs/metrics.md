@@ -1,6 +1,13 @@
 # Metrics Reference
 
-Pipelock exposes Prometheus metrics at `/metrics` on the proxy listen port (default 8888). Set `metrics_listen` to move `/metrics` and `/stats` to a dedicated address and port. All metric names are prefixed with `pipelock_` (or `pipelock_learn_` for the observation-pipeline family).
+Pipelock collects metrics internally without exposing them by default. Set `metrics_listen` to serve Prometheus metrics at `/metrics` and JSON statistics at `/stats` on a dedicated listener. The agent-facing proxy listener never serves either route. Omitted, YAML null, and blank `metrics_listen` values expose neither route and create no metrics listener. All metric names are prefixed with `pipelock_` (or `pipelock_learn_` for the observation-pipeline family).
+
+```yaml
+# pipelock.yaml
+metrics_listen: 127.0.0.1:9091
+```
+
+This applies to `pipelock run`, standalone `pipelock sandbox`, and `pipelock mcp proxy`. Changes to the listener address require a restart. The dedicated listener has no authentication: restrict network access so agents cannot connect directly. Loopback alone does not separate processes on the same host; use operating-system or container network controls. The proxy blocks mediated requests to the configured metrics address, but direct connections need those network controls.
 
 Contained deployments keep the dedicated listener on loopback by default. A contained listener on another numeric address needs a current `containment.metrics_exposure` policy that lists the exact scraper source CIDRs. That policy permits `/metrics` only. `/stats` remains loopback-only because it includes blocked domains and scanner categories. See [`pipelock contain`](contain-cli.md#managed-metrics-invariant) for the required policy fields and expiry behavior.
 
@@ -11,7 +18,7 @@ Contained deployments keep the dedicated listener on loopback by default. A cont
 scrape_configs:
   - job_name: pipelock
     static_configs:
-      - targets: ["pipelock:8888"]
+      - targets: ["127.0.0.1:9091"]
 ```
 
 For Kubernetes deployments using a PodMonitor:
@@ -391,7 +398,7 @@ The `/metrics` endpoint serves all registered Prometheus metrics. A JSON
 summary is available at `/stats` on the same port:
 
 ```bash
-curl http://localhost:8888/stats | jq .
+curl http://localhost:9091/stats | jq .
 ```
 
 ```json

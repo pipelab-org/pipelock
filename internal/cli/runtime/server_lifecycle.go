@@ -516,11 +516,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Fetch:  http://%s/fetch?url=<url>\n", boundFetchAddr)
 	_, _ = fmt.Fprintf(s.opts.Stderr, "  Health: http://%s/health\n", boundFetchAddr)
 	if s.metricsDisabled {
-		_, _ = fmt.Fprintln(s.opts.Stderr, "  Stats:  disabled (containment managed-config drift)")
+		_, _ = fmt.Fprintln(s.opts.Stderr, "  Metrics: not exposed (containment managed-config drift); check metrics_listen")
 	} else if cfg.MetricsListen != "" {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats (separate port)\n", cfg.MetricsListen)
 	} else {
-		_, _ = fmt.Fprintf(s.opts.Stderr, "  Stats:  http://%s/stats\n", boundFetchAddr)
+		_, _ = fmt.Fprintln(s.opts.Stderr, "  Metrics: not exposed; set metrics_listen for a dedicated listener")
 	}
 	if cfg.ForwardProxy.Enabled {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "  Proxy:  HTTP/HTTPS forward proxy enabled (CONNECT + absolute-URI)\n")

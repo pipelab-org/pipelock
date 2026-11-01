@@ -66,6 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `metrics_listen` | string | `""` | Dedicated listener for `/metrics` and `/stats`; omitted, null, or blank exposes neither route. Never served on the proxy port. Requires restart; restrict agent network access. |
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
@@ -90,6 +91,8 @@ When enabled, Pipelock prints a startup disclosure. Crash payloads are rebuilt t
 ### Block Hints (`explain_blocks`)
 
 When enabled, blocked responses include a hint explaining why the request was blocked and how to fix it. Fetch proxy responses get a `hint` field in the JSON body. CONNECT and WebSocket rejections get an `X-Pipelock-Hint` response header.
+
+While adaptive `block_all` applies to the request's session and destination scope, refusals use the fixed adaptive message and omit detector hints, even with `explain_blocks: true`. Scanner details remain in operator logs, metrics and receipts.
 
 ```yaml
 explain_blocks: true
@@ -2026,7 +2029,7 @@ Anonymous current-protocol listener calls are request-local only. Cross-request 
 
 The stdio-to-HTTP bridge (`pipelock mcp proxy --upstream URL`) constructs `Mcp-Method`, the applicable `Mcp-Name`, and schema-selected `Mcp-Param-*` headers for protocol revision `2026-07-28` and later. It uses the final forwarded arguments, including any redaction, and the same property paths and value encoding as the HTTP listener. Null or absent arguments omit their mirrors. Body-derived headers replace operator-configured routing and parameter headers, so static values can't override them. This synthesis applies to JSON-RPC requests, including deferred calls at release; notifications and responses don't receive routing or parameter headers. MCP defines `tools/call`, `resources/read` and `prompts/get` only as requests, so the bridge refuses one sent without an `id` instead of forwarding it without its headers. Once the bridge negotiates `2026-07-28` or later through `initialize`, it keeps that revision for the life of the process and refuses a second `initialize` with the same JSON-RPC error. Earlier negotiated protocol revisions keep their existing behavior.
 
-The bridge uses its per-process tool-contract registry and privately discovers unknown contracts through its own upstream HTTP client, preserving the upstream credentials and session context. It shares the listener's pagination, combined 10 MiB response budget, 120-second discovery deadline, response inspection, and concurrent-discovery coordination. This private discovery doesn't mark tools client-seen, adopt definition drift, approve held actions, ask for operator approval, or count as untrusted-content exposure for taint policy. An invalid contract, discovery failure, or argument that can't be mirrored refuses the call locally with a JSON-RPC error; no upstream tool call is sent. With `require_receipts` enabled, a blocked outcome receipt at `mcp_header_contract` closes the call's allow intent, as on the HTTP listener. A deferred call refused at release is closed by its resolution receipt, with `resolution_source: "upstream_contract"` and pattern `tool_header_contract_unavailable`. When the operator configured no tool scanning, the bridge still collects current-protocol `tools/list` structure for header synthesis, so it excludes definitions with invalid `x-mcp-header` contracts from those lists as described below. That structural inventory is never the confirmed inventory that `allow_on.tool_inventory_baseline` waits for. No unchecked fallback or automatic tool-call replay occurs. See [MCP Request Metadata](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#request-metadata) for the routing, encoding, and null-omission rules.
+The bridge uses its per-process tool-contract registry and privately discovers unknown contracts through its own upstream HTTP client, preserving the upstream credentials and session context. It shares the listener's pagination, combined 10 MiB response budget, 120-second discovery deadline, response inspection, and concurrent-discovery coordination. This private discovery doesn't mark tools client-seen, adopt definition drift, approve held actions, ask for operator approval, or count as untrusted-content exposure for taint policy. An invalid contract, discovery failure, or argument that can't be mirrored refuses the call locally with a JSON-RPC error; no upstream tool call is sent. With `require_receipts` enabled, a blocked outcome receipt at `mcp_header_contract` closes the call's allow intent, as on the HTTP listener. A deferred call refused at release is closed by its resolution receipt, with `resolution_source: "upstream_contract"` and pattern `tool_header_contract_unavailable`, or `bridge_routed_notification` / `bridge_already_initialized` when the held call was a routed method sent without an `id` or a second `initialize`. A kill switch that activates while a held call waits for contract discovery closes it with the kill-switch reason instead. When the operator configured no tool scanning, the bridge still collects current-protocol `tools/list` structure for header synthesis, so it excludes definitions with invalid `x-mcp-header` contracts from those lists as described below. That structural inventory is never the confirmed inventory that `allow_on.tool_inventory_baseline` waits for. No unchecked fallback or automatic tool-call replay occurs. See [MCP Request Metadata](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http#request-metadata) for the routing, encoding, and null-omission rules.
 
 Current HTTP requests carry `Mcp-Method` and, where applicable, `Mcp-Name` plus schema-selected `Mcp-Param-*` mirrors. Pipelock checks the standard routing headers against the body before forwarding. When tool scanning accepts a `tools/list` response for an authenticated principal, Pipelock records valid `x-mcp-header` contracts and checks each recognized parameter mirror against the exact body argument path. Missing, duplicate, malformed, or mismatched recognized mirrors fail locally.
 
@@ -2162,6 +2165,10 @@ The baseline admin endpoints (list, show, ratify, forget) are only mounted on th
 
 ## Adaptive Enforcement
 
+At a level with `block_all: true`, every refusal on the applicable transport has the same status, block reason and body, whether a scanner found a problem or the request was clean. HTTP refusals use status `403`, reason `escalation_level` and layer `session_deny`. Fetch and reverse proxy keep their JSON response formats but omit request-specific content. Detector hints and optional correlation and receipt headers are omitted. WebSocket relay closes use code `1008` with the same `escalation_level` payload in both directions. MCP refusals use JSON-RPC error `-32001` with a fixed session-deny message and no detector data; the request ID is preserved and notifications receive no response. An MCP SSE stream that has already started keeps its HTTP status and carries the `-32001` error as an event. The response that first raises a session to `block_all` is uniform on the HTTP proxies, for withheld MCP replies, and for buffered MCP HTTP-listener JSON replies. Ordinary MCP responses are scored after the message writer accepts them. The HTTP listener buffers JSON replies and projects the refusal after scoring; stdio and SSE writers have already delivered the refusal, so those threshold-crossing replies keep their detector reason. Below `block_all`, scanner-specific refusals are unchanged. The kill switch keeps its own refusal and operator message on every transport: it runs before any scanner, so its answer says nothing about a detector.
+
+This changes the answer delivered to the caller, without moving scanner checks ahead of or behind other controls. Findings keep their existing operator evidence and adaptive signal contributions, including denial deduplication. Scanners already skipped by a transport's session-deny check remain skipped. This is a refusal-format guarantee, not a timing guarantee; operator logs, receipts, metrics and stats must remain inaccessible to untrusted callers.
+
 **Audit deployments:** enabling adaptive enforcement allows eligible warnings to be refused after independent enforced findings elevate the session. Set `adaptive_enforcement.enabled: false` to disable adaptive upgrades. Immutable security floors still apply.
 
 **Upgrading an existing configuration:** warnings contribute zero points. A threshold previously tuned around repeated warnings no longer produces that escalation; lowering the threshold won't make warnings score. Configure the relevant scanner action to block when a finding must be enforced. Existing enforced findings retain their score contributions.
@@ -2290,7 +2297,7 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.
 
-Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
+Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. Omitted, YAML null, or blank values expose neither route, while counters still collect internally. The proxy listener never serves these routes. Address changes require restart. The dedicated listener has no authentication, so use network controls to deny direct agent access.
 
 Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
 
@@ -2411,7 +2418,9 @@ the HTTP front door: the three endpoint exemptions cover requests made to
 Pipelock's own `/health` and `/metrics` paths and its kill-switch and session
 admin routes under `/api/v1` (on the main port only when the API has no
 separate port), never a forward-proxy
-or CONNECT request that happens to name those paths on another host, and
+or CONNECT request that happens to name those paths on another host. The proxy
+port no longer serves `/metrics`, so `metrics_exempt` has no effect there, and
+the kill switch never gates the dedicated `metrics_listen` listener. Separately,
 `allowlist_ips` matches the client address of HTTP, forward-proxy and
 intercepted CONNECT requests. MCP transports (stdio, the stdio-to-HTTP bridge
 and the HTTP listener), the reverse proxy and established relay or WebSocket
@@ -2444,7 +2453,7 @@ kill_switch:
 | `sentinel_file` | `""` | No | File presence activates kill switch |
 | `message` | `"Emergency deny-all active"` | No | Rejection message |
 | `health_exempt` | `true` | No | /health bypasses kill switch |
-| `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
+| `metrics_exempt` | `true` | No | No effect: the proxy port doesn't serve `/metrics`, and the kill switch never gates the dedicated `metrics_listen` listener |
 | `api_exempt` | `true` | No | The kill switch and session admin routes under `/api/v1` on the main port bypass it; other `/api/v1` routes do not. Ignored when `api_listen` is set |
 | `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_token_file` | `""` | No | Native token file, mutually exclusive with `api_token`. Supports `$CREDENTIALS_DIRECTORY/ID`; see [service credentials](guides/service-credentials.md) for permissions, precedence, reload, and migration. |

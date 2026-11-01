@@ -289,7 +289,7 @@ func emptyContractLoader(t *testing.T) *contractruntime.Loader {
 
 func TestForwardLiveLock_NoActiveContractPassThrough(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -324,7 +324,7 @@ func TestForwardLiveLock_NoActiveContractPassThrough(t *testing.T) {
 
 func TestForwardLiveLock_AllowRulePasses(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -357,7 +357,7 @@ func TestForwardLiveLock_AllowRulePasses(t *testing.T) {
 
 func TestForwardLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("unexpected"))
 	}))
@@ -393,7 +393,7 @@ func TestForwardLiveLock_DefaultDenyBlocksUnmatchedDestination(t *testing.T) {
 
 func TestForwardLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("unexpected"))
 	}))
@@ -437,7 +437,7 @@ func TestForwardLiveLock_ScannerBlockWinsOverContractAllow(t *testing.T) {
 
 func TestForwardA2ARequestBodyFilePartURIBlocked(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-012","result":{"ok":true}}`))
 	}))
@@ -479,7 +479,7 @@ func TestForwardA2ARequestBodyFilePartURIBlocked(t *testing.T) {
 
 func TestForwardA2ARequestBodyFilePartURIBlockedWithGenericBodyScanningDisabled(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-012","result":{"ok":true}}`))
 	}))
@@ -520,7 +520,7 @@ func TestForwardA2ARequestBodyFilePartURIBlockedWithGenericBodyScanningDisabled(
 
 func TestForwardA2ARequestBodyDirectBlockWithGenericBodyScanningDisabled(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-013","result":{"ok":true}}`))
 	}))
@@ -552,7 +552,7 @@ func TestForwardA2ARequestBodyDirectBlockWithGenericBodyScanningDisabled(t *test
 
 func TestForwardA2ARequestBodyDirectBlockAfterGenericBodyScanningWarn(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-014","result":{"ok":true}}`))
 	}))
@@ -584,12 +584,36 @@ func TestForwardA2ARequestBodyDirectBlockAfterGenericBodyScanningWarn(t *testing
 }
 
 func TestForwardA2ARequestBodyContentEntropyBlock(t *testing.T) {
+	testForwardA2ARequestBodyContentEntropyBlock(t, false)
+}
+
+func TestForwardA2ARequestBodyContentEntropyBlockIgnoresDiscoveryProbe(t *testing.T) {
+	testForwardA2ARequestBodyContentEntropyBlock(t, true)
+}
+
+func testForwardA2ARequestBodyContentEntropyBlock(t *testing.T, probe bool) {
+	t.Helper()
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req-entropy","result":{"ok":true}}`))
 	}))
 	defer backend.Close()
+	if probe {
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, readErr := io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+	}
 
 	proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
 		cfg.A2AScanning.Enabled = true
@@ -629,7 +653,7 @@ func TestForwardA2ARequestBodyContentEntropyBlock(t *testing.T) {
 
 func TestForwardA2ARequestBodyContentEntropyTrustedPeerAllows(t *testing.T) {
 	var gotBody atomic.Value
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
@@ -716,7 +740,7 @@ func TestForwardRequestBodyContentEntropyUsesParsedAuthorityNotHostHeader(t *tes
 
 func TestForwardA2ARequestBodyContentEntropyWarnAudits(t *testing.T) {
 	var gotBody atomic.Value
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
@@ -779,7 +803,7 @@ func TestForwardA2ARequestBodyContentEntropyWarnAudits(t *testing.T) {
 
 func TestForwardA2ARequestBodyForwardedWithGenericBodyScanningDisabled(t *testing.T) {
 	var gotBody atomic.Value
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
@@ -822,7 +846,7 @@ func TestForwardA2ARequestBodyForwardedWithGenericBodyScanningDisabled(t *testin
 
 func TestForwardA2ARequestBodyWarnModeForwardsAndReplaysBufferedBody(t *testing.T) {
 	var gotBody atomic.Value
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Errorf("read upstream body: %v", err)
@@ -901,7 +925,7 @@ func TestForwardA2ARequestBodyFailsClosedWithGenericBodyScanningDisabled(t *test
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var hits atomic.Int32
-			backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			backend := newForwardA2ATestBackend(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				hits.Add(1)
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"req","result":{"ok":true}}`))
 			}))
@@ -946,6 +970,84 @@ func TestForwardA2ARequestBodyFailsClosedWithGenericBodyScanningDisabled(t *test
 			}
 			if hits.Load() != 0 {
 				t.Fatalf("upstream hits = %d, want 0", hits.Load())
+			}
+		})
+	}
+}
+
+// newForwardA2ATestBackend accepts the protocol request under test. Unrelated
+// HTTP discovery probes must neither count as forwarded bodies nor replace
+// a recorded body in tests that check byte preservation.
+func newForwardA2ATestBackend(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	return newForwardTestPostBackend(t, "/message:send", handler)
+}
+
+func newForwardTestPostBackend(t *testing.T, path string, handler http.Handler) *httptest.Server {
+	t.Helper()
+	return newIPv4Server(t, forwardTestPostHandler(t, path, handler))
+}
+
+// forwardTestPostHandler passes only POST requests for path to handler. A
+// bodiless request elsewhere, such as a port-discovery GET, is answered 404
+// and ignored. Any other request that carries a body fails the test: a leaked
+// request must not escape the count by arriving with a changed method or path.
+func forwardTestPostHandler(tb testing.TB, path string, handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == path {
+			handler.ServeHTTP(w, r)
+			return
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil || len(body) != 0 {
+			tb.Errorf("unexpected upstream request with a body: %s %s (%d bytes, read error %v)", r.Method, r.URL.Path, len(body), err)
+		}
+		http.NotFound(w, r)
+	})
+}
+
+type forwardBackendErrorRecorder struct {
+	testing.TB
+	mu   sync.Mutex
+	errs []string
+}
+
+func (r *forwardBackendErrorRecorder) Errorf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, fmt.Sprintf(format, args...))
+}
+
+func TestForwardTestPostHandlerFlagsMisroutedBodies(t *testing.T) {
+	const protocolBody = `{"jsonrpc":"2.0","id":"req","method":"message/send"}`
+	for _, tc := range []struct {
+		name        string
+		method      string
+		path        string
+		body        io.Reader
+		wantForward bool
+		wantError   bool
+	}{
+		{name: "protocol_request", method: http.MethodPost, path: "/message:send", body: strings.NewReader(protocolBody), wantForward: true},
+		{name: "discovery_probe", method: http.MethodGet, path: "/"},
+		{name: "bodiless_delete", method: http.MethodDelete, path: "/"},
+		{name: "changed_path", method: http.MethodPost, path: "/message:send/", body: strings.NewReader(protocolBody), wantError: true},
+		{name: "changed_method", method: http.MethodPut, path: "/message:send", body: strings.NewReader(protocolBody), wantError: true},
+		{name: "unreadable_body", method: http.MethodPost, path: "/other", body: lifecycleFaultReader{err: io.ErrUnexpectedEOF}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := &forwardBackendErrorRecorder{TB: t}
+			var forwarded atomic.Int32
+			handler := forwardTestPostHandler(recorder, "/message:send", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				forwarded.Add(1)
+			}))
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, "http://backend.vendor.example"+tc.path, tc.body)
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+			if got := forwarded.Load() == 1; got != tc.wantForward {
+				t.Fatalf("forwarded = %v, want %v", got, tc.wantForward)
+			}
+			if got := len(recorder.errs) != 0; got != tc.wantError {
+				t.Fatalf("flagged = %v, want %v; errors=%q", got, tc.wantError, recorder.errs)
 			}
 		})
 	}
@@ -1045,7 +1147,7 @@ func TestA2AContentEntropyOptionsNilConfig(t *testing.T) {
 
 func TestForwardLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -1078,7 +1180,7 @@ func TestForwardLiveLock_ShadowModeObservesWithoutBlocking(t *testing.T) {
 
 func TestForwardLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -1111,7 +1213,7 @@ func TestForwardLiveLock_CaptureModeDoesNotBlock(t *testing.T) {
 
 func TestForwardLiveLock_KillSwitchBlocksBeforeContractAllow(t *testing.T) {
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newForwardTestPostBackend(t, "/v1/chat", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = w.Write([]byte("unexpected"))
 	}))

@@ -46,6 +46,12 @@ func TestMCPDenialCatalog(t *testing.T) {
 	if _, valid := denialSpec("unregistered"); valid {
 		t.Fatal("unknown denial accepted")
 	}
+	for _, kind := range []mcpDenialKind{"bridge_notification", "bridge_initialize"} {
+		spec, valid := denialSpec(kind)
+		if !valid || spec.label != scanner.AuditMCPProtocol || spec.class != audit.BlockClassProtective || spec.resource != mcpResourceInput {
+			t.Errorf("bridge refusal missing protocol classification: %q %+v", kind, spec)
+		}
+	}
 }
 
 // The URL family is published as Scanner* constants in scanner.go and core.go.

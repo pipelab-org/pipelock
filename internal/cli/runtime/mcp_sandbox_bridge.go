@@ -35,6 +35,7 @@ type mcpSandboxBridgeStartOptions struct {
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
+	MetricsBoundAddr string
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -51,6 +52,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
+	MetricsBoundAddr string
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -89,6 +91,7 @@ func setupMCPSandboxBridge(opts mcpSandboxBridgeSetupOptions) (func(), error) {
 		KillSwitch:       opts.KillSwitch,
 		AuditLogger:      opts.AuditLogger,
 		Metrics:          opts.Metrics,
+		MetricsBoundAddr: opts.MetricsBoundAddr,
 		ReceiptEmitter:   opts.ReceiptEmitter,
 		V2ReceiptEmitter: opts.V2ReceiptEmitter,
 		ReceiptGroup:     opts.ReceiptGroup,
@@ -161,6 +164,9 @@ func startMCPSandboxBridge(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge
 	if err != nil {
 		bridge.Close()
 		return nil, fmt.Errorf("MCP sandbox bridge proxy init: %w", err)
+	}
+	if opts.MetricsBoundAddr != "" {
+		p.UpdateMetricsDialTargetFromBoundAddr(opts.MetricsBoundAddr)
 	}
 	handler := p.Handler()
 	bridge.conns = make(map[net.Conn]struct{})

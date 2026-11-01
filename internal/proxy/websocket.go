@@ -218,8 +218,8 @@ func (r *wsRelay) blockOnCredentialAudienceReceiptFailure(log *audit.Logger, err
 		Agent:     r.agent,
 	})
 	closePayload := blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(r.requestID).CloseFramePayload()
-	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
+	r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+	r.writeUpstreamClose(ws.StatusPolicyViolation, closePayload)
 	return true
 }
 
@@ -311,6 +311,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	if agent == "" {
 		agent = agentAnonymous
 	}
+	refusalOpts := adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportWS}
+	w = p.withAdaptiveRefusal(w, refusalOpts)
 	// Carry the provenance grade from the moment identity resolves, so every
 	// audit context built from r.Context() below reports the real grade.
 	r = r.WithContext(context.WithValue(r.Context(), ctxKeyAgentAuth, string(id.Auth)))
@@ -931,6 +933,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// If Upgrade fails, it already wrote the HTTP error response.
 			return false
 		}
+		clientConn = p.withAdaptiveClose(clientConn, refusalOpts)
 		return true
 	}
 	if !cfg.FlightRecorder.RequireReceipts {
@@ -1198,6 +1201,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer safeClose(upstreamConn, "ws.upstreamConn", log)
+	upstreamConn = p.withAdaptiveClose(upstreamConn, refusalOpts)
 	wsAirlockSessions = retainAirlockSessions(wsAirlockSessions, p.airlockSessionForIdentity(cfg, agent, clientIP, id.Auth))
 	for _, wsSess := range wsAirlockSessions {
 		// Register airlock cancel for WebSocket connections. When the session
@@ -1690,8 +1694,8 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 		return false
 	}
 	payload := res.Info.WithRequestID(r.requestID).CloseFramePayload()
-	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
-	plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+	r.writeClientClose(ws.StatusPolicyViolation, payload)
+	r.writeUpstreamClose(ws.StatusPolicyViolation, payload)
 	return true
 }
 
@@ -1809,9 +1813,9 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 			PolicyHash: ceeAdmission.PolicyHash, Pattern: ceeReceiptPattern(ceeRes), Transport: TransportWS,
 			Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.CrossRequestDeny, "cross_request").WithRequestID(r.requestID).CloseFramePayload())
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-request exfiltration detected")
+		r.writeUpstreamClose(ws.StatusPolicyViolation, "cross-request exfiltration detected")
 		return true
 	}
 
@@ -1829,9 +1833,9 @@ func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg [
 				RequestID: r.requestID, Agent: r.agent, PolicyHash: ceeAdmission.PolicyHash,
 			})
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, ceeRec, r.cfg, "", blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+		r.writeUpstreamClose(ws.StatusPolicyViolation, adaptiveBlockedReason)
 		return true
 	}
 	return false
@@ -1982,9 +1986,9 @@ func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanne
 			Agent:            r.agent,
 			RedactionProfile: r.cfg.Redaction.DefaultProfile,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.RedactionFailure, scannerLabelRedaction).WithRequestID(r.requestID).CloseFramePayload())
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
+		r.writeUpstreamClose(ws.StatusPolicyViolation, "cross-message secret cannot be redacted")
 		return true
 	}
 
@@ -2096,9 +2100,9 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+			r.writeUpstreamClose(ws.StatusPolicyViolation, "DLP violation")
 			return true
 		}
 
@@ -2130,9 +2134,9 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scanner.ScannerDLP).WithRequestID(r.requestID)))
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "DLP violation")
+			r.writeUpstreamClose(ws.StatusPolicyViolation, "DLP violation")
 			return true
 		}
 
@@ -2202,8 +2206,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			if addrAction != originalAddrAction {
 				closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
 			}
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+			r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
 		if !r.cfg.EnforceEnabled() && addrAction == config.ActionBlock && addrAction != originalAddrAction {
@@ -2229,8 +2233,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			if addrAction != originalAddrAction {
 				closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.DLPMatch, scannerLabelAddressProtection).WithRequestID(r.requestID))
 			}
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "address poisoning detected")
+			r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, "address poisoning detected")
 			return true
 		}
 
@@ -2470,8 +2474,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		})
 		closePayload := blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID).CloseFramePayload()
 		_ = closeReason // free-text closeReason kept for receipt logging above
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
+		r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+		r.writeUpstreamClose(ws.StatusPolicyViolation, closePayload)
 		return true
 	}
 
@@ -2554,8 +2558,8 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(closeBlockReason, receiptLayer).WithRequestID(r.requestID))
 		}
 		_ = closeReason // free-text closeReason kept for receipt logging above
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
+		r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+		r.writeUpstreamClose(ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
 		var observeMetrics *metrics.Metrics
@@ -2622,9 +2626,9 @@ func (r *wsRelay) blockIdentityReload() bool {
 	r.terminalOnce.Do(func() {
 		r.proxy.logger.LogWSBlocked(audit.WSBlockedEvent{Target: r.targetURL, Scanner: "identity_reload", Reason: stateIdentityReloadReason, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth)})
 		_ = r.emitReceipt(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "identity_reload", Pattern: stateIdentityReloadReason, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.AuthorityMismatch, "identity_reload").WithRequestID(r.requestID).CloseFramePayload())
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, stateIdentityReloadReason)
+		r.writeUpstreamClose(ws.StatusPolicyViolation, stateIdentityReloadReason)
 	})
 	return true
 }
@@ -2666,7 +2670,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			// timeouts happen through per-read deadlines below; do not turn a
 			// cooperative cancel into a blocked metric.
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "connection timeout")
+				r.writeClientClose(ws.StatusGoingAway, "connection timeout")
 				blocked = true
 			}
 			return
@@ -2688,9 +2692,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
+			r.writeKillSwitchClose()
 			blocked = true
 			return
 		}
@@ -2724,9 +2726,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
 		}
@@ -2744,7 +2746,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				continue
 			}
 			if !plwsutil.IsExpectedCloseErr(err) {
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "client disconnected")
+				r.writeUpstreamClose(ws.StatusGoingAway, "client disconnected")
 			}
 			return
 		}
@@ -2752,13 +2754,13 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "control frame too large")
+			r.writeClientClose(ws.StatusProtocolError, "control frame too large")
 			blocked = true
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			r.writeClientClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			r.writeUpstreamClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			blocked = true
 			return
 		}
@@ -2766,8 +2768,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		// Reject compressed frames (RSV1 = permessage-deflate indicator).
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			r.writeClientClose(ws.StatusProtocolError, "compressed frames not supported")
+			r.writeUpstreamClose(ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -2805,7 +2807,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				// Forward close frame to upstream, then exit.
 				r.closeGraceDeadline()
 				r.clientClosing.Store(true)
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
+				r.writeUpstreamClose(ws.StatusNormalClosure, "client closed")
 				return
 			}
 			if ctx.Err() != nil {
@@ -2848,9 +2850,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				r.writeClientClose(ws.StatusPolicyViolation,
 					blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				r.writeUpstreamClose(ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
@@ -2875,9 +2877,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				blockInfo(scannerLabelRedaction).WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, reason)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, reason)
 			blocked = true
 			return
 		}
@@ -2901,9 +2903,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, closeCode,
+			r.writeClientClose(closeCode,
 				blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
+			r.writeUpstreamClose(closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -2923,8 +2925,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 			// UTF-8 validation per RFC 6455.
 			if !utf8.Valid(msg) {
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				r.writeClientClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				r.writeUpstreamClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				blocked = true
 				return
 			}
@@ -3090,9 +3092,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: "response_scan_error", Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.ParseError, "response_scan_error").WithRequestID(r.requestID).CloseFramePayload())
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "response scan incomplete")
+		r.writeUpstreamClose(ws.StatusPolicyViolation, "response scan incomplete")
 		return nil, true
 	}
 	if wsRespExempt {
@@ -3134,8 +3136,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 		if wsAction != originalWSAction {
 			closePayload = adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID))
 		}
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, closePayload)
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+		r.writeClientClose(ws.StatusPolicyViolation, closePayload)
+		r.writeUpstreamClose(ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	case config.ActionStrip:
 		// The strip attempt scores whether or not the rewrite succeeds; the
@@ -3154,9 +3156,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 				ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 				Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+			r.writeUpstreamClose(ws.StatusPolicyViolation, "injection detected")
 			return nil, true
 		}
 		msg = []byte(scanResult.TransformedContent)
@@ -3174,9 +3176,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock, Layer: responseScanLayer, Pattern: reason,
 			Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent,
 		})
-		plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+		r.writeClientClose(ws.StatusPolicyViolation,
 			blockInfoFor(blockreason.PromptInjection, responseScanLayer).WithRequestID(r.requestID).CloseFramePayload())
-		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "injection detected")
+		r.writeUpstreamClose(ws.StatusPolicyViolation, "injection detected")
 		return nil, true
 	default:
 		log.LogWSScan(audit.WSScanEvent{Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID, Agent: r.agent, AgentAuth: string(r.actorAuth), Action: wsAction, MatchCount: len(scanResult.Matches), PatternNames: patternNames, BundleRules: respBundleRules})
@@ -3194,8 +3196,8 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 			r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 			log.LogError(actx, fmt.Errorf("confirm WebSocket response receipt: %w", err))
 			payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+			r.writeClientClose(ws.StatusPolicyViolation, payload)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, payload)
 			return nil, true
 		}
 	}
@@ -3217,7 +3219,7 @@ func (r *wsRelay) denySessionCapacity(direction string) {
 		})
 	})
 	r.proxy.metrics.RecordWSBlocked()
-	plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+	r.writeClientClose(ws.StatusPolicyViolation,
 		blockInfoFor(blockreason.DataBudget, sessionCapacityLayer).WithRequestID(r.requestID).CloseFramePayload())
 }
 
@@ -3281,7 +3283,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// WebSocket policy block. Idle timeouts are enforced by read
 			// deadlines in the relay loops.
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusGoingAway, "connection timeout")
+				r.writeUpstreamClose(ws.StatusGoingAway, "connection timeout")
 				blocked = true
 			} else {
 				r.upstreamCancelled = true
@@ -3305,9 +3307,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
-				blockInfoFor(blockreason.KillSwitchActive, "kill_switch").WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "kill switch active")
+			r.writeKillSwitchClose()
 			blocked = true
 			return
 		}
@@ -3340,9 +3340,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					Agent:     r.agent,
 				})
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+			r.writeClientClose(ws.StatusPolicyViolation,
 				adaptiveWSClosePayload(adaptiveAudit{log, r.clientIP, r.requestID}, r.rec, r.cfg, adaptiveScopeForHost(r.hostname), blockInfoFor(blockreason.EscalationLevel, adaptiveSessionDeny).WithRequestID(r.requestID)))
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, adaptiveBlockedReason)
+			r.writeUpstreamClose(ws.StatusPolicyViolation, adaptiveBlockedReason)
 			blocked = true
 			return
 		}
@@ -3363,7 +3363,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			// connection, not an upstream that broke off mid-stream.
 			if errors.As(err, &nerr) && nerr.Timeout() {
 				r.upstreamCancelled = true
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusGoingAway, "upstream disconnected")
+				r.writeClientClose(ws.StatusGoingAway, "upstream disconnected")
 				return
 			}
 			// A read that fails after the relay ended, or after Pipelock closed
@@ -3382,13 +3382,13 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 		// Guard against OOM: reject frames exceeding limits before allocating.
 		if hdr.OpCode.IsControl() && hdr.Length > plwsutil.MaxControlPayload {
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "control frame too large")
+			r.writeUpstreamClose(ws.StatusProtocolError, "control frame too large")
 			blocked = true
 			return
 		}
 		if !hdr.OpCode.IsControl() && hdr.Length > int64(r.maxMsg) {
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			r.writeClientClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
+			r.writeUpstreamClose(ws.StatusMessageTooBig, plwsutil.ReasonMessageTooLarge)
 			blocked = true
 			return
 		}
@@ -3396,8 +3396,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Reject compressed frames (RSV1 = permessage-deflate indicator).
 		// Compressed bytes bypass DLP pattern matching entirely.
 		if hdr.Rsv1() {
-			plwsutil.WriteCloseFrame(r.clientConn, ws.StatusProtocolError, "compressed frames not supported")
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusProtocolError, "compressed frames not supported")
+			r.writeClientClose(ws.StatusProtocolError, "compressed frames not supported")
+			r.writeUpstreamClose(ws.StatusProtocolError, "compressed frames not supported")
 			blocked = true
 			return
 		}
@@ -3452,7 +3452,7 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 		// Control frames.
 		if hdr.OpCode.IsControl() {
 			if hdr.OpCode == ws.OpClose {
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusNormalClosure, "upstream closed")
+				r.writeClientClose(ws.StatusNormalClosure, "upstream closed")
 				return
 			}
 			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
@@ -3499,9 +3499,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				r.writeClientClose(ws.StatusPolicyViolation,
 					blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "binary frames not allowed")
+				r.writeUpstreamClose(ws.StatusPolicyViolation, "binary frames not allowed")
 				blocked = true
 				return
 			}
@@ -3526,9 +3526,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 				RequestID: r.requestID,
 				Agent:     r.agent,
 			})
-			plwsutil.WriteCloseFrame(r.clientConn, closeCode,
+			r.writeClientClose(closeCode,
 				blockInfo("ws_protocol").WithRequestID(r.requestID).CloseFramePayload())
-			plwsutil.WriteClientCloseFrame(r.upstreamConn, closeCode, closeReason)
+			r.writeUpstreamClose(closeCode, closeReason)
 			blocked = true
 			return
 		}
@@ -3570,9 +3570,9 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					RequestID: r.requestID,
 					Agent:     r.agent,
 				})
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation,
+				r.writeClientClose(ws.StatusPolicyViolation,
 					blockInfoFor(blockreason.MediaPolicy, "media_policy").WithRequestID(r.requestID).CloseFramePayload())
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, "media blocked")
+				r.writeUpstreamClose(ws.StatusPolicyViolation, "media blocked")
 				blocked = true
 				return
 			}
@@ -3581,8 +3581,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 					if err := r.proxy.confirmResponseDecision(r.cfg, mediaRewriteReceipt(withReceiptShard(receipt.EmitOpts{ParentActionID: r.requestActionID, Transport: TransportWS, Method: "WS", Target: r.targetURL, RequestID: r.requestID, Agent: r.agent}, r.receiptShard))); err != nil {
 						r.proxy.recordRequiredReceiptBlock(err, TransportWS)
 						payload := blockInfoFor(blockreason.ReceiptEmissionFailed, receiptEmissionFailedLayer).WithRequestID(r.requestID).CloseFramePayload()
-						plwsutil.WriteCloseFrame(r.clientConn, ws.StatusPolicyViolation, payload)
-						plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, payload)
+						r.writeClientClose(ws.StatusPolicyViolation, payload)
+						r.writeUpstreamClose(ws.StatusPolicyViolation, payload)
 						blocked = true
 						return
 					}
@@ -3596,8 +3596,8 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 
 			// UTF-8 validation.
 			if !utf8.Valid(msg) {
-				plwsutil.WriteCloseFrame(r.clientConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
-				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				r.writeClientClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
+				r.writeUpstreamClose(ws.StatusInvalidFramePayloadData, "invalid UTF-8")
 				blocked = true
 				return
 			}

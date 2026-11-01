@@ -3,17 +3,28 @@
 
 package mcp
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/luckyPipewrench/pipelock/internal/decide"
+)
 
 // mcpListenerDenialWriter is the listener admission adapter. The handler selects
 // a typed descriptor at the refusal site. Allowed replies and ordinary upstream
 // failures leave it empty; status codes alone never classify an MCP denial.
 type mcpListenerDenialWriter struct {
 	http.ResponseWriter
-	opts       MCPProxyOpts
-	descriptor *mcpDenialAudit
-	terminal   *mcpTerminalDecision
-	direction  string
+	opts           MCPProxyOpts
+	descriptor     *mcpDenialAudit
+	terminal       *mcpTerminalDecision
+	direction      string
+	wroteHeader    bool
+	uniform        bool
+	uniformMessage string
+	replied        bool
+	// notification marks a parsed POST notification. A clean one is refused
+	// with 202 and no body, so block_all gives a caught one the same answer.
+	notification bool
 }
 
 // A withheld upstream reply is a response even when revocation reuses an
@@ -26,6 +37,21 @@ func (w *mcpListenerDenialWriter) setResponseDenial(reason string) {
 }
 
 func (w *mcpListenerDenialWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *mcpListenerDenialWriter) responseDenial(terminal *mcpTerminalDecision) {
+	w.direction = "response"
+	w.terminal = terminal
+	*w.descriptor = terminal.audit
+}
+
+func (w *mcpListenerDenialWriter) pendingAdaptiveRefusal() bool {
+	if w.wroteHeader || w.terminal == nil || w.terminal.audit.keepsOwnRefusal() {
+		return false
+	}
+	_, blocked := adaptiveRefusalMessage(w.opts)
+	return blocked
+}
+
 func (w *mcpListenerDenialWriter) decision(reply []byte) *mcpDenial {
 	if w.descriptor.kind == "" {
 		return nil
@@ -36,19 +62,63 @@ func (w *mcpListenerDenialWriter) decision(reply []byte) *mcpDenial {
 		opts.Transport = "mcp_http_listener"
 		w.terminal = newMCPDenial(opts, *w.descriptor, direction, nil).decision
 	}
-	return &mcpDenial{decision: w.terminal, reply: reply}
+	// The listener writes HTTP bodies and SSE framing. JSON-RPC message
+	// projection belongs to the message adapters, not to an SSE byte chunk.
+	return &mcpDenial{decision: w.terminal, reply: reply, framed: true}
 }
 
 func (w *mcpListenerDenialWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	if status < http.StatusOK {
+		w.ResponseWriter.WriteHeader(status)
+		return
+	}
+	w.wroteHeader = true
 	d := w.decision(nil)
 	if d == nil {
 		w.ResponseWriter.WriteHeader(status)
 		return
 	}
+	if w.opts.Rec != nil && !d.decision.audit.keepsOwnRefusal() {
+		if info, message, blocked := decide.AdaptiveRefusal(w.opts.Rec.EscalationLevel(), w.opts.adaptiveCfg()); blocked {
+			w.uniform = true
+			w.uniformMessage = "pipelock: " + message
+			for key := range w.Header() {
+				// setListenerCORSHeaders depends only on the request Origin, so
+				// keeping its headers reveals nothing and lets a browser client
+				// read the refusal.
+				if isListenerCORSHeader(key) {
+					continue
+				}
+				w.Header().Del(key)
+			}
+			info.SetHeaders(w.Header())
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Cache-Control", "no-store")
+			if w.notification {
+				status = http.StatusAccepted
+			} else if status != http.StatusAccepted {
+				status = http.StatusForbidden
+			}
+		}
+	}
 	_ = finishMCPDenial(d, mcpDeniedDelivery(func([]byte) error { w.ResponseWriter.WriteHeader(status); return nil }))
 }
 
 func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.uniform {
+		if w.replied || w.notification {
+			return len(p), nil
+		}
+		w.replied = true
+		_, err := w.ResponseWriter.Write(blockSessionDenyResponse(ParseMCPFrame(p).ID, w.uniformMessage))
+		return len(p), err
+	}
 	d := w.decision(p)
 	if d == nil {
 		return w.ResponseWriter.Write(p)
@@ -63,6 +133,9 @@ func (w *mcpListenerDenialWriter) Write(p []byte) (int, error) {
 }
 
 func (w *mcpListenerDenialWriter) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	deliver := mcpDeniedDelivery(func([]byte) error { return http.NewResponseController(w.ResponseWriter).Flush() })
 	if d := w.decision(nil); d != nil {
 		_ = finishMCPDenial(d, deliver)
@@ -75,6 +148,11 @@ func writeMCPHTTPInputResult(opts MCPProxyOpts, br BlockedRequest, w http.Respon
 	terminal := br.terminal
 	if terminal == nil {
 		terminal = newMCPDenial(opts, mcpDenialAudit{}, "input", nil).decision
+	}
+	if listener, ok := w.(*mcpListenerDenialWriter); ok {
+		listener.opts = opts
+		listener.terminal = terminal
+		*listener.descriptor = terminal.audit
 	}
 	_ = finishMCPDenial(&mcpDenial{decision: terminal, reply: blockRequestResponse(br)}, mcpDeniedDelivery(func(reply []byte) error {
 		w.Header().Set("Content-Type", "application/json")

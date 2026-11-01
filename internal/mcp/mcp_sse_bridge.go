@@ -85,20 +85,29 @@ func (sw *sseMessageWriter) WriteMessage(msg []byte) error {
 	// must reflect that attempt so the handler aborts instead of appending a
 	// synthetic 502 response to a partially written event.
 	sw.wrote = true
-	lines := bytes.Split(msg, []byte("\n"))
-	for _, line := range lines {
-		if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("data: ")); err != nil {
-			return fmt.Errorf("writing sse data prefix: %w", err)
+	if listener, ok := sw.w.(*mcpListenerDenialWriter); ok && listener.pendingAdaptiveRefusal() {
+		// Before the first event, the listener can still send its fixed HTTP
+		// refusal. Give it the whole message so it retains the JSON-RPC ID;
+		// parsing an SSE prefix would lose it. Started streams keep SSE framing.
+		if _, err := (httpstream.Writer{Writer: sw.w}).Write(msg); err != nil {
+			return fmt.Errorf("writing adaptive refusal: %w", err)
 		}
-		if _, err := (httpstream.Writer{Writer: sw.w}).Write(line); err != nil {
-			return fmt.Errorf("writing sse data: %w", err)
+	} else {
+		lines := bytes.Split(msg, []byte("\n"))
+		for _, line := range lines {
+			if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("data: ")); err != nil {
+				return fmt.Errorf("writing sse data prefix: %w", err)
+			}
+			if _, err := (httpstream.Writer{Writer: sw.w}).Write(line); err != nil {
+				return fmt.Errorf("writing sse data: %w", err)
+			}
+			if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("\n")); err != nil {
+				return fmt.Errorf("writing sse line terminator: %w", err)
+			}
 		}
 		if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("\n")); err != nil {
-			return fmt.Errorf("writing sse line terminator: %w", err)
+			return fmt.Errorf("writing sse event terminator: %w", err)
 		}
-	}
-	if _, err := (httpstream.Writer{Writer: sw.w}).Write([]byte("\n")); err != nil {
-		return fmt.Errorf("writing sse event terminator: %w", err)
 	}
 	if sw.flusher != nil {
 		if sw.responseWriter != nil {

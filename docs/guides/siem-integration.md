@@ -723,7 +723,7 @@ compromised agent could call the API to deactivate its own kill switch.
 
 ### Alertmanager Integration
 
-Pipelock exposes Prometheus metrics at `/metrics`. If you already run
+Pipelock exposes Prometheus metrics at `/metrics` on the dedicated `metrics_listen` listener. If you already run
 Alertmanager, you can alert on counters directly, which is useful for events like
 chain detection that aren't emitted to webhook/syslog.
 

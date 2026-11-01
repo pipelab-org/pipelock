@@ -28,6 +28,7 @@ type mcpSandboxBridgeStartOptions struct {
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
+	MetricsBoundAddr string
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup
@@ -44,6 +45,7 @@ type mcpSandboxBridgeSetupOptions struct {
 	KillSwitch       *killswitch.Controller
 	AuditLogger      *audit.Logger
 	Metrics          *metrics.Metrics
+	MetricsBoundAddr string
 	ReceiptEmitter   *receipt.Emitter
 	V2ReceiptEmitter *proxydecision.Emitter
 	ReceiptGroup     *mcp.MCPReceiptGroup

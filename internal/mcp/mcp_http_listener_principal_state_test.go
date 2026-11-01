@@ -23,13 +23,17 @@ import (
 
 const principalStateTestBearer = "shared-listener-credential"
 
-// principalStateUpstream records the requests that Pipelock actually forwards.
+// principalStateUpstream records protocol POSTs and session DELETEs at the root.
 // A block must be visible here as an absent request, not merely as a JSON-RPC
 // error generated after forwarding.
 func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" || (r.Method != http.MethodPost && r.Method != http.MethodDelete) {
+			rejectMisroutedMCPBackendRequest(t, w, r)
+			return
+		}
 		calls.Add(1)
 		if r.Method == http.MethodDelete {
 			w.WriteHeader(http.StatusNoContent)
@@ -48,6 +52,36 @@ func principalStateUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	}))
 	t.Cleanup(upstream.Close)
 	return upstream, &calls
+}
+
+// probeMCPTestBackend exercises an unrelated HTTP discovery request directly
+// against a protocol backend. It must not change that backend's call count.
+func probeMCPTestBackend(t *testing.T, target string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rejectMisroutedMCPBackendRequest answers a request outside the protocol
+// route with 404. A bodiless request, such as a port-discovery GET, is ignored.
+// One that carries a body fails the test, so a leaked request cannot escape a
+// backend's call count by arriving with a changed method or path.
+func rejectMisroutedMCPBackendRequest(tb testing.TB, w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) != 0 {
+		tb.Errorf("unexpected upstream request with a body: %s %s (%d bytes, read error %v)", r.Method, r.URL.Path, len(body), err)
+	}
+	http.NotFound(w, r)
 }
 
 // principalStateToolCall deliberately sends the current Streamable HTTP shape:
@@ -435,6 +469,7 @@ func TestHTTPListener_PrincipalState_VerifierSeparatesAuthenticatedSubjects(t *t
 
 func TestHTTPListener_PrincipalState_ResolverCannotSeeConsumedListenerCredential(t *testing.T) {
 	upstream, calls := principalStateUpstream(t)
+	probeMCPTestBackend(t, upstream.URL)
 	opts := principalStateOpts(t, principalStateTestBearer)
 	opts.ListenerPrincipalResolver = func(r *http.Request) (ListenerPrincipal, error) {
 		if r.Header.Get("Proxy-Authorization") != "" || r.Header.Get("Authorization") != "" {

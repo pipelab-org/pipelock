@@ -59,6 +59,15 @@ Decode with Helm itself so chart policy checks require no Go or YAML package.
 {{- if not $proxy -}}
 {{- if or (ne (int (add $envs $mounts $volumes)) 0) (hasKey $maps $stateMap) }}{{ fail (printf "%s: proxy state leaked into server mode" $case) }}{{ end -}}
 {{- else -}}
+{{/* Metrics must use their own configured port, never the agent proxy port. */}}
+{{- $cfg := fromYaml (get (get $maps $deployment.metadata.name) "pipelock.yaml") -}}
+{{- $metricsPort := 0 -}}
+{{- $proxyPort := 0 -}}
+{{- range $port := $container.ports -}}
+{{- if eq $port.name "metrics" }}{{ $metricsPort = int $port.containerPort }}{{ end -}}
+{{- if eq $port.name "http" }}{{ $proxyPort = int $port.containerPort }}{{ end -}}
+{{- end -}}
+{{- if or (eq $metricsPort 0) (eq $metricsPort $proxyPort) (ne $cfg.metrics_listen (printf "0.0.0.0:%d" $metricsPort)) }}{{ fail (printf "%s: dedicated metrics listener missing or shares proxy port" $case) }}{{ end -}}
 {{- if or (ne (int $mounts) 1) (ne (int $volumes) 1) }}{{ fail (printf "%s: state links: mount=%d volume=%d" $case (int $mounts) (int $volumes)) }}{{ end -}}
 {{- if $custom -}}
 {{- if or (ne (int $envs) 1) (hasKey $maps $stateMap) }}{{ fail (printf "%s: explicit state home must replace defaults" $case) }}{{ end -}}

@@ -651,9 +651,17 @@ func RunHTTPListenerProxy(
 		stateBound := false
 		principalBound := false
 		var sessionCapacityErr error
+		// The HTTP adapter projects refusals from the recorder that scores this
+		// request. Every state the request binds, unbound ones included, sets it.
+		bindRefusalRecorder := func(state *mcpListenerClientState) {
+			w.opts.Rec = state.recorder
+			w.opts.AdaptiveCfg = adaptiveCfg
+			w.opts.AdaptiveCfgFn = nil
+		}
 		setClientState := func(state *mcpListenerClientState) {
 			clientState = state
 			clientStateKey = state.key
+			bindRefusalRecorder(state)
 			listenerToolCfgFn := func() *tools.ToolScanConfig {
 				return listenerClients.toolConfigAtDriftEpoch(clientState, opts.toolCfg(), upstreamDriftEpoch)
 			}
@@ -701,6 +709,7 @@ func RunHTTPListenerProxy(
 			if state := listenerClients.newUnboundState(); state != nil {
 				clientState = state
 				clientStateKey = state.key
+				bindRefusalRecorder(state)
 				defer listenerClients.discardUnboundState(state)
 			} else {
 				sessionCapacityErr = session.ErrCapacity
@@ -1024,6 +1033,24 @@ func RunHTTPListenerProxy(
 			}
 			return true
 		}
+		blockedByAdaptiveLockdown := func() bool {
+			reqOpts := requestBaseOpts
+			reqOpts.Rec = clientState.recorder
+			reqOpts.AdaptiveCfg = adaptiveCfg
+			reqOpts.AdaptiveCfgFn = nil
+			tryRecoverSession(reqOpts.Rec, adaptiveCfg, adaptiveRecoveryContext{sessionKey: listenerStateAuditKey(), logger: reqOpts.AuditLogger, metrics: opts.Metrics})
+			message, blocked := adaptiveRefusalMessage(reqOpts)
+			if !blocked {
+				return false
+			}
+			emitListenerBlockDecision(mcpListenerBlockDecision{
+				reason: blockreason.EscalationLevel, headerSeverity: blockreason.SeverityCritical,
+				retry: blockreason.RetryTransient, layer: "session_deny", pattern: "session escalation", target: "mcp:listener-session",
+			})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(blockSessionDenyResponse(nil, message))
+			return true
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
 			if headerResult == nil {
@@ -1174,6 +1201,9 @@ func RunHTTPListenerProxy(
 			if blockedByA2AHeaders() {
 				return
 			}
+			if blockedByAdaptiveLockdown() {
+				return
+			}
 			if principalStateAdmissionDenied {
 				rejectPrincipalStateCapacity(nil)
 				return
@@ -1271,6 +1301,7 @@ func RunHTTPListenerProxy(
 			defer recordMCPBaselineSample(baselineOpts, nil)
 			reqOpts := requestBaseOpts
 			reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
+			reqOpts.responseDenial = w.responseDenial
 			reqOpts.Rec = reqRec
 			reqOpts.BaselineRec = baselineRec
 			reqOpts.AdaptiveCfg = adaptiveCfg
@@ -1340,6 +1371,9 @@ func RunHTTPListenerProxy(
 				return
 			}
 			if blockedByA2AHeaders() {
+				return
+			}
+			if blockedByAdaptiveLockdown() {
 				return
 			}
 			if principalStateAdmissionDenied {
@@ -1479,6 +1513,7 @@ func RunHTTPListenerProxy(
 		// and upstream-error response below reads frame.ID instead of
 		// re-parsing the body bytes.
 		frame := ParseMCPFrame(body)
+		w.notification = frame.Method != "" && isRPCNotification(frame.ID)
 		headerVersion := r.Header.Get(listenerProtocolVersion)
 		if headerVersion > currentMCPVersion || frame.ProtocolVersion > currentMCPVersion {
 			w.Header().Set("Content-Type", "application/json")
@@ -2118,6 +2153,7 @@ func RunHTTPListenerProxy(
 		bufWriter := &syncWriter{w: &buf}
 		reqOpts := requestBaseOpts
 		reqOpts.A2ACardAuthFingerprint = CardCacheKeyFromRequest("", upReq.Header.Get("Authorization")).authFingerprint
+		reqOpts.responseDenial = w.responseDenial
 		reqOpts.Rec = reqRec
 		reqOpts.BaselineRec = baselineRec
 		reqOpts.AdaptiveCfg = adaptiveCfg
@@ -2644,10 +2680,16 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Set("Access-Control-Allow-Origin", origin)
 	headers.Set("Access-Control-Allow-Methods", strings.Join([]string{http.MethodPost, http.MethodGet, http.MethodDelete}, ", "))
 	headers.Set("Access-Control-Allow-Headers", listenerCORSAllowedHeaders)
-	headers.Set("Access-Control-Expose-Headers", "Mcp-Session-Id, Pipelock-Session-Token, X-Pipelock-Receipt")
+	headers.Set("Access-Control-Expose-Headers", strings.Join([]string{"Mcp-Session-Id", "Pipelock-Session-Token", "X-Pipelock-Receipt", blockreason.HeaderReason, blockreason.HeaderVersion, blockreason.HeaderSeverity, blockreason.HeaderRetry, blockreason.HeaderLayer}, ", "))
 	headers.Add("Vary", "Origin")
 	headers.Add("Vary", "Access-Control-Request-Method")
 	headers.Add("Vary", "Access-Control-Request-Headers")
+}
+
+// isListenerCORSHeader reports whether setListenerCORSHeaders writes key.
+// Relayed upstream error headers never include these names.
+func isListenerCORSHeader(key string) bool {
+	return key == "Vary" || strings.HasPrefix(http.CanonicalHeaderKey(key), "Access-Control-")
 }
 
 func listenerCORSPreflightAllowed(r *http.Request) bool {
@@ -2987,14 +3029,12 @@ func currentProtocolHeadersMatchFrame(headers http.Header, frame MCPFrame) bool 
 		!frame.ClientCapabilitiesPresent || headers.Get(listenerMCPMethod) != frame.Method {
 		return false
 	}
-	switch frame.Method {
-	case methodToolsCall, methodResourcesRead, methodPromptsGet:
+	if routingFieldForMethod(frame.Method) != "" {
 		name := headers.Get(listenerMCPName)
 		decoded, ok := decodeMCPRoutingName(name)
 		return ok && frame.RoutingNameErr == nil && frame.RoutingNamePresent && frame.RoutingName != "" && decoded == frame.RoutingName
-	default:
-		return true
 	}
+	return true
 }
 
 func decodeMCPRoutingName(value string) (string, bool) {
