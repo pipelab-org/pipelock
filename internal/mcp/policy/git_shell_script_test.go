@@ -28,6 +28,8 @@ func TestGitShellScriptOperand(t *testing.T) {
 		{"expanded later command", []string{"bash", "-c", "git ls-files --for=x; $0 --for", "git-push"}, false},
 		{"glob command prefix", []string{"bash", "-c", "* git fetch --force"}, false},
 		{"substituted command prefix", []string{"bash", "-c", "`basename gitx x` git ls-files --for"}, false},
+		{"renamed argv0", []string{"bash", "-c", "exec -agit-push git ls-files --for"}, false},
+		{"literal renamed argv0", []string{"env", "--argv0=git-push", "git", "ls-files", "--for"}, false},
 		// Environment given to the shell may define git as a function.
 		{"imported git function", []string{"env", "BASH_FUNC_git%%=() { shift; command $G $P \"$@\"; }", "bash", "-c", "git ls-files --for origin main"}, false},
 		{"startup file", []string{"env", "BASH_ENV=/tmp/f", "bash", "-c", "git ls-files --for"}, false},
@@ -78,6 +80,11 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		{"$CMD`true` git fetch --force", false},
 		{"$CMD$(true) git fetch --force", false},
 		{"$CMD\\; git fetch --force", false},
+		// Git runs the builtin its argv[0] names as git-<name>.
+		{"exec -agit-push git ls-files --for", false},
+		{"env --argv0=git-push git ls-files --for", false},
+		{"ARGV0=git-push git ls-files --for", false},
+		{"sudo -u git-user git ls-files --for=x", true},
 		// A command substitution's output may be the executable.
 		{"`basename gitx x` git ls-files --for", false},
 		{"git status; `basename gitx x` git ls-files --for", false},

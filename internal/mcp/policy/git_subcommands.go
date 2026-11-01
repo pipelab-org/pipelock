@@ -308,6 +308,13 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			if !strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "=") {
 				assigned = true
 			}
+			if (strings.HasPrefix(w.text, "-") || strings.Contains(w.text, "=")) && strings.Contains(w.text, "git-") {
+				// An option or assignment value naming git-<name>, such as
+				// exec -agit-push, env --argv0=git-push or zsh's ARGV0, may
+				// become Git's argv[0], from which Git runs builtin <name>
+				// whatever subcommand word follows.
+				expanded = true
+			}
 		case global, value:
 			switch {
 			case w.ambiguous || !w.literal && !plainShellWord(w.text):
