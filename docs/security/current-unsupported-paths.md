@@ -4,6 +4,14 @@ Pipelock is an application-layer firewall. Its enforcement comes from sitting on
 
 The point of writing this down is honesty. Documenting the gaps gives the integrator a checklist. Soft-pedaling them produces a false sense of coverage.
 
+## Cross-field instructions in oversized JSON
+
+Oversized JSON responses on forward HTTP, intercepted CONNECT and reverse proxy paths receive partial structured inspection when admitted under the existing bounded scan and in-flight reservation ceilings. The scanner checks each unique decoded string, their first-occurrence newline join, and unique adjacent ordered pairs from the full string-token sequence. It doesn't scan the raw whole document in this mode. Under-cap bodies retain their ordinary raw inspection; fetch retains its ordinary cap.
+
+An instruction spread across three or more fields or non-adjacent fields can evade these views. The server picks the response size. A body that fits the cap once insignificant JSON whitespace is removed also gets the raw whole-document scan, but filler strings can still push any JSON response past the cap and select this inspection instead of whole-document inspection. The controls `later-three-residual`, `later-four-residual`, `nonadjacent-short-residual` and `later-preference-three-residual` in [the regression tests](../../internal/proxy/structured_response_test.go) name the known gaps; each may block or deliver with partial inspection evidence. Numeric, boolean and null tokens aren't wording items, and later interpretation of nested or encoded strings can expose additional instructions. No later model-side inspection is assumed. Audit and signed receipt fields identify the structured response as partial. A clean structured result doesn't grant whole-document inspection credit.
+
+Malformed, incomplete, multiple-root, over-depth, encoded and over-ceiling responses, and exhausted reservations, retain refusal without delivery of upstream bytes. Strip actions block because synthetic match coordinates don't address the original JSON. The reservation and in-flight budget account buffered response bytes and the retained views; they don't bound decoder buffers, transient allocation or scanner working memory. Scanning time isn't budgeted: it grows with the number and length of extracted strings, and a body near the ceiling can hold one scan for minutes.
+
 ## Raw socket egress
 
 Processes that open a TCP or UDP socket directly without going through the configured HTTP proxy, HTTPS proxy, or SOCKS proxy will not be inspected. Examples include applications written against `net.Dial` in Go, `socket()` in C, `socket.socket()` in Python with no proxy library, anything using `nc` or `netcat`, and anything using `iperf`.
