@@ -387,15 +387,31 @@ func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
 				// An open intent reads only as limited evidence, so check that each
 				// refused notification's intent is closed by a blocked outcome.
 				blocked := make(map[string]bool)
+				headerOutcomes := 0
 				for _, r := range readActionReceipts(t, h.dir) {
 					if a := r.ActionRecord; a.DecisionPhase == "outcome" && a.Verdict == config.ActionBlock {
 						blocked[a.ActionID] = true
+						// The outcome pattern is the receipt's refusal reason; it
+						// must name the bridge-local refusal, not contract discovery.
+						if a.Layer == mcpReceiptLayerHeaderContract {
+							headerOutcomes++
+							if !strings.Contains(a.Pattern, "reason=bridge_routed_notification") {
+								t.Errorf("header-contract outcome pattern = %q", a.Pattern)
+							}
+						}
 					}
 				}
+				intents := 0
 				for _, r := range readActionReceipts(t, h.dir) {
-					if a := r.ActionRecord; a.DecisionPhase == "intent" && !blocked[a.ActionID] {
-						t.Fatalf("intent %s for a refused notification has no blocked outcome", a.ActionID)
+					if a := r.ActionRecord; a.DecisionPhase == "intent" {
+						intents++
+						if !blocked[a.ActionID] {
+							t.Fatalf("intent %s for a refused notification has no blocked outcome", a.ActionID)
+						}
 					}
+				}
+				if intents != headerOutcomes {
+					t.Errorf("intents=%d header-contract outcomes=%d", intents, headerOutcomes)
 				}
 			})
 		}
@@ -937,6 +953,26 @@ func TestHTTPBridgeHeaderReinitialize(t *testing.T) {
 					}
 					if !strings.Contains(out.String(), "modern bridge is already initialized") || !strings.Contains(events.String(), "MCP bridge re-initialize refused") || !strings.Contains(events.String(), "new bridge") {
 						t.Errorf("reinitialize diagnostic: out=%s events=%s", out.String(), events.String())
+					}
+					// Required recording writes an intent for the second initialize;
+					// its blocked outcome must carry the bridge-local reason. An
+					// unheld notification-form follow-up call is refused with its own.
+					reinitOutcomes := 0
+					for _, r := range readActionReceipts(t, h.dir) {
+						a := r.ActionRecord
+						if a.DecisionPhase != receipt.DecisionPhaseOutcome || a.Layer != mcpReceiptLayerHeaderContract {
+							continue
+						}
+						switch {
+						case a.Verdict == config.ActionBlock && strings.Contains(a.Pattern, "reason=bridge_already_initialized"):
+							reinitOutcomes++
+						case a.Verdict == config.ActionBlock && notification && strings.Contains(a.Pattern, "reason=bridge_routed_notification"):
+						default:
+							t.Errorf("header-contract outcome = %s %q", a.Verdict, a.Pattern)
+						}
+					}
+					if required && reinitOutcomes != 1 {
+						t.Errorf("reinitialize outcomes = %d, want 1", reinitOutcomes)
 					}
 					requireEvidenceNotBroken(t, "bridge", h)
 				})
