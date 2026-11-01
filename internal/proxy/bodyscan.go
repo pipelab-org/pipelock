@@ -2357,14 +2357,13 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 				// On parse failure, fall back to scanning raw value
 				// so malformed headers don't bypass inspection.
 				for _, v := range values {
-					mediaType, params, parseErr := mime.ParseMediaType(v)
+					_, params, parseErr := mime.ParseMediaType(v)
 					if parseErr != nil {
 						result = append(result, v)
 						continue
 					}
-					tokens = append(tokens, mediaType)
-					for pn, pv := range params {
-						tokens = append(tokens, pn)
+					tokens = append(tokens, multipartHeaderValueTokens(v)...)
+					for _, pv := range params {
 						result = append(result, pv)
 					}
 				}
@@ -2453,6 +2452,40 @@ func extractMultipartWithFiles(body []byte, boundary string, maxBytes int, onPar
 	}
 
 	return multipartText{Fields: result, Tokens: tokens, Wire: headerTexts}, ""
+}
+
+// multipartHeaderValueTokens keeps the wire case of a value already accepted
+// by mime.ParseMediaType. RFC 2045 section 5.1 permits semicolons and escaped
+// quotes inside quoted parameter values; only unquoted semicolons separate
+// parameters. Lowercasing tokens can conceal their original content entropy.
+func multipartHeaderValueTokens(value string) []string {
+	mediaType, rest, found := strings.Cut(value, ";")
+	tokens := []string{strings.TrimSpace(mediaType)}
+	if !found {
+		return tokens
+	}
+	addParameter := func(parameter string) {
+		if name, _, ok := strings.Cut(parameter, "="); ok {
+			tokens = append(tokens, strings.TrimSpace(name))
+		}
+	}
+	start := 0
+	quoted, escaped := false, false
+	for i := 0; i < len(rest); i++ {
+		switch {
+		case escaped:
+			escaped = false
+		case quoted && rest[i] == '\\':
+			escaped = true
+		case rest[i] == '"':
+			quoted = !quoted
+		case !quoted && rest[i] == ';':
+			addParameter(rest[start:i])
+			start = i + 1
+		}
+	}
+	addParameter(rest[start:])
+	return tokens
 }
 
 // rawMultipartHeaders locates the header section of a part already accepted by
