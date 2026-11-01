@@ -261,15 +261,16 @@ func TestProtocolLifecycleBodyParsingAndRouteRejection(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateFormField: %v", err)
 		}
-		if _, err := io.WriteString(part, "oversized"); err != nil {
+		if _, err := io.WriteString(part, strings.Repeat("oversized", 12)); err != nil {
 			t.Fatalf("write part: %v", err)
 		}
 		if err := writer.Close(); err != nil {
 			t.Fatalf("close multipart writer: %v", err)
 		}
 
-		values, reason := extractMultipart([]byte(body.String()), writer.Boundary(), 2)
-		if values != nil || !strings.Contains(reason, "exceeds max_body_bytes") {
+		// The 45-byte part header fits; the 108-byte part body does not.
+		values, reason := extractMultipart([]byte(body.String()), writer.Boundary(), 64)
+		if values != nil || !strings.Contains(reason, "multipart part exceeds max_body_bytes") {
 			t.Fatalf("oversized part = (%v, %q), want rejection", values, reason)
 		}
 	})
@@ -277,7 +278,8 @@ func TestProtocolLifecycleBodyParsingAndRouteRejection(t *testing.T) {
 	t.Run("multipart parser caps part count", func(t *testing.T) {
 		var body strings.Builder
 		writer := multipart.NewWriter(&body)
-		for i := 0; i < maxMultipartParts; i++ {
+		// The documented cap is max 100 parts; one more is refused.
+		for i := 0; i <= maxMultipartParts; i++ {
 			part, err := writer.CreateFormField("field")
 			if err != nil {
 				t.Fatalf("CreateFormField: %v", err)

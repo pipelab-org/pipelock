@@ -56,8 +56,9 @@ func TestMultipartPreambleMatchesReader(t *testing.T) {
 	}
 }
 
-// multipartEpilogue must start no later than where Go's mime/multipart reader
-// stops. Bytes after the reader's final delimiter are never a part.
+// multipartEpilogue must start exactly where Go's mime/multipart reader stops.
+// Bytes after the reader's final delimiter are never a part, and part bytes
+// that only look like a final delimiter are never the epilogue.
 func TestMultipartEpilogueMatchesReader(t *testing.T) {
 	part := "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue\r\n"
 	for _, tc := range []struct {
@@ -68,11 +69,17 @@ func TestMultipartEpilogueMatchesReader(t *testing.T) {
 		{"LF form", "--B\nContent-Disposition: form-data; name=\"a\"\n\nv\n--B--\nafter", "after"},
 		{"no parts", "preamble\r\n--B--\r\nafter", "after"},
 		{"nothing after", part + "--B--", ""},
+		{"bare LF final inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--extra\r\nmore\r\n--B--\r\nafter", "after"},
+		{"bare LF final line inside CRLF part", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\nafter", "after"},
+		{"empty part with bare LF headers in CRLF form", "--B\r\nContent-Disposition: form-data; name=\"a\"\n\n--B--\r\nafter", "after"},
+		{"empty part with no headers in CRLF form", "--B\r\n\n--B--\r\nafter", "after"},
+		{"bare LF final inside CRLF part, no epilogue", "--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\n--B--\r\nmore\r\n--B--\r\n", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			preamble := multipartPreamble([]byte(tc.body), "B")
-			if got := string(multipartEpilogue([]byte(tc.body), "B", len(preamble))); got != tc.epilogue {
-				t.Fatalf("epilogue = %q, want %q", got, tc.epilogue)
+			got, ok := multipartEpilogue([]byte(tc.body), "B", len(preamble))
+			if !ok || string(got) != tc.epilogue {
+				t.Fatalf("epilogue = %q, ok=%t, want %q", got, ok, tc.epilogue)
 			}
 			reader := multipart.NewReader(bytes.NewReader([]byte(tc.body)), "B")
 			for {
@@ -92,5 +99,24 @@ func TestMultipartEpilogueMatchesReader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A form that does not end in a final delimiter has no locatable epilogue, and
+// the helper must say so rather than report an empty one.
+func TestMultipartEpilogueRefusesIncompleteForm(t *testing.T) {
+	for _, body := range []string{
+		"--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue\r\n",
+		"--B\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nvalue\r\n--B--x\r\nafter",
+	} {
+		if got, ok := multipartEpilogue([]byte(body), "B", len(multipartPreamble([]byte(body), "B"))); ok {
+			t.Errorf("incomplete form reported epilogue %q", got)
+		}
+	}
+	if !endsWithFinalDelimiter([]byte("x\r\n--B-- \t\r\n"), "B") || !endsWithFinalDelimiter([]byte("--B--"), "B") {
+		t.Error("final delimiter line not recognized")
+	}
+	if endsWithFinalDelimiter([]byte("--B--\r\nafter"), "B") || endsWithFinalDelimiter([]byte("--B\r\n"), "B") {
+		t.Error("non-final line accepted as final delimiter")
 	}
 }
