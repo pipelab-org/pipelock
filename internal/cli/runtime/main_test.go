@@ -15,8 +15,12 @@ import (
 // state. Server and guard construction here call posturebinding.LoadRuntime;
 // testposture.PinAbsent documents why an absent proof is the state under test.
 func TestMain(m *testing.M) {
-	// Real standalone sandbox tests re-execute this binary as the sandbox init.
-	// Handle that entry before test setup, as the CLI entry point does.
+	// Real sandbox tests re-execute this binary as the sandbox init. Handle
+	// those entries before test setup, as the CLI entry point does.
+	if sandbox.IsInitMode() {
+		sandbox.RunInit()
+		return
+	}
 	if sandbox.IsStandaloneInitMode() {
 		sandbox.RunStandaloneInit()
 		return
