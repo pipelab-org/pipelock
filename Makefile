@@ -186,17 +186,7 @@ docker:
 		-t $(BINARY):$(VERSION) -t $(BINARY):latest .
 
 fuzz:
-	@echo "Running all fuzz targets (30s each)..."
-	@go test -run=^$$ -fuzz=FuzzScanURL -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzMatchDomain -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzShannonEntropy -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzScanResponseContent -fuzztime=30s ./internal/scanner/
-	@go test -run=^$$ -fuzz=FuzzSanitizeString -fuzztime=30s ./internal/audit/
-	@go test -run=^$$ -fuzz=FuzzParseDiff -fuzztime=30s ./internal/gitprotect/
-	@go test -run=^$$ -fuzz=FuzzScanDiff -fuzztime=30s ./internal/gitprotect/
-	@go test -run=^$$ -fuzz=FuzzScanResponse -fuzztime=30s ./internal/mcp/
-	@go test -run=^$$ -fuzz=FuzzDetect -fuzztime=30s ./internal/seedprotect/
-	@echo "All fuzz targets complete."
+	@python3 scripts/fuzz-targets.py
 
 stats: ## Print canonical stats
 	@go test -race -count=1 -run TestCanonicalStats -v ./internal/config/ 2>&1 | grep -E 'DLP patterns|Response patterns|Chain patterns|Preset files|Direct deps|PASS|FAIL|---'

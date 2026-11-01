@@ -1,0 +1,88 @@
+{
+  "include": [
+    {
+      "package": "./internal/audit",
+      "target": "FuzzSanitizeString"
+    },
+    {
+      "package": "./internal/cli/contain/viewer",
+      "target": "FuzzFilter"
+    },
+    {
+      "package": "./internal/gitprotect",
+      "target": "FuzzParseDiff"
+    },
+    {
+      "package": "./internal/gitprotect",
+      "target": "FuzzScanDiff"
+    },
+    {
+      "package": "./internal/mcp",
+      "target": "FuzzMCPHeaderEncodingRoundTrip"
+    },
+    {
+      "package": "./internal/mcp",
+      "target": "FuzzScanResponse"
+    },
+    {
+      "package": "./internal/normalize",
+      "target": "FuzzInertMatchesFullPipeline"
+    },
+    {
+      "package": "./internal/sandbox",
+      "target": "FuzzDeveloperEnvironmentDecoder"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzRegexShapeGate"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseCaseMapping"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzScanResponseContent"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseGateDistance"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponseMatchMemoParity"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponsePatternOrder"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzResponsePassParity"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzScanURL"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzMatchDomain"
+    },
+    {
+      "package": "./internal/scanner",
+      "target": "FuzzShannonEntropy"
+    },
+    {
+      "package": "./internal/seedprotect",
+      "target": "FuzzDetect"
+    },
+    {
+      "package": "./internal/seedprotect",
+      "target": "FuzzRawFieldBound"
+    },
+    {
+      "package": "./internal/shield",
+      "target": "FuzzStyleValueHidesCSS"
+    }
+  ]
+}
