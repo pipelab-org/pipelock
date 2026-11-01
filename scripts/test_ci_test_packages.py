@@ -305,7 +305,7 @@ class TestPackageSharding(unittest.TestCase):
                 tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
                 self.assertAlmostEqual(sum(tree_loads), 200.0 * factor)
                 self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0 * factor)
-            self.assertEqual(sorted(loads[shard] for shard in ci_test_packages.REST_SHARDS), [0.0, 100.0, 100.0, 100.0])
+            self.assertEqual(sorted(loads[shard] for shard in ci_test_packages.REST_SHARDS), [0.0] * (len(ci_test_packages.REST_SHARDS) - 3) + [100.0, 100.0, 100.0])
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
                 self.assertEqual(ci_test_packages.check_budget("", 40.0), 1)
@@ -746,6 +746,13 @@ class TestTestNameSplit(unittest.TestCase):
         # Median of measured names is 20s, so each unmeasured name weighs 20s.
         # Longest first: C(30)|B(20), New1->1, New2->0, A->1 gives 50 | 50.
         self.assertEqual(first, [["TestC", "TestNew2"], ["TestA", "TestB", "TestNew1"]])
+
+    def test_unknown_names_use_one_second_floor_for_packing(self) -> None:
+        weights = {"TestKnown": 0.0}
+        names = ["TestKnown", "TestNewA", "TestNewB", "TestNewC"]
+        buckets = partition_names(names, 2, weights)
+        loads = [sum(weights.get(name, 1.0) for name in bucket) for bucket in buckets]
+        self.assertEqual(sorted(loads), [1.0, 2.0])
 
     def test_weighted_selectors_stay_disjoint_and_complete(self) -> None:
         weights = {name: float(len(name) % 7 + 1) for name in self.NAMES}
