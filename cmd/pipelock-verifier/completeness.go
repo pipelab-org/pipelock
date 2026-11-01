@@ -4,6 +4,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -138,11 +139,24 @@ func runCompleteness(stdout, stderr io.Writer, target string, opts completenessO
 // usually matches no file. The report covers exactly one chain, so a lone
 // chain of the base is used and several are refused with their names rather
 // than one being chosen silently. No chain keeps the base, which reports
-// no_receipts.
+// no_receipts. Receipt-group shards are named separately: completeness cannot
+// read them, so --session would not help and the group verifier is the remedy.
 func resolveCompletenessSession(dir, base string) (string, error) {
 	sessions, err := actionreceipt.ResolveBaseSessions(dir, base)
 	if err != nil {
 		return "", fmt.Errorf("list receipt chains: %w", err)
+	}
+	legacy, err := actionreceipt.ResolveBaseSessionsExcludingReceiptGroups(dir, base)
+	if err != nil {
+		return "", fmt.Errorf("list receipt chains: %w", err)
+	}
+	if grouped := len(sessions) - len(legacy); grouped > 0 {
+		msg := fmt.Sprintf("%s holds %d receipt-group shard(s) for base %q, which completeness analysis does not read; verify them with pipelock-verifier chain %s --dir",
+			dir, grouped, base, dir)
+		if len(legacy) > 0 {
+			msg += fmt.Sprintf("; pass --session to analyze one of the ungrouped chains (%s)", strings.Join(legacy, ", "))
+		}
+		return "", errors.New(msg)
 	}
 	switch len(sessions) {
 	case 0:

@@ -320,7 +320,10 @@ The report covers one chain. A recorder writes one chain per run, named
 `proxy.run.<id>`, so without `--session` the command analyzes the directory's
 only `proxy` chain. When the directory holds several, it lists them and exits
 2 instead of picking one; pass `--session proxy.run.<id>` to choose. An
-explicit `--session` is used exactly as given.
+explicit `--session` is used exactly as given. Completeness analysis does not
+read receipt-group shards (`flight_recorder.receipt_chains` above 1); for a
+directory that holds them it exits 2 and names `pipelock-verifier chain
+RUNDIR --dir`, which verifies the group.
 
 Exit code 0 means a LIMITED result. Exit code 1 means BROKEN or UNVERIFIED
 completeness evidence (UNVERIFIED includes a directory with no matching

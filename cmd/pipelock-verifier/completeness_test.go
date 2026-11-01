@@ -889,3 +889,51 @@ func TestCompletenessCLIDefaultSessionResolvesRunChains(t *testing.T) {
 		}
 	})
 }
+
+// Completeness cannot read receipt-group shards, so a grouped directory must
+// name the group verifier instead of suggesting a --session that cannot work.
+func TestCompletenessCLIGroupedDirectoryNamesTheGroupVerifier(t *testing.T) {
+	t.Parallel()
+	pub, key, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyHex := hex.EncodeToString(pub)
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set, err := receipt.OpenInitialReceiptShardSet(receipt.EmitterConfig{
+		Recorder: rec, PrivKey: key, ConfigHash: strings.Repeat("a", 64), Principal: "local", Actor: "pipelock",
+	}, "proxy", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeStandaloneTestGroup(t, set)
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	stdout, stderr, code := runRoot(t, "completeness", "--json", "--key", keyHex, dir)
+	if code != cliutil.ExitConfig || stdout != "" {
+		t.Fatalf("grouped directory: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stderr, "receipt-group shard") || !strings.Contains(stderr, "pipelock-verifier chain") ||
+		strings.Contains(stderr, "--session") {
+		t.Fatalf("grouped directory hint must name the group verifier only: %q", stderr)
+	}
+	// The named remedy actually verifies this directory.
+	if out, errOut, chainCode := runRoot(t, "chain", dir, "--dir", "--key", keyHex); chainCode != cliutil.ExitOK ||
+		!strings.Contains(out, "GROUP_VALID") {
+		t.Fatalf("named remedy failed: code=%d stdout=%q stderr=%q", chainCode, out, errOut)
+	}
+
+	// With an ungrouped chain beside the group, the hint also offers --session for it.
+	addLegacyChainRun(t, dir, key)
+	_, stderr, code = runRoot(t, "completeness", "--json", "--key", keyHex, dir)
+	if code != cliutil.ExitConfig || !strings.Contains(stderr, "receipt-group shard") ||
+		!strings.Contains(stderr, "--session") || !strings.Contains(stderr, "(proxy)") {
+		t.Fatalf("mixed directory: code=%d stderr=%q", code, stderr)
+	}
+}
