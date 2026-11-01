@@ -118,6 +118,34 @@ func wsRespondServer(t *testing.T, response []byte, responseSent chan<- struct{}
 }
 
 func TestWSRespondServerIgnoresUnrelatedHTTPProbe(t *testing.T) {
+	t.Run("drain", func(t *testing.T) {
+		srv, frames, closed := wsDrainServerObserved(t)
+		defer srv.Close()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probe, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = probe.Body.Close()
+		if probe.StatusCode != http.StatusUpgradeRequired {
+			t.Fatalf("probe status = %d, want %d", probe.StatusCode, http.StatusUpgradeRequired)
+		}
+		conn, _, _, err := ws.Dial(t.Context(), wsURL(srv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		if err := gobwasutil.WriteClientMessage(conn, ws.OpText, []byte(jsonToolsCallEcho)); err != nil {
+			t.Fatal(err)
+		}
+		testwait.For(t, time.Second, func() bool { return frames.Load() == 1 }, "drain fixture receives valid frame after probe")
+		_ = conn.Close()
+		waitForSignal(t, closed, "drain fixture observes connection close")
+	})
+
 	response := []byte(`{"jsonrpc":"2.0","id":1,"result":{}}`)
 	sent := make(chan struct{})
 	srv := wsRespondServer(t, response, sent)
