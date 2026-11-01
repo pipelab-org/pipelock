@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -189,6 +190,41 @@ func TestVariableCommandNamePreservesConfiguredMatch(t *testing.T) {
 				if !got.Matched || got.Action != config.ActionBlock {
 					t.Errorf("%q key=%q %s: got %+v, want configured deny", tc.command, key, surface, got)
 				}
+			}
+		}
+	}
+}
+
+// TestStrictReadingKeepsIncompleteCheck checks that the ordinary and strict
+// option readings of an unproved line keep each other's incomplete checks. A
+// line just over the exhaustive pair limit can leave one reading's pair check
+// incomplete while the other matches a warn rule; on_incomplete_check: block
+// must still block, as it did when only that one reading was checked.
+func TestStrictReadingKeepsIncompleteCheck(t *testing.T) {
+	filler := func(n int) string {
+		words := make([]string, n)
+		for i := range words {
+			words[i] = fmt.Sprintf("a%d", i)
+		}
+		return strings.Join(words, " ")
+	}
+	for _, tc := range []struct {
+		command, pattern string
+	}{
+		// The strict reading is incomplete; the ordinary one matches.
+		{"git l --f " + filler(58) + "; rm --rec x", `^rm --recursive$`},
+		// The ordinary reading is incomplete; the strict one matches.
+		{"$X --q " + filler(56) + "; git push x --fo", `\bpush --force\b`},
+	} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{
+				Name: "warn rule", ToolPattern: "bash", Action: config.ActionWarn, ArgPattern: tc.pattern,
+			}},
+		})
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+			if !got.Matched || got.Action != config.ActionBlock {
+				t.Errorf("%.40q %s: got %+v, want incomplete check block", tc.command, surface, got)
 			}
 		}
 	}
