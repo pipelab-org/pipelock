@@ -24,6 +24,9 @@ func TestGitShellScriptOperand(t *testing.T) {
 		{"sh unused alias", []string{"sh", "-c", "git -c alias.l=push ls-files --for=x"}, true},
 		{"wrapped shell two commands", []string{"env", "bash", "-c", "git status; git ls-files --for=x"}, true},
 		{"zsh fetch force", []string{"zsh", "-c", "git fetch --force"}, true},
+		{"expanded command prefix", []string{"bash", "-c", "$0 git fetch --force", "git"}, false},
+		{"expanded later command", []string{"bash", "-c", "git ls-files --for=x; $0 --for", "git-push"}, false},
+		{"glob command prefix", []string{"bash", "-c", "* git fetch --force"}, false},
 		{"builtin destructive", []string{"bash", "-c", "git push --for origin"}, false},
 		{"unknown subcommand", []string{"bash", "-c", "git pus --for"}, false},
 		{"quoted subcommand", []string{"bash", "-c", "git 'ls-files' --for=x"}, false},
@@ -36,7 +39,7 @@ func TestGitShellScriptOperand(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for surface, got := range gitProofVerdicts(t, pc, "bash", tc.args, "argv") {
-				if got.Matched == tc.allow {
+				if (got.Matched && got.Action == config.ActionBlock) == tc.allow {
 					t.Errorf("%s: matched=%v rules=%v, want allow=%v", surface, got.Matched, got.Rules, tc.allow)
 				}
 			}
@@ -61,7 +64,7 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 	} {
 		t.Run(tc.command, func(t *testing.T) {
 			for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
-				if got.Matched == tc.allow {
+				if (got.Matched && got.Action == config.ActionBlock) == tc.allow {
 					t.Errorf("%s: matched=%v rules=%v, want allow=%v", surface, got.Matched, got.Rules, tc.allow)
 				}
 			}

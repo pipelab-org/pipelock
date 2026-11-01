@@ -210,7 +210,7 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 				words = append(words, gitWord{text: field, ambiguous: len(args) > 1 && len(fields) > 1})
 			}
 		}
-		proof.read(words, gitTool, gitTool)
+		proof.read(words, gitTool, gitTool, false)
 		return proof
 	}
 	if gitTool && len(carriers) != 1 {
@@ -232,7 +232,7 @@ func proveGitBuiltins(args []string, carriers []argCarrier, gitTool bool) gitPro
 				words = append(words, gitWord{text: field})
 			}
 		}
-		proof.read(words, gitTool, gitTool)
+		proof.read(words, gitTool, gitTool, false)
 	}
 	return proof
 }
@@ -249,8 +249,11 @@ func splitPlainFields(s string) []string {
 // wrappers, assignments and options, until a covered utility other than Git
 // (see commandLongOptions) starts the command instead. inGit seeds the first
 // command as the git tool's arguments; noShell keeps separators inside the
-// git tool's words, where no shell reads them.
-func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
+// git tool's words, where no shell reads them. scriptPrefix requires plain
+// words while seeking a command in a shell script and in any scalar prefix
+// leading to that script.
+func (p *gitProof) read(words []gitWord, inGit, noShell, scriptPrefix bool) {
+	scriptPrefix = scriptPrefix || slices.ContainsFunc(words, func(w gitWord) bool { return w.script })
 	const (
 		seeking = iota
 		global  // after the executable, before the subcommand
@@ -269,6 +272,11 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			case !w.literal && strings.HasPrefix(w.text, "#"):
 				// The shell reads the rest of this command as a comment.
 				state = done
+			case scriptPrefix && !w.literal && !plainShellWord(w.text):
+				// A shell expansion before the apparent executable can supply
+				// another executable and shift Git's subcommand. Script
+				// prefixes use the same plain-word contract as Git's prefix.
+				p.unproved, state = true, done
 			case !w.literal && name != "git" && viewsReadGit(w.text):
 				// A rule view reads this word as Git, but its spelling is not
 				// git, so the proof cannot say which Git command a later word
@@ -339,7 +347,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			for _, field := range fields {
 				script = append(script, gitWord{text: field})
 			}
-			p.read(script, false, false)
+			p.read(script, false, false, true)
 			state = done
 		case w.script && !w.literal:
 			// Elsewhere the value reads as it would without a shell.
