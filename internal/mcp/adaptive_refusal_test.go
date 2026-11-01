@@ -112,6 +112,20 @@ func TestAdaptiveUniformRefusalMCPListenerKeepsCORSHeaders(t *testing.T) {
 	if !slices.Contains(resp.Header.Values("Vary"), "Origin") {
 		t.Fatalf("Vary lost Origin: %v", resp.Header.Values("Vary"))
 	}
+
+	// A refused notification has no body, so its reason header is the only
+	// signal; a browser can read it only when CORS exposes it.
+	resp, body = doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","method":"notifications/progress","params":{}}`, header)
+	if resp.StatusCode != http.StatusAccepted || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) || len(body) != 0 {
+		t.Fatalf("refused notification: %d %v %q", resp.StatusCode, resp.Header, body)
+	}
+	exposed := strings.Split(resp.Header.Get("Access-Control-Expose-Headers"), ",")
+	for i := range exposed {
+		exposed[i] = strings.TrimSpace(exposed[i])
+	}
+	if !slices.Contains(exposed, blockreason.HeaderReason) {
+		t.Fatalf("Access-Control-Expose-Headers = %v, want %s", exposed, blockreason.HeaderReason)
+	}
 }
 
 func TestAdaptiveUniformRefusalMCPListenerWithheldUnboundSession(t *testing.T) {
