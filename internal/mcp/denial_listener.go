@@ -86,6 +86,12 @@ func (w *mcpListenerDenialWriter) WriteHeader(status int) {
 			w.uniform = true
 			w.uniformMessage = "pipelock: " + message
 			for key := range w.Header() {
+				// setListenerCORSHeaders depends only on the request Origin, so
+				// keeping its headers reveals nothing and lets a browser client
+				// read the refusal.
+				if isListenerCORSHeader(key) {
+					continue
+				}
 				w.Header().Del(key)
 			}
 			info.SetHeaders(w.Header())

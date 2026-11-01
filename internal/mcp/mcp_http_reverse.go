@@ -2686,6 +2686,12 @@ func setListenerCORSHeaders(headers http.Header, origin string) {
 	headers.Add("Vary", "Access-Control-Request-Headers")
 }
 
+// isListenerCORSHeader reports whether setListenerCORSHeaders writes key.
+// Relayed upstream error headers never include these names.
+func isListenerCORSHeader(key string) bool {
+	return key == "Vary" || strings.HasPrefix(http.CanonicalHeaderKey(key), "Access-Control-")
+}
+
 func listenerCORSPreflightAllowed(r *http.Request) bool {
 	switch r.Header.Get("Access-Control-Request-Method") {
 	case http.MethodPost, http.MethodGet, http.MethodDelete:

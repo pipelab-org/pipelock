@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -81,6 +82,38 @@ func TestAdaptiveUniformRefusalMCPListenerInFlightResponse(t *testing.T) {
 // A withheld upstream reply is scored before the listener commits its status.
 // When that finding reaches block_all, a tokenless client on a request-local
 // unbound state must get the same answer as a client bound to a session.
+func TestAdaptiveUniformRefusalMCPListenerKeepsCORSHeaders(t *testing.T) {
+	const origin = "https://app.vendor.example"
+	rec := &listenerDiagnosisRecorder{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request, _ := io.ReadAll(r.Body)
+		if bytes.Contains(request, []byte(`"initialize"`)) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":"2025-06-18","capabilities":{},"serverInfo":{"name":"t","version":"1"}}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, upstreamStatusInjection)
+	}))
+	t.Cleanup(upstream.Close)
+	cfg := adaptiveCfgEnabled()
+	cfg.EscalationThreshold = session.SignalPoints[session.SignalBlock]
+	cfg.Levels.Elevated.BlockAll = boolPtr(true)
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t), Store: &singleRecorderStore{rec: rec}, AdaptiveCfg: cfg, ResponseActionOverride: config.ActionBlock, ListenerAllowedOrigins: []string{origin}, listenerStateTokenRequired: boolPtr(true)})
+	header := http.Header{listenerSessionTokenHeader: {listenerSetupToken(t, baseURL)}, "Origin": {origin}}
+	resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", `{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`, header)
+	if resp.StatusCode != http.StatusForbidden || resp.Header.Get(blockreason.HeaderReason) != string(blockreason.EscalationLevel) {
+		t.Fatalf("withheld refusal at block_all: %d %v %s", resp.StatusCode, resp.Header, body)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want %q; headers %v", got, origin, resp.Header)
+	}
+	if !slices.Contains(resp.Header.Values("Vary"), "Origin") {
+		t.Fatalf("Vary lost Origin: %v", resp.Header.Values("Vary"))
+	}
+}
+
 func TestAdaptiveUniformRefusalMCPListenerWithheldUnboundSession(t *testing.T) {
 	for _, binding := range []string{"bound", "unbound", "bound below block_all", "unbound below block_all"} {
 		t.Run(binding, func(t *testing.T) {
