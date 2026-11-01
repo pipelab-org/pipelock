@@ -435,11 +435,13 @@ func TestApplySeccompThreadRetirement(t *testing.T) {
 				t.Fatal("thread-pin observation failed calibration")
 			}
 			installed := false
+			nnpSet := false
 			status, err := applySeccompWith(true,
 				func() error {
 					if !pinned() {
 						t.Fatal("NNP attempted without a pin")
 					}
+					nnpSet = true
 					if stage == "no_new_privs" {
 						return errors.New("injected NNP failure")
 					}
@@ -447,6 +449,9 @@ func TestApplySeccompThreadRetirement(t *testing.T) {
 				},
 				func(*unix.SockFprog) (uintptr, unix.Errno) {
 					installed = true
+					if !nnpSet {
+						t.Fatal("filter attempted before no_new_privs")
+					}
 					if !pinned() {
 						t.Fatal("filter attempted without a pin")
 					}

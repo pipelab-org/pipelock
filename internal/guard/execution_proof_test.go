@@ -206,23 +206,40 @@ func TestExecutionProofWithheldIsBoundAndOlderVerifierRejects(t *testing.T) {
 	}
 	// Decode the whole proof into the frozen old material schema. Unknown
 	// fields are ignored exactly as by the old encoding/json consumer.
-	var legacy struct {
-		Record           recordBeforeWithheld `json:"record"`
-		ConfigPolicyHash string               `json:"config_policy_hash"`
-		Profile          string               `json:"profile,omitempty"`
-		Workspace        string               `json:"workspace"`
-		TempDir          string               `json:"temp_dir"`
-		Binary           string               `json:"binary"`
-		Command          []string             `json:"command"`
+	legacyHashOf := func(encoded []byte) string {
+		t.Helper()
+		var legacy struct {
+			Record           recordBeforeWithheld `json:"record"`
+			ConfigPolicyHash string               `json:"config_policy_hash"`
+			Profile          string               `json:"profile,omitempty"`
+			Workspace        string               `json:"workspace"`
+			TempDir          string               `json:"temp_dir"`
+			Binary           string               `json:"binary"`
+			Command          []string             `json:"command"`
+		}
+		if err := json.Unmarshal(encoded, &legacy); err != nil {
+			t.Fatal(err)
+		}
+		material, err := json.Marshal(legacy)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%x", sha256.Sum256(material))
 	}
-	if err := json.Unmarshal(encoded, &legacy); err != nil {
-		t.Fatal(err)
-	}
-	material, err := json.Marshal(legacy)
+	// Control: the frozen schema must reproduce the hash of a proof without
+	// Withheld, or the mismatch below could come from a wrong legacy model.
+	control := proof
+	control.Record.Withheld = nil
+	control = NewExecutionProof(control.Record,
+		ExecControlOptions{PolicyHash: "policy", Workspace: "/w", TempDir: "/t", Binary: "/bin/true"}, []string{"/bin/true"})
+	controlEncoded, err := json.Marshal(control)
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyHash := fmt.Sprintf("%x", sha256.Sum256(material))
+	if got := legacyHashOf(controlEncoded); got != control.EffectivePolicyHash {
+		t.Fatalf("frozen schema does not model the older verifier: got %s, want %s", got, control.EffectivePolicyHash)
+	}
+	legacyHash := legacyHashOf(encoded)
 	if legacyHash == decoded.EffectivePolicyHash {
 		t.Fatal("older verifier silently accepted a withheld proof")
 	}
