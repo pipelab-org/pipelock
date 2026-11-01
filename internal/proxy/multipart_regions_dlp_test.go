@@ -6,8 +6,11 @@ package proxy
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -20,6 +23,57 @@ import (
 )
 
 const multipartRegionsContentType = "multipart/form-data; boundary=region-boundary"
+
+func TestMultipartRegionsExtendedBoundary(t *testing.T) {
+	// Extended parameters can carry a trailing CR without a control byte in
+	// the HTTP header. The first delimiter then ends in LF after the boundary,
+	// even though the complete line ends in CRLF.
+	const contentType = "multipart/form-data; boundary*=UTF-8''B%0D"
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil || params["boundary"] != "B\r" {
+		t.Fatalf("boundary=%q err=%v", params["boundary"], err)
+	}
+	sc := newBodyDLPScanner(t)
+	for _, surface := range []string{"forward", "intercept", "reverse"} {
+		h := newUploadHarness(t, surface, uploadPolicy{config.ActionWarn, true})
+		for _, laterMarker := range []bool{false, true} {
+			for _, credential := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/later-marker=%t/credential=%t", surface, laterMarker, credential), func(t *testing.T) {
+					epilogue := "ordinary ending"
+					if credential {
+						epilogue = "AKIA" + "Q9W8E7R6T5Y4U3I2"
+					}
+					if laterMarker {
+						epilogue += "\r\n--B\r--\r\nlast"
+					}
+					body := []byte("--B\r\nContent-Disposition: form-data; name=field\n\nordinary\n--B\r--\n" + epilogue)
+					reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+					part, readErr := reader.NextRawPart()
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					data, readErr := io.ReadAll(part)
+					if readErr != nil || string(data) != "ordinary" {
+						t.Fatalf("part=%q err=%v", data, readErr)
+					}
+					if _, readErr = reader.NextRawPart(); !errors.Is(readErr, io.EOF) {
+						t.Fatalf("reader must end before the epilogue: %v", readErr)
+					}
+					_, result := scanRequestBody(t.Context(), BodyScanRequest{Body: bytes.NewReader(body), ContentType: contentType, MaxBytes: 4096, Scanner: sc, Action: config.ActionWarn})
+					status, hits, intact, message, headers := h.exercise(t, http.Header{"Content-Type": {contentType}}, body)
+					t.Logf("clean=%t matches=%d status=%d hits=%d reason=%q", result.Clean, len(result.DLPMatches), status, hits, headers.Get("X-Pipelock-Block-Reason"))
+					if credential {
+						if result.Clean || len(result.DLPMatches) == 0 || status != http.StatusForbidden || hits != 0 || headers.Get("X-Pipelock-Block-Reason") != "dlp_match" {
+							t.Fatalf("epilogue credential delivered: result=%+v status=%d hits=%d body=%s", result, status, hits, message)
+						}
+					} else if !result.Clean || status != http.StatusCreated || hits != 1 || !intact {
+						t.Fatalf("benign form refused: result=%+v status=%d hits=%d intact=%t body=%s", result, status, hits, intact, message)
+					}
+				})
+			}
+		}
+	}
+}
 
 func multipartRegionsBody(preamble, part, epilogue, newline string) []byte {
 	return []byte(preamble + "--region-boundary" + newline +
@@ -277,14 +331,34 @@ func TestMultipartRegionsGenericViews(t *testing.T) {
 func TestMultipartRegionsEarlyEpilogueMarker(t *testing.T) {
 	sc := newBodyDLPScanner(t)
 	const boundary = "aA0bB1cC2dD3eE4fF5gG6hH7iI8jJ9kK+lL/mM_nN"
-	for _, marker := range []string{"--", "-x-"} {
+	for _, marker := range []string{"--", "-x-", "--\r\n"} {
 		t.Run(marker, func(t *testing.T) {
 			part := strings.Repeat("x", 1024) + "\n--" + boundary + marker + "extra\r\nordinary"
 			body := []byte("--" + boundary + "\r\nContent-Disposition: form-data; name=field\r\n\r\n" + part + "\r\n--" + boundary + "--\r\n")
+			if marker == "--\r\n" {
+				// A writer preserves blank LF lines within a field. They do
+				// not start another header section or end a CRLF part.
+				var form bytes.Buffer
+				writer := multipart.NewWriter(&form)
+				if err := writer.SetBoundary(boundary); err != nil {
+					t.Fatal(err)
+				}
+				part = strings.Repeat("x", 1024) + "\n\n--" + boundary + marker + "extra\r\nordinary"
+				if err := writer.WriteField("field", part); err != nil {
+					t.Fatal(err)
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				body = form.Bytes()
+				if got := multipartEpilogue(body, boundary, len(multipartPreamble(body, boundary))); len(got) != 0 {
+					t.Errorf("field content was treated as epilogue: %q", got)
+				}
+			}
 			contentType := "multipart/form-data; boundary=\"" + boundary + "\""
 			_, r := scanRequestBody(t.Context(), BodyScanRequest{Body: bytes.NewReader(body), ContentType: contentType, MaxBytes: 4096, Scanner: sc, Action: config.ActionWarn, ContentEntropyEnabled: true, ContentEntropyAction: config.ActionBlock, ContentEntropyThreshold: 4.5, ContentEntropyMinLength: 32})
 			if !r.Clean {
-				t.Fatalf("valid form refused: action=%q reason=%q entropy=%+v", r.Action, r.Reason, r.EntropyFinding)
+				t.Errorf("valid form refused: action=%q reason=%q entropy=%+v", r.Action, r.Reason, r.EntropyFinding)
 			}
 			cfg := reverseTestConfig()
 			cfg.RequestBodyScanning.Action = config.ActionWarn
