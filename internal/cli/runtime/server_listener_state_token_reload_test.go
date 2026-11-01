@@ -82,7 +82,7 @@ logging:
 			}
 		}()
 
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, upstream); err != nil {
 			return err
 		}
 

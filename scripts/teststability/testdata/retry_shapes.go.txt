@@ -1,0 +1,208 @@
+// Fixture for TestRetryShapes. Each line marked with a want comment must be
+// reported; no other line may be. The shapes follow a review of patterns the
+// analyzer used to miss or misreport.
+package x
+
+import (
+	"net/http/httptest"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/testport"
+	. "github.com/luckyPipewrench/pipelock/internal/testport"
+	tp "github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/stretchr/testify/assert"
+)
+
+// Control: a fatal on the run-exit receive.
+func TestControl(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			t.Fatalf("run exited: %v", err) // want
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+// A data receive is not a run-exit path.
+func TestDataReceive(t *testing.T) {
+	msgs := make(chan string, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case msg := <-msgs:
+			if msg != "hello" {
+				t.Fatal("wrong message")
+			}
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+// An aliased testport import.
+func TestAliasedImport(t *testing.T) {
+	errCh := make(chan error, 1)
+	tp.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			t.Fatal(err) // want
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+// A callback passed by name.
+func TestNamedCallback(t *testing.T) {
+	errCh := make(chan error, 1)
+	attempt := func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			t.Fatal(err) // want
+		case <-ready:
+		}
+		return nil
+	}
+	testport.WithRetry(t, 1, attempt)
+}
+
+// A plain receive outside any select.
+func TestPlainReceive(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		if err := <-errCh; err != nil {
+			t.Fatal(err) // want
+		}
+		err := <-errCh
+		if err != nil {
+			t.Fatal(err) // want
+		}
+		t.Fatal(<-errCh) // want
+		return nil
+	})
+}
+
+// assert reports and lets the test go on, but the test still fails.
+func TestAssertNoError(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			assert.NoError(t, err) // want
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+type harness struct{ errCh chan error }
+
+func (h *harness) waitRun(t *testing.T) {
+	select {
+	case err := <-h.errCh:
+		t.Fatal(err)
+	case <-ready:
+	}
+}
+
+// A method helper that fails on the run-exit receive.
+func TestMethodHelper(t *testing.T) {
+	h := &harness{errCh: make(chan error, 1)}
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		h.waitRun(t) // want
+		return nil
+	})
+}
+
+// An extra argument that is not the server started in the callback.
+func TestUnrelatedExtraArgument(t *testing.T) {
+	errCh := make(chan error, 1)
+	other := httptest.NewServer(nil)
+	defer other.Close()
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		upstream := httptest.NewServer(nil)
+		defer upstream.Close()
+		return waitForPortOrCommandExitResult(addrs[0], errCh, buf, other) // want
+	})
+}
+
+// The started server passed to the wait is excluded.
+func TestStartedServerExcluded(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		upstream := httptest.NewServer(nil)
+		defer upstream.Close()
+		return waitForPortOrCommandExitResult(addrs[0], errCh, buf, upstream)
+	})
+}
+
+// t.Errorf followed by return nil still fails the test.
+func TestErrorfThenReturnNil(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Errorf("run exited: %v", err) // want
+				return nil
+			}
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+// Returning the received error lets WithRetry decide; fmt.Errorf is not
+// t.Errorf.
+func TestReturnsError(t *testing.T) {
+	errCh := make(chan error, 1)
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		select {
+		case err := <-errCh:
+			return fmt.Errorf("run exited: %w", err)
+		case <-ready:
+		}
+		return nil
+	})
+}
+
+// Declared callbacks, including same-name methods, must all be inspected.
+func declaredAttempt(addrs []string) error {
+	var err error = <-errCh
+	if err != nil {
+		t.Fatal(err) // want
+	}
+	return nil
+}
+
+type otherHarness struct{}
+
+func (harness) attempt(addrs []string) error {
+	select {
+	case err := <-errCh:
+		t.Fatal(err) // want
+	}
+	return nil
+}
+
+func (otherHarness) attempt(addrs []string) error { return nil }
+
+func TestDeclaredCallbacks(t *testing.T) {
+	WithRetry(t, 1, declaredAttempt)
+	testport.WithRetry(t, 1, harness{}.attempt)
+}
+
+// A package-local server factory has the same exclusion requirement.
+func makeUpstream() *httptest.Server {
+	return httptest.NewServer(nil)
+}
+
+func TestFactoryServerMustBeExcluded(t *testing.T) {
+	testport.WithRetry(t, 1, func(addrs []string) error {
+		var upstream = makeUpstream()
+		defer upstream.Close()
+		return waitForPortOrCommandExitResult(addrs[0], errCh, buf) // want
+	})
+}

@@ -249,7 +249,10 @@ emit:
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(ctx) }()
+		go func() {
+			defer close(errCh)
+			errCh <- s.Start(ctx)
+		}()
 		defer func() {
 			_ = s.Shutdown(context.Background())
 			select {
@@ -259,7 +262,7 @@ emit:
 				t.Error("run MCP listener did not stop")
 			}
 		}()
-		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf); err != nil {
+		if err := waitForPortOrCommandExitResult(mcpAddr, errCh, buf, webhook, upstream); err != nil {
 			return err
 		}
 		body := postTokenlessListenerToolCall(t, mcpAddr, 1)

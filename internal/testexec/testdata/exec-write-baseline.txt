@@ -1,0 +1,28 @@
+# Test files that still write executable fixtures without internal/testexec,
+# with the number of such writes. Lower a count, or drop a line, when a site
+# moves to testexec.WriteExecutable; never raise one.
+internal/cli/contain/addtool_test.go 9
+internal/cli/contain/filesystem_canary_script_linux_test.go 1
+internal/cli/contain/filesystem_linux_test.go 1
+internal/cli/contain/install_test.go 7
+internal/cli/contain/rollback_test.go 1
+internal/cli/contain/runtime_contract_test.go 1
+internal/cli/contain/verify_test.go 2
+internal/cli/exec/launch_unix_test.go 1
+internal/cli/git/git_test.go 2
+internal/cli/runtime/codex_setup_env_test.go 1
+internal/cli/selfupdate/cmd_test.go 1
+internal/cli/selfupdate/errorpath_test.go 2
+internal/cli/selfupdate/update_test.go 1
+internal/cli/selfupdate/verify_test.go 3
+internal/cli/setup/codex_test.go 1
+internal/config/config_test.go 1
+internal/gitprotect/trusted_scan_contract_test.go 1
+internal/mcp/fdexec_linux_test.go 2
+internal/playground/verify_kit_exit_test.go 1
+internal/sandbox/child_failure_modes_integration_test.go 1
+internal/sandbox/landlock_test.go 1
+internal/sandbox/seccomp_thread_linux_amd64_test.go 2
+internal/serviceenv/system_linux_test.go 1
+scripts/homebrew_tap_preflight_test.go 1
+scripts/release-verifier-fixture_test.go 2
