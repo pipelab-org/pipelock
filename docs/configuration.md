@@ -1940,7 +1940,7 @@ Path arguments are matched as the text the caller sends, and a link can make tha
 
 Receipt action classification also recognizes these aliases. Authority grants retain raw-name action matching: receipt alias inference does not broaden the tool identities an existing grant authorizes. Name-based classification is a heuristic, not proof of a tool's actual effects.
 
-Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
+Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. Values that only exist at run time, such as a variable set outside the command, aren't resolved; see [Bypass Resistance](bypass-resistance.md#architectural-limits). See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
 
 ### Defer Action
 

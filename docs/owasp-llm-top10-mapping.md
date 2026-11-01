@@ -95,7 +95,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 
 - **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The proxy (which has network access) holds no agent secrets. Neither process has both capabilities.
 - **Domain allowlisting (strict mode):** in strict mode, the agent can only reach explicitly allowed API endpoints. Everything else is blocked. In balanced/audit modes, the allowlist is configured but enforcement depends on the scanner pipeline rather than a hard gate.
-- **MCP tool policy:** pre-execution allow/deny rules with regex argument matching. Shell obfuscation detection catches base64/hex-encoded commands. Actions: `block` or `ask` (human approval).
+- **MCP tool policy:** pre-execution allow/deny rules with regex argument matching. Shell obfuscation detection catches base64/hex-encoded commands; values that only exist at run time aren't resolved ([limits](bypass-resistance.md#architectural-limits)). Actions: `block` or `ask` (human approval).
 - **Tool chain detection:** subsequence matching on tool call sequences detects multi-step attack patterns (e.g., list files then read then exfiltrate).
 - **HITL terminal approval:** `action: ask` prompts the human operator with a y/N/s dialog when suspicious activity is detected.
 - **Per-agent profiles (license-gated):** each agent gets independent mode, allowlist, DLP rules, rate limits, and data budget. Multi-agent profiles require a signed license token.

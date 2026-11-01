@@ -155,7 +155,7 @@ Wraps a local MCP server process with full bidirectional message scanning.
 - Response scanning: injection detection in tool results
 - Input scanning: DLP + injection in tool arguments (when `mcp_input_scanning` enabled)
 - Tool scanning: poisoned description detection + rug-pull drift detection (when `mcp_tool_scanning` enabled)
-- Tool policy: pre-execution allow/deny rules with shell obfuscation detection (when `mcp_tool_policy` enabled)
+- Tool policy: pre-execution allow/deny rules with shell obfuscation detection (when `mcp_tool_policy` enabled); it reads the command text, so values that only exist at run time aren't resolved ([limits](../bypass-resistance.md#architectural-limits))
 - Chain detection: suspicious tool call sequence patterns (when `tool_chain_detection` enabled)
 - Session binding: tool inventory pinning per session (when `mcp_session_binding` enabled)
 

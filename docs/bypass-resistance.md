@@ -90,7 +90,7 @@ These techniques target the MCP proxy layer.
 | Rug-pull (mid-session drift) | Tool description changes after first `tools/list` | Tested | SHA256 hash baseline per session |
 | Cross-tool injection | Tool A result injected into Tool B input | Tested | All text extracted from results and scanned |
 | Encoded payload in tool result | `base64("override system prompt")` in result | Tested | Decoded and re-scanned |
-| Shell obfuscation in args | `r\m -rf`, `${IFS}-rf`, `$'\x6d'` | Tested | Shell escape decoding before policy matching |
+| Shell obfuscation in args | `r\m -rf`, `${IFS}-rf`, `$'\x6d'` | Tested | Shell escape decoding before policy matching; values that only exist at run time aren't resolved (see [Known Limitations](#architectural-limits)) |
 | Unknown tool execution | Server returns tools not in initial inventory | Tested | Session binding validates against baseline |
 | JSON key exfiltration | Secret encoded as JSON object key | Tested | Both keys and values extracted from JSON |
 | Batch response poisoning | N clean + 1 injected response in batch | Tested | Each batch element scanned individually |
@@ -190,6 +190,7 @@ These are things pipelock does not protect against. If your threat model include
 | **DNS rebinding TOCTOU** | Hostname resolves to public IP at scan time, then to internal IP at connect time. Classic time-of-check/time-of-use race. | DNS pinning mitigates most cases. For high-security: use strict mode (allowlist only). |
 | **Very slow exfiltration** | 1 byte per hour over days. Below any practical rate limit or entropy threshold. | Container isolation prevents this entirely. Without isolation, this is the residual risk. |
 | **ReDoS in custom patterns** | User-supplied DLP or response patterns could have catastrophic backtracking. Built-in patterns are tested, but custom ones aren't analyzed for ReDoS. | Test custom patterns before deploying. |
+| **Text-based tool policy** | When enabled, tool policy reads submitted text and resolves simple in-command assignments and `echo`/`printf` substitutions, but not arbitrary run-time values or earlier Git settings. An unresolved scalar program word at the start of a command, after leading assignments, gives `--force`, `--hard` and their long-option prefixes destructive readings. Programs behind wrappers or shell reserved words, short options such as `-f`, refspecs such as `+main` and Git aliases defined earlier can evade this check. | Treat tool policy as an early check, not the only one. Protect important branches where pushes land (branch protection on the Git host), and use sandbox or `pipelock contain` to limit what a process can change. |
 | **HITL approval flooding** | Attacker generates many HITL prompts to overwhelm the human reviewer. | Use `block` action instead of `ask` in unattended environments. |
 
 ### Operational Risks

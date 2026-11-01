@@ -136,6 +136,9 @@ const maxArgCarrierDepth = 64
 type gitProof struct {
 	proved   []string
 	unproved bool
+	// Keep executable uncertainty separate so added strict readings cannot
+	// erase incomplete checks in the interpretation set that preceded them.
+	variableExecutable bool
 }
 
 // grants reports whether the proof covers judged, the builtin subcommands a
@@ -145,7 +148,7 @@ type gitProof struct {
 // alias or a git-<name> program. A normalized view keeps the builtin reading
 // only for the Git commands this proof read the same way.
 func (p gitProof) grants(judged []string) bool {
-	return !p.unproved && slices.Equal(p.proved, judged)
+	return !p.unproved && !p.variableExecutable && slices.Equal(p.proved, judged)
 }
 
 // gitWord is one word of a carrier. literal marks an array element, which is
@@ -248,7 +251,19 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
+	// executable marks that the current command's executable word is next:
+	// POSIX simple commands (Shell Command Language 2.9.1) begin with
+	// optional NAME=value assignments, then the command name. A command name
+	// the shell expands, such as $X, may run Git with any subcommand, so the
+	// proof cannot vouch for the command's options.
+	executable := !inGit
 	word := func(w gitWord) {
+		if executable && (w.literal || !shellAssignment.MatchString(w.text)) {
+			executable = false
+			if !w.literal && !strings.HasPrefix(w.text, "#") && !plainShellWord(w.text) {
+				p.variableExecutable = true
+			}
+		}
 		switch state {
 		case seeking:
 			name := commandName(w.text)
@@ -333,7 +348,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state, expanded = seeking, false
+			state, expanded, executable = seeking, false, true
 			start = i + 1
 		}
 	}
@@ -353,6 +368,10 @@ func viewsReadGit(word string) bool {
 	}
 	return false
 }
+
+// shellAssignment matches a variable assignment word: a name of letters,
+// digits and underscores not starting with a digit (POSIX XBD 3.216), then =.
+var shellAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
 // gitProofSeparators end a command in a shell command string: the separators
 // the normalized views split on, and backquote, which starts a command

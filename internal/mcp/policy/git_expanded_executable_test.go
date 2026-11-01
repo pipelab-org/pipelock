@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -122,6 +123,139 @@ func TestGitSubcommandWordAsExecutable(t *testing.T) {
 		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{command}, "command") {
 			if !got.Matched || got.Action != config.ActionBlock {
 				t.Errorf("%q %s: got %+v, want block", command, surface, got)
+			}
+		}
+	}
+}
+
+// TestVariableCommandName checks a command whose name the shell expands, such
+// as $X: it may run Git with any subcommand, so its long options keep the
+// strictest reading. Assignments before the name, earlier commands and
+// literal argument-list elements do not count as an expanded name.
+func TestVariableCommandName(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		command string
+		block   bool
+	}{
+		{`X="git push"; $X --force origin main`, true},
+		{"$X --force origin main", true},
+		{"git ls-files --for=x; $X --force", true},
+		{"FOO=1 $X --force", true},
+		{`"$CMD" --for`, true},
+		// A variable program with a force- or hard-like option is blocked
+		// even when it is not Git.
+		{"$HOME/bin/deploy --force", true},
+		{"$EDITOR notes.txt", false},
+		{"$CC --help", false},
+		{"FOO=bar git fetch --force", false},
+		{`cd "/srv/repo" && git fetch --force`, false},
+		{"# note\ngit fetch --force", false},
+	} {
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+			if (got.Matched && got.Action == config.ActionBlock) != tc.block {
+				t.Errorf("%q %s: matched=%v rules=%v, want block=%v", tc.command, surface, got.Matched, got.Rules, tc.block)
+			}
+		}
+	}
+	// Without a recorded shape the values may be shell text, so only the
+	// shaped surfaces know these elements are literal.
+	for surface, got := range gitProofVerdicts(t, pc, "bash", []string{"$X", "--force"}, "argv") {
+		if surface != "CheckToolCall" && got.Matched {
+			t.Errorf("literal argv $X %s: matched=%v rules=%v, want allow", surface, got.Matched, got.Rules)
+		}
+	}
+}
+
+func TestVariableCommandNamePreservesConfiguredMatch(t *testing.T) {
+	for _, tc := range []struct {
+		command, pattern string
+	}{
+		{`$X --for; rm --rec work`, `^\$X --for; rm --recursive work$`},
+		{`$X --ha; chmod --rec 755 work`, `^\$X --ha; chmod --recursive 755 work$`},
+	} {
+		for _, key := range []string{"", "command"} {
+			pc := New(config.MCPToolPolicy{
+				Enabled: true,
+				Action:  config.ActionBlock,
+				Rules: []config.ToolPolicyRule{{
+					Name: "configured deny", ToolPattern: "bash", ArgKey: key, ArgPattern: tc.pattern,
+				}},
+			})
+			for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+				if key != "" && surface == "CheckToolCall" {
+					// This API has no JSON keys for a scoped rule to inspect.
+					continue
+				}
+				if !got.Matched || got.Action != config.ActionBlock {
+					t.Errorf("%q key=%q %s: got %+v, want configured deny", tc.command, key, surface, got)
+				}
+			}
+		}
+	}
+}
+
+// TestStrictReadingKeepsIncompleteCheck checks that the ordinary and strict
+// option readings of an unproved line keep each other's incomplete checks. A
+// line just over the exhaustive pair limit can leave one reading's pair check
+// incomplete while the other matches a warn rule; on_incomplete_check: block
+// must still block, as it did when only that one reading was checked.
+func TestStrictReadingKeepsIncompleteCheck(t *testing.T) {
+	filler := func(n int) string {
+		words := make([]string, n)
+		for i := range words {
+			words[i] = fmt.Sprintf("a%d", i)
+		}
+		return strings.Join(words, " ")
+	}
+	for _, tc := range []struct {
+		command, pattern string
+	}{
+		// The strict reading is incomplete; the ordinary one matches.
+		{"git l --f " + filler(58) + "; rm --rec x", `^rm --recursive$`},
+		// The ordinary reading is incomplete; the strict one matches.
+		{"$X --q " + filler(56) + "; git push x --fo", `\bpush --force\b`},
+	} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{
+				Name: "warn rule", ToolPattern: "bash", Action: config.ActionWarn, ArgPattern: tc.pattern,
+			}},
+		})
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+			if !got.Matched || got.Action != config.ActionBlock {
+				t.Errorf("%.40q %s: got %+v, want incomplete check block", tc.command, surface, got)
+			}
+		}
+	}
+}
+
+// TestVariableCommandNameKeepsMixedReadingIncomplete checks the pre-existing
+// interpretation set, which may read one normalization strictly and another
+// ordinarily. Adding a strict reading to the latter must not clear the former's
+// incomplete check.
+func TestVariableCommandNameKeepsMixedReadingIncomplete(t *testing.T) {
+	words := make([]string, 56)
+	for i := range words {
+		words[i] = fmt.Sprintf("a%d", i)
+	}
+	// The fullwidth separator normalizes to ';'. The invisible character is
+	// removed in one view and becomes a space in another, yielding git or g it.
+	command := "$X chmod long\uff1b g\u200bit ls-files --fo " + strings.Join(words, " ")
+	for _, key := range []string{"", "command"} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{
+				Name: "warn rule", ToolPattern: "bash", ArgKey: key,
+				ArgPattern: `^[a-z] --[a-z]{5}$`, Action: config.ActionWarn,
+			}},
+		})
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{command}, "command") {
+			if key != "" && surface == "CheckToolCall" {
+				continue
+			}
+			if !got.Matched || got.Action != config.ActionBlock || len(got.IncompleteRules) == 0 {
+				t.Errorf("key=%q %s: got %+v, want incomplete check block", key, surface, got)
 			}
 		}
 	}
