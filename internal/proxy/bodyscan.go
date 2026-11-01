@@ -1104,11 +1104,29 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	if !injectionResult.Clean {
 		sortedInjection = injectionResult.Matches
 	}
+	// Tokens and regions must not interrupt a split phrase that a narrower
+	// view detects. Preserve the field-only joins and the token-bearing part
+	// reading without regions, as well as the complete reading above.
+	var fieldInjection []scanner.ResponseMatch
+	if len(dlpExtracted.HeaderTokens) > 0 || len(dlpExtracted.MultipartFields) > 0 {
+		joinedFields := []string{strings.Join(sortedBodyTexts(dlpExtracted.GenericTexts), "\n"), strings.Join(sortedBodyTexts(dlpExtracted.MultipartFields), "\n")}
+		if len(dlpExtracted.MultipartFields) > 0 {
+			partTexts := append(slices.Clip(dlpExtracted.MultipartFields), dlpExtracted.HeaderTokens...)
+			joinedFields = append(joinedFields, strings.Join(partTexts, "\n"), strings.Join(sortedBodyTexts(partTexts), "\n"))
+		}
+		for _, joinedFields := range joinedFields {
+			fieldResult := req.Scanner.ScanResponse(ctx, joinedFields)
+			if fieldResult.Failed() {
+				return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + fieldResult.ScanError}
+			}
+			fieldInjection = mergeJoinedInjectionMatches(fieldInjection, fieldResult.Matches)
+		}
+	}
 	// The joined views re-read every field, so they repeat what the per-field
 	// scan already found. Keep every per-field match and add only the
 	// occurrences a joined view alone detected, such as a phrase split across
 	// fields.
-	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection)
+	result.InjectionMatches = mergeJoinedInjectionMatches(result.InjectionMatches, inOrderInjection, sortedInjection, fieldInjection)
 
 	// Address poisoning detection alongside DLP.
 	// Note: body address findings are currently emitted/counted as body_dlp
@@ -1199,6 +1217,7 @@ type bodyDLPTextExtraction struct {
 	CardTexts           []string
 	Atoms               []extract.DLPAtom
 	GenericTexts        []string
+	MultipartFields     []string
 	DLPFieldGroups      [][]string
 	HeaderTokens        []string
 	Texts               []string
@@ -1237,7 +1256,13 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if len(epilogue) > 0 {
 			regionTexts = append(regionTexts, string(epilogue))
 		}
+		// Regions and tokens supplement the existing part-field reading. Keep
+		// its sorted join free of either so they cannot interrupt a phrase.
 		hasRegions := len(preamble) > 0 || len(epilogue) > 0
+		var multipartFields []string
+		if hasRegions {
+			multipartFields = m.Fields
+		}
 		// Wire headers have their own DLP pass so they cannot interrupt the
 		// existing region-and-field join. Keep each group as fields until the
 		// scanner applies URL exceptions, before adding synthetic separators.
@@ -1248,7 +1273,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		if hasRegions && len(m.Fields) > 1 {
 			fieldGroups = append(fieldGroups, m.Fields)
 		}
-		return bodyDLPTextExtraction{GenericTexts: regionTexts, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
+		return bodyDLPTextExtraction{GenericTexts: regionTexts, MultipartFields: multipartFields, DLPFieldGroups: fieldGroups, HeaderTokens: m.Tokens, Texts: regionTexts, FileParts: files}
 	}
 	if mediaType != contentTypeJSON && !strings.HasSuffix(mediaType, "+json") {
 		texts, errText := extractBodyText(body, req)
