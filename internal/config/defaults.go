@@ -12,6 +12,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
+// DefaultMaxURLLength is the URI size recommended for senders and recipients
+// by RFC 9110 section 4.1, in octets. Explicit operator limits take precedence.
+const DefaultMaxURLLength = 8000
+
 // ExternalDataTransferDirectiveRegex is a bounded heuristic for tool-result
 // instructions that direct sensitive data to an external URL. It catches both
 // direct transfers and indirect tool calls whose URL carries a sensitive query
@@ -298,7 +302,7 @@ func Defaults() *Config {
 			MaxResponseMB:  10,
 			UserAgent:      "Pipelock Fetch/1.0",
 			Monitoring: Monitoring{
-				MaxURLLength:              2048,
+				MaxURLLength:              DefaultMaxURLLength,
 				EntropyThreshold:          4.5,
 				SubdomainEntropyThreshold: 4.0,
 				MaxReqPerMinute:           60,

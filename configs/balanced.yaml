@@ -24,7 +24,7 @@ fetch_proxy:
   max_response_mb: 10
   user_agent: "Pipelock Fetch/1.0"
   monitoring:
-    max_url_length: 2048
+    max_url_length: 8000 # RFC 9110 section 4.1 URI interoperability recommendation
     # Shannon entropy bits per character. Typical ranges:
     #   English/slugs: ~3.5-4.0 | hex (commit hashes): ~4.0
     #   base64: ~4.0-4.5 | random/encrypted: ~5.5-8.0

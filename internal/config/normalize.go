@@ -310,7 +310,7 @@ func (c *Config) ApplyDefaults() {
 		c.FetchProxy.UserAgent = "Pipelock Fetch/1.0"
 	}
 	if c.FetchProxy.Monitoring.MaxURLLength <= 0 {
-		c.FetchProxy.Monitoring.MaxURLLength = 2048
+		c.FetchProxy.Monitoring.MaxURLLength = DefaultMaxURLLength
 	}
 	if c.FetchProxy.Monitoring.EntropyThreshold <= 0 {
 		c.FetchProxy.Monitoring.EntropyThreshold = 4.5
