@@ -35,7 +35,7 @@ var ruleTypeDefinitions = []ruleTypeDefinition{
 		ID:                    RuleTypeDLP,
 		MergeTarget:           mergeTargetDLP,
 		OptionalPatternFields: []string{"exempt_domains", "validator"},
-		ValidatorValues:       []string{config.ValidatorABA, config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorWIF},
+		ValidatorValues:       []string{config.ValidatorABA, config.ValidatorLuhn, config.ValidatorMod97, config.ValidatorWIF, config.ValidatorDEA, config.ValidatorNPI},
 		Load:                  loadDLPRule,
 	},
 	{ID: RuleTypeInjection, MergeTarget: mergeTargetInjection, OptionalPatternFields: []string{"exempt_domains"}, Load: loadInjectionRule},

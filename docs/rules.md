@@ -98,7 +98,7 @@ version: "2026.03.1"
 tier: community
 required_features:
   - dlp           # built-in DLP scanner
-  - checksum      # post-match checksum validators (luhn, mod97, aba)
+  - checksum      # post-match checksum validators (luhn, mod97, aba, wif, dea, npi)
   - response      # response scanning
 rules:
   # ...
@@ -238,12 +238,16 @@ rules:
       regex: 'vendor_[a-zA-Z0-9]{32}'
 ```
 
-DLP rules may set `pattern.validator` to `luhn`, `mod97`, `aba`, or `wif` when
-the identifier carries that checksum. Pipelock applies the validator after a
-regex match, so malformed lookalikes do not become DLP findings. Bundle
-authors should declare `required_features: ["checksum"]` and set
-`min_pipelock` to the oldest Pipelock release whose rule-bundle loader supports
-the `pattern.validator` field.
+DLP rules may set `pattern.validator` to `luhn`, `mod97`, `aba`, `wif`, `dea`,
+or `npi` when the identifier carries that checksum. Pipelock applies the
+validator after a regex match, so malformed lookalikes do not become DLP
+findings. Bundle authors should declare `required_features: ["checksum"]` and
+set `min_pipelock` to the oldest Pipelock release whose rule-bundle loader
+supports the specific validator value used. An older loader refuses the whole
+bundle at parse time, before it reads `min_pipelock` or `required_features`,
+and `required_features` cannot gate `dea` or `npi` because older loaders
+already know `checksum`. See [Validated Patterns](configuration.md#validated-patterns)
+for what each validator receives and what a checksum does not prove.
 
 `format_version: 1` bundles still load for backwards compatibility, but new bundles should use `format_version: 2` so they can declare `tier`, `required_features`, and freshness metadata. The v2 validation also requires `key_id`, `monotonic_version`, `published_at`, and `expires_at`. `key_id` is the signing public key as 64 lowercase hex characters, and an install fails with `key_id must not be empty for v2+ bundles` without it. The value in the example is a placeholder; [Signing your bundle](#signing-your-bundle) shows how to get yours.
 

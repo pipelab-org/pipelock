@@ -117,7 +117,7 @@ var KnownFeatures = map[string]bool{
 	"ssrf":           true,
 	"response":       true,
 	"encoding_aware": true, // recursive base64/hex/base32 detection
-	"checksum":       true, // Luhn, mod97, WIF, ABA validators
+	"checksum":       true, // Luhn, mod97, WIF, ABA, DEA, NPI validators
 }
 
 // featureNameRegex validates required_features entries: 1-64 chars,

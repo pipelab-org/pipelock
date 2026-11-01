@@ -89,7 +89,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 	if removed := removedOrWeakenedDLPPatterns(old.DLP.Patterns, updated.DLP.Patterns); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "dlp.patterns",
-			Message: "DLP patterns removed or regex-swapped on reload: " + strings.Join(removed, ", "),
+			Message: "DLP patterns removed or regex/validator changed on reload: " + strings.Join(removed, ", "),
 		})
 	}
 	if removed := removedOrWeakenedResponsePatterns(old.ResponseScanning.Patterns, updated.ResponseScanning.Patterns); len(removed) > 0 {
@@ -1764,9 +1764,24 @@ func removedOrWeakenedPatterns[T any](old, updated []T, nameOf, regexOf func(T) 
 }
 
 func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
-	return removedOrWeakenedPatterns(old, updated,
+	changed := removedOrWeakenedPatterns(old, updated,
 		func(p DLPPattern) string { return p.Name },
 		func(p DLPPattern) string { return p.Regex })
+	updatedByName := make(map[string]DLPPattern, len(updated))
+	for _, p := range updated {
+		updatedByName[p.Name] = p
+	}
+	for _, p := range old {
+		next, ok := updatedByName[p.Name]
+		// Adding or swapping a validator can filter previously detected
+		// candidates without changing the regex. Removing one restores
+		// shape-only detection, so it cannot reduce that pattern's coverage.
+		// Regex changes already have a warning from the shared diff above.
+		if ok && next.Regex == p.Regex && next.Validator != "" && next.Validator != p.Validator {
+			changed = append(changed, p.Name+" (validator changed)")
+		}
+	}
+	return changed
 }
 
 func removedOrWeakenedResponsePatterns(old, updated []ResponseScanPattern) []string {
