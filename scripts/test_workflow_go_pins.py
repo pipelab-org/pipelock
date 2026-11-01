@@ -137,6 +137,23 @@ class WorkflowGoPinTest(unittest.TestCase):
             checked, 0, "no workflow job pinned or asserted a Go version"
         )
 
+    def test_release_setup_go_never_restores_the_shared_cache(self) -> None:
+        # Tag-triggered workflows can restore default-branch caches. Release
+        # build inputs must not depend on that mutable build/module cache.
+        checked = 0
+        for job_name, steps in _jobs(WORKFLOW_DIR / "release.yaml"):
+            for step in steps:
+                if not isinstance(step, dict) or not str(step.get("uses", "")).startswith("actions/setup-go@"):
+                    continue
+                checked += 1
+                with self.subTest(job=job_name):
+                    self.assertIs(
+                        step.get("with", {}).get("cache"),
+                        False,
+                        f"release.yaml job {job_name!r} must explicitly disable the setup-go cache",
+                    )
+        self.assertGreater(checked, 0, "no release setup-go steps were checked")
+
     def test_script_pins_match_the_workflow_each_script_names(self) -> None:
         workflow_names = {p.name for p in WORKFLOW_DIR.glob("*.y*ml")}
         checked = 0
