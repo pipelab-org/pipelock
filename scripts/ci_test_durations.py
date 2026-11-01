@@ -6,8 +6,9 @@
 
 The sub-shard split in scripts/ci_test_packages.py balances by these measured
 seconds. Feed it the JSON of race runs that cover a split tree (CI keeps each
-shard's stream as a workflow artifact), and it records the elapsed time of
-every top-level test in that tree, taking the slowest value seen for a name.
+shard's stream as a workflow artifact). Each weight includes elapsed time plus
+the recursive costs of directly paused children divided by race parallelism.
+Incomplete runs are lower bounds.
 
     python3 scripts/ci_test_durations.py --write shard-a.json shard-b.json ...
 
@@ -53,43 +54,148 @@ def collect_packages(paths: list[Path]) -> dict[str, float]:
     """
     measured: dict[str, float] = {}
     for path in paths:
+        packages: dict[str, float | None] = {}
+        pending: set[tuple[str, str]] = set()
+        failed: set[str] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(event, dict) or event.get("Action") not in ("pass", "fail"):
+                if not isinstance(event, dict):
                     continue
-                if event.get("Test") is not None or not isinstance(event.get("Elapsed"), (int, float)):
-                    continue
-                package = event.get("Package")
+                package, action = event.get("Package"), event.get("Action")
                 if not isinstance(package, str) or tree_for_package(package) is not None:
                     continue
-                measured[package] = max(measured.get(package, 0.0), round(float(event["Elapsed"]), 1))
+                name = event.get("Test")
+                if isinstance(name, str):
+                    key = (package, name)
+                    if action == "run":
+                        pending.add(key)
+                    elif action in ("pass", "fail", "skip"):
+                        pending.discard(key)
+                        if action == "fail":
+                            failed.add(package)
+                elif name is None:
+                    if action in ("start", "run", "fail"):
+                        packages[package] = None
+                    elif action == "pass":
+                        elapsed = event.get("Elapsed")
+                        packages[package] = float(elapsed) if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) else None
+        for package, elapsed in packages.items():
+            if elapsed is not None and package not in failed and not any(pkg == package for pkg, _ in pending):
+                measured[package] = max(measured.get(package, 0.0), round(elapsed, 1))
     return measured
 
 
-def collect(paths: list[Path]) -> dict[str, dict[str, float]]:
-    measured: dict[str, dict[str, float]] = {}
+# The race commands in .github/workflows/ci.yaml use -parallel=2.
+RACE_PARALLELISM = 2
+
+
+def collect(
+    paths: list[Path], previous: dict[str, dict[str, float]] | None = None,
+) -> dict[str, dict[str, float]]:
+    # Deduplicate retries by package and full test name, keeping the slowest
+    # completed event. A started but incomplete leaf contributes no elapsed
+    # time; the resulting estimate is a lower bound, not a complete run.
+    events: dict[tuple[str, str], float | None] = {}
+    incomplete: set[tuple[str, str]] = set()
+    paused: set[tuple[str, str]] = set()
+    parents: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for path in paths:
+        active: set[tuple[str, str]] = set()
+        pending: set[tuple[str, str]] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not isinstance(event, dict) or event.get("Action") not in ("pass", "fail"):
+                if not isinstance(event, dict):
                     continue
-                name = event.get("Test")
+                package, name = event.get("Package"), event.get("Test")
+                if not isinstance(package, str) or not isinstance(name, str) or tree_for_package(package) is None:
+                    continue
+                action = event.get("Action")
+                if action not in ("run", "pause", "cont", "pass", "fail", "skip"):
+                    continue
+                key = (package, name)
+                events.setdefault(key, None)
+                if action == "run":
+                    if "/" not in name and key in pending:
+                        incomplete.add(key)
+                    pending.add(key)
+                    if "/" not in name:
+                        # A new attempt of a top-level test (a retry appended to
+                        # the same stream) ends everything its last attempt left
+                        # running, so a stale subtest cannot claim a new child.
+                        active = {item for item in active if item[0] != package or item[1].split("/", 1)[0] != name}
+                    # Only an active prefix can have started this subtest.
+                    prefix = name
+                    while "/" in prefix:
+                        prefix = prefix.rsplit("/", 1)[0]
+                        parent = (package, prefix)
+                        if parent in active:
+                            parents.setdefault(key, set()).add(parent)
+                            break
+                    active.add(key)
+                elif action == "pause":
+                    active.discard(key)
+                    paused.add(key)
+                elif action == "cont":
+                    active.add(key)
+                elif action in ("pass", "fail", "skip"):
+                    active.discard(key)
+                    pending.discard(key)
+                    if action in ("fail", "skip"):
+                        incomplete.add((package, name.split("/", 1)[0]))
                 elapsed = event.get("Elapsed")
-                if not isinstance(name, str) or "/" in name or not isinstance(elapsed, (int, float)):
-                    continue
-                tree = tree_for_package(str(event.get("Package", "")))
-                if tree is None:
-                    continue
-                tests = measured.setdefault(tree, {})
-                tests[name] = max(tests.get(name, 0.0), round(float(elapsed), 1))
+                if action in ("pass", "fail", "skip") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+                    events[key] = max(events[key] or 0.0, float(elapsed))
+
+        incomplete.update((pkg, name.split("/", 1)[0]) for pkg, name in pending)
+
+    # cmd/test2json documents pause and cont; testing.T.Run documents that
+    # parallel children resume only after their parent test function returns,
+    # and a test's elapsed time excludes the wall time of its paused children.
+    # Non-paused children are already included in their parent's elapsed time.
+    # The go test -parallel flag is one limit for the whole test binary, so the
+    # running time of a paused subtree is divided by it once, where the subtree
+    # joins a test that is not itself paused, never again at each nested level.
+    def parent_of(package: str, name: str) -> tuple[str, str]:
+        # A t.Run name may itself contain "/", so the parent is the longest
+        # prefix that ran as a test, not the name minus its last segment.
+        prefix = name
+        while "/" in prefix:
+            prefix = prefix.rsplit("/", 1)[0]
+            if (package, prefix) in events:
+                return package, prefix
+        return package, name.split("/", 1)[0]
+
+    paused_work: dict[tuple[str, str], float] = {}
+    for key in sorted(events, key=lambda item: item[1].count("/"), reverse=True):
+        package, name = key
+        if key in paused and "/" in name:
+            work = (events[key] or 0.0) + paused_work.get(key, 0.0)
+            # Retries can record more than one parent for the same subtest, and
+            # every candidate is a prefix of its name. Charge its work once,
+            # through the deepest (longest) candidate, so the attempts are not
+            # added together and a later attempt cannot drop an earlier path.
+            parent = max(parents[key], key=lambda item: len(item[1])) if key in parents else parent_of(package, name)
+            paused_work[parent] = paused_work.get(parent, 0.0) + work
+
+    measured: dict[str, dict[str, float]] = {}
+    keys = {(pkg, name.split("/", 1)[0]) for pkg, name in events}
+    for package, name in keys:
+        weight = (events.get((package, name)) or 0.0) + paused_work.get((package, name), 0.0) / RACE_PARALLELISM
+        if (package, name) not in events and not weight:
+            continue
+        tree = tree_for_package(package)
+        if (package, name) in incomplete:
+            weight = max(weight, (previous or {}).get(tree, {}).get(name, 0.0))
+        tests = measured.setdefault(tree, {})
+        tests[name] = max(tests.get(name, 0.0), round(weight, 1))
     return measured
 
 
@@ -100,8 +206,10 @@ def merge(
 ) -> dict:
     """Overlay new measurements per test name onto the previous weights.
 
-    A re-measured name takes its new time, so a test that got faster stops
-    being charged its old cost. A name absent from the inputs keeps its old
+    A completely re-measured name takes its new time, so a test that got faster
+    stops being charged its old cost. collect() charges a name whose run failed,
+    never finished, or skipped any subtest at least its previous weight, so such
+    a run can raise a weight but never lower it. A name absent from the inputs keeps its old
     time, so refreshing from a few shards never erases the rest of a tree.
     When an inventory is given, names no longer present in the tree are dropped.
     """
@@ -116,6 +224,32 @@ def merge(
     return {"trees": trees}
 
 
+def artifact_complete(path: Path) -> bool:
+    """Require terminal package results and no unfinished tests in a CI stream."""
+    packages: dict[str, str | None] = {}
+    pending: set[tuple[str, str]] = set()
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or not isinstance(event.get("Package"), str):
+                continue
+            package = event["Package"]
+            packages.setdefault(package, None)
+            name, action = event.get("Test"), event.get("Action")
+            if isinstance(name, str):
+                key = (package, name)
+                if action == "run":
+                    pending.add(key)
+                elif action in ("pass", "fail", "skip"):
+                    pending.discard(key)
+            elif action in ("pass", "fail", "skip"):
+                packages[package] = action
+    return bool(packages) and not pending and all(action in ("pass", "skip") for action in packages.values())
+
+
 def ci_artifact_inputs(directory: Path) -> list[Path]:
     """Require every Go 1.26 producer before treating a refresh as CI evidence."""
     inputs: list[Path] = []
@@ -124,6 +258,8 @@ def ci_artifact_inputs(directory: Path) -> list[Path]:
             profile = directory / f"go-test-json-{lane}-go126-{shard}" / f"go-test-{lane}.json"
             if not profile.is_file() or profile.stat().st_size == 0:
                 raise ValueError(f"missing or empty CI timing artifact: {profile}")
+            if not artifact_complete(profile):
+                raise ValueError(f"incomplete or failed CI timing artifact: {profile}")
             if not collect([profile]) and not collect_packages([profile]):
                 raise ValueError(f"CI timing artifact has no measured results: {profile}")
             inputs.append(profile)
@@ -146,13 +282,14 @@ def main() -> int:
     if not inputs:
         parser.error("provide input files or --ci-artifacts")
 
-    measured = collect(inputs)
+    previous = load_durations()
+    measured = collect(inputs, previous)
     packages = collect_packages(inputs)
     if not measured and not packages:
         print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1
     inventory = {tree: set(tree_test_names(ROOT / HEAVY_TREES[tree])) for tree in TEST_SPLITS}
-    result = merge(load_durations(), measured, inventory)
+    result = merge(previous, measured, inventory)
     merged_packages = dict(load_package_durations())
     merged_packages.update(packages)
     if merged_packages:
