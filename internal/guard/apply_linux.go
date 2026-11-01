@@ -13,6 +13,8 @@ import (
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 	"golang.org/x/sys/unix"
+
+	"github.com/luckyPipewrench/pipelock/internal/landlockcompat"
 )
 
 // handledAccessFS is the set of operations the ruleset MEDIATES.
@@ -88,7 +90,9 @@ func capabilitiesFor(abi int) (accessFS, scoped uint64, unmediated []string) {
 // into a successful call that a caller then records as enforced.
 //
 // The returned record is the only permitted source of truth about what
-// happened; a nil error alone does not mean enforced.
+// happened; a nil error alone does not mean enforced. If no_new_privs was set
+// but restriction failed, the goroutine remains locked to its modified thread.
+// The caller must let that goroutine exit so the runtime retires the thread.
 func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 	return p.apply(llsys.LandlockGetABIVersion)
 }
@@ -102,7 +106,9 @@ func (p *PreparedManifest) apply(getABI func() (int, error)) (EnforcementRecord,
 // the process image after this returns. The exec'd program inherits the domain,
 // and every thread it later creates inherits it too, so base Landlock ABI 5 is
 // sufficient; kernel thread synchronization is only required by Apply's
-// already-multithreaded in-process contract.
+// already-multithreaded in-process contract. After setting no_new_privs, this
+// leaves the goroutine locked on every return path, including errors. The caller
+// must exec or let the goroutine exit without calling runtime.UnlockOSThread.
 func (p *PreparedManifest) ApplyForExec() (EnforcementRecord, error) {
 	return p.applyWithOperations(kernelRulesetOperations(), false)
 }
@@ -115,6 +121,7 @@ func (p *PreparedManifest) applyMode(getABI func() (int, error), threadSync bool
 
 type rulesetOperations struct {
 	getABI        func() (int, error)
+	getErrata     func() (int, error)
 	createRuleset func(*llsys.RulesetAttr, int) (int, error)
 	addPathRule   func(int, *llsys.PathBeneathAttr, int) error
 	restrictSelf  func(int, uint32) error
@@ -125,6 +132,7 @@ type rulesetOperations struct {
 func kernelRulesetOperations() rulesetOperations {
 	return rulesetOperations{
 		getABI:        llsys.LandlockGetABIVersion,
+		getErrata:     llsys.LandlockGetErrata,
 		createRuleset: llsys.LandlockCreateRuleset,
 		addPathRule:   llsys.LandlockAddPathBeneathRule,
 		restrictSelf:  llsys.LandlockRestrictSelf,
@@ -208,6 +216,21 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 		return record, ErrManifestIncomplete
 	}
 
+	// Writable directories promise cross-directory rename/link support. Refuse
+	// instead of silently removing that grant when erratum 3 is unconfirmed.
+	// See Documentation/userspace-api/landlock.rst, "Landlock errata":
+	// https://docs.kernel.org/userspace-api/landlock.html#landlock-errata
+	for _, rule := range p.rules {
+		if rule.access&llsys.AccessFSRefer == 0 {
+			continue
+		}
+		if !landlockcompat.ReferAllowed(abi, ops.getErrata) {
+			record.Reason = "writable directory grants require landlock erratum 3 (disconnected directory handling) to be reported fixed; refusing rather than removing cross-directory rename and link support"
+			return record, errors.New(record.Reason)
+		}
+		break
+	}
+
 	rulesetFD, err := ops.createRuleset(&llsys.RulesetAttr{
 		HandledAccessFS: handledAccessFS,
 		Scoped:          scoped,
@@ -257,12 +280,20 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	// another thread between the prctl and the restrict. The optional TSYNC
 	// flag synchronizes existing threads only for the in-process Apply path.
 	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
+	defer func() {
+		if !record.threadTainted {
+			runtime.UnlockOSThread()
+		}
+	}()
 
 	if err := ops.setNoNewPrivs(); err != nil {
 		record.Reason = fmt.Sprintf("setting no_new_privs: %v", err)
 		return record, fmt.Errorf("setting no_new_privs: %w", err)
 	}
+
+	// NNP cannot be undone even if restriction fails. Leave the goroutine
+	// pinned so the runtime retires its thread when it exits.
+	record.threadTainted = true
 
 	flags := uint32(0)
 	if threadSync {
@@ -275,6 +306,12 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	// Set here rather than on the success path: the process is constrained from
 	// this point on whatever the verification below concludes.
 	p.applied = true
+	if threadSync {
+		// Successful TSYNC synchronizes both the policy and NNP. This thread
+		// no longer differs from the rest of the process, even if a later
+		// access probe fails. Failed TSYNC must retain the pin above.
+		record.threadTainted = false
+	}
 
 	// Verify the manifest is actually in force before claiming it is.
 	//

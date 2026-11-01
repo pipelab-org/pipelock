@@ -182,6 +182,10 @@ const (
 // distinguishable from "the reading was zero"; conflating them would let an
 // unread value present as the worst case and then be argued away as a default.
 type EnforcementRecord struct {
+	// threadTainted is local bookkeeping, not evidence: the calling thread has
+	// irreversible state that was not synchronized to the entire process.
+	threadTainted bool
+
 	State            EnforcementState `json:"state"`
 	Mechanism        string           `json:"mechanism"`
 	RequiredABI      int              `json:"required_abi"`

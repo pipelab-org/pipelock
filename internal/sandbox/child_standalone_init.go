@@ -172,10 +172,8 @@ func RunStandaloneInit() {
 	llStatus, llErr := ApplyLandlock(policy, socketPath)
 	reportLayer(os.Stderr, llStatus, llErr)
 
-	// Set no_new_privs + seccomp (strict blocks clone3).
-	if err := SetNoNewPrivs(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
-	}
+	// ApplySeccomp sets no_new_privs while pinned before installing the filter.
+	// Strict mode blocks clone3.
 	scStatus, scErr := ApplySeccomp(strict)
 	reportLayer(os.Stderr, scStatus, scErr)
 

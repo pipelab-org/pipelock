@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 
+	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"golang.org/x/sys/unix"
 )
@@ -515,7 +516,7 @@ func TestRunExecWithKeepsOuterThreadPinThroughReplacement(t *testing.T) {
 			appliedThread = unix.Gettid()
 			runtime.UnlockOSThread()
 			check("apply return")
-			return EnforcementRecord{State: EnforcementEnforced, Mechanism: "landlock", Coverage: CoverageFull}, nil
+			return EnforcementRecord{threadTainted: true, State: EnforcementEnforced, Mechanism: "landlock", Coverage: CoverageFull}, nil
 		},
 		func(string, []string, []string) error { check("replacement"); replaced = true; return nil },
 		func(ExecutionProof) error { check("report"); return nil },
@@ -526,7 +527,115 @@ func TestRunExecWithKeepsOuterThreadPinThroughReplacement(t *testing.T) {
 	if !replaced {
 		t.Fatal("replacement was not reached")
 	}
-	if pinned() {
-		t.Fatal("outer pin leaked after replacement returned")
+	if !pinned() {
+		t.Fatal("modified thread was unlocked after replacement returned")
 	}
+}
+
+// These use fake syscalls: no test thread acquires a real NNP or Landlock
+// restriction. Each subtest exits with any retained pin, retiring that thread.
+func TestRunExecWithThreadRetirement(t *testing.T) {
+	t.Setenv(execWorkspaceEnv, t.TempDir())
+	t.Setenv(execTempDirEnv, t.TempDir())
+	t.Setenv(execPolicyHashEnv, "policy-hash")
+	t.Setenv(execBinaryEnv, "/usr/bin/true")
+	t.Setenv(execDeclarationEnv, `{}`)
+	t.Setenv(execProfileEnv, "")
+	for _, stage := range []string{"create", "add", "no_new_privs", "restrict", "verify", "close", "report", "replace", "replace_report", "success"} {
+		t.Run(stage, func(t *testing.T) {
+			if guardThreadPinned() {
+				t.Fatal("subtest starts pinned")
+			}
+			sentinel := errors.New("injected failure")
+			var appliedThread int
+			reports, replacements := 0, 0
+			checkThread := func() {
+				t.Helper()
+				if !guardThreadPinned() || unix.Gettid() != appliedThread {
+					t.Fatal("modified thread was not retained through exec")
+				}
+			}
+			err := runExecWith([]string{"/usr/bin/true"}, nil,
+				func(p *PreparedManifest) (EnforcementRecord, error) {
+					ops := rulesetOperations{
+						getABI:    func() (int, error) { return SocketMediationABI, nil },
+						getErrata: func() (int, error) { return 0x4, nil },
+						createRuleset: func(*llsys.RulesetAttr, int) (int, error) {
+							if stage == "create" {
+								return -1, sentinel
+							}
+							return 42, nil
+						},
+						addPathRule: func(int, *llsys.PathBeneathAttr, int) error {
+							if stage == "add" {
+								return sentinel
+							}
+							return nil
+						},
+						setNoNewPrivs: func() error {
+							if stage == "no_new_privs" {
+								return sentinel
+							}
+							appliedThread = unix.Gettid()
+							return nil
+						},
+						restrictSelf: func(int, uint32) error {
+							if stage == "restrict" {
+								return sentinel
+							}
+							if stage == "verify" {
+								p.rules[0].resolved = "/absent-guard-test-grant"
+							}
+							return nil
+						},
+						closeFD: func(int) error { return nil },
+					}
+					record, err := p.applyWithOperations(ops, false)
+					if stage == "close" {
+						if closeErr := unix.Close(p.rules[0].fd); closeErr != nil {
+							t.Fatal(closeErr)
+						}
+					}
+					return record, err
+				},
+				func(string, []string, []string) error {
+					checkThread()
+					replacements++
+					if strings.HasPrefix(stage, "replace") {
+						return sentinel
+					}
+					return nil
+				},
+				func(ExecutionProof) error {
+					checkThread()
+					reports++
+					if stage == "report" || stage == "replace_report" && reports == 2 {
+						return sentinel
+					}
+					return nil
+				},
+			)
+			if (err == nil) != (stage == "success") {
+				t.Fatalf("stage %s error = %v", stage, err)
+			}
+			wantPinned := stage != "create" && stage != "add" && stage != "no_new_privs"
+			if got := guardThreadPinned(); got != wantPinned {
+				t.Fatalf("thread pinned after %s = %v, want %v", stage, got, wantPinned)
+			}
+			wantReplace := stage == "success" || strings.HasPrefix(stage, "replace")
+			if (replacements == 1) != wantReplace {
+				t.Fatalf("replacement count = %d", replacements)
+			}
+			if strings.HasPrefix(stage, "replace") && reports != 2 {
+				t.Fatalf("failed exec reports = %d, want 2", reports)
+			}
+		})
+	}
+}
+
+func guardThreadPinned() bool {
+	var stack [1024]byte
+	n := runtime.Stack(stack[:], false)
+	header, _, _ := strings.Cut(string(stack[:n]), "\n")
+	return strings.Contains(header, "locked to thread")
 }

@@ -7,7 +7,11 @@ Pipelock, and denies direct TCP, UDP, QUIC, and child DNS with a required
 network namespace.
 
 The preview requires Linux, user and network namespaces, and Landlock ABI 5 or
-newer. Host file ownership maps to the caller's UID and GID, but the namespace
+newer. Writable directory grants also require the kernel to report
+[Landlock erratum 3](https://docs.kernel.org/userspace-api/landlock.html#landlock-errata)
+as fixed. Guard refuses the launch if the fix is missing or cannot be queried,
+rather than silently removing cross-directory rename and hard-link support.
+Host file ownership maps to the caller's UID and GID, but the namespace
 UID can appear as 0. Writable manifest paths must belong to the caller and
 cannot be group- or world-writable. Exact service grants cover one TCP host and
 port; they never override the immutable metadata, link-local, multicast, or
@@ -36,7 +40,9 @@ pipelock guard --config pipelock.yaml --profile worker --workspace /opt/app --dr
 
 The separator is required. Arguments after `--` belong to the command. Guard
 returns the command's exit code. `--dry-run` validates the declaration and
-checks the required kernel features without launching the command.
+checks the kernel isolation primitives without launching the command. The
+REFER errata check and post-restriction access probes run when enforcement is
+applied.
 
 The `show` and `explain` subcommands remain read-only. Their human and JSON
 output says that the inspection itself did not enforce anything. Run output
