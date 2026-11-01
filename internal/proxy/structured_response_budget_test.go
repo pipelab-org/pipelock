@@ -110,7 +110,7 @@ func TestStructuredResponseReverseHoldsReservationUntilBodyClose(t *testing.T) {
 	if err := rp.modifyResponse(resp); err != nil {
 		t.Fatal(err)
 	}
-	if got := rp.sizeExemptScanBudget.inflightBytes.Load(); got < structuredTestCeiling {
+	if got := rp.sizeExemptScanBudget.inflightBytes.Load(); got < int64(len(body)) {
 		t.Fatalf("reservation %d released before delivery; the buffered body is still live", got)
 	}
 	got, err := io.ReadAll(resp.Body)

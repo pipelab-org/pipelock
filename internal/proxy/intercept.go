@@ -2943,9 +2943,12 @@ func newInterceptHandler(
 			if structured != nil {
 				ic.Logger.LogAnomaly(actx, structuredResponseLayer, structuredResponseEvidence, 0)
 				evidence := withInterceptRedaction(receipt.EmitOpts{ActionID: receipt.NewActionID(), ParentActionID: actionID, Verdict: config.ActionWarn, Layer: structuredResponseLayer, Pattern: structuredResponseEvidence, Transport: "intercept", Method: r.Method, Target: targetURL, RequestID: ic.RequestID, Agent: ic.Agent})
-				if interceptEmitReceiptOrBlock(ic, w, actx, evidence) {
+				if interceptConfirmResponseOrBlock(ic, w, evidence) {
 					emitBlockedPostRoundTripOutcome(http.StatusForbidden, receiptEmissionFailedLayer)
 					return
+				}
+				if !ic.Config.FlightRecorder.RequireReceipts {
+					_ = interceptEmitReceipt(ic, evidence)
 				}
 			}
 

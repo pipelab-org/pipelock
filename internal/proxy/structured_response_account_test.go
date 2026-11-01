@@ -53,10 +53,10 @@ func TestStructuredResponseAccountReturnsBudget(t *testing.T) {
 		t.Fatalf("over-budget views admitted or leaked %d bytes", budget.inflightBytes.Load())
 	}
 
-	// A small body's views come from the unused part of its own reservation.
+	// A small body and its views charge only their retained memory.
 	body, view, release = budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{"data":"garden"}`), cfg)
-	if view == nil || view.account == nil || budget.inflightBytes.Load() != structuredTestCeiling {
-		t.Fatalf("view=%v reserved=%d, want admission inside the body reservation", view, budget.inflightBytes.Load())
+	if view == nil || view.account == nil || budget.inflightBytes.Load() <= int64(cap(body)) || budget.inflightBytes.Load() >= structuredTestCeiling {
+		t.Fatalf("view=%v reserved=%d, want body capacity plus retained views below the ceiling", view, budget.inflightBytes.Load())
 	}
 	// A rewrite whose rebuilt views exceed what is left fails closed and
 	// stays charged to the same admission until release.
@@ -78,7 +78,7 @@ func TestStructuredResponseAccountReturnsBudget(t *testing.T) {
 		t.Fatalf("release left %d bytes reserved", got)
 	}
 
-	// Views beyond the body reservation draw on the shared budget and return it.
+	// Larger views draw on the shared budget and return it.
 	body, view, release = budget.readStructuredResponse(t.Context(), "data.vendor.example", nil, strings.NewReader(`{"data":"`+strings.Repeat("garden ", 150)+`"}`), cfg)
 	if view == nil || budget.inflightBytes.Load() <= structuredTestCeiling {
 		t.Fatalf("view=%v reserved=%d, want a shared-budget draw", view != nil, budget.inflightBytes.Load())
@@ -121,11 +121,11 @@ func TestStructuredAccountNilAndErrors(t *testing.T) {
 		t.Fatal("nil account must not charge")
 	}
 	var budget sizeExemptScanBudget
-	account = &structuredResponseAccount{budget: &budget, limit: 10, unused: 4}
-	if err := account.charge(4); err != nil || account.unused != 0 {
-		t.Fatal("charge did not spend the body reservation first")
+	account = &structuredResponseAccount{budget: &budget, limit: 10}
+	if err := account.charge(4); err != nil || account.reserved != 4 || budget.inflightBytes.Load() != 4 {
+		t.Fatal("charge did not reserve the retained bytes")
 	}
-	if err := account.charge(11); !errors.Is(err, errStructuredViewBudget) || budget.inflightBytes.Load() != 0 {
+	if err := account.charge(11); !errors.Is(err, errStructuredViewBudget) || budget.inflightBytes.Load() != 4 {
 		t.Fatal("charge beyond the limit was not refused cleanly")
 	}
 	if _, err := structuredJSONStrings([]byte(`["a","b"]`), &structuredResponseAccount{budget: &budget, limit: 1}); !errors.Is(err, errStructuredViewBudget) {

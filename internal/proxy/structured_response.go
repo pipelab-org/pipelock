@@ -55,18 +55,15 @@ type structuredResponseInspection struct {
 	account        *structuredResponseAccount
 }
 
-// structuredResponseAccount charges what V3 construction retains against the
-// reservation that admitted the body. The body read reserved the whole
-// per-response ceiling; body capacity and every retained view, index and part
-// record are spent from that reservation first and then from the shared
-// in-flight budget. Each allocation is charged as it is made, so a refusal can
-// overshoot by the one allocation that crossed the limit. Decoder buffers,
-// discarded slice growth, scanner working memory and Go runtime overhead are not
-// charged. A nil account charges nothing; only offline replay uses one.
+// structuredResponseAccount charges retained body capacity, decoded strings,
+// views, indexes and part records directly to the shared in-flight budget.
+// Each allocation is charged as it is made, so a refusal can overshoot by the
+// one allocation that crossed the limit. Decoder buffers, discarded slice
+// growth, scanner working memory and Go runtime overhead aren't charged.
+// A nil account charges nothing; only offline replay uses one.
 type structuredResponseAccount struct {
 	budget   *sizeExemptScanBudget
 	limit    int64
-	unused   int64
 	reserved int64
 	release  func()
 }
@@ -75,16 +72,10 @@ func (a *structuredResponseAccount) charge(n int64) error {
 	if a == nil || n <= 0 {
 		return nil
 	}
-	if n <= a.unused {
-		a.unused -= n
-		return nil
-	}
-	need := n - a.unused
-	if !a.budget.reserveSizeExemptScanBytes(need, a.limit) {
+	if !a.budget.reserveSizeExemptScanBytes(n, a.limit) {
 		return errStructuredViewBudget
 	}
-	a.unused = 0
-	a.reserved += need
+	a.reserved += n
 	return nil
 }
 
@@ -97,6 +88,10 @@ func extractStructuredResponseAccounted(body []byte, account *structuredResponse
 	if err != nil {
 		return nil, fmt.Errorf("extracting structured response: %w", err)
 	}
+	return buildStructuredResponse(body, texts, account)
+}
+
+func buildStructuredResponse(body []byte, texts []string, account *structuredResponseAccount) (*structuredResponseInspection, error) {
 	n := len(texts)
 	// Stable index sorts mark the first occurrence of each string and of each
 	// ordered adjacent pair. Adjacency uses the full sequence before dedupe.
@@ -203,7 +198,11 @@ func extractStructuredResponseAccounted(body []byte, account *structuredResponse
 // included, in document order; numbers, booleans and null are not wording.
 // TestStructuredJSONGrammarMatchesDLPExtractor keeps the two accept sets equal.
 func structuredJSONStrings(body []byte, account *structuredResponseAccount) ([]string, error) {
-	dec := json.NewDecoder(bytes.NewReader(body))
+	return readStructuredJSONStrings(bytes.NewReader(body), account)
+}
+
+func readStructuredJSONStrings(body io.Reader, account *structuredResponseAccount) ([]string, error) {
+	dec := json.NewDecoder(body)
 	dec.UseNumber()
 	var texts []string
 	depth := 0
@@ -268,37 +267,58 @@ func structuredJSONStartPossible(prefix []byte) bool {
 	return true
 }
 
-// readStructuredResponse joins the existing bounded whole-body admission. The
-// views are charged against that reservation as described on
-// structuredResponseAccount. Failed parsing or view admission discards every
-// partial view, returns every reserved byte and retains the ordinary refusal.
-func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, host string, prefix []byte, body io.Reader, cfg *config.Config) ([]byte, *structuredResponseInspection, sizeExemptScanRelease) {
+// structuredResponseReader retains and charges only bytes actually read. The
+// decoder supplies its read buffer; no full-ceiling reservation is held while
+// waiting for upstream. Capacity growth and views use the same account.
+// Context cancellation is checked between reads; the HTTP transport cancels
+// an outstanding upstream read through the request context.
+type structuredResponseReader struct {
+	ctx     context.Context
+	reader  io.Reader
+	ceiling int64
+	body    []byte
+	account *structuredResponseAccount
+}
+
+func (r *structuredResponseReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.reader.Read(p)
+	if int64(n) > r.ceiling-int64(len(r.body)) {
+		return 0, errors.New("structured response exceeds bounded scan ceiling")
+	}
+	before := cap(r.body)
+	r.body = append(r.body, p[:n]...)
+	if chargeErr := r.account.charge(int64(cap(r.body) - before)); chargeErr != nil {
+		return 0, chargeErr
+	}
+	return n, err
+}
+
+// readStructuredResponse validates JSON while buffering it. Invalid syntax,
+// failed reads and failed body/view charges discard every retained byte and
+// view, release the shared budget, and retain the ordinary refusal.
+func (b *sizeExemptScanBudget) readStructuredResponse(ctx context.Context, _ string, prefix []byte, body io.Reader, cfg *config.Config) ([]byte, *structuredResponseInspection, sizeExemptScanRelease) {
 	if ctx.Err() != nil || !structuredJSONStartPossible(prefix) {
 		return nil, nil, noopSizeExemptScanRelease
 	}
-	full, bodyRelease, failure := b.readBoundedSizeExemptResponse(host, prefix, body, cfg.ResponseScanning.SizeExemptScanMaxBytes, cfg.ResponseScanning.SizeExemptScanMaxInflightBytes, sizeRemedies{})
-	if failure != nil {
-		return nil, nil, noopSizeExemptScanRelease
-	}
-	account := &structuredResponseAccount{
-		budget: b,
-		limit:  sizeExemptScanInflightLimit(cfg.ResponseScanning.SizeExemptScanMaxInflightBytes),
-		unused: sizeExemptScanCeiling(cfg.ResponseScanning.SizeExemptScanMaxBytes),
-	}
-	account.release = sync.OnceFunc(func() {
-		b.releaseSizeExemptScanBytes(account.reserved)
-		bodyRelease()
-	})
+	account := &structuredResponseAccount{budget: b, limit: sizeExemptScanInflightLimit(cfg.ResponseScanning.SizeExemptScanMaxInflightBytes)}
+	account.release = sync.OnceFunc(func() { b.releaseSizeExemptScanBytes(account.reserved) })
+	ceiling := sizeExemptScanCeiling(cfg.ResponseScanning.SizeExemptScanMaxBytes)
+	reader := &structuredResponseReader{ctx: ctx, reader: io.MultiReader(bytes.NewReader(prefix), body), ceiling: ceiling, account: account}
+	// Limit each decoder read to the remaining ceiling plus a refusal probe.
+	// This preserves the bounded size-exempt reader's existing ceiling rule.
+	texts, err := readStructuredJSONStrings(io.LimitReader(reader, ceiling+1), account)
 	var inspection *structuredResponseInspection
-	err := account.charge(int64(cap(full)))
 	if err == nil {
-		inspection, err = extractStructuredResponseAccounted(full, account)
+		inspection, err = buildStructuredResponse(reader.body, texts, account)
 	}
 	if err != nil || ctx.Err() != nil {
 		account.release()
 		return nil, nil, noopSizeExemptScanRelease
 	}
-	return full, inspection, account.release
+	return reader.body, inspection, account.release
 }
 
 func scanStructuredResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, target string, inspection *structuredResponseInspection) scanner.ResponseScanResult {
