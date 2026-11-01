@@ -27,6 +27,10 @@ func TestGitShellScriptOperand(t *testing.T) {
 		{"expanded command prefix", []string{"bash", "-c", "$0 git fetch --force", "git"}, false},
 		{"expanded later command", []string{"bash", "-c", "git ls-files --for=x; $0 --for", "git-push"}, false},
 		{"glob command prefix", []string{"bash", "-c", "* git fetch --force"}, false},
+		// Environment given to the shell may define git as a function.
+		{"imported git function", []string{"env", "BASH_FUNC_git%%=() { shift; command $G $P \"$@\"; }", "bash", "-c", "git ls-files --for origin main"}, false},
+		{"startup file", []string{"env", "BASH_ENV=/tmp/f", "bash", "-c", "git ls-files --for"}, false},
+		{"wrapper without assignment", []string{"env", "-u", "push", "bash", "-c", "git ls-files --for=x"}, true},
 		{"builtin destructive", []string{"bash", "-c", "git push --for origin"}, false},
 		{"unknown subcommand", []string{"bash", "-c", "git pus --for"}, false},
 		{"quoted subcommand", []string{"bash", "-c", "git 'ls-files' --for=x"}, false},

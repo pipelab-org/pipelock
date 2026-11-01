@@ -272,6 +272,11 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
+	// assigned marks a name=value word in the current command before its
+	// executable. Git's builtins ignore its environment, but a shell's does
+	// not: bash imports a function named git from BASH_FUNC_git%% and reads
+	// BASH_ENV first, so a shell command string after it is unproved.
+	assigned := false
 	word := func(w gitWord) {
 		switch state {
 		case seeking:
@@ -299,6 +304,9 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			}
 			if !w.literal && !plainShellWord(w.text) {
 				expanded = true
+			}
+			if !strings.HasPrefix(w.text, "-") && strings.Contains(w.text, "=") {
+				assigned = true
 			}
 		case global, value:
 			switch {
@@ -347,13 +355,13 @@ func (p *gitProof) read(words []gitWord, inGit, noShell, script bool) {
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state, expanded = seeking, false
+			state, expanded, assigned = seeking, false, false
 			start = i + 1
 		}
 	}
 	for _, w := range words {
 		switch {
-		case w.script && state == seeking && expanded:
+		case w.script && state == seeking && (expanded || assigned):
 			p.unproved, state = true, done
 		case w.script && state == seeking:
 			// The shell runs the commands in its command string; the words
