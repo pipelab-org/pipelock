@@ -26,6 +26,14 @@ import (
 // bridge's configured target naming another address. The sandboxed server
 // must still be refused the address the listener actually bound.
 func TestMCPSandboxMetricsDialUsesBoundAddress(t *testing.T) {
+	// Check prerequisites before re-executing: a skip inside the child exits
+	// zero, which the parent would otherwise report as a pass.
+	if sandbox.Detect().LandlockABI == 0 {
+		t.Skip("kernel does not support Landlock")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is required for real sandbox traffic")
+	}
 	// The MCP command marks its process non-dumpable, so run this in a fresh
 	// process as a separate CLI invocation would.
 	const helperEnv = "PIPELOCK_TEST_MCP_SANDBOX_METRICS"
@@ -38,12 +46,6 @@ func TestMCPSandboxMetricsDialUsesBoundAddress(t *testing.T) {
 			t.Fatalf("MCP sandbox invocation: %v\n%s", err, output)
 		}
 		return
-	}
-	if sandbox.Detect().LandlockABI == 0 {
-		t.Skip("kernel does not support Landlock")
-	}
-	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl is required for real sandbox traffic")
 	}
 	_, port, err := net.SplitHostPort(testport.ListenAddrs(t, 1)[0])
 	if err != nil {

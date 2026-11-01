@@ -52,6 +52,14 @@ func TestSandboxMetricsBindFailurePrecedesLaunch(t *testing.T) {
 }
 
 func TestSandboxMetricsListenerAndAgentRoutes(t *testing.T) {
+	// Check prerequisites before re-executing: a skip inside the child exits
+	// zero, which the parent would otherwise report as a pass.
+	if sandbox.Detect().LandlockABI == 0 {
+		t.Skip("kernel does not support Landlock")
+	}
+	if _, err := exec.LookPath("curl"); err != nil {
+		t.Skip("curl is required for real sandbox traffic")
+	}
 	// MCP command tests harden their process with PR_SET_DUMPABLE=0. Execute
 	// this standalone launch in a fresh process, as a separate CLI invocation
 	// would run, so earlier MCP tests cannot affect user-namespace re-execution.
@@ -65,12 +73,6 @@ func TestSandboxMetricsListenerAndAgentRoutes(t *testing.T) {
 			t.Fatalf("standalone invocation: %v\n%s", err, output)
 		}
 		return
-	}
-	if sandbox.Detect().LandlockABI == 0 {
-		t.Skip("kernel does not support Landlock")
-	}
-	if _, err := exec.LookPath("curl"); err != nil {
-		t.Skip("curl is required for real sandbox traffic")
 	}
 	for _, mode := range []string{"off", "numeric", "hostname-drift"} {
 		t.Run(mode, func(t *testing.T) {
