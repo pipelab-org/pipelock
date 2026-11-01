@@ -2412,9 +2412,9 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			closeReason, closeBlockReason = "high entropy content detected", blockreason.BodyEntropy
 		}
 	}
-	if bodyParserFailureOnly(result, bodyBytes) {
-		scannerLabel = scanner.ScannerParser
-		receiptLayer = scanner.ScannerParser
+	if failureLayer := bodyFailureLayer(result, bodyBytes); failureLayer != "" {
+		scannerLabel = failureLayer
+		receiptLayer = failureLayer
 		closeBlockReason = blockreason.ParseError
 		closeReason = "body could not be inspected"
 	}

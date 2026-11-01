@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -89,70 +91,101 @@ func TestWebSocketTargetURLLength(t *testing.T) {
 
 func TestBodyParseFailureReceipts(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept", "websocket"} {
-		t.Run(surface, func(t *testing.T) {
-			cfg := testScannerConfig()
-			cfg.AdaptiveEnforcement.Enabled = false
-			cfg.RequestBodyScanning.Action = config.ActionWarn
-			enforce := false
-			cfg.Enforce = &enforce
-			p := newTestProxyWithConfig(t, cfg)
-			rph := newReceiptProxyHelper(t)
-			p.receiptEmitterPtr.Store(rph.emitter)
-			sc := p.scannerPtr.Load()
-			if surface == "websocket" {
-				relay := &wsRelay{clientConn: discardConn{}, upstreamConn: discardConn{}, proxy: p, cfg: cfg, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket"}
-				body, result := scanRequestBody(t.Context(), BodyScanRequest{Body: strings.NewReader(`{"incomplete":`), ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn})
-				if !relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
-					t.Fatal("malformed frame allowed")
+		for _, scanFailure := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/scan_failure=%t", surface, scanFailure), func(t *testing.T) {
+				cfg := testScannerConfig()
+				cfg.AdaptiveEnforcement.Enabled = false
+				cfg.RequestBodyScanning.Action = config.ActionWarn
+				enforce := false
+				cfg.Enforce = &enforce
+				p := newTestProxyWithConfig(t, cfg)
+				rph := newReceiptProxyHelper(t)
+				p.receiptEmitterPtr.Store(rph.emitter)
+				sc := p.scannerPtr.Load()
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var input io.Reader = strings.NewReader(`{"incomplete":`)
+				wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"
+				if scanFailure {
+					input = &cancelAfterFirstResponseRead{Reader: strings.NewReader(`{"message":"ordinary text"}`), cancel: cancel}
+					wantLayer, wantPattern = scanner.ScannerContext, "request body scan failed:"
 				}
-			} else {
-				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/submit", strings.NewReader(`{"incomplete":`))
-				req.Header.Set("Content-Type", "application/json")
-				rec := httptest.NewRecorder()
-				if surface == "forward" {
-					p.handleForwardHTTP(rec, req)
+
+				if surface == "websocket" {
+					relay := &wsRelay{clientConn: discardConn{}, upstreamConn: discardConn{}, proxy: p, cfg: cfg, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/socket"}
+					body, result := scanRequestBody(ctx, BodyScanRequest{Body: input, ContentType: "application/json", MaxBytes: 1024, Scanner: sc, Action: config.ActionWarn})
+					if !relay.handleClientMessageBodyResult(audit.NewNop(), body, result) {
+						t.Fatal("malformed frame allowed")
+					}
 				} else {
-					handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Proxy: p}, http.DefaultTransport)
-					handler.ServeHTTP(rec, req)
+					req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://api.vendor.example/submit", input)
+					req.Header.Set("Content-Type", "application/json")
+					rec := httptest.NewRecorder()
+					if surface == "forward" {
+						p.handleForwardHTTP(rec, req)
+					} else {
+						handler := newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New(), Proxy: p}, http.DefaultTransport)
+						handler.ServeHTTP(rec, req)
+					}
+					if rec.Code != http.StatusForbidden {
+						t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+					}
+					if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
+						t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
+					}
 				}
-				if rec.Code != http.StatusForbidden {
-					t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
+				got := rph.requireReceipt(t, wantLayer).ActionRecord
+				if got.Verdict != config.ActionBlock || !strings.Contains(got.Pattern, wantPattern) || strings.Contains(got.Pattern, "secret") {
+					t.Fatalf("receipt=%+v", got)
 				}
-			}
-			got := rph.requireReceipt(t, scanner.ScannerParser).ActionRecord
-			if got.Verdict != config.ActionBlock || !strings.Contains(got.Pattern, "decoding JSON body") || strings.Contains(got.Pattern, "secret") {
-				t.Fatalf("receipt=%+v", got)
-			}
-		})
+			})
+		}
 	}
 }
 
 func TestBodyParseFailureReverseReceipt(t *testing.T) {
-	cfg := reverseParityBaseConfig(t)
-	cfg.RequestBodyScanning.Enabled = true
-	cfg.RequestBodyScanning.Action = config.ActionWarn
-	enforce := false
-	cfg.Enforce = &enforce
-	cfg.AdaptiveEnforcement.Enabled = false
-	rp, _, _, dir, closeRecorder, key := newReverseParityHarnessWithReceipts(t, cfg, func(_ http.ResponseWriter, _ *http.Request) { t.Error("malformed body reached upstream") })
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/submit", strings.NewReader(`{"incomplete":`))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	rp.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
-	}
-	closeRecorder()
-	for _, got := range extractReceiptsFromDir(t, dir) {
-		if got.ActionRecord.Layer == scanner.ScannerParser {
-			if got.ActionRecord.Verdict != config.ActionBlock || !strings.Contains(got.ActionRecord.Pattern, "decoding JSON body") {
-				t.Fatalf("receipt=%+v", got.ActionRecord)
+	for _, scanFailure := range []bool{false, true} {
+		t.Run(fmt.Sprint(scanFailure), func(t *testing.T) {
+			cfg := reverseParityBaseConfig(t)
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.Action = config.ActionWarn
+			enforce := false
+			cfg.Enforce = &enforce
+			cfg.AdaptiveEnforcement.Enabled = false
+			rp, _, _, dir, closeRecorder, key := newReverseParityHarnessWithReceipts(t, cfg, func(_ http.ResponseWriter, _ *http.Request) { t.Error("malformed body reached upstream") })
+
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var input io.Reader = strings.NewReader(`{"incomplete":`)
+			wantLayer, wantPattern := scanner.ScannerParser, "decoding JSON body"
+			if scanFailure {
+				input = &cancelAfterFirstResponseRead{Reader: strings.NewReader(`{"message":"ordinary text"}`), cancel: cancel}
+				wantLayer, wantPattern = scanner.ScannerContext, "request body scan failed:"
 			}
-			if err := receipt.VerifyWithKey(got, hex.EncodeToString(key)); err != nil {
-				t.Fatal(err)
+
+			req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://proxy.vendor.example/submit", input)
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			rp.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("status=%d body=%s", rec.Code, rec.Body)
 			}
-			return
-		}
+			if rec.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || rec.Header().Get("X-Pipelock-Block-Reason-Layer") != wantLayer {
+				t.Fatalf("headers=%v, want fail-closed layer %s", rec.Header(), wantLayer)
+			}
+			closeRecorder()
+			for _, got := range extractReceiptsFromDir(t, dir) {
+				if got.ActionRecord.Layer == wantLayer {
+					if got.ActionRecord.Verdict != config.ActionBlock || !strings.Contains(got.ActionRecord.Pattern, wantPattern) {
+						t.Fatalf("receipt=%+v", got.ActionRecord)
+					}
+					if err := receipt.VerifyWithKey(got, hex.EncodeToString(key)); err != nil {
+						t.Fatal(err)
+					}
+					return
+				}
+			}
+			t.Fatal("no parser receipt")
+		})
 	}
-	t.Fatal("no parser receipt")
 }

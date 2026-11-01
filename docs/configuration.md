@@ -590,6 +590,8 @@ request_body_scanning:
 
 Malformed or unreadable request bodies use `X-Pipelock-Block-Reason: parse_error` with the `parser` layer in block responses and receipts. No secret match is implied. Correct the body or its transport; for a body over the limit, `max_body_bytes` is the control that applies. `suppress`, `trusted_hosts`, `action: warn`, and `enforce: false` cannot make an incomplete scan safe to forward.
 
+A scanner failure also blocks with `parse_error`, but uses the `context` layer instead of `parser`. Its reason records the scan failure rather than a content finding.
+
 **Fail-closed behaviors** (always blocked regardless of `action` setting):
 - Bodies exceeding `max_body_bytes`
 - Compressed bodies (any non-identity `Content-Encoding`, such as gzip, deflate or br): compressed bytes evade regex DLP. The block uses `X-Pipelock-Block-Reason: parse_error`; it is not a secret match, so `suppress` does not apply. Send the body without `Content-Encoding`.

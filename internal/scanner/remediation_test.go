@@ -1106,6 +1106,9 @@ func TestParserBodySizeGuidance(t *testing.T) {
 	} {
 		t.Run(reason, func(t *testing.T) {
 			got, ok := GuidanceForResult(ScannerParser, reason)
+			if !IsUnreadBodyReason(reason) {
+				t.Fatal("size refusal did not reach reason-specific body hints")
+			}
 			if !ok || !strings.Contains(got.OperatorKnob, "`request_body_scanning.max_body_bytes`") ||
 				!strings.Contains(got.OperatorKnob, "regardless of `request_body_scanning.action`") ||
 				got.AgentReason != protectiveCeilingAgentReason {

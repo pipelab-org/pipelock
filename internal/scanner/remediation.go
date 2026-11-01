@@ -100,7 +100,14 @@ const UnscannedEncodingSuffix = "compressed bodies cannot be scanned for secrets
 // IsUnreadBodyReason reports a body Pipelock withheld because it could not read
 // it, not because a finding matched. Both share the parse_error block reason.
 func IsUnreadBodyReason(reason string) bool {
-	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
+	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix) || isBodySizeLimitReason(reason)
+}
+
+// isBodySizeLimitReason recognizes the size refusals emitted by request-body inspection.
+func isBodySizeLimitReason(reason string) bool {
+	return strings.HasPrefix(reason, "request body exceeds max_body_bytes (") ||
+		strings.HasPrefix(reason, "multipart headers exceed max_body_bytes (") ||
+		strings.HasPrefix(reason, "multipart part exceeds max_body_bytes (")
 }
 
 // Request-body reasons that name a finding before an unread upload. The
@@ -784,9 +791,7 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	case ScannerParser:
 		// These prefixes are emitted by request-body inspection when its
 		// configured read ceiling prevents complete scanning.
-		if strings.HasPrefix(reason, "request body exceeds max_body_bytes (") ||
-			strings.HasPrefix(reason, "multipart headers exceed max_body_bytes (") ||
-			strings.HasPrefix(reason, "multipart part exceeds max_body_bytes (") {
+		if isBodySizeLimitReason(reason) {
 			return RemediationGuidance{
 				OperatorKnob: "Reduce the request body size, or raise `request_body_scanning.max_body_bytes` only to the largest verified body this route needs. Bodies over this ceiling block regardless of `request_body_scanning.action`.",
 				AgentReason:  protectiveCeilingAgentReason,

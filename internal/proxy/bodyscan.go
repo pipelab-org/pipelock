@@ -581,9 +581,21 @@ func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
 // or malformed input. These failures use the existing parser/parse_error labels.
 func bodyParserFailureOnly(result BodyScanResult, bodyBytes []byte) bool {
 	unread := !result.Clean && bodyBytes == nil || result.UnscannedEncoding || (result.FileInspectionBlock && result.FileInspectionIncomplete != "")
-	return unread && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
+	return unread && result.ScanError == "" && len(result.DLPMatches) == 0 && len(result.InjectionMatches) == 0 &&
 		len(result.AddressFindings) == 0 && result.EntropyFinding == nil &&
 		result.RedactionBlockReason == ""
+}
+
+// bodyFailureLayer keeps scanner failures distinct from malformed or unread input.
+// Both retain the existing fail-closed body verdict and public parse_error reason.
+func bodyFailureLayer(result BodyScanResult, bodyBytes []byte) string {
+	if result.ScanError != "" {
+		return scanner.ScannerContext
+	}
+	if bodyParserFailureOnly(result, bodyBytes) {
+		return scanner.ScannerParser
+	}
+	return ""
 }
 
 // recordIncompleteFileObservation emits the body-DLP audit event and counter
@@ -648,6 +660,8 @@ func (r BodyScanResult) IsEntropyOnly() bool {
 
 // BodyScanResult describes the outcome of scanning a request body or headers.
 type BodyScanResult struct {
+	// ScanError preserves ResponseScanResult.ScanError for incomplete scans.
+	ScanError string
 	// FileInspectionIncomplete names a recognized upload that was not fully read.
 	FileInspectionIncomplete string
 	// FileInspectionBlock is set only for enforced request-body block policy.
@@ -1081,7 +1095,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	for _, text := range texts {
 		injectionResult := req.Scanner.ScanResponse(ctx, text)
 		if injectionResult.Failed() {
-			return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+			return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 		}
 		if !injectionResult.Clean {
 			result.InjectionMatches = append(result.InjectionMatches, injectionResult.Matches...)
@@ -1096,7 +1110,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	var inOrderInjection, sortedInjection []scanner.ResponseMatch
 	injectionResult := req.Scanner.ScanResponse(ctx, joinedInOrder)
 	if injectionResult.Failed() {
-		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
 		inOrderInjection = injectionResult.Matches
@@ -1108,7 +1122,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	joined := strings.Join(sorted, "\n")
 	injectionResult = req.Scanner.ScanResponse(ctx, joined)
 	if injectionResult.Failed() {
-		return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + injectionResult.ScanError}
+		return nil, BodyScanResult{Action: config.ActionBlock, ScanError: injectionResult.ScanError, Reason: "request body scan failed: " + injectionResult.ScanError}
 	}
 	if !injectionResult.Clean {
 		sortedInjection = injectionResult.Matches
@@ -1126,7 +1140,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		for _, joinedFields := range joinedFields {
 			fieldResult := req.Scanner.ScanResponse(ctx, joinedFields)
 			if fieldResult.Failed() {
-				return nil, BodyScanResult{Action: config.ActionBlock, Reason: "request body scan failed: " + fieldResult.ScanError}
+				return nil, BodyScanResult{Action: config.ActionBlock, ScanError: fieldResult.ScanError, Reason: "request body scan failed: " + fieldResult.ScanError}
 			}
 			fieldInjection = mergeJoinedInjectionMatches(fieldInjection, fieldResult.Matches)
 		}

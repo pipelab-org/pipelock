@@ -2179,10 +2179,10 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 	if signalScanner == "" {
 		signalScanner = layer
 	}
-	if bodyParserFailureOnly(result, bodyBytes) {
-		layer = scanner.ScannerParser
+	if failureLayer := bodyFailureLayer(result, bodyBytes); failureLayer != "" {
+		layer = failureLayer
 		bodyBlockReason = blockreason.ParseError
-		signalScanner = scanner.ScannerParser
+		signalScanner = failureLayer
 	}
 	if promptInjectionHardBlock || dlpHardBlock || isFailClosedBodyResult(result, bodyBytes) {
 		rp.metrics.RecordReverseProxyRequest(r.Method, "403")
