@@ -5017,6 +5017,41 @@ func TestValidate_NonLoopbackListenWarning(t *testing.T) {
 	}
 }
 
+// A specific non-loopback address is reachable from its network even though
+// it is not a wildcard, so it keeps its own warning without a metrics claim.
+func TestValidate_SpecificNonLoopbackListenWarning(t *testing.T) {
+	for _, listen := range []string{"192.0.2.10:8888", "[2001:db8::10]:8888"} {
+		cfg := Defaults()
+		cfg.FetchProxy.Listen = listen
+		warnings, err := cfg.ValidateWithWarnings()
+		if err != nil {
+			t.Fatalf("%s: non-loopback listen should validate: %v", listen, err)
+		}
+		found := false
+		for _, warning := range warnings {
+			if warning.Field != "fetch_proxy.listen" {
+				continue
+			}
+			if strings.Contains(warning.Message, "/metrics") || strings.Contains(warning.Message, "/stats") {
+				t.Fatalf("%s: agent listener warning claims counter exposure: %+v", listen, warning)
+			}
+			found = strings.Contains(warning.Message, "not loopback")
+		}
+		if !found {
+			t.Fatalf("%s: expected non-loopback fetch_proxy.listen warning, got %+v", listen, warnings)
+		}
+	}
+	cfg := Defaults()
+	cfg.FetchProxy.Listen = "127.0.0.1:8888"
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasConfigWarning(warnings, "fetch_proxy.listen") {
+		t.Fatalf("loopback listen warned: %+v", warnings)
+	}
+}
+
 // --- MCP Input Scanning Validation ---
 
 func TestValidate_MCPInputScanningValidActions(t *testing.T) {
