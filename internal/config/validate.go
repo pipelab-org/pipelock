@@ -1605,10 +1605,10 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 			}
 		}
 		if p.Validator != "" {
-			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF
+			valid := p.Validator == ValidatorLuhn || p.Validator == ValidatorMod97 || p.Validator == ValidatorABA || p.Validator == ValidatorWIF || p.Validator == ValidatorDEA || p.Validator == ValidatorNPI
 			if !valid {
-				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s)",
-					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF)
+				return fmt.Errorf("DLP pattern %q has unknown validator %q (valid: %s, %s, %s, %s, %s, %s)",
+					p.Name, p.Validator, ValidatorLuhn, ValidatorMod97, ValidatorABA, ValidatorWIF, ValidatorDEA, ValidatorNPI)
 			}
 		}
 		if err := ValidateTrustedDomains(p.ExemptDomains, fmt.Sprintf("DLP pattern %q exempt_domains", p.Name)); err != nil {
