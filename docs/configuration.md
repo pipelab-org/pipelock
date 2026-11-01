@@ -66,6 +66,7 @@ explain_blocks: false         # true = include fix hints in block responses
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `metrics_listen` | string | `""` | Dedicated listener for `/metrics` and `/stats`; omitted, null, or blank exposes neither route. Never served on the proxy port. Requires restart; restrict agent network access. |
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
 | `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
@@ -2289,7 +2290,7 @@ Session profiling detects domain bursts (many unique domains in a short window).
 
 The runtime contract points every supported client, including `NODE_EXTRA_CA_CERTS`, at `/etc/pipelock/combined-ca.pem`. Install refreshes `/etc/pipelock/ca.pem` from the CA in the contain-managed keystore on every run, rebuilds the combined bundle, and refuses success when the export does not match it. Two Pipelock CAs can share a subject name, so the comparison is on certificate material; a check that compares subject names reports agreement between a stale export and a current CA. After an intentional CA rotation, run `sudo pipelock contain ca-refresh` and confirm `pipelock contain verify` is green before launching tools.
 
-Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. An ordinary deployment may use its own network controls for that listener.
+Set `metrics_listen` to place `/metrics` and `/stats` on a dedicated address and port. The metrics port must differ from the proxy port. Omitted, YAML null, or blank values expose neither route, while counters still collect internally. The proxy listener never serves these routes. Address changes require restart. The dedicated listener has no authentication, so use network controls to deny direct agent access.
 
 Containment uses loopback by default. A contained runtime can expose `/metrics` on an assigned numeric non-loopback address only with this explicit, time-limited policy:
 
@@ -2410,7 +2411,9 @@ the HTTP front door: the three endpoint exemptions cover requests made to
 Pipelock's own `/health` and `/metrics` paths and its kill-switch and session
 admin routes under `/api/v1` (on the main port only when the API has no
 separate port), never a forward-proxy
-or CONNECT request that happens to name those paths on another host, and
+or CONNECT request that happens to name those paths on another host. The proxy
+port no longer serves `/metrics`, so `metrics_exempt` has no effect there, and
+the kill switch never gates the dedicated `metrics_listen` listener. Separately,
 `allowlist_ips` matches the client address of HTTP, forward-proxy and
 intercepted CONNECT requests. MCP transports (stdio, the stdio-to-HTTP bridge
 and the HTTP listener), the reverse proxy and established relay or WebSocket
@@ -2443,7 +2446,7 @@ kill_switch:
 | `sentinel_file` | `""` | No | File presence activates kill switch |
 | `message` | `"Emergency deny-all active"` | No | Rejection message |
 | `health_exempt` | `true` | No | /health bypasses kill switch |
-| `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
+| `metrics_exempt` | `true` | No | No effect: the proxy port doesn't serve `/metrics`, and the kill switch never gates the dedicated `metrics_listen` listener |
 | `api_exempt` | `true` | No | The kill switch and session admin routes under `/api/v1` on the main port bypass it; other `/api/v1` routes do not. Ignored when `api_listen` is set |
 | `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_token_file` | `""` | No | Native token file, mutually exclusive with `api_token`. Supports `$CREDENTIALS_DIRECTORY/ID`; see [service credentials](guides/service-credentials.md) for permissions, precedence, reload, and migration. |

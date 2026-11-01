@@ -148,6 +148,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 	report.Checks = []doctorReportCheck{
 		checkDoctorPromptInjectionDetection(cfg),
 		checkDoctorHTTPProxy(cfg),
+		checkDoctorMetrics(cfg),
 		checkDoctorTLSInterception(cfg),
 		checkDoctorTLSInterceptionCoverage(cfg),
 		checkDoctorRequestBodyScanning(cfg),
@@ -344,6 +345,18 @@ func doctorLicensePublicKey(cfg *config.Config) (ed25519.PublicKey, error) {
 		return nil, errors.New("invalid license public key")
 	}
 	return ed25519.PublicKey(keyBytes), nil
+}
+
+func checkDoctorMetrics(cfg *config.Config) doctorReportCheck {
+	check := doctorReportCheck{
+		Name: "metrics", Surface: doctorSurfaceHTTP, Status: doctorStatusInfo,
+		Detail: "metrics are not exposed unless metrics_listen is set; counters still collect internally",
+	}
+	if cfg.MetricsListen != "" {
+		check.Configured = true
+		check.Detail = "dedicated metrics listener configured at " + cfg.MetricsListen + "; restrict network access from agents"
+	}
+	return check
 }
 
 func checkDoctorHTTPProxy(cfg *config.Config) doctorReportCheck {

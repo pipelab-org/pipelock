@@ -172,8 +172,8 @@ The proxy listens on `127.0.0.1:8888` by default and exposes:
 |----------|---------|
 | `/fetch?url=<target>` | Fetch a URL through the scanner |
 | `/health` | Health check |
-| `/metrics` | Prometheus metrics |
-| `/stats` | JSON statistics |
+
+The proxy port doesn't serve `/metrics` or `/stats`. Set `metrics_listen` to serve them on a dedicated listener; see [Metrics](../metrics.md).
 
 ### Claude Code Hooks (PreToolUse)
 

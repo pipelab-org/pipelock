@@ -4161,37 +4161,6 @@ func TestKillSwitch_ExemptsHealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestKillSwitch_ExemptsMetricsEndpoint(t *testing.T) {
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
-	cfg.KillSwitch.Enabled = true
-
-	logger := audit.NewNop()
-	sc := scanner.MustNew(cfg)
-	m := metrics.New()
-	ks := killswitch.New(cfg)
-	p, err := New(cfg, logger, sc, m, WithKillSwitch(ks))
-	if err != nil {
-		t.Fatalf("proxy.New: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "# HELP test\n")
-	})
-	handler := p.buildHandler(mux)
-
-	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected /metrics to be exempt, got status %d", w.Code)
-	}
-}
-
 func TestKillSwitch_AllowlistIP(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
@@ -4261,19 +4230,7 @@ func TestMetricsNotOnMainPort_WhenMetricsListenSet(t *testing.T) {
 		t.Fatalf("proxy.New: %v", err)
 	}
 
-	// Start populates the mux; we call it directly via the exported path.
-	// Instead of starting the server, manually build the mux as Start() does.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/fetch", p.handleFetch)
-	mux.HandleFunc("/ws", p.handleWebSocket)
-	mux.HandleFunc("/health", p.handleHealth)
-	// Conditional registration mirrors Start():
-	if cfg.MetricsListen == "" {
-		mux.Handle("/metrics", m.PrometheusHandler())
-		mux.HandleFunc("/stats", m.StatsHandler())
-	}
-
-	handler := p.buildHandler(mux)
+	handler := p.Handler()
 
 	// /metrics should 404 on main port.
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
@@ -4817,8 +4774,9 @@ func TestHandler_ServesEndpoints(t *testing.T) {
 		status int
 	}{
 		{"/health", http.StatusOK},
-		{"/metrics", http.StatusOK},
-		{"/stats", http.StatusOK},
+		// Enforcement counters are available only on a dedicated listener.
+		{"/metrics", http.StatusNotFound},
+		{"/stats", http.StatusNotFound},
 	}
 	for _, ep := range endpoints {
 		t.Run(ep.path, func(t *testing.T) {
