@@ -69,7 +69,7 @@ func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
 		t.Fatal("launch omitted child enforcement callback")
 	}
 	proof := guardfs.NewExecutionProof(
-		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull},
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull, Withheld: []string{guardfs.ReferWithheldReason}},
 		guardfs.ExecControlOptions{PolicyHash: got.GuardPolicyHash, Workspace: workspace, TempDir: workspace, Binary: "/usr/bin/true"},
 		[]string{"/usr/bin/true"},
 	)
@@ -722,8 +722,15 @@ func TestGuardEvidenceRecordsPreExecApplicationWithoutClaimingCommandStart(t *te
 	}
 	evidence.onRequiredFailure = func(error) {}
 	wantHash := strings.Repeat("a", 64)
-	wantExecutionHash := strings.Repeat("b", 64)
-	if err := evidence.activate(guardfs.ExecutionProof{ConfigPolicyHash: wantHash, EffectivePolicyHash: wantExecutionHash, Binary: "/usr/bin/true"}); err != nil {
+	proof := guardfs.NewExecutionProof(
+		guardfs.EnforcementRecord{State: guardfs.EnforcementEnforced, Mechanism: "landlock", Coverage: guardfs.CoverageFull, Withheld: []string{guardfs.ReferWithheldReason}},
+		guardfs.ExecControlOptions{PolicyHash: wantHash, Binary: "/usr/bin/true"}, []string{"/usr/bin/true"},
+	)
+	if err := proof.Verify(wantHash); err != nil {
+		t.Fatal(err)
+	}
+	wantExecutionHash := proof.EffectivePolicyHash
+	if err := evidence.activate(proof); err != nil {
 		t.Fatalf("activate Guard evidence: %v", err)
 	}
 	evidence.close()
@@ -861,22 +868,28 @@ func TestGuardEvidenceActivationHandlesUnhealthyEmitter(t *testing.T) {
 	}
 }
 
-func TestGuardPreflightRefusesKernelWithoutReferErratum(t *testing.T) {
+func TestGuardPreflightWarnsWithoutReferErratum(t *testing.T) {
 	original := guardReferErratumMissing
 	t.Cleanup(func() { guardReferErratumMissing = original })
 	workspace := t.TempDir()
+	guardReferErratumMissing = func() bool { return false }
+	baseline, err := GuardPreflight(config.Defaults(), "", workspace, []string{"/usr/bin/true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("baseline preflight status=%s", baseline.Status)
 	for _, missing := range []bool{true, false} {
 		guardReferErratumMissing = func() bool { return missing }
 		result, err := GuardPreflight(config.Defaults(), "", workspace, []string{"/usr/bin/true"})
 		if err != nil {
 			t.Fatalf("GuardPreflight: %v", err)
 		}
-		reported := slices.Contains(result.Errors, guardfs.ErrReferErratumUnconfirmed.Error())
-		if reported != missing {
-			t.Fatalf("missing=%v: erratum error reported=%v, errors=%v", missing, reported, result.Errors)
+		reported := slices.Contains(result.Warnings, guardfs.ReferWithheldReason)
+		if reported != missing || slices.Contains(result.Errors, guardfs.ReferWithheldReason) {
+			t.Fatalf("missing=%v: warnings=%v errors=%v", missing, result.Warnings, result.Errors)
 		}
-		if missing && result.Status != sandbox.StatusError {
-			t.Fatalf("missing erratum preflight status = %q, want %q", result.Status, sandbox.StatusError)
+		if result.Status != baseline.Status || !slices.Equal(result.Errors, baseline.Errors) {
+			t.Fatalf("erratum warning changed readiness: baseline=%+v result=%+v", baseline, result)
 		}
 	}
 }

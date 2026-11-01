@@ -78,7 +78,10 @@ func TestPrepare_RechecksFloorOnResolvedTarget(t *testing.T) {
 }
 
 func TestCreateLeaf_ExistingLeafIsGranted(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "parent")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	state := filepath.Join(root, "state")
 	if err := os.Mkdir(state, 0o750); err != nil {
 		t.Fatal(err)

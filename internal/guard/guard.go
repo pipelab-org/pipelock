@@ -85,11 +85,11 @@ var (
 	// Landlock restrictions stack and cannot be lifted, so a second application
 	// would intersect the policy with itself and narrow it for good.
 	ErrAlreadyApplied = errors.New("guard manifest has already been applied")
-
-	// ErrReferErratumUnconfirmed is returned when a writable directory grant
-	// needs REFER but the kernel does not report Landlock erratum 3 fixed.
-	ErrReferErratumUnconfirmed = errors.New("writable directory grants require landlock erratum 3 (disconnected directory handling) to be reported fixed; refusing rather than removing cross-directory rename and link support")
 )
+
+// ReferWithheldReason describes the functionality denied when erratum 3 is
+// unconfirmed. Withholding REFER preserves mediation rather than disabling it.
+const ReferWithheldReason = "cross-directory rename and link are denied because Landlock erratum 3 is not reported fixed."
 
 // AccessKind is the grant a manifest entry asks for.
 type AccessKind string
@@ -203,6 +203,9 @@ type EnforcementRecord struct {
 	// security postures, and an operator reading evidence months later needs to
 	// see which one they had.
 	Unmediated []string `json:"unmediated,omitempty"`
+	// Withheld names functionality deliberately denied while mediation remains
+	// in force. Empty values are omitted to preserve existing proof hashes.
+	Withheld []string `json:"withheld,omitempty"`
 	// Unverified names declared paths whose grant could not be confirmed after
 	// enforcement, as distinct from paths confirmed to be narrowed. A
 	// filesystem that cannot answer the question is not evidence of a problem
@@ -250,14 +253,21 @@ func (r EnforcementRecord) Describe() string {
 	}
 	switch r.State {
 	case EnforcementEnforced:
-		if r.Coverage == CoverageFull {
-			return fmt.Sprintf("ENFORCED via %s, full mediation (ABI %s)", r.Mechanism, observed)
+		mediation := "full mediation"
+		if r.Coverage != CoverageFull {
+			mediation = "PARTIAL mediation"
 		}
-		// The caveat is part of the headline, not a footnote. An operator who
-		// reads only the first line must not come away believing sockets were
-		// covered when they were not.
-		return fmt.Sprintf("ENFORCED via %s, PARTIAL mediation (ABI %s): not mediated: %s",
-			r.Mechanism, observed, strings.Join(r.Unmediated, ", "))
+		if len(r.Unverified) > 0 {
+			mediation += fmt.Sprintf("; %d grants unverified", len(r.Unverified))
+		}
+		line := fmt.Sprintf("ENFORCED via %s, %s (ABI %s)", r.Mechanism, mediation, observed)
+		if r.Coverage != CoverageFull {
+			line += ": not mediated: " + strings.Join(r.Unmediated, ", ")
+		}
+		if len(r.Withheld) > 0 {
+			line += "; withheld: " + strings.Join(r.Withheld, "; ")
+		}
+		return line
 	case EnforcementAppliedNarrowed:
 		// The leading clause says the process IS restricted, because it is, and
 		// an operator who reads only the first line must not conclude the run

@@ -121,7 +121,10 @@ func outcomeFor(t *testing.T, p *guard.PreparedManifest, declared string) guard.
 // TestPrepare_CreatesMissingWritableLeaf covers the normal first-run state:
 // the declared directory does not exist yet.
 func TestPrepare_CreatesMissingWritableLeaf(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "parent")
+	if err := os.Mkdir(root, 0o750); err != nil {
+		t.Fatal(err)
+	}
 	state := filepath.Join(root, "state")
 
 	cfg := newConfig(t, config.GuardManifest{Name: "m", ReadWriteDirectories: []string{state}})

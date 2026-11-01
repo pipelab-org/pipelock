@@ -244,8 +244,13 @@ func (r *trackedReadCloser) Close() error {
 }
 
 func TestRunExecWithAppliesPolicyAndReplacesProcess(t *testing.T) {
-	workspace := t.TempDir()
-	tempDir := t.TempDir()
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	tempDir := filepath.Join(t.TempDir(), "temp")
+	for _, dir := range []string{workspace, tempDir} {
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Setenv(execWorkspaceEnv, workspace)
 	t.Setenv(execTempDirEnv, tempDir)
 	t.Setenv(execPolicyHashEnv, "policy-hash")
@@ -535,8 +540,15 @@ func TestRunExecWithKeepsOuterThreadPinThroughReplacement(t *testing.T) {
 // These use fake syscalls: no test thread acquires a real NNP or Landlock
 // restriction. Each subtest exits with any retained pin, retiring that thread.
 func TestRunExecWithThreadRetirement(t *testing.T) {
-	t.Setenv(execWorkspaceEnv, t.TempDir())
-	t.Setenv(execTempDirEnv, t.TempDir())
+	workspace := filepath.Join(t.TempDir(), "workspace")
+	tempDir := filepath.Join(t.TempDir(), "temp")
+	for _, dir := range []string{workspace, tempDir} {
+		if err := os.Mkdir(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(execWorkspaceEnv, workspace)
+	t.Setenv(execTempDirEnv, tempDir)
 	t.Setenv(execPolicyHashEnv, "policy-hash")
 	t.Setenv(execBinaryEnv, "/usr/bin/true")
 	t.Setenv(execDeclarationEnv, `{}`)

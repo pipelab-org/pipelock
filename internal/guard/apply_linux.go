@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
@@ -120,9 +121,9 @@ func (p *PreparedManifest) applyMode(getABI func() (int, error), threadSync bool
 }
 
 // ReferErratumMissing reports whether Landlock is present but cannot confirm
-// erratum 3. Apply then refuses writable directory grants, and every Guard
-// launch grants its workspace writable. An unreadable ABI returns false, so
-// callers must report Landlock availability separately.
+// erratum 3. Apply then withholds cross-directory rename and link rights. An
+// unreadable ABI returns false, so callers must report Landlock availability
+// separately.
 func ReferErratumMissing() bool {
 	return referErratumMissing(llsys.LandlockGetABIVersion, llsys.LandlockGetErrata)
 }
@@ -229,17 +230,23 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 		return record, ErrManifestIncomplete
 	}
 
-	// Writable directories promise cross-directory rename/link support. Refuse
-	// instead of silently removing that grant when erratum 3 is unconfirmed.
+	// Erratum 3's widening needs a REFER grant. Keep REFER handled, but
+	// withhold it from every path when the fix cannot be confirmed, as the
+	// sandbox does. The kernel then denies cross-directory rename/link with
+	// EXDEV while the remaining restriction stays enforced.
 	// See Documentation/userspace-api/landlock.rst, "Landlock errata":
 	// https://docs.kernel.org/userspace-api/landlock.html#landlock-errata
-	for _, rule := range p.rules {
+	// Clone so a setup failure does not alter the prepared grants for a retry.
+	rules := slices.Clone(p.rules)
+	for _, rule := range rules {
 		if rule.access&llsys.AccessFSRefer == 0 {
 			continue
 		}
 		if !landlockcompat.ReferAllowed(abi, ops.getErrata) {
-			record.Reason = ErrReferErratumUnconfirmed.Error()
-			return record, ErrReferErratumUnconfirmed
+			for i := range rules {
+				rules[i].access &^= llsys.AccessFSRefer
+			}
+			record.Withheld = []string{ReferWithheldReason}
 		}
 		break
 	}
@@ -254,7 +261,7 @@ func (p *PreparedManifest) applyWithOperations(ops rulesetOperations, threadSync
 	}
 	defer func() { _ = ops.closeFD(rulesetFD) }()
 
-	for _, rule := range p.rules {
+	for _, rule := range rules {
 		attr := llsys.PathBeneathAttr{
 			AllowedAccess: rule.access,
 			ParentFd:      rule.fd,

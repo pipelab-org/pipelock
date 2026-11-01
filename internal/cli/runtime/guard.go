@@ -77,11 +77,10 @@ func GuardPreflight(cfg *config.Config, profile, workspace string, command []str
 		RequireLandlock:     true,
 		MinimumLandlockABI:  guardfs.MinimumABI,
 	})
-	// The workspace is always a writable directory grant, so a launch on this
-	// kernel would be refused when enforcement is applied.
+	// The workspace is always writable. A missing erratum fix withholds
+	// cross-directory rename/link without making an otherwise ready launch fail.
 	if guardReferErratumMissing() {
-		result.Status = sandbox.StatusError
-		result.Errors = append(result.Errors, guardfs.ErrReferErratumUnconfirmed.Error())
+		result.Warnings = append(result.Warnings, guardfs.ReferWithheldReason)
 	}
 	return result, nil
 }

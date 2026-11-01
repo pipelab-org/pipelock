@@ -6,11 +6,8 @@ the selected manifest and fixed runtime paths, routes HTTP and HTTPS through
 Pipelock, and denies direct TCP, UDP, QUIC, and child DNS with a required
 network namespace.
 
-The preview requires Linux, user and network namespaces, and Landlock ABI 5 or
-newer. Writable directory grants also require the kernel to report
-[Landlock erratum 3](https://docs.kernel.org/userspace-api/landlock.html#landlock-errata)
-as fixed. Guard refuses the launch if the fix is missing or cannot be queried,
-rather than silently removing cross-directory rename and hard-link support.
+The preview requires Linux, user and network namespaces, and Landlock ABI 5 or newer. If the kernel doesn't report [Landlock erratum 3](https://docs.kernel.org/userspace-api/landlock.html#landlock-errata) as fixed, including when the errata query is unavailable, Guard withholds `REFER` and keeps the restriction enforced. Same-directory renames and hard links remain available. Cross-directory renames and links fail with `EXDEV`, including moves within the workspace, as in the [sandbox](../guides/sandbox.md). Guard keeps `REFER` in the handled set and grants it to no path.
+
 Host file ownership maps to the caller's UID and GID, but the namespace
 UID can appear as 0. Writable manifest paths must belong to the caller and
 cannot be group- or world-writable. Exact service grants cover one TCP host and
@@ -40,9 +37,11 @@ pipelock guard --config pipelock.yaml --profile worker --workspace /opt/app --dr
 
 The separator is required. Arguments after `--` belong to the command. Guard
 returns the command's exit code. `--dry-run` validates the declaration and
-checks the kernel isolation primitives, including the erratum 3 fix, without
-launching the command. Post-restriction access probes run only when enforcement
-is applied.
+checks the kernel isolation primitives without launching the command. A missing erratum 3 fix adds the warning `cross-directory rename and link are denied because Landlock erratum 3 is not reported fixed.` An otherwise ready preflight stays ready. Post-restriction access probes run only when enforcement is applied.
+
+The enforcement record carries that same sentence in its `withheld` list and on the enforced headline. This records denied functionality separately from `unmediated` capabilities; it doesn't reduce mediation coverage. Empty `withheld` values are omitted from JSON, preserving existing execution-proof bytes and hashes. A non-empty list is part of the effective invocation hash. Older typed proof verifiers that discard this new field reject such a proof with a hash mismatch. Receipt verifiers check the signed pre-exec receipt and its `guard-exec:` digest binding; they don't reconstruct the child execution proof.
+
+When post-restriction probes can't confirm a grant, the headline includes the count, for example `full mediation; 2 grants unverified`. Mediation coverage and grant verification answer separate questions.
 
 The `show` and `explain` subcommands remain read-only. Their human and JSON
 output says that the inspection itself did not enforce anything. Run output
