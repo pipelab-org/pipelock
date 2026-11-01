@@ -107,8 +107,9 @@ func (p *PreparedManifest) Close() error {
 // Two deliberate departures from the library's defaults:
 //
 //   - Refer permits cross-directory rename and hard-link operations beneath
-//     writable grants. Apply refuses these grants unless the kernel reports
-//     erratum 3 fixed, rather than silently removing that capability.
+//     writable grants. Unless the kernel reports erratum 3 fixed, Apply keeps
+//     Refer handled but removes it from every grant and names the denied
+//     operations in the record's Withheld list; enforcement continues.
 //     Same-directory rename does not require Refer.
 //   - ResolveUnix is NOT granted, so connect(2) on a pathname Unix socket
 //     inside a writable directory is denied. A writable state directory is not
