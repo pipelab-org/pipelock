@@ -9,6 +9,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,35 +26,57 @@ import (
 const sandboxUnavailableMarker = "PIPELOCK-TEST-SANDBOX-UNAVAILABLE: "
 
 // skipChildWithoutSandboxLaunch runs inside the re-executed child. It launches
-// a trivial sandboxed command, as the sandbox package's own launch tests do,
-// and skips when the runner cannot create one (for example, when the network
-// namespace cannot configure loopback).
+// a trivial sandboxed command with a bridge socket, which makes sandbox-init
+// bring up loopback in the new network namespace, as both the standalone
+// sandbox and the MCP bridge do. It skips only for known runner limits: no
+// user namespaces, or a namespace that cannot configure loopback. Any other
+// launch failure is a regression and fails the test.
 func skipChildWithoutSandboxLaunch(t *testing.T) {
 	t.Helper()
 	reason := ""
 	if caps := sandbox.Detect(); !caps.UserNamespaces {
 		reason = "user namespaces unavailable"
 	} else {
+		// Unix socket paths are short; t.TempDir can exceed the limit.
+		sockDir, err := os.MkdirTemp("", "plprobe")
+		if err != nil {
+			t.Fatalf("probe socket dir: %v", err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+		sockPath := filepath.Join(sockDir, "bridge.sock")
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "unix", sockPath)
+		if err != nil {
+			t.Fatalf("probe bridge listener: %v", err)
+		}
+		t.Cleanup(func() { _ = ln.Close() })
+
 		ctx, cancel := context.WithTimeout(context.Background(), testwait.Deadline(10*time.Second))
 		defer cancel()
 		var stderr bytes.Buffer
-		cmd, err := sandbox.LaunchSandboxed(sandbox.LaunchConfig{Ctx: ctx, Command: []string{"true"}, Workspace: t.TempDir(), Stderr: &stderr})
+		cmd, err := sandbox.LaunchSandboxed(sandbox.LaunchConfig{
+			Ctx:              ctx,
+			Command:          []string{"true"},
+			Workspace:        t.TempDir(),
+			BridgeSocketPath: sockPath,
+			Stderr:           &stderr,
+		})
 		if err == nil {
 			err = cmd.Wait()
 		}
-		if err != nil {
-			// Only the conditions below are known runner limits. Any other
-			// launch failure is a regression and must fail, not skip.
+		const loopbackFailure = "[sandbox] loopback:"
+		switch {
+		case err != nil && strings.Contains(stderr.String(), loopbackFailure):
+			// sandbox-init exits when loopback cannot be configured; these
+			// tests reach the proxy over loopback, so they cannot pass here.
+			_, line, _ := strings.Cut(stderr.String(), loopbackFailure)
+			line, _, _ = strings.Cut(line, "\n")
+			reason = "loopback: " + strings.TrimSpace(line)
+		case err != nil:
 			t.Fatalf("sandbox probe launch failed: %v: %s", err, strings.TrimSpace(stderr.String()))
-		}
-		if strings.Contains(stderr.String(), "[sandbox] loopback:") {
-			// The child reports a loopback failure and keeps running; these
-			// tests reach the proxy over loopback, so they cannot pass.
-			reason = strings.TrimSpace(stderr.String())
 		}
 	}
 	if reason != "" {
-		fmt.Printf("%s%s\n", sandboxUnavailableMarker, strings.ReplaceAll(reason, "\n", " "))
+		fmt.Printf("%s%s\n", sandboxUnavailableMarker, reason)
 		t.Skip("sandbox launch unavailable: " + reason)
 	}
 }
