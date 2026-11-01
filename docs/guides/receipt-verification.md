@@ -325,7 +325,8 @@ chain keeps analyzing that chain and names the run chains on stderr. An
 explicit `--session` is used exactly as given. Completeness analysis does not
 read receipt-group shards (`flight_recorder.receipt_chains` above 1); for a
 directory that holds them it exits 2 and names `pipelock-verifier chain
-RUNDIR --dir`, which verifies the group.
+RUNDIR --dir --key KEY`, which verifies the group against the trusted signer
+key.
 
 Exit code 0 means a LIMITED result. Exit code 1 means BROKEN or UNVERIFIED
 completeness evidence (UNVERIFIED includes a directory with no matching

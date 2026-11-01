@@ -159,7 +159,7 @@ func resolveCompletenessSession(dir, base string) (string, []string, error) {
 		return "", nil, fmt.Errorf("list receipt chains: %w", err)
 	}
 	if grouped := len(sessions) - len(legacy); grouped > 0 {
-		msg := fmt.Sprintf("%s holds %d receipt-group shard(s) for base %q, which completeness analysis does not read; verify them with pipelock-verifier chain %s --dir",
+		msg := fmt.Sprintf("%s holds %d receipt-group shard(s) for base %q, which completeness analysis does not read; verify them with pipelock-verifier chain %s --dir --key <trusted signer key>",
 			dir, grouped, base, dir)
 		if len(legacy) > 0 {
 			msg += fmt.Sprintf("; pass --session to analyze one of the ungrouped chains (%s)", strings.Join(legacy, ", "))

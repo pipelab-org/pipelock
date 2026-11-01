@@ -919,7 +919,7 @@ func TestCompletenessCLIGroupedDirectoryNamesTheGroupVerifier(t *testing.T) {
 	if code != cliutil.ExitConfig || stdout != "" {
 		t.Fatalf("grouped directory: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
-	if !strings.Contains(stderr, "receipt-group shard") || !strings.Contains(stderr, "pipelock-verifier chain") ||
+	if !strings.Contains(stderr, "receipt-group shard") || !strings.Contains(stderr, "pipelock-verifier chain") || !strings.Contains(stderr, "--key") ||
 		strings.Contains(stderr, "--session") {
 		t.Fatalf("grouped directory hint must name the group verifier only: %q", stderr)
 	}
