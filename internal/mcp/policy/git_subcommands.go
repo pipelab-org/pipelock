@@ -248,7 +248,19 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
+	// executable marks that the current command's executable word is next:
+	// POSIX simple commands (Shell Command Language 2.9.1) begin with
+	// optional NAME=value assignments, then the command name. A command name
+	// the shell expands, such as $X, may run Git with any subcommand, so the
+	// proof cannot vouch for the command's options.
+	executable := !inGit
 	word := func(w gitWord) {
+		if executable && (w.literal || !shellAssignment.MatchString(w.text)) {
+			executable = false
+			if !w.literal && !strings.HasPrefix(w.text, "#") && !plainShellWord(w.text) {
+				p.unproved = true
+			}
+		}
 		switch state {
 		case seeking:
 			name := commandName(w.text)
@@ -333,7 +345,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			if state == global || state == value {
 				p.unproved = true
 			}
-			state, expanded = seeking, false
+			state, expanded, executable = seeking, false, true
 			start = i + 1
 		}
 	}
@@ -353,6 +365,10 @@ func viewsReadGit(word string) bool {
 	}
 	return false
 }
+
+// shellAssignment matches a variable assignment word: a name of letters,
+// digits and underscores not starting with a digit (POSIX XBD 3.216), then =.
+var shellAssignment = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
 
 // gitProofSeparators end a command in a shell command string: the separators
 // the normalized views split on, and backquote, which starts a command

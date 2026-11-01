@@ -126,3 +126,42 @@ func TestGitSubcommandWordAsExecutable(t *testing.T) {
 		}
 	}
 }
+
+// TestVariableCommandName checks a command whose name the shell expands, such
+// as $X: it may run Git with any subcommand, so its long options keep the
+// strictest reading. Assignments before the name, earlier commands and
+// literal argument-list elements do not count as an expanded name.
+func TestVariableCommandName(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tc := range []struct {
+		command string
+		block   bool
+	}{
+		{`X="git push"; $X --force origin main`, true},
+		{"$X --force origin main", true},
+		{"git ls-files --for=x; $X --force", true},
+		{"FOO=1 $X --force", true},
+		{`"$CMD" --for`, true},
+		// A variable program with a force- or hard-like option is blocked
+		// even when it is not Git.
+		{"$HOME/bin/deploy --force", true},
+		{"$EDITOR notes.txt", false},
+		{"$CC --help", false},
+		{"FOO=bar git fetch --force", false},
+		{`cd "/srv/repo" && git fetch --force`, false},
+		{"# note\ngit fetch --force", false},
+	} {
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{tc.command}, "command") {
+			if (got.Matched && got.Action == config.ActionBlock) != tc.block {
+				t.Errorf("%q %s: matched=%v rules=%v, want block=%v", tc.command, surface, got.Matched, got.Rules, tc.block)
+			}
+		}
+	}
+	// Without a recorded shape the values may be shell text, so only the
+	// shaped surfaces know these elements are literal.
+	for surface, got := range gitProofVerdicts(t, pc, "bash", []string{"$X", "--force"}, "argv") {
+		if surface != "CheckToolCall" && got.Matched {
+			t.Errorf("literal argv $X %s: matched=%v rules=%v, want allow", surface, got.Matched, got.Rules)
+		}
+	}
+}
