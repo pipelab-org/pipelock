@@ -105,6 +105,50 @@ class DurationTest(unittest.TestCase):
         children = [(f"a/b{i}/c", True) for i in range(4)]
         self.assertEqual(self.collect_events(self.paused_tree("TestSlash", children, 0.2))["TestSlash"], 0.4)
 
+    def test_slash_named_sibling_after_prefix_finishes(self):
+        # Go emits a completed sibling "a" before starting the sibling "a/b".
+        events = [
+            {"Action": "run", "Test": "TestSlash"},
+            {"Action": "run", "Test": "TestSlash/a"},
+            {"Action": "pass", "Test": "TestSlash/a", "Elapsed": 0},
+        ]
+        for index in range(4):
+            name = f"TestSlash/a/b{index}"
+            events.extend({"Action": action, "Test": name} for action in ("run", "pause"))
+        for index in range(4):
+            name = f"TestSlash/a/b{index}"
+            events.extend([
+                {"Action": "cont", "Test": name},
+                {"Action": "pass", "Test": name, "Elapsed": 0.25},
+            ])
+        events.append({"Action": "pass", "Test": "TestSlash", "Elapsed": 0})
+        self.assertEqual(self.collect_events(events)["TestSlash"], 0.5)
+
+    def test_retry_with_different_parent_does_not_lose_work(self):
+        nested = [
+            {"Action": "run", "Test": "TestRetry"},
+            {"Action": "run", "Test": "TestRetry/a"},
+            {"Action": "pause", "Test": "TestRetry/a"},
+            {"Action": "cont", "Test": "TestRetry/a"},
+            {"Action": "run", "Test": "TestRetry/a/b"},
+            {"Action": "pause", "Test": "TestRetry/a/b"},
+            {"Action": "cont", "Test": "TestRetry/a/b"},
+            {"Action": "pass", "Test": "TestRetry/a/b", "Elapsed": 2},
+            {"Action": "pass", "Test": "TestRetry/a", "Elapsed": 0},
+            {"Action": "pass", "Test": "TestRetry", "Elapsed": 0},
+        ]
+        sibling = [
+            {"Action": "run", "Test": "TestRetry"},
+            {"Action": "run", "Test": "TestRetry/a"},
+            {"Action": "pass", "Test": "TestRetry/a", "Elapsed": 0},
+            {"Action": "run", "Test": "TestRetry/a/b"},
+            {"Action": "pause", "Test": "TestRetry/a/b"},
+            {"Action": "cont", "Test": "TestRetry/a/b"},
+            {"Action": "pass", "Test": "TestRetry/a/b", "Elapsed": 2},
+            {"Action": "pass", "Test": "TestRetry", "Elapsed": 0},
+        ]
+        self.assertGreaterEqual(self.collect_events(nested, sibling)["TestRetry"], 1)
+
     def test_failed_or_incomplete_package_does_not_replace_prior(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "events"

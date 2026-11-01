@@ -102,7 +102,9 @@ def collect(
     events: dict[tuple[str, str], float | None] = {}
     incomplete: set[tuple[str, str]] = set()
     paused: set[tuple[str, str]] = set()
+    parents: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for path in paths:
+        active: set[tuple[str, str]] = set()
         pending: set[tuple[str, str]] = set()
         with path.open(encoding="utf-8", errors="replace") as stream:
             for line in stream:
@@ -122,9 +124,22 @@ def collect(
                 events.setdefault(key, None)
                 if action == "run":
                     pending.add(key)
+                    # Only an active prefix can have started this subtest.
+                    prefix = name
+                    while "/" in prefix:
+                        prefix = prefix.rsplit("/", 1)[0]
+                        parent = (package, prefix)
+                        if parent in active:
+                            parents.setdefault(key, set()).add(parent)
+                            break
+                    active.add(key)
                 elif action == "pause":
+                    active.discard(key)
                     paused.add(key)
+                elif action == "cont":
+                    active.add(key)
                 elif action in ("pass", "fail", "skip"):
+                    active.discard(key)
                     pending.discard(key)
                     if action == "fail":
                         incomplete.add((package, name.split("/", 1)[0]))
@@ -155,9 +170,9 @@ def collect(
     for key in sorted(events, key=lambda item: item[1].count("/"), reverse=True):
         package, name = key
         if key in paused and "/" in name:
-            parent = parent_of(package, name)
             work = (events[key] or 0.0) + paused_work.get(key, 0.0)
-            paused_work[parent] = paused_work.get(parent, 0.0) + work
+            for parent in parents.get(key, {parent_of(package, name)}):
+                paused_work[parent] = paused_work.get(parent, 0.0) + work
 
     measured: dict[str, dict[str, float]] = {}
     keys = {(pkg, name.split("/", 1)[0]) for pkg, name in events}
