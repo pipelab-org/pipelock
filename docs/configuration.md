@@ -2405,7 +2405,9 @@ the HTTP front door: the three endpoint exemptions cover requests made to
 Pipelock's own `/health` and `/metrics` paths and its kill-switch and session
 admin routes under `/api/v1` (on the main port only when the API has no
 separate port), never a forward-proxy
-or CONNECT request that happens to name those paths on another host, and
+or CONNECT request that happens to name those paths on another host. The proxy
+port no longer serves `/metrics`, so `metrics_exempt` has no effect there, and
+the kill switch never gates the dedicated `metrics_listen` listener. Separately,
 `allowlist_ips` matches the client address of HTTP, forward-proxy and
 intercepted CONNECT requests. MCP transports (stdio, the stdio-to-HTTP bridge
 and the HTTP listener), the reverse proxy and established relay or WebSocket
@@ -2438,7 +2440,7 @@ kill_switch:
 | `sentinel_file` | `""` | No | File presence activates kill switch |
 | `message` | `"Emergency deny-all active"` | No | Rejection message |
 | `health_exempt` | `true` | No | /health bypasses kill switch |
-| `metrics_exempt` | `true` | No | /metrics bypasses kill switch |
+| `metrics_exempt` | `true` | No | No effect: the proxy port doesn't serve `/metrics`, and the kill switch never gates the dedicated `metrics_listen` listener |
 | `api_exempt` | `true` | No | The kill switch and session admin routes under `/api/v1` on the main port bypass it; other `/api/v1` routes do not. Ignored when `api_listen` is set |
 | `api_token` | `""` | No | Bearer token for API endpoints. Can be overridden by `PIPELOCK_KILLSWITCH_API_TOKEN` env var. |
 | `api_token_file` | `""` | No | Native token file, mutually exclusive with `api_token`. Supports `$CREDENTIALS_DIRECTORY/ID`; see [service credentials](guides/service-credentials.md) for permissions, precedence, reload, and migration. |
