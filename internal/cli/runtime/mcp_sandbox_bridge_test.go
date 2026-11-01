@@ -23,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 )
 
@@ -58,15 +59,16 @@ func TestSetupMCPSandboxBridge_LinuxStartsBridge(t *testing.T) {
 
 	closeBridge, err := setupMCPSandboxBridge(
 		mcpSandboxBridgeSetupOptions{
-			Context:      context.Background(),
-			GOOS:         "linux",
-			Config:       cfg,
-			KillSwitch:   ks,
-			AuditLogger:  audit.NewNop(),
-			Stderr:       &stderr,
-			LaunchConfig: &launchCfg,
+			Context:          context.Background(),
+			GOOS:             "linux",
+			Config:           cfg,
+			KillSwitch:       ks,
+			MetricsBoundAddr: "127.0.0.2:9091",
+			AuditLogger:      audit.NewNop(),
+			Stderr:           &stderr,
+			LaunchConfig:     &launchCfg,
 			StartBridge: func(opts mcpSandboxBridgeStartOptions) (*mcpSandboxBridge, error) {
-				if opts.Config != cfg || opts.KillSwitch != ks {
+				if opts.Config != cfg || opts.KillSwitch != ks || opts.MetricsBoundAddr != "127.0.0.2:9091" {
 					t.Fatal("bridge start options did not preserve config and kill switch")
 				}
 				started = true
@@ -490,6 +492,54 @@ func TestMCPSandboxBridgeNeverServesMetrics(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+func TestMCPSandboxBridgeMetricsUsesBoundAddress(t *testing.T) {
+	// The configured target represents an earlier resolution. The listener's
+	// numeric address must win even when that snapshot names another local IP.
+	var output bytes.Buffer
+	stop, boundAddr, err := startDedicatedMetricsServer(t.Context(), "127.0.0.2:0", metrics.New(), &output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stop()
+	_, port, err := net.SplitHostPort(boundAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8"}
+	cfg.MetricsListen = net.JoinHostPort("127.0.0.1", port)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	bridge, err := startMCPSandboxBridge(mcpSandboxBridgeStartOptions{
+		Context: ctx, Config: cfg, KillSwitch: killswitch.New(cfg), AuditLogger: audit.NewNop(), MetricsBoundAddr: boundAddr,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+	transport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", bridge.SocketPath())
+	}}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	for _, route := range []string{"/metrics", "/stats"} {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, "http://bridge/fetch?url=http://"+boundAddr+route, nil)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		resp, doErr := client.Do(req)
+		if doErr != nil {
+			t.Fatal(doErr)
+		}
+		data, readErr := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if readErr != nil || resp.StatusCode != http.StatusForbidden || !bytes.Contains(data, []byte("ssrf_private_ip")) {
+			t.Fatalf("agent metrics dial %s = %d, %v, %s", route, resp.StatusCode, readErr, data)
 		}
 	}
 }

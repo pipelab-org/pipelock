@@ -17,11 +17,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestSandboxMetricsBindFailurePrecedesLaunch(t *testing.T) {
@@ -70,14 +72,31 @@ func TestSandboxMetricsListenerAndAgentRoutes(t *testing.T) {
 	if _, err := exec.LookPath("curl"); err != nil {
 		t.Skip("curl is required for real sandbox traffic")
 	}
-	for _, configured := range []bool{false, true} {
-		t.Run(fmt.Sprintf("configured=%t", configured), func(t *testing.T) {
+	for _, mode := range []string{"off", "numeric", "hostname-drift"} {
+		t.Run(mode, func(t *testing.T) {
+			configured := mode != "off"
 			workspace := t.TempDir()
 			metricsAddr := ""
 			body := "ssrf:\n  ip_allowlist: ['127.0.0.0/8']\n"
 			if configured {
 				metricsAddr = testport.ListenAddrs(t, 1)[0]
-				body += fmt.Sprintf("metrics_listen: %q\n", metricsAddr)
+				configuredAddr := metricsAddr
+				if mode == "hostname-drift" {
+					_, port, splitErr := net.SplitHostPort(metricsAddr)
+					if splitErr != nil {
+						t.Fatal(splitErr)
+					}
+					metricsAddr = net.JoinHostPort("127.0.0.2", port)
+					configuredAddr = net.JoinHostPort("metrics.vendor.example", port)
+					var lookups atomic.Int32
+					useMetricsTestDNS(t, func() [4]byte {
+						if lookups.Add(1) == 1 {
+							return [4]byte{127, 0, 0, 1}
+						}
+						return [4]byte{127, 0, 0, 2}
+					})
+				}
+				body += fmt.Sprintf("metrics_listen: %q\n", configuredAddr)
 			}
 			// The workload reaches this origin through its actual proxy bridge. The
 			// parent observes the dedicated listener while the workload is still live.
@@ -122,7 +141,11 @@ for route in health metrics stats; do
 curl --max-time 5 --noproxy '*' --fail -s "$HTTP_PROXY/fetch?url=$1" > origin-result
 `
 			cmd := SandboxCmd()
-			cmd.SetArgs([]string{"--config", path, "--workspace", workspace, "--best-effort", "--best-effort-reason", "test host isolation", "--best-effort-expiry", "1m", "--", "/bin/sh", "-c", script, "metrics-test", origin.URL})
+			if configured {
+				script += `curl --max-time 5 --noproxy '*' -s -o /dev/null -w '%{http_code}\n' "$HTTP_PROXY/fetch?url=http://$2/stats" > metrics-dial
+`
+			}
+			cmd.SetArgs([]string{"--config", path, "--workspace", workspace, "--best-effort", "--best-effort-reason", "test host isolation", "--best-effort-expiry", "1m", "--", "/bin/sh", "-c", script, "metrics-test", origin.URL, metricsAddr})
 			var output bytes.Buffer
 			cmd.SetOut(&output)
 			cmd.SetErr(&output)
@@ -150,6 +173,10 @@ curl --max-time 5 --noproxy '*' --fail -s "$HTTP_PROXY/fetch?url=$1" > origin-re
 					t.Fatal("unexpected metrics notice: " + output.String())
 				}
 			} else {
+				dialStatus, readErr := os.ReadFile(filepath.Clean(filepath.Join(workspace, "metrics-dial")))
+				if readErr != nil || string(dialStatus) != "403\n" {
+					t.Fatalf("agent metrics dial = %q, %v; output=%s", dialStatus, readErr, output.String())
+				}
 				rebound, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", metricsAddr)
 				if err != nil {
 					t.Fatalf("metrics listener leaked after workload exit: %v", err)
@@ -158,4 +185,44 @@ curl --max-time 5 --noproxy '*' --fail -s "$HTTP_PROXY/fetch?url=$1" > origin-re
 			}
 		})
 	}
+}
+
+// useMetricsTestDNS models a hostname resolving differently at config load and
+// listener bind. DNS responses use the standard wire codec, and the listener
+// still binds a real local TCP socket.
+func useMetricsTestDNS(t *testing.T, address func() [4]byte) {
+	t.Helper()
+	previous := net.DefaultResolver
+	net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		client, server := net.Pipe()
+		go func() {
+			defer func() { _ = server.Close() }()
+			var length [2]byte
+			if _, err := io.ReadFull(server, length[:]); err != nil {
+				return
+			}
+			packet := make([]byte, int(length[0])<<8|int(length[1]))
+			if _, err := io.ReadFull(server, packet); err != nil {
+				return
+			}
+			var query dnsmessage.Message
+			if err := query.Unpack(packet); err != nil {
+				return
+			}
+			reply := dnsmessage.Message{Header: dnsmessage.Header{ID: query.ID, Response: true, RecursionDesired: true, RecursionAvailable: true}, Questions: query.Questions}
+			for _, question := range query.Questions {
+				if question.Type == dnsmessage.TypeA {
+					reply.Answers = append(reply.Answers, dnsmessage.Resource{Header: dnsmessage.ResourceHeader{Name: question.Name, Type: dnsmessage.TypeA, Class: dnsmessage.ClassINET}, Body: &dnsmessage.AResource{A: address()}})
+				}
+			}
+			wire, err := reply.Pack()
+			if err != nil {
+				return
+			}
+			length[0], length[1] = byte((len(wire)>>8)&0xff), byte(len(wire)&0xff)
+			_, _ = server.Write(append(length[:], wire...))
+		}()
+		return client, nil
+	}}
+	t.Cleanup(func() { net.DefaultResolver = previous })
 }

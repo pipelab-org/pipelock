@@ -116,7 +116,7 @@ func TestServerMetricsRequireDedicatedListener(t *testing.T) {
 
 func TestDedicatedMetricsListenerStatsAndCleanup(t *testing.T) {
 	var output strings.Builder
-	stop, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", metrics.New(), &output)
+	stop, _, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", metrics.New(), &output)
 	if err != nil {
 		t.Fatal(err)
 	}

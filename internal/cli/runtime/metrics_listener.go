@@ -16,20 +16,20 @@ import (
 
 // startDedicatedMetricsServer binds before returning so a configured metrics
 // listener failure prevents workload launch. Empty means no network exposure.
-func startDedicatedMetricsServer(ctx context.Context, listenAddr string, m *metrics.Metrics, stderr io.Writer) (func(), error) {
+func startDedicatedMetricsServer(ctx context.Context, listenAddr string, m *metrics.Metrics, stderr io.Writer) (func(), string, error) {
 	if listenAddr == "" {
 		_, _ = fmt.Fprintln(stderr, "pipelock: metrics not exposed; set metrics_listen for a dedicated listener")
-		return func() {}, nil
+		return func() {}, "", nil
 	}
 	if m == nil {
-		return func() {}, fmt.Errorf("start metrics server: metrics collector is nil")
+		return func() {}, "", fmt.Errorf("start metrics server: metrics collector is nil")
 	}
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", m.PrometheusHandler())
 	mux.HandleFunc("/stats", m.StatsHandler())
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
-		return func() {}, wrapBindError("metrics_listen", listenAddr, err)
+		return func() {}, "", wrapBindError("metrics_listen", listenAddr, err)
 	}
 	srv := newHTTPServer(mux)
 	go func() {
@@ -43,5 +43,5 @@ func startDedicatedMetricsServer(ctx context.Context, listenAddr string, m *metr
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
 	}
-	return stop, nil
+	return stop, ln.Addr().String(), nil
 }

@@ -202,11 +202,12 @@ Examples:
 				return fmt.Errorf("proxy init: %w", pErr)
 			}
 			defer p.Close()
-			stopMetrics, metricsErr := startDedicatedMetricsServer(cmd.Context(), cfg.MetricsListen, m, cmd.ErrOrStderr())
+			stopMetrics, metricsBoundAddr, metricsErr := startDedicatedMetricsServer(cmd.Context(), cfg.MetricsListen, m, cmd.ErrOrStderr())
 			if metricsErr != nil {
 				return metricsErr
 			}
 			defer stopMetrics()
+			p.UpdateMetricsDialTargetFromBoundAddr(metricsBoundAddr)
 			handler := p.Handler()
 
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),

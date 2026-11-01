@@ -1386,7 +1386,7 @@ Key-free evidence capture:
 				}
 				defer func() { _ = mcpLn.Close() }()
 			}
-			stopMetrics, metricsErr := startDedicatedMetricsServer(heartbeatCtx, cfg.MetricsListen, mcpMetrics, cmd.ErrOrStderr())
+			stopMetrics, metricsBoundAddr, metricsErr := startDedicatedMetricsServer(heartbeatCtx, cfg.MetricsListen, mcpMetrics, cmd.ErrOrStderr())
 			if metricsErr != nil {
 				if hasListen {
 					return fmt.Errorf("start metrics listener after reserving MCP --listen %q: %w", listenAddr, metricsErr)
@@ -1858,6 +1858,7 @@ Key-free evidence capture:
 					KillSwitch:       ks,
 					AuditLogger:      auditLogger,
 					Metrics:          mcpMetrics,
+					MetricsBoundAddr: metricsBoundAddr,
 					ReceiptEmitter:   receiptEmitter,
 					V2ReceiptEmitter: v2ReceiptEmitter,
 					ReceiptGroup:     receiptGroup,

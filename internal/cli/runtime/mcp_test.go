@@ -1115,7 +1115,7 @@ func TestStartDedicatedMetricsServerExposesRegistry(t *testing.T) {
 	m := metrics.New()
 	m.RecordDenialOfWalletEvent(config.ActionWarn, "_default", "default")
 	var stderr bytes.Buffer
-	stop, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", m, &stderr)
+	stop, _, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", m, &stderr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1142,7 +1142,7 @@ func TestStartDedicatedMetricsServerExposesRegistry(t *testing.T) {
 
 func TestStartDedicatedMetricsServerNoopAndNilCollector(t *testing.T) {
 	var output bytes.Buffer
-	stop, err := startDedicatedMetricsServer(t.Context(), "", nil, &output)
+	stop, _, err := startDedicatedMetricsServer(t.Context(), "", nil, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1150,7 +1150,7 @@ func TestStartDedicatedMetricsServerNoopAndNilCollector(t *testing.T) {
 	if !strings.Contains(output.String(), "metrics not exposed; set metrics_listen") || strings.Contains(output.String(), "metrics listening on") {
 		t.Fatalf("empty metrics address did not remain unexposed: %s", output.String())
 	}
-	if _, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", nil, io.Discard); err == nil {
+	if _, _, err := startDedicatedMetricsServer(t.Context(), "127.0.0.1:0", nil, io.Discard); err == nil {
 		t.Fatal("expected nil metrics collector error")
 	}
 	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
@@ -1158,7 +1158,7 @@ func TestStartDedicatedMetricsServerNoopAndNilCollector(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = ln.Close() }()
-	if _, err := startDedicatedMetricsServer(t.Context(), ln.Addr().String(), metrics.New(), io.Discard); err == nil {
+	if _, _, err := startDedicatedMetricsServer(t.Context(), ln.Addr().String(), metrics.New(), io.Discard); err == nil {
 		t.Fatal("expected metrics listener bind error")
 	}
 }
