@@ -60,9 +60,9 @@ HEAVY_TREES = {
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 6,
+    "proxy": 7,
     "scanner": 4,
-    "mcp": 6,
+    "mcp": 8,
     "runtime": 2,
 }
 REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
@@ -375,7 +375,7 @@ def partition_names(
             buckets[name_bucket(name, count)].append(name)
         return buckets
     known = sorted(weights[name] for name in unique if name in weights)
-    default = known[len(known) // 2] if known else 1.0
+    default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
     loads = [0.0] * count
     for name in sorted(unique, key=lambda n: (-weights.get(n, default), n)):
         # Equal loads (including all-zero measurements) fall back to the
