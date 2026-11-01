@@ -254,6 +254,11 @@ class ExampleVerificationWorkflowTest(unittest.TestCase):
             "allowed": ("HTTP/1.1 200 OK\\r\\nX-Pipelock-Block-Reason: dlp_match\\r\\n\\r\\n",
                         "FAIL FAIL"),
             "no response": ("", "FAIL FAIL"),
+            "truncated headers": (head + "X-Pipelock-Block-Reason: dlp_match\\r\\n",
+                                  "FAIL FAIL"),
+            "invalid status code": ("HTTP/1.1 4030 Invalid\\r\\n"
+                                    "X-Pipelock-Block-Reason: dlp_match\\r\\n\\r\\n",
+                                    "FAIL FAIL"),
         }
         for name, (canned, want) in cases.items():
             with self.subTest(case=name):

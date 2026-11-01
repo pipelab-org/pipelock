@@ -39,8 +39,13 @@ fetch_block() {
       waited=$((waited + 1))
     done
   } | nc -w 10 "$PIPELOCK_HOST" "$PIPELOCK_PORT" >"$response" 2>/dev/null || true
-  tr -d '\r' <"$response" | sed -n \
-    -e '1s/^HTTP\/[0-9.]* \([0-9][0-9][0-9]\).*/status=\1/p' \
+  # RFC 9112 section 2.1 ends the header section with an empty line.
+  # A connection closed before that line supplies no complete block evidence.
+  tr -d '\r' <"$response" | awk '
+    { headers[NR] = $0 }
+    /^$/ { for (i = 1; i < NR; i++) print headers[i]; exit }
+  ' | sed -n \
+    -e '1s/^HTTP\/[0-9]\.[0-9] \([0-9][0-9][0-9]\) .*/status=\1/p' \
     -e '/^$/q' \
     -e 's/^[Xx]-[Pp]ipelock-[Bb]lock-[Rr]eason: *\([^ ]*\)$/reason=\1/p'
   rm -f "$response"
