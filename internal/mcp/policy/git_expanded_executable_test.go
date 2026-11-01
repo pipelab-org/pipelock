@@ -34,18 +34,16 @@ func TestGitShellScriptOperandStaysStrict(t *testing.T) {
 	}
 }
 
-// TestGitSubcommandNameAsWrapperValue checks that a bare Git subcommand name
-// outside Git, such as env -u's value, does not lend Git's options to the
-// command that follows.
-func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
+// TestGitExpandedExecutable checks a Git command whose executable may come from
+// a shell expansion, a substitution or an argv[0] rename. Git can then run an
+// alias or another builtin instead of the subcommand the text shows, so its
+// options keep the strictest reading.
+func TestGitExpandedExecutable(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
 	for _, tc := range []struct {
 		command string
 		allow   bool
 	}{
-		{"env -u push git ls-files --for=x", true},
-		{"env --unset push git ls-files --for=x", true},
-		{"env -u push -u reset git ls-files --for=x", true},
 		// An expansion before git may be the executable itself.
 		{"$CMD git fetch --force", false},
 		{`"$CMD" git fetch --force`, false},
@@ -62,7 +60,9 @@ func TestGitSubcommandNameAsWrapperValue(t *testing.T) {
 		{"`basename gitx x` git ls-files --for", false},
 		{"git status; `basename gitx x` git ls-files --for", false},
 		{`cd "/srv/repo" && git fetch --force`, true},
-		{"env -u reset git -c alias.a=rm ls-files --for=x", true},
+		// A bare subcommand word may name a function, so env -u's value keeps
+		// the conservative reading.
+		{"env -u push git ls-files --for=x", false},
 		{"env -u push git push --for", false},
 		{"env -u push git l --for=x", false},
 		{"sudo -u push -- git reset --ha", false},

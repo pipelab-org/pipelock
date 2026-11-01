@@ -111,20 +111,6 @@ func utilityKey(name string) string {
 	return name
 }
 
-// utilityOptionKey resolves a command word to the option set of the utility
-// it runs. A bare reset, clean or push names a Git subcommand rather than a
-// utility: outside Git it runs another program, such as reset(1), which
-// reinitializes a terminal, or none, so Git's options do not apply to it. The
-// git tool's subcommand is read as Git's (see normalizeLineOptions).
-func utilityOptionKey(name string) (string, bool) {
-	if key, ok := gitCommandKey(name); ok && key == name {
-		return "", false
-	}
-	key := utilityKey(name)
-	_, ok := commandLongOptions[key]
-	return key, ok
-}
-
 // normalizeCommandOptions adds the documented long-option interpretation to
 // the normalized views; the literal view remains available to custom rules.
 // GNU getopt_long and Git parse-options accept unique prefixes. Both reject
@@ -286,9 +272,8 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 							judged = append(judged, word)
 						}
 					default:
-						if key, ok := utilityOptionKey(name); ok {
-							active = activate(key)
-						}
+						// Bare subcommands still support the MCP git tool.
+						active = activate(utilityKey(name))
 					}
 				case word == "--" && !stopped:
 					stopped = true

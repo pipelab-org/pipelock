@@ -248,33 +248,10 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 	// expanded marks a scalar word in the current command, before its
 	// executable, that is not plain.
 	expanded := false
-	// GNU env's -u/--unset consumes one environment name, not a command
-	// (env(1), --unset=NAME). Only an initial env and repeated unset pairs
-	// establish that reading; any other prefix retains the conservative one.
-	first, envPrefix, envValue, envNameSkipped := true, false, false, false
 	word := func(w gitWord) {
 		switch state {
 		case seeking:
 			name := commandName(w.text)
-			if first {
-				first, envPrefix = false, name == "env" && (w.literal || plainShellWord(w.text))
-			} else if envPrefix {
-				switch {
-				case envValue:
-					envValue = false
-					if key, ok := gitCommandKey(name); ok && key == name && !w.ambiguous && (w.literal || plainShellWord(w.text)) {
-						envNameSkipped = true
-						return
-					}
-				case w.text == "-u" || w.text == "--unset":
-					envValue = true
-				default:
-					if envNameSkipped && (name != "git" || strings.HasPrefix(w.text, "-") || strings.Contains(w.text, "=")) {
-						p.unproved = true
-					}
-					envPrefix = false
-				}
-			}
 			switch {
 			case !w.literal && strings.HasPrefix(w.text, "#"):
 				// The shell reads the rest of this command as a comment.
@@ -292,9 +269,6 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			case !strings.HasPrefix(w.text, "-"):
 				if _, covered := commandLongOptions[utilityKey(name)]; covered {
 					state = done
-					if _, utility := utilityOptionKey(name); !utility {
-						p.unproved = true
-					}
 				}
 			}
 			if !w.literal && !plainShellWord(w.text) {
@@ -327,11 +301,10 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			}
 		}
 	}
-	// feed reads one word, splitting a scalar word at shell separators.
-	feed := func(w gitWord) {
+	for _, w := range words {
 		if w.literal || noShell {
 			word(w)
-			return
+			continue
 		}
 		start := 0
 		// The pass at i == len(w.text) flushes the last piece; the loop ends there.
@@ -344,11 +317,6 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 			}
 			if i == len(w.text) {
 				break
-			}
-			if envNameSkipped {
-				// The unset exception proves only this one invocation, not
-				// shell syntax or another command sharing its option words.
-				p.unproved = true
 			}
 			if state == seeking && w.text[i] == '`' {
 				// A backquote is the older spelling of $(, whose $ marks the
@@ -366,12 +334,8 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 				p.unproved = true
 			}
 			state, expanded = seeking, false
-			first, envPrefix, envValue = false, false, false
 			start = i + 1
 		}
-	}
-	for _, w := range words {
-		feed(w)
 	}
 	if state == global || state == value {
 		p.unproved = true

@@ -157,10 +157,7 @@ func TestCommandLongOptionsNormalization(t *testing.T) {
 		{"git reset --h", "git reset --hard"},
 		{"rm --rec a --rec b", "rm --recursive a --recursive b"},
 		{"chmod --re a --re b", "chmod --re --reference --recursive a --re b"},
-		{"sudo -u push -- git reset --ha", "sudo -u push -- git reset --hard"},
-		// A bare Git subcommand name is not a utility: env -u takes push as its value.
-		{"env -u push git ls-files --for=x", "env -u push git ls-files --for=x"},
-		{"reset --ha", "reset --ha"},
+		{"sudo -u push -- git reset --ha", "sudo -u push -- git reset --ha --hard"},
 		{"cat >rm --rec file", "cat >rm --recursive file"},
 		{"git r --ha", "git r --ha reset --hard"},
 		{"git r --f origin --f", "git r --f push --force rm --force origin --f"},
