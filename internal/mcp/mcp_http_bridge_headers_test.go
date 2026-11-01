@@ -366,6 +366,8 @@ func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
 				}))
 				defer upstream.Close()
 				opts := bridgeHeaderOpts(t)
+				logger, events := newListenerEventLogger(t)
+				opts.AuditLogger = logger
 				h := openReceiptHarness(t, &opts, required)
 				out, logs := runBridgeHeaderInput(t, upstream.URL, tc.line, nil, opts)
 				want := int32(0)
@@ -378,6 +380,9 @@ func TestHTTPBridgeHeaderRoutedNotificationRefused(t *testing.T) {
 				requireEvidenceNotBroken(t, "bridge", h)
 				if tc.forwarded {
 					return
+				}
+				if !required && (!strings.Contains(events.String(), `"scanner":"mcp_protocol"`) || !strings.Contains(events.String(), "MCP bridge routed notification refused") || !strings.Contains(events.String(), "non-null")) {
+					t.Errorf("routed notification diagnostic: %s", events.String())
 				}
 				// An open intent reads only as limited evidence, so check that each
 				// refused notification's intent is closed by a blocked outcome.
@@ -804,6 +809,8 @@ func TestHTTPBridgeHeaderReinitialize(t *testing.T) {
 			for _, notification := range []bool{false, true} {
 				t.Run(fmt.Sprintf("required=%t/held=%t/notification=%t", required, held, notification), func(t *testing.T) {
 					opts := bridgeHeaderOpts(t)
+					logger, events := newListenerEventLogger(t)
+					opts.AuditLogger = logger
 					h := openReceiptHarness(t, &opts, required)
 					manager := newDeferKillManager(t)
 					if held {
@@ -927,6 +934,9 @@ func TestHTTPBridgeHeaderReinitialize(t *testing.T) {
 					}
 					if !strings.Contains(out.String(), `"code":-32020`) {
 						t.Fatalf("reinitialize not refused: %s", out.String())
+					}
+					if !strings.Contains(out.String(), "modern bridge is already initialized") || !strings.Contains(events.String(), "MCP bridge re-initialize refused") || !strings.Contains(events.String(), "new bridge") {
+						t.Errorf("reinitialize diagnostic: out=%s events=%s", out.String(), events.String())
 					}
 					requireEvidenceNotBroken(t, "bridge", h)
 				})

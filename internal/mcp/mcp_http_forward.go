@@ -267,7 +267,8 @@ func RunHTTPProxy(
 			if errors.Is(err, io.EOF) || (sessionExit.inProgress() && (isSessionExitCloseErr(err) || errors.Is(err, context.Canceled))) {
 				break
 			}
-			return fmt.Errorf("reading stdin: %w", err)
+			lastScanErr = fmt.Errorf("reading stdin: %w", err)
+			break
 		}
 		var deferredGeneration uint64
 		if fwdOpts.KillSwitch != nil {
@@ -285,10 +286,9 @@ func RunHTTPProxy(
 		}
 		var denialAudit mcpDenialAudit
 
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
+		if err := ctx.Err(); err != nil {
+			lastScanErr = err
+			break
 		}
 
 		// Kill switch: deny all messages when active.
@@ -435,8 +435,15 @@ func RunHTTPProxy(
 						return res, nil
 					}
 
-					releaseHeaders, headerContractErr = bridgeHeaders.prepare(ctx, deferredReq.ForwardMessage)
+					releaseHeaders, headerContractErr = bridgeHeaders.prepareForRelease(ctx, deferredReq.ForwardMessage, deferredGeneration)
 					if headerContractErr != nil {
+						// Discovery can end because a kill interrupted its wait, or
+						// fail on its own while a kill invalidates this hold. Either
+						// way the kill-switch cancellation owns the final reason.
+						if ks := fwdOpts.KillSwitch; ks != nil && (ks.DeferredGeneration() != deferredGeneration || ks.IsActive()) {
+							markDeferredKillSwitch(&res)
+							return res, nil
+						}
 						// The resolution receipt closes the held action, as for the
 						// live upstream gate above. The hold wrote a defer receipt,
 						// not an intent, so an outcome under its ID would read as
@@ -444,10 +451,10 @@ func RunHTTPProxy(
 						_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused deferred call %s: %q\n", deferredReq.DeferID, headerContractErr.Error())
 						res.FinalDecision = config.ActionBlock
 						res.ResolutionSource = deferred.SourceUpstreamContract
-						res.Reason = "tool_header_contract_unavailable"
-						br := BlockedRequest{ID: deferredReq.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"}
+						var message string
+						gateAudit, message, res.Reason = bridgeHeaderRefusal(headerContractErr)
+						br := BlockedRequest{ID: deferredReq.ID, ErrorCode: -32020, ErrorMessage: message}
 						gateBlock = &br
-						gateAudit = mcpListenerInspectionDenialAudit()
 						return res, nil
 					}
 					// Irreversible release boundary. Take the upstream lock
@@ -503,9 +510,11 @@ func RunHTTPProxy(
 						}
 						respReader, sendErr := httpClient.SendMessageWithOptions(ctx, deferredReq.ForwardMessage, transport.HTTPMessageOptions{Headers: releaseHeaders})
 						if sendErr != nil {
+							errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed"))
 							if !deferredReq.IsNotification {
-								_ = safeClientOut.WriteMessage(upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP request failed")))
+								_ = safeClientOut.WriteMessage(errResp)
 							}
+							emitTrackedTerminalOutcome(safeLogW, tracker, deferredReq.ID, errResp, "upstream_error", fwdOpts)
 							return
 						}
 						respReader = fwdOpts.withResponseTimeout(respReader)
@@ -522,6 +531,15 @@ func RunHTTPProxy(
 							)
 						} else if scanErr != nil {
 							_, _ = fmt.Fprintf(safeLogW, "pipelock: scan error: %v\n", scanErr)
+							// Only an unanswered request gets a terminal error. A stream
+							// can fail after its response already consumed the ID.
+							if outcome, pending := consumeTrackedRequestOutcome(tracker, deferredReq.ID); pending {
+								errResp := upstreamErrorResponse(deferredReq.ID, fmt.Errorf("upstream HTTP response failed"))
+								if !deferredReq.IsNotification {
+									_ = safeClientOut.WriteMessage(errResp)
+								}
+								emitMCPOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, outcome.Receipt, "error", int64(len(errResp)), "scan_error", fwdOpts.requireReceipts())
+							}
 						} else if !foundInjection {
 							baselineIdentity := deferredReq.BaselineIdentity
 							if baselineIdentity == "" {
@@ -646,18 +664,19 @@ func RunHTTPProxy(
 		requestHeaders, headerErr := bridgeHeaders.prepare(ctx, decision.ForwardMessage)
 		if headerErr != nil {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: header contract refused: %q\n", headerErr.Error())
+			denialAudit, message, reason := bridgeHeaderRefusal(headerErr)
 			// Notifications are never tracked: close their intent from the input
 			// decision, as the upstream gate above does.
 			if isRPCNotification(frame.ID) {
-				dropMCPDenial(fwdOpts, mcpListenerInspectionDenialAudit(), "input")
-				emitBridgeHeaderContractRefusal(safeLogW, decision.Outcome, fwdOpts)
+				dropMCPDenial(fwdOpts, denialAudit, "input")
+				emitBridgeHeaderContractRefusal(safeLogW, decision.Outcome, reason, fwdOpts)
 				continue
 			}
-			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: "pipelock: cannot establish tool header contract"})
-			_ = writeMCPInputDenial(fwdOpts, mcpListenerInspectionDenialAudit(), safeClientOut, response)
+			response := blockRequestResponse(BlockedRequest{ID: frame.ID, ErrorCode: -32020, ErrorMessage: message})
+			_ = writeMCPInputDenial(fwdOpts, denialAudit, safeClientOut, response)
 			outcome, ok := consumeTrackedRequestOutcome(tracker, frame.ID)
 			if ok {
-				emitBridgeHeaderContractRefusal(safeLogW, outcome, fwdOpts)
+				emitBridgeHeaderContractRefusal(safeLogW, outcome, reason, fwdOpts)
 			}
 			continue
 		}
@@ -775,8 +794,8 @@ func RunHTTPProxy(
 	return lastScanErr
 }
 
-func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, opts MCPProxyOpts) {
+func emitBridgeHeaderContractRefusal(logW io.Writer, outcome TrackedRequestOutcome, reason string, opts MCPProxyOpts) {
 	intent := outcome.Receipt
 	intent.Layer = mcpReceiptLayerHeaderContract
-	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, "tool_header_contract_unavailable", opts.requireReceipts())
+	emitMCPBlockedOutcomeReceipt(opts.receiptEmitter(), opts.v2ReceiptEmitter(), opts.ReceiptGroup, logW, intent, -1, reason, opts.requireReceipts())
 }

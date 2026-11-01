@@ -2987,14 +2987,12 @@ func currentProtocolHeadersMatchFrame(headers http.Header, frame MCPFrame) bool 
 		!frame.ClientCapabilitiesPresent || headers.Get(listenerMCPMethod) != frame.Method {
 		return false
 	}
-	switch frame.Method {
-	case methodToolsCall, methodResourcesRead, methodPromptsGet:
+	if routingFieldForMethod(frame.Method) != "" {
 		name := headers.Get(listenerMCPName)
 		decoded, ok := decodeMCPRoutingName(name)
 		return ok && frame.RoutingNameErr == nil && frame.RoutingNamePresent && frame.RoutingName != "" && decoded == frame.RoutingName
-	default:
-		return true
 	}
+	return true
 }
 
 func decodeMCPRoutingName(value string) (string, bool) {

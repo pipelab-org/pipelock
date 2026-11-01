@@ -227,6 +227,7 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 	if initializeID != nil {
 		c.initializeGeneration++
 		c.protocolVersion = ""
+		c.sessionID = ""
 	}
 	generation := c.initializeGeneration
 	if c.protocolVersion != "" {

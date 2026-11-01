@@ -1030,6 +1030,8 @@ func TestMCPRemediationReasonPrerequisites(t *testing.T) {
 		{AuditMCPProtocol, "MCP batch responses are unsupported", "correct the upstream server", true},
 		{AuditMCPProtocol, "MCP listener admission refused", "listener_require_state_token", true},
 		{AuditMCPProtocol, "MCP listener protocol refused", "no scanner or policy setting relaxes protocol validation", true},
+		{AuditMCPProtocol, "MCP bridge routed notification refused", "non-null", true},
+		{AuditMCPProtocol, "MCP bridge re-initialize refused", "new bridge", true},
 		{AuditMCPProtocol, "MCP listener state capacity exhausted", "Retry after an existing state expires", true},
 		{AuditMCPProtocol, "MCP listener client-registry capacity exhausted (4096 clients); wait for listener idle expiry (24h) or session end", "does not raise this registry limit", true},
 		{AuditMCPProtocol, "session capacity exhausted; wait for session recovery or increase max_sessions", "session_profiling.max_sessions", true},
