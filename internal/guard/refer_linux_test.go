@@ -117,3 +117,16 @@ func TestApplyForExec_ReferKernel(t *testing.T) {
 		})
 	}
 }
+
+// ReferErratumMissing reads the running kernel. Compare it with an answer
+// derived directly from the two kernel queries.
+func TestReferErratumMissingMatchesKernel(t *testing.T) {
+	want := false
+	if abi, err := llsys.LandlockGetABIVersion(); err == nil {
+		errata, errataErr := llsys.LandlockGetErrata()
+		want = abi < 2 || errataErr != nil || errata&(1<<(3-1)) == 0
+	}
+	if got := ReferErratumMissing(); got != want {
+		t.Fatalf("ReferErratumMissing() = %v, want %v", got, want)
+	}
+}
