@@ -82,6 +82,17 @@ def _jobs(workflow: pathlib.Path):
             yield name, job["steps"]
 
 
+def _is_setup_go_step(step) -> bool:
+    """True for a step that runs actions/setup-go, however its owner is cased.
+
+    GitHub resolves action owners case-insensitively, so `Actions/setup-go@...`
+    runs the same action and must not slip past a guard keyed on the lowercase text.
+    """
+    return isinstance(step, dict) and str(step.get("uses", "")).lower().startswith(
+        "actions/setup-go@"
+    )
+
+
 def _live_asserted_versions(run: str) -> list[str]:
     """Versions checked by a live `go env GOVERSION` comparison in this run block.
 
@@ -143,7 +154,7 @@ class WorkflowGoPinTest(unittest.TestCase):
         checked = 0
         for job_name, steps in _jobs(WORKFLOW_DIR / "release.yaml"):
             for step in steps:
-                if not isinstance(step, dict) or not str(step.get("uses", "")).startswith("actions/setup-go@"):
+                if not _is_setup_go_step(step):
                     continue
                 checked += 1
                 with self.subTest(job=job_name):
@@ -153,6 +164,14 @@ class WorkflowGoPinTest(unittest.TestCase):
                         f"release.yaml job {job_name!r} must explicitly disable the setup-go cache",
                     )
         self.assertGreater(checked, 0, "no release setup-go steps were checked")
+
+    def test_setup_go_step_detection_ignores_owner_case(self) -> None:
+        pinned = "@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+        for owner in ("actions", "Actions", "ACTIONS"):
+            self.assertTrue(_is_setup_go_step({"uses": f"{owner}/setup-go{pinned}"}))
+        self.assertFalse(_is_setup_go_step({"uses": f"actions/setup-node{pinned}"}))
+        self.assertFalse(_is_setup_go_step({"run": "go version"}))
+        self.assertFalse(_is_setup_go_step("not a step"))
 
     def test_script_pins_match_the_workflow_each_script_names(self) -> None:
         workflow_names = {p.name for p in WORKFLOW_DIR.glob("*.y*ml")}
