@@ -176,8 +176,13 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	// and the public-gallery allowlist sees a labeled hash. Proxy action
 	// receipts carry the raw (unlabeled) canonical form of the same digest.
 	policyHash := configHash(cfg)
+	runSession, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		return nil, fmt.Errorf("scenario %s: recorder session: %w", s.ID, err)
+	}
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:       rec,
+		Session:        runSession,
 		PrivKey:        privKey,
 		ConfigHash:     policyHash,
 		Principal:      labPrincipal,
@@ -196,6 +201,7 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	}
 	p, err := proxy.New(cfg, audit.NewNop(), sc, metrics.New(),
 		proxy.WithRecorder(rec),
+		proxy.WithSession(runSession),
 		proxy.WithReceiptEmitter(emitter),
 	)
 	if err != nil {
@@ -211,6 +217,9 @@ func (e *Engine) Capture(s Scenario) (_ *CapturedScenario, err error) {
 	}
 	if err := driveScenario(ctx, s, p.Handler(), sc, emitter, policyHash); err != nil {
 		return nil, fmt.Errorf("scenario %s: drive: %w", s.ID, err)
+	}
+	if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+		return nil, fmt.Errorf("scenario %s: session_close receipt: %w", s.ID, err)
 	}
 
 	recClosed = true

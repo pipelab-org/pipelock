@@ -79,10 +79,17 @@ func BenchmarkScan_BlockedByEntropy(b *testing.B) {
 }
 
 func BenchmarkScan_BlockedByURLLength(b *testing.B) {
-	s := MustNew(benchConfig())
+	cfg := benchConfig()
+	s := MustNew(cfg)
 	b.Cleanup(s.Close)
 
-	target := "https://example.com/" + strings.Repeat("a", 2100)
+	const prefix = "https://example.com/"
+	target := prefix + strings.Repeat("a", cfg.FetchProxy.Monitoring.MaxURLLength+1-len(prefix))
+	result := s.Scan(context.Background(), target)
+	wantReason := fmt.Sprintf("URL length %d exceeds maximum %d", len(target), cfg.FetchProxy.Monitoring.MaxURLLength)
+	if result.Allowed || result.Scanner != ScannerLength || result.Reason != wantReason {
+		b.Fatalf("fixture did not exercise URL length refusal: %+v", result)
+	}
 	b.ResetTimer()
 	for b.Loop() {
 		s.Scan(context.Background(), target)

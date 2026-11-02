@@ -9,7 +9,7 @@ import * as path from "node:path";
 import { parseArgs } from "node:util";
 import { verifyAuditPacket } from "./audit-packet.js";
 import { evidenceChainKey, verifyChain } from "./chain.js";
-import { analyzeLifecycle } from "./lifecycle.js";
+import { analyzeLifecycle, closeEndsChain } from "./lifecycle.js";
 import {
   baseHealthy,
   baseUnlinked,
@@ -22,7 +22,6 @@ import {
   readSessionReceipts,
   resolveBaseSessions,
   runSessionBase,
-  isRunSession,
   verifyBase,
   withBaseHistorySnapshot,
   type BaseFinding,
@@ -125,7 +124,7 @@ async function runAuditPacketCommand(args: string[]): Promise<number> {
   if (!report.valid) {
     reportFailure(`audit packet ${report.path}: ${report.errors?.[0] ?? "not valid"}`);
   }
-  return report.valid ? 0 : 1;
+  return report.valid ? 0 : report.status === prefixStatus ? 3 : 1;
 }
 
 // resolveSignerKeys resolves every --key value and joins the trusted set.
@@ -177,21 +176,6 @@ export interface ChainSetReport {
 // ("proxy") after its close, so deleting the later runs leaves a chain that
 // ends at a genuine close. The session comes from the closed run's signed
 // session_open. Called only after the chain verified.
-function closeEndsChain(receipts: Receipt[]): boolean {
-  const close = receipts.at(-1)?.action_record?.session_control;
-  if (close?.["kind"] !== "session_close") return false;
-  const runNonce = (close["close"] as Record<string, unknown> | undefined)?.["run_nonce"];
-  for (let i = receipts.length - 1; i >= 0; i--) {
-    const ctrl = receipts[i]?.action_record?.session_control;
-    const open = ctrl?.["open"] as Record<string, unknown> | undefined;
-    if (ctrl?.["kind"] !== "session_open" || open === undefined || open["run_nonce"] !== runNonce)
-      continue;
-    const session = open["recorder_session"];
-    return typeof session === "string" && isRunSession(session);
-  }
-  return false;
-}
-
 async function chainReportFor(
   label: string,
   receipts: Receipt[],

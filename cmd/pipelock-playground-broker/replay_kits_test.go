@@ -69,15 +69,16 @@ func rewriteReplayBundle(t *testing.T, bundle []byte, change string) []byte {
 }
 
 func TestReplayKits(t *testing.T) {
-	bundle, err := os.ReadFile("testdata/replay-bundle.tar.gz")
-	if err != nil {
-		t.Fatal(err)
-	}
+	bundle, rootPubHex := buildEndProvenReplayBundle(t)
 	for _, tc := range []struct {
-		name   string
-		wantOK bool
+		name    string
+		wantOK  bool
+		wantErr string
 	}{
-		{"valid", true}, {"tampered", false}, {"missing authorization", false}, {"malformed", false},
+		{"valid", true, ""},
+		{"tampered", false, "does not bind these run artifacts"},
+		{"missing authorization", false, "requires a root-signed replay archive authorization"},
+		{"malformed", false, "read replay artifacts"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := bundle
@@ -100,14 +101,17 @@ func TestReplayKits(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			cmd := newRootCmd()
+			cmd := newReplayKitsCmdForRoot(rootPubHex)
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)
-			cmd.SetArgs([]string{"replay-kits", "--bundle", inputPath, "--output-dir", output, "--linux-verifier", verifier, "--macos-verifier", verifier, "--windows-verifier", verifier})
+			cmd.SetArgs([]string{"--bundle", inputPath, "--output-dir", output, "--linux-verifier", verifier, "--macos-verifier", verifier, "--windows-verifier", verifier})
 			err := cmd.Execute()
 			if (err == nil) != tc.wantOK {
 				t.Fatalf("error = %v, output = %s", err, out.String())
+			}
+			if err != nil && !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want %q", err, tc.wantErr)
 			}
 			if !tc.wantOK {
 				if _, err := os.Stat(output); !os.IsNotExist(err) {
@@ -162,6 +166,30 @@ func TestReplayKits(t *testing.T) {
 				t.Fatal("existing kit directory was accepted")
 			}
 		})
+	}
+}
+
+// A published replay recorded before audit packets carried a session close
+// verifies only as a prefix, so the published root's replay-kits refuses it
+// rather than packaging a replay whose end it cannot prove.
+func TestReplayKitsRefusesPublishedArchiveWithoutEndProof(t *testing.T) {
+	dir := t.TempDir()
+	verifier := filepath.Join(dir, "verifier")
+	if err := os.WriteFile(verifier, []byte("test verifier"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(dir, "kits")
+	cmd := newRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs([]string{"replay-kits", "--bundle", "testdata/replay-bundle.tar.gz", "--output-dir", output, "--linux-verifier", verifier, "--macos-verifier", verifier, "--windows-verifier", verifier})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "END UNPROVEN") {
+		t.Fatalf("error = %v, want an end-unproven refusal", err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("refused replay wrote output: %v", statErr)
 	}
 }
 

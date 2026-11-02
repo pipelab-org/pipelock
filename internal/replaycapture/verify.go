@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -138,7 +139,7 @@ func verifyPacket(pkt auditpacket.Packet, evidenceJSONL []byte, keyHex string) e
 	if err := crossCheckTotals(pkt.Summary, receipts); err != nil {
 		return err
 	}
-	return nil
+	return endproof.New(true, "audit_packet", endproof.ActionEvidence(receipts)...).Require(false)
 }
 
 // crossCheckTotals confirms the packet's verdict buckets reconcile with the

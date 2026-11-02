@@ -90,13 +90,14 @@ func TestKnownValueDecodeModeIsolation(t *testing.T) {
 		}
 	}
 	var noMemo *decodingMemo
-	if !reflect.DeepEqual(noMemo.decodeKnownSecret(text, minKnownSecretSubstringLen), decodeEncodingsFixpointMode(text, true, minKnownSecretSubstringLen)) {
+	direct, _ := decodeEncodingsFixpointMode(text, true, minKnownSecretSubstringLen)
+	if !reflect.DeepEqual(noMemo.decodeKnownSecret(text, minKnownSecretSubstringLen), direct) {
 		t.Fatal("nil memo changed decoding")
 	}
 }
 
 func TestKnownValueDecodeWorkBounds(t *testing.T) {
-	if views := decodeEncodingsFixpointMode("%41", true, minKnownSecretSubstringLen); len(views) != 0 {
+	if views, _ := decodeEncodingsFixpointMode("%41", true, minKnownSecretSubstringLen); len(views) != 0 {
 		t.Fatal("candidate shorter than the minimum match retained")
 	}
 	for _, text := range []string{
@@ -104,7 +105,7 @@ func TestKnownValueDecodeWorkBounds(t *testing.T) {
 		strings.Repeat("41", maxDecodeTotalBytes/2-1) + "ZZ",
 		strings.Repeat("%34%31", maxDecodeTotalBytes/6),
 	} {
-		views := decodeEncodingsFixpointMode(text, true, minKnownSecretSubstringLen)
+		views, _ := decodeEncodingsFixpointMode(text, true, minKnownSecretSubstringLen)
 		if len(text) <= maxDecodeTotalBytes && len(views) == 0 {
 			t.Fatal("within-budget positive control produced no decoded views")
 		}

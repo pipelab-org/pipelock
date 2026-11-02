@@ -79,7 +79,7 @@ func ScanA2AResponseBody(ctx context.Context, body []byte, sc *scanner.Scanner, 
 	if cfg == nil || !cfg.Enabled {
 		return A2AScanResult{Clean: true}
 	}
-	return scanA2ABody(ctx, body, sc, cfg, nil)
+	return scanA2ABody(scanner.WithInboundDirection(ctx), body, sc, cfg, nil)
 }
 
 // a2aMaxScanBytes caps the body bytes one A2A scan inspects. It matches the
@@ -948,6 +948,7 @@ type agentCardScanOptions struct {
 }
 
 func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseline *CardBaseline, key cardCacheKey, opts agentCardScanOptions) AgentCardScanResult {
+	ctx = scanner.WithInboundDirection(ctx)
 	cfg := opts.cfg
 	if cfg == nil || !cfg.Enabled {
 		return AgentCardScanResult{Clean: true}
@@ -1354,6 +1355,7 @@ type A2AStreamOptions struct {
 
 // ScanA2AStreamWithOptions records number-only warnings before forwarding.
 func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher, sc *scanner.Scanner, opts A2AStreamOptions) error {
+	ctx = scanner.WithInboundDirection(ctx)
 	cfg := opts.Config
 	if cfg == nil || !cfg.Enabled {
 		// A2A scanning disabled: share the generic-SSE chunked

@@ -409,17 +409,15 @@ func TestVerifyReceiptCmd_FleetReportWithExpectedKey(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	assertFleetPartial(t, cmd.Execute())
 
 	output := buf.String()
 	for _, want := range []string{
-		"FLEET RECEIPT OK:",
+		"FLEET RECEIPT VALID PREFIX, END UNPROVEN:",
 		"Org/Fleet:        pipelab/dogfood",
 		"Source batches:   1",
 		"Total actions:    2",
-		"Mediated fraction: 1",
+		"Mediated fraction of included observed actions: 1",
 	} {
 		if !strings.Contains(output, want) {
 			t.Errorf("output missing %q:\n%s", want, output)
@@ -445,10 +443,8 @@ func TestVerifyReceiptCmd_FleetReportHumanKeyID(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v\n%s", err, buf.String())
-	}
-	if !strings.Contains(buf.String(), "FLEET RECEIPT OK:") || !strings.Contains(buf.String(), "Signer:           fleet-report-2026") {
+	assertFleetPartial(t, cmd.Execute())
+	if !strings.Contains(buf.String(), "FLEET RECEIPT VALID PREFIX, END UNPROVEN:") || !strings.Contains(buf.String(), "Signer:           fleet-report-2026") {
 		t.Fatalf("output:\n%s", buf.String())
 	}
 

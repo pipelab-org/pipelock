@@ -195,7 +195,7 @@ func TestCheckDLP_PathQueryMultiEscapedPrefix(t *testing.T) {
 // copies are skipped, which is where the extra allocation would come from.
 func TestAppendPathQueryConcatTargets_OversizedConcat(t *testing.T) {
 	huge := "/" + strings.Repeat("a", maxDecodeTotalBytes+16)
-	got := appendPathQueryConcatTargets(nil, huge, "x=b")
+	got := appendPathQueryConcatTargets(nil, huge, "x=b", nil)
 	if len(got) == 0 {
 		t.Fatal("oversized concat produced no target at all; detection must not stop")
 	}
@@ -207,7 +207,7 @@ func TestAppendPathQueryConcatTargets_OversizedConcat(t *testing.T) {
 
 	// Under the bound, the derived views must still be produced, or the bound
 	// would be suppressing them for every input.
-	small := appendPathQueryConcatTargets(nil, "/"+antKeyPrefix, "x="+antKeyTail)
+	small := appendPathQueryConcatTargets(nil, "/"+antKeyPrefix, "x="+antKeyTail, nil)
 	if len(small) < 2 {
 		t.Errorf("expected derived views under the bound, got %d target(s)", len(small))
 	}
@@ -302,7 +302,7 @@ func TestAppendPathQueryConcatTargets_Gating(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := appendPathQueryConcatTargets(nil, tc.path, tc.rawQuery)
+			got := appendPathQueryConcatTargets(nil, tc.path, tc.rawQuery, nil)
 			if tc.wantAny && len(got) == 0 {
 				t.Fatalf("expected at least one target for path=%q query=%q", tc.path, tc.rawQuery)
 			}

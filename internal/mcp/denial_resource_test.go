@@ -45,6 +45,7 @@ func TestMCPDenialResourceContract(t *testing.T) {
 		{"cee_entropy", "[redacted]"},
 		{"cee_fragment", "[redacted]"},
 		{"cee_fragment_limit", "[redacted]"},
+		{"cee_fragment_decode_limit", "[redacted]"},
 		{"cee_owner", "[redacted]"},
 		{"cee_capacity", "[redacted]"},
 		{"policy", "mcp_input"},

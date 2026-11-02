@@ -91,6 +91,7 @@ var mcpDenialCatalog = [...]mcpDenialSpec{
 	{"cee_entropy", scanner.AuditCrossRequestEntropy, audit.BlockClassProtective, "mcp-input", "cross-request entropy budget exceeded"},
 	{"cee_fragment", scanner.AuditCrossRequestFragment, audit.BlockClassThreat, "mcp-input", ""},
 	{"cee_fragment_limit", scanner.AuditCrossRequestFragment, audit.BlockClassProtective, "mcp-input", "cross-request fragment inspection limit exceeded"},
+	{"cee_fragment_decode_limit", scanner.AuditCrossRequestFragment, audit.BlockClassProtective, "mcp-input", scanner.DecodeFragmentLimitOperatorReason},
 	{"cee_owner", scanner.AuditCrossRequestFragmentOwnerMismatch, audit.BlockClassProtective, "mcp-input", "cross-request fragment stream belongs to another identity; request cannot be safely inspected"},
 	{"cee_capacity", scanner.AuditCrossRequestFragmentCapacity, audit.BlockClassInfrastructureError, "mcp-input", "cross-request fragment session capacity exhausted; request cannot be safely inspected; increase cross_request_detection.fragment_reassembly.max_sessions or reduce active sessions"},
 	{"kill_mcp_input", scanner.AuditKillSwitch, audit.BlockClassProtective, mcpResourceInput, "MCP kill switch active"},

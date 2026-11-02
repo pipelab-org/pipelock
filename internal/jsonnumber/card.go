@@ -115,20 +115,24 @@ func stringCardPiece(value string) (cardPiece, bool) {
 	if !groupedDigits.MatchString(value) {
 		return cardPiece{}, false
 	}
-	digits := strings.NewReplacer(" ", "", "-", "").Replace(value)
+	digits := cardSeparatorRemover.Replace(value)
 	if digits == value {
 		return cardPiece{digits: digits}, true
 	}
 	return cardPiece{digits: digits, spelling: value}, true
 }
 
-var groupedDigits = regexp.MustCompile(`^[0-9]+(?:[- ][0-9]+)*$`)
+var (
+	groupedDigits        = regexp.MustCompile(`^[0-9]+(?:[- ][0-9]+)*$`)
+	cardSeparatorRemover = strings.NewReplacer(" ", "", "-", "")
+	cardBoundaryEscaper  = strings.NewReplacer("\x1fn,", "\x1fu,", "\x1fs,", "\x1fu,", "\x1ft,", "\x1fu,", "\x1f,", "\x1fu,")
+)
 
 // EscapeCardBoundaries retains scans of input markers without granting type
 // provenance. The u marker retains untrusted spelling without granting
 // synthetic-piece classification to input control bytes.
 func EscapeCardBoundaries(text string) string {
-	return strings.NewReplacer("\x1fn,", "\x1fu,", "\x1fs,", "\x1fu,", "\x1ft,", "\x1fu,", "\x1f,", "\x1fu,").Replace(text)
+	return cardBoundaryEscaper.Replace(text)
 }
 
 // CardBoundary encodes the types at a join in an extractor-produced view.
@@ -303,7 +307,7 @@ func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
 			}
 		}
 		if count > 1 {
-			digits := strings.NewReplacer(" ", "", "-", "").Replace(candidate)
+			digits := cardSeparatorRemover.Replace(candidate)
 			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit, RetryOnly: end != len(hit)}
 			if run.RetryOnly {
 				// A complete-piece run already existed before retry was added.

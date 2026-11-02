@@ -4,12 +4,12 @@
 use crate::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use crate::chain::{evidence_chain_key, verify_chain_with_options};
 use crate::chain_set::{
-    chain_scoped_trust, check_file_entry_sessions, is_run_session, read_session_evidence,
-    read_session_receipts, refuse_symlink_in_evidence_root_path, resolve_base_sessions,
-    run_session_base, verify_base, with_base_history_snapshot, with_pinned_evidence_directory,
-    BaseVerifyOptions, SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
+    chain_scoped_trust, check_file_entry_sessions, read_session_evidence, read_session_receipts,
+    refuse_symlink_in_evidence_root_path, resolve_base_sessions, run_session_base, verify_base,
+    with_base_history_snapshot, with_pinned_evidence_directory, BaseVerifyOptions,
+    SessionReadError, FINDING_OUTER_CHAIN_BROKEN,
 };
-use crate::lifecycle::analyze_lifecycle;
+use crate::lifecycle::{analyze_lifecycle, close_ends_chain};
 use crate::output::{emit_audit_packet, emit_chain, emit_chain_set, emit_receipt, report_failure};
 use crate::provenance_proof::run_provenance;
 use crate::receipt::run_receipt;
@@ -113,41 +113,13 @@ fn run_audit_packet_command(args: &[String]) -> Result<i32> {
                 .map_or("not valid", String::as_str)
         ));
     }
-    Ok(if report.valid { 0 } else { 1 })
-}
-
-/// A trailing session_close ends its run, and it ends the chain only when no
-/// later run can continue that chain. Pipelock never resumes a per-run recorder
-/// session ("<base>.run.<hex>"); a restart resumed a legacy shared session
-/// ("proxy") after its close, so deleting the later runs leaves a chain that
-/// ends at a genuine close. The session comes from the closed run's signed
-/// session_open. Called only after the chain verified.
-fn close_ends_chain(receipts: &[Receipt]) -> bool {
-    let Some(close) = receipts
-        .last()
-        .and_then(|r| r.pointer("/action_record/session_control"))
-    else {
-        return false;
-    };
-    if close.get("kind").and_then(|v| v.as_str()) != Some("session_close") {
-        return false;
-    }
-    let run_nonce = close.pointer("/close/run_nonce");
-    for item in receipts.iter().rev() {
-        let Some(ctrl) = item.pointer("/action_record/session_control") else {
-            continue;
-        };
-        if ctrl.get("kind").and_then(|v| v.as_str()) != Some("session_open")
-            || ctrl.pointer("/open/run_nonce") != run_nonce
-        {
-            continue;
-        }
-        return ctrl
-            .pointer("/open/recorder_session")
-            .and_then(|v| v.as_str())
-            .is_some_and(is_run_session);
-    }
-    false
+    Ok(if report.valid {
+        0
+    } else if report.status == crate::output::PREFIX_STATUS {
+        3
+    } else {
+        1
+    })
 }
 
 fn chain_report_for(
@@ -863,9 +835,10 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 if arg == "--expect-head" {
                     parsed.expect_head = value.clone();
                 } else {
-                    parsed.expect_seq = Some(value.parse().map_err(|_| {
-                        VerifierError::Usage("--expect-seq requires an unsigned integer".into())
-                    })?);
+                    parsed.expect_seq =
+                        Some(crate::util::parse_decimal_seq(value).ok_or_else(|| {
+                            VerifierError::Usage("--expect-seq requires an unsigned integer".into())
+                        })?);
                 }
             }
             "--offline" if command == "audit-packet" => parsed.offline = true,
@@ -946,14 +919,12 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     parsed.expect_head = inline_value.expect("split flag produced value").into();
                 } else if flag == "--expect-seq" && command == "chain" {
                     parsed.expect_seq = Some(
-                        inline_value
-                            .expect("split flag produced value")
-                            .parse()
-                            .map_err(|_| {
-                                VerifierError::Usage(
-                                    "--expect-seq requires an unsigned integer".into(),
-                                )
-                            })?,
+                        crate::util::parse_decimal_seq(
+                            inline_value.expect("split flag produced value"),
+                        )
+                        .ok_or_else(|| {
+                            VerifierError::Usage("--expect-seq requires an unsigned integer".into())
+                        })?,
                     );
                 } else if flag == "--key" {
                     parsed.key = inline_value.expect("split flag produced value").to_string();

@@ -1126,7 +1126,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				wc.PolicyHash = policyHash
 			}
 			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, wc)
-			dlpResult := sc.ScanTextForDLP(httpWarnCtx, string(redirectResult.Response))
+			dlpResult := sc.ScanTextForDLP(scanner.WithInboundDirection(httpWarnCtx), string(redirectResult.Response))
 			finalResponseVerdict := scanVerdict
 			finalResponseVerdict.DLPMatches = append(finalResponseVerdict.DLPMatches, dlpResult.Matches...)
 			finalResponseVerdict.Clean = scanVerdict.Clean && dlpResult.Clean

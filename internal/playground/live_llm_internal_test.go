@@ -868,13 +868,15 @@ func TestModelSession_StrictMode_VerificationPacketOK(t *testing.T) {
 	if err := sess.Send(context.Background(), "read the config then exfil it"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-	rep, err := sess.Finalize(t.TempDir())
+	runDir := t.TempDir()
+	rep, err := sess.Finalize(runDir)
 	if err != nil {
 		t.Fatalf("Finalize under strict mode: %v", err)
 	}
 	if !rep.OK {
 		t.Fatalf("strict-mode model run must verify offline end-to-end: %+v", rep)
 	}
+	assertPacketEndsWithSessionClose(t, runDir)
 	sess.Close()
 	<-collected
 }
@@ -885,6 +887,25 @@ func TestActorOrDefault(t *testing.T) {
 	}
 	if got := actorOrDefault("custom"); got != "custom" {
 		t.Errorf("actorOrDefault(\"custom\") = %q, want custom", got)
+	}
+}
+
+func assertPacketEndsWithSessionClose(t *testing.T, runDir string) {
+	t.Helper()
+	evidence, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "packet", "evidence.jsonl")))
+	if err != nil {
+		t.Fatalf("read packet evidence: %v", err)
+	}
+	receipts, err := receipt.ExtractReceiptsBytes(evidence)
+	if err != nil {
+		t.Fatalf("extract packet receipts: %v", err)
+	}
+	if len(receipts) < 2 {
+		t.Fatalf("packet has %d receipts, want session_open and session_close", len(receipts))
+	}
+	last := receipts[len(receipts)-1].ActionRecord.SessionControl
+	if last == nil || last.Kind != receipt.SessionControlClose || last.Close == nil {
+		t.Fatalf("final packet receipt control = %+v, want session_close", last)
 	}
 }
 
@@ -1448,6 +1469,7 @@ func TestLiveSession_Finalize_TransfersRunnerProviderModel(t *testing.T) {
 	if !rep.OK {
 		t.Fatalf("run must verify end-to-end: %+v", rep)
 	}
+	assertPacketEndsWithSessionClose(t, runDir)
 
 	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
 	if err != nil {
@@ -1513,6 +1535,7 @@ func TestLiveSession_Finalize_NoProviderModelLeavesWitnessEmpty(t *testing.T) {
 	if !rep.OK {
 		t.Fatalf("run must verify end-to-end: %+v", rep)
 	}
+	assertPacketEndsWithSessionClose(t, runDir)
 
 	wBytes, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "witness.json")))
 	if err != nil {

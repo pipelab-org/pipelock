@@ -16,6 +16,7 @@ import (
 func TestCardUnionCorpus(t *testing.T) {
 	for _, tt := range cardtest.UnionCases() {
 		t.Run(tt.Name, func(t *testing.T) {
+			t.Parallel()
 			raw, limit := jsonnumber.CardRunsWithLimit(tt.Body, extract.MaxExtractDepth)
 			if limit != jsonnumber.CardRunWithinBudget {
 				t.Fatal("corpus exceeded budget")

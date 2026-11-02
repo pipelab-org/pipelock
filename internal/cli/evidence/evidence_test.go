@@ -24,8 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/evidenceview"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -983,28 +985,32 @@ func TestViewCmd_NoLicenseRequired(t *testing.T) {
 
 func signTestCert(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey) []byte {
 	t.Helper()
+	return signTestCertSession(t, pub, priv, coveragecert.SessionCoverage{
+		ID: "proxy.run.0123456789abcdef0123456789abcdef", ReceiptCount: 10,
+		ChainIntact: true, Anchored: "local", CompletenessStatus: "LIMITED", CompletenessReason: "bounded_closed",
+	})
+}
+
+func signTestCertSession(t *testing.T, pub ed25519.PublicKey, priv ed25519.PrivateKey, session coveragecert.SessionCoverage) []byte {
+	t.Helper()
 	now := time.Now().UTC()
+	intact, broken := 1, 0
+	var gaps uint64
+	if !session.ChainIntact {
+		intact, broken, gaps = 0, 1, 1
+	}
 	body := coveragecert.Body{
-		Schema:      coveragecert.Schema,
-		KeyPurpose:  coveragecert.KeyPurpose,
-		Agent:       "agent-alpha",
-		WindowStart: now.Add(-1 * time.Hour),
-		WindowEnd:   now,
-		Sessions: []coveragecert.SessionCoverage{
-			{
-				ID:                 "session-001",
-				ReceiptCount:       10,
-				ChainIntact:        true,
-				Anchored:           "local",
-				CompletenessStatus: "LIMITED",
-				CompletenessReason: "abnormal_end",
-			},
-		},
+		Schema:             coveragecert.Schema,
+		KeyPurpose:         coveragecert.KeyPurpose,
+		Agent:              "agent-alpha",
+		WindowStart:        now.Add(-1 * time.Hour),
+		WindowEnd:          now,
+		Sessions:           []coveragecert.SessionCoverage{session},
 		TotalReceipts:      10,
-		ChainGaps:          0,
+		ChainGaps:          gaps,
 		SessionsCovered:    1,
-		ChainsIntact:       1,
-		ChainsBroken:       0,
+		ChainsIntact:       intact,
+		ChainsBroken:       broken,
 		TrustedSignerKey:   hex.EncodeToString(pub),
 		Boundary:           coveragecert.DefaultBoundary(),
 		StandingExclusions: coveragecert.DefaultStandingExclusions(),
@@ -1113,6 +1119,47 @@ func TestVerifyCertCmd_UntrustedSigner_Reported(t *testing.T) {
 	out := stdout.String()
 	if !strings.Contains(out, "Signer: NOT TRUSTED") {
 		t.Error("output should report untrusted signer")
+	}
+}
+
+func TestVerifyCertCmd_RecordedChainStatus(t *testing.T) {
+	pub, priv := genKey(t)
+	for _, tc := range []struct {
+		name, status, reason, want string
+		intact                     bool
+		code                       int
+	}{
+		{"partial", "LIMITED", "abnormal_end", endproof.Prefix, true, endproof.ExitPrefix},
+		{"broken", "BROKEN", "chain_broken", endproof.Invalid, false, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := signTestCertSession(t, pub, priv, coveragecert.SessionCoverage{
+				ID: "proxy.run.0123456789abcdef0123456789abcdef", ReceiptCount: 10,
+				ChainIntact: tc.intact, Anchored: "local", CompletenessStatus: tc.status, CompletenessReason: tc.reason,
+			})
+			path := filepath.Join(t.TempDir(), "cert.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			cmd := Cmd()
+			cmd.SetOut(&out)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{"verify-cert", "--cert", path, "--trusted-signer", "inline=" + hex.EncodeToString(pub)})
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("incomplete or broken certificate returned success")
+			}
+			if tc.code == endproof.ExitPrefix {
+				var exit *cliutil.ExitError
+				if !errors.As(err, &exit) || exit.Code != tc.code {
+					t.Fatalf("error = %v, want exit %d", err, tc.code)
+				}
+			}
+			if !strings.Contains(out.String(), tc.want) || !strings.Contains(out.String(), "Signature: valid") {
+				t.Fatalf("missing recorded-chain verdict/signature fact: %s", out.String())
+			}
+		})
 	}
 }
 

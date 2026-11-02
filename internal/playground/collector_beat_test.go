@@ -120,8 +120,7 @@ func TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning(t *testing.
 	}
 
 	// (b) Independent witness: the collector -- the intended recipient -- received
-	// nothing for this run. Read counts BEFORE Verdicts()/HasReceipt(), which close
-	// the recorder. observed == 0 AND total == 0 proves the raw canary POST was
+	// nothing for this run. observed == 0 AND total == 0 proves the raw canary POST was
 	// blocked before egress (it never physically reached the collector).
 	if got := lr.collector.ObservedCount(runNonce); got != 0 {
 		t.Fatalf("collector observed = %d, want 0 (the raw canary must never reach the destination)", got)
@@ -131,8 +130,7 @@ func TestLiveRun_CollectorBeat_AllowlistDoesNotBypassContentScanning(t *testing.
 	}
 
 	// (a, cont.) Pipelock's own signed attestation: a BLOCKED decision was emitted
-	// for the content-blocked POST. HasReceipt closes the recorder, so it must run
-	// after the collector-count assertions above.
+	// for the content-blocked POST.
 	if !lr.HasReceipt("block") {
 		t.Fatalf("expected a signed BLOCKED decision for the raw-canary POST; verdicts = %v", lr.Verdicts())
 	}

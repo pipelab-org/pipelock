@@ -862,7 +862,7 @@ jobs:
           chart_src="$RUNNER_TEMP/chart-src"
           rm -rf "$chart_src"
           cp -R charts/pipelock "$chart_src"
-          default_line='  repository: ghcr.io/luckypipewrench/pipelock'
+          default_line='  repository: ghcr.io/pipelab-org/pipelock'
           test "$(grep -cxF "$default_line" "$chart_src/values.yaml")" -eq 1 || {
             echo "::error::charts/pipelock/values.yaml must set image.repository to exactly one default line: ${default_line}"
             exit 1

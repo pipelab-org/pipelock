@@ -26,6 +26,8 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
     println!("  schema:       {}", report.schema_check);
     println!("  chain:        {}", report.chain_check);
     println!("  cross-check:  {}", report.cross_check);
+    println!("  integrity:    {}", report.integrity);
+    println!("  end proof:    {}", report.end_proof.proven);
     if report.lifecycle_assessment != "assessed" {
         println!(
             "  lifecycle:    not assessed ({})",
@@ -42,6 +44,7 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
         );
     }
     println!("  verdict:      {verdict}");
+    println!("  status:       {}", report.status);
     println!("  trusted:      {}", report.trusted);
     println!("  receipts:     {}", report.summary.receipt_count);
     if !report.run.provider.is_empty() {
@@ -77,7 +80,13 @@ pub fn emit_audit_packet(report: &AuditPacketReport, json: bool) -> Result<()> {
     }
     println!(
         "  result:       {}",
-        if report.valid { "VALID" } else { "INVALID" }
+        if report.valid {
+            "VALID"
+        } else if report.status == PREFIX_STATUS {
+            PREFIX_STATUS
+        } else {
+            "INVALID"
+        }
     );
     Ok(())
 }

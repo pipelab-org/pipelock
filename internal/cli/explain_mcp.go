@@ -391,8 +391,8 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	}
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
-	if scanner.HasInspectionLimit(verdict.DLPMatches) {
-		report.Notes = append(report.Notes, scanner.OperatorHintForPatterns(scanner.ScannerBodyDLP, []string{scanner.UninspectableJSONNumberPattern}))
+	if limit := firstInspectionLimitPattern(verdict.DLPMatches); limit != "" {
+		report.Notes = append(report.Notes, scanner.OperatorHintForPatterns(scanner.ScannerBodyDLP, []string{limit}))
 	} else if a2aActive {
 		if len(report.Patterns) == 0 {
 			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust.")
@@ -563,4 +563,15 @@ func printMCPExplainReport(w io.Writer, report mcpExplainReport) {
 	for _, note := range report.Notes {
 		_, _ = fmt.Fprintf(w, "note: %s\n", note)
 	}
+}
+
+// firstInspectionLimitPattern names the inspection limit that refused the
+// content, so the note matches the limit that applied.
+func firstInspectionLimitPattern(matches []scanner.TextDLPMatch) string {
+	for _, match := range matches {
+		if match.IsInspectionLimit() {
+			return match.PatternName
+		}
+	}
+	return ""
 }

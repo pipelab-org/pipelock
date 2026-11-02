@@ -154,7 +154,7 @@ func TestRunAARPChain_LinkedAndBroken(t *testing.T) {
 	// Build a genuine 2-link stream.
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	signer, _ := aarp.NewEd25519Signer(testAARPKeyID, "mediator", priv)
-	_ = pub
+	writeFileT(t, trustPath, mustJSON(t, trustFile{TrustedKeys: map[string]string{testAARPKeyID: hex.EncodeToString(pub)}}))
 	mk := func(seq, prior, label string) aarp.Envelope {
 		e := aarp.Envelope{
 			Subject: aarp.Subject{
@@ -179,10 +179,11 @@ func TestRunAARPChain_LinkedAndBroken(t *testing.T) {
 	linkedPath := filepath.Join(dir, "linked.jsonl")
 	writeFileT(t, linkedPath, chainJSONL(t, e0, e1))
 	var out, errBuf bytes.Buffer
-	if err := runAARP(&out, &errBuf, linkedPath, aarpOptions{trustPath: trustPath, jsonOutput: true, chain: true}); err != nil {
+	if err := runAARP(&out, &errBuf, linkedPath, aarpOptions{trustPath: trustPath, jsonOutput: true, chain: true, allowPrefix: true}); err != nil {
 		t.Fatalf("linked chain rejected: %v", err)
 	}
-	if !strings.Contains(out.String(), `"chain_linked":true`) {
+	var report aarpChainReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil || !report.ChainLinked {
 		t.Errorf("linked chain output: %s", out.String())
 	}
 

@@ -147,6 +147,8 @@ func ScanGenericSSEStreamWithOptions(
 	if cfg == nil || !cfg.Enabled {
 		return passthroughSSE(ctx, body, w, flusher)
 	}
+	// Server-sent events are responses: a decode bound must not refuse them.
+	ctx = scanner.WithInboundDirection(ctx)
 
 	maxEventBytes := cfg.MaxEventBytes
 	if maxEventBytes <= 0 {
