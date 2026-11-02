@@ -18,9 +18,12 @@ These techniques hide secrets or injection payloads inside encoded data.
 | Base32 | `ONQW2YLUMVWGY3DP` | Tested | Decoded and re-checked against DLP |
 | Hex encoding | `736b2d616e742d` | Tested | Hex-decoded, case-insensitive |
 | Delimiter-separated hex | `73:6b:2d:61:6e:74` | Tested | Strips 6 delimiter formats (`:`, `-`, ` `, `,`, `\x` prefix, `0x` prefix) before hex decode |
-| URL encoding (multi-layer) | `%25%32%44` (5-10 layers deep) | Tested | `IterativeDecode()` runs up to 500 rounds |
-| Mixed encoding chains | `base64(hex("secret"))` | Tested | Each layer decoded, re-normalized, re-checked |
-| Field-split encoding | Secret spread across `?a=sk-&b=ant-&c=api03` | Tested | Query subsequence matching (ordered 2-4 param combos) |
+| URL encoding (multi-layer) | `%25%32%44` (5-10 layers deep) | Tested | `IterativeDecode()` runs up to 500 rounds; a URL component or reconstructed value still changing after 500 rounds is refused |
+| Mixed encoding chains | `base64(hex("secret"))` | Tested | Each layer decoded, re-normalized, re-checked; HTML entities are one of the layers, at any position in the chain |
+| Nested HTML entities | `&amp;amp;#65;` | Tested | Decoded up to 16 passes; an entity chain still changing after 16 passes is refused on outbound surfaces |
+| Field-split encoding | Secret spread across `?a=sk-&b=ant-&c=api03` | Tested | Query subsequence matching (ordered 2-4 param combos; see Query parameter splitting) |
+
+Decoding is bounded so scan cost stays bounded: 500 percent-decoding rounds, 16 HTML entity passes, and at most 8 MiB of decoded candidates and 4096 candidates per decode walk. Reaching a depth bound (rounds or entity passes) with decodable content left is a refusal, not a partial pass. The byte and candidate budgets still return the views produced so far; legitimate large bodies can reach them, so refusing there waits on a change to how decode work is counted. A URL is refused through the core floor wherever it's scanned as a URL, including URL fields that A2A responses carry. Outbound bodies, WebSocket frames, MCP tool arguments, A2A requests and headers carry the `Uninspectable encoded content` finding, which blocks under warn actions, audit mode and suppression like other incomplete inspection. Inbound text (HTTP and MCP responses, server-to-client frames, A2A responses and Agent Cards) isn't refused at a decode bound.
 
 ## Unicode Evasion
 
@@ -62,7 +65,7 @@ These techniques exfiltrate data in small pieces over time.
 | Many small requests | 1 byte per request, 1000 requests | Tested | Per-domain rate limiting (default 60/min) |
 | Data budget exhaustion | Stay under rate limit, send lots of data | Tested | Per-domain byte budget (sliding 60-second window) |
 | Subdomain rotation for rate bypass | Different subdomains to reset counters | Tested | Rate limit keyed on base domain, not full hostname |
-| Query parameter splitting | `?a=sk-&b=ant-&c=api03` across params | Tested | Ordered query subsequence matching (O(n^4), capped at 20 params) |
+| Query parameter splitting | `?a=sk-&b=ant-&c=api03` across params | Tested | Ordered query subsequence matching: combinations of 2-4 values for up to 20 non-empty values; above 20, every combination of 3 (up to 33 values) or 2 (up to 111 values); a URL with more values is refused, never truncated |
 | Path segment splitting | `/sk-/ant-/api03/AAAA/evil.com` | Tested | Noise stripping + ordered concatenation |
 
 ## Prompt Injection Evasion

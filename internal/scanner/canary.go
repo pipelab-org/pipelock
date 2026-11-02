@@ -104,7 +104,7 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, label)...)
 		matches = append(matches, s.matchCanaryDecimalView(decoded, label)...)
 	}
-	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
 		label := spanViewLabel("html_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(decoded, encodingHTML, false, label)...)
 		matches = append(matches, s.matchCanaryDecimalView(decoded, label)...)

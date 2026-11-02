@@ -289,6 +289,9 @@ const (
 	// ScannerQueryUnescapeMaxRounds is shared with the production scanner so
 	// receipt replay cannot drift from IterativeDecode's safety ceiling.
 	ScannerQueryUnescapeMaxRounds = 500
+	// ScannerHTMLEntityMaxPasses is shared with the production scanner's
+	// entity decoder for the same reason.
+	ScannerHTMLEntityMaxPasses = 16
 
 	// evidenceProvenanceMaxOperations bounds recipe length. Per-operation input
 	// and output caps do not bound verifier work when the attacker controls how
@@ -305,7 +308,7 @@ const (
 	evidenceProvenanceMaxTotalBytes = 16 << 20
 
 	evidenceProvenanceScannerMaxDecodeRounds = ScannerQueryUnescapeMaxRounds
-	evidenceProvenanceHTMLMaxDecodePasses    = 16
+	evidenceProvenanceHTMLMaxDecodePasses    = ScannerHTMLEntityMaxPasses
 	evidenceProvenanceQueryMaxValues         = 20
 	evidenceProvenanceQueryMinIndices        = 2
 	evidenceProvenanceQueryMaxIndices        = 4

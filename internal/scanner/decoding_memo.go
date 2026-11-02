@@ -14,10 +14,44 @@ type decodingMemoKey struct {
 // decodingMemo shares immutable decoded and normalized views within one scan. It never
 // stores findings, policy decisions or state on the Scanner. Reaching either
 // existing decoder work bound stops retention, not decoding or detection.
+//
+// incomplete records that some decode or HTML entity chain in this scan
+// stopped at a depth bound with decodable work left. It is a property of the
+// scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
-	views         map[decodingMemoKey][]decodedResult
+	views         map[decodingMemoKey]memoDecode
 	normalized    map[string]string
 	retainedBytes int
+	incomplete    bool
+}
+
+type memoDecode struct {
+	views    []decodedResult
+	complete bool
+}
+
+// markIncomplete records a bound reached outside the fixpoint decoder. A nil
+// memo has no scan to mark; callers that need the signal pass a memo.
+func (m *decodingMemo) markIncomplete() {
+	if m != nil {
+		m.incomplete = true
+	}
+}
+
+// inspectionIncomplete reports whether any bound in this scan returned a
+// partial result.
+func (m *decodingMemo) inspectionIncomplete() bool {
+	return m != nil && m.incomplete
+}
+
+// decodeHTML is decodeHTMLEntities that records a chain left undecoded at the
+// pass limit.
+func (m *decodingMemo) decodeHTML(text string) string {
+	decoded, converged := decodeHTMLEntitiesChecked(text)
+	if !converged {
+		m.markIncomplete()
+	}
+	return decoded
 }
 
 func (m *decodingMemo) decode(text string, includeURL bool) []decodedResult {
@@ -30,13 +64,20 @@ func (m *decodingMemo) decodeKnownSecret(text string, minimum int) []decodedResu
 
 func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) []decodedResult {
 	if m == nil {
-		return decodeEncodingsFixpointMode(text, includeURL, minPrefix)
-	}
-	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix}
-	if decoded, ok := m.views[key]; ok {
+		decoded, _ := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 		return decoded
 	}
-	decoded := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
+	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix}
+	if cached, ok := m.views[key]; ok {
+		if !cached.complete {
+			m.incomplete = true
+		}
+		return cached.views
+	}
+	decoded, complete := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
+	if !complete {
+		m.incomplete = true
+	}
 	if text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return decoded
 	}
@@ -52,9 +93,9 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		cost += len(view.text)
 	}
 	if m.views == nil {
-		m.views = make(map[decodingMemoKey][]decodedResult)
+		m.views = make(map[decodingMemoKey]memoDecode)
 	}
-	m.views[key] = decoded
+	m.views[key] = memoDecode{views: decoded, complete: complete}
 	m.retainedBytes += cost
 	return decoded
 }

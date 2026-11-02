@@ -570,6 +570,9 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 			continue
 		}
 		structured = true
+		if pattern == UninspectableEncodedContentPattern {
+			return decodeInspectionLimitGuidance(), true
+		}
 		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
 			if _, combined := findingBeforeUnread(stripNestedURLReasonPrefix(reason)); combined {
 				return inspectionLimitBeforeUnread().guidance(), true
@@ -581,6 +584,17 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 		return guidanceForResult(label, reason)
 	}
 	return GuidanceForResult(label, reason)
+}
+
+// decodeInspectionLimitGuidance covers outbound content and URLs refused
+// because a decoder work bound was reached. The bounds are fixed and the
+// refusal holds under warn actions, audit mode and suppression.
+func decodeInspectionLimitGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "Send the content with fewer stacked encoding layers or fewer query values. Decoder depth and query search bounds are fixed; content that could not be fully decoded is refused, not allowed unscanned.",
+		Immutable:    true,
+		AgentReason:  "Request blocked: the content is encoded more deeply than Pipelock can fully inspect.",
+	}
 }
 
 func jsonInspectionLimitGuidance() RemediationGuidance {
@@ -654,6 +668,9 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// A reason that also names an unread upload is routed by
 	// findingBeforeUnread, whatever order its pattern names take.
 	stripped := stripNestedURLReasonPrefix(reason)
+	if stripped == urlInspectionLimitReason || stripped == querySubsequenceLimitReason {
+		return decodeInspectionLimitGuidance(), true
+	}
 	if _, combined := findingBeforeUnread(stripped); !combined && isJSONInspectionLimitReason(label, stripped) {
 		return jsonInspectionLimitGuidance(), true
 	}

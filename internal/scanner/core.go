@@ -566,7 +566,7 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 		matches = append(matches, s.matchCoreDLPPatterns(decoded, "url")...)
 	}
 
-	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
 		matches = append(matches, s.matchCoreDLPPatterns(decoded, encodingHTML)...)
 	}
 
@@ -847,7 +847,7 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
 		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
-		for _, d := range decodes.decode(hostname, false) {
+		for _, d := range decodes.decode(hostname, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -875,21 +875,21 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	// Path segment decoding (hex/base64/base32).
 	for _, segment := range urlPathDecodeSegments(parsed.Path) {
 		if len(segment) >= 10 {
-			for _, d := range decodes.decode(segment, false) {
+			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
 	}
 
 	// Ordered query-value concatenation (catches secrets split across params).
-	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
+	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery, decodes)
 
 	// A DNS-over-HTTPS query is also read as the message it carries. Every
 	// name, record payload and fixed-width field, and their decodings, reach
 	// the floor, which configured exemptions never narrow.
 	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
 		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-		for _, d := range decodes.decode(text, false) {
+		for _, d := range decodes.decode(text, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -921,20 +921,26 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 
 	// Subsequence scan: try ordered combinations of query values to catch
 	// secrets split across params with junk values interleaved.
-	if result := s.querySubsequenceCoreDLP(parsed.RawQuery); !result.Allowed {
+	if result := s.querySubsequenceCoreDLP(parsed.RawQuery, decodes); !result.Allowed {
 		return result
+	}
+
+	// Content findings above take precedence. A URL whose decoding stopped at
+	// a work bound was not fully inspected, and the floor refuses it.
+	if decodes.inspectionIncomplete() || !urlPercentDecodeConverges(parsed) {
+		return urlInspectionLimitResult()
 	}
 
 	return Result{Allowed: true}
 }
 
 // querySubsequenceCoreDLP checks ordered combinations of query values against
-// core DLP patterns. Mirrors the main scanner's querySubsequenceDLP -- see
-// its doc comment for why the size-4 cap is a deliberately bounded secondary
-// defense, not the primary one, and is left unchanged.
+// core DLP patterns, with the same search sizes as the main scanner's
+// querySubsequenceDLP (querySubsequenceSearchSize). A query too wide for a
+// complete pair search is refused here, so no configuration can reopen it.
 //
 //pipelock:provenance-transform query_subsequence
-func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
+func (s *Scanner) querySubsequenceCoreDLP(rawQuery string, decodes *decodingMemo) Result {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}
 	}
@@ -943,9 +949,15 @@ func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
 	if n < 3 {
 		return Result{Allowed: true}
 	}
-	for size := 2; size <= 4 && size <= n; size++ {
-		if result := s.checkCoreDLPCombinations(values, n, size); !result.Allowed {
-			return result
+	passes, ok := querySubsequencePasses(n)
+	if !ok {
+		return querySubsequenceLimitResult()
+	}
+	for _, pass := range passes {
+		for size := 2; size <= pass.maxSize && size <= pass.values; size++ {
+			if result := s.checkCoreDLPCombinations(values[:pass.values], pass.values, size, decodes); !result.Allowed {
+				return result
+			}
 		}
 	}
 	return Result{Allowed: true}
@@ -953,7 +965,7 @@ func (s *Scanner) querySubsequenceCoreDLP(rawQuery string) Result {
 
 // checkCoreDLPCombinations tries all ordered combinations of query values
 // of the given size against core DLP patterns.
-func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int) Result {
+func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int, decodes *decodingMemo) Result {
 	indices := make([]int, size)
 	for i := range indices {
 		indices[i] = i
@@ -964,18 +976,28 @@ func (s *Scanner) checkCoreDLPCombinations(values []string, n, size int) Result 
 			concat.WriteString(values[idx])
 		}
 		combined := concat.String()
-		cleaned := normalize.ForDLP(combined)
-		for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
-			p := s.core.dlpPatterns[idx]
-			if start, end, ok := p.matchSpan(cleaned); ok {
-				return Result{
-					Allowed: false,
-					Reason:  fmt.Sprintf("core DLP match: %s (%s)", p.name, p.severity),
-					Scanner: ScannerCoreDLP,
-					Score:   1.0,
-					spans: []MatchSpan{
-						newMatchSpan(start, end, dlpViewLabel("query_subsequence"), p.name, "", ""),
-					},
+		views := []dlpTarget{{combined, dlpViewLabel("query_subsequence"), ""}}
+		// Concatenation can create a percent escape across value boundaries.
+		// The original components' convergence says nothing about that view.
+		if strings.Contains(combined, "%") {
+			for _, d := range decodeEncodingsRecursiveWithDecodes(combined, decodes) {
+				views = append(views, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			}
+		}
+		for _, view := range views {
+			cleaned := decodes.normalize(view.text)
+			for _, idx := range s.core.dlpPreFilter.patternsToCheck(cleaned) {
+				p := s.core.dlpPatterns[idx]
+				if start, end, ok := p.matchSpan(cleaned); ok {
+					return Result{
+						Allowed: false,
+						Reason:  fmt.Sprintf("core DLP match: %s (%s)", p.name, p.severity),
+						Scanner: ScannerCoreDLP,
+						Score:   1.0,
+						spans: []MatchSpan{
+							newMatchSpan(start, end, view.viewLabel, p.name, "", ""),
+						},
+					}
 				}
 			}
 		}

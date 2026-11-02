@@ -13,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -366,5 +367,22 @@ func TestJSONInspectionMCPRemediationHint(t *testing.T) {
 		if !strings.Contains(notes, "Reduce nesting or number size") || strings.Contains(notes, "trust action is block") {
 			t.Fatalf("inspection notes = %q; report = %+v", notes, report)
 		}
+	}
+}
+
+func TestFirstInspectionLimitPattern(t *testing.T) {
+	t.Parallel()
+	if got := firstInspectionLimitPattern([]scanner.TextDLPMatch{{PatternName: "AWS Access ID"}}); got != "" {
+		t.Fatalf("content finding reported as limit %q", got)
+	}
+	for _, name := range []string{scanner.UninspectableJSONNumberPattern, scanner.UninspectableEncodedContentPattern} {
+		matches := []scanner.TextDLPMatch{{PatternName: "AWS Access ID"}, {PatternName: name}}
+		if got := firstInspectionLimitPattern(matches); got != name {
+			t.Fatalf("limit = %q, want %q", got, name)
+		}
+	}
+	if scanner.OperatorHintForPatterns(scanner.ScannerBodyDLP, []string{scanner.UninspectableEncodedContentPattern}) ==
+		scanner.OperatorHintForPatterns(scanner.ScannerBodyDLP, []string{scanner.UninspectableJSONNumberPattern}) {
+		t.Fatal("decode and JSON number limits share one hint")
 	}
 }
