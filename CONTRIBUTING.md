@@ -199,9 +199,10 @@ release integration, and the exact scope of the reproducibility claim.
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 20+ Cobra commands (run, check, report, tls, mcp, audit, generate, ...)
+  cli/                 Cobra commands (run, check, reload, report, tls, mcp, audit, generate, ...)
   config/              YAML config loading, validation, defaults, hot-reload (fsnotify)
   scanner/             Ordered URL scanning pipeline + response injection detection
+  checker/             Versioned content-assessment protocol and HTTP client; no runtime integration
   audit/               Structured JSON audit logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, TLS interception
   certgen/             ECDSA P-256 CA + leaf certificate generation, cache

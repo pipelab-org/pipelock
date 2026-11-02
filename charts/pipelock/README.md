@@ -5,10 +5,12 @@ Pipelock is an agent firewall: a network proxy that sits between AI agents and t
 ## TL;DR
 
 ```bash
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock
+helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock
 ```
 
 The chart is published as an OCI artifact to the same registry as the images it deploys, so there is no repository to add. Installing a specific revision takes `--version`, which selects the chart version; Pipelock intentionally keeps that version equal to its release version. To install from a checkout instead, point Helm at the directory: `helm install pipelock ./charts/pipelock`.
+
+For this release, images and charts use the `pipelab-org` namespace. Update explicit repository overrides and registry policies, and select a matching image digest if your values pin one. Historical releases retain their original addresses. Read the [upgrade guide](https://github.com/pipelab-org/pipelock/blob/main/docs/guides/upgrading-to-3.8.md) before replacing an existing deployment.
 
 Pipelock runs as a non-root container with a read-only root filesystem, drops all Linux capabilities, and binds the standard Pipelock proxy on port 8888.
 
@@ -40,7 +42,7 @@ The chart is configured by passing values to `helm install -f values.yaml`. The 
 
 | Key | Default | Description |
 |---|---|---|
-| `image.repository` | `ghcr.io/luckypipewrench/pipelock` | Image repository |
+| `image.repository` | `ghcr.io/pipelab-org/pipelock` | Image repository |
 | `image.tag` | `""` | Tag used when `image.digest` is empty. Falls through to `.Chart.AppVersion` if also empty. |
 | `image.digest` | `""` | Optional multi-arch manifest digest. When set, the chart renders `repository@digest` for pinning |
 | `image.pullPolicy` | `IfNotPresent` | Image pull policy |
