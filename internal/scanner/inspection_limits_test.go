@@ -295,9 +295,25 @@ func TestDecodeInspectionLimitGuidance(t *testing.T) {
 	if got, ok := GuidanceForResultWithPatterns("body_dlp", "DLP match", []string{UninspectableEncodedContentPattern}); !ok || got != want {
 		t.Fatalf("pattern guidance = %+v, %v", got, ok)
 	}
-	for _, reason := range []string{urlInspectionLimitReason, querySubsequenceLimitReason} {
-		if got, ok := GuidanceForResult(ScannerCoreDLP, reason); !ok || got != want {
-			t.Fatalf("%q guidance = %+v, %v", reason, got, ok)
+	if got, ok := GuidanceForResult(ScannerCoreDLP, urlInspectionLimitReason); !ok || got != want {
+		t.Fatalf("URL limit guidance = %+v, %v", got, ok)
+	}
+	if got, ok := GuidanceForResult(ScannerCoreDLP, querySubsequenceLimitReason); !ok || got != queryValueLimitGuidance() || got == want {
+		t.Fatalf("query value limit guidance = %+v, %v", got, ok)
+	}
+	// The body path can record only the reason text.
+	bodyReason := "request body contains secret: AWS Access ID, " + UninspectableEncodedContentPattern
+	if got, ok := GuidanceForResult(ScannerBodyDLP, bodyReason); !ok || got != want {
+		t.Fatalf("body reason guidance = %+v, %v", got, ok)
+	}
+	// Named before an unread upload, the limit keeps immutable guidance
+	// instead of the suppressible secret guidance.
+	unread := secretAndUnreadPrefix + " " + UninspectableEncodedContentPattern + "; upload unread, " + IncompleteFileGovernedSuffix
+	fromReason, okReason := GuidanceForResult(ScannerBodyDLP, unread)
+	fromPatterns, okPatterns := GuidanceForResultWithPatterns(ScannerBodyDLP, unread, []string{UninspectableEncodedContentPattern})
+	for _, got := range []RemediationGuidance{fromReason, fromPatterns} {
+		if !okReason || !okPatterns || !got.Immutable || !strings.Contains(got.OperatorKnob, "decoder inspection limit") {
+			t.Fatalf("unread-upload guidance = %+v", got)
 		}
 	}
 	if got, _ := GuidanceForResultWithPatterns("body_dlp", "DLP match", []string{UninspectableJSONNumberPattern}); got == want {
@@ -394,7 +410,7 @@ func TestDecodeFixpointKeepsEntityFreeViews(t *testing.T) {
 		for _, v := range views {
 			got[v.text] = struct{}{}
 		}
-		for _, want := range referenceDecodeEncodingsFixpoint(input, true) {
+		for _, want := range reference {
 			if _, ok := got[want.text]; !ok {
 				t.Fatalf("%s: entity-free view (%s, %d bytes) missing", name, want.encoding, len(want.text))
 			}

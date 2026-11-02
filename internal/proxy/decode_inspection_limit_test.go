@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -107,9 +108,13 @@ func TestDecodeInspectionLimitForwardAndFetch(t *testing.T) {
 		if err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
+		body, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusOK || hits.Load() != before {
+		if resp.StatusCode != http.StatusForbidden || hits.Load() != before {
 			t.Fatalf("fetch status %d delivered=%v", resp.StatusCode, hits.Load() != before)
+		}
+		if !strings.Contains(string(body), "inspection limit") {
+			t.Fatalf("fetch refusal does not name the inspection limit: %s", body)
 		}
 	})
 }

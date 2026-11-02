@@ -141,6 +141,13 @@ func inspectionLimitBeforeUnread() findingAndUnread {
 	return findingAndUnread{limit.AgentReason, "The reason names a JSON inspection limit and then an unread upload. " + limit.OperatorKnob, true}
 }
 
+// decodeLimitBeforeUnread is the decoder depth limit named before an unread
+// upload. Suppression cannot lift it either.
+func decodeLimitBeforeUnread() findingAndUnread {
+	limit := decodeInspectionLimitGuidance()
+	return findingAndUnread{limit.AgentReason, "The reason names a decoder inspection limit and then an unread upload. " + limit.OperatorKnob, true}
+}
+
 func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 	if !strings.Contains(reason, IncompleteFileGovernedSuffix) {
 		return findingAndUnread{}, false
@@ -152,6 +159,9 @@ func findingBeforeUnread(reason string) (findingAndUnread, bool) {
 		names, _, _ := strings.Cut(strings.TrimPrefix(reason, secretAndUnreadPrefix+" "), "; ")
 		if jsonInspectionLimitInNames(names) {
 			return inspectionLimitBeforeUnread(), true
+		}
+		if decodeInspectionLimitInNames(names) {
+			return decodeLimitBeforeUnread(), true
 		}
 		return findingAndUnread{secretAgentReason, "The reason names a secret finding and then an unread upload. A path-scoped top-level `suppress:` entry applies to a non-core secret.", false}, true
 	case strings.HasPrefix(reason, injectionAndUnreadPrefix):
@@ -571,6 +581,9 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 		}
 		structured = true
 		if pattern == UninspectableEncodedContentPattern {
+			if _, combined := findingBeforeUnread(stripNestedURLReasonPrefix(reason)); combined {
+				return decodeLimitBeforeUnread().guidance(), true
+			}
 			return decodeInspectionLimitGuidance(), true
 		}
 		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
@@ -586,12 +599,22 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 	return GuidanceForResult(label, reason)
 }
 
+// queryValueLimitGuidance covers a URL refused because it carries more
+// non-empty query values than the split-credential search can cover.
+func queryValueLimitGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "Send fewer query values in one URL, or move the data into a request body. The query search bound is fixed; a URL it cannot fully search is refused, not allowed unscanned.",
+		Immutable:    true,
+		AgentReason:  "Request blocked: the URL has more query values than Pipelock can fully inspect.",
+	}
+}
+
 // decodeInspectionLimitGuidance covers outbound content and URLs refused
 // because a decoder work bound was reached. The bounds are fixed and the
 // refusal holds under warn actions, audit mode and suppression.
 func decodeInspectionLimitGuidance() RemediationGuidance {
 	return RemediationGuidance{
-		OperatorKnob: "Send the content with fewer stacked encoding layers or fewer query values. Decoder depth and query search bounds are fixed; content that could not be fully decoded is refused, not allowed unscanned.",
+		OperatorKnob: "Send the content with fewer stacked encoding layers. Decoder depth bounds are fixed; content that could not be fully decoded is refused, not allowed unscanned.",
 		Immutable:    true,
 		AgentReason:  "Request blocked: the content is encoded more deeply than Pipelock can fully inspect.",
 	}
@@ -609,6 +632,16 @@ func jsonInspectionLimitGuidance() RemediationGuidance {
 // and HTTP/MCP fragment reassembly. Other reason text is not a pattern-name
 // authority.
 func isJSONInspectionLimitReason(label, reason string) bool {
+	if label == AuditCrossRequestFragment {
+		return reason == "cross-request fragment inspection limit exceeded" || reason == "fragment reassembly DLP match: "+UninspectableJSONNumberPattern ||
+			reason == "cross-request fragment refused: "+UninspectableJSONNumberPattern+"; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"
+	}
+	return inspectionLimitReasonNames(label, reason, jsonInspectionLimitInNames)
+}
+
+// inspectionLimitReasonNames reports whether a generated reason of one of the
+// known formats lists a pattern accepted by inNames.
+func inspectionLimitReasonNames(label, reason string, inNames func(string) bool) bool {
 	switch label {
 	case AuditA2AScan, AuditA2AHeader, AuditA2AResponse:
 		// A2A joins generated finding parts with "; " after "a2a: "; only the
@@ -616,7 +649,7 @@ func isJSONInspectionLimitReason(label, reason string) bool {
 		if parts, ok := strings.CutPrefix(reason, "a2a: "); ok {
 			for part := range strings.SplitSeq(parts, "; ") {
 				if names, ok := strings.CutPrefix(part, "DLP: "); ok {
-					return jsonInspectionLimitInNames(names)
+					return inNames(names)
 				}
 				// Only generated URL counts and injection pattern names can
 				// precede DLP in buildA2AReason. Parser errors can quote a
@@ -634,7 +667,7 @@ func isJSONInspectionLimitReason(label, reason string) bool {
 		}
 	case ScannerBodyDLP:
 		if names, ok := strings.CutPrefix(reason, "request body contains secret: "); ok {
-			return jsonInspectionLimitInNames(names)
+			return inNames(names)
 		}
 	case ScannerDLP, ScannerCoreDLP:
 		for _, prefix := range []string{"DLP match: ", "core DLP match: ", "DLP: "} {
@@ -643,12 +676,20 @@ func isJSONInspectionLimitReason(label, reason string) bool {
 				// optionally followed by its adaptive-enforcement annotation.
 				names = strings.TrimSuffix(names, " (high)")
 				names = strings.TrimSuffix(names, " (escalated)")
-				return jsonInspectionLimitInNames(names)
+				return inNames(names)
 			}
 		}
-	case AuditCrossRequestFragment:
-		return reason == "cross-request fragment inspection limit exceeded" || reason == "fragment reassembly DLP match: "+UninspectableJSONNumberPattern ||
-			reason == "cross-request fragment refused: "+UninspectableJSONNumberPattern+"; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"
+	}
+	return false
+}
+
+// decodeInspectionLimitInNames reports the decoder inspection limit in a
+// generated ", "-joined pattern-name list.
+func decodeInspectionLimitInNames(names string) bool {
+	for name := range strings.SplitSeq(names, ", ") {
+		if name == UninspectableEncodedContentPattern {
+			return true
+		}
 	}
 	return false
 }
@@ -668,11 +709,19 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 	// A reason that also names an unread upload is routed by
 	// findingBeforeUnread, whatever order its pattern names take.
 	stripped := stripNestedURLReasonPrefix(reason)
-	if stripped == urlInspectionLimitReason || stripped == querySubsequenceLimitReason {
+	switch stripped {
+	case urlInspectionLimitReason:
 		return decodeInspectionLimitGuidance(), true
+	case querySubsequenceLimitReason:
+		return queryValueLimitGuidance(), true
 	}
-	if _, combined := findingBeforeUnread(stripped); !combined && isJSONInspectionLimitReason(label, stripped) {
-		return jsonInspectionLimitGuidance(), true
+	if _, combined := findingBeforeUnread(stripped); !combined {
+		if isJSONInspectionLimitReason(label, stripped) {
+			return jsonInspectionLimitGuidance(), true
+		}
+		if inspectionLimitReasonNames(label, stripped, decodeInspectionLimitInNames) {
+			return decodeInspectionLimitGuidance(), true
+		}
 	}
 	return guidanceForResult(label, reason)
 }

@@ -97,8 +97,8 @@ func TestDecodeInspectionLimitResponseStreamsDeliver(t *testing.T) {
 	var output bytes.Buffer
 	input := "data: " + deepEntityChain() + "\n\n"
 	sseCfg := &config.GenericSSEScanning{Enabled: true, Action: config.ActionWarn}
-	if err := ScanGenericSSEStream(t.Context(), strings.NewReader(input), &output, nil, sc, sseCfg); err != nil || output.Len() == 0 {
-		t.Fatalf("SSE event refused at a decode bound: delivered=%d err=%v", output.Len(), err)
+	if err := ScanGenericSSEStream(t.Context(), strings.NewReader(input), &output, nil, sc, sseCfg); err != nil || output.String() != input {
+		t.Fatalf("SSE event not delivered unchanged at a decode bound: delivered=%q err=%v", output.String(), err)
 	}
 
 	cfg := enabledA2ACfg()
