@@ -1772,10 +1772,10 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 	}
 	*controlTail = updateWSCrossMessageTail(prevTail, payload)
 
-	if r.handleClientTextResult(ctx, log, scanInput, r.scanner.ScanTextForDLP(ctx, string(scanInput)), true) {
+	if r.handleClientTextResult(ctx, log, scanInput, r.scanner.ScanTextForDLP(ctx, string(scanInput)), wsClientTextOptions{crossMessage: true}) {
 		return true
 	}
-	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), true) {
+	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}) {
 		return true
 	}
 	return false
@@ -1890,23 +1890,28 @@ func (r *wsRelay) scanClientText(ctx context.Context, log *audit.Logger, scanInp
 }
 
 func (r *wsRelay) scanClientTextWithCardView(ctx context.Context, log *audit.Logger, scanInput, cardInput []byte) (blocked bool) {
+	surface, _, invalid := r.scanner.WebSocketCredentialAudienceSurface(ctx, scanInput, r.targetURL)
+	if invalid {
+		return r.handleClientMessageBodyResult(log, nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"})
+	}
 	dlpResult := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
-	return r.handleClientTextResult(ctx, log, scanInput, dlpResult, false)
+	return r.handleClientTextResult(ctx, log, scanInput, dlpResult, wsClientTextOptions{surface: surface})
 }
 
 func (r *wsRelay) scanClientNumberText(ctx context.Context, log *audit.Logger, text, cards []byte) bool {
 	result := r.scanner.ScanTextForDLPWithTypedCardView(ctx, string(text), string(cards))
-	return r.handleClientTextResult(ctx, log, text, result, true)
+	return r.handleClientTextResult(ctx, log, text, result, wsClientTextOptions{crossMessage: true})
 }
 
-func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, crossMessage bool) bool {
-	surface := "websocket_frame"
-	if !crossMessage {
-		var invalid bool
-		surface, _, invalid = r.scanner.WebSocketCredentialAudienceSurface(ctx, scanInput, r.targetURL)
-		if invalid {
-			return r.handleClientMessageBodyResult(log, nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"})
-		}
+type wsClientTextOptions struct {
+	surface      string
+	crossMessage bool
+}
+
+func (r *wsRelay) handleClientTextResult(_ context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) bool {
+	surface := opts.surface
+	if surface == "" || opts.crossMessage {
+		surface = "websocket_frame"
 	}
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
 	for _, allow := range audienceAllows {
@@ -1914,7 +1919,7 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 			return r.blockOnCredentialAudienceReceiptFailure(log, err)
 		}
 	}
-	if crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
+	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
 		return true
 	}
 	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
@@ -2974,8 +2979,13 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		if isTextMessage && r.scanText {
-			_, scanMessage, invalid := r.scanner.WebSocketCredentialAudienceSurface(ctx, msg, r.targetURL)
-			if !redactionEnabled && (scanMessage != nil || invalid) && r.scanClientText(ctx, log, msg) {
+			surface, scanMessage, invalid := r.scanner.WebSocketCredentialAudienceSurface(ctx, msg, r.targetURL)
+			if invalid {
+				r.handleClientMessageBodyResult(log, nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"})
+				blocked = true
+				return
+			}
+			if !redactionEnabled && scanMessage != nil && r.handleClientTextResult(ctx, log, msg, r.scanner.ScanTextForDLP(ctx, string(msg)), wsClientTextOptions{surface: surface}) {
 				blocked = true
 				return
 			}
@@ -3016,11 +3026,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			crossMsgCardTail = updateWSCrossMessageTail(prevCardTail, cardMsg)
 			if !redactionEnabled {
 				result := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
-				if len(scanInput) > 0 && r.handleClientTextResult(ctx, log, scanInput, result, true) {
+				if len(scanInput) > 0 && r.handleClientTextResult(ctx, log, scanInput, result, wsClientTextOptions{crossMessage: true}) {
 					blocked = true
 					return
 				}
-				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), true) {
+				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}) {
 					blocked = true
 					return
 				}

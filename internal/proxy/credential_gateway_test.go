@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -44,6 +45,9 @@ func TestDiscordGatewayStructuredCarrier(t *testing.T) {
 		{"elsewhere", gateway, `{"op":2,"d":{"presence":{"token":"` + credential + `"}}}`, false},
 		{"extra activity", gateway, auth(2, `,"presence":{"activities":[{"name":"`+credential+`"}]}`), false},
 		{"encoded extra", gateway, auth(2, `,"extra":"`+base64.StdEncoding.EncodeToString([]byte(credential))+`"`), false},
+		{"hex extra", gateway, auth(2, `,"extra":["before","`+hex.EncodeToString([]byte(credential))+`","after"]`), false},
+		{"percent extra", gateway, auth(2, `,"extra":"`+strings.ReplaceAll(credential, ".", "%2E")+`"`), false},
+		{"same token split", gateway, auth(2, fmt.Sprintf(`,"extra":[%q,%q]`, credential[:24], credential[24:])), false},
 		{"split extra ordered", gateway, auth(2, `,"extra":["`+"M"+strings.Repeat("a", 23)+`","`+strings.Repeat("0", 6)+"."+strings.Repeat("c", 27)+`"]`), false},
 		{"split extra sorted", gateway, auth(2, `,"extra":{"z1":"`+"M"+strings.Repeat("a", 23)+`","z2":"`+strings.Repeat("b", 6)+"."+strings.Repeat("c", 27)+`"}`), false},
 		{"other secret", gateway, auth(2, `,"extra":"AKIA`+strings.Repeat("A", 16)+`"`), false},
@@ -328,6 +332,11 @@ func TestDiscordGatewayOtherPatternPolicy(t *testing.T) {
 			}
 			if blocked := relay.scanClientText(t.Context(), audit.NewNop(), []byte(frame)); blocked == suppressOther {
 				t.Fatalf("direct blocked=%t, want %t", blocked, !suppressOther)
+			}
+			copyFrame := fmt.Sprintf(`{"op":2,"d":{"token":%q,"note":%q,"extra":%q}}`, credential, other, base64.StdEncoding.EncodeToString([]byte(credential)))
+			_, copied := relay.scanClientMessageBody(t.Context(), []byte(copyFrame))
+			if copied.Clean || !relay.scanClientText(t.Context(), audit.NewNop(), []byte(copyFrame)) {
+				t.Fatal("another pattern masked an encoded credential copy")
 			}
 		})
 	}

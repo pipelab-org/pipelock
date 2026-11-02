@@ -83,24 +83,8 @@ func (s *Scanner) WebSocketCredentialAudienceSurface(ctx context.Context, frame 
 	if err != nil {
 		return fallback, nil, false
 	}
-	extracted := extract.AllStringsFromJSONResult(remaining)
-	if extracted.Truncated {
+	if gatewayRemainderHasCredential(ctx, remaining, qualified.name, s.ScanTextForDLPQuiet) {
 		return fallback, nil, false
-	}
-	sorted := slices.Clone(extracted.Strings)
-	slices.Sort(sorted)
-	views := append(extracted.Strings, string(remaining), strings.Join(extracted.Strings, ""),
-		strings.Join(extracted.Strings, extract.BodyDLPJoinSeparator),
-		strings.Join(sorted, extract.BodyDLPJoinSeparator))
-	for _, view := range views {
-		for _, match := range s.ScanTextForDLPQuiet(ctx, view).Matches {
-			if match.PatternName == qualified.name {
-				return fallback, nil, false
-			}
-		}
-		if ctx.Err() != nil {
-			return fallback, nil, false
-		}
 	}
 	// The original raw JSON value occurs once: a second copy elsewhere would
 	// make the replacement ambiguous. Preserve every other byte and its order
@@ -109,4 +93,34 @@ func (s *Scanner) WebSocketCredentialAudienceSurface(ctx context.Context, frame 
 		return fallback, nil, false
 	}
 	return credentialAudienceDiscordGatewaySurface, bytes.Replace(frame, rawCredential, []byte(`""`), 1), false
+}
+
+func gatewayRemainderHasCredential(ctx context.Context, remaining []byte, pattern string, scan func(context.Context, string) TextDLPResult) bool {
+	extracted := extract.AllStringsFromJSONResult(remaining)
+	if extracted.Truncated {
+		return true
+	}
+	// Independent fields need independent scans: a match of another pattern
+	// can stop segment decoding in an aggregate view. Reuse the text decoder's
+	// candidate budget for these views; an over-budget frame cannot earn the
+	// carrier, so the authenticated credential keeps its ordinary DLP block.
+	if len(extracted.Strings) > maxDecodeCandidates {
+		return true
+	}
+	sorted := slices.Clone(extracted.Strings)
+	slices.Sort(sorted)
+	views := append(extracted.Strings, string(remaining), strings.Join(extracted.Strings, ""),
+		strings.Join(extracted.Strings, extract.BodyDLPJoinSeparator),
+		strings.Join(sorted, extract.BodyDLPJoinSeparator))
+	for _, view := range views {
+		for _, match := range scan(ctx, view).Matches {
+			if match.PatternName == pattern {
+				return true
+			}
+		}
+		if ctx.Err() != nil {
+			return true
+		}
+	}
+	return false
 }
