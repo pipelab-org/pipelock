@@ -519,6 +519,13 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm
 // normalizeArgTokensUnexpanded retains the normalized spelling that configured
 // rules consumed before command-option expansion was added.
 func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
+	return normalizeArgTokensRead(argStrings, normFn, preNorm, false)
+}
+
+// normalizeArgTokensRead is normalizeArgTokensUnexpanded with, when words is
+// set, the shell word reading (readShellWords) applied after the text's own
+// assignments are resolved.
+func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) ([]string, string) {
 	var tokens []string
 	for _, s := range argStrings {
 		if preNorm != nil {
@@ -532,6 +539,9 @@ func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) strin
 		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
 		normalized = resolveShellConstruction(normalized)
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
+		if words {
+			normalized = readShellWords(normalized)
+		}
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		normalized = collapsePathSeparators(normalized)

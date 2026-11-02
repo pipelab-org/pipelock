@@ -66,15 +66,28 @@ func literalArgTokens(args []string) ([]string, string) {
 	return args, strings.Join(args, " ")
 }
 
-// argViewNorms are the normalizations the rule views read arguments under:
-// a Unicode normalization function and an optional confusable pre-normalizer.
-var argViewNorms = []struct {
-	fn  func(string) string
-	pre *strings.Replacer
-}{
-	{normalize.ForMatching, policyPreNormalize},
-	{normalize.ForPolicy, policyPreNormalize},
-	{normalize.ForMatching, nil},
+// argViewNorm is one normalization the rule views read arguments under: a
+// Unicode normalization function, an optional confusable pre-normalizer, and
+// whether the shell word reading applies (see readShellWords).
+type argViewNorm struct {
+	fn    func(string) string
+	pre   *strings.Replacer
+	words bool
+}
+
+// tokens normalizes args under n.
+func (n argViewNorm) tokens(args []string) ([]string, string) {
+	return normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+}
+
+// argViewNorms are the normalizations the rule views read arguments under.
+// The word reading is a separate view so the spellings the other views read
+// stay unchanged.
+var argViewNorms = []argViewNorm{
+	{fn: normalize.ForMatching, pre: policyPreNormalize},
+	{fn: normalize.ForPolicy, pre: policyPreNormalize},
+	{fn: normalize.ForMatching},
+	{fn: normalize.ForMatching, pre: policyPreNormalize, words: true},
 }
 
 // buildArgViews retains the primary, alt, baseline, and literal views, and adds
@@ -113,7 +126,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		views = append(views, v)
 	}
 	for _, n := range norms {
-		tokens, joined := normalizeArgTokensUnexpanded(args, n.fn, n.pre)
+		tokens, joined := n.tokens(args)
 		v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
@@ -121,7 +134,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		case len(segs) > 1:
 			v.segments = make([][]string, 0, len(segs))
 			for _, seg := range segs {
-				t, _ := normalizeArgTokensUnexpanded([]string{seg}, n.fn, n.pre)
+				t, _ := n.tokens([]string{seg})
 				v.segments = append(v.segments, t)
 			}
 		}

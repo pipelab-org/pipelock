@@ -1955,7 +1955,7 @@ Path arguments are matched as the text the caller sends, and a link can make tha
 
 Receipt action classification also recognizes these aliases. Authority grants retain raw-name action matching: receipt alias inference does not broaden the tool identities an existing grant authorizes. Name-based classification is a heuristic, not proof of a tool's actual effects.
 
-Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution, brace expansion, and octal/hex escapes are decoded before matching. Values that only exist at run time, such as a variable set outside the command, aren't resolved; see [Bypass Resistance](bypass-resistance.md#architectural-limits). See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
+Shell obfuscation detection is built-in for `arg_pattern`: backslash escapes, `$IFS` substitution and octal/hex escapes are decoded before matching. Rules also see one more reading of a command, the words the shell would produce from expansions the text decides: a variable the command doesn't set reads as unset (`r${u}m` reads as `rm`, `${x:-rm}` as `rm`), brace expansion joins each item to the surrounding word (`{r,}m` reads as `rm m`), and a bracket of literal characters reads as each one (`r[m]` reads as `rm`). That reading can only add matches. The value a variable holds when it is set outside the command, and the files a wildcard (`*`, `?`, ranges or classes) matches, only exist at run time and aren't resolved; see [Bypass Resistance](bypass-resistance.md#architectural-limits). See [Redirect Action (v2.0)](#redirect-action-v20) for redirect profile configuration.
 
 ### Defer Action
 

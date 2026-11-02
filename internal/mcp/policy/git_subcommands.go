@@ -361,7 +361,7 @@ func (p *gitProof) read(words []gitWord, inGit, noShell bool) {
 // executable, under the same normalizations the views use (argViewNorms).
 func viewsReadGit(word string) bool {
 	for _, n := range argViewNorms {
-		tokens, _ := normalizeArgTokensUnexpanded([]string{word}, n.fn, n.pre)
+		tokens, _ := n.tokens([]string{word})
 		if slices.ContainsFunc(tokens, func(t string) bool { return commandName(t) == "git" }) {
 			return true
 		}
