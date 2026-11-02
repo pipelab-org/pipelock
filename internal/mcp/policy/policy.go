@@ -393,12 +393,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
-			argPatternMatched, pairIncomplete = matched, false
+		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
+			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
-				argPatternMatched, pairIncomplete = matched, false
+			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
+				argPatternMatched, pairIncomplete = matched, incomplete
 			}
 		}
 		if !argPatternMatched {
@@ -451,7 +451,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	if len(incompleteRules) > 0 {
 		matchedRules = append(matchedRules, incompletePairCheckRule)
 		strictest = StricterAction(strictest, pc.incompleteAction())
-		linkNotes = append(linkNotes, "could not rule out a match across every token pair for: "+strings.Join(incompleteRules, ", "))
+		reason := "could not rule out a match across every token pair for: "
+		if len(views) > 0 && views[0].unreadable {
+			// Every view carries the flag; see buildArgViews.
+			reason = "could not read every shell expansion within its bounds for: "
+		}
+		linkNotes = append(linkNotes, reason+strings.Join(incompleteRules, ", "))
 	}
 
 	if len(matchedRules) == 0 {
@@ -519,7 +524,15 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm
 // normalizeArgTokensUnexpanded retains the normalized spelling that configured
 // rules consumed before command-option expansion was added.
 func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
-	var tokens []string
+	tokens, joined, _ := normalizeArgTokensRead(argStrings, normFn, preNorm, false)
+	return tokens, joined
+}
+
+// normalizeArgTokensRead is normalizeArgTokensUnexpanded with, when words is
+// set, the shell word reading (readShellWords) applied after the text's own
+// assignments are resolved. unreadable reports a word that reading could not
+// expand within its bounds.
+func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) (tokens []string, joined string, unreadable bool) {
 	for _, s := range argStrings {
 		if preNorm != nil {
 			s = preNorm.Replace(s)
@@ -532,12 +545,17 @@ func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) strin
 		normalized = shellPositionalRe.ReplaceAllString(normalized, "")
 		normalized = resolveShellConstruction(normalized)
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
+		if words {
+			var u bool
+			normalized, u = readShellWords(normalized)
+			unreadable = unreadable || u
+		}
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		normalized = collapsePathSeparators(normalized)
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}
-	return tokens, strings.Join(tokens, " ")
+	return tokens, strings.Join(tokens, " "), unreadable
 }
 
 // pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem

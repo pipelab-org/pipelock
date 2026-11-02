@@ -49,9 +49,14 @@ type argView struct {
 	inputKnown  string // direct xargs utility whose input is proved on raw input
 	checkXargs  bool
 	interpreted bool              // added option view; cannot erase original uncertainty
+	wordReading bool              // added shell word view; cannot erase earlier uncertainty
 	ordinary    bool              // ordinary reading kept beside a strict one (see matchArgViews)
 	prior       bool              // interpretation selected without variable-executable uncertainty
 	folded      map[string]string // request-local folds of original tokens and joined views
+	// unreadable marks every view of arguments with a word the shell word
+	// reading could not expand within its bounds; a rule that matches no
+	// view then reports an incomplete check instead of passing.
+	unreadable bool
 	// findPaths caches findPathsOnly(segments) for a plain view; it does not
 	// depend on the pattern. nil means not computed.
 	findPaths [][]string
@@ -66,15 +71,29 @@ func literalArgTokens(args []string) ([]string, string) {
 	return args, strings.Join(args, " ")
 }
 
-// argViewNorms are the normalizations the rule views read arguments under:
-// a Unicode normalization function and an optional confusable pre-normalizer.
-var argViewNorms = []struct {
-	fn  func(string) string
-	pre *strings.Replacer
-}{
-	{normalize.ForMatching, policyPreNormalize},
-	{normalize.ForPolicy, policyPreNormalize},
-	{normalize.ForMatching, nil},
+// argViewNorm is one normalization the rule views read arguments under: a
+// Unicode normalization function, an optional confusable pre-normalizer, and
+// whether the shell word reading applies (see readShellWords).
+type argViewNorm struct {
+	fn    func(string) string
+	pre   *strings.Replacer
+	words bool
+}
+
+// tokens normalizes args under n.
+func (n argViewNorm) tokens(args []string) ([]string, string) {
+	tokens, joined, _ := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+	return tokens, joined
+}
+
+// argViewNorms are the normalizations the rule views read arguments under.
+// The word reading is a separate view so the spellings the other views read
+// stay unchanged.
+var argViewNorms = []argViewNorm{
+	{fn: normalize.ForMatching, pre: policyPreNormalize},
+	{fn: normalize.ForPolicy, pre: policyPreNormalize},
+	{fn: normalize.ForMatching},
+	{fn: normalize.ForMatching, pre: policyPreNormalize, words: true},
 }
 
 // buildArgViews retains the primary, alt, baseline, and literal views, and adds
@@ -96,6 +115,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	priorProof.variableExecutable = false
 	retainPrior := proof.variableExecutable && !proof.unproved
 	norms := argViewNorms
+	unreadable := false
 	views := make([]argView, 0, 2*len(norms)+1)
 	// add keeps the first of identical views. matchArgViewSet skips a view the
 	// same as an earlier one, so dropping it here only saves the work of
@@ -113,7 +133,8 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		views = append(views, v)
 	}
 	for _, n := range norms {
-		tokens, joined := normalizeArgTokensUnexpanded(args, n.fn, n.pre)
+		tokens, joined, u := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+		unreadable = unreadable || u
 		v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
@@ -121,7 +142,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		case len(segs) > 1:
 			v.segments = make([][]string, 0, len(segs))
 			for _, seg := range segs {
-				t, _ := normalizeArgTokensUnexpanded([]string{seg}, n.fn, n.pre)
+				t, _ := n.tokens([]string{seg})
 				v.segments = append(v.segments, t)
 			}
 		}
@@ -129,6 +150,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		if slices.ContainsFunc(views, func(prev argView) bool { return !prev.interpreted && sameArgView(prev, v) }) {
 			continue
 		}
+		v.wordReading = n.words
 		add(v)
 		var priorStrict bool
 		if retainPrior {
@@ -170,6 +192,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
 	folded := make(map[string]string)
 	for i := range views {
+		views[i].unreadable = unreadable
 		for _, token := range views[i].tokens {
 			if _, ok := folded[token]; !ok {
 				folded[token] = foldString(token)
@@ -444,6 +467,30 @@ func fileRefs(words []string) []string {
 // commands, or a revised pattern, can then turn a match into an incomplete
 // check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
+	var original, words []argView
+	for _, v := range views {
+		if v.wordReading {
+			words = append(words, v)
+		} else {
+			original = append(original, v)
+		}
+	}
+	if len(words) == 0 {
+		return matchOptionViews(pat, views...)
+	}
+	matched, incomplete = matchOptionViews(pat, original...)
+	if matched {
+		return matched, incomplete
+	}
+	// A match in the word reading cannot release a block from an earlier
+	// incomplete check, including one in an earlier option interpretation.
+	moreMatched, moreIncomplete := matchOptionViews(pat, words...)
+	return moreMatched, incomplete || moreIncomplete
+}
+
+// matchOptionViews combines the ordinary and option interpretations within
+// one set of shell word readings.
+func matchOptionViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
 	memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
 	if !slices.ContainsFunc(views, func(v argView) bool { return v.interpreted }) {
 		return matchArgViewSet(pat, memo, views...)
@@ -494,7 +541,7 @@ func matchArgViewSet(pat *regexp.Regexp, memo *afterPartsMemo, views ...argView)
 		if m {
 			return true, false
 		}
-		incomplete = incomplete || inc
+		incomplete = incomplete || inc || v.unreadable
 	}
 	prior := priorPatterns(pat)
 	if incomplete {
@@ -558,7 +605,7 @@ func cachedFold(text string, folds map[string]string) string {
 // that decides whether command input can be considered known.
 func sameArgView(a, b argView) bool {
 	return a.joined == b.joined && a.unsplit == b.unsplit && a.plain == b.plain &&
-		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.ordinary == b.ordinary && a.prior == b.prior &&
+		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.wordReading == b.wordReading && a.ordinary == b.ordinary && a.prior == b.prior &&
 		(a.segments == nil) == (b.segments == nil) && slices.Equal(a.tokens, b.tokens) &&
 		slices.EqualFunc(a.segments, b.segments, slices.Equal[[]string])
 }
