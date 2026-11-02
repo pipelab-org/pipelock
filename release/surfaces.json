@@ -103,6 +103,22 @@
   },
   "surfaces": [
     {
+      "id": "quickstart-current-version",
+      "path": "examples/quickstart/README.md",
+      "pattern": "Pin a specific version with `PIPELOCK_VERSION=(?P<value>[0-9]+\\.[0-9]+\\.[0-9]+)",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "The quickstart installation example follows the product release."
+    },
+    {
+      "id": "quickstart-legacy-namespace",
+      "path": "examples/quickstart/README.md",
+      "pattern": "(?P<value>3\\.7\\.1)",
+      "expected": "3.7.1",
+      "count": 2,
+      "reason": "Historical namespace boundary and example: the v3.7.1 scripts/release-image-namespace.sh maps both release repositories to ghcr.io/luckypipewrench."
+    },
+    {
       "id": "docs-benchmarks.md-1",
       "path": "docs/benchmarks.md",
       "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",

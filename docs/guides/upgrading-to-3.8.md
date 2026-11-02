@@ -9,11 +9,11 @@ This guide covers operator actions when moving from the 3.7 release line. Instal
 
 ## Move metrics scrapers to a dedicated listener
 
-The agent-facing proxy no longer serves `/metrics` or `/stats`. Counters still collect internally, but neither route is exposed unless `metrics_listen` names a dedicated listener. Omitted, null and blank values leave it disabled. This also applies to sandbox proxy listeners.
+The agent-facing proxy no longer serves `/metrics` or `/stats`. Counters still collect internally, but neither route is exposed unless `metrics_listen` names a dedicated listener. Omitted, null and blank values disable the listener at startup. This also applies to sandbox proxy listeners. Managed containment rejects a reload that removes or blanks the setting: the existing listener stays bound, `/metrics` returns `403` until a valid reload clears the denial, and `/stats` keeps serving loopback clients. Restart with the setting removed or blank to disable that listener.
 
 For a scraper on the proxy host, add this field to the existing configuration:
 
-```yaml pipelock-fragment
+```yaml
 metrics_listen: "127.0.0.1:9091"
 ```
 

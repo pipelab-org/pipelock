@@ -15,7 +15,7 @@ This starts two containers:
 
 Set your agent's `HTTP_PROXY` and `HTTPS_PROXY` to `http://pipelock:8888`. The agent container already has these configured.
 
-Pin a specific version with `PIPELOCK_VERSION=<tag> docker compose up`. See [Releases](https://github.com/luckyPipewrench/pipelock/releases) for available tags.
+Pin a specific version with `PIPELOCK_VERSION=3.8.0 docker compose up`. `PIPELOCK_IMAGE_NAMESPACE` defaults to `pipelab-org`. For releases through 3.7.1, also select the legacy namespace, for example `PIPELOCK_IMAGE_NAMESPACE=luckypipewrench PIPELOCK_VERSION=3.7.1 docker compose up`. See [Releases](https://github.com/pipelab-org/pipelock/releases) for available tags.
 
 ## Verify
 
