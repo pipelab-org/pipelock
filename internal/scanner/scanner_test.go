@@ -6655,7 +6655,7 @@ func TestScan_LLMProviderKeyURLCarrier(t *testing.T) {
 		},
 		{
 			name:        "llm router own provider URL is blocked",
-			rawURL:      "https://api.openrouter.ai/v1/responses/" + "sk-or-v1-" + strings.Repeat("B", 24),
+			rawURL:      "https://openrouter.ai/api/v1/responses/" + "sk-or-v1-" + strings.Repeat("B", 24),
 			shouldAllow: false,
 		},
 		{
