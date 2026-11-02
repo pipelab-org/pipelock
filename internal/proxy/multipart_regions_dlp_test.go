@@ -159,8 +159,8 @@ func TestMultipartRegionsDLPLimits(t *testing.T) {
 		}{
 			{"at limit", atLimit, "", "", http.StatusCreated},
 			{"credential at limit", seededLimit, "dlp_match", "", http.StatusForbidden},
-			{"over limit", append([]byte("x"), atLimit...), "dlp_match", "max_body_bytes", http.StatusForbidden},
-			{"missing close", []byte(secret + "\r\n--region-boundary\r\nContent-Disposition: form-data; name=field\r\n\r\nordinary text"), "dlp_match", "unexpected EOF", http.StatusForbidden},
+			{"over limit", append([]byte("x"), atLimit...), "parse_error", "max_body_bytes", http.StatusForbidden},
+			{"missing close", []byte(secret + "\r\n--region-boundary\r\nContent-Disposition: form-data; name=field\r\n\r\nordinary text"), "parse_error", "unexpected EOF", http.StatusForbidden},
 		} {
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
 				wantReason, wantStatus := tc.reason, tc.status

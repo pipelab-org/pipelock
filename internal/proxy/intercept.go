@@ -1438,8 +1438,8 @@ func newInterceptHandler(
 				if result.RedactionBlockReason == "" {
 					scannerLabel = bodyBlockCauseLabel(blockCause, scannerLabel)
 				}
-				if unreadHoldOnly(result) {
-					scannerLabel = scanner.ScannerParser
+				if failureLayer := bodyFailureLayer(result, bodyBytes); failureLayer != "" {
+					scannerLabel = failureLayer
 				}
 				promptInjectionHardBlock := shouldHardBlockBodyPromptInjection(result, r.URL.Hostname(), ic.Config)
 				dlpHardBlock := shouldHardBlockBodyCriticalDLP(result, r.URL.Hostname(), ic.Config)

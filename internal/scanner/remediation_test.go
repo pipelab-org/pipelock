@@ -1098,6 +1098,39 @@ func TestQueryEntropyKeyHint(t *testing.T) {
 	}
 }
 
+func TestParserBodySizeGuidance(t *testing.T) {
+	for _, reason := range []string{
+		"request body exceeds max_body_bytes (1024)",
+		"multipart headers exceed max_body_bytes (1024)",
+		"multipart part exceeds max_body_bytes (1024)",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			got, ok := GuidanceForResult(ScannerParser, reason)
+			if !IsUnreadBodyReason(reason) {
+				t.Fatal("size refusal did not reach reason-specific body hints")
+			}
+			if !ok || !strings.Contains(got.OperatorKnob, "`request_body_scanning.max_body_bytes`") ||
+				!strings.Contains(got.OperatorKnob, "regardless of `request_body_scanning.action`") ||
+				got.AgentReason != protectiveCeilingAgentReason {
+				t.Fatalf("size-limit guidance = %#v, found %v", got, ok)
+			}
+			if hint := OperatorHintForResult(ScannerParser, reason); hint != got.OperatorKnob {
+				t.Fatalf("audit hint = %q, want %q", hint, got.OperatorKnob)
+			}
+		})
+	}
+	for _, reason := range []string{
+		"invalid JSON request body",
+		"error reading request body: request body exceeds max_body_bytes (1024)",
+		"multipart body exceeds 100 parts limit",
+	} {
+		got, ok := GuidanceForResult(ScannerParser, reason)
+		if !ok || got.OperatorKnob != parseContextOperatorKnob {
+			t.Fatalf("ordinary parser guidance for %q = %#v, found %v", reason, got, ok)
+		}
+	}
+}
+
 func TestUnscannedEncodingGuidance(t *testing.T) {
 	reason := `request body uses Content-Encoding "gzip"; ` + UnscannedEncodingSuffix
 	for _, label := range []string{ScannerParser, ScannerBodyDLP} {

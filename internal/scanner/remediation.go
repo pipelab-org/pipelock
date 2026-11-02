@@ -100,7 +100,14 @@ const UnscannedEncodingSuffix = "compressed bodies cannot be scanned for secrets
 // IsUnreadBodyReason reports a body Pipelock withheld because it could not read
 // it, not because a finding matched. Both share the parse_error block reason.
 func IsUnreadBodyReason(reason string) bool {
-	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix)
+	return strings.HasSuffix(reason, IncompleteFileGovernedSuffix) || strings.HasSuffix(reason, UnscannedEncodingSuffix) || isBodySizeLimitReason(reason)
+}
+
+// isBodySizeLimitReason recognizes the size refusals emitted by request-body inspection.
+func isBodySizeLimitReason(reason string) bool {
+	return strings.HasPrefix(reason, "request body exceeds max_body_bytes (") ||
+		strings.HasPrefix(reason, "multipart headers exceed max_body_bytes (") ||
+		strings.HasPrefix(reason, "multipart part exceeds max_body_bytes (")
 }
 
 // Request-body reasons that name a finding before an unread upload. The
@@ -250,7 +257,7 @@ const (
 		"There is no allow knob — reach the intended service by its ordinary routable or private address instead."
 
 	injectionTraversalOperatorKnob = "This sequence is never legitimate in a normal URL (header injection / directory escape). There is no exemption knob — the URL must be corrected at the source."
-	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the URL could not be parsed. Correct the input and retry."
+	parseContextOperatorKnob       = "This is not a policy block: the request context was unavailable/cancelled, or the input could not be parsed or fully scanned. Correct the input or unreadable body and retry."
 
 	// Query entropy shares the ScannerEntropy label with path entropy
 	// but is a distinct gate with a distinct knob. The table is keyed by label
@@ -394,7 +401,7 @@ var remediationGuidance = map[string]RemediationGuidance{
 	},
 	ScannerParser: {
 		OperatorKnob: parseContextOperatorKnob,
-		AgentReason:  "Request blocked: the URL could not be parsed.",
+		AgentReason:  "Request blocked: the input could not be parsed or fully scanned.",
 	},
 	ScannerBodyDLP: {
 		OperatorKnob: bodyDLPOperatorKnob,
@@ -781,6 +788,16 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// reason so hot-path blocks such as URL length do not allocate a lowercase
 	// copy that no branch will inspect.
 	switch label {
+	case ScannerParser:
+		// These prefixes are emitted by request-body inspection when its
+		// configured read ceiling prevents complete scanning.
+		if isBodySizeLimitReason(reason) {
+			return RemediationGuidance{
+				OperatorKnob: "Reduce the request body size, or raise `request_body_scanning.max_body_bytes` only to the largest verified body this route needs. Bodies over this ceiling block regardless of `request_body_scanning.action`.",
+				AgentReason:  protectiveCeilingAgentReason,
+			}, true
+		}
+		return GuidanceFor(label)
 	case AuditKillSwitch:
 		if reason == "conductor_apply_failure" {
 			return RemediationGuidance{
