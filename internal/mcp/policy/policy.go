@@ -393,12 +393,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
-			argPatternMatched, pairIncomplete = matched, false
+		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
+			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
-				argPatternMatched, pairIncomplete = matched, false
+			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
+				argPatternMatched, pairIncomplete = matched, incomplete
 			}
 		}
 		if !argPatternMatched {
