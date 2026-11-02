@@ -85,7 +85,9 @@ func readShellWords(s string) (out string, unreadable bool) {
 func readUnsetParameters(s string) string {
 	for range maxParamNesting {
 		next := replaceUnescaped(s, bracedParamRe, func(m []string) (string, bool) {
-			if m[3] == "IFS" {
+			// Parameter zero names the shell, including a multi-digit zero
+			// spelling. Its value is not the unset positional-argument case.
+			if m[3] == "IFS" || strings.Trim(m[3], "0") == "" {
 				return "", false
 			}
 			return unsetBracedValue(m[1] != "", m[4]), true

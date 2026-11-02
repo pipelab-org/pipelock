@@ -4,6 +4,7 @@
 package policy
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,35 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
+
+func TestWordReadingKeepsIncompleteCheck(t *testing.T) {
+	// The unresolved words exhaust the earlier view's pair budget. Reading
+	// them as unset exposes a warn match, but must retain the incomplete block.
+	var command strings.Builder
+	command.WriteString("echo ")
+	for i := range maxPairwiseTokens {
+		fmt.Fprintf(&command, "$u%d ", i)
+	}
+	command.WriteString("zz +rf ")
+	command.WriteString(strings.Join(shortWords(maxPairwiseTokens+1), " "))
+	for _, key := range []string{"", "command"} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{
+				Name: "warn rule", ToolPattern: "bash", ArgKey: key,
+				ArgPattern: `^[a-z]{2} \+rf$`, Action: config.ActionWarn,
+			}},
+		})
+		for surface, got := range gitProofVerdicts(t, pc, "bash", []string{command.String()}, "command") {
+			if key != "" && surface == "CheckToolCall" {
+				continue
+			}
+			if got.Action != config.ActionBlock || !slices.Contains(got.IncompleteRules, "warn rule") {
+				t.Errorf("key=%q %s: got %+v, want incomplete check block", key, surface, got)
+			}
+		}
+	}
+}
 
 const (
 	ruleSensitiveFileRead = "Credential File Access"
@@ -33,6 +63,7 @@ var wordReadingRows = []struct {
 	{"assign default names program", "${x:=rm} -rf /", ruleFileDelete},
 	{"nested default", "${x:-${y:-rm}} -rf /", ruleFileDelete},
 	{"length expansion is not a splice", "r${#x}m -rf /tmp/x", ""},
+	{"shell parameter zero is not a splice", "r${0}m -rf /tmp/x", ""},
 	{"brace preamble", "{r,}m -rf /", ruleFileDelete},
 	{"brace postscript", "r{m,} -rf /", ruleFileDelete},
 	{"bracket in program name", "/bin/r[m] -rf /", ruleFileDelete},
@@ -141,6 +172,7 @@ func TestReadUnsetParameters(t *testing.T) {
 		{"$IFS ${IFS} ${IFS:0:1}", "$IFS ${IFS} ${IFS:0:1}"},
 		{`\$u ${u}`, `\$u `},
 		{"$? $$ $0", "$? $$ $0"},
+		{"${0} ${00} ${#0} ${0:-rm}", "${0} ${00} ${#0} ${0:-rm}"},
 		{"no expansion", "no expansion"},
 	}
 	for _, tt := range tests {
@@ -158,6 +190,8 @@ func TestExpandWords(t *testing.T) {
 		{"a{b,c}d{e,f}", "abde abdf acde acdf"},
 		{"/bin/r[m]", "/bin/rm"},
 		{"x[ab]y", "xay xby"},
+		{"a[bc]d[ef]", "abde abdf acde acdf"},
+		{"x{a,b}[cd]", "xac xad xbc xbd"},
 		{"ls *.go [!a] [a-z]", "ls *.go [!a] [a-z]"},
 		{"echo {a,b};r[m] x|{c,d}", "echo a b;rm x|c d"},
 		{`{"k":1,"v":2}`, `{"k":1,"v":2}`},
@@ -212,5 +246,40 @@ func TestWordReading_UnreadableIsIncomplete(t *testing.T) {
 	}
 	if v := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()}).CheckToolCall("bash", []string{"ls {a,b}.go"}); v.Matched {
 		t.Fatalf("readable expansion reported %v", v.Rules)
+	}
+}
+
+func TestExpandWords_MixedBound(t *testing.T) {
+	// The combined brace/bracket product shares the same bound.
+	if got, unreadable := expandWords("{a,b}[ab][ab][ab][ab][ab][ab]"); got != "{a,b}[ab][ab][ab][ab][ab][ab]" || !unreadable {
+		t.Fatal("a mixed 128-word expansion was not left unchanged and unreadable")
+	}
+	if got, unreadable := expandWords(strings.Repeat("[a]", 16000)); got != strings.Repeat("a", 16000) || unreadable {
+		t.Fatal("a long word with one result was not expanded")
+	}
+}
+
+func BenchmarkExpandWordsSingletons(b *testing.B) {
+	for _, n := range []int{1000, 4000, 16000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			word := strings.Repeat("[a]", n)
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = expandWords(word)
+			}
+		})
+	}
+}
+
+func BenchmarkWordReadingCommand(b *testing.B) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, n := range []int{10, 1000} {
+		b.Run(fmt.Sprint(n), func(b *testing.B) {
+			command := "echo " + strings.Repeat("{a,b}{a,b}{a,b}{a,b}{a,b}{a,b} ", n)
+			b.ReportAllocs()
+			for b.Loop() {
+				_ = pc.CheckToolCall("bash", []string{command})
+			}
+		})
 	}
 }

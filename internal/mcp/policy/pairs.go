@@ -49,6 +49,7 @@ type argView struct {
 	inputKnown  string // direct xargs utility whose input is proved on raw input
 	checkXargs  bool
 	interpreted bool              // added option view; cannot erase original uncertainty
+	wordReading bool              // added shell word view; cannot erase earlier uncertainty
 	ordinary    bool              // ordinary reading kept beside a strict one (see matchArgViews)
 	prior       bool              // interpretation selected without variable-executable uncertainty
 	folded      map[string]string // request-local folds of original tokens and joined views
@@ -149,6 +150,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		if slices.ContainsFunc(views, func(prev argView) bool { return !prev.interpreted && sameArgView(prev, v) }) {
 			continue
 		}
+		v.wordReading = n.words
 		add(v)
 		var priorStrict bool
 		if retainPrior {
@@ -465,6 +467,30 @@ func fileRefs(words []string) []string {
 // commands, or a revised pattern, can then turn a match into an incomplete
 // check only where that earlier check found no match either.
 func matchArgViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
+	var original, words []argView
+	for _, v := range views {
+		if v.wordReading {
+			words = append(words, v)
+		} else {
+			original = append(original, v)
+		}
+	}
+	if len(words) == 0 {
+		return matchOptionViews(pat, views...)
+	}
+	matched, incomplete = matchOptionViews(pat, original...)
+	if matched {
+		return matched, incomplete
+	}
+	// A match in the word reading cannot release a block from an earlier
+	// incomplete check, including one in an earlier option interpretation.
+	moreMatched, moreIncomplete := matchOptionViews(pat, words...)
+	return moreMatched, incomplete || moreIncomplete
+}
+
+// matchOptionViews combines the ordinary and option interpretations within
+// one set of shell word readings.
+func matchOptionViews(pat *regexp.Regexp, views ...argView) (matched, incomplete bool) {
 	memo := &afterPartsMemo{segs: map[int]*afterPartsSeg{}}
 	if !slices.ContainsFunc(views, func(v argView) bool { return v.interpreted }) {
 		return matchArgViewSet(pat, memo, views...)
@@ -579,7 +605,7 @@ func cachedFold(text string, folds map[string]string) string {
 // that decides whether command input can be considered known.
 func sameArgView(a, b argView) bool {
 	return a.joined == b.joined && a.unsplit == b.unsplit && a.plain == b.plain &&
-		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.ordinary == b.ordinary && a.prior == b.prior &&
+		a.inputKnown == b.inputKnown && a.checkXargs == b.checkXargs && a.interpreted == b.interpreted && a.wordReading == b.wordReading && a.ordinary == b.ordinary && a.prior == b.prior &&
 		(a.segments == nil) == (b.segments == nil) && slices.Equal(a.tokens, b.tokens) &&
 		slices.EqualFunc(a.segments, b.segments, slices.Equal[[]string])
 }
