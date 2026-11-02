@@ -26,8 +26,14 @@ func TestWithCoreDLPFloor(t *testing.T) {
 	} {
 		configured := core[0]
 		mutate(&configured)
-		if got := WithCoreDLPFloor([]DLPPattern{configured}); len(got) != len(core)+1 {
+		got := WithCoreDLPFloor([]DLPPattern{configured})
+		if len(got) != len(core)+1 {
 			t.Fatalf("a same-name configured pattern displaced the core pattern: %d", len(got))
+		}
+		if !slices.ContainsFunc(got, func(p DLPPattern) bool {
+			return p.Name == core[0].Name && p.Regex == core[0].Regex && p.Validator == core[0].Validator
+		}) {
+			t.Fatalf("the original core pattern %q is missing from the result", core[0].Name)
 		}
 	}
 	// The input slice is not modified.

@@ -495,22 +495,35 @@ func TestQuickstartExampleRetainsBuiltInPatterns(t *testing.T) {
 	if cfg.DLP.IncludeDefaults == nil || !*cfg.DLP.IncludeDefaults || cfg.ResponseScanning.IncludeDefaults == nil || !*cfg.ResponseScanning.IncludeDefaults {
 		t.Fatal("quickstart example must inherit built-in patterns")
 	}
-	have := make(map[string]bool)
-	for _, p := range cfg.ResponseScanning.Patterns {
-		have[p.Name] = true
+	// Same comparison as the shipped presets: a same-name entry replaces the
+	// built-in, so every built-in must survive with its properties intact.
+	dlp := make(map[string]config.DLPPattern)
+	for _, p := range cfg.DLP.Patterns {
+		dlp[p.Name] = p
 	}
-	for _, p := range config.Defaults().ResponseScanning.Patterns {
-		if !have[p.Name] {
-			t.Errorf("quickstart example lacks built-in response pattern %q", p.Name)
+	for _, want := range config.Defaults().DLP.Patterns {
+		got, ok := dlp[want.Name]
+		if !ok {
+			t.Errorf("quickstart example lacks built-in DLP pattern %q", want.Name)
+			continue
+		}
+		if !presetDLPPatternMatchesBuiltIn(got, want) {
+			t.Errorf("quickstart example changed built-in DLP pattern %q", want.Name)
 		}
 	}
-	have = make(map[string]bool)
-	for _, p := range cfg.DLP.Patterns {
-		have[p.Name] = true
+	response := make(map[string]config.ResponseScanPattern)
+	for _, p := range cfg.ResponseScanning.Patterns {
+		response[p.Name] = p
 	}
-	for _, p := range config.Defaults().DLP.Patterns {
-		if !have[p.Name] {
-			t.Errorf("quickstart example lacks built-in DLP pattern %q", p.Name)
+	for _, want := range config.Defaults().ResponseScanning.Patterns {
+		got, ok := response[want.Name]
+		if !ok {
+			t.Errorf("quickstart example lacks built-in response pattern %q", want.Name)
+			continue
+		}
+		got.Compiled = want.Compiled
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("quickstart example changed built-in response pattern %q", want.Name)
 		}
 	}
 }
