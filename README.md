@@ -53,7 +53,7 @@ Pipelock emits mediator-signed [action receipts](https://pipelab.org/learn/actio
 </p>
 
 <p align="center">
-  <strong>Try it in your browser at the <a href="https://pipelab.org/playground">live playground</a>. If Pipelock earns it, <a href="https://github.com/luckyPipewrench/pipelock/stargazers">star the repo</a> so other people find it.</strong>
+  <strong>Try it in your browser at the <a href="https://pipelab.org/playground">live playground</a>. If Pipelock earns it, <a href="https://github.com/pipelab-org/pipelock">star the repo</a> so other people find it.</strong>
 </p>
 
 ---
