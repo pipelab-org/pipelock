@@ -844,8 +844,23 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 }
 
 func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	// Pattern matching stops at the first enforced credential. That skip must
+	// not drop a later segment whose decode hits a work bound: the outer
+	// refusal reads the memo after this function returns, and an audience
+	// allow can remove the credential that stopped the match.
+	var budgetText string
+	if decodes != nil && !decodes.inbound {
+		defer func() {
+			noteTextSegmentDecodeBudget(budgetText, decodes)
+		}()
+	}
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
+	if decodes != nil {
+		// Same normalized text the segment matcher uses, including the
+		// early return that runs before that matcher.
+		budgetText = decodes.normalize(text)
+	}
 
 	// Core DLP runs FIRST - immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
@@ -990,6 +1005,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := decodes.normalize(text)
+	budgetText = cleaned
 	if opts.patterns != textDLPCardPatterns {
 		matches = append(matches, s.scanCanaryTextWithDecodes(cleaned, decodes)...)
 	}
@@ -1093,9 +1109,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// try decoding each segment individually. Catches encoded secrets embedded
 	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
 	// where whole-string decode fails because the text isn't pure hex/base64.
-	// Only skip segment decoding when enforced matches already exist.
-	// Warn-only matches must not gate off further scanning - an enforced
-	// match might hide in a decoded segment.
+	// Stop pattern matching once an enforced match exists. Warn-only matches
+	// must not do that: another enforced match can still sit in a later
+	// segment. noteTextSegmentDecodeBudget still decodes every segment, so
+	// this stop cannot hide a walk that reached its bound.
 	if !hasEnforcedMatch(matches) {
 		for _, view := range segmentDecodeViews {
 			matches = append(matches, s.decodeTextSegmentsWithDecodes(view.text, decodes, opts.patterns)...)
@@ -1536,6 +1553,25 @@ func hasEnforcedMatch(matches []TextDLPMatch) bool {
 		}
 	}
 	return false
+}
+
+// noteTextSegmentDecodeBudget decodes every text segment the pattern walk
+// might have skipped. It adds no findings. A bound reached here sticks on
+// the memo and the caller refuses outbound text. Inbound scans keep the
+// partial-view policy and do not call it.
+func noteTextSegmentDecodeBudget(text string, decodes *decodingMemo) {
+	if decodes == nil || decodes.inbound || decodes.inspectionIncomplete() || text == "" {
+		return
+	}
+	for _, seg := range textDLPSegments(text) {
+		if len(seg) < 10 {
+			continue
+		}
+		decodes.decode(seg, true)
+		if decodes.inspectionIncomplete() {
+			return
+		}
+	}
 }
 
 // decodeTextSegmentsWithDecodes splits text on common URL/path delimiters and tries

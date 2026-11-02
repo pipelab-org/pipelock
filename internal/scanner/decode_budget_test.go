@@ -203,6 +203,44 @@ func TestDecodeBudgetInboundAccounting(t *testing.T) {
 	}
 }
 
+func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	// Two-layer base64 whose intermediate is past the recursive budget.
+	// The surrounding header is not itself that encoding, so only a segment
+	// walk reaches the bound. A compiled audience then drops the credential.
+	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
+	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
+	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	var segment decodingMemo
+	if views := segment.decode(outer, true); segment.inspectionIncomplete() == false || len(views) == 0 {
+		t.Fatalf("segment fixture did not exhaust: views=%d incomplete=%v", len(views), segment.inspectionIncomplete())
+	}
+	token := "ghp_" + strings.Repeat("A", 36)
+	value := "Bearer " + token + "/" + outer
+	var whole decodingMemo
+	_ = whole.decode(value, true)
+	if whole.inspectionIncomplete() {
+		t.Fatal("whole header exhausted; segment skip is not isolated")
+	}
+	result := sc.ScanTextForDLP(t.Context(), value)
+	if !HasInspectionLimit(result.Matches) {
+		t.Fatalf("segment walk skipped: clean=%v matches=%v", result.Clean, matchNames(result.Matches))
+	}
+	kept, allows := sc.FilterHeaderDLPMatches(result.Matches, "https://api.github.com/repos/example", "Authorization", value)
+	if len(allows) == 0 || !HasInspectionLimit(kept) {
+		t.Fatalf("audience filter removed the budget refusal: kept=%v allows=%v", matchNames(kept), allows)
+	}
+	inbound := sc.ScanTextForDLP(WithInboundDirection(t.Context()), value)
+	if HasInspectionLimit(inbound.Matches) {
+		t.Fatal("inbound segment budget refused a response")
+	}
+}
+
 func TestDecodeBudgetKnownValueURL(t *testing.T) {
 	known := strings.Join([]string{"Q7m2", "X9z4", "R8v3", "N6p1"}, "")
 	nested := `\u0051` + known[1:]
