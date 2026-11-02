@@ -109,7 +109,7 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
-For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes and whole-recorder transcript roots with trailing signed checkpoints in per-run sessions, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links, recovery seals, and closes in a legacy shared session such as "proxy" do not. Fleet-report signatures are verified, but current fleet-report formats do not prove a final chain endpoint, so verification reports VALID PREFIX, END UNPROVEN and exits 3.
+For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes and whole-recorder transcript roots with trailing signed checkpoints in per-run sessions, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links, recovery seals, and closes in a legacy shared session such as "proxy" do not. Fleet-report signatures are verified, but current fleet-report formats do not prove a final chain endpoint, so verification reports VALID PREFIX, END UNPROVEN and exits 3 by default. --allow-prefix returns 0 for a valid fleet-report prefix while retaining that label; fleet reports do not accept --expect-head or --expect-seq.
 
 Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, refused (a symlink inside an evidence directory, an entry filed under the wrong session), or report delivery failed; exit 2 = usage or configuration error, such as a malformed --key or a missing directory.
 
@@ -140,8 +140,11 @@ Examples:
 			if cmd.Flags().Changed("expect-seq") {
 				expectedSeq = &expectSeq
 			}
-			if (allowPrefix || expectHead != "" || expectedSeq != nil || jsonOutput) && (fleetReport || (jsonOutput && cleanReport != "") || (chainDir == "" && (len(args) == 0 || !strings.HasSuffix(args[0], ".jsonl")))) {
+			if (expectHead != "" || expectedSeq != nil || jsonOutput) && (fleetReport || (jsonOutput && cleanReport != "") || (chainDir == "" && (len(args) == 0 || !strings.HasSuffix(args[0], ".jsonl")))) {
 				return configError(errors.New("end-proof and JSON flags require a receipt chain"))
+			}
+			if allowPrefix && !fleetReport && chainDir == "" && (len(args) == 0 || !strings.HasSuffix(args[0], ".jsonl")) {
+				return configError(errors.New("--allow-prefix requires a receipt chain"))
 			}
 			if requireSeal && !wholeRecorder {
 				return configError(errors.New("--require-seal requires --whole-recorder"))
@@ -248,7 +251,7 @@ Examples:
 				if cmd.Flags().Changed("session") {
 					return configError(fmt.Errorf("--fleet-report cannot be combined with --session"))
 				}
-				return outputResult(out, verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned))
+				return outputResult(out, verifyFleetReportWithOptions(out, args[0], trustedKeys, allowUnpinned, allowPrefix))
 			}
 			if resolvedLocation != nil && cleanReport == "" {
 				sessionBase := sessionID
@@ -1255,7 +1258,7 @@ func verifySingleReceiptDetailed(out io.Writer, path, expectedKey string, opts v
 	return nil
 }
 
-func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned bool) error {
+func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []string, allowUnpinned, allowPrefix bool) error {
 	data, err := readOperatorFile(path)
 	if err != nil {
 		return fmt.Errorf("reading fleet receipt: %w", err)
@@ -1310,7 +1313,7 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	if result.Unpinned && !allowUnpinned {
 		return fmt.Errorf("fleet receipt verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
-	return endProof.Require(false)
+	return endProof.Require(allowPrefix)
 }
 
 func resolvedLimitString(raw string) string {

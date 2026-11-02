@@ -157,11 +157,13 @@ FLEET RECEIPT VALID PREFIX, END UNPROVEN: fleet-receipt.dsse.json
   Continuity:       cross_session_continuity_unproven (receiver observations unavailable)
 ```
 
-The command exits 3 here. Neither fleet report format binds a final endpoint or proves that no batch is missing from either end of the window, so a verified report is a valid prefix rather than a complete record. A report that fails its signature, structure, or arithmetic checks exits 1. The mediated fraction covers only the observed actions in the included batches. A `Reported dropped actions` line appears when followers reported dropping actions, and that total must equal the sum of the source batches' signed dropped counts.
+The command exits 3 here. Neither fleet report format binds a final endpoint or proves that no batch is missing from either end of the window, so a verified report is a valid prefix rather than a complete record. Add `--allow-prefix` to return exit 0 while keeping the `VALID PREFIX, END UNPROVEN` label; the flag does not prove report completeness. A report that fails its signature, structure, or arithmetic checks still exits 1. The mediated fraction covers only the observed actions in the included batches. A `Reported dropped actions` line appears when followers reported dropping actions, and that total must equal the sum of the source batches' signed dropped counts.
 
 Without `--key`, the verifier can check structure and self-consistency only. It
 prints `FLEET RECEIPT UNPINNED` and exits non-zero unless `--allow-unpinned` is
-passed.
+passed. That acknowledgement still leaves the end unproven and exits 3 unless
+`--allow-prefix` is also passed. Fleet reports do not accept `--expect-head`,
+`--expect-seq`, or `--json`.
 
 Fleet reports use v2 by default so independent recorder runs and v3 writers can
 reuse sequence numbers within one window. Use `--report-version 1` when a v1

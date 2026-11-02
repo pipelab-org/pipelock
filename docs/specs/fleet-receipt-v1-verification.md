@@ -16,12 +16,15 @@ pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key <public-key
 ```
 
 The `--key` flag accepts either a 64-character hex Ed25519 public key or a path to a
-file containing the key. The verifier exits 3 when the report verifies, because v1 can't prove a final endpoint, and 1 on any verification failure.
+file containing the key. A report that verifies exits 3 because v1 can't prove a final
+endpoint. Pass `--allow-prefix` to return exit 0 while retaining the
+`VALID PREFIX, END UNPROVEN` label. This accepts the valid prefix; it does not prove
+that the report is complete. Verification failures still exit 1.
 
 Example with a key file:
 
 ```bash
-pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
+pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub --allow-prefix
 ```
 
 Output for a report that verifies:

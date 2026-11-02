@@ -79,3 +79,50 @@ func TestVerifyReceiptCmd_FleetReportNeedsEndProof(t *testing.T) {
 		})
 	}
 }
+
+func TestVerifyReceiptCmd_FleetReportAllowPrefix(t *testing.T) {
+	pub, path := writeFleetReportStatement(t, fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, nil))
+	key := hex.EncodeToString(pub)
+
+	run := func(args ...string) (string, error) {
+		t.Helper()
+		cmd := VerifyReceiptCmd()
+		cmd.SilenceErrors = true
+		cmd.SilenceUsage = true
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&out)
+		cmd.SetArgs(legacyReceiptPrefixArgs(cmd, args))
+		err := cmd.Execute()
+		return out.String(), err
+	}
+
+	defaultOut, defaultErr := run(path, "--fleet-report", "--key", key)
+	assertFleetPartial(t, defaultErr)
+	if !strings.Contains(defaultOut, "FLEET RECEIPT "+endproof.Prefix+":") || strings.Contains(defaultOut, "FLEET RECEIPT OK:") {
+		t.Fatalf("default fleet report output must retain the prefix verdict, got:\n%s", defaultOut)
+	}
+
+	allowedOut, allowedErr := run(path, "--fleet-report", "--key", key, "--allow-prefix")
+	if allowedErr != nil {
+		t.Fatalf("--allow-prefix error = %v (code %d), want success; output:\n%s", allowedErr, cliutil.ExitCodeOf(allowedErr), allowedOut)
+	}
+	if !strings.Contains(allowedOut, "FLEET RECEIPT "+endproof.Prefix+":") || strings.Contains(allowedOut, "FLEET RECEIPT OK:") {
+		t.Fatalf("--allow-prefix must keep the partial verdict, got:\n%s", allowedOut)
+	}
+
+	_, pinErr := run(path, "--fleet-report", "--key", key, "--expect-seq", "1")
+	if pinErr == nil || cliutil.ExitCodeOf(pinErr) != cliutil.ExitConfig {
+		t.Fatalf("fleet --expect-seq error = %v (code %d), want usage refusal", pinErr, cliutil.ExitCodeOf(pinErr))
+	}
+
+	_, unpinnedErr := run(path, "--fleet-report", "--allow-prefix")
+	if unpinnedErr == nil || cliutil.ExitCodeOf(unpinnedErr) != 1 {
+		t.Fatalf("fleet --allow-prefix without --key error = %v (code %d), want unpinned refusal", unpinnedErr, cliutil.ExitCodeOf(unpinnedErr))
+	}
+
+	_, wrongKeyErr := run(path, "--fleet-report", "--key", strings.Repeat("0", len(key)), "--allow-prefix")
+	if wrongKeyErr == nil || cliutil.ExitCodeOf(wrongKeyErr) != 1 {
+		t.Fatalf("fleet --allow-prefix with wrong key error = %v (code %d), want invalid-signature refusal", wrongKeyErr, cliutil.ExitCodeOf(wrongKeyErr))
+	}
+}
