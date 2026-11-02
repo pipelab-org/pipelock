@@ -167,16 +167,64 @@ func replaceUnescaped(s string, re *regexp.Regexp, repl func(m []string) (string
 // shell's control and redirection operators.
 const shellWordBreaks = " \t\n\r;|&<>()"
 
-// singleBracketRe matches a bracket expression listing one literal
-// character, which matches exactly that character and adds no word.
-var singleBracketRe = regexp.MustCompile(`\[([A-Za-z0-9._~+@%,:=/])\]`)
+// nextLiteralBracket finds an outer bracket expression containing only the
+// supported literals. A nested bracket belongs to a class or another pattern
+// outside this reading; its inner spelling is not a separate expression.
+func nextLiteralBracket(s string, offset int) (start, end int) {
+	depth := 0
+	nested := false
+	for i := offset; i < len(s); i++ {
+		switch s[i] {
+		case '[':
+			if depth == 0 {
+				start, nested = i, false
+			} else {
+				nested = true
+			}
+			depth++
+		case ']':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && !nested && bracketRe.MatchString(s[start:i+1]) {
+				return start, i + 1
+			}
+		}
+	}
+	return -1, -1
+}
+
+// readSingleBrackets reads singleton expressions in one pass, preserving
+// classes and other nested patterns for every later expansion step as well.
+func readSingleBrackets(s string) string {
+	var b strings.Builder
+	last := 0
+	for offset := 0; offset < len(s); {
+		start, end := nextLiteralBracket(s, offset)
+		if start < 0 {
+			break
+		}
+		if end-start == 3 {
+			b.WriteString(s[last:start])
+			b.WriteByte(s[start+1])
+			last = end
+		}
+		offset = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
 
 // expandWords applies brace and bracket expansion to each word of s.
 // unreadable reports a word whose expansion exceeded the bounds.
 func expandWords(s string) (string, bool) {
 	// One-character brackets are read in one linear pass, so they cannot
 	// spend the expansion budget below.
-	s = singleBracketRe.ReplaceAllString(s, "$1")
+	s = readSingleBrackets(s)
 	var b strings.Builder
 	unreadable := false
 	// added counts the words expansion adds across the whole text. The
@@ -242,11 +290,14 @@ func expandWord(word string) (string, bool) {
 				return word, false
 			}
 			items = strings.Split(w[loc[2]:loc[3]], ",")
-		} else if loc = bracketRe.FindStringSubmatchIndex(w); loc != nil {
-			items = strings.Split(w[loc[2]:loc[3]], "")
 		} else {
-			done = append(done, w)
-			continue
+			start, end := nextLiteralBracket(w, 0)
+			if start < 0 {
+				done = append(done, w)
+				continue
+			}
+			loc = []int{start, end}
+			items = strings.Split(w[start+1:end-1], "")
 		}
 		pre, post := w[:loc[0]], w[loc[1]:]
 		// Push in reverse so the words come out in the shell's order.

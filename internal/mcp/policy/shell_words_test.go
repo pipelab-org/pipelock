@@ -259,6 +259,26 @@ func TestExpandWords_MixedBound(t *testing.T) {
 	}
 }
 
+func TestExpandWordsLeavesBracketClasses(t *testing.T) {
+	for _, word := range []string{"x[[:alpha:]]", "x[[:digit:]]", "x[a[:digit:]b]", "x[[a]]", "x[[ab]]"} {
+		if got, unreadable := expandWords(word); got != word || unreadable {
+			t.Errorf("%q: got %q, unreadable=%v", word, got, unreadable)
+		}
+	}
+	if got, unreadable := expandWords("x[[:digit:]][a]"); got != "x[[:digit:]]a" || unreadable {
+		t.Errorf("class followed by singleton: %q, unreadable=%v", got, unreadable)
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{
+		Name: "literal filename", ToolPattern: "bash", ArgPattern: `\bxd\b`,
+	}}})
+	if v := pc.CheckToolCall("bash", []string{"echo x[[:digit:]]"}); v.Matched {
+		t.Fatalf("digit class invented a literal d: %+v", v)
+	}
+	if v := pc.CheckToolCall("bash", []string{"echo x[d]"}); !v.Matched {
+		t.Fatal("literal singleton was not read")
+	}
+}
+
 func BenchmarkExpandWordsSingletons(b *testing.B) {
 	for _, n := range []int{1000, 4000, 16000} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) {
