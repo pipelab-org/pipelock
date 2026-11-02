@@ -6,6 +6,7 @@ package policy
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -178,5 +179,24 @@ func TestExpandWords_Bounded(t *testing.T) {
 	small := "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}"
 	if got := expandWords(small); got == small {
 		t.Fatal("a 64-word expansion was not expanded")
+	}
+}
+
+// TestExpandWords_ManyGroups: a word with many expansion groups, including
+// single-item brackets that add no words, keeps its spelling within a bounded
+// number of steps instead of recursing once per group.
+func TestExpandWords_ManyGroups(t *testing.T) {
+	for _, word := range []string{
+		strings.Repeat("[m]", 1<<16),
+		strings.Repeat("{a,}", 1<<12),
+		strings.Repeat("x", 1<<20) + "{a,b}",
+	} {
+		got := expandWords(word)
+		if len(word) < 1<<20 && got != word {
+			t.Fatalf("a %d-byte word of many groups was expanded", len(word))
+		}
+	}
+	if got := expandWords("r[m][m]"); got != "rmm" {
+		t.Fatalf("expandWords(r[m][m]) = %q", got)
 	}
 }

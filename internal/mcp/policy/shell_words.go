@@ -38,6 +38,12 @@ import (
 // unexpanded spelling in this view; the other views still read it.
 const maxWordExpansions = maxPairwiseTokens
 
+// maxWordExpansionSteps bounds the expansion steps for one word. An expansion
+// to maxWordExpansions words whose groups each list two or more items takes
+// fewer than twice that many steps; a group listing one item adds a step
+// without adding a word.
+const maxWordExpansionSteps = 2 * maxWordExpansions
+
 // maxParamNesting bounds the passes that resolve nested braced expansions,
 // innermost first, such as ${a:-${b}}.
 const maxParamNesting = 8
@@ -174,55 +180,40 @@ func expandWords(s string) string {
 }
 
 // expandWord returns the space-separated words one word expands to, or the
-// word unchanged when it has no expansion or would exceed maxWordExpansions.
+// word unchanged when it has no expansion or its expansion exceeds the bounds.
+//
+// Each step takes one pending word and expands its first brace expansion, or
+// else its first bracket expression; a word with neither is finished. Nested
+// braces are reached as the outer ones are consumed, as in Bash. The words are
+// bounded by maxWordExpansions and the steps by maxWordExpansionSteps, so the
+// work for one word is linear in its length whatever the input holds.
 func expandWord(word string) string {
 	if !strings.ContainsAny(word, "{[") {
 		return word
 	}
-	words := []string{word}
-	for _, re := range []*regexp.Regexp{braceExpansionRe, bracketRe} {
-		var next []string
-		for _, w := range words {
-			expanded, ok := expandMatches(w, re, len(next))
-			if !ok {
-				return word
-			}
-			next = append(next, expanded...)
+	pending := []string{word}
+	var done []string
+	for steps := 0; len(pending) > 0; steps++ {
+		if steps >= maxWordExpansionSteps || len(done)+len(pending) > maxWordExpansions {
+			return word
 		}
-		words = next
-	}
-	return strings.Join(words, " ")
-}
-
-// expandMatches expands every match of re in word, left to right. Brace items
-// are separated by commas; a bracket expression yields each listed character.
-// have is the number of words already produced; ok is false when the total
-// would exceed maxWordExpansions.
-func expandMatches(word string, re *regexp.Regexp, have int) ([]string, bool) {
-	loc := re.FindStringSubmatchIndex(word)
-	if loc == nil {
-		return []string{word}, have < maxWordExpansions
-	}
-	pre, inner, post := word[:loc[0]], word[loc[2]:loc[3]], word[loc[1]:]
-	var items []string
-	if re == bracketRe {
-		items = strings.Split(inner, "")
-	} else {
-		items = strings.Split(inner, ",")
-	}
-	// The postscript may hold further expansions; each item's word carries it.
-	tails, ok := expandMatches(post, re, have)
-	if !ok {
-		return nil, false
-	}
-	out := make([]string, 0, len(items)*len(tails))
-	for _, item := range items {
-		for _, tail := range tails {
-			if have+len(out) >= maxWordExpansions {
-				return nil, false
-			}
-			out = append(out, pre+item+tail)
+		w := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		var items []string
+		loc := braceExpansionRe.FindStringSubmatchIndex(w)
+		if loc != nil {
+			items = strings.Split(w[loc[2]:loc[3]], ",")
+		} else if loc = bracketRe.FindStringSubmatchIndex(w); loc != nil {
+			items = strings.Split(w[loc[2]:loc[3]], "")
+		} else {
+			done = append(done, w)
+			continue
+		}
+		pre, post := w[:loc[0]], w[loc[1]:]
+		// Push in reverse so the words come out in the shell's order.
+		for i := len(items) - 1; i >= 0; i-- {
+			pending = append(pending, pre+items[i]+post)
 		}
 	}
-	return out, true
+	return strings.Join(done, " ")
 }
