@@ -18,10 +18,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// suppressRe matches inline suppression comments: // pipelock:ignore or # pipelock:ignore
-// Must stay in sync with cliutil.SuppressRe - duplicated here to avoid import cycle.
+// InlineSuppressPattern matches inline suppression comments in diffs and source files.
+const InlineSuppressPattern = `(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`
+
 var (
-	suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+	suppressRe = regexp.MustCompile(InlineSuppressPattern)
 
 	maxDiffLineNumber = int(^uint(0)>>1) - 1
 )
@@ -272,6 +273,12 @@ func hunkNewCountZero(rest string, startEnd int) bool {
 	return err == nil && c == 0
 }
 
+// IsCoreFloorPattern reports whether a finding belongs to a core floor.
+// Core floor patterns cannot be suppressed by inline markers or config.
+func IsCoreFloorPattern(name string) bool {
+	return config.IsCoreDLPPatternName(name) || config.IsCoreResponsePatternName(name)
+}
+
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.
 type CompiledDLPPattern struct {
 	Class    redact.Class
@@ -466,7 +473,7 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 	for file, lines := range addedLines {
 		for _, al := range lines {
 			// Respect pipelock:ignore inline comments.
-			// Bare "pipelock:ignore" suppresses all patterns on the line.
+			// Bare "pipelock:ignore" suppresses non-core patterns on the line.
 			// "pipelock:ignore RuleName" suppresses only that specific pattern.
 			suppressMatch := suppressRe.FindStringSubmatch(al.content)
 			suppressAll := suppressMatch != nil && strings.TrimSpace(suppressMatch[1]) == ""
@@ -506,7 +513,7 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 					Pattern:  cp.Name,
 					Severity: cp.Severity,
 				}
-				if suppressAll || (suppressRule != "" && strings.EqualFold(suppressRule, cp.Name)) {
+				if !IsCoreFloorPattern(cp.Name) && (suppressAll || (suppressRule != "" && strings.EqualFold(suppressRule, cp.Name))) {
 					suppressed = append(suppressed, f)
 				} else {
 					findings = append(findings, f)

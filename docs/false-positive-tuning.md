@@ -74,10 +74,10 @@ suppress:
 
 Suppressed findings still appear in logs with `suppressed: true`, so you can review them later.
 
-For inline suppression in git-scanned files, put a `pipelock:ignore` comment at the end of the flagged line itself. A comment on the line above does nothing. Any text after `pipelock:ignore` is read as the rule name to suppress, so leave it empty to suppress every rule on that line, or name the rule exactly:
+For inline suppression in git-scanned files, put a `pipelock:ignore` comment at the end of the flagged line itself. A comment on the line above does nothing. Any text after `pipelock:ignore` is read as the rule name to suppress, so leave it empty to suppress every non-core rule on that line, or name the rule (case-insensitive). Core DLP and core response floor patterns cannot be suppressed; bare and rule-named inline markers leave those findings in the results, matching config suppression:
 
 ```python
-TEST_KEY = "AKIA..."  # pipelock:ignore AWS Access ID
+TEST_VALUE = "fixture"  # pipelock:ignore Custom Fixture Rule
 ```
 
 See [docs/guides/suppression.md](guides/suppression.md) for the full suppression reference.
@@ -284,7 +284,7 @@ cross_request_detection:
 | Internal API keys matching AWS format, in a request body or header | body_dlp/header_dlp | AWS Access ID | Core DLP names cannot be suppressed. Fix the pattern precision or use a distinct non-core custom pattern for a different credential format |
 | GET to an AWS S3 presigned URL (issuer's bucket) | dlp | AWS Access ID | None required — handled automatically. The scanner detects a structurally valid SigV4 query set (all six parameters required exactly once: `X-Amz-Algorithm=AWS4-HMAC-SHA256`, `X-Amz-Credential=<KeyID>/<YYYYMMDD>/<region>/<service>/aws4_request`, `X-Amz-Date`, `X-Amz-SignedHeaders`, `X-Amz-Signature`, `X-Amz-Expires` as a positive integer no greater than 604800) hosted on an `amazonaws.com` (or `amazonaws.com.cn`) endpoint, and exempts only the access-key component inside the credential value. `<region>` and `<service>` must be lowercase letters, digits and single hyphens, at most 64 characters each, and nothing may follow `aws4_request`; any other scope falls back to normal DLP (and redaction). The same access-key elsewhere in the URL — path, hostname, other query params, ordered subsequence concatenation — still blocks. Duplicate fields, mismatched scope dates, overlong key prefixes, non-AWS hosts, and bogus algorithms all fall back to normal DLP. SigV4 carve-outs are adaptive-neutral: they neither poison the threat score nor earn clean-decay. An `X-Amz-Expires` above 24h attaches an info-tier `SigV4 Long Expiry` warn finding for audit visibility but does not block; above 604800 seconds (7 days) the carve-out does not apply at all and the access-key ID blocks. |
 | WebSocket frames with encoded binary data | dlp | Environment Variable Secret | Add a `suppress` entry for `Environment Variable Secret` scoped to that upstream URL. Per-pattern `exempt_domains` only affects URL scans and does not apply to WebSocket frame content. |
-| Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments |
+| Test fixtures containing fake secrets | dlp | (multiple) | Use `pipelock:ignore` inline comments for non-core rules |
 | Security research site with injection examples | core_response | Credential Solicitation | Core response floor names cannot be suppressed. Declare a `response_scanning.core_observe_exceptions` entry for that host and pattern, or fix pattern precision; `exempt_domains` is the whole-host fallback |
 | Hash-based object storage paths | entropy | (path entropy) | Add the storage host and path prefix to `path_entropy_exclusions` |
 

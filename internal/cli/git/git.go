@@ -150,6 +150,13 @@ Examples:
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "SUPPRESSED: %s:%d  %s (inline)\n", f.File, f.Line, f.Pattern)
 				}
 			}
+			if verbose {
+				for _, f := range findings {
+					if gitprotect.IsCoreFloorPattern(f.Pattern) && cliutil.SuppressRe.MatchString(f.Content) {
+						_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "KEPT: %s:%d  %s (core floor patterns cannot be suppressed)\n", f.File, f.Line, f.Pattern)
+					}
+				}
+			}
 
 			// Config-based suppression (suppress_findings entries)
 			findings, suppressed, reasons := cliutil.SuppressGitFindings(findings, cfg.Suppress)
