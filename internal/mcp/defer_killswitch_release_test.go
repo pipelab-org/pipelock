@@ -324,6 +324,11 @@ func TestCountingUpstreamIgnoresUnrelatedHTTPProbe(t *testing.T) {
 	if status := send(http.MethodGet, "*/*", nil); status != http.StatusNotFound || calls.Load() != 0 {
 		t.Fatalf("probe: status=%d calls=%d, want 404 and 0", status, calls.Load())
 	}
+	for _, method := range []string{http.MethodHead, http.MethodOptions} {
+		if status := send(method, "text/event-stream", nil); status != http.StatusNotFound || calls.Load() != 0 {
+			t.Fatalf("%s probe: status=%d calls=%d, want 404 and 0", method, status, calls.Load())
+		}
+	}
 	if status := send(http.MethodPost, "application/json, text/event-stream", strings.NewReader(deferKillTestCall)); status != http.StatusOK || calls.Load() != 1 {
 		t.Fatalf("MCP POST after probe: status=%d calls=%d, want 200 and 1", status, calls.Load())
 	}
