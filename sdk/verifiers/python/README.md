@@ -34,16 +34,22 @@ rejection, so one bad parallel signature can neither mask nor poison a good one.
 ## CLI
 
 ```
-python -m pipelock_aarp_verify aarp PATH --trust TRUST_JSON [--chain] [--json]
+python -m pipelock_aarp_verify aarp PATH --trust TRUST_JSON [--chain] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--json]
 python -m pipelock_aarp_verify receipt PATH --key PUBLIC_KEY_HEX [--json] [--chain] [--group] [--allow-unpinned] [--allow-prefix] [--expect-head HASH] [--expect-seq N]
 ```
 
 - `PATH`: a single envelope (`*.aarp.json`) or, with `--chain`, a JSONL stream
   (`*.aarp.jsonl`, one envelope per line).
-- `--trust TRUST_JSON`: the pinned trust file. Optional; absent means empty trust
-  (every signature is `unknown_key`).
+- `--trust TRUST_JSON`: the pinned trust file. Optional for single-envelope
+  appraisal; absent means empty trust (every signature is `unknown_key`). Chain
+  verification requires at least one valid trusted signature on each envelope.
 - `--json`: print the cross-language comparable output on stdout.
-- `--chain`: verify Rung-1 chain linkage instead of single-envelope appraisal.
+- `--chain`: verify contiguous links, trusted signatures, and the chain endpoint.
+  The first envelope must be the genesis link. Because AARP has no terminal
+  record, a linked chain exits `3` with `VALID PREFIX, END UNPROVEN` unless an
+  independent endpoint pin matches. `--expect-head` pins the final payload
+  digest; `--expect-seq` pins the final sequence. Either matching pin proves the
+  endpoint. `--allow-prefix` returns `0` while keeping the partial verdict.
 
 The `receipt` subcommand verifies an EvidenceReceipt v2 file against a pinned
 Ed25519 public key. Its conformance coverage includes `proxy_decision_with_spans`
@@ -112,6 +118,8 @@ The suite includes a corpus-driven conformance test over **every** fixture in
 byte-equal to the committed `.appraisal.json` and exit `0`; fatal fixtures must
 exit non-zero. The four-language gate (`sdk/conformance/aarp-corpus-gate.sh`)
 additionally checks that this verifier agrees with the Go reference on every row.
+The AARP chain CLI also consumes `sdk/conformance/testdata/aarp-end-proof/` for
+truncated tails, head cuts, forged signatures, endpoint pins, and prefix opt-in.
 
 ## Cross-language hazards handled
 
@@ -135,4 +143,4 @@ Receipt-chain CLI verification returns 0 only when integrity verifies and the en
 
 A terminal signed `session_close` proves the action-chain endpoint when its run's `session_open` names a per-run recorder session (`<base>.run.<id>`). Chains written before Pipelock v3.6.0 recorded every run under one shared session and resumed it after each restart, so their closes don't prove the end; pin those or accept the prefix. A complete receipt-group close proves its group scope. `--expect-head HASH` or `--expect-seq N` checks an independently known final receipt hash or sequence. A signer key, restart link, or recovery seal alone doesn't prove an end. Mixed action/evidence input verifies both chains, with pins applied to the evidence chain. Use `receipt FILE --chain` for a file or `receipt DIR --group ID` for a group directory.
 
-JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scope`, and `status` from signer trust. Low-level prefix-verification APIs and signed formats retain their existing contracts. Audit Packet, AARP, provenance, and single-receipt commands retain their existing exit codes.
+JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scope`, and `status` from signer trust. Low-level prefix-verification APIs and signed formats retain their existing contracts. Audit Packet, provenance, and single-receipt commands retain their existing exit codes. AARP chain mode returns `3` for a valid prefix unless an endpoint pin or `--allow-prefix` is supplied.

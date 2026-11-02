@@ -14,6 +14,7 @@ from pipelock_aarp_verify.cli import (
     EXIT_CONFIG,
     EXIT_GENERAL,
     EXIT_OK,
+    EXIT_PREFIX,
     EXIT_USAGE,
     main,
 )
@@ -21,6 +22,12 @@ from pipelock_aarp_verify.provenance_proof import MAX_FIXTURE_BYTES
 
 _CORPUS = (
     Path(__file__).resolve().parents[3] / "conformance" / "testdata" / "aarp-corpus"
+)
+_END_PROOF = (
+    Path(__file__).resolve().parents[3]
+    / "conformance"
+    / "testdata"
+    / "aarp-end-proof"
 )
 _TRUST = _CORPUS / "trust.json"
 _G01 = _CORPUS / "golden" / "g01-single-ed25519-mediated.aarp.json"
@@ -74,16 +81,95 @@ def test_fatal_human_mode_writes_stderr():
     assert "ENVELOPE FATAL" in err
 
 
-def test_chain_links_exit_zero():
+def test_chain_requires_an_end_proof():
     rc, out, _ = run(["aarp", str(_C01), "--trust", str(_TRUST), "--chain", "--json"])
+    assert rc == 3
+    report = json.loads(out)
+    assert report["chain_linked"] is True
+    assert report["status"] == "VALID PREFIX, END UNPROVEN"
+    assert report["integrity"] == "valid"
+    assert report["end_proof"] == {"proven": False, "evidence": []}
+
+
+def test_chain_end_can_be_proven_by_operator_pin():
+    rc, out, _ = run([
+        "aarp",
+        str(_C01),
+        "--trust",
+        str(_TRUST),
+        "--chain",
+        "--expect-seq",
+        "2",
+        "--json",
+    ])
     assert rc == EXIT_OK
-    assert json.loads(out)["chain_linked"] is True
+    report = json.loads(out)
+    assert report["status"] == "CHAIN VALID"
+    assert report["end_proof"] == {"proven": True, "evidence": ["operator_seq"]}
+
+
+def test_chain_allow_prefix_keeps_partial_verdict():
+    rc, out, _ = run([
+        "aarp", str(_C01), "--trust", str(_TRUST), "--chain", "--allow-prefix", "--json"
+    ])
+    assert rc == EXIT_OK
+    report = json.loads(out)
+    assert report["status"] == "VALID PREFIX, END UNPROVEN"
+    assert report["end_proof"]["proven"] is False
+
+
+def test_chain_without_trusted_signature_fails(tmp_path: Path):
+    rc, out, _ = run(["aarp", str(_C01), "--chain", "--json"])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["integrity"] == "invalid"
+
+
+def test_chain_forged_signature_fails(tmp_path: Path):
+    rows = [json.loads(line) for line in _C01.read_text().splitlines()]
+    signature = rows[1]["signatures"][0]["sig"]
+    alg, wire = signature.split(":", 1)
+    forged_wire = ("A" if wire[0] != "A" else "B") + wire[1:]
+    rows[1]["signatures"][0]["sig"] = f"{alg}:{forged_wire}"
+    forged = tmp_path / "forged.jsonl"
+    forged.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    rc, out, _ = run(["aarp", str(forged), "--trust", str(_TRUST), "--chain", "--json"])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["integrity"] == "invalid"
+
+
+def test_chain_head_cut_fails(tmp_path: Path):
+    rows = _C01.read_text().splitlines()[1:]
+    cut = tmp_path / "head-cut.jsonl"
+    cut.write_text("\n".join(rows) + "\n")
+    rc, out, _ = run(["aarp", str(cut), "--trust", str(_TRUST), "--chain", "--json"])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["integrity"] == "invalid"
+
+
+def test_end_proof_shared_conformance_cases():
+    manifest = json.loads((_END_PROOF / "expect.json").read_text())
+    trust = (_END_PROOF / manifest["trust"]).resolve()
+    for case in manifest["cases"]:
+        rc, out, _ = run([
+            "aarp",
+            str(_END_PROOF / case["file"]),
+            "--trust",
+            str(trust),
+            "--chain",
+            *case["flags"],
+            "--json",
+        ])
+        report = json.loads(out)
+        assert rc == case["exit"], case["name"]
+        assert report["status"] == case["status"], case["name"]
+        assert report["end_proof"]["proven"] is case["proven"], case["name"]
 
 
 def test_chain_human_mode():
     rc, out, _ = run(["aarp", str(_C01), "--trust", str(_TRUST), "--chain"])
-    assert rc == EXIT_OK
+    assert rc == 3
     assert "AARP chain" in out
+    assert "VALID PREFIX, END UNPROVEN" in out
 
 
 def test_missing_envelope_is_config_error():
@@ -213,8 +299,34 @@ def test_chain_skips_blank_lines(tmp_path: Path):
     f = tmp_path / "stream.jsonl"
     f.write_text(body)
     rc, out, _ = run(["aarp", str(f), "--trust", str(_TRUST), "--chain", "--json"])
-    assert rc == EXIT_OK
+    assert rc == EXIT_PREFIX
     assert json.loads(out)["chain_linked"] is True
+
+
+def test_chain_accepts_good_signature_beside_bad_parallel_signature(tmp_path: Path):
+    rows = [json.loads(line) for line in _C01.read_text().splitlines()]
+    good = rows[1]["signatures"][0]
+    alg, wire = good["sig"].split(":", 1)
+    bad = {**good, "sig": f"{alg}:{('A' if wire[0] != 'A' else 'B') + wire[1:]}"}
+    rows[1]["signatures"] = [good, bad]
+    stream = tmp_path / "parallel.jsonl"
+    stream.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    rc, out, _ = run([
+        "aarp", str(stream), "--trust", str(_TRUST), "--chain",
+        "--expect-seq", "2", "--json",
+    ])
+    assert rc == EXIT_OK
+    assert json.loads(out)["signatures_verified"] is True
+
+
+def test_chain_rejects_unknown_signer_even_with_valid_signature_bytes(tmp_path: Path):
+    rows = [json.loads(line) for line in _C01.read_text().splitlines()]
+    rows[1]["signatures"][0]["protected"]["key_id"] = "unknown-key"
+    stream = tmp_path / "unknown-signer.jsonl"
+    stream.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    rc, out, _ = run(["aarp", str(stream), "--trust", str(_TRUST), "--chain", "--json"])
+    assert rc == EXIT_GENERAL
+    assert json.loads(out)["signatures_verified"] is False
 
 
 def test_trusted_keys_not_object(tmp_path: Path):

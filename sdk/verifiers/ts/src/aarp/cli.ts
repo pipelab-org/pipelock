@@ -10,8 +10,9 @@
 // envelope (never with --chain); without it the output is the plain envelope
 // appraisal, unchanged.
 //
-// Exit codes: 0 appraised (single) / linked (chain); 1 fatal (or chain not
-// linked); 2 I/O or trust-file error; 64 usage. On fatal with --json the
+// Exit codes: 0 appraised (single) / endpoint-proven or explicitly accepted
+// prefix (chain); 1 fatal or broken/untrusted chain; 2 I/O or trust-file error;
+// 3 valid chain prefix with unproven end; 64 usage. On fatal with --json the
 // verifier prints {"envelope_fatal":true} and exits non-zero; the gate compares
 // only the non-zero exit for fatal fixtures.
 
@@ -19,9 +20,10 @@ import { parseArgs } from "node:util";
 import { readVerifierBytes } from "../util.js";
 import { comparableAppraisal } from "./appraise.js";
 import { canonicalize } from "./canonical.js";
-import { comparableChain, loadTrustFile, unmarshal, verify, verifyChain } from "./index.js";
+import { loadTrustFile, unmarshal, verify, verifyChain } from "./index.js";
 import type { Envelope } from "./index.js";
 import { appraiseWithSVID, loadSVIDFile } from "./svid.js";
+import { GENESIS_PRIOR_HASH, payloadDigest } from "./envelope.js";
 
 // CodedError is anything carrying a numeric exit `code`. Our module errors all do.
 interface CodedError {
@@ -44,7 +46,7 @@ export class AARPUsageError extends Error {
 }
 
 const USAGE =
-  "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--json]";
+  "Usage: pipelock-verifier-ts aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--json]";
 
 // emitFatal prints the envelope-fatal marker (or human text) and returns 1.
 function emitFatal(jsonMode: boolean, cause: string): number {
@@ -56,8 +58,17 @@ function emitFatal(jsonMode: boolean, cause: string): number {
   return 1;
 }
 
-// runAARPChain verifies a JSONL stream of envelopes for Rung-1 chain linkage.
-function runAARPChain(data: string, jsonMode: boolean): number {
+// runAARPChain verifies linkage, trusted signatures, and an independently
+// supplied end proof. AARP has no terminal record, so an unpinned stream is a
+// valid prefix even when every envelope is authentic.
+function runAARPChain(
+  data: string,
+  opts: ReturnType<typeof loadTrustFile>,
+  jsonMode: boolean,
+  allowPrefix: boolean,
+  expectHead: string,
+  expectSeq: string,
+): number {
   const lines = data.trim().split("\n");
   const envs: Envelope[] = [];
   for (let i = 0; i < lines.length; i++) {
@@ -75,12 +86,67 @@ function runAARPChain(data: string, jsonMode: boolean): number {
     envs.push(env);
   }
 
+  let linked = verifyChain(envs);
+  let signaturesVerified = false;
+  let failure = "";
+  try {
+    signaturesVerified = envs.length > 0 && envs.every((env) => verify(env, opts).assertion_signed);
+    if (!linked) throw new Error("chain links are not contiguous");
+    const first = envs[0];
+    if (
+      first?.chain === undefined ||
+      first.chain.seq !== "0" ||
+      first.chain.prior_hash !== GENESIS_PRIOR_HASH
+    ) {
+      throw new Error("chain does not start at the genesis link");
+    }
+    if (!signaturesVerified)
+      throw new Error("one or more envelopes lack a trusted valid signature");
+  } catch (err) {
+    failure = isCodedError(err) ? err.message : String(err);
+  }
+
+  const evidence: string[] = [];
+  if (!failure && (expectHead !== "" || expectSeq !== "")) {
+    const last = envs[envs.length - 1];
+    if (last === undefined || last.chain === undefined) {
+      failure = "empty chain";
+    } else if (expectHead !== "" && payloadDigest(last) !== expectHead) {
+      failure = "chain tip does not match expected head (tail truncated or different scope)";
+    } else if (expectSeq !== "" && last.chain.seq !== expectSeq) {
+      failure = `final_seq ${last.chain.seq} does not match expected seq ${expectSeq}`;
+    } else {
+      if (expectHead !== "") evidence.push("operator_head");
+      if (expectSeq !== "") evidence.push("operator_seq");
+    }
+  }
+
+  const valid = failure === "";
+  const report = {
+    chain_linked: linked,
+    length: envs.length,
+    integrity: valid ? "valid" : "invalid",
+    end_proof: { proven: evidence.length > 0, evidence },
+    scope: "aarp_chain",
+    status: !valid
+      ? "CHAIN BROKEN"
+      : evidence.length > 0
+        ? "CHAIN VALID"
+        : "VALID PREFIX, END UNPROVEN",
+    signatures_verified: signaturesVerified,
+    ...(failure === "" ? {} : { error: failure }),
+  };
   if (jsonMode) {
-    process.stdout.write(`${comparableChain(envs)}\n`);
+    process.stdout.write(`${canonicalize(report)}\n`);
   } else {
     process.stdout.write(`AARP chain: ${envs.length} envelopes\n`);
+    process.stdout.write(`  signatures_verified: ${signaturesVerified}\n`);
+    process.stdout.write(`  status: ${report.status}\n`);
+    if (evidence.length > 0) process.stdout.write(`  end_proof: ${evidence.join(", ")}\n`);
+    if (failure !== "") process.stderr.write(`  error: ${failure}\n`);
   }
-  return verifyChain(envs) ? 0 : 1;
+  if (!valid) return 1;
+  return evidence.length > 0 || allowPrefix ? 0 : 3;
 }
 
 // runAARPCommand executes the aarp subcommand and returns its process exit code.
@@ -95,6 +161,9 @@ export function runAARPCommand(args: string[]): number {
         svid: { type: "string", default: "" },
         json: { type: "boolean", default: false },
         chain: { type: "boolean", default: false },
+        "allow-prefix": { type: "boolean", default: false },
+        "expect-head": { type: "string", default: "" },
+        "expect-seq": { type: "string", default: "" },
       },
     });
   } catch (err) {
@@ -108,6 +177,9 @@ export function runAARPCommand(args: string[]): number {
   const svidPath = parsed.values.svid ?? "";
   const jsonMode = parsed.values.json === true;
   const chainMode = parsed.values.chain === true;
+  const allowPrefix = parsed.values["allow-prefix"] === true;
+  const expectHead = parsed.values["expect-head"] ?? "";
+  const expectSeq = parsed.values["expect-seq"] ?? "";
 
   // An SVID binding appraises a single envelope; the chain arm verifies stream
   // linkage and never attaches per-envelope SVID claims.
@@ -115,6 +187,14 @@ export function runAARPCommand(args: string[]): number {
     throw new AARPUsageError(
       `${USAGE}\n--svid is single-envelope only and cannot combine with --chain`,
     );
+  }
+  if ((allowPrefix || expectHead !== "" || expectSeq !== "") && !chainMode) {
+    throw new AARPUsageError(`${USAGE}\nend-proof flags require --chain`);
+  }
+  if (expectSeq !== "") {
+    if (!/^(0|[1-9][0-9]*)$/u.test(expectSeq) || BigInt(expectSeq) > 0xffff_ffff_ffff_ffffn) {
+      throw new AARPUsageError(`${USAGE}\n--expect-seq requires an unsigned integer`);
+    }
   }
 
   // Trust-file and envelope read errors are exit-2 (I/O), propagated as coded
@@ -131,7 +211,7 @@ export function runAARPCommand(args: string[]): number {
   }
 
   if (chainMode) {
-    return runAARPChain(data, jsonMode);
+    return runAARPChain(data, opts, jsonMode, allowPrefix, expectHead, expectSeq);
   }
 
   // A malformed --svid sidecar (bad pinned-bundle DER, inverted window, empty

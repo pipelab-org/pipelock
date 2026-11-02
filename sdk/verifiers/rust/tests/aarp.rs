@@ -66,8 +66,22 @@ fn run_aarp(fixture: &Path, chain: bool) -> RunResult {
         .arg(trust_path())
         .arg("--json");
     if chain {
-        cmd.arg("--chain");
+        cmd.arg("--chain").arg("--allow-prefix");
     }
+    let output = cmd.output().expect("run verifier binary");
+    RunResult {
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        code: output.status.code().unwrap_or(-1),
+    }
+}
+
+fn run_aarp_flags(fixture: &Path, flags: &[&str]) -> RunResult {
+    let mut cmd = Command::new(binary());
+    cmd.arg("aarp")
+        .arg(fixture)
+        .arg("--trust")
+        .arg(trust_path());
+    cmd.args(flags);
     let output = cmd.output().expect("run verifier binary");
     RunResult {
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -152,13 +166,22 @@ fn corpus_conformance() {
                     "{base}: appraise fixture must exit 0; stdout={}",
                     result.stdout
                 );
-                let want = fs::read_to_string(dir.join(format!("{base}.appraisal.json")))
-                    .expect("read committed appraisal");
-                assert_eq!(
-                    result.stdout.trim_end(),
-                    want.trim_end(),
-                    "{base}: comparable bytes diverge from committed appraisal"
-                );
+                if is_chain {
+                    let report: serde_json::Value =
+                        serde_json::from_str(&result.stdout).expect("parse chain report");
+                    assert_eq!(
+                        report["status"], "VALID PREFIX, END UNPROVEN",
+                        "{base}: chain CLI must preserve the partial verdict"
+                    );
+                } else {
+                    let want = fs::read_to_string(dir.join(format!("{base}.appraisal.json")))
+                        .expect("read committed appraisal");
+                    assert_eq!(
+                        result.stdout.trim_end(),
+                        want.trim_end(),
+                        "{base}: comparable bytes diverge from committed appraisal"
+                    );
+                }
             }
         }
     }
@@ -414,9 +437,85 @@ fn chain_non_json_mode_reports_count() {
         .arg("--chain")
         .output()
         .expect("run verifier");
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(3));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("AARP chain: 3 envelopes"), "{stdout}");
+    assert!(stdout.contains("VALID PREFIX, END UNPROVEN"), "{stdout}");
+}
+
+#[test]
+fn chain_requires_end_proof_and_signature_trust() {
+    let fixture = corpus_dir().join("chain/c01-valid-stream.aarp.jsonl");
+    let result = run_aarp_flags(&fixture, &["--chain", "--json"]);
+    assert_eq!(result.code, 3, "{}", result.stdout);
+    let report: serde_json::Value = serde_json::from_str(&result.stdout).unwrap();
+    assert_eq!(report["status"], "VALID PREFIX, END UNPROVEN");
+    assert_eq!(report["signatures_verified"], true);
+    assert_eq!(report["end_proof"]["proven"], false);
+}
+
+#[test]
+fn chain_without_trusted_signature_fails() {
+    let fixture = corpus_dir().join("chain/c01-valid-stream.aarp.jsonl");
+    let output = Command::new(binary())
+        .arg("aarp")
+        .arg(&fixture)
+        .arg("--chain")
+        .arg("--json")
+        .output()
+        .expect("run verifier binary");
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("parse report");
+    assert_eq!(report["integrity"], "invalid");
+    assert_eq!(report["signatures_verified"], false);
+}
+
+#[test]
+fn chain_pin_proves_end_and_allow_prefix_keeps_partial_status() {
+    let fixture = corpus_dir().join("chain/c01-valid-stream.aarp.jsonl");
+    let pinned = run_aarp_flags(&fixture, &["--chain", "--expect-seq", "2", "--json"]);
+    assert_eq!(pinned.code, 0, "{}", pinned.stdout);
+    let report: serde_json::Value = serde_json::from_str(&pinned.stdout).unwrap();
+    assert_eq!(report["status"], "CHAIN VALID");
+    assert_eq!(report["end_proof"]["evidence"][0], "operator_seq");
+
+    let prefix = run_aarp_flags(&fixture, &["--chain", "--allow-prefix", "--json"]);
+    assert_eq!(prefix.code, 0, "{}", prefix.stdout);
+    let report: serde_json::Value = serde_json::from_str(&prefix.stdout).unwrap();
+    assert_eq!(report["status"], "VALID PREFIX, END UNPROVEN");
+    assert_eq!(report["end_proof"]["proven"], false);
+}
+
+#[test]
+fn end_proof_shared_conformance_cases() {
+    let dir = corpus_dir().parent().unwrap().join("aarp-end-proof");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(dir.join("expect.json")).unwrap()).unwrap();
+    let trust = dir.join(manifest["trust"].as_str().unwrap());
+    for case in manifest["cases"].as_array().unwrap() {
+        let fixture = dir.join(case["file"].as_str().unwrap());
+        let mut cmd = Command::new(binary());
+        cmd.arg("aarp")
+            .arg(&fixture)
+            .arg("--trust")
+            .arg(&trust)
+            .arg("--chain")
+            .arg("--json");
+        for flag in case["flags"].as_array().unwrap() {
+            cmd.arg(flag.as_str().unwrap());
+        }
+        let output = cmd.output().expect("run verifier binary");
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        let name = case["name"].as_str().unwrap();
+        assert_eq!(
+            output.status.code(),
+            case["exit"].as_i64().map(|v| v as i32),
+            "{name}: {stdout}"
+        );
+        assert_eq!(report["status"], case["status"], "{name}");
+        assert_eq!(report["end_proof"]["proven"], case["proven"], "{name}");
+    }
 }
 
 #[test]

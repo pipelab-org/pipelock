@@ -4,10 +4,11 @@
 //! AARP v0.1 assurance-envelope verifier, ported from the Go reference in
 //! `internal/aarp` and `cmd/pipelock-verifier/aarp.go`.
 //!
-//! CLI: `pipelock-verifier-rs aarp <PATH> --trust <TRUST_JSON> [--chain] [--json]`
+//! CLI: `pipelock-verifier-rs aarp <PATH> --trust <TRUST_JSON> [--chain] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--json]`
 //!
-//! Exit codes: 0 appraised (single) / linked (chain); 1 envelope-fatal or chain
-//! not linked; 2 I/O or trust-file error; 64 usage error. With `--json` a fatal
+//! Exit codes: 0 appraised (single) / endpoint-proven or explicitly accepted
+//! prefix (chain); 1 envelope-fatal or broken/untrusted chain; 2 I/O or trust-file
+//! error; 3 valid chain prefix with unproven end; 64 usage error. With `--json` a fatal
 //! envelope prints `{"envelope_fatal":true,...}` and exits non-zero.
 
 pub mod chain;
@@ -21,7 +22,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use envelope::Envelope;
+use envelope::{Envelope, GENESIS_PRIOR_HASH};
 use jcs::Json;
 use verify::{TrustEntry, VerifyOptions};
 
@@ -40,6 +41,9 @@ struct AarpArgs {
     svid_path: String,
     json: bool,
     chain: bool,
+    allow_prefix: bool,
+    expect_head: String,
+    expect_seq: Option<u64>,
 }
 
 /// run_aarp is the `aarp` subcommand entry. It returns the process exit code.
@@ -55,6 +59,14 @@ pub fn run_aarp(args: &[String]) -> Result<i32> {
     if parsed.chain && !parsed.svid_path.is_empty() {
         return Err(VerifierError::Usage(format!(
             "--svid is single-envelope only and cannot be combined with --chain\n{}",
+            aarp_usage()
+        )));
+    }
+    if (parsed.allow_prefix || !parsed.expect_head.is_empty() || parsed.expect_seq.is_some())
+        && !parsed.chain
+    {
+        return Err(VerifierError::Usage(format!(
+            "end-proof flags require --chain\n{}",
             aarp_usage()
         )));
     }
@@ -77,7 +89,14 @@ pub fn run_aarp(args: &[String]) -> Result<i32> {
     let data = read_verifier_text(Path::new(target))?;
 
     let outcome = if parsed.chain {
-        run_chain(&data, parsed.json)
+        run_chain(
+            &data,
+            &opts,
+            parsed.json,
+            parsed.allow_prefix,
+            &parsed.expect_head,
+            parsed.expect_seq,
+        )
     } else {
         run_single(&data, &opts, svid_input.as_ref(), parsed.json)
     };
@@ -126,7 +145,14 @@ fn run_single(
     }
 }
 
-fn run_chain(data: &str, json_mode: bool) -> Outcome {
+fn run_chain(
+    data: &str,
+    opts: &VerifyOptions,
+    json_mode: bool,
+    allow_prefix: bool,
+    expect_head: &str,
+    expect_seq: Option<u64>,
+) -> Outcome {
     let mut envs = Vec::new();
     for (index, line) in data.trim().split('\n').enumerate() {
         if line.trim().is_empty() {
@@ -138,24 +164,128 @@ fn run_chain(data: &str, json_mode: bool) -> Outcome {
         }
     }
 
-    let comparable = match chain::comparable_chain(&envs) {
-        Ok(bytes) => bytes,
-        Err(err) => return fatal(json_mode, &format!("render chain: {err}")),
-    };
-
     let linked = chain::verify_chain(&envs).is_ok();
-    let code = if linked { 0 } else { 1 };
-
-    if json_mode {
-        let mut stdout = String::from_utf8_lossy(&comparable).into_owned();
-        stdout.push('\n');
-        Outcome { stdout, code }
+    let mut signatures_verified = false;
+    let mut failure = String::new();
+    if !linked {
+        failure = "chain links are not contiguous".to_string();
+    } else if let Some(first) = envs.first() {
+        if first
+            .chain
+            .as_ref()
+            .is_none_or(|link| link.seq != "0" || link.prior_hash != GENESIS_PRIOR_HASH)
+        {
+            failure = "chain does not start at the genesis link".to_string();
+        } else {
+            signatures_verified = envs.iter().all(|env| {
+                verify::verify(env, opts)
+                    .map(|appraisal| appraisal.assertion_signed)
+                    .unwrap_or(false)
+            });
+            if !signatures_verified {
+                failure = "one or more envelopes lack a trusted valid signature".to_string();
+            }
+        }
     } else {
-        Outcome {
-            stdout: format!("AARP chain: {} envelopes\n", envs.len()),
-            code,
+        failure = "empty chain".to_string();
+    }
+
+    let mut evidence = Vec::new();
+    if failure.is_empty() && (!expect_head.is_empty() || expect_seq.is_some()) {
+        let last = envs.last().expect("non-empty chain after verification");
+        let seq = last
+            .chain
+            .as_ref()
+            .and_then(|link| link.seq.parse::<u64>().ok());
+        let head = last
+            .payload_digest()
+            .map(|digest| digest)
+            .unwrap_or_default();
+        if !expect_head.is_empty() && head != expect_head {
+            failure = "chain tip does not match expected head (tail truncated or different scope)"
+                .to_string();
+        } else if expect_seq.is_some() && seq != expect_seq {
+            failure = format!(
+                "final_seq {:?} does not match expected seq {:?}",
+                seq, expect_seq
+            );
+        } else {
+            if !expect_head.is_empty() {
+                evidence.push("operator_head");
+            }
+            if expect_seq.is_some() {
+                evidence.push("operator_seq");
+            }
         }
     }
+
+    let valid = failure.is_empty();
+    let status = if !valid {
+        "CHAIN BROKEN"
+    } else if !evidence.is_empty() {
+        "CHAIN VALID"
+    } else {
+        "VALID PREFIX, END UNPROVEN"
+    };
+    let mut report: BTreeMap<String, Json> = BTreeMap::new();
+    report.insert("chain_linked".to_string(), Json::Bool(linked));
+    report.insert("length".to_string(), Json::Number(envs.len().to_string()));
+    report.insert(
+        "integrity".to_string(),
+        Json::String(if valid { "valid" } else { "invalid" }.to_string()),
+    );
+    report.insert(
+        "end_proof".to_string(),
+        Json::Object(BTreeMap::from([
+            ("proven".to_string(), Json::Bool(!evidence.is_empty())),
+            (
+                "evidence".to_string(),
+                Json::Array(
+                    evidence
+                        .iter()
+                        .map(|item| Json::String((*item).to_string()))
+                        .collect(),
+                ),
+            ),
+        ])),
+    );
+    report.insert("scope".to_string(), Json::String("aarp_chain".to_string()));
+    report.insert("status".to_string(), Json::String(status.to_string()));
+    report.insert(
+        "signatures_verified".to_string(),
+        Json::Bool(signatures_verified),
+    );
+    if !failure.is_empty() {
+        report.insert("error".to_string(), Json::String(failure.clone()));
+    }
+
+    let stdout = if json_mode {
+        format!(
+            "{}\n",
+            String::from_utf8_lossy(
+                &jcs::canonicalize_value(&Json::Object(report)).unwrap_or_default()
+            )
+        )
+    } else {
+        let mut out = format!("AARP chain: {} envelopes\n", envs.len());
+        out.push_str(&format!("  signatures_verified: {signatures_verified}\n"));
+        out.push_str(&format!("  status: {status}\n"));
+        if !evidence.is_empty() {
+            out.push_str(&format!("  end_proof: {}\n", evidence.join(", ")));
+        }
+        if !failure.is_empty() {
+            out.push_str(&format!("  error: {failure}\n"));
+        }
+        out
+    };
+    let code = if !valid {
+        1
+    } else if !evidence.is_empty() || allow_prefix {
+        0
+    } else {
+        3
+    };
+    Outcome { stdout, code }
 }
 
 /// fatal builds the envelope-fatal outcome: the `{"envelope_fatal":true,...}`
@@ -205,6 +335,37 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
         match arg.as_str() {
             "--json" => parsed.json = true,
             "--chain" => parsed.chain = true,
+            "--allow-prefix" => parsed.allow_prefix = true,
+            "--expect-head" => {
+                index += 1;
+                parsed.expect_head = args
+                    .get(index)
+                    .ok_or_else(|| {
+                        VerifierError::Usage(format!(
+                            "--expect-head requires a value\n{}",
+                            aarp_usage()
+                        ))
+                    })?
+                    .clone();
+            }
+            "--expect-seq" => {
+                index += 1;
+                parsed.expect_seq = Some(
+                    args.get(index)
+                        .ok_or_else(|| {
+                            VerifierError::Usage(format!(
+                                "--expect-seq requires a value\n{}",
+                                aarp_usage()
+                            ))
+                        })?
+                        .parse()
+                        .map_err(|_| {
+                            VerifierError::Usage(
+                                "--expect-seq requires an unsigned integer".to_string(),
+                            )
+                        })?,
+                );
+            }
             "--trust" => {
                 index += 1;
                 parsed.trust_path = args
@@ -216,6 +377,14 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
             }
             _ if arg.starts_with("--trust=") => {
                 parsed.trust_path = arg["--trust=".len()..].to_string();
+            }
+            _ if arg.starts_with("--expect-head=") => {
+                parsed.expect_head = arg["--expect-head=".len()..].to_string();
+            }
+            _ if arg.starts_with("--expect-seq=") => {
+                parsed.expect_seq = Some(arg["--expect-seq=".len()..].parse().map_err(|_| {
+                    VerifierError::Usage("--expect-seq requires an unsigned integer".to_string())
+                })?);
             }
             "--svid" => {
                 index += 1;
@@ -251,7 +420,7 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
 }
 
 fn aarp_usage() -> String {
-    "Usage: pipelock-verifier-rs aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--json]"
+    "Usage: pipelock-verifier-rs aarp PATH --trust TRUST_JSON [--svid SVID_JSON] [--chain] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--json]"
         .to_string()
 }
 

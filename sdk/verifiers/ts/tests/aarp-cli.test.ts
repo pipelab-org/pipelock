@@ -7,7 +7,9 @@
 // the built dist so exit-code wiring through main() is exercised.
 
 import { spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { findPackageRoot } from "./paths.js";
@@ -15,6 +17,7 @@ import { findPackageRoot } from "./paths.js";
 const packageRoot = findPackageRoot(import.meta.url);
 const CLI = resolve(packageRoot, "dist/src/cli.js");
 const corpus = resolve(packageRoot, "../../conformance/testdata/aarp-corpus");
+const endProof = resolve(packageRoot, "../../conformance/testdata/aarp-end-proof");
 const trust = `${corpus}/trust.json`;
 const provenanceFixture = resolve(
   packageRoot,
@@ -83,8 +86,13 @@ test("cli aarp: --chain linked stream exits 0", () => {
     "--chain",
     "--json",
   ]);
-  assert.equal(r.status, 0);
-  assert.equal(r.stdout.trim(), '{"chain_linked":true,"length":3}');
+  assert.equal(r.status, 3);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.chain_linked, true);
+  assert.equal(report.integrity, "valid");
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
+  assert.deepEqual(report.end_proof, { proven: false, evidence: [] });
+  assert.equal(report.signatures_verified, true);
 });
 
 test("cli aarp: --chain non-json human path exits 0", () => {
@@ -95,8 +103,141 @@ test("cli aarp: --chain non-json human path exits 0", () => {
     trust,
     "--chain",
   ]);
-  assert.equal(r.status, 0);
+  assert.equal(r.status, 3);
   assert.match(r.stdout, /AARP chain: 3 envelopes/u);
+  assert.match(r.stdout, /VALID PREFIX, END UNPROVEN/u);
+});
+
+test("cli aarp: --chain expected sequence proves endpoint", () => {
+  const r = runCLI([
+    "aarp",
+    `${corpus}/chain/c01-valid-stream.aarp.jsonl`,
+    "--trust",
+    trust,
+    "--chain",
+    "--expect-seq",
+    "2",
+    "--json",
+  ]);
+  assert.equal(r.status, 0);
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.status, "CHAIN VALID");
+  assert.deepEqual(report.end_proof, { proven: true, evidence: ["operator_seq"] });
+});
+
+test("cli aarp: --allow-prefix succeeds but keeps partial verdict", () => {
+  const r = runCLI([
+    "aarp",
+    `${corpus}/chain/c01-valid-stream.aarp.jsonl`,
+    "--trust",
+    trust,
+    "--chain",
+    "--allow-prefix",
+    "--json",
+  ]);
+  assert.equal(r.status, 0);
+  assert.equal(JSON.parse(r.stdout).status, "VALID PREFIX, END UNPROVEN");
+});
+
+test("cli aarp: chain requires trusted signatures", () => {
+  const r = runCLI(["aarp", `${corpus}/chain/c01-valid-stream.aarp.jsonl`, "--chain", "--json"]);
+  assert.equal(r.status, 1);
+  assert.equal(JSON.parse(r.stdout).integrity, "invalid");
+});
+
+test("cli aarp: good parallel signature survives a bad signature", () => {
+  const source = `${corpus}/chain/c01-valid-stream.aarp.jsonl`;
+  const rows = readFileSync(source, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const dir = mkdtempSync(join(tmpdir(), "aarp-chain-"));
+  try {
+    const good = rows[1].signatures[0];
+    const signature = good.sig as string;
+    const bad = { ...good, sig: `${signature.slice(0, -1)}${signature.endsWith("A") ? "B" : "A"}` };
+    rows[1].signatures = [good, bad];
+    const parallel = join(dir, "parallel.jsonl");
+    writeFileSync(parallel, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const r = runCLI([
+      "aarp",
+      parallel,
+      "--trust",
+      trust,
+      "--chain",
+      "--expect-seq",
+      "2",
+      "--json",
+    ]);
+    assert.equal(r.status, 0);
+    assert.equal(JSON.parse(r.stdout).signatures_verified, true);
+
+    rows[1].signatures = [good];
+    rows[1].signatures[0].protected.key_id = "unknown-key";
+    const unknown = join(dir, "unknown-signer.jsonl");
+    writeFileSync(unknown, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const rejected = runCLI(["aarp", unknown, "--trust", trust, "--chain", "--json"]);
+    assert.equal(rejected.status, 1);
+    assert.equal(JSON.parse(rejected.stdout).signatures_verified, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli aarp: forged signature and head cut fail", () => {
+  const source = `${corpus}/chain/c01-valid-stream.aarp.jsonl`;
+  const rows = readFileSync(source, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  const dir = mkdtempSync(join(tmpdir(), "aarp-chain-"));
+  try {
+    const sig = rows[1].signatures[0].sig as string;
+    rows[1].signatures[0].sig = `${sig.slice(0, -1)}${sig.endsWith("A") ? "B" : "A"}`;
+    const forged = join(dir, "forged.jsonl");
+    writeFileSync(forged, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    let r = runCLI(["aarp", forged, "--trust", trust, "--chain", "--json"]);
+    assert.equal(r.status, 1);
+    assert.equal(JSON.parse(r.stdout).status, "CHAIN BROKEN");
+
+    const cut = join(dir, "head-cut.jsonl");
+    writeFileSync(cut, `${readFileSync(source, "utf8").trim().split("\n").slice(1).join("\n")}\n`);
+    r = runCLI(["aarp", cut, "--trust", trust, "--chain", "--json"]);
+    assert.equal(r.status, 1);
+    assert.equal(JSON.parse(r.stdout).integrity, "invalid");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli aarp: shared end-proof conformance cases", () => {
+  const manifest = JSON.parse(readFileSync(resolve(endProof, "expect.json"), "utf8")) as {
+    trust: string;
+    cases: Array<{
+      name: string;
+      file: string;
+      flags: string[];
+      exit: number;
+      status: string;
+      proven: boolean;
+    }>;
+  };
+  const trustPath = resolve(endProof, manifest.trust);
+  for (const c of manifest.cases) {
+    const r = runCLI([
+      "aarp",
+      resolve(endProof, c.file),
+      "--trust",
+      trustPath,
+      "--chain",
+      "--json",
+      ...c.flags,
+    ]);
+    assert.equal(r.status, c.exit, c.name);
+    const report = JSON.parse(r.stdout);
+    assert.equal(report.status, c.status, c.name);
+    assert.equal(report.end_proof.proven, c.proven, c.name);
+  }
 });
 
 test("cli aarp: --chain broken stream exits 1", () => {
