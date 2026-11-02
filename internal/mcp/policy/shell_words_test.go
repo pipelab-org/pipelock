@@ -403,3 +403,26 @@ func TestCredentialWordMatchKeepsIncomplete(t *testing.T) {
 		t.Fatalf("plain spelling: verdict %v %q %v, want warn", v.Matched, v.Action, v.Rules)
 	}
 }
+
+// TestCredentialWordMatchKeepsPairIncomplete: when an ordinary view's bounded
+// pair scan stops early and the credential rule matches only in the word
+// reading, the pair scan's incomplete check is kept.
+func TestCredentialWordMatchKeepsPairIncomplete(t *testing.T) {
+	rules := DefaultToolPolicyRules()
+	for i := range rules {
+		if rules[i].Name == ruleSensitiveFileRead {
+			rules[i].Action = config.ActionWarn
+		}
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: rules})
+	var b strings.Builder
+	b.WriteString("cat")
+	for i := range 100 {
+		fmt.Fprintf(&b, " .ssh/foo%d", i)
+	}
+	b.WriteString(" ~/.aws/cred${u}entials")
+	v := pc.CheckToolCall("bash", []string{b.String()})
+	if !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("verdict %v %q rules %v incomplete %v, want block", v.Matched, v.Action, v.Rules, v.IncompleteRules)
+	}
+}
