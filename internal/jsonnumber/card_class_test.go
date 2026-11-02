@@ -29,6 +29,7 @@ func TestCardRunPieceClasses(t *testing.T) {
 		{"after prose", `{"a":"report","b":[4111,1111,1111,1111]}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			runs, limit := CardRunsWithLimit(tt.input, 64)
 			if limit != CardRunWithinBudget || !slices.ContainsFunc(runs, func(r CardRun) bool {
 				return r.Digits == card && r.NumberOnly == tt.numberOnly && r.SpaceCandidate != ""
@@ -46,12 +47,24 @@ func TestCardRunPieceClasses(t *testing.T) {
 
 func TestCardRunInputBoundariesStayStrings(t *testing.T) {
 	card := "4111" + "1111" + "1111" + "1111"
-	for _, separator := range []string{NumberBoundary, NumberStringBoundary, StringNumberBoundary} {
-		text := strings.Join([]string{"4111", "1111", "1111", "1111"}, separator)
-		runs := BoundaryCardRuns(EscapeCardBoundaries(text))
-		if !slices.ContainsFunc(runs, func(r CardRun) bool { return r.Digits == card && !r.NumberOnly }) {
-			t.Fatal("input boundary lost enforcement or claimed numeric provenance")
-		}
+	for _, tt := range []struct{ name, separator string }{
+		{"number", NumberBoundary},
+		{"number string", NumberStringBoundary},
+		{"string number", StringNumberBoundary},
+		{"string", StringBoundary},
+		{"untrusted", ",\x1fu,"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			text := strings.Join([]string{"4111", "1111", "1111", "1111"}, tt.separator)
+			runs := BoundaryCardRuns(EscapeCardBoundaries(text))
+			if !slices.ContainsFunc(runs, func(r CardRun) bool { return r.Digits == card && r.EnforcesShippedRule() }) {
+				t.Fatal("input boundary lost enforcement")
+			}
+			if slices.ContainsFunc(runs, func(r CardRun) bool { return r.NumberOnly }) {
+				t.Fatal("input boundary claimed numeric provenance")
+			}
+		})
 	}
 }
 
