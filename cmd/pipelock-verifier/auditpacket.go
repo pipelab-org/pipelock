@@ -454,18 +454,28 @@ func reverifyChain(baseDir string, packet *auditpacket.Packet, signerOverride st
 	if err != nil {
 		return receipt.ChainResult{}, nil, false, fmt.Errorf("resolve signer key: %w", err)
 	}
+	var trusted []string
+	if resolvedKey != "" {
+		trusted = []string{resolvedKey}
+	}
 	if len(evidenceReceipts) > 0 {
-		var trusted []string
-		if resolvedKey != "" {
-			trusted = []string{resolvedKey}
-		}
 		res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trusted, contractreceipt.ChainVerifyOptions{})
 		if !res.Valid {
 			return receipt.ChainResult{}, nil, false, fmt.Errorf("evidence receipt chain rejected at seq %d: %s", res.BrokenAtSeq, res.Error)
 		}
-		recorderEndProven, err = clisigning.VerifyRecorderEnd(entries, trusted)
-		if err != nil {
-			return receipt.ChainResult{}, nil, false, fmt.Errorf("recorder end proof: %w", err)
+	}
+	if !bare && len(receipts) > 0 {
+		// Every present checkpoint signature and transcript_root seal must
+		// verify, even in a packet with only the action chain; otherwise a v2
+		// chain could be stripped while its now-stale seal stays in place. The
+		// whole-recorder end is required once the file carries a v2 chain or a
+		// seal; a legacy action-only packet keeps its session_close end proof.
+		proven, endErr := clisigning.VerifyRecorderEnd(entries, trusted)
+		if endErr != nil {
+			return receipt.ChainResult{}, nil, false, fmt.Errorf("recorder end proof: %w", endErr)
+		}
+		if len(evidenceReceipts) > 0 || hasTranscriptRoot(entries) {
+			recorderEndProven = proven
 		}
 	}
 	if len(receipts) == 0 {
@@ -603,4 +613,13 @@ func chainStatusLabel(c receipt.ChainResult) string {
 		return statusPass
 	}
 	return statusFail
+}
+
+func hasTranscriptRoot(entries []recorder.Entry) bool {
+	for _, entry := range entries {
+		if entry.Type == recorder.TranscriptRootEntryType {
+			return true
+		}
+	}
+	return false
 }

@@ -241,6 +241,14 @@
       "integrity": "invalid",
       "status": "CHAIN BROKEN",
       "proven": false
+    },
+    {
+      "name": "v2-stripped-seal",
+      "file": "v2-stripped-seal.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
     }
   ]
 }

@@ -7,8 +7,11 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -102,6 +105,7 @@ func generatePacketRecorderEndCorpus(t *testing.T) {
 		"v2-tail-cut":      rehash(t, cut),
 		"v2-no-checkpoint": closed[:len(closed)-1],
 		"v2-bad-seal":      rehash(t, badSeal),
+		"v2-stripped-seal": stripV2KeepSeal(t, closed),
 	}
 	for name, lines := range variants {
 		if err := os.WriteFile(filepath.Join(endProofDir, name+".jsonl"), joinLines(lines), 0o600); err != nil {
@@ -132,6 +136,7 @@ func generatePacketRecorderEndCorpus(t *testing.T) {
 		auditPacketEndProofCase{Name: "v2-tail-cut", File: "v2-tail-cut.jsonl", Exit: 3, Integrity: "valid", Status: endProofPrefix},
 		auditPacketEndProofCase{Name: "v2-no-checkpoint", File: "v2-no-checkpoint.jsonl", Exit: 3, Integrity: "valid", Status: endProofPrefix},
 		auditPacketEndProofCase{Name: "v2-bad-seal", File: "v2-bad-seal.jsonl", Exit: 1, Integrity: "invalid", Status: "CHAIN BROKEN"},
+		auditPacketEndProofCase{Name: "v2-stripped-seal", File: "v2-stripped-seal.jsonl", Exit: 1, Integrity: "invalid", Status: "CHAIN BROKEN"},
 	)
 	data, err = json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
@@ -139,6 +144,48 @@ func generatePacketRecorderEndCorpus(t *testing.T) {
 	}
 	if err := os.WriteFile(manifestPath, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+var (
+	recorderSeqField  = regexp.MustCompile(`^(\{"v":[0-9]+,"seq":)[0-9]+,`)
+	checkpointSummary = regexp.MustCompile(`"summary":"checkpoint: [0-9]+ entries \[seq 0-[0-9]+\]"`)
+	checkpointSpan    = regexp.MustCompile(`"detail":\{"entry_count":[0-9]+,"first_seq":0,"last_seq":[0-9]+,`)
+)
+
+// stripV2KeepSeal removes every v2 evidence receipt from a sealed run while
+// keeping its transcript_root and the checkpoint signature made over the
+// original recorder chain. Sequences, the checkpoint span, and the unkeyed
+// recorder hashes are rewritten consistently, so the only defect left is the
+// stale checkpoint signature. The action chain and its session_close are
+// untouched, which is what an action-only verifier would accept.
+func stripV2KeepSeal(t *testing.T, closed []string) []string {
+	t.Helper()
+	var kept []string
+	for _, line := range closed {
+		if entryType(t, line) != "evidence_receipt" {
+			kept = append(kept, line)
+		}
+	}
+	for i, line := range kept {
+		line = recorderSeqField.ReplaceAllString(line, "${1}"+strconv.Itoa(i)+",")
+		if entryType(t, line) == "checkpoint" {
+			line = checkpointSummary.ReplaceAllLiteralString(line, fmt.Sprintf(`"summary":"checkpoint: %d entries [seq 0-%d]"`, i, i-1))
+			line = checkpointSpan.ReplaceAllLiteralString(line, fmt.Sprintf(`"detail":{"entry_count":%d,"first_seq":0,"last_seq":%d,`, i, i-1))
+		}
+		kept[i] = line
+	}
+	return rehash(t, kept)
+}
+
+func TestPacketRecorderStrippedSealFixtureMatchesTransform(t *testing.T) {
+	want := joinLines(stripV2KeepSeal(t, readLines(t, filepath.Join(endProofDir, "v2-closed.jsonl"))))
+	got, err := os.ReadFile(filepath.Clean(filepath.Join(endProofDir, "v2-stripped-seal.jsonl")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("v2-stripped-seal.jsonl is not the stripV2KeepSeal transform of v2-closed.jsonl")
 	}
 }
 

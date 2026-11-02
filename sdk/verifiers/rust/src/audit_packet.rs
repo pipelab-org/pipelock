@@ -266,9 +266,17 @@ fn verify_audit_packet_report(
     report.cross_check = "pass".to_string();
     let trusted = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
     let action_end_proven = chain.valid && close_ends_chain(&receipts);
-    let v2_end_proof = if chain.valid && has_v2_evidence {
+    // Every present checkpoint signature and transcript_root seal must verify,
+    // even in a packet with only the action chain; otherwise a v2 chain could be
+    // stripped while its now-stale seal stays in place. The whole-recorder end is
+    // required once the file carries a v2 chain or a seal; a legacy action-only
+    // packet keeps its session_close end proof.
+    let has_recorder_seal = evidence_lines.iter().any(|line| {
+        line.entry.get("type").and_then(serde_json::Value::as_str) == Some("transcript_root")
+    });
+    let v2_end_proof = if chain.valid {
         match verify_v2_recorder_end(&evidence_lines, &action_receipts, &chain) {
-            Ok(proven) => proven,
+            Ok(proven) => proven || !(has_v2_evidence || has_recorder_seal),
             Err(err) => {
                 report.chain_check = "fail".to_string();
                 chain.valid = false;
