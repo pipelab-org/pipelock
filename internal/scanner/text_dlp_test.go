@@ -1292,7 +1292,7 @@ func TestScanTextForDLP_DecodesDeepHTMLEntitySecret(t *testing.T) {
 }
 
 func TestDecodeHTMLEntitiesSingleEncodedResolvesInOnePass(t *testing.T) {
-	decoded, passes := decodeHTMLEntitiesWithPassCount("safe &amp; sound")
+	decoded, passes, _ := decodeHTMLEntitiesBounded("safe &amp; sound")
 	if decoded != "safe & sound" {
 		t.Fatalf("decoded = %q, want %q", decoded, "safe & sound")
 	}

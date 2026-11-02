@@ -2234,15 +2234,15 @@ type dlpTarget struct {
 // looked at, which is the failure this concatenation exists to prevent.
 //
 //pipelock:provenance-transform ordered_query_concat
-func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpTarget {
-	targets = appendPathQueryConcatTargets(targets, path, rawQuery)
+func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decodes *decodingMemo) []dlpTarget {
+	targets = appendPathQueryConcatTargets(targets, path, rawQuery, decodes)
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return targets
 	}
 	concat := orderedQueryConcat(rawQuery)
 	proseSource := orderedQueryProseSource(rawQuery)
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat"), proseSource})
-	for _, d := range decodeEncodingsRecursive(concat) {
+	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), proseSource})
 	}
 	if stripped := stripURLNoise(concat); stripped != concat {
@@ -2274,7 +2274,7 @@ func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpT
 // Composes two transforms that are already registered in the provenance profile
 // (url_noise_strip and ordered_query_concat), so it introduces no new operation
 // kind and needs no profile version bump.
-func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []dlpTarget {
+func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decodes *decodingMemo) []dlpTarget {
 	if path == "" || path == "/" || rawQuery == "" {
 		return targets
 	}
@@ -2304,7 +2304,7 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []
 			continue
 		}
 		seen[concat] = struct{}{}
-		targets = appendPathQueryConcatViews(targets, concat, p+"\x00"+orderedQueryProseSource(rawQuery))
+		targets = appendPathQueryConcatViews(targets, concat, p+"\x00"+orderedQueryProseSource(rawQuery), decodes)
 	}
 	return targets
 }
@@ -2317,12 +2317,12 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string) []
 // allocating another copy of a very large URL. The plain concatenation is still
 // scanned, so the bound trims amplification without creating a length above
 // which detection quietly stops.
-func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string) []dlpTarget {
+func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string, decodes *decodingMemo) []dlpTarget {
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat"), proseSource})
 	if len(concat) > maxDecodeTotalBytes {
 		return targets
 	}
-	for _, d := range decodeEncodingsRecursive(concat) {
+	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel("path_query_concat_" + d.encoding), proseSource})
 	}
 	if stripped := stripToAlphanumeric(concat); stripped != concat {
@@ -2393,8 +2393,9 @@ const (
 // this is prose, not a split secret.
 //
 // Tradeoff, stated rather than hidden: a secret deliberately split across an
-// alphabet run longer than this evades THIS view. It remains subject to every
-// other pass, including the raw and contiguous-decode passes.
+// alphabet run longer than this evades THIS view, and the raw and
+// contiguous-decode passes do not reconstruct a separator-interleaved token.
+// Bounding the candidate window instead of the whole run is open design work.
 const maxReassembledTokenLen = 4096
 
 // Package-level to avoid repeated construction on every normalizeHex call.
@@ -2940,52 +2941,137 @@ func decodeEncodingsRecursive(s string) []decodedResult {
 	return decodeEncodingsFixpoint(s, false)
 }
 
-func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
-	return decodeEncodingsFixpointMode(s, includeURL, 0)
+// decodeEncodingsRecursiveWithDecodes decodes reconstructed URL targets through
+// the scan memo. Joining components, or decoding another encoding, can expose
+// percent escapes absent from every original component.
+func decodeEncodingsRecursiveWithDecodes(s string, decodes *decodingMemo) []decodedResult {
+	return decodes.decode(s, true)
 }
 
-func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) []decodedResult {
-	if s == "" || len(s) > maxDecodeTotalBytes {
-		return nil
-	}
+func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
+	out, _ := decodeEncodingsFixpointMode(s, includeURL, 0)
+	return out
+}
 
+// decodeEncodingsFixpointMode walks the decode graph breadth first. complete
+// is false when a decode step stopped at a depth bound with decodable content
+// left: an HTML entity chain still changing after its pass limit, or percent
+// decoding still changing after its round limit. Callers refuse incomplete
+// outbound content.
+//
+// The walk runs in two parts so the HTML entity layer only adds views. The
+// first part is the hex, base64, base32, JSON-escape and URL graph, with its
+// own byte and candidate budget. The second part starts from the entity
+// decoding of the input and of every view the first part produced, and walks
+// the graph with the entity layer included under a separate budget. An entity
+// view that copies most of a large input therefore cannot spend the budget
+// the other views had.
+//
+// The byte and candidate budgets still return the views produced so far.
+// Ordinary large bodies under the request size cap can exhaust them, for
+// example through whole-text views that copy most of the input or a hex run
+// that also decodes as base64, so refusing at the budget would block
+// legitimate uploads. Budget accounting has to change before its exhaustion
+// can become a refusal.
+func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) (out []decodedResult, complete bool) {
+	if s == "" || len(s) > maxDecodeTotalBytes {
+		return nil, true
+	}
 	seen := map[string]struct{}{s: {}}
-	var out []decodedResult
-	queue := []string{s}
-	consumed := 0
-	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
-		text := queue[head]
-		for _, d := range decodeEncodingsOnce(text, includeURL, minPrefix) {
-			if len(d.text) < max(minPrefix, 1) {
-				continue
-			}
-			if _, ok := seen[d.text]; ok {
-				continue
-			}
-			if minPrefix > 0 && len(d.text) > maxDecodeTotalBytes-consumed {
-				return out
-			}
-			seen[d.text] = struct{}{}
-			out = append(out, d)
-			consumed += len(d.text)
-			if len(out) >= maxDecodeCandidates || consumed >= maxDecodeTotalBytes {
-				return out
-			}
-			queue = append(queue, d.text)
+	out, complete = decodeEncodingsWalk([]string{s}, nil, seen, includeURL, minPrefix, false)
+
+	// Entity roots: the input and every first-part view whose entity decoding
+	// differs. The first part already expanded those texts' other layers.
+	var roots []decodedResult
+	sources := make([]string, 0, len(out)+1)
+	sources = append(sources, s)
+	for _, d := range out {
+		sources = append(sources, d.text)
+	}
+	for _, text := range sources {
+		if strings.IndexByte(text, '&') < 0 {
+			continue
+		}
+		decoded, converged := decodeHTMLEntitiesChecked(text)
+		complete = complete && converged
+		if decoded != text && decoded != "" {
+			roots = append(roots, decodedResult{decoded, encodingHTML})
 		}
 	}
-	return out
+	if len(roots) == 0 {
+		return out, complete
+	}
+	htmlViews, htmlComplete := decodeEncodingsWalk(nil, roots, seen, includeURL, minPrefix, true)
+	return append(out, htmlViews...), complete && htmlComplete
 }
 
-func decodeEncodingsOnce(s string, includeURL bool, minPrefix int) []decodedResult {
+// decodeEncodingsWalk expands queue breadth first under one byte and
+// candidate budget. start lists views to admit, under the same budget, before
+// expanding them. seen is shared so a text is expanded once across walks.
+func decodeEncodingsWalk(queue []string, start []decodedResult, seen map[string]struct{}, includeURL bool, minPrefix int, withHTML bool) (out []decodedResult, complete bool) {
+	consumed := 0
+	complete = true
+	// admit records one view and reports whether the walk may continue.
+	admit := func(d decodedResult) (added, more bool) {
+		if len(d.text) < max(minPrefix, 1) {
+			return false, true
+		}
+		if _, ok := seen[d.text]; ok {
+			return false, true
+		}
+		if minPrefix > 0 && len(d.text) > maxDecodeTotalBytes-consumed {
+			return false, false
+		}
+		seen[d.text] = struct{}{}
+		out = append(out, d)
+		consumed += len(d.text)
+		return true, len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes
+	}
+	for _, d := range start {
+		added, more := admit(d)
+		if added {
+			queue = append(queue, d.text)
+		}
+		if !more {
+			return out, complete
+		}
+	}
+	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
+		views, stepComplete := decodeEncodingsOnce(queue[head], includeURL, minPrefix, withHTML)
+		complete = complete && stepComplete
+		for _, d := range views {
+			added, more := admit(d)
+			if !more {
+				return out, complete
+			}
+			if added {
+				queue = append(queue, d.text)
+			}
+		}
+	}
+	return out, complete
+}
+
+func decodeEncodingsOnce(s string, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
 	out := decodeEncodingsMode(s, minPrefix)
+	complete := true
+	if withHTML && strings.IndexByte(s, '&') >= 0 {
+		decoded, converged := decodeHTMLEntitiesChecked(s)
+		complete = converged
+		if decoded != s && decoded != "" {
+			out = append(out, decodedResult{decoded, encodingHTML})
+		}
+	}
 	if !includeURL {
-		return out
+		return out, complete
 	}
 	if decoded := IterativeDecode(s); decoded != s && decoded != "" {
+		if normalize.QueryUnescapePartial(decoded) != decoded {
+			return out, false
+		}
 		out = append(out, decodedResult{decoded, encodingURL})
 	}
-	return out
+	return out, complete
 }
 
 // checkDLP runs DLP regex patterns against the full URL string including hostname.
@@ -3041,7 +3127,7 @@ func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
 			}
 		}
 		for _, segment := range segments {
-			for _, decoded := range decodes.decode(segment, false) {
+			for _, decoded := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{decoded.text, spanViewLabel(decoded.encoding+"_decoded", source.viewLabel), ""})
 			}
 		}
@@ -3142,7 +3228,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
 	for _, segment := range urlPathDecodeSegments(parsed.Path) {
 		if len(segment) >= 10 { // minimum viable encoded secret length
-			for _, d := range decodes.decode(segment, false) {
+			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 			}
 		}
@@ -3153,7 +3239,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Dots break regex character classes, so individual labels pass DLP checks.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
 		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
-		for _, d := range decodes.decode(hostname, false) {
+		for _, d := range decodes.decode(hostname, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -3170,10 +3256,10 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Uses RawQuery to preserve parameter order (url.Values is a map with random iteration).
 	// Also noise-strip the concatenation to defeat inserted garbage params
 	// (e.g., "?part1=sk-ant-&mid=%20&part2=AAAA" → "sk-ant-AAAA...").
-	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery)
+	targets = appendQueryConcatTargets(targets, parsed.Path, parsed.RawQuery, decodes)
 	for _, text := range dnsQueryDLPTexts(parsed.RawQuery) {
 		targets = append(targets, dlpTarget{text, dlpViewLabel("doh"), ""})
-		for _, d := range decodes.decode(text, false) {
+		for _, d := range decodes.decode(text, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 		}
 	}
@@ -3238,7 +3324,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// to catch secrets split across params with junk values interleaved.
 	// E.g., "?a=sk-&x=junk&b=ant-&y=junk&c=api03-&z=junk&d=AAAA..." -
 	// combination (0,2,4,6) reconstructs "sk-ant-api03-AAAA...".
-	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String(), &queryLessMemo)
+	subResult, subWarns := s.querySubsequenceDLP(parsed.RawQuery, parsed.Hostname(), parsed.String(), &queryLessMemo, decodes)
 	warnMatches = append(warnMatches, subWarns...)
 	credentialAudienceAllows = append(credentialAudienceAllows, subResult.CredentialAudienceAllows...)
 	if !subResult.Allowed {
@@ -3287,7 +3373,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			if len(seg) < 20 {
 				continue
 			}
-			for _, d := range decodes.decode(IterativeDecode(seg), false) {
+			for _, d := range decodes.decode(IterativeDecode(seg), true) {
 				seedTargets = append(seedTargets, dlpTarget{d.text, spanViewLabel(d.encoding+"_decoded", "url_path_segment"), ""})
 			}
 		}
@@ -3341,6 +3427,13 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		}
 	}
 
+	// The core floor refuses an incompletely decoded URL before this stage
+	// runs. Views first decoded here (configured-pattern targets, query
+	// subsequences) can still reach a bound, and are refused the same way.
+	if decodes.inspectionIncomplete() {
+		return urlInspectionLimitResult(), warnMatches
+	}
+
 	return Result{Allowed: true}, deduplicateWarnMatches(warnMatches)
 }
 
@@ -3370,7 +3463,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 // for the specific case this still cannot close).
 //
 //pipelock:provenance-transform query_subsequence
-func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *queryLessDLPMemo) (result Result, warnMatches []WarnMatch) {
+func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *queryLessDLPMemo, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
 	if rawQuery == "" || !strings.Contains(rawQuery, "&") {
 		return Result{Allowed: true}, nil
 	}
@@ -3380,16 +3473,24 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 	if n < 3 {
 		return Result{Allowed: true}, nil
 	}
+	passes, ok := querySubsequencePasses(n)
+	if !ok {
+		// The core floor refuses this query first; keep the configured stage
+		// fail closed on its own as well.
+		return querySubsequenceLimitResult(), nil
+	}
 	var credentialAudienceAllows []CredentialAudienceAllow
 	defer func() {
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
 	}()
-	for size := 2; size <= SubsequenceMaxSize && size <= n; size++ {
-		result, warns := s.checkDLPCombinations(values, n, size, hostname, target, memo)
-		warnMatches = append(warnMatches, warns...)
-		credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
-		if !result.Allowed {
-			return result, warnMatches
+	for _, pass := range passes {
+		for size := 2; size <= pass.maxSize && size <= pass.values; size++ {
+			result, warns := s.checkDLPCombinations(values[:pass.values], pass.values, size, hostname, target, memo, decodes)
+			warnMatches = append(warnMatches, warns...)
+			credentialAudienceAllows = append(credentialAudienceAllows, result.CredentialAudienceAllows...)
+			if !result.Allowed {
+				return result, warnMatches
+			}
 		}
 	}
 
@@ -3397,17 +3498,96 @@ func (s *Scanner) querySubsequenceDLP(rawQuery, hostname, target string, memo *q
 }
 
 // SubsequenceMaxParts and SubsequenceMaxSize bound the ordered subsequence
-// search on the request path: at most this many parts are combined, in
-// ordered combinations of 2..SubsequenceMaxSize, and further values are
-// truncated. The receipt content boundary uses the same combination order.
-// Within SubsequenceMaxParts it runs the same sizes. A wider receipt degrades
-// to a complete smaller search or refuses, which
-// docs/guides/receipt-verification.md describes. The request path does not
-// refuse when the part cap is exceeded.
+// search on the request path. The first SubsequenceMaxParts non-empty values
+// are always searched in ordered combinations of 2..SubsequenceMaxSize. A
+// wider query is also searched over every value at the largest size in
+// {3, 2} whose combination count stays within that 20-value search, and
+// refused when even every pair does not fit. Later values are no longer
+// dropped: a cap that ignored them let a credential split around filler
+// values pass. The receipt content boundary applies the same widest-complete
+// rule to wide receipts (internal/receiptcontent, scanFragments), which
+// docs/guides/receipt-verification.md describes.
 const (
 	SubsequenceMaxParts = 20
 	SubsequenceMaxSize  = 4
 )
+
+// querySubsequenceMaxCombinations is the combination count of the full
+// 20-value search, the work budget a wider query is held to.
+var querySubsequenceMaxCombinations = subsequenceCombinations(SubsequenceMaxParts, SubsequenceMaxSize)
+
+// querySubsequencePass searches ordered combinations of sizes 2..maxSize
+// drawn from the first values query values.
+type querySubsequencePass struct {
+	values  int
+	maxSize int
+}
+
+// querySubsequencePasses plans the split-credential search for n values. The
+// first pass is the 20-value search, run over the first SubsequenceMaxParts
+// values whatever the width, so adding values never removes a combination
+// that search covers. A wider query adds a second pass over every value at
+// the largest complete size within the same combination budget. It returns
+// false when even every pair does not fit.
+func querySubsequencePasses(n int) ([]querySubsequencePass, bool) {
+	if n <= SubsequenceMaxParts {
+		return []querySubsequencePass{{values: n, maxSize: SubsequenceMaxSize}}, true
+	}
+	size, ok := querySubsequenceSearchSize(n)
+	if !ok {
+		return nil, false
+	}
+	return []querySubsequencePass{
+		{values: SubsequenceMaxParts, maxSize: SubsequenceMaxSize},
+		{values: n, maxSize: size},
+	}, true
+}
+
+// querySubsequenceSearchSize returns the largest combination size searched
+// completely over all n values, or false when even every pair exceeds the
+// budget.
+func querySubsequenceSearchSize(n int) (int, bool) {
+	if n <= SubsequenceMaxParts {
+		return SubsequenceMaxSize, true
+	}
+	for size := 3; size >= 2; size-- {
+		if subsequenceCombinations(n, size) <= querySubsequenceMaxCombinations {
+			return size, true
+		}
+	}
+	return 0, false
+}
+
+// subsequenceCombinations counts ordered combinations of sizes 2..maxSize
+// drawn from n values, saturating instead of overflowing.
+func subsequenceCombinations(n, maxSize int) int {
+	total := 0
+	for k := 2; k <= maxSize && k <= n; k++ {
+		ways := 1
+		for i := 0; i < k; i++ {
+			ways = ways * (n - i) / (i + 1)
+			if ways > 1<<40 {
+				return 1 << 40
+			}
+		}
+		total += ways
+	}
+	return total
+}
+
+// querySubsequenceLimitReason names a query whose value count exceeds the
+// complete pair search. It is a core-floor refusal, like the other
+// inspection limits.
+const querySubsequenceLimitReason = "core DLP inspection limit: too many query values to search for a split credential"
+
+func querySubsequenceLimitResult() Result {
+	return Result{
+		Allowed: false,
+		Reason:  querySubsequenceLimitReason,
+		Scanner: ScannerCoreDLP,
+		Score:   1.0,
+	}
+}
 
 // NextSubsequence advances indices to the next ordered combination of n
 // parts, in the same lexicographic order the query-subsequence detector uses.
@@ -3417,26 +3597,23 @@ func NextSubsequence(indices []int, n int) bool {
 }
 
 // querySubsequenceValues extracts the production query-value view shared by
-// core DLP, configured DLP, and the provenance parity test.
+// core DLP, configured DLP, and the provenance parity test. Empty values are
+// skipped; every non-empty value is kept.
 func querySubsequenceValues(rawQuery string) []string {
-	const maxValues = SubsequenceMaxParts
-	values := make([]string, 0, maxValues)
+	var values []string
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value == "" {
 			continue
 		}
 		values = append(values, IterativeDecode(value))
-		if len(values) == maxValues {
-			break
-		}
 	}
 	return values
 }
 
 // checkDLPCombinations generates all ordered combinations of the given size
 // from the values slice and checks each concatenation against DLP patterns.
-func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string, memo *queryLessDLPMemo) (result Result, warnMatches []WarnMatch) {
+func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, target string, memo *queryLessDLPMemo, decodes *decodingMemo) (result Result, warnMatches []WarnMatch) {
 	var credentialAudienceAllows []CredentialAudienceAllow
 	defer func() {
 		result.CredentialAudienceAllows = deduplicateCredentialAudienceAllows(credentialAudienceAllows)
@@ -3462,7 +3639,7 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 		candidates := []dlpTarget{
 			{concat, dlpViewLabel("query_subsequence"), source},
 		}
-		for _, d := range decodeEncodingsRecursive(concat) {
+		for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
 		}
 
@@ -6002,9 +6179,9 @@ func queryValueDecodedTargets(decoded string) []dlpTarget {
 func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) []dlpTarget {
 	var targets []dlpTarget
 	addDecoded := func(text string) {
-		for _, d := range decodes.decode(text, false) {
+		for _, d := range decodes.decode(text, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-			if h := decodeHTMLEntities(d.text); h != d.text {
+			if h := decodes.decodeHTML(d.text); h != d.text {
 				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})
 			}
 		}
@@ -6030,7 +6207,7 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 		addDecoded(decoded[start:])
 	}
 
-	if htmlDecoded := decodeHTMLEntities(decoded); htmlDecoded != decoded {
+	if htmlDecoded := decodes.decodeHTML(decoded); htmlDecoded != decoded {
 		targets = append(targets, dlpTarget{htmlDecoded, dlpViewLabel(encodingHTML), decoded})
 		addDecoded(htmlDecoded)
 	}
