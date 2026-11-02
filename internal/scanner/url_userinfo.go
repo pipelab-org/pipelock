@@ -21,13 +21,19 @@ func urlUserinfoValues(u *url.URL, joined bool) []dlpTarget {
 	if u.User == nil {
 		return nil
 	}
-	rawUser, rawPassword, hasPassword := strings.Cut(u.User.String(), ":")
+	// The second field is recovered from the escaped form so it reads as
+	// inspected content: String escapes each field and PathUnescape reverses
+	// that exactly, matching Userinfo's own decoded value.
+	rawUser, rawSecond, hasSecond := strings.Cut(u.User.String(), ":")
 	values := []dlpTarget{{rawUser, "url_userinfo_username_escaped", ""}, {u.User.Username(), "url_userinfo_username", ""}}
-	if hasPassword {
-		password, _ := u.User.Password()
-		values = append(values, dlpTarget{rawPassword, "url_userinfo_password_escaped", ""}, dlpTarget{password, "url_userinfo_password", ""})
+	if hasSecond {
+		second, err := url.PathUnescape(rawSecond)
+		if err != nil {
+			second = rawSecond
+		}
+		values = append(values, dlpTarget{rawSecond, "url_userinfo_password_escaped", ""}, dlpTarget{second, "url_userinfo_password", ""})
 		if joined {
-			values = append(values, dlpTarget{u.User.Username() + ":" + password, "url_userinfo", ""})
+			values = append(values, dlpTarget{u.User.Username() + ":" + second, "url_userinfo", ""})
 		}
 	}
 	return values
@@ -144,8 +150,8 @@ func lenientURLUserinfo(token string) *url.Userinfo {
 	if at < 0 {
 		return nil
 	}
-	if user, password, hasPassword := strings.Cut(authority[:at], ":"); hasPassword {
-		return url.UserPassword(user, password)
+	if user, second, hasSecond := strings.Cut(authority[:at], ":"); hasSecond {
+		return url.UserPassword(user, second)
 	}
 	return url.User(authority[:at])
 }
