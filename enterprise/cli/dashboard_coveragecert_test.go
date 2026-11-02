@@ -21,8 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/coveragecertverify"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -416,6 +418,118 @@ func TestRunCoverageCertGenerate_FiltersDeclaredWindow(t *testing.T) {
 	}
 	if cert.Body.Sessions[0].ID != "inside" {
 		t.Fatalf("cert session = %q, want inside", cert.Body.Sessions[0].ID)
+	}
+}
+
+func TestRunCoverageCertGenerate_VerifiesWholeSessionBeforeWindowCounts(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+	const sessionID = "proxy.run.0123456789abcdef0123456789abcdef"
+	writeCoverageCertSession(t, dir, priv, 2)
+	receipts, err := receipt.ExtractReceiptsFromSessionDir(dir, sessionID)
+	if err != nil {
+		t.Fatalf("ExtractReceiptsFromSessionDir: %v", err)
+	}
+	terminalClosed := len(receipts) > 0 && isSessionClose(receipts[len(receipts)-1])
+	if len(receipts) != 4 || !terminalClosed {
+		t.Fatalf("fixture receipts = %d, terminal close = %v, want 4 and closed", len(receipts), terminalClosed)
+	}
+
+	keyFile := filepath.Join(t.TempDir(), "signing.key")
+	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
+		t.Fatalf("SavePrivateKey: %v", err)
+	}
+	tests := []struct {
+		name             string
+		start            time.Time
+		end              time.Time
+		wantCount        uint64
+		wantExit         int
+		wantCompleteness string
+		wantReason       string
+	}{
+		{
+			name: "whole session", start: receipts[0].ActionRecord.Timestamp,
+			end:       receipts[len(receipts)-1].ActionRecord.Timestamp.Add(time.Nanosecond),
+			wantCount: uint64(len(receipts)), wantExit: 0,
+			wantCompleteness: "LIMITED", wantReason: "bounded_closed",
+		},
+		{
+			name: "window starts mid-session", start: receipts[1].ActionRecord.Timestamp,
+			end:       receipts[len(receipts)-1].ActionRecord.Timestamp.Add(time.Nanosecond),
+			wantCount: uint64(len(receipts)) - 1, wantExit: 0,
+			wantCompleteness: "LIMITED", wantReason: "bounded_closed",
+		},
+		{
+			name: "window ends mid-session", start: receipts[0].ActionRecord.Timestamp,
+			end:       receipts[len(receipts)-1].ActionRecord.Timestamp,
+			wantCount: uint64(len(receipts)) - 1, wantExit: 3,
+			wantCompleteness: "LIMITED", wantReason: "abnormal_end",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			certFile := filepath.Join(t.TempDir(), "cert.json")
+			cmd := &cobra.Command{}
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			if err := runCoverageCertGenerate(cmd, coverageCertGenerateOptions{
+				agent:          "agent-a",
+				receiptDir:     dir,
+				signingKeyFile: keyFile,
+				windowStart:    tc.start.Format(time.RFC3339Nano),
+				windowEnd:      tc.end.Format(time.RFC3339Nano),
+				outFile:        certFile,
+			}); err != nil {
+				t.Fatalf("runCoverageCertGenerate: %v", err)
+			}
+
+			data, err := os.ReadFile(filepath.Clean(certFile))
+			if err != nil {
+				t.Fatalf("read cert: %v", err)
+			}
+			cert, err := coveragecert.Unmarshal(data)
+			if err != nil {
+				t.Fatalf("Unmarshal cert: %v", err)
+			}
+			if cert.Body.TotalReceipts != tc.wantCount {
+				t.Fatalf("window receipt count = %d, want %d", cert.Body.TotalReceipts, tc.wantCount)
+			}
+			if got := cert.Body.Sessions[0].CompletenessStatus; got != tc.wantCompleteness {
+				t.Fatalf("window completeness status = %q, want %q", got, tc.wantCompleteness)
+			}
+			if got := cert.Body.Sessions[0].CompletenessReason; got != tc.wantReason {
+				t.Fatalf("window completeness reason = %q, want %q", got, tc.wantReason)
+			}
+			if !cert.Body.Sessions[0].ChainIntact || cert.Body.ChainsIntact != 1 || cert.Body.ChainsBroken != 0 {
+				t.Fatalf("source chain result = intact:%v aggregate intact:%d broken:%d, want intact",
+					cert.Body.Sessions[0].ChainIntact, cert.Body.ChainsIntact, cert.Body.ChainsBroken)
+			}
+
+			var verifyOut bytes.Buffer
+			verifyErr := coveragecertverify.Run(coveragecertverify.Options{
+				CertFile:       certFile,
+				TrustedSigners: []string{"inline=" + hex.EncodeToString(pub)},
+				Out:            &verifyOut,
+			})
+			if tc.wantExit == 0 && verifyErr != nil {
+				t.Fatalf("coverage-cert verify error = %v, want success; output: %s", verifyErr, verifyOut.String())
+			}
+			if tc.wantExit != 0 && cliutil.ExitCodeOf(verifyErr) != tc.wantExit {
+				t.Fatalf("coverage-cert verify exit = %d (err %v), want %d; output: %s",
+					cliutil.ExitCodeOf(verifyErr), verifyErr, tc.wantExit, verifyOut.String())
+			}
+			if tc.wantExit == 3 && !strings.Contains(verifyOut.String(), "VALID PREFIX, END UNPROVEN") {
+				t.Fatalf("coverage-cert verify output = %q, want valid-prefix verdict", verifyOut.String())
+			}
+			if tc.wantExit == 0 && !strings.Contains(verifyOut.String(), "CHAIN VALID") {
+				t.Fatalf("coverage-cert verify output = %q, want complete-chain verdict", verifyOut.String())
+			}
+		})
 	}
 }
 
