@@ -503,7 +503,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					m.RecordCrossRequestDLPMatch()
 				}
 				operatorReason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", primary.PatternName)
-				if inspectionLimit {
+				switch {
+				case inspectionLimit && primary.PatternName == scanner.UninspectableEncodedContentPattern:
+					operatorReason = scanner.DecodeFragmentLimitOperatorReason
+				case inspectionLimit:
 					operatorReason = fmt.Sprintf("cross-request fragment refused: %s; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)", primary.PatternName)
 				}
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
@@ -516,7 +519,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					}
 					if opts.denialAudit != nil {
 						*opts.denialAudit = mcpCEEFragmentDenialAudit(operatorReason)
-						if inspectionLimit {
+						switch {
+						case inspectionLimit && primary.PatternName == scanner.UninspectableEncodedContentPattern:
+							*opts.denialAudit = mcpCeeFragmentDecodeLimitDenialAudit()
+						case inspectionLimit:
 							*opts.denialAudit = mcpCeeFragmentLimitDenialAudit()
 						}
 					}

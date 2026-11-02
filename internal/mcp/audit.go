@@ -372,6 +372,12 @@ func mcpCeeFragmentLimitDenialAudit() mcpDenialAudit {
 	return mcpDenialAudit{kind: "cee_fragment_limit"}
 }
 
+// Decoder-limit refusals keep their own reason so the audit event names the
+// encoding-layer remedy rather than the JSON number and depth one.
+func mcpCeeFragmentDecodeLimitDenialAudit() mcpDenialAudit {
+	return mcpDenialAudit{kind: "cee_fragment_decode_limit"}
+}
+
 func mcpCeeOwnerDenialAudit() mcpDenialAudit { return mcpDenialAudit{kind: "cee_owner"} }
 
 func mcpCorrelationResponseDenialAudit() mcpDenialAudit {

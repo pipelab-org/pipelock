@@ -54,9 +54,9 @@ func TestDecodingMemoRetentionLimitsKeepDecoding(t *testing.T) {
 			}
 		})
 	}
-	memo := decodingMemo{views: make(map[decodingMemoKey][]decodedResult)}
+	memo := decodingMemo{views: make(map[decodingMemoKey]memoDecode)}
 	for i := 0; i < maxDecodeCandidates; i++ {
-		memo.views[decodingMemoKey{text: fmt.Sprintf("retained-%d", i)}] = nil
+		memo.views[decodingMemoKey{text: fmt.Sprintf("retained-%d", i)}] = memoDecode{}
 	}
 	if got := memo.decode(input, true); !reflect.DeepEqual(got, want) || len(memo.views) != maxDecodeCandidates {
 		t.Fatalf("entry budget changed decoding or retention: got %#v, entries %d", got, len(memo.views))

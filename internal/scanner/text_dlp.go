@@ -403,10 +403,12 @@ func OnlyNumberOnlyCardRuns(matches []TextDLPMatch) bool {
 	return true
 }
 
-// IsInspectionLimit reports that a typed JSON document could not be fully
-// inspected. This is a refusal, not a configurable content-pattern finding.
+// IsInspectionLimit reports that content could not be fully inspected: a
+// typed JSON document past its number budget, or outbound encoded content
+// past a decoder work bound. This is a refusal, not a configurable
+// content-pattern finding.
 func (m TextDLPMatch) IsInspectionLimit() bool {
-	return m.PatternName == UninspectableJSONNumberPattern
+	return m.PatternName == UninspectableJSONNumberPattern || m.PatternName == UninspectableEncodedContentPattern
 }
 
 // HasInspectionLimit reports incomplete typed JSON inspection in any scan view.
@@ -706,6 +708,18 @@ func uninspectableJSONNumberMatch() TextDLPMatch {
 	return TextDLPMatch{PatternName: UninspectableJSONNumberPattern, Severity: config.SeverityHigh}
 }
 
+// UninspectableEncodedContentPattern identifies outbound text whose decoding
+// stopped at a depth bound with decodable content left: an HTML entity chain
+// still changing after its pass limit, or percent decoding still changing
+// after its round limit. Each bound exists to cap scan cost; reaching one
+// means the remaining layers were never scanned, so the transport refuses
+// the content rather than reporting the partial scan as clean.
+const UninspectableEncodedContentPattern = "Uninspectable encoded content"
+
+func uninspectableEncodedContentMatch() TextDLPMatch {
+	return TextDLPMatch{PatternName: UninspectableEncodedContentPattern, Severity: config.SeverityCritical}
+}
+
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	var originalDecodes decodingMemo
 	if !s.hasGenericCardPatterns() {
@@ -815,7 +829,20 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 	return result
 }
 
+// scanTextForDLPDetectors adds the decode inspection limit to an outbound
+// scan. Inbound content (tool results and other text the agent receives) is
+// not refused at a decode bound: exfiltration is an outbound threat, and
+// large legitimate downloads must keep their delivery contract.
 func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
+	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
+		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
+		result.Clean = false
+	}
+	return result
+}
+
+func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 
@@ -1001,7 +1028,7 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 
 	segmentViews := textDLPEncodingSegmentViews(cleaned)
 	segmentDecodeViews := segmentViews
-	if decoded := decodeHTMLEntities(cleaned); decoded != cleaned {
+	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, encodingHTML))...)
 		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(decoded, decodes))...)
 		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
@@ -1357,27 +1384,35 @@ func appendUniqueTextDLPViews(views []spanTextView, candidates ...spanTextView) 
 	return views
 }
 
+// maxHTMLEntityDecodePasses bounds nested entity decoding. It is shared with
+// receipt replay so the two cannot drift.
+const maxHTMLEntityDecodePasses = normalize.ScannerHTMLEntityMaxPasses
+
+// decodeHTMLEntitiesChecked reports whether entity decoding reached a fixed
+// point within maxHTMLEntityDecodePasses. A chain that is still changing at
+// the limit is uninspected, not finished: a receiver that decodes until the
+// text stops changing recovers bytes the scan never saw.
+//
 //pipelock:provenance-transform html_entity_decode
-func decodeHTMLEntities(text string) string {
-	decoded, _ := decodeHTMLEntitiesWithPassCount(text)
-	return decoded
+func decodeHTMLEntitiesChecked(text string) (string, bool) {
+	decoded, _, converged := decodeHTMLEntitiesBounded(text)
+	return decoded, converged
 }
 
-func decodeHTMLEntitiesWithPassCount(text string) (string, int) {
+func decodeHTMLEntitiesBounded(text string) (decoded string, passes int, converged bool) {
 	if !strings.Contains(text, "&") {
-		return text, 0
+		return text, 0, true
 	}
-	decoded := text
-	passes := 0
-	for range 16 {
+	decoded = text
+	for range maxHTMLEntityDecodePasses {
 		next := html.UnescapeString(decoded)
 		if next == decoded {
-			return decoded, passes
+			return decoded, passes, true
 		}
 		passes++
 		decoded = next
 	}
-	return decoded, passes
+	return decoded, passes, html.UnescapeString(decoded) == decoded
 }
 
 // checkSecretsInText scans text for leaked secrets (env vars or file-based).

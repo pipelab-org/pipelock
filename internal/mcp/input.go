@@ -1344,7 +1344,7 @@ func ForwardScannedInput(
 					stdioWarnCtxMeta.PolicyHash = policyHash
 				}
 				stdioWarnCtx := scanner.WithDLPWarnContext(stdioInputCtx, stdioWarnCtxMeta)
-				dlpResult := sc.ScanTextForDLP(stdioWarnCtx, string(result.Response))
+				dlpResult := sc.ScanTextForDLP(scanner.WithInboundDirection(stdioWarnCtx), string(result.Response))
 				finalResponseVerdict := scanVerdict
 				finalResponseVerdict.DLPMatches = append(finalResponseVerdict.DLPMatches, dlpResult.Matches...)
 				finalResponseVerdict.Clean = scanVerdict.Clean && dlpResult.Clean
