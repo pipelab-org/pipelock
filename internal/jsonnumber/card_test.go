@@ -30,6 +30,7 @@ func TestCardRuns(t *testing.T) {
 		{"over depth", `[[` + groups + `]]`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			depth := 64
 			if tt.name == "over depth" {
 				depth = 1
