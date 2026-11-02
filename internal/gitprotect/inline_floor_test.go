@@ -83,3 +83,17 @@ func TestWithCoreDLPFloor(t *testing.T) {
 		t.Fatalf("core-only pattern not applied: %+v", result.Findings)
 	}
 }
+
+func TestWithCoreDLPFloorPreservesValidation(t *testing.T) {
+	core := config.CoreDLPPatterns()[0]
+	configured := core
+	configured.Validator = config.ValidatorLuhn
+	// A configured checksum must not become a prerequisite for the independent floor.
+	patterns := WithCoreDLPFloor([]config.DLPPattern{configured})
+	for _, p := range patterns {
+		if p.Name == core.Name && p.Regex == core.Regex && p.Validator == core.Validator {
+			return
+		}
+	}
+	t.Fatal("configured validator replaced the immutable core detector")
+}

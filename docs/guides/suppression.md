@@ -12,6 +12,8 @@ All three work in `pipelock audit`, `pipelock git scan-diff`, and the GitHub Act
 
 Add `// pipelock:ignore` to a source line to suppress non-core findings on that line. Core DLP and core response floor patterns cannot be suppressed. They remain findings even with a bare marker or a marker naming the rule, matching the config suppression policy.
 
+`git scan-diff` applies the core DLP floor even with `dlp.include_defaults: false` or a custom pattern replacing a built-in name. This includes the core-only GCP service-account marker, which can also occur in documentation and fixtures without a private key. There is no per-rule or per-line exception for a core finding. Construct synthetic test values from fragments when possible. For files that must retain a literal example, the path exclusions below remove every finding for that path, including core findings. Generated pre-push hooks don't expose an exclusion option.
+
 ```go
 // Suppress a specific rule:
 url := buildTestURL("token", testToken) // pipelock:ignore Credential in URL
@@ -125,6 +127,8 @@ This does not add a refresh-token allowance or change the built-in audience. Avo
 ## Layer 3: `--exclude` Flag
 
 Remove entire paths from scan results. Available on `pipelock git scan-diff` and `pipelock audit`:
+
+These exclusions also remove core findings. Use the narrowest path possible: an excluded fixture can contain a real secret that the gate will no longer report. The GitHub Action exposes the same control through `exclude-paths`.
 
 ```bash
 pipelock git scan-diff --exclude vendor/ --exclude "*.generated.go"

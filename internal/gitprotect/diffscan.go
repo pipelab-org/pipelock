@@ -280,7 +280,7 @@ func IsCoreFloorPattern(name string) bool {
 }
 
 // WithCoreDLPFloor returns patterns plus each core floor DLP pattern that is
-// not already present with the same name and expression. The proxy scanner
+// not already present with the same name, expression, and validator. The proxy scanner
 // applies the core floor whatever the configuration holds, so a git gate must
 // not depend on the configured list to include it.
 func WithCoreDLPFloor(patterns []config.DLPPattern) []config.DLPPattern {
@@ -288,7 +288,7 @@ func WithCoreDLPFloor(patterns []config.DLPPattern) []config.DLPPattern {
 	for _, core := range config.CoreDLPPatterns() {
 		present := false
 		for _, p := range patterns {
-			if strings.EqualFold(p.Name, core.Name) && p.Regex == core.Regex {
+			if strings.EqualFold(p.Name, core.Name) && p.Regex == core.Regex && p.Validator == core.Validator {
 				present = true
 				break
 			}
