@@ -77,7 +77,7 @@ def _jobs(workflow: pathlib.Path):
     """Yield (job_name, steps) for every job with a step list."""
     try:
         doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=WorkflowLoader)
-    except yaml.YAMLError:  # a malformed workflow is another gate's problem
+    except (yaml.YAMLError, ValueError):  # a malformed workflow is another gate's problem
         return
     if not isinstance(doc, dict):
         return
@@ -183,7 +183,9 @@ class WorkflowGoPinTest(unittest.TestCase):
     def test_release_cache_policy_uses_workflow_boolean_rules(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workflow_dir = pathlib.Path(directory)
-            for value in ("false", "off", "no", "'false'"):
+            for value in (
+                "false", "off", "no", "'false'", "false\n          cache: true", "["
+            ):
                 with self.subTest(cache=value):
                     (workflow_dir / "release.yaml").write_text(
                         "jobs:\n  release:\n    steps:\n"
