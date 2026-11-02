@@ -261,12 +261,9 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 // candidate the case-insensitive regex could have had accepted. Re-running the
 // regex from each rejected start instead costs up to 52 regex steps per byte.
 func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int, bool) {
-	runStart := 0
-	for i := 0; i <= len(text); i++ {
-		if i < len(text) && isBase58Byte(text[i]) {
-			continue
-		}
-		for start := runStart; i-start >= wifUncompressedLen; start++ {
+	// run checks every start in the base58 run text[runStart:runEnd].
+	run := func(runStart, runEnd int) (int, int, bool) {
+		for start := runStart; runEnd-start >= wifUncompressedLen; start++ {
 			width := 0
 			switch text[start] {
 			case '5':
@@ -274,11 +271,21 @@ func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int,
 			case 'K', 'L':
 				width = wifCompressedLen
 			}
-			if width > 0 && start+width <= i && accept(start, start+width) {
+			if width > 0 && start+width <= runEnd && accept(start, start+width) {
 				return start, start + width, true
 			}
 		}
+		return 0, 0, false
+	}
+	runStart := 0
+	for i := range len(text) {
+		if isBase58Byte(text[i]) {
+			continue
+		}
+		if start, end, ok := run(runStart, i); ok {
+			return start, end, true
+		}
 		runStart = i + 1
 	}
-	return 0, 0, false
+	return run(runStart, len(text))
 }
