@@ -263,7 +263,9 @@ func TestDeferredStdioReleaseKillSwitchOrdering(t *testing.T) {
 }
 
 // countingUpstream is an MCP HTTP upstream bound through net.ListenConfig on
-// an ephemeral port that counts every request it receives.
+// an ephemeral port that counts every request the proxy can send it: a POST,
+// a session DELETE, or the GET that opens the server-event stream. Other local
+// processes may probe loopback ports; their requests are refused without being counted.
 func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -271,7 +273,11 @@ func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 		t.Fatalf("listen: %v", err)
 	}
 	var calls atomic.Int32
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMCPUpstreamRequest(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		calls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
@@ -281,6 +287,69 @@ func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	srv.Start()
 	t.Cleanup(srv.Close)
 	return srv, &calls
+}
+
+// isMCPUpstreamRequest reports whether r has the shape of a request the MCP
+// HTTP client sends to an upstream.
+func isMCPUpstreamRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodPost, http.MethodDelete:
+		return true
+	case http.MethodGet:
+		return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
+	default:
+		return false
+	}
+}
+
+func TestCountingUpstreamIgnoresUnrelatedHTTPProbe(t *testing.T) {
+	srv, calls := countingUpstream(t)
+	send := func(method, accept string, body io.Reader) int {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), method, srv.URL, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if accept != "" {
+			req.Header.Set("Accept", accept)
+		}
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	// A loopback port scanner's plain GET is not traffic from the proxy.
+	if status := send(http.MethodGet, "*/*", nil); status != http.StatusNotFound || calls.Load() != 0 {
+		t.Fatalf("probe: status=%d calls=%d, want 404 and 0", status, calls.Load())
+	}
+	for _, method := range []string{http.MethodHead, http.MethodOptions} {
+		if status := send(method, "text/event-stream", nil); status != http.StatusNotFound || calls.Load() != 0 {
+			t.Fatalf("%s probe: status=%d calls=%d, want 404 and 0", method, status, calls.Load())
+		}
+	}
+	if status := send(http.MethodPost, "application/json, text/event-stream", strings.NewReader(deferKillTestCall)); status != http.StatusOK || calls.Load() != 1 {
+		t.Fatalf("MCP POST after probe: status=%d calls=%d, want 200 and 1", status, calls.Load())
+	}
+	if status := send(http.MethodGet, "text/event-stream", nil); status != http.StatusOK || calls.Load() != 2 {
+		t.Fatalf("MCP event-stream GET: status=%d calls=%d, want 200 and 2", status, calls.Load())
+	}
+	// Use the listener's real forwarding path: session teardown is upstream
+	// traffic too, including when a denial test expects no upstream requests.
+	base, _ := startListenerProxyWithOpts(t, srv.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || calls.Load() != 3 {
+		t.Fatalf("MCP session DELETE: status=%d calls=%d, want 200 and 3", resp.StatusCode, calls.Load())
+	}
 }
 
 type httpDeferRun struct {

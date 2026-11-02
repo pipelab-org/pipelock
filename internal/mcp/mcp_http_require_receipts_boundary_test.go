@@ -33,7 +33,11 @@ const cleanToolsCallResponse = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"t
 // regression that forwards first and records afterwards leaves it at zero,
 // which "the receipt exists once the test ends" cannot detect.
 func receiptBoundaryUpstream(hits *atomic.Int32, sse bool, recorded, recordedAtEntry *atomic.Int32) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !isMCPUpstreamRequest(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		if recorded != nil && recordedAtEntry != nil {
 			recordedAtEntry.Store(recorded.Load())
 		}
