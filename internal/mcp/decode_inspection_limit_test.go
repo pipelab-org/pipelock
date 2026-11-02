@@ -6,9 +6,12 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -109,5 +112,61 @@ func TestDecodeInspectionLimitResponseStreamsDeliver(t *testing.T) {
 	}
 	if res := ScanA2ARequestBody(t.Context(), body, sc, cfg); res.Clean || res.Action != config.ActionBlock {
 		t.Fatalf("A2A request past the entity pass limit: clean=%v action=%s", res.Clean, res.Action)
+	}
+}
+
+func TestCeeRecordMCP_DecodeLimitAuditKeepsDecoderGuidance(t *testing.T) {
+	fb := scanner.NewFragmentBuffer(65536, 1000, testMCPWindowSecs)
+	t.Cleanup(fb.Close)
+	sc := testMCPScanner()
+	t.Cleanup(sc.Close)
+	cee := &CEEDeps{
+		Buffer: fb,
+		Config: &config.CrossRequestDetection{
+			FragmentReassembly: config.CrossRequestFragments{
+				Enabled:        true,
+				MaxBufferBytes: 65536,
+				WindowMinutes:  testMCPWindowSecs / 60,
+			},
+			Action: config.ActionWarn,
+		},
+	}
+
+	var logBuf bytes.Buffer
+	auditPath := filepath.Join(t.TempDir(), "audit.jsonl")
+	logger, err := audit.New("json", "file", auditPath, false, true)
+	if err != nil {
+		t.Fatalf("create audit logger: %v", err)
+	}
+	// Neither half reaches the entity pass limit alone; the joined stream does.
+	chain := deepEntityChain()
+	first, payload := []byte(chain[:len(chain)/2]), []byte(chain[len(chain)/2:])
+	if r := ceeRecordMCP(ceeRecordMCPOptions{
+		sessionKey: testMCPSessionKey, entropyPayload: first, fragmentPayloads: map[string][]byte{"": first}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	}); r != "" {
+		t.Fatalf("first half refused: %q", r)
+	}
+	var descriptor mcpDenialAudit
+	reason := ceeRecordMCP(ceeRecordMCPOptions{
+		denialAudit: &descriptor,
+		sessionKey:  testMCPSessionKey, entropyPayload: payload, fragmentPayloads: map[string][]byte{"": payload}, cee: cee, sc: sc, logW: &logBuf, logger: logger,
+	})
+	if reason != ceeFragmentBlockClientReason {
+		t.Fatalf("decode-limit fragment reason = %q, want %q", reason, ceeFragmentBlockClientReason)
+	}
+	if descriptor.kind != "cee_fragment_decode_limit" {
+		t.Fatalf("denial kind = %q, want cee_fragment_decode_limit", descriptor.kind)
+	}
+	dropMCPDenial(MCPProxyOpts{AuditLogger: logger}, descriptor, "input")
+	logger.Close()
+	auditRaw, err := os.ReadFile(auditPath) // #nosec G304 -- auditPath is inside t.TempDir.
+	if err != nil {
+		t.Fatalf("read decode-limit audit: %v", err)
+	}
+	if !bytes.Contains(auditRaw, []byte("fewer stacked encoding layers")) {
+		t.Fatalf("decode-limit audit lost decoder guidance: %s", auditRaw)
+	}
+	if bytes.Contains(auditRaw, []byte("typed JSON number")) {
+		t.Fatalf("decode-limit audit names JSON number guidance: %s", auditRaw)
 	}
 }

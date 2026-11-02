@@ -519,7 +519,10 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 					}
 					if opts.denialAudit != nil {
 						*opts.denialAudit = mcpCEEFragmentDenialAudit(operatorReason)
-						if inspectionLimit {
+						switch {
+						case inspectionLimit && primary.PatternName == scanner.UninspectableEncodedContentPattern:
+							*opts.denialAudit = mcpCeeFragmentDecodeLimitDenialAudit()
+						case inspectionLimit:
 							*opts.denialAudit = mcpCeeFragmentLimitDenialAudit()
 						}
 					}
