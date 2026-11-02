@@ -98,10 +98,8 @@ func writeFleetReportStatement(t *testing.T, stmt fleetreceipt.Statement) (ed255
 	return pub, path
 }
 
-// A passing L1 fleet report must surface its declared verification limits so an
-// operator cannot over-read the PASS. Without printing Limits, a verified L1
-// report looks like full replay verification when L1 only checks the signed
-// report, anchors, ordering, and arithmetic.
+// A structurally verified L1 fleet report must surface its declared limits so
+// an operator cannot over-read what the signed report establishes.
 func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	t.Parallel()
 
@@ -116,13 +114,11 @@ func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute: %v", err)
-	}
+	assertFleetPartial(t, cmd.Execute())
 
 	output := buf.String()
-	if !strings.Contains(output, "FLEET RECEIPT OK:") {
-		t.Fatalf("expected a passing L1 verification, got:\n%s", output)
+	if !strings.Contains(output, "FLEET RECEIPT VALID PREFIX, END UNPROVEN:") {
+		t.Fatalf("expected a partial L1 verification, got:\n%s", output)
 	}
 	if !strings.Contains(output, "Limit:") {
 		t.Errorf("verifier output omitted the Limit block:\n%s", output)

@@ -215,6 +215,10 @@ export interface ChainResult {
 }
 
 export interface AuditPacketReport {
+  integrity: string;
+  end_proof: { proven: boolean; evidence: string[] };
+  scope: string;
+  status: string;
   path: string;
   verdict: string;
   trusted: boolean;

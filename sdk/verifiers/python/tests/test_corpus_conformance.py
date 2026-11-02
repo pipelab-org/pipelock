@@ -8,6 +8,8 @@ For each fixture:
   - ``appraise`` verdict: the CLI must exit 0 and its ``--json`` stdout must equal
     the committed ``.appraisal.json`` bytes (trailing whitespace trimmed).
   - ``fatal`` verdict: the CLI must exit non-zero.
+  - An authenticated chain without an endpoint pin must exit 3 and retain its
+    committed linkage projection alongside the shared endpoint report.
 
 This is the same equality surface the cross-language gate enforces, so a pass here
 means the Python arm agrees with the Go reference on the whole corpus.
@@ -98,6 +100,15 @@ def test_corpus_fixture(base: str, expfile: Path, meta: dict, trust_path: Path) 
 
     if verdict == "fatal":
         assert rc != 0, f"{base}: expected non-zero exit, got {rc}; stdout={out!r}"
+    elif informat == "chain":
+        assert rc == 3, f"{base}: expected prefix exit 3, got {rc}; stdout={out!r}"
+        report = json.loads(out)
+        assert report["status"] == "VALID PREFIX, END UNPROVEN"
+        assert report["integrity"] == "valid"
+        assert report["signatures_verified"] is True
+        assert report["end_proof"] == {"proven": False, "evidence": []}
+        want = json.loads((corpus_dir / f"{base}.appraisal.json").read_text())
+        assert {key: report[key] for key in ("chain_linked", "length")} == want
     else:
         assert rc == 0, f"{base}: expected exit 0, got {rc}; stdout={out!r}"
         want = (corpus_dir / f"{base}.appraisal.json").read_text()

@@ -48,6 +48,7 @@ func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey,
 		ConfigHash: "policy-hash-test",
 		Principal:  "operator",
 		Actor:      coverageCertTestActor,
+		Session:    "proxy.run.0123456789abcdef0123456789abcdef",
 	})
 	if err := emitter.EmitSessionOpen(); err != nil {
 		t.Fatalf("EmitSessionOpen: %v", err)
@@ -67,6 +68,9 @@ func writeCoverageCertSession(t *testing.T, dir string, priv ed25519.PrivateKey,
 		}); err != nil {
 			t.Fatalf("Emit(%d): %v", i, err)
 		}
+	}
+	if err := emitter.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatalf("EmitSessionClose: %v", err)
 	}
 	_ = rec.Close()
 }
@@ -442,13 +446,13 @@ func genCoverageCertForTest(t *testing.T) (certFile, pubHex string) {
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
-	writeCoverageCertEvidenceSession(t, dir, priv, "verify", "agent-a", 2)
+	writeCoverageCertSession(t, dir, priv, 2)
 	keyFile := filepath.Join(t.TempDir(), "signing.key")
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)
 	}
 	certFile = filepath.Join(t.TempDir(), "cert.json")
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Now().UTC().Add(-time.Hour)
 	cmd := &cobra.Command{}
 	var out bytes.Buffer
 	cmd.SetOut(&out)
@@ -718,7 +722,7 @@ func TestCoverageCertGenerate_Execute_LicenseGated(t *testing.T) {
 	if err := signing.SavePrivateKey(priv, keyFile); err != nil {
 		t.Fatalf("SavePrivateKey: %v", err)
 	}
-	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	start := time.Now().UTC().Add(-time.Hour)
 	root := coverageCertCmd()
 	var buf bytes.Buffer
 	root.SetOut(&buf)
@@ -750,6 +754,9 @@ func TestCoverageCertVerify_Execute(t *testing.T) {
 	}
 	if buf.Len() == 0 {
 		t.Error("verify should print bounded lines")
+	}
+	if !strings.Contains(buf.String(), "CHAIN VALID") {
+		t.Fatalf("verify output = %q, want completed-chain verdict", buf.String())
 	}
 }
 

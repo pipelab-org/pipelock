@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::chain::{compute_totals, evidence_chain_key, verify_chain_with_options};
-use crate::lifecycle::analyze_lifecycle;
+use crate::lifecycle::{analyze_lifecycle, close_ends_chain};
 use crate::recorder::extract_typed_receipts;
 use crate::schema::validate_audit_packet;
 use crate::types::{
@@ -37,6 +37,10 @@ fn without_claimed_trust(mut report: AuditPacketReport) -> AuditPacketReport {
         return report;
     }
     report.trusted = false;
+    if report.status == crate::output::PREFIX_STATUS {
+        report.verdict = crate::output::PREFIX_STATUS.to_string();
+        return report;
+    }
     if report.verdict == "valid" || report.verdict == "self_consistent_only" {
         report.verdict = "invalid".to_string();
     }
@@ -226,6 +230,12 @@ fn verify_audit_packet_report(
             ),
         );
     }
+    if chain.valid {
+        report.summary = ReportSummary {
+            receipt_count: receipts.len() as u64,
+            totals: compute_totals(&receipts),
+        };
+    }
     let cross_errors = cross_check(&packet, &chain, &receipts);
     if !cross_errors.is_empty() {
         report.cross_check = "fail".to_string();
@@ -235,7 +245,33 @@ fn verify_audit_packet_report(
         return Ok(report);
     }
     report.cross_check = "pass".to_string();
-    report.valid = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
+    let trusted = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
+    let end_proven = chain.valid && close_ends_chain(&receipts);
+    report.integrity = if chain.valid { "valid" } else { "invalid" }.to_string();
+    report.end_proof = crate::types::EndProof {
+        proven: end_proven,
+        evidence: if end_proven {
+            vec!["session_close".to_string()]
+        } else {
+            vec![]
+        },
+    };
+    report.scope = "audit_packet".to_string();
+    report.status = if !trusted {
+        "CHAIN BROKEN"
+    } else if !end_proven {
+        crate::output::PREFIX_STATUS
+    } else if end_proven {
+        "CHAIN VALID"
+    } else {
+        "CHAIN BROKEN"
+    }
+    .to_string();
+    if trusted && !end_proven {
+        report.verdict = crate::output::PREFIX_STATUS.to_string();
+    }
+    report.valid = trusted && end_proven;
+    report.trusted = report.trusted && report.valid;
     if lifecycle_broken {
         push_error(&mut report, format!("lifecycle: {lifecycle_reason}"));
     }
@@ -256,11 +292,13 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
             .and_then(|packet| bool_at(packet, &["verifier", "trusted"]))
             .unwrap_or(false),
         valid: false,
+        integrity: "invalid".to_string(),
+        end_proof: crate::types::EndProof::default(),
+        scope: "audit_packet".to_string(),
+        status: "CHAIN BROKEN".to_string(),
         summary: ReportSummary {
-            receipt_count: packet
-                .and_then(|packet| u64_at(packet, &["summary", "receipt_count"]))
-                .unwrap_or(0),
-            totals: totals_from_packet(packet),
+            receipt_count: 0,
+            totals: Totals::zero(),
         },
         posture: ReportPosture {
             enforcement_mode: packet
@@ -288,7 +326,7 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
                 .to_string(),
         },
         errors: None,
-        warnings: None,
+        warnings: packet.map(|_| vec!["run and posture fields are packet claims and are not authenticated by receipt-chain verification".to_string()]),
         schema_check: "skipped".to_string(),
         chain_check: "skipped".to_string(),
         cross_check: "skipped".to_string(),

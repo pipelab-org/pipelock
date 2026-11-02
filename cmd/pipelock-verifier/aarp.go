@@ -11,20 +11,26 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/aarp"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 )
 
 // aarpOptions holds resolved CLI flags for the aarp subcommand.
 type aarpOptions struct {
-	trustPath  string
-	svidPath   string
-	jsonOutput bool
-	chain      bool
+	trustPath      string
+	svidPath       string
+	jsonOutput     bool
+	chain          bool
+	allowPrefix    bool
+	expectHead     string
+	expectSeq      uint64
+	expectFinalSeq *uint64
 }
 
 // trustFile is the on-disk trust input shared by all four reference verifiers.
@@ -72,11 +78,20 @@ Exit codes: 0 the envelope was appraised; 1 the envelope is fatal to appraise
 (schema violation, profile/canon mismatch, unknown critical extension); 2 an
 I/O or trust-file error; 64 a usage error. With --json the verifier prints the
 cross-language comparable appraisal on stdout (or {"envelope_fatal":true} when
-the envelope is fatal).`,
+the envelope is fatal).
+
+With --chain, every envelope must have a signature verified against --trust,
+and the stream must start at genesis. AARP has no terminal record: exit 0
+requires an independently supplied --expect-head or --expect-seq endpoint.
+Otherwise the verdict is VALID PREFIX, END UNPROVEN with exit 3.
+--allow-prefix returns 0 while preserving that partial verdict.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("expect-seq") {
+				opts.expectFinalSeq = &opts.expectSeq
+			}
 			return runAARP(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
@@ -85,12 +100,18 @@ the envelope is fatal).`,
 	cmd.Flags().StringVar(&opts.trustPath, "trust", "", "path to the pinned trust JSON (trusted_keys + trust_entries)")
 	cmd.Flags().StringVar(&opts.svidPath, "svid", "", "path to the SVID attestation JSON (evidence + pinned bundle/action-time); appraises the X.509-SVID binding")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit the comparable appraisal JSON on stdout")
-	cmd.Flags().BoolVar(&opts.chain, "chain", false, "PATH is a JSONL stream of envelopes; verify Rung-1 chain linkage")
+	cmd.Flags().BoolVar(&opts.chain, "chain", false, "PATH is a JSONL stream; authenticate every envelope and verify linkage from genesis")
+	cmd.Flags().BoolVar(&opts.allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end (--chain)")
+	cmd.Flags().StringVar(&opts.expectHead, "expect-head", "", "require the final payload digest to equal this independently known hash (--chain)")
+	cmd.Flags().Uint64Var(&opts.expectSeq, "expect-seq", 0, "require this independently known final sequence (--chain)")
 
 	return cmd
 }
 
 func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
+	if !opts.chain && (opts.allowPrefix || opts.expectHead != "" || opts.expectFinalSeq != nil) {
+		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--allow-prefix, --expect-head and --expect-seq require --chain"))
+	}
 	if opts.chain && opts.svidPath != "" {
 		return cliutil.ExitCodeError(exitUsage, fmt.Errorf("--svid is single-envelope only and cannot be combined with --chain"))
 	}
@@ -120,7 +141,7 @@ func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
 	}
 
 	if opts.chain {
-		return runAARPChain(stdout, stderr, data, opts.jsonOutput)
+		return runAARPChain(stdout, stderr, data, opts, verifyOpts)
 	}
 
 	env, err := aarp.Unmarshal(data)
@@ -155,13 +176,9 @@ func runAARP(stdout, stderr io.Writer, target string, opts aarpOptions) error {
 	return nil
 }
 
-// runAARPChain verifies a JSONL stream of envelopes for Rung-1 chain linkage.
-// A line that fails to parse, or a stream that is not contiguously hash-linked
-// under a single issuer, is fatal (non-zero exit). Signature validity is NOT
-// checked here — VerifyChain checks only the linkage that makes backdating,
-// insertion, and reorder detectable; per-envelope signatures are appraised
-// separately via the single-envelope path.
-func runAARPChain(stdout, stderr io.Writer, data []byte, jsonMode bool) error {
+// runAARPChain authenticates a JSONL stream from genesis. AARP has no terminal
+// record, so only an independently supplied endpoint pin proves its end.
+func runAARPChain(stdout, stderr io.Writer, data []byte, opts aarpOptions, trust aarp.VerifyOptions) error {
 	lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
 	envs := make([]aarp.Envelope, 0, len(lines))
 	for i, line := range lines {
@@ -170,25 +187,70 @@ func runAARPChain(stdout, stderr io.Writer, data []byte, jsonMode bool) error {
 		}
 		e, err := aarp.Unmarshal(line)
 		if err != nil {
-			return emitFatal(stdout, stderr, jsonMode, fmt.Errorf("chain line %d: %w", i, err))
+			return emitFatal(stdout, stderr, opts.jsonOutput, fmt.Errorf("chain line %d: %w", i, err))
 		}
 		envs = append(envs, e)
 	}
 
-	comparableBytes, err := aarp.ComparableChain(envs)
+	report := aarpChainReport{Report: endproof.New(false, "aarp_chain"), Length: len(envs)}
+	emit := func(cause error) error {
+		if cause != nil {
+			report.Report = endproof.New(false, "aarp_chain")
+			report.Error = cause.Error()
+		}
+		if opts.jsonOutput {
+			writeJSON(stdout, report)
+		} else {
+			_, _ = fmt.Fprintf(stdout, "AARP chain: %d envelopes\n%s\n", len(envs), report.Status)
+			if cause != nil {
+				_, _ = fmt.Fprintln(stderr, cause)
+			}
+		}
+		if cause != nil {
+			return cliutil.ExitCodeError(cliutil.ExitGeneral, cause)
+		}
+		return report.Require(opts.allowPrefix)
+	}
+	if err := aarp.VerifyChain(envs); err != nil {
+		return emit(err)
+	}
+	report.ChainLinked = true
+	if envs[0].Chain.Seq != "0" || envs[0].Chain.PriorHash != aarp.GenesisPriorHash {
+		return emit(fmt.Errorf("chain does not start at genesis"))
+	}
+	for i, env := range envs {
+		ap, err := aarp.Verify(env, trust)
+		if err != nil {
+			return emit(fmt.Errorf("chain envelope %d: %w", i, err))
+		}
+		if !ap.AssertionSigned {
+			return emit(fmt.Errorf("chain envelope %d has no signature verified against pinned trust", i))
+		}
+	}
+	report.SignaturesVerified = true
+	tip := envs[len(envs)-1]
+	head, err := tip.PayloadDigest()
 	if err != nil {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("render chain: %w", err))
+		return emit(err)
 	}
-	if jsonMode {
-		_, _ = stdout.Write(comparableBytes)
-		_, _ = fmt.Fprintln(stdout)
-	} else {
-		_, _ = fmt.Fprintf(stdout, "AARP chain: %d envelopes\n", len(envs))
+	seq, err := strconv.ParseUint(tip.Chain.Seq, 10, 64)
+	if err != nil {
+		return emit(err)
 	}
-	if aarp.VerifyChain(envs) != nil {
-		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain not linked"))
+	proof, err := endproof.Pin(head, seq, opts.expectHead, opts.expectFinalSeq)
+	if err != nil {
+		return emit(err)
 	}
-	return nil
+	report.Report = endproof.New(true, "aarp_chain", proof...)
+	return emit(nil)
+}
+
+type aarpChainReport struct {
+	endproof.Report
+	ChainLinked        bool   `json:"chain_linked"`
+	Length             int    `json:"length"`
+	SignaturesVerified bool   `json:"signatures_verified"`
+	Error              string `json:"error,omitempty"`
 }
 
 // emitFatal prints the envelope-fatal marker (or human text) and returns the

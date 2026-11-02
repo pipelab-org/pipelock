@@ -172,6 +172,40 @@ pub fn analyze_lifecycle(receipts: &[Receipt], chain: &ChainResult) -> Lifecycle
         .unwrap_or_else(|| report("UNVERIFIED", "no_lifecycle"))
 }
 
+/// A trailing session_close ends its run, and it ends the chain only when no
+/// later run can continue that chain. Pipelock never resumes a per-run recorder
+/// session ("<base>.run.<hex>"); a restart resumed a legacy shared session
+/// ("proxy") after its close, so deleting the later runs leaves a chain that
+/// ends at a genuine close. The session comes from the closed run's signed
+/// session_open. Called only after the chain verified.
+pub fn close_ends_chain(receipts: &[Receipt]) -> bool {
+    let Some(close) = receipts
+        .last()
+        .and_then(|r| r.pointer("/action_record/session_control"))
+    else {
+        return false;
+    };
+    if close.get("kind").and_then(|v| v.as_str()) != Some("session_close") {
+        return false;
+    }
+    let run_nonce = close.pointer("/close/run_nonce");
+    for item in receipts.iter().rev() {
+        let Some(ctrl) = item.pointer("/action_record/session_control") else {
+            continue;
+        };
+        if ctrl.get("kind").and_then(|v| v.as_str()) != Some("session_open")
+            || ctrl.pointer("/open/run_nonce") != run_nonce
+        {
+            continue;
+        }
+        return ctrl
+            .pointer("/open/recorder_session")
+            .and_then(|v| v.as_str())
+            .is_some_and(is_run_session);
+    }
+    false
+}
+
 fn apply_durability(state: &mut RunState, value: Option<&serde_json::Value>) -> bool {
     let snapshot = DurabilitySnapshot {
         fsync_errors_gated: match value.and_then(|value| value.get("fsync_errors_gated")) {

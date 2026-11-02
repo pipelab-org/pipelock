@@ -206,6 +206,8 @@ equal to the previous envelope's payload digest. Inserting, reordering, or
 backdating a receipt within the stream breaks the linkage and the signature, and
 is detected. The genesis link carries `seq` `"0"` and the all-zero `prior_hash`.
 
+The reference `aarp --chain` CLIs require that genesis link and at least one signature verified against the supplied `--trust` file on every envelope. Linkage alone does not authenticate a stream. AARP has no terminal record, so an authenticated stream without an independently supplied endpoint reports `VALID PREFIX, END UNPROVEN` and exits 3. `--expect-head HASH` pins the final payload digest, and `--expect-seq N` pins the final sequence; either matching expectation proves the endpoint for the declared stream. `--allow-prefix` returns 0 while keeping the partial verdict. A mismatching pin, missing genesis, broken link, or unauthenticated envelope fails even with that opt-in. The library linkage primitive remains available for checking contiguous segments.
+
 ## Key-time evidence
 
 A verified `mediated` claim binds a signing key to an **authority namespace**,

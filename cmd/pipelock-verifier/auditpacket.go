@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -101,6 +102,7 @@ checks under their documented conditions.`,
 // auditPacketReport is the structured form emitted by --json. Field names are
 // deliberately stable so external CI checks can grep them.
 type auditPacketReport struct {
+	endproof.Report
 	Path            string              `json:"path"`
 	Verdict         string              `json:"verdict"`
 	Trusted         bool                `json:"trusted"`
@@ -149,6 +151,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 
 	report := auditPacketReport{
+		Report:                    endproof.New(false, "audit_packet"),
 		Path:                      packetPath,
 		SchemaCheck:               statusSkipped,
 		ChainCheck:                statusSkipped,
@@ -244,6 +247,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		emitReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet chain rejected at seq %d: %s", chainResult.BrokenAtSeq, chainResult.Error))
 	}
+	populateReportFromReceipts(&report, chainReceipts)
 	lifecycle := completeness.Analyze(chainReceipts, chainResult)
 	report.LifecycleStatus = lifecycle.Status
 	report.LifecycleReason = lifecycle.Reason
@@ -260,11 +264,25 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	}
 	report.CrossCheck = statusPass
 
-	report.Valid = chainResult.Valid && lifecycle.Status != completeness.StatusBroken && trustVerdict(&packet, opts)
+	endEvidence := endproof.ActionEvidence(chainReceipts)
+	trusted := chainResult.Valid && lifecycle.Status != completeness.StatusBroken && trustVerdict(&packet, opts)
+	report.Report = endproof.New(chainResult.Valid, "audit_packet", endEvidence...)
+	if !trusted {
+		report.Status = endproof.Invalid
+	}
+	report.Valid = trusted && report.EndProof.Proven
 	if lifecycle.Status == completeness.StatusBroken {
 		report.Errors = append(report.Errors, fmt.Sprintf("lifecycle: %s", lifecycle.Reason))
 	}
+	if trusted && !report.EndProof.Proven {
+		report.Verdict = endproof.Prefix
+		report.Trusted = false
+		report.Errors = append(report.Errors, endproof.Prefix)
+	}
 	emitReport(stdout, stderr, report, opts.jsonOutput)
+	if trusted && !report.EndProof.Proven {
+		return report.Require(false)
+	}
 	if !report.Valid {
 		if lifecycle.Status == completeness.StatusBroken {
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("packet lifecycle broken: %s", lifecycle.Error))
@@ -272,6 +290,13 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New("packet not trusted"))
 	}
 	return nil
+}
+
+func populateReportFromReceipts(report *auditPacketReport, receipts []receipt.Receipt) {
+	report.Summary = auditPktDigest{
+		ReceiptCount: len(receipts),
+		Totals:       computeTotals(receipts),
+	}
 }
 
 // withoutClaimedTrust keeps a failed verification from repeating the
@@ -285,6 +310,10 @@ func withoutClaimedTrust(r auditPacketReport) auditPacketReport {
 		return r
 	}
 	r.Trusted = false
+	if r.Status == endproof.Prefix {
+		r.Verdict = endproof.Prefix
+		return r
+	}
 	if r.Verdict == auditpacket.VerdictValid || r.Verdict == auditpacket.VerdictSelfConsistentOnly {
 		r.Verdict = auditpacket.VerdictInvalid
 	}
@@ -292,20 +321,7 @@ func withoutClaimedTrust(r auditPacketReport) auditPacketReport {
 }
 
 func populateReportFromPacket(r *auditPacketReport, p *auditpacket.Packet) {
-	totals := map[string]int{
-		"allow":    p.Summary.Totals.Allow,
-		"block":    p.Summary.Totals.Block,
-		"warn":     p.Summary.Totals.Warn,
-		"ask":      p.Summary.Totals.Ask,
-		"strip":    p.Summary.Totals.Strip,
-		"forward":  p.Summary.Totals.Forward,
-		"redirect": p.Summary.Totals.Redirect,
-		"other":    p.Summary.Totals.Other,
-	}
-	r.Summary = auditPktDigest{
-		ReceiptCount: p.Summary.ReceiptCount,
-		Totals:       totals,
-	}
+	r.Warnings = append(r.Warnings, "run and posture fields are packet claims and are not authenticated by receipt-chain verification")
 	r.Posture = posturePeek{
 		EnforcementMode:  p.Posture.EnforcementMode,
 		UnsupportedPaths: append([]string(nil), p.Posture.UnsupportedPaths...),

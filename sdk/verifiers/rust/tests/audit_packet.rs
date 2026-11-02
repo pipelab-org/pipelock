@@ -17,6 +17,7 @@ const PUBLIC_KEY: &str = "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a
 const VERSIONED_PUBLIC_KEY: &str =
     "pipelock-ed25519-public-v1\nRlWn5gXBLrsApGA3iBwzxbyl63S0WgLo5yYaf/WiFng=";
 const ROOT_HASH: &str = "be904bd5ca82adc26c2969872c23925f22ff24e33faf44a1185b9ffc0e2c2b5a";
+const ENDPROOF_KEY: &str = "49131515e58f653ad8e2f5972b8be9efbbcb943af2c7ed4c6e41ff23b0c11f52";
 static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
 
 #[test]
@@ -45,7 +46,8 @@ fn example_packet_validates_in_offline_mode() {
 fn audit_packet_verifies_end_to_end() {
     let packet_dir = write_packet(None);
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid, "unclosed chain must remain a prefix");
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
     assert_eq!(report.schema_check, "pass");
     assert_eq!(report.chain_check, "pass");
     assert_eq!(report.cross_check, "pass");
@@ -71,7 +73,8 @@ fn audit_packet_rejects_an_orphan_outcome_in_an_otherwise_valid_chain() {
 fn audit_packet_keeps_an_in_progress_lifecycle_valid_but_names_it() {
     let packet_dir = write_packet_with_evidence("g1-restart-chain.jsonl", None);
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid, "unclosed chain must remain a prefix");
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
     assert_eq!(report.lifecycle_assessment, "assessed");
     assert_eq!(report.lifecycle_status.as_deref(), Some("LIMITED"));
     assert_eq!(report.lifecycle_reason.as_deref(), Some("open_action"));
@@ -81,10 +84,115 @@ fn audit_packet_keeps_an_in_progress_lifecycle_valid_but_names_it() {
 fn audit_packet_keeps_an_open_session_valid_but_marks_its_missing_close() {
     let packet_dir = write_packet_with_evidence("g1-valid-chain.jsonl", Some(1));
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(!report.valid, "open chain must remain a prefix");
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
     assert_eq!(report.lifecycle_assessment, "assessed");
     assert_eq!(report.lifecycle_status.as_deref(), Some("LIMITED"));
     assert_eq!(report.lifecycle_reason.as_deref(), Some("abnormal_end"));
+}
+
+#[test]
+fn audit_packet_requires_endproof_and_reports_verified_prefix_counts() {
+    let root = common::repo_root();
+    let closed_path = root.join("sdk/conformance/testdata/end-proof/closed.jsonl");
+    let line_count = fs::read_to_string(&closed_path).unwrap().lines().count();
+    let closed_dir = write_packet_with_key("end-proof/closed.jsonl", None, ENDPROOF_KEY);
+    let closed = verify_audit_packet(closed_dir.to_str().unwrap(), &endproof_options()).unwrap();
+    assert!(closed.valid, "{:?}", closed.errors);
+    assert!(closed.end_proof.proven);
+    assert_eq!(closed.status, "CHAIN VALID");
+
+    let structural_dir = write_packet_with_key("end-proof/closed.jsonl", None, ENDPROOF_KEY);
+    let structural_path = structural_dir.join("packet.json");
+    let mut packet: Value = serde_json::from_slice(&fs::read(&structural_path).unwrap()).unwrap();
+    packet["verifier"]["verdict"] = Value::from("self_consistent_only");
+    packet["verifier"]["trusted"] = Value::from(false);
+    fs::write(&structural_path, serde_json::to_vec(&packet).unwrap()).unwrap();
+    let structural = verify_audit_packet(
+        structural_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            allow_self_consistent_only: true,
+            ..endproof_options()
+        },
+    )
+    .unwrap();
+    assert!(structural.valid);
+    assert!(!structural.trusted);
+
+    let tail_dir =
+        write_packet_with_key("end-proof/closed.jsonl", Some(line_count - 1), ENDPROOF_KEY);
+    let partial = verify_audit_packet(tail_dir.to_str().unwrap(), &endproof_options()).unwrap();
+    assert!(!partial.valid);
+    assert!(!partial.trusted);
+    assert_eq!(partial.integrity, "valid");
+    assert!(!partial.end_proof.proven);
+    assert_eq!(partial.status, "VALID PREFIX, END UNPROVEN");
+    assert_eq!(partial.verdict, "VALID PREFIX, END UNPROVEN");
+    assert_eq!(partial.summary.receipt_count, (line_count - 1) as u64);
+
+    let head_dir = write_packet_with_key("end-proof/head-cut.jsonl", None, ENDPROOF_KEY);
+    let head = verify_audit_packet(head_dir.to_str().unwrap(), &endproof_options()).unwrap();
+    assert!(!head.valid);
+    assert_eq!(head.integrity, "invalid");
+    assert_eq!(head.status, "CHAIN BROKEN");
+
+    let manifest: Value = serde_json::from_slice(
+        &fs::read(root.join("sdk/conformance/testdata/end-proof/expect.json")).unwrap(),
+    )
+    .unwrap();
+    for expected in manifest["audit_packet"].as_array().unwrap() {
+        let report = match expected["name"].as_str().unwrap() {
+            "closed" => &closed,
+            "truncated-tail" => &partial,
+            "head-cut" => &head,
+            name => panic!("unknown audit-packet end-proof case {name}"),
+        };
+        assert_eq!(report.integrity, expected["integrity"].as_str().unwrap());
+        assert_eq!(report.status, expected["status"].as_str().unwrap());
+        assert_eq!(
+            report.end_proof.proven,
+            expected["proven"].as_bool().unwrap()
+        );
+    }
+
+    let closed_code = pipelock_verifier_rs::cli::run(&[
+        "audit-packet".to_string(),
+        closed_dir.display().to_string(),
+        "--key".to_string(),
+        ENDPROOF_KEY.to_string(),
+        "--json".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        closed_code,
+        manifest["audit_packet"][0]["exit"].as_i64().unwrap() as i32
+    );
+
+    let code = pipelock_verifier_rs::cli::run(&[
+        "audit-packet".to_string(),
+        tail_dir.display().to_string(),
+        "--key".to_string(),
+        ENDPROOF_KEY.to_string(),
+        "--json".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        code,
+        manifest["audit_packet"][1]["exit"].as_i64().unwrap() as i32
+    );
+
+    let head_code = pipelock_verifier_rs::cli::run(&[
+        "audit-packet".to_string(),
+        head_dir.display().to_string(),
+        "--key".to_string(),
+        ENDPROOF_KEY.to_string(),
+        "--json".to_string(),
+    ])
+    .unwrap();
+    assert_eq!(
+        head_code,
+        manifest["audit_packet"][2]["exit"].as_i64().unwrap() as i32
+    );
 }
 
 #[test]
@@ -136,7 +244,11 @@ fn packet_hash_can_anchor_embedded_signer_key() {
         },
     )
     .unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(
+        !report.valid,
+        "packet hash does not prove the evidence endpoint"
+    );
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
 }
 
 #[test]
@@ -174,7 +286,11 @@ fn explicit_self_consistent_mode_uses_unpinned_chain() {
         },
     )
     .unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(
+        !report.valid,
+        "self-consistent mode does not prove the evidence endpoint"
+    );
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
 }
 
 #[test]
@@ -192,7 +308,11 @@ fn explicit_no_trust_mode_can_use_packet_key() {
         },
     )
     .unwrap();
-    assert!(report.valid, "{:?}", report.errors);
+    assert!(
+        !report.valid,
+        "no-trust mode does not prove the evidence endpoint"
+    );
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
 }
 
 #[test]
@@ -224,7 +344,7 @@ fn literal_signer_key_wins_over_same_named_cwd_file() {
         .args(["audit-packet", ".", "--key", PUBLIC_KEY])
         .status()
         .unwrap();
-    assert!(status.success());
+    assert_eq!(status.code(), Some(3));
 }
 
 #[test]
@@ -238,7 +358,7 @@ fn versioned_literal_signer_key_wins_over_same_named_cwd_file() {
         .args(["audit-packet", ".", "--key", VERSIONED_PUBLIC_KEY])
         .status()
         .unwrap();
-    assert!(status.success());
+    assert_eq!(status.code(), Some(3));
 }
 
 #[test]
@@ -430,6 +550,14 @@ fn write_packet(mutator: Option<fn(&mut Value)>) -> PathBuf {
 }
 
 fn write_packet_with_evidence(name: &str, lines: Option<usize>) -> PathBuf {
+    let dir = write_packet_with_key(name, lines, PUBLIC_KEY);
+    let receipts = extract_receipts(&dir.join("evidence.jsonl")).unwrap();
+    let chain = verify_chain(&receipts, PUBLIC_KEY);
+    assert!(chain.valid, "{name}: {:?}", chain.error);
+    dir
+}
+
+fn write_packet_with_key(name: &str, lines: Option<usize>, key: &str) -> PathBuf {
     let root = common::repo_root();
     let evidence = root.join("sdk/conformance/testdata").join(name);
     let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
@@ -451,14 +579,14 @@ fn write_packet_with_evidence(name: &str, lines: Option<usize>) -> PathBuf {
     };
     fs::write(dir.join("evidence.jsonl"), evidence_text).unwrap();
     let receipts = extract_receipts(&dir.join("evidence.jsonl")).unwrap();
-    let chain = verify_chain(&receipts, PUBLIC_KEY);
-    assert!(chain.valid, "{name}: {:?}", chain.error);
+    let chain = verify_chain(&receipts, key);
     let mut packet = base_packet();
     packet["summary"]["receipt_count"] = Value::from(chain.receipt_count as u64);
     packet["summary"]["totals"] = serde_json::to_value(compute_totals(&receipts)).unwrap();
     packet["verifier"]["receipt_count"] = Value::from(chain.receipt_count as u64);
     packet["verifier"]["root_hash"] = Value::from(chain.root_hash);
     packet["verifier"]["final_seq"] = Value::from(chain.final_seq);
+    packet["verifier"]["signer_key"] = Value::from(key);
     fs::write(
         dir.join("packet.json"),
         format!("{}\n", serde_json::to_string_pretty(&packet).unwrap()),
@@ -479,6 +607,13 @@ fn default_options() -> AuditPacketOptions {
     }
 }
 
+fn endproof_options() -> AuditPacketOptions {
+    AuditPacketOptions {
+        signer_key: ENDPROOF_KEY.to_string(),
+        ..default_options()
+    }
+}
+
 fn has_error(errors: &Option<Vec<String>>, needle: &str) -> bool {
     errors
         .as_ref()
@@ -489,12 +624,12 @@ fn has_error(errors: &Option<Vec<String>>, needle: &str) -> bool {
 // fails, the report must not repeat that claim.
 #[test]
 fn failed_audit_packet_verification_never_reports_trust() {
-    // Positive control: the unmodified packet verifies and keeps its claim.
+    // Prefix control: the packet's claim remains untrusted without an end proof.
     let control =
         verify_audit_packet(write_packet(None).to_str().unwrap(), &default_options()).unwrap();
-    assert!(control.valid, "{:?}", control.errors);
-    assert_eq!(control.verdict, "valid");
-    assert!(control.trusted);
+    assert!(!control.valid, "unclosed chain must remain a prefix");
+    assert_eq!(control.verdict, "VALID PREFIX, END UNPROVEN");
+    assert!(!control.trusted);
 
     let tampered = write_packet(None);
     fs::copy(

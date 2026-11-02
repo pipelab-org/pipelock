@@ -10,12 +10,14 @@ This document describes what the packet does and does not prove about the run. I
 
 ## What a verified packet proves
 
-A packet whose chain hashes correctly and whose receipts verify against a pinned Pipelock signer key proves the following about traffic that crossed the Pipelock control point:
+A packet whose supplied chain hashes correctly and whose receipts verify with a pinned Pipelock signer key proves these facts about traffic that crossed the Pipelock control point:
 
 - Receipts in the chain were signed by the holder of the pinned signer key at the time written.
-- The hash chain is intact. No receipt in the chain was modified, removed, or reordered after emission without breaking every receipt that follows.
-- Each emitted receipt records the policy hash and posture metadata in force at signing time, so a reviewer can confirm the run executed under the declared configuration.
-- Decision counts in the summary reconcile with the chain. The standalone `pipelock-verifier` cross-checks the packet's claimed totals, root hash, and final sequence against the actual chain on every invocation.
+- Hash links between supplied receipts are intact. Changing or removing a receipt in the middle of the chain breaks the links that follow it. An intact chain can still be a prefix because it doesn't prove the file includes the final receipt.
+- Receipt fields signed by Pipelock, including the policy hash, are authenticated. Packet-level run and posture fields are producer claims; receipt signatures don't bind them.
+- The verifier calculates decision counts from the supplied receipts and checks them against the packet summary. It also checks the packet's root hash and final sequence when those optional fields are present. A matching summary shows that it describes the supplied chain, but it doesn't prove the chain is complete.
+
+The verifier reports `VALID PREFIX, END UNPROVEN` when the supplied chain passes integrity checks but its endpoint isn't proven. For an Audit Packet, a signed final `session_close` in a run-scoped session proves the endpoint. Receipt-chain commands also accept an operator-pinned head or sequence. A partial verdict has exit code 3; the Audit Packet verifier has no prefix opt-in.
 
 Receipts are signed by Pipelock at the network boundary, not by the agent process. Verification of the slice the receipts cover does not depend on the agent transcript. It still depends on the signer, binary, wrapper, workflow, and runner-boundary assumptions below.
 
@@ -80,7 +82,7 @@ A verified packet's evidentiary value depends on eight assumptions. If any fails
 4. The wrapper that creates the boundary matches the expected action revision. Pin the GitHub Action by full-length commit SHA. Signed tags help identify publisher intent, but tag names can be repointed.
 5. The workflow boundary is scoped correctly. The wrapped script should be the only secret-bearing step in the job. Sibling steps, earlier steps, artifact uploads, and workflow outputs are outside the packet's evidence boundary.
 6. The receipt schema was not silently changed. The `v0` schema is frozen in `sdk/audit-packet/v0.json`. A producer that emits a packet claiming `schema_version: v0` but with a divergent shape fails schema validation in the verifier. Future schema versions are independent of the binary version.
-7. The relying party reads the verifier verdict and posture, not just the summary. The summary file is human-friendly Markdown. Posture fields and the verifier verdict are the contract. Consumers that read only the summary and not the structured fields can be fooled by a producer that lies in Markdown.
+7. The relying party reads the verifier verdict and treats packet-level posture fields as producer claims. The summary file is human-friendly Markdown and is not signed evidence. Consumers that read only the summary and not the structured verifier fields can be fooled by a producer that lies in Markdown.
 8. The cryptographic primitive is not yet broken. Ed25519 is the current signing algorithm. A post-quantum or unforeseen-attack break of Ed25519 invalidates every receipt ever signed under it. The schema version is the rotation point for primitive changes.
 
 ## Operational requirements for a usable packet

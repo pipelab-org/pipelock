@@ -25,7 +25,7 @@ neither mask nor poison a good one.
 ## CLI interface (exact)
 
 ```
-<verifier> aarp <PATH> --trust <TRUST_JSON> [--chain] [--json]
+<verifier> aarp <PATH> --trust <TRUST_JSON> [--chain] [--json] [--allow-prefix] [--expect-head HASH] [--expect-seq N]
 ```
 
 - `<PATH>`: a single envelope (`*.aarp.json`) or, with `--chain`, a JSONL stream
@@ -33,18 +33,23 @@ neither mask nor poison a good one.
 - `--trust <TRUST_JSON>`: the pinned trust file (see below). Optional; absent
   means empty trust (every signature is `unknown_key`).
 - `--json`: print the **comparable output** (below) on stdout.
-- `--chain`: verify Rung-1 chain linkage instead of single-envelope appraisal.
+- `--chain`: authenticate every envelope against the pinned trust and verify Rung-1 linkage from genesis. The library linkage primitive still accepts contiguous segments; CLI verification requires the genesis link.
+- `--expect-head HASH` and `--expect-seq N`: independently known endpoint pins, for chain mode only. The head is the final envelope's payload digest; the sequence is its `chain.seq`. A mismatching pin fails even with `--allow-prefix`.
+- `--allow-prefix`: return 0 for an authenticated prefix while retaining `VALID PREFIX, END UNPROVEN`. This chain-only opt-in never accepts broken linkage, a missing genesis, or an unauthenticated envelope.
 
 ### Exit codes
 
 | Code | Meaning |
 |------|---------|
-| 0 | The envelope was **appraised** (single) / the stream is **linked** (chain). |
+| 0 | The envelope was **appraised** (single), or the chain authenticates from genesis and matches an independently supplied endpoint pin. `--allow-prefix` also returns 0 with the partial verdict. |
 | 1 | The envelope is **fatal**: schema violation, ENVELOPE profile mismatch, ENVELOPE-level unknown critical extension, unsafe number, duplicate key, trailing tokens, unknown field, bad grammar, empty signature set, OR a chain that is not linked. |
 | 2 | I/O or trust-file error. |
+| 3 | The chain authenticates from genesis, but its end is unproven: `VALID PREFIX, END UNPROVEN`. |
 | 64 | Usage error. |
 
-"Fatal" is distinct from "appraised with unverified claims": a forged signature is **appraised** (exit 0) and reports `assertion_signed=false`; an ENVELOPE profile mismatch is **fatal** (exit 1) and produces no appraisal.
+"Fatal" is distinct from "appraised with unverified claims": in single-envelope mode a forged signature is **appraised** (exit 0) and reports `assertion_signed=false`; an ENVELOPE profile mismatch is **fatal** (exit 1) and produces no appraisal. Chain mode requires at least one verified signature per envelope. AARP defines no terminal record, so a chain without an endpoint pin remains a prefix even when all supplied envelopes authenticate.
+
+Chain JSON retains `chain_linked` and `length` and adds the shared endpoint report: `integrity`, `end_proof` (`proven` and `evidence`), `scope` (`aarp_chain`), `status`, and `signatures_verified`. Status is `CHAIN BROKEN`, `VALID PREFIX, END UNPROVEN`, or `CHAIN VALID`. Pins contribute `operator_head` or `operator_seq` to the proof evidence. The shared `testdata/aarp-end-proof/expect.json` corpus pins CLI exit codes and these verdicts across all four implementations; the older linkage corpus continues to test the library's narrower linkage primitive.
 
 **Envelope-fatal vs per-signature.** Fatal conditions are properties of the envelope the verifier cannot safely interpret at all: the ENVELOPE `profile`, the ENVELOPE-level `crit_ext`, schema/grammar/number-safety, and an empty signature set. Anything wrong with one PARALLEL SIGNATURE is reported per signature and never rejects the envelope, so a bad signature can neither mask nor poison a good one. In particular a signature whose `protected.profile` or `protected.canon` does not match, or whose `protected.crit` names an unknown critical extension, is reported `unknown_suite` on THAT signature (it never verifies, no fallback); it is NOT envelope-fatal.
 
@@ -98,15 +103,17 @@ it as the array length. `overclaim_risks` lists active "you might be about to
 over-read X" warnings (codes below). The default human (`--json`-off) view leads
 with `does_not_assert` + `overclaim_risks` BEFORE the verified claims.
 
-A **chain** that links prints:
+A chain CLI report separates authenticated integrity from its endpoint:
 
 ```json
-{"chain_linked": true, "length": <N>}
+{"chain_linked": true, "length": 3, "signatures_verified": true, "integrity": "valid", "end_proof": {"proven": false, "evidence": []}, "scope": "aarp_chain", "status": "VALID PREFIX, END UNPROVEN"}
 ```
 
 EXCLUDED from the comparable surface (legitimately differ across languages):
 `warnings` prose, per-signature `reason` prose, and `assurance_claimed` (a
 verbatim echo of the input). A verifier MAY print these in non-`--json` mode.
+
+The library `ComparableChain` output remains `{"chain_linked": true, "length": 3}` for that same stream. It describes linkage only. The CLI corpus gate compares the parsed endpoint reports and checks that their linkage projection agrees with the library golden.
 
 For a **fatal** envelope, `--json` prints `{"envelope_fatal": true, ...}` and the
 process exits non-zero. The gate compares only the non-zero exit for fatal

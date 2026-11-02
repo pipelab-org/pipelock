@@ -3,7 +3,7 @@
 
 import type { AuditPacket, AuditPacketReport, ChainResult, Receipt, Totals } from "./types.js";
 import { computeTotals, evidenceChainKey, verifyChain } from "./chain.js";
-import { analyzeLifecycle } from "./lifecycle.js";
+import { analyzeLifecycle, closeEndsChain } from "./lifecycle.js";
 import { extractTypedReceipts, selectReceiptChain } from "./recorder.js";
 import { validateAuditPacket } from "./schema.js";
 import {
@@ -40,13 +40,17 @@ const zeroTotals: Totals = {
 
 function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacketReport {
   return {
+    integrity: "invalid",
+    end_proof: { proven: false, evidence: [] },
+    scope: "audit_packet",
+    status: "CHAIN BROKEN",
     path: packetPath,
     verdict: packet?.verifier?.verdict ?? "",
     trusted: packet?.verifier?.trusted ?? false,
     valid: false,
     summary: {
-      receipt_count: packet?.summary?.receipt_count ?? 0,
-      totals: { ...zeroTotals, ...(packet?.summary?.totals ?? {}) },
+      receipt_count: 0,
+      totals: { ...zeroTotals },
     },
     posture: {
       enforcement_mode: packet?.posture?.enforcement_mode ?? "",
@@ -58,6 +62,11 @@ function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacket
       sha: packet?.run?.sha,
       agent_identity: packet?.run?.agent_identity ?? "",
     },
+    warnings: packet
+      ? [
+          "run and posture fields are packet claims and are not authenticated by receipt-chain verification",
+        ]
+      : undefined,
     schema_check: "skipped",
     chain_check: "skipped",
     cross_check: "skipped",
@@ -128,6 +137,10 @@ function crossCheck(packet: AuditPacket, chain: ChainResult, receipts: Receipt[]
 function withoutClaimedTrust(report: AuditPacketReport): AuditPacketReport {
   if (report.valid) return report;
   report.trusted = false;
+  if (report.status === "VALID PREFIX, END UNPROVEN") {
+    report.verdict = report.status;
+    return report;
+  }
   if (report.verdict === "valid" || report.verdict === "self_consistent_only") {
     report.verdict = "invalid";
   }
@@ -251,6 +264,8 @@ async function verifyAuditPacketReport(
   report.lifecycle_reason = lifecycle.reason;
   report.lifecycle_assessment = "assessed";
   delete report.lifecycle_assessment_reason;
+  if (chain.valid)
+    report.summary = { receipt_count: receipts.length, totals: computeTotals(receipts) };
 
   const crossErrors = crossCheck(packet, chain, receipts);
   if (crossErrors.length > 0) {
@@ -259,7 +274,21 @@ async function verifyAuditPacketReport(
     return report;
   }
   report.cross_check = "pass";
-  report.valid = chain.valid && lifecycle.status !== "BROKEN" && trustVerdict(packet, opts);
+  const trusted = chain.valid && lifecycle.status !== "BROKEN" && trustVerdict(packet, opts);
+  const endProven = chain.valid && closeEndsChain(receipts);
+  report.integrity = chain.valid ? "valid" : "invalid";
+  report.end_proof = { proven: endProven, evidence: endProven ? ["session_close"] : [] };
+  report.scope = "audit_packet";
+  report.status = !trusted
+    ? "CHAIN BROKEN"
+    : !endProven
+      ? "VALID PREFIX, END UNPROVEN"
+      : endProven
+        ? "CHAIN VALID"
+        : "CHAIN BROKEN";
+  if (trusted && !endProven) report.verdict = "VALID PREFIX, END UNPROVEN";
+  report.valid = trusted && endProven;
+  report.trusted = report.trusted && report.valid;
   if (lifecycle.status === "BROKEN") pushError(report, `lifecycle: ${lifecycle.reason}`);
   if (!report.valid) pushError(report, "packet not trusted");
   return report;

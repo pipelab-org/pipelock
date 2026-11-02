@@ -119,6 +119,37 @@ for category in "${categories[@]}"; do
       if [ "$go_rc" -eq 0 ] || [ "$ts_rc" -eq 0 ] || [ "$rs_rc" -eq 0 ] || [ "$py_rc" -eq 0 ]; then
         result="FATAL-NOT-REJECTED"; fails=$((fails + 1))
       fi
+    elif [ "$chainflag" = "chain" ]; then
+      # The linkage corpus has no independently pinned endpoint. Authenticate
+      # its signatures, but require the shared partial verdict and exit 3.
+      if [ "$go_rc" -ne 3 ] || [ "$ts_rc" -ne 3 ] || [ "$rs_rc" -ne 3 ] || [ "$py_rc" -ne 3 ]; then
+        result="PREFIX-EXIT-MISMATCH"; fails=$((fails + 1))
+      else
+        chain_report() {
+          python3 -c 'import json,sys
+r=json.load(sys.stdin)
+assert r["integrity"] == "valid" and r["signatures_verified"] is True
+assert r["status"] == "VALID PREFIX, END UNPROVEN"
+assert r["end_proof"] == {"proven":False,"evidence":[]}
+assert r["scope"] == "aarp_chain"
+print(json.dumps(r,sort_keys=True,separators=(",",":")))'
+        }
+        go_chain="$(printf '%s' "$go_out" | chain_report)"; go_report_rc=$?
+        ts_chain="$(printf '%s' "$ts_out" | chain_report)"; ts_report_rc=$?
+        rs_chain="$(printf '%s' "$rs_out" | chain_report)"; rs_report_rc=$?
+        py_chain="$(printf '%s' "$py_out" | chain_report)"; py_report_rc=$?
+        if [ "$go_report_rc" -ne 0 ] || [ "$ts_report_rc" -ne 0 ] || [ "$rs_report_rc" -ne 0 ] || [ "$py_report_rc" -ne 0 ]; then
+          result="PREFIX-REPORT-MISMATCH"; fails=$((fails + 1))
+        elif [ "$go_chain" != "$ts_chain" ] || [ "$go_chain" != "$rs_chain" ] || [ "$go_chain" != "$py_chain" ]; then
+          result="DIFFERENTIAL"; fails=$((fails + 1))
+        else
+          projection="$(printf '%s' "$go_out" | python3 -c 'import json,sys; r=json.load(sys.stdin); print(json.dumps({"chain_linked":r["chain_linked"],"length":r["length"]},sort_keys=True,separators=(",",":")))')"
+          want="$(cat "$CORPUS/$category/$base.appraisal.json")"
+          if [ "$projection" != "$want" ]; then
+            result="EXPECT-MISMATCH"; fails=$((fails + 1))
+          fi
+        fi
+      fi
     else
       # appraise: all four exit 0, identical bytes, equal to committed appraisal.
       want="$(cat "$CORPUS/$category/$base.appraisal.json")"
@@ -146,3 +177,42 @@ if [ "$checked" -eq 0 ]; then
 fi
 [ "$fails" -eq 0 ] || exit 1
 echo "PASS: all four verifiers agree across the AARP corpus (no inflation, no differential)"
+
+# Exercise caller endpoint expectations through the same four CLI commands.
+# These fixtures retain linkage while changing the supplied boundary or trust.
+export GO_AARP TS_AARP RUST_AARP PY_AARP
+python3 - "$ROOT/testdata/aarp-end-proof/expect.json" <<'PY'
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+manifest = Path(sys.argv[1])
+corpus = json.loads(manifest.read_text())
+cases = corpus["cases"]
+if not cases:
+    raise SystemExit("FATAL: empty AARP endpoint corpus")
+commands = {name: shlex.split(os.environ[name]) for name in
+            ("GO_AARP", "TS_AARP", "RUST_AARP", "PY_AARP")}
+for case in cases:
+    reports = []
+    for name, command in commands.items():
+        result = subprocess.run(command + [
+            str(manifest.parent / case["file"]), "--chain", "--json",
+            "--trust", str(manifest.parent / corpus["trust"]), *case["flags"],
+        ], capture_output=True, text=True, check=False)
+        if result.returncode != case["exit"]:
+            raise SystemExit(f"FAIL {case['name']} {name}: exit {result.returncode}, expected {case['exit']}; {result.stderr}")
+        report = json.loads(result.stdout)
+        if report["status"] != case["status"] or report["end_proof"]["proven"] != case["proven"]:
+            raise SystemExit(f"FAIL {case['name']} {name}: endpoint verdict differs")
+        reports.append(report)
+    # Rejected bodies may contain different diagnostic prose. Accepted prefix
+    # and pinned reports must agree on every structured field.
+    if case["exit"] in (0, 3) and any(report != reports[0] for report in reports[1:]):
+        raise SystemExit(f"FAIL {case['name']}: endpoint reports differ")
+    print(f"endpoint {case['name']}: all four agree (exit {case['exit']})")
+print(f"PASS: {len(cases)} AARP endpoint cases agree across all four verifiers")
+PY

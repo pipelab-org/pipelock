@@ -1,0 +1,134 @@
+{
+  "trust": "../aarp-corpus/trust.json",
+  "cases": [
+    {
+      "name": "unbounded",
+      "file": "stream.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "tail",
+      "file": "tail.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "head",
+      "file": "head.jsonl",
+      "flags": [],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "signature",
+      "file": "signature.jsonl",
+      "flags": [],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "allow-prefix",
+      "file": "tail.jsonl",
+      "flags": [
+        "--allow-prefix"
+      ],
+      "exit": 0,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "pinned-head",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-head",
+        "025b62b11b0493307f0857e35eb862be43fc0cb44b9519623718c16ce58f81a5"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "pinned-seq",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq",
+        "2"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "tail-pinned-head",
+      "file": "tail.jsonl",
+      "flags": [
+        "--expect-head",
+        "025b62b11b0493307f0857e35eb862be43fc0cb44b9519623718c16ce58f81a5"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "tail-pinned-seq",
+      "file": "tail.jsonl",
+      "flags": [
+        "--expect-seq",
+        "2"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "pin-mismatch-allow-prefix",
+      "file": "tail.jsonl",
+      "flags": [
+        "--expect-head",
+        "025b62b11b0493307f0857e35eb862be43fc0cb44b9519623718c16ce58f81a5",
+        "--allow-prefix"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "head-allow-prefix",
+      "file": "head.jsonl",
+      "flags": [
+        "--allow-prefix"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "signature-allow-prefix",
+      "file": "signature.jsonl",
+      "flags": [
+        "--allow-prefix"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "parallel-signatures",
+      "file": "parallel.jsonl",
+      "flags": [
+        "--expect-seq",
+        "2"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    }
+  ]
+}

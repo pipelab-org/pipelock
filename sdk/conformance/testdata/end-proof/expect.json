@@ -184,5 +184,31 @@
       "status": "CHAIN VALID",
       "proven": true
     }
+  ],
+  "audit_packet": [
+    {
+      "name": "closed",
+      "file": "closed.jsonl",
+      "exit": 0,
+      "integrity": "valid",
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "truncated-tail",
+      "file": "truncated.jsonl",
+      "exit": 3,
+      "integrity": "valid",
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "head-cut",
+      "file": "head-cut.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
+    }
   ]
 }
