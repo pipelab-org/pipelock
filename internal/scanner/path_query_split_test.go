@@ -189,22 +189,29 @@ func TestCheckDLP_PathQueryMultiEscapedPrefix(t *testing.T) {
 	}
 }
 
-// TestAppendPathQueryConcatTargets_OversizedConcat pins the amplification bound.
-// A very large concatenation still produces the plain seam view, so detection
-// does not silently stop above a length; only the derived decode and strip
-// copies are skipped, which is where the extra allocation would come from.
-func TestAppendPathQueryConcatTargets_OversizedConcat(t *testing.T) {
+// TestAppendPathQueryConcatTargets_LargeConcat checks that large outbound
+// seams retain derived views while inbound scans keep their size shortcut.
+func TestAppendPathQueryConcatTargets_LargeConcat(t *testing.T) {
 	huge := "/" + strings.Repeat("a", maxDecodeTotalBytes+16)
-	got := appendPathQueryConcatTargets(nil, huge, "x=b", nil)
+	var outbound decodingMemo
+	got := appendPathQueryConcatTargets(nil, huge, "x=b", &outbound)
+	derived := false
+	for _, target := range got {
+		derived = derived || target.viewLabel != dlpViewLabel("path_query_concat")
+	}
+	if len(got) == 0 || !derived {
+		t.Fatal("large outbound concat lost its derived views")
+	}
+	inbound := decodingMemo{inbound: true}
+	got = appendPathQueryConcatTargets(nil, huge, "x=b", &inbound)
 	if len(got) == 0 {
-		t.Fatal("oversized concat produced no target at all; detection must not stop")
+		t.Fatal("inbound concat lost its plain view")
 	}
 	for _, target := range got {
 		if target.viewLabel != dlpViewLabel("path_query_concat") {
-			t.Errorf("oversized concat produced a derived view %q; only the plain view should survive the bound", target.viewLabel)
+			t.Errorf("inbound concat produced a derived view %q", target.viewLabel)
 		}
 	}
-
 	// Under the bound, the derived views must still be produced, or the bound
 	// would be suppressing them for every input.
 	small := appendPathQueryConcatTargets(nil, "/"+antKeyPrefix, "x="+antKeyTail, nil)

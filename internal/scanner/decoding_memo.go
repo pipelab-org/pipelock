@@ -9,20 +9,22 @@ type decodingMemoKey struct {
 	text       string
 	includeURL bool
 	minPrefix  int
+	inbound    bool
 }
 
 // decodingMemo shares immutable decoded and normalized views within one scan. It never
-// stores findings, policy decisions or state on the Scanner. Reaching either
-// existing decoder work bound stops retention, not decoding or detection.
+// stores findings, policy decisions or state on the Scanner. Its retention
+// limits stop caching, not decoding or detection.
 //
 // incomplete records that some decode or HTML entity chain in this scan
-// stopped at a depth bound with decodable work left. It is a property of the
+// stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
 	views         map[decodingMemoKey]memoDecode
 	normalized    map[string]string
 	retainedBytes int
 	incomplete    bool
+	inbound       bool
 }
 
 type memoDecode struct {
@@ -67,14 +69,14 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		decoded, _ := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 		return decoded
 	}
-	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix}
+	key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound}
 	if cached, ok := m.views[key]; ok {
 		if !cached.complete {
 			m.incomplete = true
 		}
 		return cached.views
 	}
-	decoded, complete := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
+	decoded, complete := decodeEncodingsBudgetMode(text, includeURL, minPrefix, m.inbound)
 	if !complete {
 		m.incomplete = true
 	}

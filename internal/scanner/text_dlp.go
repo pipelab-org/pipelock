@@ -709,10 +709,8 @@ func uninspectableJSONNumberMatch() TextDLPMatch {
 }
 
 // UninspectableEncodedContentPattern identifies outbound text whose decoding
-// stopped at a depth bound with decodable content left: an HTML entity chain
-// still changing after its pass limit, or percent decoding still changing
-// after its round limit. Each bound exists to cap scan cost; reaching one
-// means the remaining layers were never scanned, so the transport refuses
+// stopped at a depth or work bound with decodable content left. Each bound
+// exists to cap scan cost; reaching one means the remaining layers were never scanned, so the transport refuses
 // the content rather than reporting the partial scan as clean.
 const UninspectableEncodedContentPattern = "Uninspectable encoded content"
 
@@ -834,6 +832,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 // not refused at a decode bound: exfiltration is an outbound threat, and
 // large legitimate downloads must keep their delivery contract.
 func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	if decodes != nil {
+		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
+	}
 	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
 	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
 		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())

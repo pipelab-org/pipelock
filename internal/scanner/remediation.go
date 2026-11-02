@@ -614,9 +614,9 @@ func queryValueLimitGuidance() RemediationGuidance {
 // refusal holds under warn actions, audit mode and suppression.
 func decodeInspectionLimitGuidance() RemediationGuidance {
 	return RemediationGuidance{
-		OperatorKnob: "Send the content with fewer stacked encoding layers. Decoder depth bounds are fixed; content that could not be fully decoded is refused, not allowed unscanned.",
+		OperatorKnob: "Send the content with fewer stacked encoding layers or split it into smaller requests. Decoder depth and work bounds are fixed; content that could not be fully decoded is refused, not allowed unscanned.",
 		Immutable:    true,
-		AgentReason:  "Request blocked: the content is encoded more deeply than Pipelock can fully inspect.",
+		AgentReason:  "Request blocked: the encoded content exceeds what Pipelock can fully inspect.",
 	}
 }
 

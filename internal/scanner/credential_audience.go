@@ -1072,7 +1072,7 @@ func (s *Scanner) queryLessURLScansClean(parsed *url.URL, memo *queryLessDLPMemo
 	withoutQuery := *parsed
 	withoutQuery.RawQuery = ""
 	withoutQuery.ForceQuery = false
-	var decodes decodingMemo
+	decodes := decodingMemo{inbound: memo != nil && memo.inbound}
 	result, _ := s.checkDLPWithDecodesAt(&withoutQuery, &decodes, s.queryScanTime(memo))
 	if memo != nil {
 		memo.done, memo.clean = true, result.Allowed
@@ -1088,6 +1088,7 @@ type queryAudienceSurfaceKey struct {
 }
 
 type queryLessDLPMemo struct {
+	inbound  bool
 	surfaces map[queryAudienceSurfaceKey]string
 	now      time.Time
 	nowSet   bool
@@ -1574,11 +1575,15 @@ const (
 // A block that any other match causes keeps its own reason and guidance, so
 // the clock advice is never attached to a block the clock cannot clear.
 func (s *Scanner) queryGrantValidityNote(parsed *url.URL, now time.Time) string {
+	return s.queryGrantValidityNoteWithMode(parsed, now, false)
+}
+
+func (s *Scanner) queryGrantValidityNoteWithMode(parsed *url.URL, now time.Time, inbound bool) string {
 	note, at, ok := queryGrantValidityCandidate(parsed, now)
 	if !ok {
 		return ""
 	}
-	var decodes decodingMemo
+	decodes := decodingMemo{inbound: inbound}
 	if result, _ := s.checkDLPWithDecodesAt(parsed, &decodes, at); !result.Allowed {
 		return ""
 	}

@@ -105,22 +105,33 @@ func TestKnownValueDecodeWorkBounds(t *testing.T) {
 		strings.Repeat("41", maxDecodeTotalBytes/2-1) + "ZZ",
 		strings.Repeat("%34%31", maxDecodeTotalBytes/6),
 	} {
-		views, _ := decodeEncodingsFixpointMode(text, true, minKnownSecretSubstringLen)
-		if len(text) <= maxDecodeTotalBytes && len(views) == 0 {
-			t.Fatal("within-budget positive control produced no decoded views")
-		}
-		if len(views) > maxDecodeCandidates {
-			t.Fatal("candidate budget exceeded")
-		}
-		total := 0
-		for _, view := range views {
-			total += len(view.text)
-		}
-		if total > maxDecodeTotalBytes {
-			t.Fatalf("decoded byte budget exceeded: %d", total)
-		}
-		if len(text) > maxDecodeTotalBytes && len(views) != 0 {
-			t.Fatal("oversized input decoded")
+		for _, inbound := range []bool{false, true} {
+			views, complete := decodeEncodingsBudgetMode(text, true, minKnownSecretSubstringLen, inbound)
+			if len(text) <= maxDecodeTotalBytes && len(views) == 0 {
+				t.Fatal("within-budget positive control produced no decoded views")
+			}
+			if len(views) > maxDecodeCandidates {
+				t.Fatal("candidate budget exceeded")
+			}
+			if !inbound {
+				// These roots have at most one nonterminal decoded layer,
+				// within the recursive budget. Terminal output size is free.
+				if !complete || len(views) == 0 {
+					t.Fatal("inspectable known-value carrier was truncated")
+				}
+				continue
+			}
+			// Responses keep the previous total-output and entry-size bounds.
+			total := 0
+			for _, view := range views {
+				total += len(view.text)
+			}
+			if total > maxDecodeTotalBytes {
+				t.Fatalf("inbound decoded byte budget exceeded: %d", total)
+			}
+			if len(text) > maxDecodeTotalBytes && len(views) != 0 {
+				t.Fatal("oversized inbound input decoded")
+			}
 		}
 	}
 }
