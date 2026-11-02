@@ -211,3 +211,44 @@ func TestURLUserinfoColonSplitCredential(t *testing.T) {
 		t.Fatalf("benign userinfo pair blocked: %s", got.Reason)
 	}
 }
+
+// TestURLUserinfoTextLenientAuthority covers URL tokens that url.Parse refuses
+// but other HTTP clients still send as Basic credentials.
+func TestURLUserinfoTextLenientAuthority(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	defer s.Close()
+	encoded := hex.EncodeToString([]byte("gh" + "p_" + "R7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jGuEoYi"))
+	random := "Q7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jG" + "uEoYiHkSqVfDtNr"
+	for _, text := range []string{
+		"fetch https://réader:" + encoded + "@api.vendor.example/read",
+		"fetch https://réader:" + random + "@api.vendor.example/read",
+		"fetch https://" + encoded + "é@api.vendor.example/read",
+	} {
+		if _, err := url.Parse(strings.Fields(text)[1]); err == nil {
+			t.Fatalf("fixture parses strictly: %q", text)
+		}
+		if got := s.ScanTextForDLP(context.Background(), text); got.Clean {
+			t.Fatalf("credential in leniently parsed userinfo clean: %q", text)
+		}
+	}
+	if got := s.ScanTextForDLP(context.Background(), "fetch https://réader:ordinary@api.vendor.example/read"); !got.Clean {
+		t.Fatalf("benign non-ASCII userinfo reported: %+v", got.Matches)
+	}
+	for token, want := range map[string]string{
+		"https://a:b@c@host.example/p@q": "a:b%40c",
+		"https://host.example/p@q":       "",
+		"https://host.example?x=a@b":     "",
+		"https://user@host.example#a@b":  "user",
+		"host.example/a@b":               "",
+	} {
+		got := ""
+		if info := lenientURLUserinfo(token); info != nil {
+			got = info.String()
+		}
+		if got != want {
+			t.Fatalf("lenientURLUserinfo(%q) = %q, want %q", token, got, want)
+		}
+	}
+}

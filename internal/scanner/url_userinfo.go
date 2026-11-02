@@ -102,7 +102,10 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 	opts.emitWarns = false
 	for _, token := range textURLTokenRe.FindAllString(text, -1) {
 		u, err := url.Parse(token)
-		if err != nil || u.User == nil {
+		if err != nil {
+			u = &url.URL{User: lenientURLUserinfo(token)}
+		}
+		if u.User == nil {
 			continue
 		}
 		for _, target := range urlUserinfoDLPTargets(u, decodes) {
@@ -121,4 +124,28 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 		}
 	}
 	return matches
+}
+
+// lenientURLUserinfo recovers userinfo from a URL token that url.Parse refuses,
+// such as one with a non-ASCII byte or a malformed percent escape. Other HTTP
+// clients accept those tokens and still send the pair as Basic credentials,
+// so text inspection cannot depend on Go's stricter parser. The authority ends
+// at the first '/', '?' or '#', and userinfo ends at its last '@' (RFC 3986
+// section 3.2). Fields keep their spelling; the target views decode them.
+func lenientURLUserinfo(token string) *url.Userinfo {
+	_, authority, ok := strings.Cut(token, "://")
+	if !ok {
+		return nil
+	}
+	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+		authority = authority[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return nil
+	}
+	if user, password, hasPassword := strings.Cut(authority[:at], ":"); hasPassword {
+		return url.UserPassword(user, password)
+	}
+	return url.User(authority[:at])
 }
