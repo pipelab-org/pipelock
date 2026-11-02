@@ -245,8 +245,11 @@ func TestURLUserinfoTextLenientAuthority(t *testing.T) {
 		"host.example/a@b":               "",
 	} {
 		got := ""
-		if info := lenientURLUserinfo(token); info != nil {
-			got = info.String()
+		if user, second, hasSecond, present := lenientURLUserinfo(token); present {
+			got = user
+			if hasSecond {
+				got += ":" + second
+			}
 		}
 		if got != want {
 			t.Fatalf("lenientURLUserinfo(%q) = %q, want %q", token, got, want)
@@ -272,6 +275,15 @@ func TestTextURLUserinfoRepeatedTokens(t *testing.T) {
 		got := s.textURLUserinfoMatches(t.Context(), strings.Repeat(token+" ", 8), &decodingMemo{}, options)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("repeated URL changed userinfo matches: got %d, want %d", len(got), len(want))
+		}
+	}
+}
+
+func TestEscapeUserinfoFieldParity(t *testing.T) {
+	for i := range 256 {
+		value := string([]byte{byte(i)})
+		if got, want := escapeUserinfoField(value), url.User(value).String(); got != want {
+			t.Fatalf("byte %d: spelling %q, want %q", i, got, want)
 		}
 	}
 }

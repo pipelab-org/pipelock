@@ -793,6 +793,10 @@ func (s *Scanner) checkCoreSSRFLiteral(dest destination.Destination) Result {
 // checkCoreDLPWithDecodes runs core DLP patterns against a parsed URL. Mirrors the main
 // checkDLP flow but uses only core patterns. Core findings are FINAL.
 func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) Result {
+	return s.checkCoreDLPWithUserinfoValues(parsed, parsedURLUserinfoValues(parsed, true), decodes)
+}
+
+func (s *Scanner) checkCoreDLPWithUserinfoValues(parsed *url.URL, values []dlpTarget, decodes *decodingMemo) Result {
 	if s.core == nil || len(s.core.dlpPatterns) == 0 {
 		return Result{Allowed: true}
 	}
@@ -802,7 +806,7 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
-	for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+	for _, target := range userinfoTargets(values, decodes) {
 		target.viewLabel = dlpViewLabel(target.viewLabel)
 		targets = append(targets, target)
 	}

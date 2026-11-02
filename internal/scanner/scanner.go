@@ -254,8 +254,9 @@ func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 		// query credentials or a credential split across userinfo. Inspection
 		// cannot grant trust to this URL.
 		userinfoFloor := Result{Allowed: true}
-		if info := lenientURLUserinfo(rawURL); info != nil {
-			userinfoFloor = s.checkCoreDLPWithDecodes(&url.URL{User: info}, &decodes)
+		if user, second, hasSecond, present := lenientURLUserinfo(rawURL); present {
+			values := urlUserinfoValues(user, second, hasSecond, true)
+			userinfoFloor = s.checkCoreDLPWithUserinfoValues(&url.URL{}, values, &decodes)
 		}
 		sent, _, _ := strings.Cut(rawURL, "#")
 		if _, query, ok := strings.Cut(sent, "?"); ok {

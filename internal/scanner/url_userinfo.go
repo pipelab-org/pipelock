@@ -17,32 +17,37 @@ import (
 // the same inspection as other URL components. PathUnescape preserves '+'.
 // joined adds the decoded "username:password" pair, whose noise-stripped view
 // rejoins a credential split at the colon, as path and query views already do.
-func urlUserinfoValues(u *url.URL, joined bool) []dlpTarget {
-	if u.User == nil {
-		return nil
+func urlUserinfoValues(escapedUser, escapedSecond string, hasSecond, joined bool) []dlpTarget {
+	user, err := url.PathUnescape(escapedUser)
+	if err != nil {
+		user = escapedUser
 	}
-	// The second field is recovered from the escaped form so it reads as
-	// inspected content: String escapes each field and PathUnescape reverses
-	// that exactly, matching Userinfo's own decoded value.
-	rawUser, rawSecond, hasSecond := strings.Cut(u.User.String(), ":")
-	values := []dlpTarget{{rawUser, "url_userinfo_username_escaped", ""}, {u.User.Username(), "url_userinfo_username", ""}}
+	values := []dlpTarget{{escapedUser, "url_userinfo_username_escaped", ""}, {user, "url_userinfo_username", ""}}
 	if hasSecond {
-		second, err := url.PathUnescape(rawSecond)
+		second, err := url.PathUnescape(escapedSecond)
 		if err != nil {
-			second = rawSecond
+			second = escapedSecond
 		}
-		values = append(values, dlpTarget{rawSecond, "url_userinfo_password_escaped", ""}, dlpTarget{second, "url_userinfo_password", ""})
+		values = append(values, dlpTarget{escapedSecond, "url_userinfo_password_escaped", ""}, dlpTarget{second, "url_userinfo_password", ""})
 		if joined {
-			values = append(values, dlpTarget{u.User.Username() + ":" + second, "url_userinfo", ""})
+			values = append(values, dlpTarget{user + ":" + second, "url_userinfo", ""})
 		}
 	}
 	return values
 }
 
+func parsedURLUserinfoValues(u *url.URL, joined bool) []dlpTarget {
+	if u.User == nil {
+		return nil
+	}
+	user, second, hasSecond := strings.Cut(u.User.String(), ":")
+	return urlUserinfoValues(user, second, hasSecond, joined)
+}
+
 // urlUserinfoDLPTargets includes the joined pair. Entropy keeps per-field
 // scoring so a benign Basic-auth pair is not judged as one longer string.
 func urlUserinfoDLPTargets(u *url.URL, decodes *decodingMemo) []dlpTarget {
-	return userinfoTargets(urlUserinfoValues(u, true), decodes)
+	return userinfoTargets(parsedURLUserinfoValues(u, true), decodes)
 }
 
 func userinfoTargets(values []dlpTarget, decodes *decodingMemo) []dlpTarget {
@@ -84,11 +89,15 @@ func normalizePercentUserinfo(value string) string {
 }
 
 func (s *Scanner) checkUserinfoEntropy(u *url.URL) Result {
+	return s.checkUserinfoValuesEntropy(parsedURLUserinfoValues(u, false))
+}
+
+func (s *Scanner) checkUserinfoValuesEntropy(values []dlpTarget) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
 	var decodes decodingMemo
-	for _, target := range userinfoTargets(urlUserinfoValues(u, false), &decodes) {
+	for _, target := range userinfoTargets(values, &decodes) {
 		if finding, blocked := s.queryValueEntropy(target.text, 0); blocked {
 			return Result{
 				Allowed: false, Scanner: ScannerEntropy, Class: ClassHeuristicEntropy,
@@ -112,25 +121,34 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 			continue
 		}
 		seen[token] = struct{}{}
+		var user, second string
+		var hasSecond, present bool
 		u, err := url.Parse(token)
 		if err != nil {
-			u = &url.URL{User: lenientURLUserinfo(token)}
+			user, second, hasSecond, present = lenientURLUserinfo(token)
+		} else if u.User != nil {
+			user, second, hasSecond = strings.Cut(u.User.String(), ":")
+			present = true
 		}
-		if u.User == nil {
+		if !present {
 			continue
 		}
-		for _, target := range urlUserinfoDLPTargets(u, decodes) {
+		for _, target := range userinfoTargets(urlUserinfoValues(user, second, hasSecond, true), decodes) {
 			result := s.scanTextForDLPWithDecodes(ctx, target.text, opts, decodes)
 			for _, match := range append(result.Matches, result.InformationalMatches...) {
 				match.span.ViewLabel = spanViewLabel(match.span.ViewLabel, target.viewLabel)
 				matches = append(matches, match)
 			}
 		}
-		if opts.patterns != textDLPCardPatterns && !s.checkUserinfoEntropy(u).Allowed {
+		if opts.patterns != textDLPCardPatterns && !s.checkUserinfoValuesEntropy(urlUserinfoValues(user, second, hasSecond, false)).Allowed {
 			const pattern = "URL Userinfo Entropy"
+			length := len(user)
+			if hasSecond {
+				length += 1 + len(second)
+			}
 			matches = append(matches, TextDLPMatch{
 				PatternName: pattern, Severity: "high",
-				span: newMatchSpan(0, len(u.User.String()), "url_userinfo", pattern, "", ""),
+				span: newMatchSpan(0, length, "url_userinfo", pattern, "", ""),
 			})
 		}
 	}
@@ -143,20 +161,27 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 // so text inspection cannot depend on Go's stricter parser. The authority ends
 // at the first '/', '?' or '#', and userinfo ends at its last '@' (RFC 3986
 // section 3.2). Fields keep their spelling; the target views decode them.
-func lenientURLUserinfo(token string) *url.Userinfo {
+func lenientURLUserinfo(token string) (user, second string, hasSecond, present bool) {
 	_, authority, ok := strings.Cut(token, "://")
 	if !ok {
-		return nil
+		return "", "", false, false
 	}
 	if end := strings.IndexAny(authority, "/?#"); end >= 0 {
 		authority = authority[:end]
 	}
 	at := strings.LastIndex(authority, "@")
 	if at < 0 {
-		return nil
+		return "", "", false, false
 	}
-	if user, second, hasSecond := strings.Cut(authority[:at], ":"); hasSecond {
-		return url.UserPassword(user, second)
-	}
-	return url.User(authority[:at])
+	user, second, hasSecond = strings.Cut(authority[:at], ":")
+	return escapeUserinfoField(user), escapeUserinfoField(second), hasSecond, true
 }
+
+// escapeUserinfoField preserves net/url's userinfo spelling (RFC 3986 section
+// 3.2.1). PathEscape shares its unreserved bytes; userinfo additionally permits
+// semicolons and commas, while escaping the colon and at sign.
+func escapeUserinfoField(value string) string {
+	return userinfoFieldEscapes.Replace(url.PathEscape(value))
+}
+
+var userinfoFieldEscapes = strings.NewReplacer(":", "%3A", "@", "%40", "%3B", ";", "%2C", ",")
