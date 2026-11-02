@@ -48,7 +48,7 @@ func reasonFromScanner(label string) blockreason.Reason {
 		return blockreason.RedactionFailure
 	case scannerLabelUnavailable:
 		return blockreason.PatternUnavailable
-	case scanner.ScannerParser:
+	case scanner.ScannerParser, scanner.ScannerContext:
 		return blockreason.ParseError
 	default:
 		// Unknown layer: keep the block fail-closed but emit a generic

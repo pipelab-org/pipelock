@@ -17,6 +17,22 @@ import (
 // as the expected value across multiple table cases here.
 const dlpLayerLabel = "dlp"
 
+func TestBodySizeResultHint(t *testing.T) {
+	for _, reason := range []string{
+		"request body exceeds max_body_bytes (1024)",
+		"multipart headers exceed max_body_bytes (1024)",
+		"multipart part exceeds max_body_bytes (1024)",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			setBodyResultHint(w, scanner.ScannerParser, reason)
+			if got := w.Header().Get("X-Pipelock-Hint"); got != "Request blocked: a protective request ceiling was exceeded." {
+				t.Fatalf("hint = %q", got)
+			}
+		})
+	}
+}
+
 func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 	t.Parallel()
 	cases := map[string]blockreason.Reason{
@@ -33,6 +49,7 @@ func TestReasonFromScanner_AllMappedLayers(t *testing.T) {
 		scanner.ScannerDLP:              blockreason.DLPMatch,
 		scanner.ScannerCoreDLP:          blockreason.DLPMatch,
 		scanner.ScannerParser:           blockreason.ParseError,
+		scanner.ScannerContext:          blockreason.ParseError,
 		scannerLabelBodyDLP:             blockreason.DLPMatch,
 		scannerLabelBodyPromptInjection: blockreason.PromptInjection,
 		scannerLabelBodyEntropy:         blockreason.BodyEntropy,

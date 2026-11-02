@@ -96,7 +96,7 @@ Examples:
 				cmd.Printf("  Blocklist:      %d patterns\n", len(cfg.FetchProxy.Monitoring.Blocklist))
 				cmd.Printf("  DLP patterns:   %d rules\n", len(cfg.DLP.Patterns))
 				cmd.Printf("  Entropy thresh: %.1f bits\n", cfg.FetchProxy.Monitoring.EntropyThreshold)
-				cmd.Printf("  Max URL length: %d chars\n", cfg.FetchProxy.Monitoring.MaxURLLength)
+				cmd.Printf("  Max URL length: %d bytes\n", cfg.FetchProxy.Monitoring.MaxURLLength)
 			} else {
 				cfg = config.Defaults()
 				cmd.Println("Using default config (no --config specified)")

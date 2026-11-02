@@ -71,6 +71,9 @@ func TestCheckCmd_WithConfig(t *testing.T) {
 	}
 
 	output := buf.String()
+	if want := fmt.Sprintf("Max URL length: %d bytes", config.Defaults().FetchProxy.Monitoring.MaxURLLength); !strings.Contains(output, want) {
+		t.Errorf("expected byte unit %q, got: %s", want, output)
+	}
 	if !strings.Contains(output, "Config validation: OK") {
 		t.Errorf("expected OK message, got: %s", output)
 	}

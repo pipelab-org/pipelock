@@ -142,11 +142,6 @@ func TestA2ARequestBodyVerdictPrecedesUpstream(t *testing.T) {
 							return
 						}
 						wantReason := tc.reason
-						if generic && (tc.name == "malformed" || tc.name == "read_error" || tc.name == "canceled_scan") {
-							// Generic body inspection reports unreadable input through
-							// its body_dlp gate before the A2A parser runs.
-							wantReason = blockreason.DLPMatch
-						}
 						if rec.Code != http.StatusForbidden || rec.Header().Get(blockreason.HeaderReason) != string(wantReason) {
 							t.Fatalf("status=%d reason=%q, want 403/%s; body=%s", rec.Code, rec.Header().Get(blockreason.HeaderReason), wantReason, rec.Body.String())
 						}
