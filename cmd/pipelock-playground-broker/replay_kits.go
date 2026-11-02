@@ -15,6 +15,12 @@ import (
 )
 
 func newReplayKitsCmd() *cobra.Command {
+	return newReplayKitsCmdForRoot(playground.PublishedOrchestratorPubKeyHex)
+}
+
+// newReplayKitsCmdForRoot builds the command against one orchestrator root key.
+// The command line always uses the published root; tests pass their own.
+func newReplayKitsCmdForRoot(orchestratorPubHex string) *cobra.Command {
 	var bundlePath string
 	f := &archiveReplayFlags{}
 	cmd := &cobra.Command{
@@ -30,7 +36,7 @@ func newReplayKitsCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("read replay artifacts: %w", err)
 			}
-			report, err := playground.VerifyArchivedReplayArtifacts(artifacts, playground.PublishedOrchestratorPubKeyHex)
+			report, err := playground.VerifyArchivedReplayArtifacts(artifacts, orchestratorPubHex)
 			if err != nil {
 				return fmt.Errorf("verify replay archive: %w", err)
 			}

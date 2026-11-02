@@ -476,6 +476,8 @@ default. Pass `--allow-unpinned` only for an explicit structural-only
 check; that output is labeled `STRUCTURAL ONLY` and does not report the signer
 as trusted.
 
+After the signature check, verification prints the certificate's recorded chain status. A recorded broken chain fails. Exit 0 also requires every session in the certificate to record a closed run in a per-run session (`LIMITED` with `bounded_closed`); any other recorded status, or a certificate with no sessions, prints `VALID PREFIX, END UNPROVEN` and exits 3. The verifier reads this status from the signed certificate and doesn't replay the original receipts. `generate` sets the status by verifying each whole recorded session, then counting only the receipts inside the window. A window that ends before a closed session's final close receipt records that session as `abnormal_end`, so its certificate verifies as `VALID PREFIX, END UNPROVEN` and exits 3. To certify a closed session as `bounded_closed`, end the window at or after its close.
+
 ## Backup, restore, and read-model rebuild
 
 Dashboard durable stores are the JSON files that cannot be reconstructed from

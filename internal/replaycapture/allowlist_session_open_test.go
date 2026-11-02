@@ -53,7 +53,7 @@ func TestValidateReceiptPublicSafe_SessionOpenFields(t *testing.T) {
 		{
 			name:    "wrong kind",
 			mutate:  func(ar *receipt.ActionRecord) { ar.SessionControl.Kind = receipt.SessionControlClose },
-			wantMsg: "only session_open control receipts are public-safe",
+			wantMsg: "invalid public session_close control",
 		},
 		{
 			name:    "missing open body",
@@ -221,6 +221,13 @@ func TestValidateReceiptPublicSafe_SessionOpenFields(t *testing.T) {
 		{
 			name:    "contained uid set",
 			mutate:  func(ar *receipt.ActionRecord) { ar.SessionControl.Open.ContainedUID = "1000" },
+			wantMsg: "unsupported public-gallery binding fields",
+		},
+		{
+			name: "group binding set",
+			mutate: func(ar *receipt.ActionRecord) {
+				ar.SessionControl.Open.GroupBinding = &receipt.ReceiptGroupBinding{GroupID: "private"}
+			},
 			wantMsg: "unsupported public-gallery binding fields",
 		},
 		{

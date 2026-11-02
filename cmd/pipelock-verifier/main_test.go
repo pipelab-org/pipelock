@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
@@ -376,11 +377,14 @@ func TestAuditPacket_HappyPath(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 
 	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, stdout, stderr)
+	if code != endproof.ExitPrefix {
+		t.Fatalf("unclosed chain exit = %d, want %d, stdout=%q stderr=%q", code, endproof.ExitPrefix, stdout, stderr)
 	}
-	if !strings.Contains(stdout, "VALID") {
-		t.Errorf("stdout missing VALID: %s", stdout)
+	if !strings.Contains(stdout, endproof.Prefix) {
+		t.Errorf("stdout missing partial verdict: %s", stdout)
+	}
+	if !strings.Contains(stdout, "  result:       "+endproof.Prefix) || strings.Contains(stdout, "  result:       INVALID") {
+		t.Fatalf("human result must distinguish a valid prefix from a broken chain: %s", stdout)
 	}
 }
 
@@ -399,8 +403,8 @@ func TestAuditPacketReportsInFlightLifecycleCompleteness(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 
 	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("valid in-flight packet should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	if code != endproof.ExitPrefix {
+		t.Fatalf("in-flight packet exit=%d, want partial exit %d stdout=%q stderr=%q", code, endproof.ExitPrefix, stdout, stderr)
 	}
 	if !strings.Contains(stdout, "lifecycle:    LIMITED (abnormal_end)") {
 		t.Fatalf("packet report must name missing session_close: %s", stdout)
@@ -661,8 +665,8 @@ func TestAuditPacket_SelfConsistentOnly_Allowed(t *testing.T) {
 	})
 
 	stdout, stderr, code := runRoot(t, "audit-packet", "--allow-self-consistent-only", dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("expected pass with allow-self-consistent-only, code=%d stdout=%q stderr=%q", code, stdout, stderr)
+	if code != endproof.ExitPrefix || !strings.Contains(stdout, endproof.Prefix) {
+		t.Fatalf("expected explicit self-consistent prefix result, code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
@@ -680,9 +684,9 @@ func TestAuditPacket_NoTrustRequired(t *testing.T) {
 	// Without --no-trust-required this would fail; cross-check still runs
 	// against an error-verdict packet, so we also need a tampered chain
 	// claim set to error to bypass the verdict-vs-chain agreement check.
-	_, stderr, code := runRoot(t, "audit-packet", "--no-trust-required", dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("--no-trust-required should pass error verdict, stderr=%q", stderr)
+	stdout, stderr, code := runRoot(t, "audit-packet", "--no-trust-required", dir)
+	if code != endproof.ExitPrefix || !strings.Contains(stdout, endproof.Prefix) {
+		t.Fatalf("--no-trust-required should still report an unproven endpoint, code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
@@ -712,9 +716,9 @@ func TestAuditPacket_ExpectedSHAMatch(t *testing.T) {
 	}
 	sum := sha256Hex(raw)
 
-	_, stderr, code := runRoot(t, "audit-packet", "--expect-sha256", sum, pkt)
-	if code != cliutil.ExitOK {
-		t.Fatalf("matching sha should pass, stderr=%q", stderr)
+	stdout, stderr, code := runRoot(t, "audit-packet", "--expect-sha256", sum, pkt)
+	if code != endproof.ExitPrefix || !strings.Contains(stdout, endproof.Prefix) {
+		t.Fatalf("matching packet sha must not prove chain end, code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
@@ -769,15 +773,15 @@ func TestAuditPacket_JSONOutput(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 
 	stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("happy path failed under --json: code=%d", code)
+	if code != endproof.ExitPrefix {
+		t.Fatalf("unclosed chain should be a prefix under --json: code=%d", code)
 	}
 	var report auditPacketReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatalf("json output not parseable: %v\nstdout=%s", err, stdout)
 	}
-	if !report.Valid {
-		t.Errorf("expected valid=true, got %+v", report)
+	if report.Valid || report.Verdict != endproof.Prefix || report.Trusted {
+		t.Errorf("unclosed chain claimed success: %+v", report)
 	}
 	if report.Summary.ReceiptCount != 2 {
 		t.Errorf("expected receipt_count=2, got %d", report.Summary.ReceiptCount)
@@ -790,9 +794,9 @@ func TestAuditPacket_PacketAsFileArg(t *testing.T) {
 	dir := t.TempDir()
 	pkt := fix.writePacketDir(t, dir, nil)
 
-	_, stderr, code := runAuditPacketWithKey(t, fix.keyHex, pkt)
-	if code != cliutil.ExitOK {
-		t.Fatalf("file-arg form should pass, stderr=%q", stderr)
+	stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, pkt)
+	if code != endproof.ExitPrefix || !strings.Contains(stdout, endproof.Prefix) {
+		t.Fatalf("file-arg form should report an unproven endpoint, code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}
 }
 
@@ -2604,8 +2608,8 @@ func TestAuditPacket_ReportContainsRunMetadata(t *testing.T) {
 	})
 
 	stdout, _, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
-	if code != cliutil.ExitOK {
-		t.Fatalf("happy path failed: stdout=%q", stdout)
+	if code != endproof.ExitPrefix {
+		t.Fatalf("unclosed chain should report a prefix: code=%d stdout=%q", code, stdout)
 	}
 	var report auditPacketReport
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
@@ -3194,8 +3198,8 @@ func TestAuditPacketLifecycleAssessmentDistinguishesOfflineFromFailure(t *testin
 		fix.writePacketDir(t, dir, nil)
 
 		stdout, stderr, code := runAuditPacketWithKey(t, fix.keyHex, "--json", dir)
-		if code != cliutil.ExitOK {
-			t.Fatalf("valid packet should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
+		if code != endproof.ExitPrefix {
+			t.Fatalf("unclosed packet should report a prefix: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 		}
 		var report auditPacketReport
 		if err := json.Unmarshal([]byte(stdout), &report); err != nil {

@@ -1,0 +1,196 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package main
+
+import (
+	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/aarp"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
+)
+
+func aarpChainFixtures(t *testing.T) ([]aarp.Envelope, string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := aarp.NewEd25519Signer(testAARPKeyID, "mediator", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stream []aarp.Envelope
+	prior := aarp.GenesisPriorHash
+	for i := range 3 {
+		e := aarp.Envelope{
+			Subject:   aarp.Subject{ActionRecordSHA256: strings.Repeat("a", 64), ReceiptEnvelopeSHA256: strings.Repeat("b", 64), ReceiptSignerKey: hex.EncodeToString(pub), ReceiptType: aarp.ReceiptTypeActionV1},
+			Assertion: aarp.Assertion{Claimed: []string{"mediated"}, MediatorID: testAARPMediator, IssuedAt: testAARPIssued},
+			Chain:     &aarp.ChainLink{IssuerID: "issuer.example", Seq: strconv.Itoa(i), PriorHash: prior},
+		}
+		e, err = aarp.Sign(e, signer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stream = append(stream, e)
+		prior, err = e.PayloadDigest()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	trust := filepath.Join(t.TempDir(), "trust.json")
+	writeFileT(t, trust, mustJSON(t, trustFile{TrustedKeys: map[string]string{testAARPKeyID: hex.EncodeToString(pub)}}))
+	return stream, trust
+}
+
+func TestAARPEndProofCorpus(t *testing.T) {
+	dir := "../../sdk/conformance/testdata/aarp-end-proof"
+	data, err := os.ReadFile(filepath.Join(dir, "expect.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		Trust string
+		Cases []struct {
+			Name, File string
+			Flags      []string
+			Exit       int
+			Status     string
+			Proven     bool
+		}
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if len(corpus.Cases) == 0 {
+		t.Fatal("empty AARP endpoint corpus")
+	}
+	for _, tc := range corpus.Cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			cmd := newAARPCmd()
+			var out, stderr bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&stderr)
+			args := []string{filepath.Join(dir, tc.File), "--chain", "--json", "--trust", filepath.Join(dir, corpus.Trust)}
+			cmd.SetArgs(append(args, tc.Flags...))
+			err := cmd.Execute()
+			if tc.Exit == 0 {
+				if err != nil {
+					t.Fatalf("exit: %v\n%s", err, out.String())
+				}
+			} else {
+				assertExitCode(t, err, tc.Exit)
+			}
+			if tc.Exit == exitUsage {
+				return
+			}
+			var report endproof.Report
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatalf("output: %v\n%s", err, out.String())
+			}
+			if report.Status != tc.Status || report.EndProof.Proven != tc.Proven {
+				t.Fatalf("report: %+v; want %s / proven=%t", report, tc.Status, tc.Proven)
+			}
+		})
+	}
+}
+
+func TestAARPChainAuthenticatedBoundary(t *testing.T) {
+	stream, trust := aarpChainFixtures(t)
+	for _, tc := range []struct {
+		name           string
+		start, end     int
+		forge, noTrust bool
+		want           int
+	}{
+		{"unbounded", 0, 3, false, false, 3},
+		{"tail", 0, 2, false, false, 3},
+		{"head", 1, 3, false, false, 1},
+		{"signature", 0, 3, true, false, 1},
+		{"unknown-key", 0, 3, false, true, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chain := append([]aarp.Envelope(nil), stream[tc.start:tc.end]...)
+			if tc.forge {
+				chain[0].Signatures = append([]aarp.Signature(nil), chain[0].Signatures...)
+				// Keep the encoding well formed and change one signature byte,
+				// so the rejection is cryptographic rather than a parse error.
+				sig := []byte(chain[0].Signatures[0].Sig)
+				i := len("ed25519:") + 10
+				if sig[i] == 'A' {
+					sig[i] = 'B'
+				} else {
+					sig[i] = 'A'
+				}
+				chain[0].Signatures[0].Sig = string(sig)
+			}
+			path := filepath.Join(t.TempDir(), "chain.jsonl")
+			writeFileT(t, path, chainJSONL(t, chain...))
+			opts := aarpOptions{trustPath: trust, chain: true, jsonOutput: true}
+			if tc.noTrust {
+				opts.trustPath = ""
+			}
+			var out, stderr bytes.Buffer
+			err := runAARP(&out, &stderr, path, opts)
+			assertExitCode(t, err, tc.want)
+			if tc.want == 3 && !strings.Contains(out.String(), "VALID PREFIX, END UNPROVEN") {
+				t.Fatalf("missing prefix status: %s", out.String())
+			}
+			if tc.forge {
+				var report aarpChainReport
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("parse forged report: %v\n%s", err, out.String())
+				}
+				if !report.ChainLinked || report.SignaturesVerified || report.Error == "" {
+					t.Fatalf("forged report = %+v, want a linked chain whose signature fails", report)
+				}
+			}
+			if tc.noTrust {
+				var report aarpChainReport
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("parse no-trust report: %v\n%s", err, out.String())
+				}
+				if !strings.Contains(report.Error, "--trust") {
+					t.Fatalf("no-trust error %q does not name --trust", report.Error)
+				}
+			}
+		})
+	}
+}
+
+func TestAARPChainRefusesSVID(t *testing.T) {
+	stream, trust := aarpChainFixtures(t)
+	path := filepath.Join(t.TempDir(), "chain.jsonl")
+	writeFileT(t, path, chainJSONL(t, stream...))
+	var out, stderr bytes.Buffer
+	err := runAARP(&out, &stderr, path, aarpOptions{trustPath: trust, chain: true, svidPath: path})
+	assertExitCode(t, err, exitUsage)
+	if !strings.Contains(err.Error(), "--svid") {
+		t.Fatalf("usage error %q does not name --svid", err)
+	}
+}
+
+// Human output names the broken status on stdout and the cause on stderr.
+func TestAARPChainBrokenHumanOutput(t *testing.T) {
+	stream, trust := aarpChainFixtures(t)
+	path := filepath.Join(t.TempDir(), "chain.jsonl")
+	writeFileT(t, path, chainJSONL(t, stream[1:]...))
+	var out, stderr bytes.Buffer
+	err := runAARP(&out, &stderr, path, aarpOptions{trustPath: trust, chain: true})
+	assertExitCode(t, err, 1)
+	if !strings.Contains(out.String(), "AARP chain: 2 envelopes") || !strings.Contains(out.String(), "CHAIN BROKEN") {
+		t.Fatalf("stdout = %q, want envelope count and CHAIN BROKEN", out.String())
+	}
+	if !strings.Contains(stderr.String(), "genesis") {
+		t.Fatalf("stderr = %q, want the genesis cause", stderr.String())
+	}
+}

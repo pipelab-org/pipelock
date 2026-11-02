@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
 
@@ -23,7 +25,7 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := fleetReportStatementWithLimits("L1", []string{fleetLimitL1NoReplay})
+	s := fleetReportStatementWithLimits([]string{fleetLimitL1NoReplay})
 	s.PredicateType = fleetreceipt.PredicateTypeV2
 	s.Predicate.SchemaVersion = 2
 	s.Predicate.SourceBatches[0].Chain = &fleetreceipt.ChainIdentity{EntryVersion: 2, SessionID: "run-a"}
@@ -40,10 +42,8 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(pub)}, false); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), "FLEET RECEIPT OK") || !strings.Contains(out.String(), fleetLimitL1NoReplay) {
+	assertFleetPartial(t, verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(pub)}, false, false))
+	if !strings.Contains(out.String(), "FLEET RECEIPT VALID PREFIX, END UNPROVEN") || !strings.Contains(out.String(), fleetLimitL1NoReplay) {
 		t.Fatal("missing assurance limits")
 	}
 	if !strings.Contains(out.String(), "cross_session_continuity_unproven (receiver observations unavailable)") {
@@ -66,9 +66,7 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	out.Reset()
-	if err = verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(pub)}, false); err != nil {
-		t.Fatal(err)
-	}
+	assertFleetPartial(t, verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(pub)}, false, false))
 	for _, fact := range []string{fleetreceipt.ContinuityUnproven, "Multiple sessions: false", "Sequence gaps:    0", "History unknown:  true", "Pruned before:    2026-01-01T00:00:00Z"} {
 		if !strings.Contains(out.String(), fact) {
 			t.Fatalf("missing signed history fact %q: %s", fact, out.String())
@@ -78,7 +76,9 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(wrong)}, false); err == nil {
-		t.Fatal("wrong key accepted")
+	// A verified report now exits 3, so a non-nil error alone cannot show the
+	// key was refused; the refusal must not be the partial verdict.
+	if err := verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(wrong)}, false, false); err == nil || cliutil.ExitCodeOf(err) == endproof.ExitPrefix {
+		t.Fatalf("wrong key accepted: %v (code %d)", err, cliutil.ExitCodeOf(err))
 	}
 }

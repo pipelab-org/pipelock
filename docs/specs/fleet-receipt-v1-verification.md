@@ -16,18 +16,22 @@ pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key <public-key
 ```
 
 The `--key` flag accepts either a 64-character hex Ed25519 public key or a path to a
-file containing the key. The verifier exits 0 on success and 1 on any failure.
+file containing the key. A report that verifies exits 3 because v1 can't prove a final
+endpoint. Pass `--allow-prefix` to return exit 0 while retaining the
+`VALID PREFIX, END UNPROVEN` label. This accepts the valid prefix; it does not prove
+that the report is complete. Verification failures still exit 1.
 
 Example with a key file:
 
 ```bash
-pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
+pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub --allow-prefix
 ```
 
-Successful output:
+Output for a report that verifies:
 
 ```text
-FLEET RECEIPT OK: fleet-receipt.dsse.json
+FLEET RECEIPT VALID PREFIX, END UNPROVEN: fleet-receipt.dsse.json
+  End proof:        VALID PREFIX, END UNPROVEN
   Signer:           fleet-report-test-signer
   Payload SHA-256:  <hex>
   Org/Fleet:        org-example/fleet-example
@@ -35,13 +39,14 @@ FLEET RECEIPT OK: fleet-receipt.dsse.json
   Level:            L1
   Source batches:   1
   Total actions:    10
-  Mediated fraction: 1
+  Mediated fraction of included observed actions: 1
+  Continuity:       unavailable (v1 does not include continuity proof)
   Limit:            L1 verifies the signed report, source-batch anchors, ordering, summary arithmetic, and completeness arithmetic.
   Limit:            L1 does not replay raw audit-batch payloads during offline verification.
   Limit:            Actions outside included signed audit batches are not claimed by this report.
 ```
 
-The `Limit:` lines are the report's own declared verification limits. Read them as the boundary of the proof: a PASS means the signed report is internally consistent and anchored, **not** that the raw audit payloads were replayed or that no bypass occurred outside the included signed batches.
+The `Limit:` lines are the report's own declared verification limits. Read them as the boundary of the proof: a verified report is internally consistent and anchored, **not** replayed from raw audit payloads, complete at either end of its window, or proof that no bypass occurred outside the included signed batches.
 
 ## What L1 verification checks
 
@@ -76,7 +81,7 @@ These are reserved for a future L2 forensic profile; the current verifier reject
 
 Without `--key`, the verifier resolves the signer identity from the envelope's
 `keyid` field directly and performs structural-only verification. The output shows
-`FLEET RECEIPT UNPINNED` and exits non-zero unless `--allow-unpinned` is passed:
+`FLEET RECEIPT UNPINNED` and exits 1 unless `--allow-unpinned` is passed, which still exits 3 for the unproven end:
 
 ```bash
 pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --allow-unpinned

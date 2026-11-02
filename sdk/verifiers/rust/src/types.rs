@@ -95,6 +95,10 @@ pub struct ChainResult {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AuditPacketReport {
+    pub integrity: String,
+    pub end_proof: EndProof,
+    pub scope: String,
+    pub status: String,
     pub path: String,
     pub verdict: String,
     pub trusted: bool,

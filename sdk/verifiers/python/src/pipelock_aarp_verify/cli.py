@@ -9,9 +9,11 @@ Usage::
 
 Exit codes mirror the Go reference and the cross-language gate:
 
-  - 0  the envelope was appraised (single) / the stream is linked (chain)
-  - 1  the envelope is fatal / the chain is not linked
+  - 0  the envelope was appraised (single) / a chain endpoint is proven or
+       --allow-prefix explicitly accepts a valid prefix
+  - 1  the envelope is fatal / the chain is broken or lacks trusted signatures
   - 2  an I/O or trust-file error
+  - 3  the chain is valid but its endpoint is unproven
   - 64 a usage error
 """
 
@@ -33,8 +35,8 @@ from .appraise import (
     comparable_appraisal,
     verify,
 )
-from .chain import comparable_chain, verify_chain
-from .envelope import unmarshal
+from .chain import verify_chain
+from .envelope import GENESIS_PRIOR_HASH, parse_seq_value, unmarshal
 from .group import GROUP_VALID, verify_receipt_group
 from .input_file import read_verifier_file
 from .line_space import trim_go_space_bytes
@@ -138,7 +140,27 @@ def _emit_fatal(stdout: IO[str], stderr: IO[str], json_mode: bool, cause: str) -
     return EXIT_GENERAL
 
 
-def _run_chain(stdout: IO[str], stderr: IO[str], data: bytes, json_mode: bool) -> int:
+def _decimal_seq(value: str) -> int:
+    """Parse an operator-supplied final sequence as ASCII decimal digits.
+
+    int() also accepts signs, underscores, surrounding spaces and non-ASCII
+    digits; refusing them keeps every verifier on the same number.
+    """
+    if not value or any(c < "0" or c > "9" for c in value):
+        raise argparse.ArgumentTypeError("--expect-seq requires decimal digits")
+    return int(value)
+
+
+def _run_chain(
+    stdout: IO[str],
+    stderr: IO[str],
+    data: bytes,
+    json_mode: bool,
+    verify_opts: VerifyOptions,
+    allow_prefix: bool,
+    expect_head: str,
+    expect_seq: int | None,
+) -> int:
     lines = data.split(b"\n")
     envs = []
     for i, line in enumerate(lines):
@@ -150,21 +172,83 @@ def _run_chain(stdout: IO[str], stderr: IO[str], data: bytes, json_mode: bool) -
         except Exception as exc:  # noqa: BLE001 - any parse failure is fatal
             return _emit_fatal(stdout, stderr, json_mode, f"chain line {i}: {exc}")
 
+    linked = False
+    signatures_verified = False
+    failure = ""
     try:
-        comparable = comparable_chain(envs)
-    except Exception as exc:  # noqa: BLE001 - render failure
-        stderr.write(f"render chain: {exc}\n")
-        return EXIT_GENERAL
+        verify_chain(envs)
+        linked = True
+        first = envs[0].chain
+        if (
+            first is None
+            or first.seq != "0"
+            or first.prior_hash != GENESIS_PRIOR_HASH
+        ):
+            raise ValueError("chain does not start at the genesis link")
+        # Each envelope must have at least one valid signature from the supplied
+        # trust. verify() intentionally allows a bad parallel signature beside a
+        # good one, matching the AARP appraisal contract.
+        signatures_verified = all(
+            verify(env, verify_opts).assertion_signed for env in envs
+        )
+        if not signatures_verified:
+            raise ValueError(
+                "no signature verified against pinned trust; pass --trust with the signer key"
+            )
+    except Exception as exc:  # noqa: BLE001 - linkage, genesis, or trust failure
+        failure = str(exc)
+
+    evidence: list[str] = []
+    if not failure and (expect_head or expect_seq is not None):
+        last = envs[-1]
+        actual_seq = parse_seq_value(last.chain.seq) if last.chain is not None else -1
+        if expect_head and last.payload_digest() != expect_head:
+            failure = (
+                "chain tip does not match expected head "
+                "(tail truncated or different scope)"
+            )
+        elif expect_seq is not None and actual_seq != expect_seq:
+            failure = f"final_seq {actual_seq} does not match expected seq {expect_seq}"
+        else:
+            if expect_head:
+                evidence.append("operator_head")
+            if expect_seq is not None:
+                evidence.append("operator_seq")
+
+    valid = not failure
+    report = {
+        "chain_linked": linked,
+        "length": len(envs),
+        "integrity": "valid" if valid else "invalid",
+        "end_proof": {"proven": bool(evidence), "evidence": evidence},
+        "scope": "aarp_chain",
+        "status": (
+            "CHAIN BROKEN"
+            if not valid
+            else "CHAIN VALID"
+            if evidence
+            else "VALID PREFIX, END UNPROVEN"
+        ),
+        "signatures_verified": signatures_verified,
+    }
+    if failure:
+        report["error"] = failure
     if json_mode:
-        stdout.write(comparable.decode("utf-8"))
+        stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
         stdout.write("\n")
     else:
         stdout.write(f"AARP chain: {len(envs)} envelopes\n")
-    try:
-        verify_chain(envs)
-    except Exception:  # noqa: BLE001 - not linked
+        stdout.write(f"  signatures_verified: {str(signatures_verified).lower()}\n")
+        stdout.write(f"  status: {report['status']}\n")
+        if evidence:
+            stdout.write(f"  end_proof: {', '.join(evidence)}\n")
+        if failure:
+            stderr.write(f"  error: {failure}\n")
+    if not valid:
         return EXIT_GENERAL
-    return EXIT_OK
+    if evidence or allow_prefix:
+        return EXIT_OK
+    return EXIT_PREFIX
 
 
 def _run_aarp(
@@ -175,6 +259,9 @@ def _run_aarp(
     json_mode: bool,
     chain_mode: bool,
     svid_path: str,
+    allow_prefix: bool,
+    expect_head: str,
+    expect_seq: int | None,
 ) -> int:
     # --svid is single-envelope only; combining it with --chain is a usage error.
     if chain_mode and svid_path != "":
@@ -208,7 +295,10 @@ def _run_aarp(
         return EXIT_CONFIG
 
     if chain_mode:
-        return _run_chain(stdout, stderr, data, json_mode)
+        return _run_chain(
+            stdout, stderr, data, json_mode, verify_opts, allow_prefix,
+            expect_head, expect_seq,
+        )
 
     try:
         env = unmarshal(data)
@@ -472,7 +562,23 @@ def main(argv: list[str] | None = None) -> int:
     aarp_p.add_argument(
         "--chain",
         action="store_true",
-        help="PATH is a JSONL stream; verify Rung-1 chain linkage",
+        help="PATH is a JSONL stream; verify linkage, trusted signatures, and endpoint",
+    )
+    aarp_p.add_argument(
+        "--allow-prefix",
+        action="store_true",
+        help="return success for a valid prefix while reporting its unproven end",
+    )
+    aarp_p.add_argument(
+        "--expect-head",
+        default="",
+        help="independently known final envelope payload digest",
+    )
+    aarp_p.add_argument(
+        "--expect-seq",
+        type=_decimal_seq,
+        default=None,
+        help="independently known final sequence",
     )
     receipt_p = sub.add_parser("receipt", help="verify a Pipelock receipt")
     receipt_p.add_argument("path", help="path to a Pipelock receipt JSON file")
@@ -504,7 +610,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     receipt_p.add_argument(
         "--expect-seq",
-        type=int,
+        type=_decimal_seq,
         default=None,
         help="independently known final sequence",
     )
@@ -550,6 +656,15 @@ def main(argv: list[str] | None = None) -> int:
             args.expect_head,
             args.expect_seq,
         )
+    if args.command == "aarp" and args.chain:
+        if args.expect_seq is not None and not 0 <= args.expect_seq <= (1 << 64) - 1:
+            sys.stderr.write("--expect-seq requires an unsigned 64-bit integer\n")
+            return EXIT_USAGE
+    elif args.command == "aarp" and (
+        args.allow_prefix or args.expect_head or args.expect_seq is not None
+    ):
+        sys.stderr.write("end-proof flags require --chain\n")
+        return EXIT_USAGE
     if args.command == "provenance":
         return _run_provenance(sys.stdout, sys.stderr, args.path, args.allow_incomplete)
 
@@ -565,4 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         args.json,
         args.chain,
         args.svid,
+        args.allow_prefix,
+        args.expect_head,
+        args.expect_seq,
     )

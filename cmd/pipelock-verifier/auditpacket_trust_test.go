@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	auditpacket "github.com/luckyPipewrench/pipelock/sdk/audit-packet"
 )
 
@@ -31,11 +32,11 @@ func TestAuditPacket_FailedVerificationDoesNotClaimTrust(t *testing.T) {
 	fix := newFixture(t, 2)
 	wrongKey := newFixture(t, 1).keyHex
 
-	// Positive control: the unmodified packet verifies and keeps its claim.
+	// Prefix control: packet claims stay untrusted without a verified end proof.
 	okDir := t.TempDir()
 	fix.writePacketDir(t, okDir, nil)
 	ok, code := auditPacketJSON(t, "--key", fix.keyHex, okDir)
-	if code != cliutil.ExitOK || !ok.Valid || ok.Verdict != auditpacket.VerdictValid || !ok.Trusted {
+	if code != endproof.ExitPrefix || ok.Valid || ok.Trusted || ok.Verdict != endproof.Prefix {
 		t.Fatalf("control: code=%d valid=%v verdict=%q trusted=%v", code, ok.Valid, ok.Verdict, ok.Trusted)
 	}
 
@@ -146,7 +147,7 @@ func TestAuditPacket_RawActionJSONLCompatibility(t *testing.T) {
 		t.Fatal(err)
 	}
 	report, code := auditPacketJSON(t, "--key", fix.keyHex, dir)
-	if code != cliutil.ExitOK || !report.Valid || !report.Trusted {
+	if code != endproof.ExitPrefix || report.Valid || report.Trusted || report.Verdict != endproof.Prefix {
 		t.Fatalf("raw action JSONL compatibility: code=%d report=%+v", code, report)
 	}
 }
