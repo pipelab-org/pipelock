@@ -5801,6 +5801,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		headers: r.Header, cfg: cfg, sc: sc, logger: log, actx: actx,
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
+	if refuseTextDLPScanError(w, log, actx, requestID, headerReceiptErr) {
+		return
+	}
 	if headerReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(headerReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

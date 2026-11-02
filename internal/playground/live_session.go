@@ -531,7 +531,13 @@ func (s *LiveSession) scanAgentReply(ctx context.Context, ev LiveEvent) (LiveEve
 	if s.lr == nil || s.lr.sc == nil {
 		return ev, false
 	}
-	if res := s.lr.sc.ScanTextForDLPQuiet(ctx, ev.Text); !res.Clean {
+	res := s.lr.sc.ScanTextForDLPQuiet(ctx, ev.Text)
+	if err := res.Err(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "playground: agent reply redacted (scan error: %v)\n", err)
+		ev.Text = redactedReplyNotice
+		return ev, true
+	}
+	if !res.Clean {
 		// Diagnostic: a generic-DLP shape match may be a TRUE catch or a false
 		// positive on benign narration. Log the pattern name(s)/severity/encoding
 		// (never the matched text) so a redaction can be told apart from an FP.

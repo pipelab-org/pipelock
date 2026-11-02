@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -57,8 +58,36 @@ func TestScanTextForDLPReportsIncomplete(t *testing.T) {
 		"quiet":    sc.ScanTextForDLPQuiet,
 		"inbound":  sc.ScanTextForDLPInbound,
 		"body":     sc.ScanRequestBodyTextForDLP,
+		"body-parts": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanRequestBodyTextPartsForDLP(ctx, []string{text}, " ")
+		},
+		"body-card-parts": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{text}, []string{text}, " ")
+		},
+
+		"card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPWithCardView(ctx, text, text)
+		},
+		"quiet-card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPQuietWithCardView(ctx, text, text)
+		},
+		"inbound-card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPInboundWithCardView(ctx, text, text)
+		},
+		"typed-card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPWithTypedCardView(ctx, text, text)
+		},
+		"quiet-typed-card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPQuietWithTypedCardView(ctx, text, text)
+		},
+		"inbound-typed-card": func(ctx context.Context, text string) TextDLPResult {
+			return sc.ScanTextForDLPInboundWithTypedCardView(ctx, text, text)
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			if noMatch := scan(ctx, "ordinary content"); noMatch.Clean || !errors.Is(noMatch.Err(), ErrTextDLPIncomplete) || len(noMatch.Matches) != 0 {
+				t.Fatalf("incomplete no-match scan = %+v", noMatch)
+			}
 			got := scan(ctx, text)
 			if !got.Incomplete {
 				t.Fatalf("ended context: want Incomplete, got %+v", got)
@@ -86,5 +115,16 @@ func TestScanTextDLPViewsKeepsLaterDeadline(t *testing.T) {
 	}
 	if got.Clean || len(got.Matches) == 0 {
 		t.Fatalf("incomplete merge dropped findings: %+v", got)
+	}
+}
+
+func TestTextDLPResultIncompleteError(t *testing.T) {
+	for _, incomplete := range []bool{false, true} {
+		for _, matches := range [][]TextDLPMatch{nil, {{PatternName: "fixture"}}} {
+			result := TextDLPResult{Clean: !incomplete && len(matches) == 0, Incomplete: incomplete, Matches: matches}
+			if got := errors.Is(result.Err(), ErrTextDLPIncomplete); got != incomplete {
+				t.Fatalf("result %+v: incomplete error = %v", result, result.Err())
+			}
+		}
 	}
 }

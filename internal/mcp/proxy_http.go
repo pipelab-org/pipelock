@@ -148,7 +148,7 @@ func scanMCPListenerHeadersForTarget(
 // ended before it finished carries no match; it is reported as a parse error,
 // the same reason an unfinished response scan of a decoded parameter gets.
 func mcpListenerHeaderDLPFinding(header string, result scanner.TextDLPResult) *mcpListenerHeaderDLPResult {
-	if result.Incomplete && len(result.Matches) == 0 {
+	if result.Err() != nil && len(result.Matches) == 0 {
 		return &mcpListenerHeaderDLPResult{header: header, reason: blockreason.ParseError}
 	}
 	return &mcpListenerHeaderDLPResult{header: header, matches: result.Matches}

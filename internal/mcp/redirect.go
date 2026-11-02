@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 // redirectManifest describes the operation context passed to built-in
@@ -172,4 +173,15 @@ func executeRedirect(profile config.RedirectProfile, profileName string, request
 		Response:  data,
 		LatencyMs: latencyMs,
 	}
+}
+
+// mergeRedirectResponseDLP preserves scan failures before output attribution.
+func mergeRedirectResponseDLP(verdict jsonrpc.ScanVerdict, dlp scanner.TextDLPResult) jsonrpc.ScanVerdict {
+	verdict.DLPMatches = append(verdict.DLPMatches, dlp.Matches...)
+	verdict.Clean = verdict.Clean && dlp.Clean
+	if err := dlp.Err(); err != nil && verdict.Error == "" {
+		verdict.Error = err.Error()
+		verdict.Action = config.ActionBlock
+	}
+	return verdict
 }

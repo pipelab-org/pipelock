@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"html"
 	"net/url"
 	"regexp"
@@ -456,6 +457,19 @@ type TextDLPResult struct {
 	// false because canceled component scans may have stopped early. Callers
 	// must treat an incomplete scan as unverified.
 	Incomplete bool `json:"incomplete,omitempty"`
+}
+
+// ErrTextDLPIncomplete reports that text inspection did not finish. It is
+// distinct from a credential finding, including when no matches were collected.
+var ErrTextDLPIncomplete = errors.New("text DLP scan incomplete")
+
+// Err reports an unfinished inspection. Matches collected before interruption
+// remain available, but cannot establish that the inspection completed.
+func (r TextDLPResult) Err() error {
+	if r.Incomplete {
+		return ErrTextDLPIncomplete
+	}
+	return nil
 }
 
 // textDLPOptions tunes a text-DLP scan. emitWarns controls warn-hook telemetry.

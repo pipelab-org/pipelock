@@ -1436,7 +1436,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		// SSE metadata is string-valued (WHATWG server-sent events). Inspect
 		// each value before envelope joins can remove a credential boundary.
 		for _, metadata := range []string{reader.LastEventID(), reader.LastEventType(), reader.LastRetry()} {
-			if dlpResult := sc.ScanTextForDLP(ctx, metadata); !dlpResult.Clean {
+			dlpResult := sc.ScanTextForDLP(ctx, metadata)
+			if err := dlpResult.Err(); err != nil {
+				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+			}
+			if !dlpResult.Clean {
 				return fmt.Errorf("%w: dlp in sse metadata: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
 			}
 		}
@@ -1447,7 +1451,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				sseFindingCause(ErrA2AStreamFinding, session.FindingWording), sseInjectionNames(injResult.Matches))
 		}
-		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
+		dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical)
+		if err := dlpResult.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+		}
+		if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
 			return fmt.Errorf("%w: dlp in sse metadata: %s",
 				sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
 		}
@@ -1473,6 +1481,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			combined := dlpTail + currentText
 			cardBoundary := jsonnumber.CardBoundary(previousLastNumber, currentFirstNumber)
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
+			if err := dlpResult.Err(); err != nil {
+				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+			}
 			if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
 				if scanner.HasInspectionLimit(dlpResult.Matches) {
 					return sseDLPFindingError(dlpResult.Matches, "cross-event dlp")
@@ -1487,6 +1498,9 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		numberText, numberCard := extract.JSONNumberStreamViews(event)
 		if numberTail != "" && numberText != "" {
 			result := sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
+			if err := result.Err(); err != nil {
+				return fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+			}
 			if len(result.Matches) > 0 && !recordNumberOnly(result.Matches) {
 				if scanner.HasInspectionLimit(result.Matches) {
 					return sseDLPFindingError(result.Matches, "cross-event dlp")

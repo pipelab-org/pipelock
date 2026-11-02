@@ -380,7 +380,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// unit, so encoding checks only work on individual field values.
 		if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 			for i, s := range strs {
-				if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
+				if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); r.Err() != nil || len(r.Matches) > 0 {
 					dlpResult = mergeInputDLP(dlpResult, r)
 					if !scanner.OnlyInformational(r.Matches) {
 						break
@@ -420,6 +420,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			}
 		}
 
+		if err := dlpResult.Err(); err != nil {
+			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
+		}
 		if injResult.Failed() {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 		}
@@ -507,7 +510,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// checks only work on individual field values.
 	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		for i, s := range strs {
-			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); r.Err() != nil || len(r.Matches) > 0 {
 				dlpResult = mergeInputDLP(dlpResult, r)
 			}
 		}
@@ -540,6 +543,9 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		}
 	}
 
+	if err := dlpResult.Err(); err != nil {
+		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
+	}
 	if injResult.Failed() {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
@@ -610,7 +616,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// Scan each extracted string individually for encoded secrets.
 	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		for i, s := range strs {
-			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); r.Err() != nil || len(r.Matches) > 0 {
 				dlpResult = mergeInputDLP(dlpResult, r)
 			}
 		}
@@ -655,6 +661,9 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 		}
 	}
 
+	if err := dlpResult.Err(); err != nil {
+		return InputVerdict{ID: recoveredID, Action: config.ActionBlock, Error: "response scan incomplete: " + err.Error()}
+	}
 	if injResult.Failed() {
 		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: "response scan incomplete: " + injResult.ScanError}
 	}
@@ -806,7 +815,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
 	if concat != joined {
-		if r := sc.ScanTextForDLPWithTypedCardView(ctx, concat, extract.JoinCardAtoms(cardAtoms, "")); len(r.Matches) > 0 {
+		if r := sc.ScanTextForDLPWithTypedCardView(ctx, concat, extract.JoinCardAtoms(cardAtoms, "")); r.Err() != nil || len(r.Matches) > 0 {
 			result = mergeInputDLP(result, r)
 			if !r.Clean {
 				return result
@@ -836,13 +845,13 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			// reconstruction belongs only to other credential detectors; it must
 			// not erase keys or scalar interruptions or reverse card pieces.
 			forwardCard, reverseCard := "", ""
-			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[i]+vals[j], forwardCard); len(r.Matches) > 0 {
+			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[i]+vals[j], forwardCard); r.Err() != nil || len(r.Matches) > 0 {
 				result = mergeInputDLP(result, r)
 				if !r.Clean {
 					return result
 				}
 			}
-			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[j]+vals[i], reverseCard); len(r.Matches) > 0 {
+			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[j]+vals[i], reverseCard); r.Err() != nil || len(r.Matches) > 0 {
 				result = mergeInputDLP(result, r)
 				if !r.Clean {
 					return result
@@ -858,6 +867,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 func mergeInputDLP(prior, next scanner.TextDLPResult) scanner.TextDLPResult {
 	prior.Matches = appendUniqueA2ADLPFindings(prior.Matches, next.Matches)
 	prior.InformationalMatches = append(prior.InformationalMatches, next.InformationalMatches...)
-	prior.Clean = !scanner.HasEnforcingMatch(prior.Matches)
+	prior.Incomplete = prior.Incomplete || next.Incomplete
+	prior.Clean = !prior.Incomplete && !scanner.HasEnforcingMatch(prior.Matches)
 	return prior
 }

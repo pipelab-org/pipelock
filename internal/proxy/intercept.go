@@ -1650,6 +1650,9 @@ func newInterceptHandler(
 				}
 				return nil
 			})
+			if headerResult != nil && headerResult.ScanError != "" && refuseTextDLPScanError(w, ic.Logger, actx, ic.RequestID, scanner.ErrTextDLPIncomplete) {
+				return
+			}
 			if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(headerResult.CredentialAudienceReceiptErr)
 				ic.Logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

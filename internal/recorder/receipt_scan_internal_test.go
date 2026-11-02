@@ -5,6 +5,7 @@ package recorder
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,5 +62,20 @@ func TestInternalReceiptWriteWithoutAttestationScansAtBoundary(t *testing.T) {
 	}
 	if err := VerifyChain(entries); err != nil {
 		t.Fatalf("VerifyChain: %v", err)
+	}
+}
+
+func TestIncompleteDLPIsNotReceiptFinding(t *testing.T) {
+	det := func(context.Context, string) scanner.TextDLPResult { return scanner.TextDLPResult{Incomplete: true} }
+	r := &Recorder{cfg: Config{Redact: true}, redactFn: det, contentDetector: det}
+	if err := r.checkBoundOuter(Entry{Summary: "ordinary"}, nil); !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("outer scan error: %v", err)
+	}
+	if _, err := r.PreflightSignedReceiptDetail(map[string]string{"value": "ordinary"}); !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("receipt detail scan error: %v", err)
+	}
+	got, ok := r.redactDetail(map[string]string{"value": "ordinary"}).(map[string]any)
+	if !ok || got["redacted"] != true || got["scan_error"] == nil || got["detected_patterns"] != nil {
+		t.Fatalf("incomplete redaction fabricated findings: %+v", got)
 	}
 }

@@ -620,6 +620,9 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// DLP-scan forwarded header values regardless of destination or enforce mode.
 	// In audit mode, findings are logged as anomalies but traffic is allowed.
 	wsHeaderBlockedResult, wsHeaderHardBlock, wsHeaderAction, wsHeaderReason, wsHeaderPattern, wsHeaderReceiptErr := p.dlpScanWSHeaders(r.Context(), fwdHeaders, sc, cfg, targetURL, actx)
+	if refuseTextDLPScanError(w, log, actx, requestID, wsHeaderReceiptErr) {
+		return
+	}
 	if wsHeaderReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(wsHeaderReceiptErr)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)
@@ -1392,7 +1395,7 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 	matchedHeaders := make([]string, 0, 2)
 	defer func() {
 		// Record audience allows only when no header blocks the handshake.
-		if len(allMatches) > 0 {
+		if len(allMatches) > 0 || ctx.Err() != nil {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
@@ -1414,6 +1417,9 @@ func (p *Proxy) dlpScanWSHeaders(ctx context.Context, headers http.Header, sc *s
 			scanVal = scanner.ScrubSigV4AuthorizationForTarget(val, targetURL)
 		}
 		result := sc.ScanTextForDLP(ctx, scanVal)
+		if err := result.Err(); err != nil {
+			return false, false, "", "", "", err
+		}
 		if !result.Clean {
 			matches, allows := sc.FilterHeaderDLPMatches(result.Matches, targetURL, key, scanVal)
 			audienceAllows = append(audienceAllows, allows...)
@@ -1951,9 +1957,15 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 	prevDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(tail), string(cardTail))
 	currDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(msg), string(cardMsg))
 
+	if combinedDLP.Err() != nil || prevDLP.Err() != nil || currDLP.Err() != nil {
+		return true
+	}
 	crossDLP, crossWarns := wsCrossMessageDLPMatches(combinedDLP, prevDLP, currDLP)
 	if joined, ok := joinLabeledWSCrossMessageSuffixes(tail, msg); ok {
 		joinedDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(joined))
+		if joinedDLP.Err() != nil {
+			return true
+		}
 		crossDLP = append(crossDLP, joinedDLP.Matches...)
 		crossWarns = append(crossWarns, joinedDLP.InformationalMatches...)
 	}

@@ -29,6 +29,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
@@ -2673,6 +2674,11 @@ func scanRequestHeadersWithSuppress(ctx context.Context, headers http.Header, cf
 // credential exception as URL and body DLP. An empty or invalid target keeps
 // the match, preserving the original fail-closed header behavior.
 func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cfg *config.Config, sc *scanner.Scanner, target string, suppress []config.SuppressEntry, onDropped func(scanner.TextDLPMatch, string), onAudienceAllow func(scanner.CredentialAudienceAllow) error) (result *BodyScanResult) {
+	defer func() {
+		if ctx.Err() != nil {
+			result = &BodyScanResult{Action: config.ActionBlock, ScanError: scanner.ErrTextDLPIncomplete.Error()}
+		}
+	}()
 	bodyCfg := cfg.RequestBodyScanning
 	disabled := bodyDLPDisabledSet(bodyCfg.DisablePatterns)
 	var allMatches []scanner.TextDLPMatch
@@ -2682,7 +2688,7 @@ func scanRequestHeadersWithAudience(ctx context.Context, headers http.Header, cf
 		// An audience allow is evidence that a credential was delivered. It is
 		// emitted only when the whole header scan is clean, never for a request
 		// another header, decoded view, or joined match goes on to block.
-		if onAudienceAllow == nil || len(allMatches) > 0 {
+		if onAudienceAllow == nil || len(allMatches) > 0 || ctx.Err() != nil {
 			return
 		}
 		var audienceErr error
@@ -2861,11 +2867,10 @@ type headerDLPParams struct {
 	reasonPrefix string
 }
 
-// evalHeaderDLP's last return value is the require_receipts credential
-// audience receipt confirmation failure, if any. It takes priority over the
-// DLP block decision: the caller must block on it before evaluating
-// blocked/hadFinding, since a non-nil receiptErr means the allow could not be
-// durably confirmed and the request must never be forwarded.
+// evalHeaderDLP's last return value is an incomplete inspection or a
+// require_receipts credential audience receipt confirmation failure, if any.
+// The caller must block on this error before evaluating blocked/hadFinding;
+// an incomplete inspection or an unconfirmed allow must never be forwarded.
 func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked bool, hadFinding bool, reason string, receiptErr error) {
 	if !e.cfg.RequestBodyScanning.Enabled || !e.cfg.RequestBodyScanning.ScanHeaders {
 		return false, false, "", nil
@@ -2884,6 +2889,9 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 	})
 	if headerResult == nil {
 		return false, false, "", nil
+	}
+	if headerResult.ScanError != "" {
+		return false, false, "", scanner.ErrTextDLPIncomplete
 	}
 	if headerResult.CredentialAudienceReceiptErr != nil {
 		return false, false, "", headerResult.CredentialAudienceReceiptErr
@@ -2908,4 +2916,17 @@ func (p *Proxy) evalHeaderDLP(ctx context.Context, e headerDLPParams) (blocked b
 		return true, true, reason, nil
 	}
 	return false, true, reason, nil
+}
+
+// refuseTextDLPScanError writes the existing parse_error/context refusal. It
+// never emits a DLP finding or permits audit mode to release unverified input.
+func refuseTextDLPScanError(w http.ResponseWriter, log *audit.Logger, actx audit.LogContext, requestID string, err error) bool {
+	if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		return false
+	}
+	if log != nil {
+		log.LogBlocked(actx, scanner.ScannerContext, err.Error())
+	}
+	writeBlockedError(w, blockInfoFor(blockreason.ParseError, scanner.ScannerContext).WithRequestID(requestID), "request scan failed: "+err.Error(), http.StatusServiceUnavailable)
+	return true
 }

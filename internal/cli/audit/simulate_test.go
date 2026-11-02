@@ -4,6 +4,7 @@
 package audit
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -318,5 +319,25 @@ func TestMatchNames(t *testing.T) {
 
 	if matchNames(nil) != "" {
 		t.Error("matchNames(nil) should return empty string")
+	}
+}
+
+func TestSimulateIncompleteTextDLPIsNotDetection(t *testing.T) {
+	result := scanner.TextDLPResult{Incomplete: true}
+	if detected, detail := textDLPDetected(result); detected || detail != scanner.ErrTextDLPIncomplete.Error() {
+		t.Fatalf("incomplete DLP counted as detection: detected=%v detail=%q", detected, detail)
+	}
+	if detected, detail := hasCanaryMatch(result, "fixture"); detected || detail != scanner.ErrTextDLPIncomplete.Error() {
+		t.Fatalf("incomplete canary scan: detected=%v detail=%q", detected, detail)
+	}
+	sc := scanner.MustNew(config.Defaults())
+	defer sc.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for _, scenario := range buildV2SimScenarios(ctx, sc) {
+		detected, detail := scenario.run()
+		if detected {
+			t.Fatalf("cancelled scenario %q counted as detection: %s", scenario.name, detail)
+		}
 	}
 }

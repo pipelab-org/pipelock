@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -633,5 +634,99 @@ func TestRequestBodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	}
 	if !ended && cancelledCheckpoints == maxCheckpoint {
 		t.Fatalf("request-body scan exceeded bounded checkpoint guard of %d", maxCheckpoint)
+	}
+}
+
+func TestRequestHeaderTextDLPIncompleteIsScanError(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Enforce = new(false)
+	cfg.RequestBodyScanning.Enabled = true
+	cfg.RequestBodyScanning.ScanHeaders = true
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.HeaderMode = config.HeaderModeAll
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	var logs bytes.Buffer
+	log, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	p := &Proxy{logger: log, metrics: metrics.New()}
+	headers := http.Header{"Authorization": {"Bearer ordinary"}, "X-Fixture": {"ordinary"}}
+	result := scanRequestHeaders(ctx, headers, cfg, sc)
+	if result == nil || result.Clean || result.Action != config.ActionBlock || result.ScanError == "" || len(result.DLPMatches) != 0 {
+		t.Fatalf("incomplete header scan: %+v", result)
+	}
+	_, finding, _, scanErr := p.evalHeaderDLP(ctx, headerDLPParams{headers: headers, cfg: cfg, sc: sc, logger: log})
+	if finding || !errors.Is(scanErr, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("incomplete header evaluation: finding=%v err=%v", finding, scanErr)
+	}
+	_, _, _, _, pattern, wsErr := p.dlpScanWSHeaders(ctx, headers, sc, cfg, "wss://api.vendor.example/events", audit.LogContext{})
+	if pattern != "" || !errors.Is(wsErr, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("incomplete WS header scan: pattern=%q error=%v", pattern, wsErr)
+	}
+	cleanResponse := httptest.NewRecorder()
+	if refuseTextDLPScanError(cleanResponse, log, audit.LogContext{}, "complete-scan", nil) || cleanResponse.Body.Len() != 0 {
+		t.Fatal("complete scan was refused")
+	}
+	w := httptest.NewRecorder()
+	if !refuseTextDLPScanError(w, log, audit.LogContext{}, "incomplete-scan", scanErr) || w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("incomplete scan not refused: status=%d body=%s", w.Code, w.Body.String())
+	}
+	if w.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || strings.Contains(logs.String(), "header_dlp") {
+		t.Fatalf("incomplete scan labeled as DLP: headers=%v logs=%s", w.Header(), logs.String())
+	}
+}
+
+func TestWebSocketCrossMessageTextDLPIncompleteClosesRelay(t *testing.T) {
+	sc := scanner.MustNew(testScannerConfig())
+	defer sc.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	relay := &wsRelay{scanner: sc}
+	if !relay.scanClientCrossMessageText(ctx, nil, []byte("ordinary"), []byte("reply")) {
+		t.Fatal("incomplete quiet cross-message scans did not close the relay")
+	}
+}
+
+func TestReverseURLTextDLPIncompleteIsScanError(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.Enforce = new(false)
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	var cfgPtr atomic.Pointer[config.Config]
+	var scPtr atomic.Pointer[scanner.Scanner]
+	cfgPtr.Store(cfg)
+	scPtr.Store(sc)
+	var logs bytes.Buffer
+	log, err := audit.NewWithStream("json", "stdout", "", true, true, &logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	target, err := url.Parse("http://api.vendor.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := NewReverseProxy(target, &cfgPtr, &scPtr, log, metrics.New(), killswitch.New(cfg), nil, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	w := httptest.NewRecorder()
+	rp.ServeHTTP(w, httptest.NewRequestWithContext(ctx, http.MethodGet, "http://api.vendor.example/ordinary", nil))
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("X-Pipelock-Block-Reason") != "parse_error" || !strings.Contains(logs.String(), "text DLP scan incomplete") {
+		t.Fatalf("reverse URL incomplete result: status=%d headers=%v body=%s logs=%s", w.Code, w.Header(), w.Body.String(), logs.String())
+	}
+}
+
+func TestCookieAuditNameIncompleteDLPIsRedacted(t *testing.T) {
+	sc := scanner.MustNew(testScannerConfig())
+	defer sc.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if got := loggableCookieName(ctx, "ordinary=content", sc); got != issuerCookieRedactedName {
+		t.Fatalf("unverified audit name was released: %q", got)
 	}
 }
