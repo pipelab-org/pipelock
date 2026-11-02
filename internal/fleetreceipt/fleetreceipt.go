@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
@@ -173,6 +174,7 @@ type ExternalCorrelation struct {
 
 type Verification struct {
 	Statement        Statement
+	EndProof         endproof.Report
 	SignerKeyID      string
 	Trusted          bool
 	Unpinned         bool
@@ -274,6 +276,7 @@ func VerifyEnvelope(env Envelope, trustedKeys map[string]ed25519.PublicKey) (Ver
 	sum := sha256.Sum256(payload)
 	return Verification{
 		Statement:        statement,
+		EndProof:         endproof.New(true, "fleet_receipt"),
 		SignerKeyID:      sig.KeyID,
 		Trusted:          trusted,
 		Unpinned:         !trusted,
@@ -414,6 +417,16 @@ func (p Predicate) validateSummary() error {
 
 func (p Predicate) validateCompleteness() error {
 	c := p.Completeness
+	var droppedObservedActions uint64
+	for _, batch := range p.SourceBatches {
+		if batch.DroppedCount > ^uint64(0)-droppedObservedActions {
+			return fmt.Errorf("%w: source batch droppedCount sum overflows uint64", ErrInvalidPredicate)
+		}
+		droppedObservedActions += batch.DroppedCount
+	}
+	if c.DroppedObservedActions != droppedObservedActions {
+		return fmt.Errorf("%w: completeness.droppedObservedActions=%d source batch droppedCount total=%d", ErrInvalidPredicate, c.DroppedObservedActions, droppedObservedActions)
+	}
 	if c.ObservedActions != p.Summary.TotalActions {
 		return fmt.Errorf("%w: completeness.observedActions=%d totalActions=%d", ErrInvalidPredicate, c.ObservedActions, p.Summary.TotalActions)
 	}

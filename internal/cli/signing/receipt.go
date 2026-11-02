@@ -109,7 +109,7 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
-For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes and whole-recorder transcript roots with trailing signed checkpoints in per-run sessions, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links, recovery seals, and closes in a legacy shared session such as "proxy" do not. Single-receipt and fleet-report exit contracts are unchanged.
+For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes and whole-recorder transcript roots with trailing signed checkpoints in per-run sessions, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links, recovery seals, and closes in a legacy shared session such as "proxy" do not. Fleet-report signatures are verified, but current fleet-report formats do not prove a final chain endpoint, so verification reports VALID PREFIX, END UNPROVEN and exits 3.
 
 Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, refused (a symlink inside an evidence directory, an entry filed under the wrong session), or report delivery failed; exit 2 = usage or configuration error, such as a malformed --key or a missing directory.
 
@@ -1274,12 +1274,14 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 		_, _ = fmt.Fprintf(out, "FAILED: %s: %v\n", path, err)
 		return fmt.Errorf("fleet receipt verification failed: %w", err)
 	}
+	endProof := result.EndProof
 	if result.Unpinned {
 		_, _ = fmt.Fprintf(out, "FLEET RECEIPT UNPINNED: %s\n", path)
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
 	} else {
-		_, _ = fmt.Fprintf(out, "FLEET RECEIPT OK: %s\n", path)
+		_, _ = fmt.Fprintf(out, "FLEET RECEIPT %s: %s\n", endProof.Status, path)
 	}
+	_, _ = fmt.Fprintf(out, "  End proof:        %s\n", endProof.Status)
 	_, _ = fmt.Fprintf(out, "  Signer:           %s\n", result.SignerKeyID)
 	_, _ = fmt.Fprintf(out, "  Payload SHA-256:  %s\n", result.PayloadSHA256)
 	_, _ = fmt.Fprintf(out, "  Org/Fleet:        %s/%s\n", result.Statement.Predicate.OrgID, result.Statement.Predicate.FleetID)
@@ -1287,25 +1289,28 @@ func verifyFleetReportWithOptions(out io.Writer, path string, trustedKeys []stri
 	_, _ = fmt.Fprintf(out, "  Level:            %s\n", result.Statement.Predicate.VerificationLevel)
 	_, _ = fmt.Fprintf(out, "  Source batches:   %d\n", result.SourceBatches)
 	_, _ = fmt.Fprintf(out, "  Total actions:    %d\n", result.TotalActions)
-	_, _ = fmt.Fprintf(out, "  Mediated fraction: %s\n", result.MediatedFraction)
+	_, _ = fmt.Fprintf(out, "  Mediated fraction of included observed actions: %s\n", result.MediatedFraction)
+	if dropped := result.Statement.Predicate.Completeness.DroppedObservedActions; dropped > 0 {
+		_, _ = fmt.Fprintf(out, "  Reported dropped actions: %d\n", dropped)
+	}
+	if result.Statement.Predicate.SchemaVersion == fleetreceipt.SchemaVersionV1 {
+		_, _ = fmt.Fprintln(out, "  Continuity:       unavailable (v1 does not include continuity proof)")
+	}
 	if result.Statement.Predicate.SchemaVersion == fleetreceipt.SchemaVersionV2 && result.Statement.Predicate.History == nil {
 		_, _ = fmt.Fprintln(out, "  Continuity:       cross_session_continuity_unproven (receiver observations unavailable)")
 	}
 	if h := result.Statement.Predicate.History; h != nil {
 		_, _ = fmt.Fprintf(out, "  Continuity:       %s\n  Multiple sessions: %t\n  Sequence gaps:    %d\n  History unknown:  %t\n  Pruned before:    %s\n", h.Continuity, h.MultipleSessions, len(h.Gaps), h.Retention.HistoryUnknown, h.Retention.PrunedBefore)
 	}
-	// Print the predicate's declared verification limits (e.g. "L1 does not
-	// replay raw audit-batch payloads during offline verification") so an
-	// operator reading a passing report cannot over-read what the level proves.
-	// Without this, a PASS looks like full replay verification when L1 only
-	// checks the signed report, anchors, ordering, and arithmetic.
+	// Print the predicate's declared verification limits so an operator can see
+	// what L1 establishes alongside the separate unproven-end status.
 	for _, limit := range result.Statement.Predicate.Limits {
 		_, _ = fmt.Fprintf(out, "  Limit:            %s\n", resolvedLimitString(limit))
 	}
 	if result.Unpinned && !allowUnpinned {
 		return fmt.Errorf("fleet receipt verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
-	return nil
+	return endProof.Require(false)
 }
 
 func resolvedLimitString(raw string) string {

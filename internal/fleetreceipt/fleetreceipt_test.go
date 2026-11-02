@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -45,11 +46,134 @@ func TestSignAndVerifyFleetReceipt(t *testing.T) {
 	if !got.Trusted || got.Unpinned {
 		t.Fatalf("trusted/unpinned = %v/%v, want true/false", got.Trusted, got.Unpinned)
 	}
+	if got.EndProof.Status != endproof.Prefix || got.EndProof.Integrity != "valid" || got.EndProof.EndProof.Proven {
+		t.Fatalf("end proof = %+v, want valid integrity with unproven endpoint", got.EndProof)
+	}
 	if got.SignerKeyID != keyID {
 		t.Fatalf("SignerKeyID = %q, want %q", got.SignerKeyID, keyID)
 	}
 	if got.SourceBatches != 2 || got.TotalActions != 3 || got.MediatedFraction != "1" {
 		t.Fatalf("summary = batches %d actions %d fraction %q", got.SourceBatches, got.TotalActions, got.MediatedFraction)
+	}
+}
+
+func TestVerifyFleetReceiptReportsUnprovenEndForCurrentFormats(t *testing.T) {
+	const largeDrop = uint64(1_000_000_000_000)
+	cases := []struct {
+		name  string
+		setup func(*Statement)
+	}{
+		{name: "v1 has no continuity field"},
+		{
+			name: "v2 has no history snapshot",
+			setup: func(s *Statement) {
+				setV2FleetReport(s)
+			},
+		},
+		{
+			name: "v2 empty history snapshot",
+			setup: func(s *Statement) {
+				setV2FleetReport(s)
+				s.Predicate.History = &History{Continuity: ContinuityUnproven, Sessions: []ObservedChain{}, Gaps: []SequenceGap{}, Retention: RetentionCoverage{HistoryUnknown: true}}
+			},
+		},
+		{
+			name: "v2 zero gaps do not prove endpoint",
+			setup: func(s *Statement) {
+				setV2FleetReport(s)
+				chain := *s.Predicate.SourceBatches[0].Chain
+				s.Predicate.History = &History{
+					Continuity: ContinuityUnproven,
+					Sessions: []ObservedChain{{
+						InstanceID:    "pl-1",
+						Chain:         chain,
+						FirstReceived: testTimestamp,
+						LastReceived:  testTimestamp,
+						SeqStart:      1,
+						SeqEnd:        3,
+					}},
+					Gaps:      []SequenceGap{},
+					Retention: RetentionCoverage{HistoryUnknown: true},
+				}
+			},
+		},
+		{
+			name: "large signed drop remains partial",
+			setup: func(s *Statement) {
+				setV2FleetReport(s)
+				s.Predicate.SourceBatches[0].DroppedCount = largeDrop
+				s.Predicate.Completeness.DroppedObservedActions = largeDrop
+			},
+		},
+	}
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	keyID := hex.EncodeToString(pub)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			statement := testStatement()
+			if tc.setup != nil {
+				tc.setup(&statement)
+			}
+			env, err := SignStatement(statement, keyID, priv)
+			if err != nil {
+				t.Fatalf("SignStatement: %v", err)
+			}
+			verified, err := VerifyEnvelope(env, map[string]ed25519.PublicKey{keyID: pub})
+			if err != nil {
+				t.Fatalf("VerifyEnvelope: %v", err)
+			}
+			if verified.EndProof.Integrity != "valid" || verified.EndProof.EndProof.Proven || verified.EndProof.Status != endproof.Prefix {
+				t.Fatalf("end proof = %+v, want valid prefix with unproven end", verified.EndProof)
+			}
+		})
+	}
+}
+
+func TestPredicateValidateCompletenessMatchesDroppedActionTotals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(*Predicate)
+		want string
+	}{
+		{
+			name: "reported drops exceed source batches",
+			edit: func(p *Predicate) { p.Completeness.DroppedObservedActions = 1 },
+			want: "droppedObservedActions",
+		},
+		{
+			name: "source batch drops exceed report",
+			edit: func(p *Predicate) { p.SourceBatches[0].DroppedCount = 1 },
+			want: "droppedObservedActions",
+		},
+		{
+			name: "source batch dropped count sum overflows",
+			edit: func(p *Predicate) {
+				p.SourceBatches[0].DroppedCount = ^uint64(0)
+				p.SourceBatches[1].DroppedCount = 1
+				p.Completeness.DroppedObservedActions = 0
+			},
+			want: "overflows uint64",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			statement := testStatement()
+			tc.edit(&statement.Predicate)
+			err := statement.Predicate.Validate()
+			if err == nil || !errors.Is(err, ErrInvalidPredicate) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Predicate.Validate() error = %v, want ErrInvalidPredicate mentioning %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func setV2FleetReport(statement *Statement) {
+	statement.PredicateType = PredicateTypeV2
+	statement.Predicate.SchemaVersion = SchemaVersionV2
+	for i := range statement.Predicate.SourceBatches {
+		statement.Predicate.SourceBatches[i].Chain = &ChainIdentity{EntryVersion: 2, SessionID: "run-a"}
 	}
 }
 
