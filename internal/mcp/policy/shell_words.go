@@ -71,10 +71,12 @@ var bracketRe = regexp.MustCompile(`\[([A-Za-z0-9._~+@%,:=/]{1,8})\]`)
 // complete.
 func readShellWords(s string) (out string, unreadable bool) {
 	if strings.ContainsRune(s, '$') {
-		s = readUnsetParameters(s)
+		s, unreadable = readUnsetParameters(s)
 	}
 	if strings.ContainsAny(s, "{[") {
-		s, unreadable = expandWords(s)
+		var u bool
+		s, u = expandWords(s)
+		unreadable = unreadable || u
 	}
 	return s, unreadable
 }
@@ -82,27 +84,32 @@ func readShellWords(s string) (out string, unreadable bool) {
 // readUnsetParameters replaces each remaining parameter expansion with its
 // value when the parameter is unset. IFS is left to shellExpansionRe: the
 // shell sets it at startup, and the views read it as a word separator.
-func readUnsetParameters(s string) string {
+//
+// unreadable reports braced expansions still nested deeper than
+// maxParamNesting; they keep their spelling.
+func readUnsetParameters(s string) (string, bool) {
+	unsetBraced := func(m []string) (string, bool) {
+		// Parameter zero names the shell, including a multi-digit zero
+		// spelling. Its value is not the unset positional-argument case.
+		if m[3] == "IFS" || strings.Trim(m[3], "0") == "" {
+			return "", false
+		}
+		return unsetBracedValue(m[1] != "", m[4]), true
+	}
 	for range maxParamNesting {
-		next := replaceUnescaped(s, bracedParamRe, func(m []string) (string, bool) {
-			// Parameter zero names the shell, including a multi-digit zero
-			// spelling. Its value is not the unset positional-argument case.
-			if m[3] == "IFS" || strings.Trim(m[3], "0") == "" {
-				return "", false
-			}
-			return unsetBracedValue(m[1] != "", m[4]), true
-		})
+		next := replaceUnescaped(s, bracedParamRe, unsetBraced)
 		if next == s {
 			break
 		}
 		s = next
 	}
+	unreadable := replaceUnescaped(s, bracedParamRe, unsetBraced) != s
 	return replaceUnescaped(s, bareParamRe, func(m []string) (string, bool) {
 		if m[1] == "IFS" {
 			return "", false
 		}
 		return "", true
-	})
+	}), unreadable
 }
 
 // unsetBracedValue is the value of ${name rest} (or ${#name rest} when
@@ -172,6 +179,10 @@ func expandWords(s string) (string, bool) {
 	s = singleBracketRe.ReplaceAllString(s, "$1")
 	var b strings.Builder
 	unreadable := false
+	// added counts the words expansion adds across the whole text. The
+	// whole command shares maxWordExpansions, so many expandable words
+	// cannot multiply the work the matcher does.
+	added := 0
 	start := -1
 	flush := func(end int) {
 		if start < 0 {
@@ -179,10 +190,14 @@ func expandWords(s string) (string, bool) {
 		}
 		w, ok := expandWord(s[start:end])
 		unreadable = unreadable || !ok
+		added += strings.Count(w, " ") - strings.Count(s[start:end], " ")
 		b.WriteString(w)
 		start = -1
 	}
 	for i := 0; i < len(s); i++ {
+		if added > maxWordExpansions {
+			return s, true
+		}
 		if strings.IndexByte(shellWordBreaks, s[i]) >= 0 {
 			flush(i)
 			b.WriteByte(s[i])
@@ -193,6 +208,9 @@ func expandWords(s string) (string, bool) {
 		}
 	}
 	flush(len(s))
+	if added > maxWordExpansions {
+		return s, true
+	}
 	return b.String(), unreadable
 }
 

@@ -176,7 +176,7 @@ func TestReadUnsetParameters(t *testing.T) {
 		{"no expansion", "no expansion"},
 	}
 	for _, tt := range tests {
-		if got := readUnsetParameters(tt.in); got != tt.want {
+		if got, _ := readUnsetParameters(tt.in); got != tt.want {
 			t.Errorf("readUnsetParameters(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
@@ -281,5 +281,61 @@ func BenchmarkWordReadingCommand(b *testing.B) {
 				_ = pc.CheckToolCall("bash", []string{command})
 			}
 		})
+	}
+}
+
+// TestWordReading_QuotedText: quotes are removed before the word reading, so
+// quoted text is read too. A nested shell re-parses quoted text as a command,
+// and telling those arguments apart would need more shell grammar, so a quoted
+// search for a destructive spelling also matches (a conservative over-block).
+func TestWordReading_QuotedText(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, cmd := range []string{
+		"bash -c 'r[m] -rf /'",
+		"sh -c '{r,}m -rf /'",
+		"eval 'r${u}m -rf /'",
+		"'r'[m] -rf /",
+		`"r${u}m" -rf /`,
+		"grep 'r[m] -rf' script.sh",
+	} {
+		if v := pc.CheckToolCall("bash", []string{cmd}); !v.Matched || !slices.Contains(v.Rules, ruleFileDelete) {
+			t.Errorf("%q: verdict %v %v, want %s", cmd, v.Matched, v.Rules, ruleFileDelete)
+		}
+	}
+}
+
+// TestWordReading_CommandBudget: many expandable words share one budget, and
+// a command over it reports an incomplete check rather than a partial reading.
+func TestWordReading_CommandBudget(t *testing.T) {
+	got, unreadable := expandWords(strings.Repeat("{a,b}{a,b} ", 100))
+	if !unreadable || got != strings.Repeat("{a,b}{a,b} ", 100) {
+		t.Fatal("a command expanding to 400 words was not reported unreadable")
+	}
+	if _, unreadable := expandWords(strings.Repeat("{a,b} ", 8)); unreadable {
+		t.Fatal("a command adding 8 words was reported unreadable")
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	cmd := "echo " + strings.Repeat("{a,b}{a,b}{a,b} ", 20) + "; {r,}m -rf /tmp/x"
+	if v := pc.CheckToolCall("bash", []string{cmd}); !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("over-budget command: verdict %v %q %v", v.Matched, v.Action, v.Rules)
+	}
+}
+
+// TestReadUnsetParameters_Nesting: expansions nested past maxParamNesting are
+// reported unreadable.
+func TestReadUnsetParameters_Nesting(t *testing.T) {
+	deep := "rm"
+	for range maxParamNesting + 1 {
+		deep = "${x:-" + deep + "}"
+	}
+	if _, unreadable := readUnsetParameters(deep); !unreadable {
+		t.Fatal("nesting past the bound was not reported unreadable")
+	}
+	if got, unreadable := readUnsetParameters("${x:-${y:-rm}}"); got != "rm" || unreadable {
+		t.Fatalf("two-level nesting = %q, %v", got, unreadable)
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	if v := pc.CheckToolCall("bash", []string{deep + " -rf /tmp/x"}); !v.Matched || v.Action != config.ActionBlock {
+		t.Fatalf("deep nesting: verdict %v %q %v", v.Matched, v.Action, v.Rules)
 	}
 }
