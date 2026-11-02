@@ -9,7 +9,7 @@ AutoGen v0.4+ and Docker Compose deployment.
 
 ```bash
 # 1. Install pipelock
-git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
+git clone --branch v3.8.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 make -C pipelock install
 
 # 2. Generate a config (or copy a preset)
@@ -265,7 +265,7 @@ networks:
 services:
   pipelock:
     # Pin to a specific version for production. See https://github.com/pipelab-org/pipelock/releases for available tags.
-    image: ghcr.io/luckypipewrench/pipelock:3.7.0
+    image: ghcr.io/pipelab-org/pipelock:3.8.0
     networks:
       - pipelock-internal
       - pipelock-external

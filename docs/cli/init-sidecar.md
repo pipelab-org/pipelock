@@ -49,7 +49,7 @@ The command runs 7 phases: detect, generate, preview, emit, verify, canary, and 
 | `--output`, `-o` | stdout (patch only) | Output path. **`patch` writes a multi-doc YAML stream to stdout when `-o` is omitted.** **`kustomize` and `helm-values` require `-o <dir>`** (bundle formats emit multi-file trees — overlay, resources, values.yaml, README — and error out when `-o` is missing). Passing a `.yaml` file path to a bundle format creates a directory with that name. |
 | `--dry-run` | false | Show the generated topology without writing files or running canary |
 | `--force` | false | Regenerate companion output even from an already-patched input, and overwrite existing output files |
-| `--image` | `ghcr.io/luckypipewrench/pipelock:<version>` | Companion proxy image (tag or digest ref) |
+| `--image` | `ghcr.io/pipelab-org/pipelock:<version>` | Companion proxy image (tag or digest ref) |
 | `--preset` | `balanced` | Config preset: `strict`, `balanced`, `audit`, `claude-code`, `cursor`, `generic-agent`, `hostile-model` |
 | `--skip-canary` | false | Skip the canary detection test |
 | `--skip-verify` | false | Skip static topology verification |
@@ -126,11 +126,11 @@ Generated files:
 pipelock init sidecar --inject-spec deployment.yaml --emit helm-values --output ./pipelock-bundle
 # The chart is an OCI artifact and Helm cannot list its tags: use an exact chart version, which equals a Pipelock release version.
 read -r -p 'Chart version to render and inspect: ' chart_version
-helm show chart oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version"
-helm template my-agent-pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version" \
+helm show chart oci://ghcr.io/pipelab-org/charts/pipelock --version "$chart_version"
+helm template my-agent-pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version "$chart_version" \
   -f ./pipelock-bundle/values.yaml > ./pipelock-bundle/rendered.yaml
 # Inspect rendered.yaml before continuing (see Verification below).
-helm upgrade --install my-agent-pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version "$chart_version" \
+helm upgrade --install my-agent-pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version "$chart_version" \
   -f ./pipelock-bundle/values.yaml
 kubectl rollout status deployment/my-agent-pipelock
 kubectl apply -f ./pipelock-bundle/pipelock-networkpolicy.yaml \

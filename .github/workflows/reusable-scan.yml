@@ -4,9 +4,9 @@
 #
 #   jobs:
 #     security:
-#       uses: pipelab-org/pipelock/.github/workflows/reusable-scan.yml@v3.7.0
+#       uses: pipelab-org/pipelock/.github/workflows/reusable-scan.yml@v3.8.0
 #       with:
-#         pipelock-version: '3.7.0'
+#         pipelock-version: '3.8.0'
 #
 # All inputs have sensible defaults. Override what you need.
 
@@ -19,7 +19,7 @@ on:
   workflow_call:
     inputs:
       pipelock-version:
-        description: 'Pipelock version (e.g., "3.7.0"). Defaults to latest.'
+        description: 'Pipelock version (e.g., "3.8.0"). Defaults to latest.'
         type: string
         default: 'latest'
       config-path:
@@ -78,7 +78,7 @@ jobs:
         id: pipelock
         # Keep wrapper behavior aligned with the installed release. In particular,
         # scan-diff exit code 2 means no verified result was produced.
-        uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+        uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0 examples; source snapshot, not release tag
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}
