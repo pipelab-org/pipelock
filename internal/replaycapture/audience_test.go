@@ -51,7 +51,13 @@ func captureWithTargetHost(t *testing.T, target string) *CapturedScenario {
 	if len(cs.Receipts) == 0 {
 		t.Fatal("capture produced no receipts")
 	}
-	cs.Receipts[len(cs.Receipts)-1].ActionRecord.Target = target
+	for i := range cs.Receipts {
+		if cs.Receipts[i].ActionRecord.SessionControl == nil && cs.Receipts[i].ActionRecord.Verdict == verdictBlock {
+			cs.Receipts[i].ActionRecord.Target = target
+			return cs
+		}
+	}
+	t.Fatal("capture produced no decisive blocking action")
 	return cs
 }
 

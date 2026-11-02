@@ -11,6 +11,7 @@ import (
 	"io"
 
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/securefile"
 	"github.com/luckyPipewrench/pipelock/internal/signingflag"
 )
@@ -91,5 +92,33 @@ func Run(opts Options) error {
 		}
 		_, _ = fmt.Fprintln(out, "STRUCTURAL ONLY — signer NOT trusted")
 	}
-	return nil
+
+	chainReport := certificateEndProof(result.Body)
+	_, _ = fmt.Fprintln(out, chainReport.Status)
+	if chainReport.Integrity == "invalid" {
+		return errors.New("coverage certificate records a broken receipt chain")
+	}
+	return chainReport.Require(false)
+}
+
+func certificateEndProof(body coveragecert.Body) endproof.Report {
+	evidence := make([]string, 0, len(body.Sessions))
+	incomplete := len(body.Sessions) == 0
+	for _, session := range body.Sessions {
+		if !session.ChainIntact || session.CompletenessStatus == "BROKEN" {
+			return endproof.New(false, "coverage_certificate")
+		}
+		if session.CompletenessStatus == "LIMITED" &&
+			session.CompletenessReason == "bounded_closed" && endproof.RunScoped(session.ID) {
+			evidence = append(evidence, "session_close")
+			continue
+		}
+		incomplete = true
+	}
+	if incomplete {
+		// A proven session cannot establish that every session in the signed
+		// certificate reached its endpoint. Keep the aggregate at prefix status.
+		return endproof.New(true, "coverage_certificate")
+	}
+	return endproof.New(true, "coverage_certificate", evidence...)
 }

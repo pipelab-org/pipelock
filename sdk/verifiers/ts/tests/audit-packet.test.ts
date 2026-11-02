@@ -10,10 +10,12 @@ import { spawnSync } from "node:child_process";
 import { verifyAuditPacket } from "../src/audit-packet.js";
 import { computeTotals, verifyChain } from "../src/chain.js";
 import { extractReceipts } from "../src/recorder.js";
+import { recorderEntryHash } from "../src/recorder-chain.js";
 import type { AuditPacket } from "../src/types.js";
 import { resolveSignerKey, sha256Hex } from "../src/util.js";
 
 const publicKey = "4655a7e605c12ebb00a46037881c33c5bca5eb74b45a02e8e7261a7ff5a21678";
+const endProofKey = "49131515e58f653ad8e2f5972b8be9efbbcb943af2c7ed4c6e41ff23b0c11f52";
 const versionedPublicKey =
   "pipelock-ed25519-public-v1\nRlWn5gXBLrsApGA3iBwzxbyl63S0WgLo5yYaf/WiFng=";
 const rootHash = "be904bd5ca82adc26c2969872c23925f22ff24e33faf44a1185b9ffc0e2c2b5a";
@@ -85,7 +87,11 @@ function writePacket(mutator?: (packet: AuditPacket) => void): string {
   return dir;
 }
 
-async function writePacketWithEvidence(source: string, lines?: number): Promise<string> {
+async function writePacketWithEvidence(
+  source: string,
+  lines?: number,
+  signerKey = publicKey,
+): Promise<string> {
   const dir = mkdtempSync(path.join(tmpdir(), "pipelock-ts-verifier-lifecycle-"));
   const rawEvidence = readFileSync(source, "utf8");
   const evidence =
@@ -94,7 +100,7 @@ async function writePacketWithEvidence(source: string, lines?: number): Promise<
       : `${rawEvidence.trimEnd().split("\n").slice(0, lines).join("\n")}\n`;
   writeFileSync(path.join(dir, "evidence.jsonl"), evidence, { mode: 0o600 });
   const receipts = extractReceipts(path.join(dir, "evidence.jsonl"));
-  const chain = await verifyChain(receipts, publicKey);
+  const chain = await verifyChain(receipts, signerKey);
   assert.equal(chain.valid, true, chain.error ?? "");
   const packet = basePacket();
   packet.summary!.receipt_count = chain.receipt_count;
@@ -102,12 +108,117 @@ async function writePacketWithEvidence(source: string, lines?: number): Promise<
   packet.verifier!.receipt_count = chain.receipt_count;
   packet.verifier!.root_hash = chain.root_hash;
   packet.verifier!.final_seq = chain.final_seq;
+  packet.verifier!.signer_key = signerKey;
   writeFileSync(path.join(dir, "packet.json"), `${JSON.stringify(packet, null, 2)}\n`, {
     mode: 0o600,
   });
   writeFileSync(path.join(dir, "verifier.txt"), "ok\n", { mode: 0o600 });
   return dir;
 }
+
+test("audit packet requires end proof and reports verified prefix counts", async () => {
+  const closedPath = "../../conformance/testdata/end-proof/closed.jsonl";
+  const evidence = readFileSync(closedPath, "utf8");
+  const lineCount = evidence.trimEnd().split("\n").length;
+  const closedDir = await writePacketWithEvidence(closedPath, undefined, endProofKey);
+  const closed = await verifyAuditPacket(closedDir, { ...defaultOptions, signerKey: endProofKey });
+  assert.equal(closed.valid, true);
+  assert.equal(closed.end_proof.proven, true);
+  assert.equal(closed.status, "CHAIN VALID");
+
+  const structuralDir = await writePacketWithEvidence(closedPath, undefined, endProofKey);
+  const structuralPath = path.join(structuralDir, "packet.json");
+  const structuralPacket = JSON.parse(readFileSync(structuralPath, "utf8"));
+  structuralPacket.verifier.verdict = "self_consistent_only";
+  structuralPacket.verifier.trusted = false;
+  writeFileSync(structuralPath, `${JSON.stringify(structuralPacket)}\n`, { mode: 0o600 });
+  const structural = await verifyAuditPacket(structuralDir, {
+    ...defaultOptions,
+    signerKey: endProofKey,
+    allowSelfConsistentOnly: true,
+  });
+  assert.equal(structural.valid, true);
+  assert.equal(structural.trusted, false);
+
+  const partialDir = await writePacketWithEvidence(closedPath, lineCount - 1, endProofKey);
+  const partial = await verifyAuditPacket(partialDir, {
+    ...defaultOptions,
+    signerKey: endProofKey,
+  });
+  assert.equal(partial.integrity, "valid");
+  assert.equal(partial.end_proof.proven, false);
+  assert.equal(partial.status, "VALID PREFIX, END UNPROVEN");
+  assert.equal(partial.verdict, "VALID PREFIX, END UNPROVEN");
+  assert.equal(partial.valid, false);
+  assert.equal(partial.trusted, false);
+  assert.equal(partial.summary.receipt_count, lineCount - 1);
+
+  const headDir = writePacket();
+  writeFileSync(
+    path.join(headDir, "evidence.jsonl"),
+    readFileSync("../../conformance/testdata/end-proof/head-cut.jsonl"),
+    { mode: 0o600 },
+  );
+  const head = await verifyAuditPacket(headDir, { ...defaultOptions, signerKey: endProofKey });
+  assert.equal(head.integrity, "invalid");
+  assert.equal(head.status, "CHAIN BROKEN");
+  assert.equal(head.end_proof.proven, false);
+
+  const manifest = JSON.parse(
+    readFileSync("../../conformance/testdata/end-proof/expect.json", "utf8"),
+  ) as {
+    audit_packet: Array<{
+      name: string;
+      exit: number;
+      integrity: string;
+      status: string;
+      proven: boolean;
+    }>;
+  };
+  for (const expected of manifest.audit_packet.filter((item) => !item.name.startsWith("v2-"))) {
+    const report = { closed, "truncated-tail": partial, "head-cut": head }[
+      expected.name as "closed" | "truncated-tail" | "head-cut"
+    ];
+    assert.ok(report, `unknown audit-packet end-proof case ${expected.name}`);
+    assert.equal(report.integrity, expected.integrity, expected.name);
+    assert.equal(report.status, expected.status, expected.name);
+    assert.equal(report.end_proof.proven, expected.proven, expected.name);
+  }
+
+  const closedCli = spawnSync(
+    process.execPath,
+    [cliPath, "audit-packet", closedDir, "--key", endProofKey, "--json"],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    closedCli.status,
+    manifest.audit_packet.find((item) => item.name === "closed")?.exit,
+  );
+
+  const cli = spawnSync(
+    process.execPath,
+    [cliPath, "audit-packet", partialDir, "--key", endProofKey, "--json"],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    cli.status,
+    manifest.audit_packet.find((item) => item.name === "truncated-tail")?.exit,
+    cli.stderr,
+  );
+  assert.match(cli.stdout, /"status": "VALID PREFIX, END UNPROVEN"/u);
+
+  const headCli = spawnSync(
+    process.execPath,
+    [cliPath, "audit-packet", headDir, "--key", endProofKey, "--json"],
+    { encoding: "utf8" },
+  );
+  assert.equal(
+    headCli.status,
+    manifest.audit_packet.find((item) => item.name === "head-cut")?.exit,
+    headCli.stderr,
+  );
+  assert.match(headCli.stdout, /"status": "CHAIN BROKEN"/u);
+});
 
 const defaultOptions = {
   signerKey: publicKey,
@@ -119,7 +230,8 @@ const defaultOptions = {
 
 test("audit packet verifies end to end", async () => {
   const report = await verifyAuditPacket(writePacket(), defaultOptions);
-  assert.equal(report.valid, true);
+  assert.equal(report.valid, false);
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
   assert.equal(report.schema_check, "pass");
   assert.equal(report.chain_check, "pass");
   assert.equal(report.cross_check, "pass");
@@ -147,7 +259,8 @@ test("audit packet keeps an in-progress lifecycle valid but names it", async () 
     await writePacketWithEvidence("../../conformance/testdata/g1-restart-chain.jsonl"),
     defaultOptions,
   );
-  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.valid, false, JSON.stringify(report.errors));
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
   assert.equal(report.lifecycle_assessment, "assessed");
   assert.equal(report.lifecycle_status, "LIMITED");
   assert.equal(report.lifecycle_reason, "open_action");
@@ -158,7 +271,8 @@ test("audit packet keeps an open session valid but marks its missing close", asy
     await writePacketWithEvidence("../../conformance/testdata/g1-valid-chain.jsonl", 1),
     defaultOptions,
   );
-  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.valid, false, JSON.stringify(report.errors));
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
   assert.equal(report.lifecycle_assessment, "assessed");
   assert.equal(report.lifecycle_status, "LIMITED");
   assert.equal(report.lifecycle_reason, "abnormal_end");
@@ -174,15 +288,30 @@ test("audit packet reports a malformed lifecycle chain as assessed and broken", 
   const report = await verifyAuditPacket(dir, defaultOptions);
   assert.equal(report.valid, false);
   assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "CHAIN BROKEN");
   assert.equal(report.lifecycle_assessment, "assessed");
   assert.equal(report.lifecycle_status, "BROKEN");
   assert.equal(report.lifecycle_reason, "chain_broken");
+});
+
+test("malformed audit-packet schema is not reported as a broken chain", async () => {
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.schema_version = "unknown";
+    }),
+    defaultOptions,
+  );
+  assert.equal(report.valid, false);
+  assert.equal(report.schema_check, "fail");
+  assert.equal(report.status, "PACKET INVALID");
+  assert.equal(report.chain_check, "skipped");
 });
 
 test("audit packet requires external trust for valid verdict", async () => {
   const report = await verifyAuditPacket(writePacket(), { ...defaultOptions, signerKey: "" });
   assert.equal(report.valid, false);
   assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "TRUST UNVERIFIED");
   assert.ok(report.errors?.some((err) => err.includes("requires --key or --expect-sha256")));
 });
 
@@ -194,7 +323,8 @@ test("packet hash can anchor the embedded signer key", async () => {
     signerKey: "",
     expectSha256: sha256Hex(packetBytes),
   });
-  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.valid, false, JSON.stringify(report.errors));
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
 });
 
 test("wrong packet hash cannot anchor the embedded signer key", async () => {
@@ -218,7 +348,8 @@ test("explicit self-consistent mode uses the unpinned chain", async () => {
     signerKey: "",
     allowSelfConsistentOnly: true,
   });
-  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.valid, false, JSON.stringify(report.errors));
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
 });
 
 test("explicit no-trust mode can use the packet key", async () => {
@@ -231,7 +362,29 @@ test("explicit no-trust mode can use the packet key", async () => {
     signerKey: "",
     noTrustRequired: true,
   });
+  assert.equal(report.valid, false, JSON.stringify(report.errors));
+  assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
+});
+
+test("no-trust mode does not repeat the packet trust claim", async () => {
+  const dir = await packetOverRun(
+    "../../conformance/testdata/end-proof/v2-closed.jsonl",
+    endProofKey,
+  );
+  const report = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: "",
+    noTrustRequired: true,
+  });
   assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.trusted, false, "no external anchor was supplied");
+  const anchored = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: endProofKey,
+    noTrustRequired: true,
+  });
+  assert.equal(anchored.valid, true);
+  assert.equal(anchored.trusted, false, "relaxed-trust mode never reports trusted");
 });
 
 test("audit packet rejects an empty chain", async () => {
@@ -264,7 +417,7 @@ test("literal signer key wins over a same-named cwd file", () => {
       encoding: "utf8",
     },
   );
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 3, result.stderr);
 });
 
 test("versioned literal signer key wins over a same-named cwd file", () => {
@@ -280,7 +433,7 @@ test("versioned literal signer key wins over a same-named cwd file", () => {
       encoding: "utf8",
     },
   );
-  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.status, 3, result.stderr);
 });
 
 test("versioned signer keys reject malformed base64", () => {
@@ -383,6 +536,7 @@ test("--offline skips chain verification", async () => {
   assert.equal(report.cross_check, "skipped");
   assert.equal(report.lifecycle_assessment, "not_assessed");
   assert.equal(report.lifecycle_assessment_reason, "offline mode skips chain re-verification");
+  assert.equal(report.status, "TRUST UNVERIFIED");
 });
 
 test("CLI missing argument exits 64", () => {
@@ -476,11 +630,11 @@ test("audit packet rejects invalid UTF-8 instead of replacing bytes", async () =
 // A packet claims verdict=valid and trusted=true. When full verification
 // fails, the report must not repeat that claim.
 test("failed audit packet verification never reports trust", async () => {
-  // Positive control: the unmodified packet verifies and keeps its claim.
+  // Prefix control: the packet claim stays untrusted without an end proof.
   const control = await verifyAuditPacket(writePacket(), defaultOptions);
-  assert.equal(control.valid, true, JSON.stringify(control.errors));
-  assert.equal(control.verdict, "valid");
-  assert.equal(control.trusted, true);
+  assert.equal(control.valid, false, JSON.stringify(control.errors));
+  assert.equal(control.verdict, "VALID PREFIX, END UNPROVEN");
+  assert.equal(control.trusted, false);
 
   const tamperedDir = writePacket();
   writeFileSync(
@@ -588,6 +742,68 @@ test("an audit packet over a forged EvidenceReceipt v2 is never trusted", async 
   assert.equal(r.status, 1, r.stdout);
   assert.equal((JSON.parse(r.stdout) as { trusted: boolean }).trusted, false);
   assert.match(r.stderr, /^verification failed: audit packet .*evidence receipt chain/mu);
+});
+
+test("audit-packet and SDK verifiers share v2 recorder endpoint conformance cases", async () => {
+  const key = endProofKey;
+  const manifest = JSON.parse(
+    readFileSync("../../conformance/testdata/end-proof/expect.json", "utf8"),
+  ) as {
+    audit_packet: { name: string; integrity: string; status: string; proven: boolean }[];
+  };
+  for (const expected of manifest.audit_packet.filter((item) => item.name.startsWith("v2-"))) {
+    const evidence = `../../conformance/testdata/end-proof/${expected.name}.jsonl`;
+    const dir = await packetOverRun(evidence, key);
+    const report = await verifyAuditPacket(dir, { ...defaultOptions, signerKey: key });
+    assert.equal(report.integrity, expected.integrity, expected.name);
+    assert.equal(report.status, expected.status, expected.name);
+    assert.equal(report.end_proof.proven, expected.proven, expected.name);
+    if (expected.name === "v2-closed") {
+      assert.equal(report.valid, true, "the closed shared fixture is a positive control");
+    } else {
+      assert.equal(report.valid, false, expected.name);
+    }
+  }
+});
+
+test("an open action prefix still checks a present v2 recorder seal", async () => {
+  const source = readFileSync("../../conformance/testdata/end-proof/v2-closed.jsonl", "utf8");
+  const entries = source
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  const closeIndex = entries.findIndex((entry) => {
+    const action = (entry["detail"] as Record<string, unknown> | undefined)?.["action_record"] as
+      Record<string, unknown> | undefined;
+    const control = action?.["session_control"] as Record<string, unknown> | undefined;
+    return entry["type"] === "action_receipt" && control?.["kind"] === "session_close";
+  });
+  assert.notEqual(closeIndex, -1, "fixture has a session_close action");
+  entries.splice(closeIndex, 1);
+  let previous = "genesis";
+  const lines = entries.map((entry, index) => {
+    entry["seq"] = index;
+    if (entry["type"] === "checkpoint") {
+      const detail = entry["detail"] as Record<string, unknown>;
+      detail["last_seq"] = index - 1;
+      detail["entry_count"] = index;
+    }
+    entry["prev_hash"] = previous;
+    const hash = recorderEntryHash(JSON.stringify(entry));
+    entry["hash"] = hash;
+    previous = hash;
+    return JSON.stringify(entry);
+  });
+  const evidencePath = path.join(
+    mkdtempSync(path.join(tmpdir(), "pipelock-ts-verifier-open-v2-seal-")),
+    "evidence.jsonl",
+  );
+  writeFileSync(evidencePath, `${lines.join("\n")}\n`, { mode: 0o600 });
+  const dir = await packetOverRun(evidencePath, endProofKey);
+  const report = await verifyAuditPacket(dir, { ...defaultOptions, signerKey: endProofKey });
+  assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "CHAIN BROKEN");
+  assert.ok(report.errors?.some((error) => error.includes("transcript_root does not match")));
 });
 
 test("audit-packet --key repeats to pin a trusted key set", async () => {

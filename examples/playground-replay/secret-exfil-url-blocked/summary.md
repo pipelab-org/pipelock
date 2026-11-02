@@ -5,7 +5,7 @@
 - **Transport:** fetch
 - **Destination:** attacker-controlled collector (reserved example host)
 - **Decision:** block
-- **Receipts:** 1 (chain verifies)
+- **Receipts:** 3 (chain verifies)
 
 ## Without Pipelock
 

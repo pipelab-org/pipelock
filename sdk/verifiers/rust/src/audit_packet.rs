@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::chain::{compute_totals, evidence_chain_key, verify_chain_with_options};
-use crate::lifecycle::analyze_lifecycle;
-use crate::recorder::extract_typed_receipts;
+use crate::lifecycle::{analyze_lifecycle, close_ends_chain};
+use crate::recorder::{extract_typed_from_lines, read_entry_lines, RecorderLine};
+use crate::recorder_chain::verify_recorder_chain;
 use crate::schema::validate_audit_packet;
 use crate::types::{
     AuditPacket, AuditPacketReport, ChainResult, Receipt, ReportPosture, ReportRun, ReportSummary,
@@ -13,6 +14,7 @@ use crate::util::{
     bool_at, parse_json_text, reject_duplicate_keys, resolve_artifact_path, resolve_packet_path,
     resolve_signer_key, sha256_hex, string_at, string_vec_at, u64_at, Result,
 };
+use ed25519_dalek::{Signature, VerifyingKey};
 
 #[derive(Debug, Clone, Default)]
 pub struct AuditPacketOptions {
@@ -37,6 +39,10 @@ fn without_claimed_trust(mut report: AuditPacketReport) -> AuditPacketReport {
         return report;
     }
     report.trusted = false;
+    if report.status == crate::output::PREFIX_STATUS {
+        report.verdict = crate::output::PREFIX_STATUS.to_string();
+        return report;
+    }
     if report.verdict == "valid" || report.verdict == "self_consistent_only" {
         report.verdict = "invalid".to_string();
     }
@@ -92,6 +98,7 @@ fn verify_audit_packet_report(
     };
     report = report_from_packet(&packet_path_string, Some(&packet));
     if opts.offline {
+        report.status = "TRUST UNVERIFIED".to_string();
         report.verdict.clear();
         report.trusted = false;
     }
@@ -126,14 +133,25 @@ fn verify_audit_packet_report(
         Ok(path) => path,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
     };
-    let typed = match extract_typed_receipts(&evidence_path) {
+    let evidence_lines = match read_entry_lines(&evidence_path) {
+        Ok(lines) => lines,
+        Err(err) => {
+            report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
+            push_error(&mut report, format!("chain: {err}"));
+            return Ok(report);
+        }
+    };
+    let typed = match extract_typed_from_lines(evidence_lines.clone()) {
         Ok(typed) => typed,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
@@ -156,6 +174,7 @@ fn verify_audit_packet_report(
         packet_key
     } else {
         report.chain_check = "fail".to_string();
+        report.status = "TRUST UNVERIFIED".to_string();
         push_error(
             &mut report,
             "chain: trusted Audit Packet verification requires --key or --expect-sha256"
@@ -176,13 +195,16 @@ fn verify_audit_packet_report(
         Ok(key) => key,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "TRUST UNVERIFIED".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
     };
     let has_both = !typed.action.is_empty() && !typed.evidence.is_empty();
     let evidence_only = typed.action.is_empty();
+    let has_v2_evidence = !typed.evidence.is_empty();
     let evidence_receipts = typed.evidence.clone();
+    let action_receipts = typed.action.clone();
     let receipts = typed.select_chain();
     let primary_key = if evidence_only {
         evidence_chain_key(&key_hex, &receipts)
@@ -226,8 +248,15 @@ fn verify_audit_packet_report(
             ),
         );
     }
+    if chain.valid {
+        report.summary = ReportSummary {
+            receipt_count: receipts.len() as u64,
+            totals: compute_totals(&receipts),
+        };
+    }
     let cross_errors = cross_check(&packet, &chain, &receipts);
     if !cross_errors.is_empty() {
+        report.status = "CHAIN BROKEN".to_string();
         report.cross_check = "fail".to_string();
         for err in cross_errors {
             push_error(&mut report, format!("cross-check: {err}"));
@@ -235,7 +264,61 @@ fn verify_audit_packet_report(
         return Ok(report);
     }
     report.cross_check = "pass".to_string();
-    report.valid = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
+    let trusted = chain.valid && !lifecycle_broken && trust_verdict(&packet, opts);
+    let action_end_proven = chain.valid && close_ends_chain(&receipts);
+    // Every present checkpoint signature and transcript_root seal must verify,
+    // even in a packet with only the action chain; otherwise a v2 chain could be
+    // stripped while its now-stale seal stays in place. The whole-recorder end is
+    // required once the file carries a v2 chain; a legacy action-only packet
+    // keeps its session_close end proof.
+    let v2_end_proof = if chain.valid {
+        match verify_v2_recorder_end(&evidence_lines, &action_receipts, &chain) {
+            Ok(proven) => proven || !has_v2_evidence,
+            Err(err) => {
+                report.chain_check = "fail".to_string();
+                chain.valid = false;
+                chain.error = Some(format!("whole-recorder endpoint: {err}"));
+                push_error(
+                    &mut report,
+                    format!(
+                        "chain: {}",
+                        chain.error.as_deref().unwrap_or("verification failed")
+                    ),
+                );
+                false
+            }
+        }
+    } else {
+        true
+    };
+    let end_proven = action_end_proven && v2_end_proof;
+    report.integrity = if chain.valid { "valid" } else { "invalid" }.to_string();
+    report.end_proof = crate::types::EndProof {
+        proven: end_proven,
+        evidence: if end_proven {
+            vec!["session_close".to_string()]
+        } else {
+            vec![]
+        },
+    };
+    report.scope = "audit_packet".to_string();
+    report.status = if !chain.valid || lifecycle_broken {
+        "CHAIN BROKEN"
+    } else if !trusted {
+        "TRUST UNVERIFIED"
+    } else if !end_proven {
+        crate::output::PREFIX_STATUS
+    } else if end_proven {
+        "CHAIN VALID"
+    } else {
+        "CHAIN BROKEN"
+    }
+    .to_string();
+    if trusted && !end_proven {
+        report.verdict = crate::output::PREFIX_STATUS.to_string();
+    }
+    report.valid = trusted && end_proven && chain.valid;
+    report.trusted = report.trusted && report.valid && !opts.no_trust_required;
     if lifecycle_broken {
         push_error(&mut report, format!("lifecycle: {lifecycle_reason}"));
     }
@@ -243,6 +326,260 @@ fn verify_audit_packet_report(
         push_error(&mut report, "packet not trusted".to_string());
     }
     Ok(report)
+}
+
+fn verify_v2_recorder_end(
+    lines: &[RecorderLine],
+    action_receipts: &[Receipt],
+    action_chain: &ChainResult,
+) -> std::result::Result<bool, String> {
+    let raw_lines: Vec<&str> = lines.iter().map(|line| line.line.as_str()).collect();
+    if let Some(err) = verify_recorder_chain(&raw_lines) {
+        return Err(format!("recorder hash chain: {err}"));
+    }
+
+    let action_indexes: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.entry.get("type").and_then(serde_json::Value::as_str) == Some("action_receipt"))
+                .then_some(index)
+        })
+        .collect();
+    let evidence_indexes: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.entry.get("type").and_then(serde_json::Value::as_str) == Some("evidence_receipt"))
+                .then_some(index)
+        })
+        .collect();
+    if action_indexes.len() != action_receipts.len() {
+        return Err("recorder action receipt inventory differs from the verified chain".into());
+    }
+
+    let roots: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            (line.entry.get("type").and_then(serde_json::Value::as_str) == Some("transcript_root"))
+                .then_some(index)
+        })
+        .collect();
+    // A v2 chain without a transcript root is still a verified prefix.
+    let Some(&root_index) = roots.last() else {
+        validate_checkpoints(lines, &action_indexes)?;
+        return Ok(false);
+    };
+    for index in &roots {
+        let entry = &lines[*index].entry;
+        let detail = entry
+            .get("detail")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("transcript_root detail is not an object")?;
+        detail
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("transcript_root session_id is missing")?;
+        detail
+            .get("final_seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("transcript_root final_seq is missing or invalid")?;
+        detail
+            .get("root_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("transcript_root root_hash is missing")?;
+        detail
+            .get("receipt_count")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("transcript_root receipt_count is missing or invalid")?;
+    }
+
+    let root_entry = &lines[root_index].entry;
+    let root = root_entry
+        .get("detail")
+        .and_then(serde_json::Value::as_object)
+        .ok_or("transcript_root detail is not an object")?;
+    let root_session = root
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("transcript_root session_id is missing")?;
+    let entry_session = root_entry
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("transcript_root entry session_id is missing")?;
+    if root_session != entry_session {
+        return Err("transcript_root detail session differs from its recorder entry".into());
+    }
+    let final_seq = root
+        .get("final_seq")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("transcript_root final_seq is missing or invalid")?;
+    let root_hash = root
+        .get("root_hash")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("transcript_root root_hash is missing")?;
+    let receipt_count = root
+        .get("receipt_count")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("transcript_root receipt_count is missing or invalid")?;
+    if action_indexes
+        .last()
+        .is_none_or(|index| *index >= root_index)
+        || evidence_indexes.iter().any(|index| *index >= root_index)
+        || final_seq != action_chain.final_seq
+        || root_hash != action_chain.root_hash
+        || receipt_count == 0
+        || receipt_count > action_receipts.len() as u64
+        || receipt_count != final_segment_receipt_count(action_receipts) as u64
+    {
+        return Err("transcript_root does not match the verified action receipt chain".into());
+    }
+    if !crate::chain_set::is_run_session(root_session) {
+        return Ok(false);
+    }
+
+    let after_root = &lines[root_index + 1..];
+    if after_root.len() > 1
+        || after_root.first().is_some_and(|line| {
+            line.entry.get("type").and_then(serde_json::Value::as_str) != Some("checkpoint")
+        })
+    {
+        return Err("transcript_root is followed by unsealed recorder entries".into());
+    }
+    validate_checkpoints(lines, &action_indexes)?;
+
+    let Some(checkpoint) = after_root.first() else {
+        return Ok(false);
+    };
+    let signature = checkpoint
+        .entry
+        .pointer("/detail/signature")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("trailing checkpoint signature is missing")?;
+    if signature.is_empty() {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+fn final_segment_receipt_count(receipts: &[Receipt]) -> usize {
+    let start = receipts
+        .iter()
+        .rposition(|receipt| {
+            receipt
+                .get("action_record")
+                .and_then(|record| record.get("key_transition"))
+                .is_some()
+        })
+        .unwrap_or(0);
+    receipts.len().saturating_sub(start)
+}
+
+fn validate_checkpoints(
+    lines: &[RecorderLine],
+    action_indexes: &[usize],
+) -> std::result::Result<(), String> {
+    let mut previous_checkpoint_seq = None;
+    for (index, line) in lines.iter().enumerate() {
+        if line.entry.get("type").and_then(serde_json::Value::as_str) != Some("checkpoint") {
+            continue;
+        }
+        let seq = line
+            .entry
+            .get("seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("checkpoint sequence is missing or invalid")?;
+        let preceding_seq = index
+            .checked_sub(1)
+            .and_then(|previous| lines[previous].entry.get("seq"))
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("checkpoint has no preceding recorder entry")?;
+        let detail = line
+            .entry
+            .get("detail")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("checkpoint detail is not an object")?;
+        let first_seq = detail
+            .get("first_seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("checkpoint first_seq is missing or invalid")?;
+        let last_seq = detail
+            .get("last_seq")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("checkpoint last_seq is missing or invalid")?;
+        let entry_count = detail
+            .get("entry_count")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or("checkpoint entry_count is missing or invalid")?;
+        if last_seq != preceding_seq
+            || first_seq > last_seq
+            || entry_count == 0
+            || entry_count - 1 != last_seq - first_seq
+            || previous_checkpoint_seq.is_some_and(|previous| first_seq <= previous)
+        {
+            return Err(format!("checkpoint span is invalid at recorder seq {seq}"));
+        }
+        previous_checkpoint_seq = Some(seq);
+
+        let signature = detail
+            .get("signature")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("checkpoint signature is missing")?;
+        if signature.is_empty() {
+            continue;
+        }
+        let sig_bytes = hex::decode(signature).map_err(|err| err.to_string())?;
+        let signature = Signature::from_slice(&sig_bytes).map_err(|err| err.to_string())?;
+        let previous_hash = line
+            .entry
+            .get("prev_hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("checkpoint prev_hash is missing")?;
+        let previous = action_indexes
+            .iter()
+            .rev()
+            .find(|receipt_index| **receipt_index < index)
+            .copied();
+        let next = action_indexes
+            .iter()
+            .find(|receipt_index| **receipt_index > index)
+            .copied();
+        let signer_key = |receipt_index: usize| -> std::result::Result<&str, String> {
+            lines[receipt_index]
+                .entry
+                .pointer("/detail/signer_key")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "signed checkpoint has no action receipt signer".to_string())
+        };
+        let verify_with = |key_hex: &str| -> std::result::Result<bool, String> {
+            let key_bytes = hex::decode(key_hex).map_err(|err| err.to_string())?;
+            let key_bytes: [u8; 32] = key_bytes
+                .try_into()
+                .map_err(|_| "checkpoint signer key must be 32 bytes".to_string())?;
+            let key = VerifyingKey::from_bytes(&key_bytes).map_err(|err| err.to_string())?;
+            Ok(key
+                .verify_strict(previous_hash.as_bytes(), &signature)
+                .is_ok())
+        };
+        let Some(first_index) = previous.or(next) else {
+            return Err("signed checkpoint has no action receipt signer".into());
+        };
+        if verify_with(signer_key(first_index)?)? {
+            continue;
+        }
+        if let (Some(previous_index), Some(next_index)) = (previous, next) {
+            if signer_key(previous_index)? != signer_key(next_index)?
+                && verify_with(signer_key(next_index)?)?
+            {
+                continue;
+            }
+        }
+        return Err(format!(
+            "checkpoint signature is invalid at recorder seq {seq}"
+        ));
+    }
+    Ok(())
 }
 
 pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPacketReport {
@@ -256,11 +593,13 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
             .and_then(|packet| bool_at(packet, &["verifier", "trusted"]))
             .unwrap_or(false),
         valid: false,
+        integrity: "invalid".to_string(),
+        end_proof: crate::types::EndProof::default(),
+        scope: "audit_packet".to_string(),
+        status: "PACKET INVALID".to_string(),
         summary: ReportSummary {
-            receipt_count: packet
-                .and_then(|packet| u64_at(packet, &["summary", "receipt_count"]))
-                .unwrap_or(0),
-            totals: totals_from_packet(packet),
+            receipt_count: 0,
+            totals: Totals::zero(),
         },
         posture: ReportPosture {
             enforcement_mode: packet
@@ -288,7 +627,7 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
                 .to_string(),
         },
         errors: None,
-        warnings: None,
+        warnings: packet.map(|_| vec!["run and posture fields are packet claims and are not authenticated by receipt-chain verification".to_string()]),
         schema_check: "skipped".to_string(),
         chain_check: "skipped".to_string(),
         cross_check: "skipped".to_string(),

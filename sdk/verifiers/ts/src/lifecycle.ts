@@ -138,6 +138,23 @@ export function analyzeLifecycle(receipts: Receipt[], chain: ChainResult): Lifec
   return report ?? { status: unverified, reason: "no_lifecycle" };
 }
 
+// A trailing session_close proves the endpoint only for a run-scoped
+// recorder session. Called after signature and chain verification.
+export function closeEndsChain(receipts: Receipt[]): boolean {
+  const close = receipts.at(-1)?.action_record?.session_control;
+  if (close?.["kind"] !== "session_close") return false;
+  const runNonce = (close["close"] as Record<string, unknown> | undefined)?.["run_nonce"];
+  for (let i = receipts.length - 1; i >= 0; i--) {
+    const ctrl = receipts[i]?.action_record?.session_control;
+    const open = ctrl?.["open"] as Record<string, unknown> | undefined;
+    if (ctrl?.["kind"] !== "session_open" || open === undefined || open["run_nonce"] !== runNonce)
+      continue;
+    const session = open["recorder_session"];
+    return typeof session === "string" && isRunSession(session);
+  }
+  return false;
+}
+
 function applyDurability(state: RunState, value: Record<string, unknown> | undefined): boolean {
   const fsyncErrorsGated = counter(value?.["fsync_errors_gated"]);
   const durabilityBlocks = counter(value?.["durability_blocks"]);

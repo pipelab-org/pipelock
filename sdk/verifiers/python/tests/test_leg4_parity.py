@@ -16,6 +16,7 @@ import pytest
 
 from pipelock_aarp_verify import group as group_module
 from pipelock_aarp_verify import recovery
+from pipelock_aarp_verify.appraise import VerifyOptions
 from pipelock_aarp_verify.cli import _run_chain
 from pipelock_aarp_verify.group import (
     ACTION_ENTRY_TYPE,
@@ -164,7 +165,16 @@ def test_go_space_trim_never_raises_on_invalid_utf8() -> None:
 
 def test_chain_line_with_invalid_utf8_is_a_fatal_verdict_not_a_traceback() -> None:
     stdout, stderr = io.StringIO(), io.StringIO()
-    code = _run_chain(stdout, stderr, b'{"a":"\xff"}\n', json_mode=True)
+    code = _run_chain(
+        stdout,
+        stderr,
+        b'{"a":"\xff"}\n',
+        json_mode=True,
+        verify_opts=VerifyOptions(),
+        allow_prefix=False,
+        expect_head="",
+        expect_seq=None,
+    )
     assert code != 0
     assert json.loads(stdout.getvalue())["envelope_fatal"] is True
 

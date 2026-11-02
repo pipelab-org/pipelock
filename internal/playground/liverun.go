@@ -159,6 +159,7 @@ type LiveRun struct {
 	proxySrv     *http.Server
 	proxyObj     *proxy.Proxy
 	rec          *recorder.Recorder
+	receipts     *receipt.Emitter
 	sc           *scanner.Scanner
 
 	// Scenario / config
@@ -480,6 +481,10 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	if err != nil {
 		return nil, fmt.Errorf("recorder: %w", err)
 	}
+	runSession, err := recorder.AcquireRunSession(lr.rec, recorder.DefaultSessionBase)
+	if err != nil {
+		return nil, fmt.Errorf("acquire recorder run session: %w", err)
+	}
 
 	emitter := receipt.NewEmitter(receipt.EmitterConfig{
 		Recorder:       lr.rec,
@@ -487,6 +492,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		ConfigHash:     lr.policyHash,
 		Principal:      liveRunPrincipal,
 		Actor:          liveRunActor,
+		Session:        runSession,
 		OnReceipt:      opts.OnReceipt,
 		PostureBinding: receipt.PostureBinding{},
 	})
@@ -494,6 +500,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 		err = fmt.Errorf("emitter construction failed")
 		return nil, err
 	}
+	lr.receipts = emitter
 	if err = emitter.EmitSessionOpen(); err != nil {
 		return nil, fmt.Errorf("session_open receipt: %w", err)
 	}
@@ -501,6 +508,7 @@ func StartLiveRun(ctx context.Context, opts LiveRunOpts) (*LiveRun, error) {
 	// --- Proxy ---
 	lr.proxyObj, err = proxy.New(cfg, audit.NewNop(), lr.sc, metrics.New(),
 		proxy.WithRecorder(lr.rec),
+		proxy.WithSession(runSession),
 		proxy.WithReceiptEmitter(emitter),
 	)
 	if err != nil {
@@ -820,11 +828,8 @@ func (lr *LiveRun) HasReceipt(verdict string) bool {
 
 // Verdicts returns all receipt verdicts from the evidence JSONL.
 func (lr *LiveRun) Verdicts() []string {
-	// Close the recorder so evidence is flushed before reading.
-	if lr.rec != nil {
-		_ = lr.rec.Close()
-		lr.rec = nil
-	}
+	// Recorder writes flush each complete entry before returning. Inspecting
+	// verdicts must leave the run open for later actions and its final close.
 
 	evidenceFile, err := singleLiveEvidenceFile(lr.evidenceDir)
 	if err != nil {
@@ -846,10 +851,25 @@ func (lr *LiveRun) Verdicts() []string {
 // AssembleAndVerify performs the full end-to-end: red-case calibration, witness
 // seal, packet assembly, and offline verification. Returns the VerifyReport.
 func (lr *LiveRun) AssembleAndVerify(runDir string) (VerifyReport, error) {
-	// Ensure recorder is closed so evidence is flushed.
+	// A packet represents this completed live run, so durably seal the signed
+	// receipt chain before flushing and assembling its recorder evidence.
 	if lr.rec != nil {
-		_ = lr.rec.Close()
+		if lr.receipts != nil {
+			if err := lr.receipts.EmitSessionClose("graceful_shutdown"); err != nil {
+				closeErr := lr.rec.Close()
+				lr.rec = nil
+				if closeErr != nil {
+					return VerifyReport{}, fmt.Errorf("session_close receipt: %w (recorder close: %w)", err, closeErr)
+				}
+				return VerifyReport{}, fmt.Errorf("session_close receipt: %w", err)
+			}
+		}
+		if err := lr.rec.Close(); err != nil {
+			lr.rec = nil
+			return VerifyReport{}, fmt.Errorf("close recorder: %w", err)
+		}
 		lr.rec = nil
+		lr.receipts = nil
 	}
 
 	// The seal must complete even when the session context is canceled (TTL

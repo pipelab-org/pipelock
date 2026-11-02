@@ -184,5 +184,71 @@
       "status": "CHAIN VALID",
       "proven": true
     }
+  ],
+  "audit_packet": [
+    {
+      "name": "closed",
+      "file": "closed.jsonl",
+      "exit": 0,
+      "integrity": "valid",
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "truncated-tail",
+      "file": "truncated.jsonl",
+      "exit": 3,
+      "integrity": "valid",
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "head-cut",
+      "file": "head-cut.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "v2-closed",
+      "file": "v2-closed.jsonl",
+      "exit": 0,
+      "integrity": "valid",
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "v2-tail-cut",
+      "file": "v2-tail-cut.jsonl",
+      "exit": 3,
+      "integrity": "valid",
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "v2-no-checkpoint",
+      "file": "v2-no-checkpoint.jsonl",
+      "exit": 3,
+      "integrity": "valid",
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "v2-bad-seal",
+      "file": "v2-bad-seal.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "v2-stripped-seal",
+      "file": "v2-stripped-seal.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
+    }
   ]
 }

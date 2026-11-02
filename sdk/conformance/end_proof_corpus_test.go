@@ -42,6 +42,15 @@ type endProofCase struct {
 	Proven bool     `json:"proven"`
 }
 
+type auditPacketEndProofCase struct {
+	Name      string `json:"name"`
+	File      string `json:"file"`
+	Exit      int    `json:"exit"`
+	Integrity string `json:"integrity"`
+	Status    string `json:"status"`
+	Proven    bool   `json:"proven"`
+}
+
 // endProofRun records one emitter run into dir. A non-empty base mints a
 // per-run session; empty records under the legacy shared default session.
 func endProofRun(t *testing.T, dir string, priv ed25519.PrivateKey, session string, heartbeat bool, actions int) {
@@ -141,6 +150,7 @@ func TestGenerateEndProofCorpus(t *testing.T) {
 	write("closed.jsonl", closed)
 	truncated := closed[:len(closed)-1]
 	write("truncated.jsonl", truncated)
+	write("head-cut.jsonl", closed[1:])
 	write("middle-gap.jsonl", append([]string{closed[0]}, closed[2:]...))
 
 	// A legacy shared session: the restart resumed the same chain after run
@@ -176,14 +186,20 @@ func TestGenerateEndProofCorpus(t *testing.T) {
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(struct {
-		Key   string         `json:"key"`
-		Cases []endProofCase `json:"cases"`
-	}{hex.EncodeToString(pub), cases}); err != nil {
+		Key         string                    `json:"key"`
+		Cases       []endProofCase            `json:"cases"`
+		AuditPacket []auditPacketEndProofCase `json:"audit_packet"`
+	}{hex.EncodeToString(pub), cases, []auditPacketEndProofCase{
+		{Name: "closed", File: "closed.jsonl", Exit: 0, Integrity: "valid", Status: "CHAIN VALID", Proven: true},
+		{Name: "truncated-tail", File: "truncated.jsonl", Exit: 3, Integrity: "valid", Status: endProofPrefix, Proven: false},
+		{Name: "head-cut", File: "head-cut.jsonl", Exit: 1, Integrity: "invalid", Status: "CHAIN BROKEN", Proven: false},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(endProofDir, "expect.json"), buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	generatePacketRecorderEndCorpus(t)
 }
 
 func itoa(n int) string {

@@ -416,13 +416,14 @@ func realBundleForMemoryVerifyWithOrchestrator(t *testing.T, orchPub ed25519.Pub
 		ChainSeq:        1,
 		RunNonce:        runNonce,
 	})
+	closeRec := signMemorySessionClose(t, pipePriv, openRec, rec, now.Add(time.Second))
 
 	evidenceDir := filepath.Join(t.TempDir(), scenarioID)
 	if err := os.MkdirAll(evidenceDir, 0o750); err != nil {
 		t.Fatalf("mkdir evidence dir: %v", err)
 	}
 	evidenceFile := filepath.Join(evidenceDir, "evidence.jsonl")
-	if err := os.WriteFile(evidenceFile, mustMarshalReceiptLines(t, openRec, rec), 0o600); err != nil {
+	if err := os.WriteFile(evidenceFile, mustMarshalReceiptLines(t, openRec, rec, closeRec), 0o600); err != nil {
 		t.Fatalf("write evidence: %v", err)
 	}
 
@@ -559,11 +560,12 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		ChainSeq:        1,
 		RunNonce:        runNonce,
 	})
-	chain := receipt.VerifyChain([]receipt.Receipt{openRec, rec}, hex.EncodeToString(pipePub))
+	closeRec := signMemorySessionClose(t, pipePriv, openRec, rec, now.Add(time.Second))
+	chain := receipt.VerifyChain([]receipt.Receipt{openRec, rec, closeRec}, hex.EncodeToString(pipePub))
 	if !chain.Valid {
 		t.Fatalf("test receipt chain invalid: %s", chain.Error)
 	}
-	evidenceJSONL := mustMarshalReceiptLines(t, openRec, rec)
+	evidenceJSONL := mustMarshalReceiptLines(t, openRec, rec, closeRec)
 	packetJSON := mustJSON(t, auditpacket.Packet{
 		SchemaVersion: auditpacket.SchemaVersion,
 		PacketID:      "ap-verify-memory",
@@ -576,18 +578,18 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		},
 		Policy: auditpacket.Policy{PolicyHashes: []string{policyHash}},
 		Summary: auditpacket.Summary{
-			ReceiptCount:   2,
-			Totals:         auditpacket.Totals{Allow: 1, Block: 1},
-			Transports:     map[string]int{"receipt_session": 1, "http": 1},
+			ReceiptCount:   3,
+			Totals:         auditpacket.Totals{Allow: 2, Block: 1},
+			Transports:     map[string]int{"receipt_session": 2, "http": 1},
 			Layers:         map[string]int{"core_dlp": 1},
 			DomainsTouched: []string{"intake.lab.test"},
 		},
 		Verifier: auditpacket.Verifier{
 			Verdict:      auditpacket.VerdictValid,
 			Trusted:      true,
-			ReceiptCount: 2,
+			ReceiptCount: 3,
 			RootHash:     chain.RootHash,
-			FinalSeq:     1,
+			FinalSeq:     2,
 			SignerKey:    hex.EncodeToString(pipePub),
 			OutputFile:   "verifier.txt",
 		},
@@ -615,8 +617,8 @@ func newVerifyMemoryFixture(t *testing.T) verifyMemoryFixture {
 		Packet: replaycapture.PacketBinding{
 			Path:         "packet.json",
 			RootHash:     chain.RootHash,
-			ReceiptCount: 2,
-			FinalSeq:     1,
+			ReceiptCount: 3,
+			FinalSeq:     2,
 		},
 	})
 
@@ -787,7 +789,7 @@ func signMemorySessionOpen(
 	open := receipt.SessionOpen{
 		RunNonce:        runNonce,
 		OpenNonce:       openNonce,
-		RecorderSession: "proxy",
+		RecorderSession: "proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		PolicyHash:      policyHash,
 		SignerKeyEpoch:  hex.EncodeToString(pub),
 		ChainOpenSeq:    0,
@@ -811,6 +813,47 @@ func signMemorySessionOpen(
 		SessionControl: &receipt.SessionControl{
 			Kind: receipt.SessionControlOpen,
 			Open: &open,
+		},
+	})
+}
+
+func signMemorySessionClose(
+	t *testing.T,
+	priv ed25519.PrivateKey,
+	opening receipt.Receipt,
+	previous receipt.Receipt,
+	ts time.Time,
+) receipt.Receipt {
+	t.Helper()
+	open := opening.ActionRecord.SessionControl.Open
+	chainSeq := previous.ActionRecord.ChainSeq + 1
+	chainPrevHash := receiptHashForMemoryTest(t, previous)
+	return signReceipt(t, priv, receipt.ActionRecord{
+		Version:         receipt.ActionRecordVersion,
+		ActionID:        "act-session-close",
+		ActionType:      receipt.ActionUnclassified,
+		SideEffectClass: receipt.SideEffectNone,
+		Reversibility:   receipt.ReversibilityUnknown,
+		Timestamp:       ts,
+		Principal:       "pipelock-lab",
+		Actor:           "lab-agent",
+		Target:          "pipelock://session/close",
+		PolicyHash:      opening.ActionRecord.PolicyHash,
+		Verdict:         "allow",
+		Transport:       "receipt_session",
+		ChainPrevHash:   chainPrevHash,
+		ChainSeq:        chainSeq,
+		RunNonce:        open.RunNonce,
+		SessionControl: &receipt.SessionControl{
+			Kind: receipt.SessionControlClose,
+			Close: &receipt.SessionClose{
+				RunNonce:     open.RunNonce,
+				OpenNonce:    open.OpenNonce,
+				FinalSeq:     chainSeq,
+				RootHash:     chainPrevHash,
+				ReceiptCount: chainSeq + 1,
+				CloseReason:  "graceful_shutdown",
+			},
 		},
 	})
 }

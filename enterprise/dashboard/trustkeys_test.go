@@ -26,6 +26,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
 	anchorcmd "github.com/luckyPipewrench/pipelock/internal/cli/anchor"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -116,7 +117,7 @@ func TestAuditReceiptChain_ConsistentAndStaleAnchor(t *testing.T) {
 		}
 	})
 
-	t.Run("single receipt is a complete chain", func(t *testing.T) {
+	t.Run("single receipt has valid integrity", func(t *testing.T) {
 		got := AuditReceiptChain(ChainAuditInput{SessionID: testSessionID, Receipts: chain[:1], TrustedKeys: []string{keyHex}})
 		if !got.Consistent || got.Failures != 0 || got.Gaps != 0 || got.Forks != 0 {
 			t.Fatalf("audit = %+v, want single-receipt chain consistent", got)
@@ -152,6 +153,138 @@ func TestAuditReceiptChain_ConsistentAndStaleAnchor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAuditReceiptChain_ReportsIntegrityAndEndProofSeparately(t *testing.T) {
+	pub, priv := generateDashboardKey(t)
+	keyHex := hex.EncodeToString(pub)
+
+	t.Run("valid prefix has no end proof", func(t *testing.T) {
+		got := AuditReceiptChain(ChainAuditInput{
+			SessionID: testSessionID, Receipts: buildDashboardChain(t, priv, 3), TrustedKeys: []string{keyHex},
+		})
+		if !got.Consistent || !strings.Contains(got.Detail, endproof.Prefix) || strings.Contains(got.Detail, "chain consistent") {
+			t.Fatalf("audit = %+v, want valid prefix with unproven end", got)
+		}
+	})
+
+	t.Run("signed run close proves end", func(t *testing.T) {
+		chain := buildDashboardClosedRunChain(t, priv)
+		result := receipt.VerifyChainTrusted(chain, []string{keyHex})
+		if !result.Valid {
+			t.Fatalf("VerifyChainTrusted = %+v, want valid completed chain", result)
+		}
+		got := AuditReceiptChain(ChainAuditInput{
+			SessionID: chain[0].ActionRecord.SessionControl.Open.RecorderSession,
+			Receipts:  chain, TrustedKeys: []string{keyHex},
+		})
+		if !got.Consistent || !strings.Contains(got.Detail, endproof.Valid) {
+			t.Fatalf("audit = %+v, want valid completed chain", got)
+		}
+	})
+}
+
+func buildDashboardClosedRunChain(t *testing.T, priv ed25519.PrivateKey) []receipt.Receipt {
+	t.Helper()
+	const (
+		runNonce  = "dashboard-run"
+		openNonce = "dashboard-open"
+		sessionID = "proxy.run.0123456789abcdef0123456789abcdef"
+	)
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	open := receipt.SessionOpen{
+		RunNonce: runNonce, OpenNonce: openNonce, RecorderSession: sessionID,
+		PolicyHash: testPolicyHash, ChainOpenSeq: 0,
+	}
+	open.GenesisHash = receipt.ComputeSessionOpenGenesis(open)
+	openAction := validDashboardAction(0, open.GenesisHash, base)
+	openAction.SessionID = sessionID
+	openAction.RunNonce = runNonce
+	openAction.SessionControl = &receipt.SessionControl{Kind: receipt.SessionControlOpen, Open: &open}
+	first, err := receipt.Sign(openAction, priv)
+	if err != nil {
+		t.Fatalf("Sign open receipt: %v", err)
+	}
+	firstHash, err := receipt.ReceiptHash(first)
+	if err != nil {
+		t.Fatalf("ReceiptHash open: %v", err)
+	}
+	closeAction := validDashboardAction(1, firstHash, base.Add(time.Second))
+	closeAction.SessionID = sessionID
+	closeAction.RunNonce = runNonce
+	closeAction.SessionControl = &receipt.SessionControl{
+		Kind: receipt.SessionControlClose,
+		Close: &receipt.SessionClose{
+			RunNonce: runNonce, OpenNonce: openNonce, FinalSeq: 1,
+			RootHash: firstHash, ReceiptCount: 2, CloseReason: "graceful_shutdown",
+		},
+	}
+	last, err := receipt.Sign(closeAction, priv)
+	if err != nil {
+		t.Fatalf("Sign close receipt: %v", err)
+	}
+	return []receipt.Receipt{first, last}
+}
+
+func TestTrustKeysTemplateRendersEndProofStatus(t *testing.T) {
+	pub, priv := generateDashboardKey(t)
+	closed := buildDashboardClosedRunChain(t, priv)
+	for _, tc := range []struct {
+		name          string
+		chain         []receipt.Receipt
+		class, status string
+	}{
+		{"closed", closed, "pass", endproof.Valid},
+		{"tail", closed[:len(closed)-1], "warn", endproof.Prefix},
+		{"head", closed[1:], "fail", endproof.Invalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			audit := AuditReceiptChain(ChainAuditInput{
+				SessionID: closed[0].ActionRecord.SessionControl.Open.RecorderSession,
+				Receipts:  tc.chain, TrustedKeys: []string{hex.EncodeToString(pub)},
+			})
+			var out bytes.Buffer
+			if err := trustKeysTemplate.Execute(&out, TrustKeysPage{Audits: []ChainAudit{audit}}); err != nil {
+				t.Fatal(err)
+			}
+			want := `<td class="` + tc.class + `">` + tc.status + `</td>`
+			if !strings.Contains(out.String(), want) {
+				t.Fatalf("missing end-proof cell %q: %s", want, out.String())
+			}
+			if tc.status == endproof.Prefix && strings.Contains(out.String(), `class="pass">`+endproof.Prefix) {
+				t.Fatalf("unproven endpoint rendered green: %s", out.String())
+			}
+		})
+	}
+
+	t.Run("anchor-only failure is named in the red integrity cell", func(t *testing.T) {
+		audit := AuditReceiptChain(ChainAuditInput{
+			SessionID:      closed[0].ActionRecord.SessionControl.Open.RecorderSession,
+			Receipts:       closed,
+			TrustedKeys:    []string{hex.EncodeToString(pub)},
+			AnchorExpected: true,
+			AnchorBundle:   &anchor.Bundle{Checkpoint: anchor.Checkpoint{}},
+			AnchorBackend:  anchor.LocalLog{},
+		})
+		if audit.Consistent || audit.AnchorStatus != AnchorFailure || audit.EndProof.Integrity != "valid" || !audit.EndProof.EndProof.Proven {
+			t.Fatalf("audit = %+v, want only anchor verification to fail", audit)
+		}
+		if !strings.Contains(audit.Detail, endproof.Valid) {
+			t.Fatalf("audit detail = %q, want positive chain-valid control", audit.Detail)
+		}
+
+		var out bytes.Buffer
+		if err := trustKeysTemplate.Execute(&out, TrustKeysPage{Audits: []ChainAudit{audit}}); err != nil {
+			t.Fatal(err)
+		}
+		want := `<td class="fail">ANCHOR FAILURE</td>`
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing anchor failure label %q: %s", want, out.String())
+		}
+		if strings.Contains(out.String(), `<td class="fail">`+endproof.Valid+`</td>`) {
+			t.Fatalf("anchor-only failure rendered a red valid-chain label: %s", out.String())
+		}
+	})
 }
 
 func TestFileAnchorResolver_VerifiesExistingMarkerMaterial(t *testing.T) {

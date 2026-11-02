@@ -7,23 +7,34 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/coveragecert"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 func writeCoverageCertVerifyFixture(t *testing.T) (certFile, pubHex string) {
+	return writeCoverageCertVerifyStatusFixture(t, "LIMITED", "bounded_closed", true,
+		"proxy.run.0123456789abcdef0123456789abcdef")
+}
+
+func writeCoverageCertVerifyStatusFixture(t *testing.T, status, reason string, chainIntact bool, sessionID string) (certFile, pubHex string) {
 	t.Helper()
 	pub, priv, err := signing.GenerateKeyPair()
 	if err != nil {
 		t.Fatalf("GenerateKeyPair: %v", err)
 	}
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var chainGaps uint64
+	if !chainIntact {
+		chainGaps = 1
+	}
 	cert, err := coveragecert.Sign(coveragecert.Body{
 		Schema:        coveragecert.Schema,
 		KeyPurpose:    coveragecert.KeyPurpose,
@@ -31,16 +42,18 @@ func writeCoverageCertVerifyFixture(t *testing.T) (certFile, pubHex string) {
 		WindowStart:   start,
 		WindowEnd:     start.Add(time.Hour),
 		TotalReceipts: 2,
+		ChainGaps:     chainGaps,
 		Sessions: []coveragecert.SessionCoverage{{
-			ID:                 "session-a",
+			ID:                 sessionID,
 			ReceiptCount:       2,
-			ChainIntact:        true,
+			ChainIntact:        chainIntact,
 			Anchored:           "local",
-			CompletenessStatus: "LIMITED",
-			CompletenessReason: "abnormal_end",
+			CompletenessStatus: status,
+			CompletenessReason: reason,
 		}},
 		SessionsCovered:    1,
-		ChainsIntact:       1,
+		ChainsIntact:       boolCount(chainIntact),
+		ChainsBroken:       boolCount(!chainIntact),
 		TrustedSignerKey:   hex.EncodeToString(pub),
 		Boundary:           coveragecert.DefaultBoundary(),
 		StandingExclusions: coveragecert.DefaultStandingExclusions(),
@@ -119,9 +132,100 @@ func TestRunTrustedSignerVerifies(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(out.String(), "Signature: valid") {
+	if !strings.Contains(out.String(), "Signature: valid") || !strings.Contains(out.String(), "CHAIN VALID") {
 		t.Fatalf("Run output = %q, want bounded verification lines", out.String())
 	}
+}
+
+func TestRunCertificateEndProofStatus(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      string
+		reason      string
+		chainIntact bool
+		sessionID   string
+		wantStatus  string
+		wantErr     bool
+	}{
+		{
+			name:   "bounded run close proves end",
+			status: "LIMITED", reason: "bounded_closed", chainIntact: true,
+			sessionID:  "proxy.run.0123456789abcdef0123456789abcdef",
+			wantStatus: "CHAIN VALID",
+		},
+		{
+			name:   "abnormal end is partial",
+			status: "LIMITED", reason: "abnormal_end", chainIntact: true, sessionID: "session-a",
+			wantStatus: "VALID PREFIX, END UNPROVEN", wantErr: true,
+		},
+		{
+			name:   "broken chain fails",
+			status: "BROKEN", reason: "chain_broken", chainIntact: false, sessionID: "session-a",
+			wantStatus: "CHAIN BROKEN", wantErr: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			certFile, pubHex := writeCoverageCertVerifyStatusFixture(t, tc.status, tc.reason, tc.chainIntact, tc.sessionID)
+			var out bytes.Buffer
+			err := Run(Options{CertFile: certFile, TrustedSigners: []string{"inline=" + pubHex}, Out: &out})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Run err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantErr && tc.wantStatus == "VALID PREFIX, END UNPROVEN" {
+				var exit *cliutil.ExitError
+				if !errors.As(err, &exit) || exit.Code != 3 {
+					t.Fatalf("Run err = %v, want exit code 3", err)
+				}
+			}
+			if !strings.Contains(out.String(), tc.wantStatus) {
+				t.Fatalf("Run output = %q, want %q", out.String(), tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestCertificateEndProofAggregatesEverySession(t *testing.T) {
+	closed := coveragecert.SessionCoverage{
+		ID: "proxy.run.0123456789abcdef0123456789abcdef", ChainIntact: true,
+		CompletenessStatus: "LIMITED", CompletenessReason: "bounded_closed",
+	}
+	incomplete := coveragecert.SessionCoverage{
+		ID: "session-a", ChainIntact: true,
+		CompletenessStatus: "LIMITED", CompletenessReason: "abnormal_end",
+	}
+	broken := coveragecert.SessionCoverage{
+		ID: "session-b", ChainIntact: false,
+		CompletenessStatus: "BROKEN", CompletenessReason: "chain_broken",
+	}
+	tests := []struct {
+		name       string
+		sessions   []coveragecert.SessionCoverage
+		wantStatus string
+		wantValid  string
+		wantProof  bool
+	}{
+		{name: "empty certificate is partial", sessions: nil, wantStatus: "VALID PREFIX, END UNPROVEN", wantValid: "valid"},
+		{name: "later incomplete session prevents aggregate proof", sessions: []coveragecert.SessionCoverage{closed, incomplete}, wantStatus: "VALID PREFIX, END UNPROVEN", wantValid: "valid"},
+		{name: "earlier incomplete session does not hide later broken session", sessions: []coveragecert.SessionCoverage{incomplete, broken}, wantStatus: "CHAIN BROKEN", wantValid: "invalid"},
+		{name: "earlier close does not hide later broken session", sessions: []coveragecert.SessionCoverage{closed, broken}, wantStatus: "CHAIN BROKEN", wantValid: "invalid"},
+		{name: "every bounded run has a close", sessions: []coveragecert.SessionCoverage{closed, closed}, wantStatus: "CHAIN VALID", wantValid: "valid", wantProof: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := certificateEndProof(coveragecert.Body{Sessions: tc.sessions})
+			if got.Status != tc.wantStatus || got.Integrity != tc.wantValid || got.EndProof.Proven != tc.wantProof {
+				t.Fatalf("certificateEndProof() = %+v, want status=%q integrity=%q proven=%v", got, tc.wantStatus, tc.wantValid, tc.wantProof)
+			}
+		})
+	}
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func TestRunNoTrustedSignerFailsClosedByDefault(t *testing.T) {

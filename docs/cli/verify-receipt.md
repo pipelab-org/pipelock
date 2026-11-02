@@ -18,7 +18,7 @@ Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`)
 | `--session ID` | Select one exact run; its restart base is still checked. |
 | `--whole-recorder` | Verify every recorder entry and the authenticated outer boundary. |
 | `--require-seal` | Treat a missing transcript root as invalid evidence. Requires `--whole-recorder`. |
-| `--allow-prefix` | Return 0 for a valid prefix while retaining `VALID PREFIX, END UNPROVEN`. |
+| `--allow-prefix` | Return 0 for a valid prefix while retaining `VALID PREFIX, END UNPROVEN`, including with `--fleet-report`. |
 | `--expect-head HASH` | Require the independently known final receipt hash. |
 | `--expect-seq N` | Require the independently known final unsigned sequence. |
 | `--json` | Emit separate `integrity`, `end_proof`, `scope`, and `status` fields plus per-chain signer trust. |
@@ -26,7 +26,7 @@ Pipelock has recorded each run under its own per-run session (`<base>.run.<id>`)
 | `--group ID` | Verify a complete signed group in `--chain DIR` with pinned keys. |
 | `--allow-unpinned` | Acknowledge reduced signer trust; this doesn't accept an unproven end. |
 
-For chains, exit 0 means integrity verified and the endpoint proven for the declared scope. Exit 1 means invalid evidence; exit 2 means usage or configuration failure; exit 3 means `VALID PREFIX, END UNPROVEN`. `--allow-prefix` changes only the last exit to 0. Single receipts and fleet reports keep their existing exit contracts. Report-write failures remain errors. A script that treats any non-zero exit as failure now stops on an unproven end; add a pin or `--allow-prefix` where an open chain is expected, such as a recorder that's still running.
+For chains, exit 0 means integrity verified and the endpoint proven for the declared scope. Exit 1 means invalid evidence; exit 2 means usage or configuration failure; exit 3 means `VALID PREFIX, END UNPROVEN`. `--allow-prefix` changes only the last exit to 0 while preserving the prefix label. Single receipts keep their existing exit contract. Fleet reports verify their signature and arithmetic, but neither current fleet format proves a final endpoint, so a report that verifies prints `VALID PREFIX, END UNPROVEN` and exits 3 by default. With `--allow-prefix`, that verified prefix exits 0 and keeps the same label; this does not prove a complete report. `--expect-head`, `--expect-seq`, and `--json` remain refused with `--fleet-report`. Report-write failures remain errors. A script that treats any non-zero exit as failure now stops on an unproven end; add `--allow-prefix` where an open chain or fleet report is expected.
 
 Group verification refuses a native evidence run stream above 256 MiB, and the writer doesn't stop before that ceiling, so restart a multi-chain proxy before a run reaches it. See [receipt groups with multiple chains](../guides/receipt-verification.md#receipt-groups-with-multiple-chains). The published PyPI package `pipelock-verify` 0.4.1 doesn't verify groups or end proof.
 

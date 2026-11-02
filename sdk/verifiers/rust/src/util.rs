@@ -640,9 +640,38 @@ pub(crate) fn io_read_error(path: &Path, err: std::io::Error) -> VerifierError {
     }
 }
 
+/// Parses an operator-supplied final sequence as ASCII decimal digits. Signs,
+/// base prefixes, separators, and spaces are refused so every verifier reads
+/// the same number from the same text.
+pub(crate) fn parse_decimal_seq(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::reject_duplicate_keys;
+    use super::{parse_decimal_seq, reject_duplicate_keys};
+
+    #[test]
+    fn decimal_seq_refuses_signs_prefixes_and_spaces() {
+        assert_eq!(parse_decimal_seq("2"), Some(2));
+        assert_eq!(parse_decimal_seq("02"), Some(2));
+        assert_eq!(parse_decimal_seq("18446744073709551615"), Some(u64::MAX));
+        for bad in [
+            "",
+            "+2",
+            "-1",
+            "0x2",
+            " 2",
+            "2 ",
+            "1_0",
+            "18446744073709551616",
+        ] {
+            assert_eq!(parse_decimal_seq(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn rejects_numbers_outside_cross_language_exact_range() {

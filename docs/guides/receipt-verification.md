@@ -141,10 +141,11 @@ kubectl exec deploy/conductor -- pipelock conductor fleet report \
 pipelock verify-receipt fleet-receipt.dsse.json --fleet-report --key fleet-report.pub
 ```
 
-Output on success:
+Output when the signature and arithmetic verify:
 
 ```text
-FLEET RECEIPT OK: fleet-receipt.dsse.json
+FLEET RECEIPT VALID PREFIX, END UNPROVEN: fleet-receipt.dsse.json
+  End proof:        VALID PREFIX, END UNPROVEN
   Signer:           fleet-report-key
   Payload SHA-256:  9c46a3...
   Org/Fleet:        example-org/prod
@@ -152,13 +153,17 @@ FLEET RECEIPT OK: fleet-receipt.dsse.json
   Level:            L1
   Source batches:   12
   Total actions:    481
-  Mediated fraction: 1
+  Mediated fraction of included observed actions: 1
   Continuity:       cross_session_continuity_unproven (receiver observations unavailable)
 ```
 
+The command exits 3 here. Neither fleet report format binds a final endpoint or proves that no batch is missing from either end of the window, so a verified report is a valid prefix rather than a complete record. Add `--allow-prefix` to return exit 0 while keeping the `VALID PREFIX, END UNPROVEN` label; the flag does not prove report completeness. A report that fails its signature, structure, or arithmetic checks still exits 1. The mediated fraction covers only the observed actions in the included batches. A `Reported dropped actions` line appears when followers reported dropping actions, and that total must equal the sum of the source batches' signed dropped counts.
+
 Without `--key`, the verifier can check structure and self-consistency only. It
 prints `FLEET RECEIPT UNPINNED` and exits non-zero unless `--allow-unpinned` is
-passed.
+passed. That acknowledgement still leaves the end unproven and exits 3 unless
+`--allow-prefix` is also passed. Fleet reports do not accept `--expect-head`,
+`--expect-seq`, or `--json`.
 
 Fleet reports use v2 by default so independent recorder runs and v3 writers can
 reuse sequence numbers within one window. Use `--report-version 1` when a v1
@@ -829,8 +834,12 @@ pipelock-verifier audit-packet ./audit-packet --key ./trusted-signing-key.pub
 An Audit Packet report separates chain integrity from run lifecycle evidence.
 After chain re-verification, its `lifecycle` line reports the lifecycle status
 and reason, such as `LIMITED (abnormal_end)` when a valid in-flight chain has
-no signed `session_close`. That status does not change the packet's integrity
-verdict. With `--offline`, the report says lifecycle was not assessed because
+no signed `session_close`. The packet's `end proof` line is true only when the
+chain ends with a signed `session_close` from a per-run session. Otherwise the
+verdict is `VALID PREFIX, END UNPROVEN`, `trusted` and `valid` are false, and
+the command exits 3 with no prefix opt-in. Summary counts in the report come
+from the verified receipts; run and posture fields are packet claims that the
+receipt signatures don't cover. With `--offline`, the report says lifecycle was not assessed because
 it did not re-read the receipt chain. The Go, Rust, and TypeScript
 verifiers emit `verdict: schema_checked_trust_unverified`, `trusted: false`,
 and `valid: false` in this mode, and their CLIs exit nonzero. This means only
@@ -855,7 +864,7 @@ entries can rewrite an unsigned value stored beside them.
 
 The standalone binary reads the same Audit Packet v0 schema and receipt signing
 conventions as the in-tree `pipelock verify-receipt` subcommand, plus the
-EvidenceReceipt v2 schema used by learn-and-lock. For chain verification it returns exit 0 only with a proven end, exit 3 for a valid prefix with an unproven end, and exit 1 for invalid evidence. `--allow-prefix` accepts exit 3 as exit 0 while retaining the prefix status. Other commands retain their contracts. It returns exit 2 for runtime errors, and exit 64
+EvidenceReceipt v2 schema used by learn-and-lock. For chain verification it returns exit 0 only with a proven end, exit 3 for a valid prefix with an unproven end, and exit 1 for invalid evidence. `--allow-prefix` accepts exit 3 as exit 0 while retaining the prefix status. `aarp --chain` follows the same contract with `--expect-head`, `--expect-seq`, and `--allow-prefix`. `audit-packet` exits 3 for a packet whose chain lacks that final close and has no prefix opt-in. Other commands retain their contracts. It returns exit 2 for runtime errors, and exit 64
 for CLI usage errors. Use this binary in post-incident review and nightly audit
 jobs.
 
