@@ -166,3 +166,31 @@ func TestAARPChainAuthenticatedBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestAARPChainRefusesSVID(t *testing.T) {
+	stream, trust := aarpChainFixtures(t)
+	path := filepath.Join(t.TempDir(), "chain.jsonl")
+	writeFileT(t, path, chainJSONL(t, stream...))
+	var out, stderr bytes.Buffer
+	err := runAARP(&out, &stderr, path, aarpOptions{trustPath: trust, chain: true, svidPath: path})
+	assertExitCode(t, err, exitUsage)
+	if !strings.Contains(err.Error(), "--svid") {
+		t.Fatalf("usage error %q does not name --svid", err)
+	}
+}
+
+// Human output names the broken status on stdout and the cause on stderr.
+func TestAARPChainBrokenHumanOutput(t *testing.T) {
+	stream, trust := aarpChainFixtures(t)
+	path := filepath.Join(t.TempDir(), "chain.jsonl")
+	writeFileT(t, path, chainJSONL(t, stream[1:]...))
+	var out, stderr bytes.Buffer
+	err := runAARP(&out, &stderr, path, aarpOptions{trustPath: trust, chain: true})
+	assertExitCode(t, err, 1)
+	if !strings.Contains(out.String(), "AARP chain: 2 envelopes") || !strings.Contains(out.String(), "CHAIN BROKEN") {
+		t.Fatalf("stdout = %q, want envelope count and CHAIN BROKEN", out.String())
+	}
+	if !strings.Contains(stderr.String(), "genesis") {
+		t.Fatalf("stderr = %q, want the genesis cause", stderr.String())
+	}
+}
