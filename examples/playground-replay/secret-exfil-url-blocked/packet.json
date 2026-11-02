@@ -1,22 +1,22 @@
 {
   "schema_version": "pipelock.audit_packet.v0",
   "packet_id": "ap-secret-exfil-url-blocked",
-  "generated_at": "2026-06-05T13:42:57Z",
+  "generated_at": "2026-11-02T03:41:23Z",
   "run": {
     "provider": "local",
     "agent_identity": "pipelock-lab-agent",
-    "started_at": "2026-06-05T13:42:57Z",
-    "completed_at": "2026-06-05T13:42:57Z"
+    "started_at": "2026-11-02T03:41:23Z",
+    "completed_at": "2026-11-02T03:41:23Z"
   },
   "policy": {
     "policy_hashes": [
-      "sha256:b26d127148a20ad9b09689150dfb0810f569779ad471cd45870614d9b38e4127"
+      "sha256:4b99f6afd01dcef74b2d1c67512b4460505544e0370b2e47381d88fed55cb350"
     ]
   },
   "summary": {
-    "receipt_count": 1,
+    "receipt_count": 3,
     "totals": {
-      "allow": 0,
+      "allow": 2,
       "block": 1,
       "warn": 0,
       "ask": 0,
@@ -26,7 +26,8 @@
       "other": 0
     },
     "transports": {
-      "fetch": 1
+      "fetch": 1,
+      "receipt_session": 2
     },
     "layers": {
       "core_dlp": 1
@@ -38,9 +39,10 @@
   "verifier": {
     "verdict": "valid",
     "trusted": true,
-    "receipt_count": 1,
-    "root_hash": "ea38f82b45728ed85248bfc31eed3bc831331109aff58eebcb2138f46c5e8186",
-    "signer_key": "b885b08758956d3b1e3ef6ce7f738a651b8a82e933d907b3a3614ca5a7a0fe12",
+    "receipt_count": 3,
+    "root_hash": "d252b08cab50567366a724b98621a2adf94e8814097fe0003222c26f83897002",
+    "final_seq": 2,
+    "signer_key": "e7d380579368fa1f8a4975ec7e9a0697a26acb9586992df88b0e8d1369b026a4",
     "output_file": "verifier.txt"
   },
   "posture": {

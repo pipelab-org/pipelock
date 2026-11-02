@@ -90,6 +90,13 @@ func TestAssembleSessionOwnerFromEvidence_RealHostKeepsValidChain(t *testing.T) 
 	}
 	pubKeyHex := hex.EncodeToString(pub)
 	stamp := time.Date(2026, time.September, 3, 12, 0, 0, 0, time.UTC)
+	const (
+		runNonce   = "55555555555555555555555555555555"
+		openNonce  = "66666666666666666666666666666666"
+		policyHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+		sessionID  = "proxy.run.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	open := signMemorySessionOpen(t, priv, pub, runNonce, openNonce, policyHash, stamp)
 
 	r, err := receipt.Sign(receipt.ActionRecord{
 		Version:         receipt.ActionRecordVersion,
@@ -101,41 +108,50 @@ func TestAssembleSessionOwnerFromEvidence_RealHostKeepsValidChain(t *testing.T) 
 		Target:          "https://sts.amazonaws.com/",
 		SideEffectClass: receipt.SideEffectExternalWrite,
 		Reversibility:   receipt.ReversibilityUnknown,
-		PolicyHash:      "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		PolicyHash:      policyHash,
 		Verdict:         "block",
 		Transport:       "forward",
 		Method:          "POST",
 		Layer:           "core_dlp",
-		ChainPrevHash:   receipt.GenesisHash,
-		ChainSeq:        0,
+		ChainPrevHash:   receiptHashForMemoryTest(t, open),
+		ChainSeq:        1,
+		RunNonce:        runNonce,
 	}, priv)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
+	closing := signMemorySessionClose(t, priv, open, r, stamp.Add(time.Second))
 
 	evidenceDir := filepath.Join(t.TempDir(), "visitor-real-host")
 	if err := os.MkdirAll(evidenceDir, 0o750); err != nil {
 		t.Fatalf("MkdirAll evidence: %v", err)
 	}
 	evidenceFile := filepath.Join(evidenceDir, "evidence.jsonl")
-	entry := recorder.Entry{
-		Version:   recorder.EntryVersion,
-		Sequence:  0,
-		Timestamp: stamp,
-		SessionID: "visitor-session",
-		Type:      "action_receipt",
-		EventKind: "write",
-		Transport: "forward",
-		Summary:   "signed visitor receipt",
-		Detail:    r,
-		PrevHash:  recorder.GenesisHash,
+	var lines []byte
+	prevHash := recorder.GenesisHash
+	for i, rcpt := range []receipt.Receipt{open, r, closing} {
+		entry := recorder.Entry{
+			Version:   recorder.EntryVersion,
+			Sequence:  uint64(i),
+			Timestamp: stamp.Add(time.Duration(i) * time.Second),
+			SessionID: sessionID,
+			Type:      "action_receipt",
+			EventKind: "receipt",
+			Transport: "receipt_session",
+			Summary:   "signed visitor receipt",
+			Detail:    rcpt,
+			PrevHash:  prevHash,
+		}
+		entry.Hash = recorder.ComputeHash(entry)
+		prevHash = entry.Hash
+		line, err := json.Marshal(entry)
+		if err != nil {
+			t.Fatalf("Marshal evidence entry: %v", err)
+		}
+		lines = append(lines, line...)
+		lines = append(lines, '\n')
 	}
-	entry.Hash = recorder.ComputeHash(entry)
-	line, err := json.Marshal(entry)
-	if err != nil {
-		t.Fatalf("Marshal evidence entry: %v", err)
-	}
-	if err := os.WriteFile(evidenceFile, append(line, '\n'), 0o600); err != nil {
+	if err := os.WriteFile(evidenceFile, lines, 0o600); err != nil {
 		t.Fatalf("WriteFile evidence: %v", err)
 	}
 

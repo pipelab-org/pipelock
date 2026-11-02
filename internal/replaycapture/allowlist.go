@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 )
@@ -112,6 +113,9 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 	}
 
 	if ar.SessionControl != nil {
+		if ar.SessionControl.Kind == receipt.SessionControlClose {
+			return validatePublicSessionClose(ar)
+		}
 		return validatePublicSessionOpen(ar)
 	}
 
@@ -167,7 +171,8 @@ func validatePublicSessionOpen(ar receipt.ActionRecord) error {
 	if !safeRunNonceRE.MatchString(open.OpenNonce) {
 		return fmt.Errorf("%w: session_open open_nonce is not the expected nonce shape", errAllowlist)
 	}
-	if open.RecorderSession != "proxy" {
+	if open.RecorderSession != "proxy" &&
+		(!strings.HasPrefix(open.RecorderSession, "proxy"+evidencename.RunInfix) || !evidencename.IsRunSession(open.RecorderSession)) {
 		return fmt.Errorf("%w: session_open recorder_session %q is not public-safe", errAllowlist, open.RecorderSession)
 	}
 	if !strings.HasPrefix(open.PolicyHash, policyHashLabelPrefix) {
@@ -188,8 +193,35 @@ func validatePublicSessionOpen(ar receipt.ActionRecord) error {
 	if open.PriorChainHead != "" || open.PriorChainSeq != 0 ||
 		open.GenesisAnchorHead != "" || open.GenesisAnchorLog != "" ||
 		open.PostureCapsuleSHA256 != "" || open.PostureSignerKeyID != "" ||
-		open.ContainmentNonce != "" || open.ContainedUID != "" {
+		open.ContainmentNonce != "" || open.ContainedUID != "" || open.GroupBinding != nil {
 		return fmt.Errorf("%w: session_open carries unsupported public-gallery binding fields", errAllowlist)
+	}
+	return validateDisallowedEmpty(ar)
+}
+
+func validatePublicSessionClose(ar receipt.ActionRecord) error {
+	control := ar.SessionControl
+	if ar.Target != "pipelock://session/close" || control.Close == nil || control.Open != nil || control.Heartbeat != nil {
+		return fmt.Errorf("%w: invalid public session_close control", errAllowlist)
+	}
+	closing := control.Close
+	if !safeRunNonceRE.MatchString(ar.RunNonce) || closing.RunNonce != ar.RunNonce || !safeRunNonceRE.MatchString(closing.OpenNonce) {
+		return fmt.Errorf("%w: session_close nonce is not the expected nonce shape", errAllowlist)
+	}
+	if ar.ChainSeq == 0 || closing.FinalSeq != ar.ChainSeq || closing.ReceiptCount <= closing.FinalSeq || closing.ReceiptCount != ar.ChainSeq+1 ||
+		closing.RootHash != ar.ChainPrevHash || !safeSignerEpochRE.MatchString(closing.RootHash) {
+		return fmt.Errorf("%w: session_close chain boundary is not the expected shape", errAllowlist)
+	}
+	if closing.CloseReason != "graceful_shutdown" || closing.FsyncErrorsGated != 0 || closing.DurabilityBlocks != 0 {
+		return fmt.Errorf("%w: session_close is not a clean lab shutdown", errAllowlist)
+	}
+	if ar.ActionType != "unclassified" || ar.SideEffectClass != "none" || ar.Reversibility != "unknown" ||
+		ar.Verdict != "allow" || ar.Transport != "receipt_session" || ar.Pattern != "" || ar.RequestID != "" ||
+		ar.Method != "" || ar.Layer != "" || ar.Severity != "" ||
+		!strings.HasPrefix(ar.PolicyHash, policyHashLabelPrefix) ||
+		!safeSignerEpochRE.MatchString(strings.TrimPrefix(ar.PolicyHash, policyHashLabelPrefix)) ||
+		ar.SessionTaintLevel != "" || ar.AuthorityKind != "" || ar.TaintDecision != "" || ar.TaintDecisionReason != "" {
+		return fmt.Errorf("%w: session_close carries unexpected control fields", errAllowlist)
 	}
 	return validateDisallowedEmpty(ar)
 }
