@@ -30,7 +30,9 @@ import (
 // expansion splits: r${u}m, rm$u, --for${u}ce. Views are alternatives, so the
 // reading adds matches and never removes one from the other views. Wildcards
 // (*, ?), ranges, classes and negated brackets name files that exist at run
-// time and are left as written.
+// time and are left as written. A word whose expansion exceeds the bounds is
+// reported unreadable, and rules that do not match report an incomplete check
+// (mcp_tool_policy.on_incomplete_check) instead of passing.
 
 // maxWordExpansions bounds the words one brace or bracket expansion of a word
 // may produce. It equals maxPairwiseTokens, the most tokens the pairwise
@@ -38,10 +40,9 @@ import (
 // unexpanded spelling in this view; the other views still read it.
 const maxWordExpansions = maxPairwiseTokens
 
-// maxWordExpansionSteps bounds the expansion steps for one word. An expansion
-// to maxWordExpansions words whose groups each list two or more items takes
-// fewer than twice that many steps; a group listing one item adds a step
-// without adding a word.
+// maxWordExpansionSteps bounds the expansion steps for one word. Every group
+// left after one-character brackets are read lists two or more items, so an
+// expansion to maxWordExpansions words takes fewer than twice that many steps.
 const maxWordExpansionSteps = 2 * maxWordExpansions
 
 // maxParamNesting bounds the passes that resolve nested braced expansions,
@@ -65,14 +66,17 @@ var bracketRe = regexp.MustCompile(`\[([A-Za-z0-9._~+@%,:=/]{1,8})\]`)
 
 // readShellWords applies the word reading to normalized text. It runs after
 // resolveShellConstruction, so assignments the text makes are read first.
-func readShellWords(s string) string {
+// unreadable reports a word whose expansion exceeds the bounds below; that
+// word keeps its spelling, and the caller must not treat the reading as
+// complete.
+func readShellWords(s string) (out string, unreadable bool) {
 	if strings.ContainsRune(s, '$') {
 		s = readUnsetParameters(s)
 	}
 	if strings.ContainsAny(s, "{[") {
-		s = expandWords(s)
+		s, unreadable = expandWords(s)
 	}
-	return s
+	return s, unreadable
 }
 
 // readUnsetParameters replaces each remaining parameter expansion with its
@@ -154,15 +158,26 @@ func replaceUnescaped(s string, re *regexp.Regexp, repl func(m []string) (string
 // shell's control and redirection operators.
 const shellWordBreaks = " \t\n\r;|&<>()"
 
+// singleBracketRe matches a bracket expression listing one literal
+// character, which matches exactly that character and adds no word.
+var singleBracketRe = regexp.MustCompile(`\[([A-Za-z0-9._~+@%,:=/])\]`)
+
 // expandWords applies brace and bracket expansion to each word of s.
-func expandWords(s string) string {
+// unreadable reports a word whose expansion exceeded the bounds.
+func expandWords(s string) (string, bool) {
+	// One-character brackets are read in one linear pass, so they cannot
+	// spend the expansion budget below.
+	s = singleBracketRe.ReplaceAllString(s, "$1")
 	var b strings.Builder
+	unreadable := false
 	start := -1
 	flush := func(end int) {
 		if start < 0 {
 			return
 		}
-		b.WriteString(expandWord(s[start:end]))
+		w, ok := expandWord(s[start:end])
+		unreadable = unreadable || !ok
+		b.WriteString(w)
 		start = -1
 	}
 	for i := 0; i < len(s); i++ {
@@ -176,32 +191,36 @@ func expandWords(s string) string {
 		}
 	}
 	flush(len(s))
-	return b.String()
+	return b.String(), unreadable
 }
 
-// expandWord returns the space-separated words one word expands to, or the
-// word unchanged when it has no expansion or its expansion exceeds the bounds.
+// expandWord returns the space-separated words one word expands to. When the
+// expansion exceeds the bounds it returns the word unchanged and ok false.
 //
 // Each step takes one pending word and expands its first brace expansion, or
 // else its first bracket expression; a word with neither is finished. Nested
 // braces are reached as the outer ones are consumed, as in Bash. The words are
 // bounded by maxWordExpansions and the steps by maxWordExpansionSteps, so the
 // work for one word is linear in its length whatever the input holds.
-func expandWord(word string) string {
+func expandWord(word string) (string, bool) {
 	if !strings.ContainsAny(word, "{[") {
-		return word
+		return word, true
 	}
 	pending := []string{word}
 	var done []string
 	for steps := 0; len(pending) > 0; steps++ {
 		if steps >= maxWordExpansionSteps || len(done)+len(pending) > maxWordExpansions {
-			return word
+			return word, false
 		}
 		w := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
 		var items []string
 		loc := braceExpansionRe.FindStringSubmatchIndex(w)
 		if loc != nil {
+			// Count the items before building any word from them.
+			if len(done)+len(pending)+strings.Count(w[loc[2]:loc[3]], ",")+1 > maxWordExpansions {
+				return word, false
+			}
 			items = strings.Split(w[loc[2]:loc[3]], ",")
 		} else if loc = bracketRe.FindStringSubmatchIndex(w); loc != nil {
 			items = strings.Split(w[loc[2]:loc[3]], "")
@@ -215,5 +234,5 @@ func expandWord(word string) string {
 			pending = append(pending, pre+items[i]+post)
 		}
 	}
-	return strings.Join(done, " ")
+	return strings.Join(done, " "), true
 }

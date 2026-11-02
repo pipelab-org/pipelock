@@ -519,14 +519,15 @@ func normalizeArgTokens(argStrings []string, normFn func(string) string, preNorm
 // normalizeArgTokensUnexpanded retains the normalized spelling that configured
 // rules consumed before command-option expansion was added.
 func normalizeArgTokensUnexpanded(argStrings []string, normFn func(string) string, preNorm *strings.Replacer) ([]string, string) {
-	return normalizeArgTokensRead(argStrings, normFn, preNorm, false)
+	tokens, joined, _ := normalizeArgTokensRead(argStrings, normFn, preNorm, false)
+	return tokens, joined
 }
 
 // normalizeArgTokensRead is normalizeArgTokensUnexpanded with, when words is
 // set, the shell word reading (readShellWords) applied after the text's own
-// assignments are resolved.
-func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) ([]string, string) {
-	var tokens []string
+// assignments are resolved. unreadable reports a word that reading could not
+// expand within its bounds.
+func normalizeArgTokensRead(argStrings []string, normFn func(string) string, preNorm *strings.Replacer, words bool) (tokens []string, joined string, unreadable bool) {
 	for _, s := range argStrings {
 		if preNorm != nil {
 			s = preNorm.Replace(s)
@@ -540,14 +541,16 @@ func normalizeArgTokensRead(argStrings []string, normFn func(string) string, pre
 		normalized = resolveShellConstruction(normalized)
 		normalized = shellHomeSlashRe.ReplaceAllString(normalized, "/")
 		if words {
-			normalized = readShellWords(normalized)
+			var u bool
+			normalized, u = readShellWords(normalized)
+			unreadable = unreadable || u
 		}
 		normalized = expandBraces(normalized)
 		normalized = shellExpansionRe.ReplaceAllString(normalized, " ")
 		normalized = collapsePathSeparators(normalized)
 		tokens = append(tokens, strings.Fields(normalized)...)
 	}
-	return tokens, strings.Join(tokens, " ")
+	return tokens, strings.Join(tokens, " "), unreadable
 }
 
 // pathSeparatorRunRe matches a run of `/` and `./` segments that a filesystem

@@ -52,6 +52,10 @@ type argView struct {
 	ordinary    bool              // ordinary reading kept beside a strict one (see matchArgViews)
 	prior       bool              // interpretation selected without variable-executable uncertainty
 	folded      map[string]string // request-local folds of original tokens and joined views
+	// unreadable marks every view of arguments with a word the shell word
+	// reading could not expand within its bounds; a rule that matches no
+	// view then reports an incomplete check instead of passing.
+	unreadable bool
 	// findPaths caches findPathsOnly(segments) for a plain view; it does not
 	// depend on the pattern. nil means not computed.
 	findPaths [][]string
@@ -77,7 +81,8 @@ type argViewNorm struct {
 
 // tokens normalizes args under n.
 func (n argViewNorm) tokens(args []string) ([]string, string) {
-	return normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+	tokens, joined, _ := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+	return tokens, joined
 }
 
 // argViewNorms are the normalizations the rule views read arguments under.
@@ -109,6 +114,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	priorProof.variableExecutable = false
 	retainPrior := proof.variableExecutable && !proof.unproved
 	norms := argViewNorms
+	unreadable := false
 	views := make([]argView, 0, 2*len(norms)+1)
 	// add keeps the first of identical views. matchArgViewSet skips a view the
 	// same as an earlier one, so dropping it here only saves the work of
@@ -126,7 +132,8 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		views = append(views, v)
 	}
 	for _, n := range norms {
-		tokens, joined := n.tokens(args)
+		tokens, joined, u := normalizeArgTokensRead(args, n.fn, n.pre, n.words)
+		unreadable = unreadable || u
 		v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, inputKnown: inputKnown, checkXargs: true}
 		switch {
 		case len(segs) == 1:
@@ -183,6 +190,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
 	folded := make(map[string]string)
 	for i := range views {
+		views[i].unreadable = unreadable
 		for _, token := range views[i].tokens {
 			if _, ok := folded[token]; !ok {
 				folded[token] = foldString(token)
@@ -507,7 +515,7 @@ func matchArgViewSet(pat *regexp.Regexp, memo *afterPartsMemo, views ...argView)
 		if m {
 			return true, false
 		}
-		incomplete = incomplete || inc
+		incomplete = incomplete || inc || v.unreadable
 	}
 	prior := priorPatterns(pat)
 	if incomplete {

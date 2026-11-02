@@ -163,40 +163,54 @@ func TestExpandWords(t *testing.T) {
 		{`{"k":1,"v":2}`, `{"k":1,"v":2}`},
 	}
 	for _, tt := range tests {
-		if got := expandWords(tt.in); got != tt.want {
-			t.Errorf("expandWords(%q) = %q, want %q", tt.in, got, tt.want)
+		got, unreadable := expandWords(tt.in)
+		if got != tt.want || unreadable {
+			t.Errorf("expandWords(%q) = %q, %v, want %q", tt.in, got, unreadable, tt.want)
 		}
 	}
 }
 
 // TestExpandWords_Bounded: a word whose expansion would exceed
-// maxWordExpansions keeps its spelling instead of growing without bound.
+// maxWordExpansions keeps its spelling and is reported unreadable.
 func TestExpandWords_Bounded(t *testing.T) {
-	word := "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}"
-	if got := expandWords(word); got != word {
-		t.Fatalf("expandWords of a 128-word expansion = %d bytes, want the word unchanged", len(got))
+	for _, word := range []string{
+		"{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}",
+		"{" + strings.Repeat("a,", 1<<16) + "a}",
+		strings.Repeat("{a,}", 1<<12),
+	} {
+		got, unreadable := expandWords(word)
+		if got != word || !unreadable {
+			t.Fatalf("over-bound word of %d bytes: unreadable=%v, changed=%v", len(word), unreadable, got != word)
+		}
 	}
 	small := "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}"
-	if got := expandWords(small); got == small {
+	if got, unreadable := expandWords(small); got == small || unreadable {
 		t.Fatal("a 64-word expansion was not expanded")
+	}
+	// One-character brackets add no words and cost no expansion steps.
+	padded := strings.Repeat("[x]", 1<<16) + "{r,}m"
+	got, unreadable := expandWords(padded)
+	if unreadable || !strings.Contains(got, "xrm ") {
+		t.Fatalf("padded word: unreadable=%v, suffix %q", unreadable, got[max(0, len(got)-8):])
 	}
 }
 
-// TestExpandWords_ManyGroups: a word with many expansion groups, including
-// single-item brackets that add no words, keeps its spelling within a bounded
-// number of steps instead of recursing once per group.
-func TestExpandWords_ManyGroups(t *testing.T) {
-	for _, word := range []string{
-		strings.Repeat("[m]", 1<<16),
-		strings.Repeat("{a,}", 1<<12),
-		strings.Repeat("x", 1<<20) + "{a,b}",
+// TestWordReading_UnreadableIsIncomplete: a command whose word reading cannot
+// be completed reports an incomplete check, which on_incomplete_check turns
+// into a warning or a block, instead of passing.
+func TestWordReading_UnreadableIsIncomplete(t *testing.T) {
+	cmd := "{a,b}{a,b}{a,b}{a,b}{a,b}{a,b}{r,}m -rf /tmp/x"
+	for _, tt := range []struct{ incomplete, want string }{
+		{"", config.ActionWarn},
+		{config.ActionBlock, config.ActionBlock},
 	} {
-		got := expandWords(word)
-		if len(word) < 1<<20 && got != word {
-			t.Fatalf("a %d-byte word of many groups was expanded", len(word))
+		pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: tt.incomplete, Rules: DefaultToolPolicyRules()})
+		v := pc.CheckToolCall("bash", []string{cmd})
+		if !v.Matched || v.Action != tt.want || !slices.Contains(v.IncompleteRules, ruleFileDelete) {
+			t.Fatalf("on_incomplete_check %q: verdict %v %q %v incomplete %v", tt.incomplete, v.Matched, v.Action, v.Rules, v.IncompleteRules)
 		}
 	}
-	if got := expandWords("r[m][m]"); got != "rmm" {
-		t.Fatalf("expandWords(r[m][m]) = %q", got)
+	if v := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()}).CheckToolCall("bash", []string{"ls {a,b}.go"}); v.Matched {
+		t.Fatalf("readable expansion reported %v", v.Rules)
 	}
 }
