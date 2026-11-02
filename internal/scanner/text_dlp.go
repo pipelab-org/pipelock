@@ -466,10 +466,11 @@ type TextDLPResult struct {
 // (regex patterns, seed phrases, canary tokens, hostname-exfil) are unaffected
 // and run in both directions.
 type textDLPOptions struct {
-	typedCardView  bool // only extractor-produced boundaries carry numeric provenance
-	emitWarns      bool
-	scanSecretLeak bool
-	patterns       textDLPPatternSet
+	skipURLUserinfo bool // component recursion stays within one text scan
+	typedCardView   bool // only extractor-produced boundaries carry numeric provenance
+	emitWarns       bool
+	scanSecretLeak  bool
+	patterns        textDLPPatternSet
 }
 
 type textDLPPatternSet uint8
@@ -827,18 +828,22 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 		coreMatches = s.scanCoreDLPWithDecodes(text, decodes)
 	}
 
+	var userinfoMatches []TextDLPMatch
+	if !opts.skipURLUserinfo {
+		userinfoMatches = s.textURLUserinfoMatches(ctx, text, decodes, opts)
+	}
 	if len(s.dlpPatterns) == 0 &&
 		len(s.canaryTokens) == 0 &&
 		len(s.envSecrets) == 0 &&
 		len(s.fileSecrets) == 0 &&
 		!s.seedEnabled {
-		if len(coreMatches) > 0 {
-			return TextDLPResult{Clean: false, Matches: coreMatches}
+		if len(coreMatches)+len(userinfoMatches) > 0 {
+			return TextDLPResult{Clean: false, Matches: append(coreMatches, userinfoMatches...)}
 		}
 		return TextDLPResult{Clean: true}
 	}
 
-	var matches []TextDLPMatch
+	matches := userinfoMatches
 
 	// Seed phrase detection runs FIRST so seed phrases get the correct label
 	// ("BIP-39 Seed Phrase") instead of an accidental regex DLP match.

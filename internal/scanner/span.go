@@ -111,12 +111,7 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 		return 0, 0, false
 	}
 	if p.withoutLeftBoundary == nil {
-		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			if start, end, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
-				return start, end, true
-			}
-		}
-		return 0, 0, false
+		return p.firstAcceptedSpan(text, nil)
 	}
 	if source == text {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
@@ -166,13 +161,9 @@ func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []i
 	if !p.shapeGate.admits(text) {
 		return 0, 0, false
 	}
-	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
-		if ok && p.validateJoined(text, start, end, source, offsets) {
-			return start, end, true
-		}
-	}
-	return 0, 0, false
+	return p.firstAcceptedSpan(text, func(start, end int) bool {
+		return p.validateJoined(text, start, end, source, offsets)
+	})
 }
 
 func sameProviderCandidate(candidate, sourceCandidate string) bool {
@@ -242,4 +233,33 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 		}
 	}
 	return false
+}
+
+// firstAcceptedSpan preserves whole-match and boundary semantics for ordinary
+// validators. The canonical WIF grammar has no boundaries and consumes at most
+// 52 bytes (Bitcoin's mainnet WIF format), so retrying one byte after a rejected
+// start takes O(52*n) regex work and at most n fixed-size checksum validations.
+// It also sees a candidate that starts inside a hit and ends beyond that hit.
+func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
+	if !p.wifOverlapRetry {
+		for _, loc := range p.re.FindAllStringIndex(text, -1) {
+			start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
+			if ok && (joined == nil || joined(start, end)) {
+				return start, end, true
+			}
+		}
+		return 0, 0, false
+	}
+	for offset := 0; offset < len(text); {
+		loc := p.re.FindStringIndex(text[offset:])
+		if loc == nil {
+			break
+		}
+		start, end := offset+loc[0], offset+loc[1]
+		if p.accepts(text, start, end) && (joined == nil || joined(start, end)) {
+			return start, end, true
+		}
+		offset = start + 1
+	}
+	return 0, 0, false
 }

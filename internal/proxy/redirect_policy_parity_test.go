@@ -61,6 +61,7 @@ func TestCheckRedirect_RechecksCredentialAudienceOnNewHost(t *testing.T) {
 		t.Run(tc.header, func(t *testing.T) {
 			redirectReq, originalReq := redirectPolicyRequests(t, cfg, sc)
 			originalReq.URL.Host = "gitlab.com"
+			originalReq.URL.Path = "/api/v4/user"
 			redirectReq.Header.Set(tc.header, tc.token)
 			originalReq.Header.Set(tc.header, tc.token)
 			if first := scanRequestHeadersForTarget(t.Context(), originalReq.Header, cfg, sc, originalReq.URL.String()); first != nil && !first.Clean {

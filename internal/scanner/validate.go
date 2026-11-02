@@ -352,3 +352,19 @@ var ibanCountryLengths = map[string]int{
 	"SV": 28, "TL": 23, "TN": 24, "TR": 26, "UA": 29,
 	"VA": 22, "VG": 24, "XK": 20, "YE": 30,
 }
+
+// RetriesWIFOverlaps binds overlapping search to the fixed-width mainnet WIF
+// grammar. Arbitrary operator regexes retain their whole-match semantics.
+func RetriesWIFOverlaps(p config.DLPPattern) bool {
+	return p.Validator == config.ValidatorWIF && p.Regex == config.BitcoinWIFRegex
+}
+
+// ValidatedPatternMatches shares checksum candidate enumeration with local
+// diff and project scanners. Failed WIF hits cannot consume a valid neighbor.
+func ValidatedPatternMatches(text string, re *regexp.Regexp, validate func(string) bool, cardPrefixRetry, wifOverlapRetry bool) bool {
+	if re == nil {
+		return false
+	}
+	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry}
+	return p.matches(text)
+}

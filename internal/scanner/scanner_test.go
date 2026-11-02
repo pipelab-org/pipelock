@@ -6630,7 +6630,7 @@ func TestScan_DLPExemptDomainsOtherPatternsStillFire(t *testing.T) {
 	}
 }
 
-func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
+func TestScan_LLMProviderKeyURLCarrier(t *testing.T) {
 	cfg := testConfig()
 	cfg.Internal = nil
 	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
@@ -6644,9 +6644,9 @@ func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 		shouldAllow bool
 	}{
 		{
-			name:        "openai own provider URL is allowed",
+			name:        "openai own provider URL is blocked",
 			rawURL:      "https://api.openai.com/v1/responses/" + "sk-proj-" + strings.Repeat("A", 40),
-			shouldAllow: true,
+			shouldAllow: false,
 		},
 		{
 			name:        "openai non-provider URL is blocked",
@@ -6654,9 +6654,9 @@ func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 			shouldAllow: false,
 		},
 		{
-			name:        "llm router own provider URL is allowed",
+			name:        "llm router own provider URL is blocked",
 			rawURL:      "https://api.openrouter.ai/v1/responses/" + "sk-or-v1-" + strings.Repeat("B", 24),
-			shouldAllow: true,
+			shouldAllow: false,
 		},
 		{
 			name:        "llm router non-provider URL is blocked",
@@ -6664,9 +6664,9 @@ func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 			shouldAllow: false,
 		},
 		{
-			name:        "answer engine own provider URL is allowed",
+			name:        "answer engine own provider URL is blocked",
 			rawURL:      "https://api.perplexity.ai/chat/completions/" + "pplx-" + strings.Repeat("C", 24),
-			shouldAllow: true,
+			shouldAllow: false,
 		},
 		{
 			name:        "answer engine non-provider URL is blocked",
@@ -6674,9 +6674,9 @@ func TestScan_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 			shouldAllow: false,
 		},
 		{
-			name:        "web research own provider URL is allowed",
+			name:        "web research own provider URL is blocked",
 			rawURL:      "https://api.tavily.com/search/" + "tvly-" + strings.Repeat("E", 24),
-			shouldAllow: true,
+			shouldAllow: false,
 		},
 		{
 			name:        "web research non-provider URL is blocked",

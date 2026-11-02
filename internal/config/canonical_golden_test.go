@@ -456,7 +456,8 @@ const (
 	// audience, RubyGems gained Bearer, and the container-registry JWT
 	// gained a bearer audience for ghcr.io.
 	// Re-bumped for the RFC 9110 section 4.1 default URI size (8000 octets).
-	goldenHashDefaults = "6038a97f76bc091b23dc0eaf51394a0bcad758ce5b6b1e7ffa707dfde7a77e32"
+	// Bound to compiled API endpoint carriers and the Api-Key sensitive header.
+	goldenHashDefaults = "1e463f127f6ca2ba2a2973eaa3ff7991dc9edffa0ef8d795ae023fed80d3348e"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -696,7 +697,8 @@ const (
 	// Re-bumped for the Azure SAS Token ReleaseGrantSAS audience; see
 	// goldenHashDefaults above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "3dfb5e4b36f15a3e20559aa5650e5a6f1695dfbf98af6935a2730d99c43483a4"
+	// Bound to the narrowed compiled credential audiences and carriers.
+	goldenHashRichConfig = "db374fe4b18744c7d3ad712ef8c95981b6b7639a74aefef267b8483df32d9c49"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1271,8 +1273,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// the compiled Authorization-only Google credential audience policy and the
 		// JWT Token URL-query audience.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "12f51d19e8f04a354cc18cd70866a81977e5dd6d3a9ace9e041f5348846823eb"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "19727c57d8836daecc0d9a7f927581f20b094f42fd496c9adb9496af84f85781"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "14a7da94486b892e6ec6c4616f38fa8ca63062e70396b5c067dda130b5b6f42e"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "c9af307a88404e7748633b1eb71095c1f9052ca35eefe1df0cceb017955e87af"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

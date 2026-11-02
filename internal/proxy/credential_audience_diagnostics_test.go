@@ -68,9 +68,9 @@ func TestCredentialAudienceDiagnosticsSurvivingFindings(t *testing.T) {
 					Body: strings.NewReader(`{"refresh_token":"` + key + `"}`), ContentType: "application/json",
 					MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc, Target: target, Action: action,
 				})
-				header := scanRequestHeadersForTarget(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, cfg, sc, target)
+				header := scanRequestHeadersForTarget(t.Context(), http.Header{"X-Api-Key": []string{key}}, cfg, sc, target)
 				for name, result := range map[string]*BodyScanResult{"body": &body, "header": header} {
-					if target == "https://api.anthropic.com/v1/messages" {
+					if target == "https://api.anthropic.com/v1/messages" && name == "header" {
 						if result != nil && (!result.Clean || len(result.CredentialAudienceMismatches) != 0) {
 							t.Fatalf("%s audience allow changed: %+v", name, result)
 						}
@@ -319,7 +319,7 @@ func TestWebSocketCredentialAudienceDiagnostic(t *testing.T) {
 	if pattern != "DLP match in Authorization header: Anthropic API Key, Anthropic API Key" {
 		t.Fatalf("decisive header pattern = %q", pattern)
 	}
-	blocked, _, _, reason, _, err = p.dlpScanWSHeaders(t.Context(), http.Header{"Authorization": []string{"Bearer " + key}}, sc, cfg, "wss://api.anthropic.com/v1", audit.LogContext{})
+	blocked, _, _, reason, _, err = p.dlpScanWSHeaders(t.Context(), http.Header{"X-Api-Key": []string{key}}, sc, cfg, "wss://api.anthropic.com/v1", audit.LogContext{})
 	if blocked || err != nil || reason != "" {
 		t.Fatalf("audience header blocked=%v reason=%s err=%v", blocked, reason, err)
 	}

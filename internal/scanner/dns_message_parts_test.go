@@ -178,7 +178,7 @@ func TestCoreFloorDecodesURLEncodingsWithEmptyConfiguredList(t *testing.T) {
 // A key inside a DNS-over-HTTPS message gets the same credential-audience
 // decision as the same key in an ordinary query parameter, because the
 // message's pieces are ordinary checkDLP targets rather than an early block:
-// allowed when the request goes to the key's issuer, blocked anywhere else.
+// header-only credentials stay blocked in both query representations.
 func TestDoHQueryMatchesPlainQueryAudienceDecision(t *testing.T) {
 	key := "sk-ant-" + "api03-" + strings.Repeat("AbCdEfGhIj", 9) + "-" + "AAAAAAAA"
 	cfg := config.Defaults()
@@ -191,7 +191,7 @@ func TestDoHQueryMatchesPlainQueryAudienceDecision(t *testing.T) {
 		host    string
 		allowed bool
 	}{
-		{"api.anthropic.com", true},
+		{"api.anthropic.com", false},
 		{"resolver.vendor.example", false},
 	} {
 		p := s.Scan(context.Background(), "https://"+tc.host+"/dns-query"+plain)

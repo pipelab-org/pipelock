@@ -296,6 +296,7 @@ type compiledDLP struct {
 	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
 	// policy, so project scans and runtime scanning agree on card endpoints.
 	cardPrefixRetry bool
+	wifOverlapRetry bool
 }
 
 func compileDLPPatterns() ([]compiledDLP, error) {
@@ -328,6 +329,7 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 			}
 			cp.validate = fn
 			cp.cardPrefixRetry = scanner.RetriesCardPrefixes(p)
+			cp.wifOverlapRetry = scanner.RetriesWIFOverlaps(p)
 		}
 		patterns = append(patterns, cp)
 	}
@@ -335,18 +337,7 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 }
 
 func (p compiledDLP) matches(text string) bool {
-	if p.re == nil {
-		return false
-	}
-	if p.validate == nil {
-		return p.re.MatchString(text)
-	}
-	for _, match := range p.re.FindAllString(text, -1) {
-		if scanner.AcceptsMatch(match, p.validate, p.cardPrefixRetry) {
-			return true
-		}
-	}
-	return false
+	return scanner.ValidatedPatternMatches(text, p.re, p.validate, p.cardPrefixRetry, p.wifOverlapRetry)
 }
 
 // scanFiles walks the directory and scans config/env files for secrets.

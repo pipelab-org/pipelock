@@ -254,14 +254,14 @@ func TestIssuerSentUserinfo(t *testing.T) {
 		}
 	})
 
-	t.Run("top-level userinfo is not blocked by the URL scan", func(t *testing.T) {
+	t.Run("top-level high entropy userinfo is blocked by the URL scan", func(t *testing.T) {
 		cfg := config.Defaults()
 		cfg.Internal = nil // no DNS; this checks whether userinfo itself is scored
 		sc := scanner.MustNew(cfg)
 		t.Cleanup(sc.Close)
 		result := sc.Scan(context.Background(), "https://agent:"+agentBlob+"@api.vendor.example/notes/index")
-		if !result.Allowed {
-			t.Fatalf("userinfo URL blocked: %s", result.Reason)
+		if result.Allowed || result.Scanner != scanner.ScannerEntropy {
+			t.Fatalf("userinfo URL not refused by entropy: %+v", result)
 		}
 	})
 }

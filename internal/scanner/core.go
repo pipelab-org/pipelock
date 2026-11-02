@@ -802,6 +802,10 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
+	for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+	}
 	for _, target := range urlFragmentDLPTargets(parsed, decodes) {
 		target.viewLabel = dlpViewLabel(target.viewLabel)
 		targets = append(targets, target)

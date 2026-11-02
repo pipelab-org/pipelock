@@ -713,16 +713,7 @@ func (c *Config) ApplyDefaults() {
 			c.RequestBodyScanning.HeaderMode = HeaderModeSensitive
 		}
 		if len(c.RequestBodyScanning.SensitiveHeaders) == 0 {
-			c.RequestBodyScanning.SensitiveHeaders = []string{
-				"Authorization",
-				"Cookie",
-				"X-Api-Key",
-				"X-Token",
-				"Proxy-Authorization",
-				"X-Goog-Api-Key",
-				"Private-Token",
-				"Job-Token",
-			}
+			c.RequestBodyScanning.SensitiveHeaders = defaultSensitiveHeaders()
 		}
 		if len(c.RequestBodyScanning.IgnoreHeaders) == 0 {
 			c.RequestBodyScanning.IgnoreHeaders = []string{
