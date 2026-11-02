@@ -284,16 +284,6 @@ func newCredentialAudienceWebSocketRelay(sc *scanner.Scanner, cfg *config.Config
 	}
 }
 
-func assertCredentialAudienceWebSocketMetric(t *testing.T, m *metrics.Metrics, pattern string) {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	want := `pipelock_dlp_credential_audience_allows_total{pattern="` + pattern + `",surface="websocket_frame"} 1`
-	if !strings.Contains(rec.Body.String(), want) {
-		t.Fatalf("credential audience WebSocket metric missing or not exactly one: want %q in %s", want, rec.Body.String())
-	}
-}
-
 func TestCredentialAudienceHosts_CorePatternWithoutAudienceStillBlocks(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
