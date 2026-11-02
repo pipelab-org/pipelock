@@ -33,6 +33,8 @@ Valid expired scanner exceptions now lapse with a warning instead of refusing an
 
 The default `fetch_proxy.monitoring.max_url_length` increases from 2048 to 8000 octets, following RFC 9110's URI-size recommendation. Explicit values and presets with their own lower limits retain those limits. Set the field explicitly if you need the previous ceiling. DLP, entropy and the other URL checks continue to run.
 
+Floating-point settings must now be finite. If an existing configuration contains NaN or infinity, replace it with a finite value inside the setting's supported range before upgrading. Invalid values refuse configuration loading and reload; the error names the field.
+
 ## Review effective scanning and regenerated presets
 
 The new `prompt_injection_detection` policy controls supported regex wording checks. Leave it omitted to retain legacy behavior; review the [configuration contract](../configuration.md#prompt-injection-wording-detection) before selecting warn or off. Those settings don't turn off DLP or other independent security controls. Wording detection set to off grants no traffic-based recovery credit. Warn-only matches don't create hostile taint or earn clean-assessment credit; assessed-clean traffic in warn-only mode still supports recovery.
