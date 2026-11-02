@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -86,7 +87,12 @@ func (s *Scanner) WebSocketCredentialAudienceSurface(ctx context.Context, frame 
 	if extracted.Truncated {
 		return fallback, nil, false
 	}
-	for _, view := range append(extracted.Strings, string(remaining), strings.Join(extracted.Strings, "")) {
+	sorted := slices.Clone(extracted.Strings)
+	slices.Sort(sorted)
+	views := append(extracted.Strings, string(remaining), strings.Join(extracted.Strings, ""),
+		strings.Join(extracted.Strings, extract.BodyDLPJoinSeparator),
+		strings.Join(sorted, extract.BodyDLPJoinSeparator))
+	for _, view := range views {
 		for _, match := range s.ScanTextForDLPQuiet(ctx, view).Matches {
 			if match.PatternName == qualified.name {
 				return fallback, nil, false

@@ -10,6 +10,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
+// BodyDLPJoinSeparator keeps cross-field token detection through dot collapse
+// without synthesizing phrase-based secrets across unrelated body fields.
+const BodyDLPJoinSeparator = "."
+
 // DLPAtom keeps card spelling, number type and key provenance alongside text.
 // Integers retain their original spelling but still have Number set.
 type DLPAtom struct {

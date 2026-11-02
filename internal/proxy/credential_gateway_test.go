@@ -44,6 +44,8 @@ func TestDiscordGatewayStructuredCarrier(t *testing.T) {
 		{"elsewhere", gateway, `{"op":2,"d":{"presence":{"token":"` + credential + `"}}}`, false},
 		{"extra activity", gateway, auth(2, `,"presence":{"activities":[{"name":"`+credential+`"}]}`), false},
 		{"encoded extra", gateway, auth(2, `,"extra":"`+base64.StdEncoding.EncodeToString([]byte(credential))+`"`), false},
+		{"split extra ordered", gateway, auth(2, `,"extra":["`+"M"+strings.Repeat("a", 23)+`","`+strings.Repeat("0", 6)+"."+strings.Repeat("c", 27)+`"]`), false},
+		{"split extra sorted", gateway, auth(2, `,"extra":{"z1":"`+"M"+strings.Repeat("a", 23)+`","z2":"`+strings.Repeat("b", 6)+"."+strings.Repeat("c", 27)+`"}`), false},
 		{"other secret", gateway, auth(2, `,"extra":"AKIA`+strings.Repeat("A", 16)+`"`), false},
 		{"duplicate op", gateway, `{"op":3,"op":2,"d":{"token":"` + credential + `"}}`, false},
 		{"duplicate nested", gateway, auth(2, `,"presence":{"x":1,"x":2}`), false},

@@ -100,7 +100,7 @@ const (
 	// scanner's dot-collapse pass removes dots, but it prevents phrase-based
 	// detectors like BIP-39 from synthesizing mnemonics across unrelated JSON
 	// fields. Field-local seed phrases are still scanned before the join.
-	bodyDLPJoinSeparator = "."
+	bodyDLPJoinSeparator = extract.BodyDLPJoinSeparator
 )
 
 // redactionRewriteCount returns the number of unique values the pre-DLP
