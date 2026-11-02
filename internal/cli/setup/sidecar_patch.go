@@ -44,7 +44,7 @@ const (
 
 	// defaultImage is the GHCR image with the current version tag.
 	// Overridden by --image flag.
-	defaultImageRepo = "ghcr.io/luckypipewrench/pipelock"
+	defaultImageRepo = "ghcr.io/pipelab-org/pipelock"
 
 	// Proxy env vars injected into the primary container.
 	envHTTPSProxy = "HTTPS_PROXY"

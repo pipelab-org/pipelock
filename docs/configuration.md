@@ -2425,6 +2425,8 @@ See "Published agent services" in `contain-cli.md` for install, verification, an
 
 ## Kill Switch
 
+The activation-source list below describes `pipelock run`, including its integrated MCP listener. Standalone `pipelock mcp proxy` reads configuration and sentinel-file activation but doesn't run the kill-switch/session API, SIGUSR1 toggle or Conductor producers. With `defer.enabled`, `kill_switch.api_listen` and an API token configured, supported MCP modes can run the authenticated deferred operator API at `/api/v1/deferred`; see [deferred actions](#defer-action) for supported transports. All sources already active in a shared controller still deny MCP traffic; source wiring and controller enforcement are separate boundaries.
+
 Emergency deny-all with seven independent activation sources: `enabled`,
 `sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor
 stale-bundle detection, and uncertain Conductor apply. Any one active denies
@@ -3019,7 +3021,7 @@ All presets use the bundled files in `configs/` and inherit built-in DLP and res
 
 Generated YAML for `strict`, `balanced`, and `audit` is the bundled file verbatim, including comments and regular expressions. Older generated output serialized an assembled configuration, so text, layout, and explicit fields can differ. Scripts that compare generated files byte for byte need updated expectations.
 
-The mode presets use `Preset Tool Invocation`, `Preset Instruction Boundary`, `Preset Instruction Dismissal`, and `Preset Priority Override` for their supplemental expressions. Audit also uses `Preset Covert Action Directive`. These names identify the supplemental expressions in configuration and any findings they produce. Existing built-in identities remain active alongside them. Immutable core matches take precedence. Audit text covered by `Preset Covert Action Directive` reports the core `Covert Action Directive` identity, which can't be suppressed.
+The mode presets and the quickstart example use `Preset Tool Invocation`, `Preset Instruction Boundary`, `Preset Instruction Dismissal`, and `Preset Priority Override` for their supplemental expressions. Audit also uses `Preset Covert Action Directive`. These names identify the supplemental expressions in configuration and any findings they produce. Existing built-in identities remain active alongside them. Immutable core matches take precedence. Audit text covered by `Preset Covert Action Directive` reports the core `Covert Action Directive` identity, which can't be suppressed.
 
 The `claude-code`, `cursor`, `generic-agent`, and `hostile-model` presets use all five supplemental names above. When adopting regenerated YAML, check name-based alerts and suppressions carried over from an older config: the old name now identifies the built-in expression, while `Preset <name>` identifies the preserved preset expression. A suppression for a non-core old name still loads but doesn't cover a supplemental finding. To retain an exception for that expression, use its `Preset` name with the same narrow path and reason; review the built-in finding separately. Existing saved configurations keep their configured pattern names until you replace or edit them. `request_body_scanning.pattern_actions` keys name DLP patterns, whose names are unchanged.
 

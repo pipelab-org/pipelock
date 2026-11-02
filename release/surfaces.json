@@ -103,6 +103,30 @@
   },
   "surfaces": [
     {
+      "id": "quickstart-current-version",
+      "path": "examples/quickstart/README.md",
+      "pattern": "Pin a specific version with `PIPELOCK_VERSION=(?P<value>[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?)(?=[`\\s]|$)",
+      "expected": "source:product",
+      "count": 1,
+      "reason": "The quickstart installation example follows the product release."
+    },
+    {
+      "id": "quickstart-legacy-boundary",
+      "path": "examples/quickstart/README.md",
+      "pattern": "For releases through (?P<value>3\\.7\\.1), also select the legacy namespace",
+      "expected": "3.7.1",
+      "count": 1,
+      "reason": "Historical namespace boundary and example: the v3.7.1 scripts/release-image-namespace.sh maps both release repositories to ghcr.io/luckypipewrench."
+    },
+    {
+      "id": "quickstart-legacy-example",
+      "path": "examples/quickstart/README.md",
+      "pattern": "PIPELOCK_IMAGE_NAMESPACE=luckypipewrench PIPELOCK_VERSION=(?P<value>3\\.7\\.1)(?=[`\\s]|$)",
+      "expected": "3.7.1",
+      "count": 1,
+      "reason": "The v3.7.1 quickstart command must pair its version with the historical image namespace selected by that tag's scripts/release-image-namespace.sh."
+    },
+    {
       "id": "docs-benchmarks.md-1",
       "path": "docs/benchmarks.md",
       "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
@@ -304,7 +328,7 @@
       "path": "README.md",
       "pattern": "(?P<value>(?<![A-Za-z0-9.])v?[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?![A-Za-z0-9]|\\.[0-9]))",
       "expected": "source:product",
-      "count": 13,
+      "count": 12,
       "reason": "Current installation, health output, chart metadata or action binary input; follows chart appVersion and the release tag.",
       "format": "version"
     },

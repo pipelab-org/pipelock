@@ -101,7 +101,7 @@ Examples:
 	cmd.Flags().StringVarP(&opts.output, "output", "o", "", "output path (default: stdout)")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "show diff without writing files or running canary")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "regenerate output even from a patched manifest and overwrite existing output files")
-	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/luckypipewrench/pipelock:<version>)")
+	cmd.Flags().StringVar(&opts.image, "image", "", "companion proxy image (default: ghcr.io/pipelab-org/pipelock:<version>)")
 	cmd.Flags().StringVar(&opts.preset, "preset", config.ModeBalanced, presets.FlagHelp)
 	cmd.Flags().BoolVar(&opts.skipCanary, "skip-canary", false, "skip the canary detection test")
 	cmd.Flags().BoolVar(&opts.skipVerify, "skip-verify", false, "skip static topology verification")
@@ -622,14 +622,14 @@ func printSidecarSummary(w io.Writer, result *sidecarResult, opts sidecarOptions
 	case emitHelmValues:
 		if result.Patch.OutputPath != "" {
 			_, _ = fmt.Fprintf(w, "  # render and inspect first: see %s/README.txt\n", result.Patch.OutputPath)
-			_, _ = fmt.Fprintf(w, "  helm upgrade --install <release-name> oci://ghcr.io/luckypipewrench/charts/pipelock --version <chart-version> -f %s/values.yaml\n", result.Patch.OutputPath)
+			_, _ = fmt.Fprintf(w, "  helm upgrade --install <release-name> oci://ghcr.io/pipelab-org/charts/pipelock --version <chart-version> -f %s/values.yaml\n", result.Patch.OutputPath)
 			_, _ = fmt.Fprintln(w, "  kubectl rollout status deployment/<release-name>")
 			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/pipelock-networkpolicy.yaml -f %s/pipelock-pdb.yaml\n", result.Patch.OutputPath, result.Patch.OutputPath)
 			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/agent-networkpolicy.yaml\n", result.Patch.OutputPath)
 			_, _ = fmt.Fprintf(w, "  kubectl apply -f %s/agent-workload.yaml\n", result.Patch.OutputPath)
 		} else {
 			_, _ = fmt.Fprintln(w, "  # render and inspect first: see <bundle-dir>/README.txt")
-			_, _ = fmt.Fprintln(w, "  helm upgrade --install <release-name> oci://ghcr.io/luckypipewrench/charts/pipelock --version <chart-version> -f <bundle-dir>/values.yaml")
+			_, _ = fmt.Fprintln(w, "  helm upgrade --install <release-name> oci://ghcr.io/pipelab-org/charts/pipelock --version <chart-version> -f <bundle-dir>/values.yaml")
 		}
 	default:
 		_, _ = fmt.Fprintln(w, "  kubectl apply -f <patched-manifest>")

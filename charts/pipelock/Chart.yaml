@@ -6,11 +6,11 @@ type: application
 # gate enforces that both equal the release tag. The chart publishes to an
 # OCI registry under this version as the tag, so a version that did not move
 # every release would overwrite the previously published chart in place.
-version: 3.7.0
-appVersion: "3.7.0"
+version: 3.8.0
+appVersion: "3.8.0"
 home: https://pipelab.org
 sources:
-  - https://github.com/luckyPipewrench/pipelock
+  - https://github.com/pipelab-org/pipelock
 maintainers:
   - name: Josh Waldrep
     url: https://github.com/luckyPipewrench
@@ -21,7 +21,7 @@ keywords:
   - dlp
   - prompt-injection
   - egress-control
-icon: https://raw.githubusercontent.com/luckyPipewrench/pipelock/main/assets/pipelock-logo.svg
+icon: https://raw.githubusercontent.com/pipelab-org/pipelock/main/assets/pipelock-logo.svg
 annotations:
   # This is the license of THE CHART, not of the application it deploys, and
   # Artifact Hub requires a single SPDX identifier here rather than an
@@ -31,24 +31,22 @@ annotations:
   # labels on the image itself, and the Homebrew formula for the binary.
   artifacthub.io/license: Apache-2.0
   artifacthub.io/containsSecurityUpdates: "true"
-  artifacthub.io/changesURL: https://github.com/luckyPipewrench/pipelock/releases
+  artifacthub.io/changesURL: https://github.com/pipelab-org/pipelock/releases
   artifacthub.io/links: |
     - name: Documentation
       url: https://pipelab.org/learn/
     - name: Release notes
-      url: https://github.com/luckyPipewrench/pipelock/releases
+      url: https://github.com/pipelab-org/pipelock/releases
     - name: Receipt verifier (Python)
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed
-      description: Pipelock appVersion 3.7.0. Parallel signed receipt chains use group openings, closes and complete-history verification; exact clean-text caching reduces receipt scanning cost within its documented detection bounds.
+      description: Pipelock appVersion 3.8.0. Upgrade notes cover dedicated metrics, the container registry move, expiring scanner exceptions and managed containment units.
     - kind: added
-      description: Exact destination grants authorize host-and-port pairs while retaining content and protected-address checks.
-    - kind: added
-      description: Cooperative pipelock exec launch, filesystem grants for host containment, kernel-observed local MCP service identities and per-tool credential-request acknowledgments.
+      description: Synchronous configuration reload, service-aware validation, explicit prompt-injection wording policy and bounded partial inspection of oversized JSON responses.
     - kind: changed
-      description: A valid receipt prefix without a proven end exits 3; clean reports use schema version 2, and compatible verifiers are required for parallel groups and recovery seals.
+      description: Images default to ghcr.io/pipelab-org; proxy Pods have a private writable home while the root filesystem remains read-only. Evidence and follower persistence still require separate storage.
     - kind: security
-      description: Schema-bound JSON key validation, preserved replay and revocation state, runtime socket isolation and required durable receipts before covered effects.
+      description: Metrics no longer appear on the agent-facing proxy port. Configure a dedicated listener and restrict direct agent access.
     - kind: fixed
-      description: Stream truncation, receipt rotation and per-chain evidence health, browser-visible media inspection, and MCP protocol negotiation and clean upstream refusals.
+      description: Containment activation and rollback, MCP mirrored-header contracts and refusal evidence, response rewrite findings, structured scanning and recorder restart handling.

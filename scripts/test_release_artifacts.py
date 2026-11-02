@@ -488,8 +488,15 @@ class TestReleaseArtifacts(unittest.TestCase):
         # No image, chart or label still names a fixed account.
         # The one permitted mention is the committed chart default the package
         # step locates and replaces.
-        self.assertEqual(self.workflow.lower().count("ghcr.io/luckypipewrench"), 1)
-        self.assertIn("default_line='  repository: ghcr.io/luckypipewrench/pipelock'", self.workflow)
+        self.assertEqual(self.workflow.lower().count("ghcr.io/pipelab-org"), 1)
+        self.assertIn("default_line='  repository: ghcr.io/pipelab-org/pipelock'", self.workflow)
+        chart_repository = yaml.load(
+            (ROOT / "charts/pipelock/values.yaml").read_text(encoding="utf-8"), Loader=WorkflowLoader,
+        )["image"]["repository"]
+        sidecar_source = (ROOT / "internal/cli/setup/sidecar_patch.go").read_text(encoding="utf-8")
+        sidecar_repository = re.search(r'defaultImageRepo = "([^"]+)"', sidecar_source)
+        self.assertIsNotNone(sidecar_repository, "sidecar default image repository is missing")
+        self.assertEqual(sidecar_repository.group(1), chart_repository)
         self.assertNotIn("ghcr.io/luckypipewrench", self.goreleaser.lower())
         self.assertIn(
             "image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}",

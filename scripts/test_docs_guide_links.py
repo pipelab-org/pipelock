@@ -108,6 +108,27 @@ class DocsGuideLinksTest(unittest.TestCase):
         self.assert_failure(result)
         self.assertIn("docs-check: failed: found stale gauntlet corpus count", result.stdout)
 
+    def test_moving_image_tags_fail_for_both_release_namespaces(self):
+        for namespace in ("luckypipewrench", "pipelab-org"):
+            with self.subTest(namespace=namespace):
+                (self.root / "README.md").write_text(
+                    f"docker pull ghcr.io/{namespace}/pipelock:latest\n", encoding="utf-8",
+                )
+                result = self.run_gate()
+                self.assert_failure(result)
+                self.assertIn("moving Pipelock image tag", result.stdout)
+
+    def test_deployment_recipe_requires_digest_in_both_release_namespaces(self):
+        recipe = self.root / "docs/guides/deployment-recipes.md"
+        for namespace in ("luckypipewrench", "pipelab-org"):
+            with self.subTest(namespace=namespace):
+                recipe.write_text(
+                    f"    image: ghcr.io/{namespace}/pipelock:{self.current_version}\n", encoding="utf-8",
+                )
+                result = self.run_gate()
+                self.assert_failure(result)
+                self.assertIn("mutable Pipelock image tag in deployment recipe", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
