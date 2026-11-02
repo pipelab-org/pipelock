@@ -444,7 +444,10 @@ func TestCredentialWordViewPairIncomplete(t *testing.T) {
 		fmt.Fprintf(&b, " .s${u}sh/foo%d", i)
 	}
 	v := pc.CheckToolCall("bash", []string{b.String()})
-	if !slices.Contains(v.IncompleteRules, ruleSensitiveFileRead) {
-		t.Fatalf("verdict %v %q rules %v incomplete %v, want %s incomplete", v.Matched, v.Action, v.Rules, v.IncompleteRules, ruleSensitiveFileRead)
+	if !v.Matched || v.Action != config.ActionBlock ||
+		slices.Contains(v.Rules, ruleSensitiveFileRead) ||
+		!slices.Contains(v.Rules, incompletePairCheckRule) ||
+		!slices.Contains(v.IncompleteRules, ruleSensitiveFileRead) {
+		t.Fatalf("verdict %v %q rules %v incomplete %v, want an incomplete-check block without a %s match", v.Matched, v.Action, v.Rules, v.IncompleteRules, ruleSensitiveFileRead)
 	}
 }
