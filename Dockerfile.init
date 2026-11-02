@@ -7,7 +7,7 @@
 # Usage in a pod spec:
 #   initContainers:
 #     - name: pipelock-init
-#       image: ghcr.io/luckypipewrench/pipelock-init:latest
+#       image: ghcr.io/pipelab-org/pipelock-init:latest
 #       command: ["cp", "/pipelock", "/shared-bin/pipelock"]
 #       volumeMounts:
 #         - name: shared-bin
