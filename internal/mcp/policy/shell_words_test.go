@@ -422,7 +422,29 @@ func TestCredentialWordMatchKeepsPairIncomplete(t *testing.T) {
 	}
 	b.WriteString(" ~/.aws/cred${u}entials")
 	v := pc.CheckToolCall("bash", []string{b.String()})
-	if !v.Matched || v.Action != config.ActionBlock {
-		t.Fatalf("verdict %v %q rules %v incomplete %v, want block", v.Matched, v.Action, v.Rules, v.IncompleteRules)
+	if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.Rules, ruleSensitiveFileRead) || !slices.Contains(v.IncompleteRules, ruleSensitiveFileRead) {
+		t.Fatalf("verdict %v %q rules %v incomplete %v, want block with %s matched and incomplete", v.Matched, v.Action, v.Rules, v.IncompleteRules, ruleSensitiveFileRead)
+	}
+}
+
+// TestCredentialWordViewPairIncomplete: when only the word reading's bounded
+// pair scan stops early and nothing matches, the credential rule still reports
+// an incomplete check instead of a complete no-match.
+func TestCredentialWordViewPairIncomplete(t *testing.T) {
+	rules := DefaultToolPolicyRules()
+	for i := range rules {
+		if rules[i].Name == ruleSensitiveFileRead {
+			rules[i].Action = config.ActionWarn
+		}
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: rules})
+	var b strings.Builder
+	b.WriteString("cat")
+	for i := range 100 {
+		fmt.Fprintf(&b, " .s${u}sh/foo%d", i)
+	}
+	v := pc.CheckToolCall("bash", []string{b.String()})
+	if !slices.Contains(v.IncompleteRules, ruleSensitiveFileRead) {
+		t.Fatalf("verdict %v %q rules %v incomplete %v, want %s incomplete", v.Matched, v.Action, v.Rules, v.IncompleteRules, ruleSensitiveFileRead)
 	}
 }
