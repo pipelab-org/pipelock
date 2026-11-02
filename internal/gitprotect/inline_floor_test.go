@@ -130,3 +130,26 @@ func TestReplaceGitProtectMatchesMergesOverlaps(t *testing.T) {
 		t.Fatalf("replaceGitProtectMatches = %q", got)
 	}
 }
+
+// TestScanDiffRedactsPartlyOverlappingMatches: a regex match that only partly
+// overlaps another pattern's span is still redacted in full, because every
+// span is found on the original line before anything is replaced.
+func TestScanDiffRedactsPartlyOverlappingMatches(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{
+		{Name: "Left", Regex: `abcdefgh`, Severity: config.SeverityHigh},
+		{Name: "Right", Regex: `efghijkl`, Severity: config.SeverityHigh},
+	})
+	diff := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+v=abcdefghijkl;\n"
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("want two findings, got %+v", result.Findings)
+	}
+	for _, f := range result.Findings {
+		if f.Content != "v=[REDACTED];" {
+			t.Fatalf("finding %q content %q", f.Pattern, f.Content)
+		}
+	}
+}

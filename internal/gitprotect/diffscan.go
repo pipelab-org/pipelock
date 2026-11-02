@@ -487,7 +487,6 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 			// another finding's secret.
 			var hits []CompiledDLPPattern
 			var spans []redact.Match
-			var regexHits []*regexp.Regexp
 			for _, cp := range patterns {
 				matched := false
 				regexMatched := cp.regexMatches(al.content)
@@ -501,7 +500,13 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 					}
 				}
 				if regexMatched {
-					regexHits = append(regexHits, cp.Re)
+					// Spans are found on the original line, so redaction
+					// already applied for another pattern cannot hide part
+					// of this match. Every match is redacted, accepted by
+					// the validator or not.
+					for _, loc := range cp.Re.FindAllStringIndex(al.content, -1) {
+						spans = append(spans, redact.Match{Start: loc[0], End: loc[1]})
+					}
 					matched = true
 				}
 				if matched {
@@ -512,9 +517,6 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 				continue
 			}
 			redacted := replaceGitProtectMatches(al.content, spans)
-			for _, re := range regexHits {
-				redacted = re.ReplaceAllString(redacted, "[REDACTED]")
-			}
 			for _, cp := range hits {
 				f := Finding{
 					File:     file,
