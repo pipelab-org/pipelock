@@ -121,7 +121,9 @@ def test_chain_allow_prefix_keeps_partial_verdict():
 def test_chain_without_trusted_signature_fails(tmp_path: Path):
     rc, out, _ = run(["aarp", str(_C01), "--chain", "--json"])
     assert rc == EXIT_GENERAL
-    assert json.loads(out)["integrity"] == "invalid"
+    report = json.loads(out)
+    assert report["integrity"] == "invalid"
+    assert "--trust" in report["error"]
 
 
 def test_chain_forged_signature_fails(tmp_path: Path):

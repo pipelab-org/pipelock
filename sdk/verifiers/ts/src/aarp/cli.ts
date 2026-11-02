@@ -101,7 +101,9 @@ function runAARPChain(
       throw new Error("chain does not start at the genesis link");
     }
     if (!signaturesVerified)
-      throw new Error("one or more envelopes lack a trusted valid signature");
+      throw new Error(
+        "no signature verified against pinned trust; pass --trust with the signer key",
+      );
   } catch (err) {
     failure = isCodedError(err) ? err.message : String(err);
   }

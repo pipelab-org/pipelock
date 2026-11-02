@@ -136,6 +136,15 @@ func TestAARPChainAuthenticatedBoundary(t *testing.T) {
 			if tc.want == 3 && !strings.Contains(out.String(), "VALID PREFIX, END UNPROVEN") {
 				t.Fatalf("missing prefix status: %s", out.String())
 			}
+			if tc.noTrust {
+				var report aarpChainReport
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("parse no-trust report: %v\n%s", err, out.String())
+				}
+				if !strings.Contains(report.Error, "--trust") {
+					t.Fatalf("no-trust error %q does not name --trust", report.Error)
+				}
+			}
 		})
 	}
 }

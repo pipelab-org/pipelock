@@ -278,10 +278,40 @@ test("audit packet keeps an open session valid but marks its missing close", asy
   assert.equal(report.lifecycle_reason, "abnormal_end");
 });
 
+test("audit packet reports a malformed lifecycle chain as assessed and broken", async () => {
+  const dir = writePacket();
+  writeFileSync(
+    path.join(dir, "evidence.jsonl"),
+    readFileSync("../../conformance/testdata/g1-inconsistent-close.jsonl"),
+    { mode: 0o600 },
+  );
+  const report = await verifyAuditPacket(dir, defaultOptions);
+  assert.equal(report.valid, false);
+  assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "CHAIN BROKEN");
+  assert.equal(report.lifecycle_assessment, "assessed");
+  assert.equal(report.lifecycle_status, "BROKEN");
+  assert.equal(report.lifecycle_reason, "chain_broken");
+});
+
+test("malformed audit-packet schema is not reported as a broken chain", async () => {
+  const report = await verifyAuditPacket(
+    writePacket((packet) => {
+      packet.schema_version = "unknown";
+    }),
+    defaultOptions,
+  );
+  assert.equal(report.valid, false);
+  assert.equal(report.schema_check, "fail");
+  assert.equal(report.status, "PACKET INVALID");
+  assert.equal(report.chain_check, "skipped");
+});
+
 test("audit packet requires external trust for valid verdict", async () => {
   const report = await verifyAuditPacket(writePacket(), { ...defaultOptions, signerKey: "" });
   assert.equal(report.valid, false);
   assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "TRUST UNVERIFIED");
   assert.ok(report.errors?.some((err) => err.includes("requires --key or --expect-sha256")));
 });
 
@@ -334,6 +364,27 @@ test("explicit no-trust mode can use the packet key", async () => {
   });
   assert.equal(report.valid, false, JSON.stringify(report.errors));
   assert.equal(report.status, "VALID PREFIX, END UNPROVEN");
+});
+
+test("no-trust mode does not repeat the packet trust claim", async () => {
+  const dir = await packetOverRun(
+    "../../conformance/testdata/end-proof/v2-closed.jsonl",
+    endProofKey,
+  );
+  const report = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: "",
+    noTrustRequired: true,
+  });
+  assert.equal(report.valid, true, JSON.stringify(report.errors));
+  assert.equal(report.trusted, false, "no external anchor was supplied");
+  const anchored = await verifyAuditPacket(dir, {
+    ...defaultOptions,
+    signerKey: endProofKey,
+    noTrustRequired: true,
+  });
+  assert.equal(anchored.valid, true);
+  assert.equal(anchored.trusted, false, "relaxed-trust mode never reports trusted");
 });
 
 test("audit packet rejects an empty chain", async () => {
@@ -485,6 +536,7 @@ test("--offline skips chain verification", async () => {
   assert.equal(report.cross_check, "skipped");
   assert.equal(report.lifecycle_assessment, "not_assessed");
   assert.equal(report.lifecycle_assessment_reason, "offline mode skips chain re-verification");
+  assert.equal(report.status, "TRUST UNVERIFIED");
 });
 
 test("CLI missing argument exits 64", () => {
@@ -750,6 +802,7 @@ test("an open action prefix still checks a present v2 recorder seal", async () =
   const dir = await packetOverRun(evidencePath, endProofKey);
   const report = await verifyAuditPacket(dir, { ...defaultOptions, signerKey: endProofKey });
   assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "CHAIN BROKEN");
   assert.ok(report.errors?.some((error) => error.includes("transcript_root does not match")));
 });
 

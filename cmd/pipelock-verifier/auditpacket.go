@@ -34,6 +34,8 @@ const (
 	statusFail                         = "fail"
 	statusSkipped                      = "skipped"
 	statusSchemaCheckedTrustUnverified = "schema_checked_trust_unverified"
+	statusPacketInvalid                = "PACKET INVALID"
+	statusTrustUnverified              = "TRUST UNVERIFIED"
 )
 
 // Stable values for the lifecycle_assessment field.
@@ -151,8 +153,10 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 		return cliutil.ExitCodeError(cliutil.ExitConfig, err)
 	}
 
+	packetReport := endproof.New(false, "audit_packet")
+	packetReport.Status = statusPacketInvalid
 	report := auditPacketReport{
-		Report:                    endproof.New(false, "audit_packet"),
+		Report:                    packetReport,
 		Path:                      packetPath,
 		SchemaCheck:               statusSkipped,
 		ChainCheck:                statusSkipped,
@@ -206,6 +210,7 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	report.SchemaCheck = statusPass
 
 	if opts.offline {
+		report.Status = statusTrustUnverified
 		report.LifecycleAssessmentReason = lifecycleReasonOffline
 		report.Verdict = statusSchemaCheckedTrustUnverified
 		report.Trusted = false
@@ -217,11 +222,13 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 
 	signerKey, keyErr := auditPacketSignerKey(&packet, opts)
 	if keyErr != nil {
+		report.Status = statusTrustUnverified
 		report.ChainCheck = statusFail
 		report.Errors = append(report.Errors, fmt.Sprintf("chain: %v", keyErr))
 		emitReport(stdout, stderr, report, opts.jsonOutput)
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, keyErr)
 	}
+	report.Report = endproof.New(false, "audit_packet")
 	chainResult, chainReceipts, recorderEndProven, chainErr := reverifyChain(baseDir, &packet, signerKey)
 	if chainErr != nil {
 		report.ChainCheck = statusFail
@@ -273,8 +280,14 @@ func runAuditPacket(stdout, stderr io.Writer, target string, opts auditPacketOpt
 	report.Report = endproof.New(chainResult.Valid, "audit_packet", endEvidence...)
 	if !trusted {
 		report.Status = endproof.Invalid
+		if lifecycle.Status != completeness.StatusBroken {
+			report.Status = statusTrustUnverified
+		}
 	}
 	report.Valid = trusted && report.EndProof.Proven
+	if opts.relaxTrust {
+		report.Trusted = false
+	}
 	if lifecycle.Status == completeness.StatusBroken {
 		report.Errors = append(report.Errors, fmt.Sprintf("lifecycle: %s", lifecycle.Reason))
 	}

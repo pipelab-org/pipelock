@@ -98,6 +98,7 @@ fn verify_audit_packet_report(
     };
     report = report_from_packet(&packet_path_string, Some(&packet));
     if opts.offline {
+        report.status = "TRUST UNVERIFIED".to_string();
         report.verdict.clear();
         report.trusted = false;
     }
@@ -132,6 +133,7 @@ fn verify_audit_packet_report(
         Ok(path) => path,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
@@ -140,6 +142,7 @@ fn verify_audit_packet_report(
         Ok(lines) => lines,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
@@ -148,6 +151,7 @@ fn verify_audit_packet_report(
         Ok(typed) => typed,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "CHAIN BROKEN".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
@@ -170,6 +174,7 @@ fn verify_audit_packet_report(
         packet_key
     } else {
         report.chain_check = "fail".to_string();
+        report.status = "TRUST UNVERIFIED".to_string();
         push_error(
             &mut report,
             "chain: trusted Audit Packet verification requires --key or --expect-sha256"
@@ -190,6 +195,7 @@ fn verify_audit_packet_report(
         Ok(key) => key,
         Err(err) => {
             report.chain_check = "fail".to_string();
+            report.status = "TRUST UNVERIFIED".to_string();
             push_error(&mut report, format!("chain: {err}"));
             return Ok(report);
         }
@@ -250,6 +256,7 @@ fn verify_audit_packet_report(
     }
     let cross_errors = cross_check(&packet, &chain, &receipts);
     if !cross_errors.is_empty() {
+        report.status = "CHAIN BROKEN".to_string();
         report.cross_check = "fail".to_string();
         for err in cross_errors {
             push_error(&mut report, format!("cross-check: {err}"));
@@ -290,19 +297,23 @@ fn verify_audit_packet_report(
         },
     };
     report.scope = "audit_packet".to_string();
-    report.status = if !chain.valid || !trusted {
+    report.status = if !chain.valid || lifecycle_broken {
         "CHAIN BROKEN"
+    } else if !trusted {
+        "TRUST UNVERIFIED"
     } else if !end_proven {
         crate::output::PREFIX_STATUS
-    } else {
+    } else if end_proven {
         "CHAIN VALID"
+    } else {
+        "CHAIN BROKEN"
     }
     .to_string();
     if trusted && !end_proven {
         report.verdict = crate::output::PREFIX_STATUS.to_string();
     }
     report.valid = trusted && end_proven && chain.valid;
-    report.trusted = report.trusted && report.valid;
+    report.trusted = report.trusted && report.valid && !opts.no_trust_required;
     if lifecycle_broken {
         push_error(&mut report, format!("lifecycle: {lifecycle_reason}"));
     }
@@ -580,7 +591,7 @@ pub fn report_from_packet(path: &str, packet: Option<&AuditPacket>) -> AuditPack
         integrity: "invalid".to_string(),
         end_proof: crate::types::EndProof::default(),
         scope: "audit_packet".to_string(),
-        status: "CHAIN BROKEN".to_string(),
+        status: "PACKET INVALID".to_string(),
         summary: ReportSummary {
             receipt_count: 0,
             totals: Totals::zero(),

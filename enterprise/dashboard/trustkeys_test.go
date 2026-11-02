@@ -256,6 +256,35 @@ func TestTrustKeysTemplateRendersEndProofStatus(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("anchor-only failure is named in the red integrity cell", func(t *testing.T) {
+		audit := AuditReceiptChain(ChainAuditInput{
+			SessionID:      closed[0].ActionRecord.SessionControl.Open.RecorderSession,
+			Receipts:       closed,
+			TrustedKeys:    []string{hex.EncodeToString(pub)},
+			AnchorExpected: true,
+			AnchorBundle:   &anchor.Bundle{Checkpoint: anchor.Checkpoint{}},
+			AnchorBackend:  anchor.LocalLog{},
+		})
+		if audit.Consistent || audit.AnchorStatus != AnchorFailure || audit.EndProof.Integrity != "valid" || !audit.EndProof.EndProof.Proven {
+			t.Fatalf("audit = %+v, want only anchor verification to fail", audit)
+		}
+		if !strings.Contains(audit.Detail, endproof.Valid) {
+			t.Fatalf("audit detail = %q, want positive chain-valid control", audit.Detail)
+		}
+
+		var out bytes.Buffer
+		if err := trustKeysTemplate.Execute(&out, TrustKeysPage{Audits: []ChainAudit{audit}}); err != nil {
+			t.Fatal(err)
+		}
+		want := `<td class="fail">ANCHOR FAILURE</td>`
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing anchor failure label %q: %s", want, out.String())
+		}
+		if strings.Contains(out.String(), `<td class="fail">`+endproof.Valid+`</td>`) {
+			t.Fatalf("anchor-only failure rendered a red valid-chain label: %s", out.String())
+		}
+	})
 }
 
 func TestFileAnchorResolver_VerifiesExistingMarkerMaterial(t *testing.T) {

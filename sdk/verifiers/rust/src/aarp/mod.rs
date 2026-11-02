@@ -183,7 +183,9 @@ fn run_chain(
                     .unwrap_or(false)
             });
             if !signatures_verified {
-                failure = "one or more envelopes lack a trusted valid signature".to_string();
+                failure =
+                    "no signature verified against pinned trust; pass --trust with the signer key"
+                        .to_string();
             }
         }
     } else {

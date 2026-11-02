@@ -192,7 +192,9 @@ def _run_chain(
             verify(env, verify_opts).assertion_signed for env in envs
         )
         if not signatures_verified:
-            raise ValueError("one or more envelopes lack a trusted valid signature")
+            raise ValueError(
+                "no signature verified against pinned trust; pass --trust with the signer key"
+            )
     except Exception as exc:  # noqa: BLE001 - linkage, genesis, or trust failure
         failure = str(exc)
 

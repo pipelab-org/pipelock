@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -224,7 +225,7 @@ func runAARPChain(stdout, stderr io.Writer, data []byte, opts aarpOptions, trust
 			return emit(fmt.Errorf("chain envelope %d: %w", i, err))
 		}
 		if !ap.AssertionSigned {
-			return emit(fmt.Errorf("chain envelope %d has no signature verified against pinned trust", i))
+			return emit(errors.New("no signature verified against pinned trust; pass --trust with the signer key"))
 		}
 	}
 	report.SignaturesVerified = true

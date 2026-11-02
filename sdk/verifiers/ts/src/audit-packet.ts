@@ -46,7 +46,7 @@ function reportFromPacket(packetPath: string, packet?: AuditPacket): AuditPacket
     integrity: "invalid",
     end_proof: { proven: false, evidence: [] },
     scope: "audit_packet",
-    status: "CHAIN BROKEN",
+    status: "PACKET INVALID",
     path: packetPath,
     verdict: packet?.verifier?.verdict ?? "",
     trusted: packet?.verifier?.trusted ?? false,
@@ -379,6 +379,7 @@ async function verifyAuditPacketReport(
   report.schema_check = "pass";
 
   if (opts.offline) {
+    report.status = "TRUST UNVERIFIED";
     report.lifecycle_assessment_reason = "offline mode skips chain re-verification";
     report.verdict = "schema_checked_trust_unverified";
     report.trusted = false;
@@ -434,6 +435,9 @@ async function verifyAuditPacketReport(
     }
   } catch (err) {
     report.chain_check = "fail";
+    report.status = (err as Error).message.includes("requires --key")
+      ? "TRUST UNVERIFIED"
+      : "CHAIN BROKEN";
     pushError(report, `chain: ${(err as Error).message}`);
     return report;
   }
@@ -453,6 +457,7 @@ async function verifyAuditPacketReport(
   const crossErrors = crossCheck(packet, chain, receipts);
   if (crossErrors.length > 0) {
     report.cross_check = "fail";
+    report.status = "CHAIN BROKEN";
     for (const err of crossErrors) pushError(report, `cross-check: ${err}`);
     return report;
   }
@@ -479,14 +484,16 @@ async function verifyAuditPacketReport(
   report.end_proof = { proven: endProven, evidence: endProven ? ["session_close"] : [] };
   report.scope = "audit_packet";
   report.status =
-    !chain.valid || !trusted
+    !chain.valid || lifecycle.status === "BROKEN"
       ? "CHAIN BROKEN"
-      : !endProven
-        ? "VALID PREFIX, END UNPROVEN"
-        : "CHAIN VALID";
+      : !trusted
+        ? "TRUST UNVERIFIED"
+        : !endProven
+          ? "VALID PREFIX, END UNPROVEN"
+          : "CHAIN VALID";
   if (trusted && !endProven) report.verdict = "VALID PREFIX, END UNPROVEN";
   report.valid = trusted && endProven && chain.valid;
-  report.trusted = report.trusted && report.valid;
+  report.trusted = report.trusted && report.valid && !opts.noTrustRequired;
   if (lifecycle.status === "BROKEN") pushError(report, `lifecycle: ${lifecycle.reason}`);
   if (!report.valid) pushError(report, "packet not trusted");
   return report;

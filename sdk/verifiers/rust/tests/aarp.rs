@@ -468,6 +468,7 @@ fn chain_without_trusted_signature_fails() {
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("parse report");
     assert_eq!(report["integrity"], "invalid");
     assert_eq!(report["signatures_verified"], false);
+    assert!(report["error"].as_str().unwrap().contains("--trust"));
 }
 
 #[test]

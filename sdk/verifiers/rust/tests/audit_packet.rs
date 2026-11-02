@@ -250,6 +250,18 @@ fn audit_packet_reports_a_malformed_lifecycle_chain_as_assessed_and_broken() {
 }
 
 #[test]
+fn malformed_audit_packet_schema_is_not_reported_as_a_broken_chain() {
+    let packet_dir = write_packet(Some(|packet| {
+        packet["schema_version"] = Value::Null;
+    }));
+    let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
+    assert!(!report.valid);
+    assert_eq!(report.schema_check, "fail");
+    assert_eq!(report.status, "PACKET INVALID");
+    assert_eq!(report.chain_check, "skipped");
+}
+
+#[test]
 fn audit_packet_requires_external_trust_for_valid_verdict() {
     let packet_dir = write_packet(None);
     let report = verify_audit_packet(
@@ -262,6 +274,7 @@ fn audit_packet_requires_external_trust_for_valid_verdict() {
     .unwrap();
     assert!(!report.valid);
     assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.status, "TRUST UNVERIFIED");
     assert!(has_error(
         &report.errors,
         "requires --key or --expect-sha256"
@@ -350,6 +363,39 @@ fn explicit_no_trust_mode_can_use_packet_key() {
         "no-trust mode does not prove the evidence endpoint"
     );
     assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
+}
+
+#[test]
+fn no_trust_mode_does_not_repeat_the_packet_trust_claim() {
+    let packet_dir = write_packet_with_key("end-proof/closed.jsonl", None, ENDPROOF_KEY);
+    let report = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: String::new(),
+            no_trust_required: true,
+            ..endproof_options()
+        },
+    )
+    .unwrap();
+    assert!(
+        report.valid,
+        "the chain is structurally complete: {:?}",
+        report.errors
+    );
+    assert!(!report.trusted, "no external anchor was supplied");
+    let anchored = verify_audit_packet(
+        packet_dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            no_trust_required: true,
+            ..endproof_options()
+        },
+    )
+    .unwrap();
+    assert!(anchored.valid);
+    assert!(
+        !anchored.trusted,
+        "relaxed-trust mode never reports trusted"
+    );
 }
 
 #[test]
@@ -716,6 +762,7 @@ fn offline_audit_packet_verdict_is_unchanged() {
     assert_eq!(report.verdict, "schema_checked_trust_unverified");
     assert!(!report.trusted);
     assert!(!report.valid);
+    assert_eq!(report.status, "TRUST UNVERIFIED");
 }
 
 // The evidence file of a current run holds an ActionReceipt v1 chain and an

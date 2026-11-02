@@ -142,7 +142,9 @@ test("cli aarp: --allow-prefix succeeds but keeps partial verdict", () => {
 test("cli aarp: chain requires trusted signatures", () => {
   const r = runCLI(["aarp", `${corpus}/chain/c01-valid-stream.aarp.jsonl`, "--chain", "--json"]);
   assert.equal(r.status, 1);
-  assert.equal(JSON.parse(r.stdout).integrity, "invalid");
+  const report = JSON.parse(r.stdout);
+  assert.equal(report.integrity, "invalid");
+  assert.match(report.error, /--trust/u);
 });
 
 test("cli aarp: good parallel signature survives a bad signature", () => {
