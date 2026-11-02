@@ -43,6 +43,12 @@ For legacy MCP sections, `enabled: false` with an empty action can still mean sc
 
 Generated configurations now preserve bundled policy. The audit preset keeps explicit tool-policy blocks, warns on ordinary findings and disables adaptive escalation. Regenerated strict configurations retain their strict actions, taint policy and tool-chain detection. Compare generated output with your existing policy before replacing it. See [configuration generation](../configuration.md) and [MCP diagnostics](../cli/doctor.md).
 
+The `claude-code`, `cursor`, `generic-agent`, and `hostile-model` presets also retain built-in response patterns alongside their supplemental expressions. Regenerated YAML uses `Preset` names for the supplemental expressions. Review name-based alerts and suppressions before replacing an older configuration: an old rule name doesn't cover its supplemental `Preset` counterpart. Existing saved configurations keep their names until edited or replaced. See [preset migration](../configuration.md#presets).
+
+## Review repository-scan suppressions
+
+`pipelock git scan-diff`, `pipelock audit`, and the GitHub Action apply the core DLP floor even when configured defaults are disabled or a custom pattern reuses a built-in name. Inline `pipelock:ignore` markers and rule suppressions can't silence core findings. Synthetic fixtures can therefore produce findings after upgrading. Construct synthetic values from fragments where possible; path exclusions remove every finding for that path, including core findings, so review them narrowly. Generated pre-push hooks don't expose an exclusion option. See the [suppression guide](suppression.md).
+
 ## Reinstall and verify managed containment units
 
 After replacing the binary, rerun `pipelock contain install` with the same intended configuration and deployment options, then run `pipelock contain verify` and `pipelock contain doctor`. Binary upgrade alone doesn't replace every forwarder definition. The new forwarders report ready only after their listener binds. Install verifies the doorway from inside the managed namespace and rolls back a failed activation.
