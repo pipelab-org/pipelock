@@ -199,6 +199,7 @@ func TestGenerateEndProofCorpus(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(endProofDir, "expect.json"), buf.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	generatePacketRecorderEndCorpus(t)
 }
 
 func itoa(n int) string {

@@ -6,6 +6,7 @@ mod common;
 use pipelock_verifier_rs::audit_packet::{verify_audit_packet, AuditPacketOptions};
 use pipelock_verifier_rs::chain::{compute_totals, verify_chain};
 use pipelock_verifier_rs::recorder::extract_receipts;
+use pipelock_verifier_rs::recorder_chain::recorder_entry_hash;
 use pipelock_verifier_rs::util::sha256_hex;
 use serde_json::{json, Value};
 use std::fs;
@@ -131,10 +132,19 @@ fn audit_packet_requires_endproof_and_reports_verified_prefix_counts() {
     assert_eq!(partial.summary.receipt_count, (line_count - 1) as u64);
 
     let head_dir = write_packet_with_key("end-proof/head-cut.jsonl", None, ENDPROOF_KEY);
+    let packet_path = head_dir.join("packet.json");
+    let mut packet: Value = serde_json::from_slice(&fs::read(&packet_path).unwrap()).unwrap();
+    packet["summary"]["totals"] = json!({
+        "allow": 0, "block": 0, "warn": 0, "ask": 0,
+        "strip": 0, "forward": 0, "redirect": 0, "other": 0
+    });
+    fs::write(&packet_path, serde_json::to_vec(&packet).unwrap()).unwrap();
     let head = verify_audit_packet(head_dir.to_str().unwrap(), &endproof_options()).unwrap();
     assert!(!head.valid);
     assert_eq!(head.integrity, "invalid");
     assert_eq!(head.status, "CHAIN BROKEN");
+    assert_eq!(head.schema_check, "pass");
+    assert_eq!(head.chain_check, "fail");
 
     let manifest: Value = serde_json::from_slice(
         &fs::read(root.join("sdk/conformance/testdata/end-proof/expect.json")).unwrap(),
@@ -145,6 +155,32 @@ fn audit_packet_requires_endproof_and_reports_verified_prefix_counts() {
             "closed" => &closed,
             "truncated-tail" => &partial,
             "head-cut" => &head,
+            "v2-closed" | "v2-tail-cut" | "v2-no-checkpoint" | "v2-bad-seal" => {
+                let name = expected["name"].as_str().unwrap();
+                let dir =
+                    write_packet_with_key(&format!("end-proof/{name}.jsonl"), None, ENDPROOF_KEY);
+                let report =
+                    verify_audit_packet(dir.to_str().unwrap(), &endproof_options()).unwrap();
+                assert_eq!(
+                    report.integrity,
+                    expected["integrity"].as_str().unwrap(),
+                    "{name}"
+                );
+                assert_eq!(
+                    report.status,
+                    expected["status"].as_str().unwrap(),
+                    "{name}"
+                );
+                assert_eq!(
+                    report.end_proof.proven,
+                    expected["proven"].as_bool().unwrap(),
+                    "{name}"
+                );
+                // Keep each report alive for the manifest comparison below.
+                // These v2 cases are checked in this arm because their packet directories
+                // are per-case temporary fixtures.
+                continue;
+            }
             name => panic!("unknown audit-packet end-proof case {name}"),
         };
         assert_eq!(report.integrity, expected["integrity"].as_str().unwrap());
@@ -207,6 +243,7 @@ fn audit_packet_reports_a_malformed_lifecycle_chain_as_assessed_and_broken() {
     let report = verify_audit_packet(packet_dir.to_str().unwrap(), &default_options()).unwrap();
     assert!(!report.valid);
     assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.status, "CHAIN BROKEN");
     assert_eq!(report.lifecycle_assessment, "assessed");
     assert_eq!(report.lifecycle_status.as_deref(), Some("BROKEN"));
     assert_eq!(report.lifecycle_reason.as_deref(), Some("chain_broken"));
@@ -794,6 +831,114 @@ fn an_audit_packet_over_a_forged_evidence_receipt_is_never_trusted() {
                 && l.contains("evidence receipt chain")),
         "{stderr}"
     );
+}
+
+#[test]
+fn an_audit_packet_requires_a_signed_recorder_endpoint_when_v2_is_present() {
+    let key = run_key();
+    let (clean, _) = forged_run_files();
+    let source = fs::read_to_string(clean).unwrap();
+    let mut entries: Vec<Value> = source
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let last_evidence = entries
+        .iter()
+        .rposition(|entry| entry["type"] == "evidence_receipt")
+        .expect("fixture has an EvidenceReceipt v2");
+    entries.remove(last_evidence);
+    entries.retain(|entry| {
+        !matches!(
+            entry["type"].as_str(),
+            Some("transcript_root" | "checkpoint")
+        )
+    });
+
+    let mut previous = "genesis".to_string();
+    let mut evidence = String::new();
+    for mut entry in entries {
+        entry["prev_hash"] = Value::from(previous.clone());
+        let line = serde_json::to_string(&entry).unwrap();
+        let hash = recorder_entry_hash(&line).unwrap();
+        entry["hash"] = Value::from(hash.clone());
+        previous = hash;
+        evidence.push_str(&serde_json::to_string(&entry).unwrap());
+        evidence.push('\n');
+    }
+    let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
+    let evidence_path = std::env::temp_dir().join(format!(
+        "pipelock-rust-audit-packet-v2-tail-cut-{}-{id}.jsonl",
+        std::process::id()
+    ));
+    fs::write(&evidence_path, evidence).unwrap();
+    let dir = packet_over_run(&evidence_path, &key);
+
+    let report = verify_audit_packet(
+        dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: key,
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert!(!report.valid, "v2 tail cut must not look complete");
+    assert_eq!(report.status, "VALID PREFIX, END UNPROVEN");
+    assert!(!report.end_proof.proven);
+}
+
+#[test]
+fn an_open_action_prefix_still_checks_a_present_v2_recorder_seal() {
+    let root = common::repo_root();
+    let source =
+        fs::read_to_string(root.join("sdk/conformance/testdata/end-proof/v2-closed.jsonl"))
+            .unwrap();
+    let mut entries: Vec<Value> = source
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let close = entries
+        .iter()
+        .position(|entry| {
+            entry["type"] == "action_receipt"
+                && entry.pointer("/detail/action_record/session_control/kind")
+                    == Some(&Value::from("session_close"))
+        })
+        .expect("fixture has a session_close action");
+    entries.remove(close);
+    let mut previous = "genesis".to_string();
+    let mut evidence = String::new();
+    for (index, mut entry) in entries.into_iter().enumerate() {
+        entry["seq"] = Value::from(index as u64);
+        if entry["type"] == "checkpoint" {
+            entry["detail"]["last_seq"] = Value::from(index as u64 - 1);
+            entry["detail"]["entry_count"] = Value::from(index as u64);
+        }
+        entry["prev_hash"] = Value::from(previous.clone());
+        let line = serde_json::to_string(&entry).unwrap();
+        let hash = recorder_entry_hash(&line).unwrap();
+        entry["hash"] = Value::from(hash.clone());
+        previous = hash;
+        evidence.push_str(&serde_json::to_string(&entry).unwrap());
+        evidence.push('\n');
+    }
+    let id = NEXT_DIR.fetch_add(1, Ordering::SeqCst);
+    let evidence_path = std::env::temp_dir().join(format!(
+        "pipelock-rust-audit-packet-open-v2-seal-{}-{id}.jsonl",
+        std::process::id()
+    ));
+    fs::write(&evidence_path, evidence).unwrap();
+    let dir = packet_over_run(&evidence_path, ENDPROOF_KEY);
+    let report = verify_audit_packet(
+        dir.to_str().unwrap(),
+        &AuditPacketOptions {
+            signer_key: ENDPROOF_KEY.to_string(),
+            ..default_options()
+        },
+    )
+    .unwrap();
+    assert_eq!(report.chain_check, "fail");
+    assert_eq!(report.status, "CHAIN BROKEN");
+    assert!(has_error(&report.errors, "transcript_root does not match"));
 }
 
 #[test]
