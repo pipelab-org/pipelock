@@ -231,7 +231,8 @@ func IsHostnameExfilResult(r Result) bool {
 // allowlist, traversal, CRLF, length, scheme) never reaches the core floor;
 // a caller that releases such findings, such as audit mode, asks here whether
 // the URL also carries a core credential. A URL that does not parse is checked
-// as text.
+// as text. Its userinfo is split the same way text inspection splits a token
+// Go refuses, because audit mode can release the parser finding on its own.
 func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 	var decodes decodingMemo
 	parsed, err := url.Parse(rawURL)
@@ -245,10 +246,20 @@ func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 			}
 		}
 		// Parsing a different URL component must not discard recoverable
-		// query credentials. Inspection cannot grant trust to this URL.
+		// query credentials or a credential split across userinfo. Inspection
+		// cannot grant trust to this URL.
+		userinfoFloor := Result{Allowed: true}
+		if info := lenientURLUserinfo(rawURL); info != nil {
+			userinfoFloor = s.checkCoreDLPWithDecodes(&url.URL{User: info}, &decodes)
+		}
 		sent, _, _ := strings.Cut(rawURL, "#")
 		if _, query, ok := strings.Cut(sent, "?"); ok {
-			return s.checkCoreDLPWithDecodes(&url.URL{RawQuery: query}, &decodes)
+			if queryFloor := s.checkCoreDLPWithDecodes(&url.URL{RawQuery: query}, &decodes); !queryFloor.Allowed {
+				return queryFloor
+			}
+		}
+		if !userinfoFloor.Allowed {
+			return userinfoFloor
 		}
 		return Result{Allowed: true}
 	}

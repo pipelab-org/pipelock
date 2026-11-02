@@ -32,6 +32,9 @@ func TestScanURLCoreFloor(t *testing.T) {
 		{"core behind blocklist", blocked, false},
 		{"core in path", "https://api.vendor.example/" + key, false},
 		{"unparseable", "https://api.vendor.example/%zz?token=" + key, false},
+		{"unparseable userinfo", "https://" + "AKIA" + "IOSFODNN7" + ":" + "EXAMPLE" + "@api.vendor.example/%zz", false},
+		{"unparseable encoded userinfo", "https://" + "%41KIA" + "IOSFODNN7" + ":" + "EXAMPLE" + "@api.vendor.example/%zz", false},
+		{"benign unparseable userinfo", "https://reader:page@api.vendor.example/%zz", true},
 		{"presigned URL", buildSigV4URL(t, fakeAKIAExample, "3600", ""), true},
 		{"benign", "https://blocked.example/x?q=hello", true},
 	}
