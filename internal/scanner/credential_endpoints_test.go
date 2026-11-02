@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"net/url"
 	"strings"
 	"testing"
@@ -196,6 +197,27 @@ func TestCredentialAudienceRemainingAPIRoutes(t *testing.T) {
 		kept, allows := s.FilterHeaderDLPMatches(matches, tc.target, tc.header, value)
 		if (len(kept) == 0) != tc.allow || (len(allows) > 0) != tc.allow {
 			t.Fatalf("%s at %s: retained=%d allows=%d want allowed=%v", tc.pattern, tc.target, len(kept), len(allows), tc.allow)
+		}
+	}
+}
+
+// TestGoogleAPIKeyQueryRescanWithoutEntropy pins the remaining-query DLP rescan
+// on its own: with query entropy off, only that rescan sees an encoded second
+// key beside the exempt key parameter.
+func TestGoogleAPIKeyQueryRescanWithoutEntropy(t *testing.T) {
+	cfg := credentialAudienceEntropyConfig()
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	s := MustNew(cfg)
+	defer s.Close()
+	key := "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+	other := "AI" + "za" + "Sy0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0uV"
+	base := "https://maps.googleapis.com/maps/api/js?key=" + key
+	if got := s.Scan(context.Background(), base+"&callback=initMap"); !got.Allowed {
+		t.Fatalf("documented key query blocked by %s: %s", got.Scanner, got.Reason)
+	}
+	for _, encoded := range []string{base64.StdEncoding.EncodeToString([]byte(other)), hex.EncodeToString([]byte(other))} {
+		if got := s.Scan(context.Background(), base+"&extra="+encoded); got.Allowed {
+			t.Fatalf("encoded second key beside the key parameter allowed: %s", encoded)
 		}
 	}
 }
