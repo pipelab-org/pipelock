@@ -1270,14 +1270,13 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		// These YAML fixtures reflect both the inherited shipped blocklist and
-		// the compiled Authorization-only Google credential audience policy, and
-		// the GitLab native token headers in the default sensitive headers.
-		// the compiled Authorization-only Google credential audience policy and the
-		// JWT Token URL-query audience.
+		// These fixtures inherit the default credential audiences and sensitive
+		// headers, including Api-Key. The hashes include the structured Discord
+		// Gateway carrier and the publisher SDK Together host, matching the
+		// default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "da9f955529c42cf4a6ebe85b4b552bc559f159f7fab6bd4ddddda20dce135e53"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1f198b95acd5afcf2f20f91d387aa1efb0ace83d6941d8a4ba9d0974f0d35409"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "5d115cf3363d70502c86af5be65567bea7f9a98424935de08a604a75209c7126"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "390824f964b49e2fdf57f401600abc6c7268bb52e3f5d6c4b68a995e452a89f4"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
