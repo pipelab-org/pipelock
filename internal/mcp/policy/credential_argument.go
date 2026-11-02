@@ -115,13 +115,21 @@ func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate strin
 			memo[candidate] = views
 		}
 	}
+	// Every view carries the same unreadable flag (see buildArgViews). As in
+	// matchArgViews, a match in the word reading alone cannot clear an
+	// incomplete check; only a match in another view can.
+	unreadable := len(views) > 0 && views[0].unreadable
 	for _, v := range views {
-		if matchArgPattern(rule.ArgPattern, v.tokens, v.joined) {
+		if !v.wordReading && matchArgPattern(rule.ArgPattern, v.tokens, v.joined) {
 			return true, false
 		}
-		incomplete = incomplete || v.unreadable
 	}
-	return false, incomplete
+	for _, v := range views {
+		if v.wordReading && matchArgPattern(rule.ArgPattern, v.tokens, v.joined) {
+			return true, unreadable
+		}
+	}
+	return false, unreadable
 }
 
 // jsonObjectKeys returns every object key at any depth. ok is false when the

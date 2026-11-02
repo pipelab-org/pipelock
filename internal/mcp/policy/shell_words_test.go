@@ -144,8 +144,8 @@ func TestWordReading_Presets(t *testing.T) {
 			}
 			t.Run(name+"/"+tt.name, func(t *testing.T) {
 				v := pc.CheckToolCall("bash", []string{tt.cmd})
-				if !v.Matched || v.Action != config.ActionBlock {
-					t.Fatalf("%q: verdict %v %q %v, want block", tt.cmd, v.Matched, v.Action, v.Rules)
+				if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.Rules, tt.rule) {
+					t.Fatalf("%q: verdict %v %q %v, want %s with block", tt.cmd, v.Matched, v.Action, v.Rules, tt.rule)
 				}
 			})
 		}
@@ -377,5 +377,29 @@ func TestReadUnsetParameters_Nesting(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: DefaultToolPolicyRules()})
 	if v := pc.CheckToolCall("bash", []string{deep + " -rf /tmp/x"}); !v.Matched || v.Action != config.ActionBlock {
 		t.Fatalf("deep nesting: verdict %v %q %v", v.Matched, v.Action, v.Rules)
+	}
+}
+
+// TestCredentialWordMatchKeepsIncomplete: a credential rule that matches only
+// in the word reading of a command whose reading is unreadable keeps the
+// incomplete check, so on_incomplete_check: block is not lowered to the
+// rule's own warn action.
+func TestCredentialWordMatchKeepsIncomplete(t *testing.T) {
+	rules := DefaultToolPolicyRules()
+	for i := range rules {
+		if rules[i].Name == ruleSensitiveFileRead {
+			rules[i].Action = config.ActionWarn
+		}
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: config.ActionBlock, Rules: rules})
+	cmd := "cat ~/.aws/cred${u}entials " + strings.Repeat("{a,b}{a,b}{a,b} ", 20)
+	v := pc.CheckToolCall("bash", []string{cmd})
+	if !v.Matched || v.Action != config.ActionBlock || !slices.Contains(v.IncompleteRules, ruleSensitiveFileRead) {
+		t.Fatalf("verdict %v %q rules %v incomplete %v, want block with %s incomplete", v.Matched, v.Action, v.Rules, v.IncompleteRules, ruleSensitiveFileRead)
+	}
+	// The plain spelling matches in an ordinary view and keeps the rule's warn.
+	v = pc.CheckToolCall("bash", []string{"cat ~/.aws/credentials"})
+	if !v.Matched || v.Action != config.ActionWarn {
+		t.Fatalf("plain spelling: verdict %v %q %v, want warn", v.Matched, v.Action, v.Rules)
 	}
 }
