@@ -60,7 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Updated Go and verifier dependencies, including the patched `golang.org/x/net` release, refreshed toolchain pins, and retained the TypeScript verifier's compatible HTML decoder dependency. Verifier source versions and published package versions remain separate; use the installation matrix to select a published artifact. (#1916, #1956, #1971, #1976, #1995, #2011, #2027)
 - Reused decoded MCP response envelopes to reduce allocation work. Benchmark comparisons now require matched clean checkouts; historical published measurements retain their measured binary and workload. (#1952, #1953)
-- Added native Go fuzz jobs, refreshed race-test shard planning, and isolated listener and receipt-matrix fixtures. CI and release workflows share the accepted target and shard contracts; release jobs no longer restore shared Go caches. (#2037, #2045, #2050, #2051, #2053, #2054, #2055, #2057)
+- Added native Go fuzz jobs, refreshed race-test shard planning, and isolated listener and receipt-matrix fixtures. CI and release workflows share the accepted target and shard contracts; release jobs no longer restore shared Go caches. Improved CI review failure diagnostics. (#2037, #2045, #2050, #2051, #2053, #2054, #2055, #2057, #2061)
 - Added source-bound playground build records, staged live-drift checks and verified replay-kit generation. Build provenance doesn't establish inspection of activity outside the mediated path. (#1912, #1920)
 
 Finding Pipelock useful? Star the repository: https://github.com/pipelab-org/pipelock
