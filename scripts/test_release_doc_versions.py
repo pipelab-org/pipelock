@@ -18,7 +18,7 @@ import yaml
 
 from scripts.release_doc_versions import (
     DISCOVER_VERSION, REGISTRY, _canonical_stats, check as check_inventory,
-    check_document_versions as check,
+    check_document_versions as check, check_registry,
 )
 from scripts.yaml_contracts import WorkflowLoader
 
@@ -330,6 +330,26 @@ class ReleaseSurfaceRegistryTests(unittest.TestCase):
         self.assertTrue(any("matched 0 times, expected 1" in issue for issue in check_inventory(self.root)))
         path.unlink()
         self.assertTrue(any("unreadable" in issue for issue in check_inventory(self.root)))
+
+    def test_quickstart_historical_pin_requires_legacy_namespace(self) -> None:
+        relative = "examples/quickstart/README.md"
+        registry = minimal_registry()
+        shipped = json.loads((ROOT / REGISTRY).read_text(encoding="utf-8"))
+        registry["surfaces"] = [entry for entry in shipped["surfaces"] if entry["path"] == relative]
+        registry["scan"]["roots"] = [relative]
+        chart = yaml.load((ROOT / "charts/pipelock/Chart.yaml").read_text(), Loader=WorkflowLoader)
+        values = {"product": str(chart["appVersion"])}
+        path = self.root / relative
+        path.parent.mkdir(parents=True)
+        original = (ROOT / relative).read_text(encoding="utf-8")
+        path.write_text(original)
+        self.assertEqual(check_registry(self.root, registry, values), [])
+
+        legacy = "PIPELOCK_IMAGE_NAMESPACE=luckypipewrench"
+        self.assertEqual(original.count(legacy), 1)
+        path.write_text(original.replace(legacy, "PIPELOCK_IMAGE_NAMESPACE=pipelab-org"))
+        issues = check_registry(self.root, registry, values)
+        self.assertTrue(any("quickstart-legacy-example matched 0 times" in issue for issue in issues), issues)
 
     def test_new_surface_requires_registration_even_when_current(self) -> None:
         (self.root / "docs/new-install.md").write_text("Release package v3.6.0\n")

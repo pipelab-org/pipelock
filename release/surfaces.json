@@ -111,12 +111,20 @@
       "reason": "The quickstart installation example follows the product release."
     },
     {
-      "id": "quickstart-legacy-namespace",
+      "id": "quickstart-legacy-boundary",
       "path": "examples/quickstart/README.md",
-      "pattern": "(?P<value>3\\.7\\.1)",
+      "pattern": "For releases through (?P<value>3\\.7\\.1), also select the legacy namespace",
       "expected": "3.7.1",
-      "count": 2,
+      "count": 1,
       "reason": "Historical namespace boundary and example: the v3.7.1 scripts/release-image-namespace.sh maps both release repositories to ghcr.io/luckypipewrench."
+    },
+    {
+      "id": "quickstart-legacy-example",
+      "path": "examples/quickstart/README.md",
+      "pattern": "PIPELOCK_IMAGE_NAMESPACE=luckypipewrench PIPELOCK_VERSION=(?P<value>3\\.7\\.1)",
+      "expected": "3.7.1",
+      "count": 1,
+      "reason": "The v3.7.1 quickstart command must pair its version with the historical image namespace selected by that tag's scripts/release-image-namespace.sh."
     },
     {
       "id": "docs-benchmarks.md-1",
