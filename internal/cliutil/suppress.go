@@ -25,8 +25,8 @@ const (
 
 // SuppressRe matches inline suppression comments.
 // Supports // and # comment styles. The optional capture group
-// holds the rule name; when absent, all rules on that line are suppressed.
-var SuppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+// holds the rule name; when absent, all non-core rules on that line are suppressed.
+var SuppressRe = regexp.MustCompile(gitprotect.InlineSuppressPattern)
 
 // SuppressResult describes why a finding was suppressed.
 type SuppressResult struct {
@@ -38,7 +38,7 @@ type SuppressResult struct {
 // CheckInlineSuppression reads a source line from disk and checks for a
 // pipelock:ignore comment. Returns whether the finding's rule is suppressed.
 func CheckInlineSuppression(file string, line int, rule string) SuppressResult {
-	if file == "" || line <= 0 {
+	if file == "" || line <= 0 || gitprotect.IsCoreFloorPattern(rule) {
 		return SuppressResult{}
 	}
 
@@ -53,7 +53,7 @@ func CheckInlineSuppression(file string, line int, rule string) SuppressResult {
 	}
 
 	// m[1] is the optional rule name after pipelock:ignore.
-	// Empty means suppress all rules on this line.
+	// Empty means suppress all non-core rules on this line.
 	ignoreRule := strings.TrimSpace(m[1])
 	if ignoreRule == "" || strings.EqualFold(ignoreRule, rule) {
 		return SuppressResult{Suppressed: true, Source: SuppressSourceInline}
@@ -67,7 +67,7 @@ func CheckConfigSuppression(file string, rule string, entries []config.SuppressE
 	if file == "" || len(entries) == 0 {
 		return SuppressResult{}
 	}
-	if config.IsCoreDLPPatternName(rule) || config.IsCoreResponsePatternName(rule) {
+	if gitprotect.IsCoreFloorPattern(rule) {
 		return SuppressResult{}
 	}
 

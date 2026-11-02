@@ -1,0 +1,155 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package gitprotect
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
+)
+
+func TestScanDiffInlineCoreFloor(t *testing.T) {
+	key := "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
+	for _, rule := range []string{"AWS Access ID", "aws access id", "Custom Secret", "Prompt Injection"} {
+		for _, marker := range []string{"# pipelock:ignore", "// pipelock:ignore " + strings.ToUpper(rule)} {
+			t.Run(rule+"/"+marker, func(t *testing.T) {
+				patterns := CompileDLPPatterns([]config.DLPPattern{{Name: rule, Regex: config.AWSAccessIDRegex, Severity: config.SeverityCritical}})
+				diff := "diff --git a/fixture b/fixture\n--- a/fixture\n+++ b/fixture\n@@ -0,0 +1 @@\n+value=" + key + " " + marker + "\n"
+				result, err := ScanDiff(diff, patterns)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantKept := 1
+				if rule == "Custom Secret" {
+					wantKept = 0
+				}
+				if len(result.Findings) != wantKept || len(result.Suppressed) != 1-wantKept {
+					t.Fatalf("kept=%d suppressed=%d, want %d/%d", len(result.Findings), len(result.Suppressed), wantKept, 1-wantKept)
+				}
+				if wantKept == 1 && (result.Findings[0].Pattern != rule || strings.Contains(result.Findings[0].Content, key)) {
+					t.Fatalf("pattern name or redaction changed: %+v", result.Findings[0])
+				}
+			})
+		}
+	}
+}
+
+func TestScanDiffInlineDefaultPatternNames(t *testing.T) {
+	patterns := CompileDLPPatterns(config.Defaults().DLP.Patterns)
+	key := "AK" + "IA" + "IOSFODNN7" + "EXAMPLE"
+	providerKey := "sk-" + "ant-api03-" + strings.Repeat("a", 93) + "AA"
+	diff := "diff --git a/fixture b/fixture\n--- a/fixture\n+++ b/fixture\n@@ -0,0 +1,2 @@\n+value=" + key + " # pipelock:ignore\n+value=" + providerKey + " # pipelock:ignore\n"
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Pattern != "AWS Access ID" || len(result.Suppressed) != 1 || result.Suppressed[0].Pattern != "Anthropic API Key" {
+		t.Fatalf("unexpected pattern classification: %+v", result)
+	}
+}
+
+func TestInlineSuppressPatternParity(t *testing.T) {
+	if suppressRe.String() != InlineSuppressPattern {
+		t.Fatal("diff suppression expression differs from shared pattern")
+	}
+}
+
+// TestWithCoreDLPFloor: every core floor pattern reaches the git scanner,
+// including core-only patterns absent from the configured list, without
+// duplicating a configured copy.
+func TestWithCoreDLPFloor(t *testing.T) {
+	core := config.CoreDLPPatterns()
+	got := config.WithCoreDLPFloor(nil)
+	if len(got) != len(core) {
+		t.Fatalf("config.WithCoreDLPFloor(nil) = %d patterns, want %d", len(got), len(core))
+	}
+	again := config.WithCoreDLPFloor(got)
+	if len(again) != len(core) {
+		t.Fatalf("core patterns duplicated: %d, want %d", len(again), len(core))
+	}
+	weakened := []config.DLPPattern{{Name: core[0].Name, Regex: `never-matches-anything`, Severity: config.SeverityLow}}
+	if out := config.WithCoreDLPFloor(weakened); len(out) != len(core)+1 {
+		t.Fatalf("a configured pattern reusing a core name replaced the core expression: %d patterns", len(out))
+	}
+	gcp := "{\"type\": \"service_" + "account\"}"
+	diff := "diff --git a/k.json b/k.json\n--- a/k.json\n+++ b/k.json\n@@ -0,0 +1 @@\n+" + gcp + "\n"
+	result, err := ScanDiff(diff, CompileDLPPatterns(config.WithCoreDLPFloor(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Pattern != "GCP Service Account Key" {
+		t.Fatalf("core-only pattern not applied: %+v", result.Findings)
+	}
+}
+
+func TestWithCoreDLPFloorPreservesValidation(t *testing.T) {
+	core := config.CoreDLPPatterns()[0]
+	configured := core
+	configured.Validator = config.ValidatorLuhn
+	// A configured checksum must not become a prerequisite for the independent floor.
+	patterns := config.WithCoreDLPFloor([]config.DLPPattern{configured})
+	for _, p := range patterns {
+		if p.Name == core.Name && p.Regex == core.Regex && p.Validator == core.Validator {
+			return
+		}
+	}
+	t.Fatal("configured validator replaced the immutable core detector")
+}
+
+// TestScanDiffRedactsEveryFindingOnALine: each finding on a line shows the
+// line redacted for every pattern that matched it, so a second secret on the
+// same line never appears in the first finding's content.
+func TestScanDiffRedactsEveryFindingOnALine(t *testing.T) {
+	aws := "AKIA" + "IOSFODNN7EXAMPLE"
+	gcp := "\"type\": \"service_" + "account\""
+	line := "{" + gcp + ", \"id\": \"" + aws + "\"}"
+	diff := "diff --git a/k.json b/k.json\n--- a/k.json\n+++ b/k.json\n@@ -0,0 +1 @@\n+" + line + "\n"
+	result, err := ScanDiff(diff, CompileDLPPatterns(config.WithCoreDLPFloor(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) < 2 {
+		t.Fatalf("want findings for both secrets, got %+v", result.Findings)
+	}
+	for _, f := range result.Findings {
+		if strings.Contains(f.Content, aws) || strings.Contains(f.Content, "service_"+"account") {
+			t.Fatalf("finding %q shows a secret: %q", f.Pattern, f.Content)
+		}
+	}
+}
+
+// TestReplaceGitProtectMatchesMergesOverlaps: overlapping spans from different
+// patterns are merged, so the longer span's tail is redacted too.
+func TestReplaceGitProtectMatchesMergesOverlaps(t *testing.T) {
+	in := "0123456789abcdefghij"
+	got := replaceGitProtectMatches(in, []redact.Match{{Start: 12, End: 18}, {Start: 2, End: 8}, {Start: 5, End: 14}})
+	if got != "01[REDACTED]ij" {
+		t.Fatalf("replaceGitProtectMatches = %q", got)
+	}
+}
+
+// TestScanDiffRedactsPartlyOverlappingMatches: a regex match that only partly
+// overlaps another pattern's span is still redacted in full, because every
+// span is found on the original line before anything is replaced.
+func TestScanDiffRedactsPartlyOverlappingMatches(t *testing.T) {
+	patterns := CompileDLPPatterns([]config.DLPPattern{
+		{Name: "Left", Regex: `abcdefgh`, Severity: config.SeverityHigh},
+		{Name: "Right", Regex: `efghijkl`, Severity: config.SeverityHigh},
+	})
+	diff := "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+v=abcdefghijkl;\n"
+	result, err := ScanDiff(diff, patterns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 2 {
+		t.Fatalf("want two findings, got %+v", result.Findings)
+	}
+	for _, f := range result.Findings {
+		if f.Content != "v=[REDACTED];" {
+			t.Fatalf("finding %q content %q", f.Pattern, f.Content)
+		}
+	}
+}
