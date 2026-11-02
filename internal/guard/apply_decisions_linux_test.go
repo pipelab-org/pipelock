@@ -7,6 +7,7 @@ package guard
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,6 +15,8 @@ import (
 	"testing"
 
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
+	"github.com/luckyPipewrench/pipelock/internal/landlockcompat/compatest"
 )
 
 // These cover Apply's decisions and setup failures without touching the kernel.
@@ -310,6 +313,13 @@ func TestApplyWithOperations_SetupFailuresRefuseAndCloseRuleset(t *testing.T) {
 			}
 
 			record, err := p.applyWithOperations(ops, tc.threadSync)
+			wantPinned := tc.failStage == "restrict" || tc.failStage == "" && !tc.threadSync
+			if got := guardThreadPinned(); got != wantPinned {
+				t.Fatalf("thread pinned = %v, want %v after %s (TSYNC=%v)", got, wantPinned, tc.failStage, tc.threadSync)
+			}
+			if record.threadTainted != wantPinned {
+				t.Fatalf("thread taint = %v, want %v", record.threadTainted, wantPinned)
+			}
 			if tc.failStage == "" {
 				if err != nil {
 					t.Fatalf("applyWithOperations: %v", err)
@@ -400,26 +410,142 @@ func TestApply_FullCoverageAtSocketMediationABI(t *testing.T) {
 // reachable and refused, without claiming an outer domain caused it: the probe
 // can't tell an ancestor policy from permissions or a changed pathname.
 func TestApplyWithOperations_UnreachableGrantIsRefusedWithMeasuredReason(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "gone")
-	p := &PreparedManifest{complete: true, rules: []preparedRule{{
-		fd: -1, access: 1, declared: "/declared/path", kind: AccessReadFile, resolved: missing,
-	}}}
-	ops := rulesetOperations{
-		getABI:        func() (int, error) { return MinimumABI, nil },
-		createRuleset: func(*llsys.RulesetAttr, int) (int, error) { return 42, nil },
-		addPathRule:   func(int, *llsys.PathBeneathAttr, int) error { return nil },
-		restrictSelf:  func(int, uint32) error { return nil },
-		setNoNewPrivs: func() error { return nil },
-		closeFD:       func(int) error { return nil },
+	for _, threadSync := range []bool{false, true} {
+		name := "thread-local"
+		if threadSync {
+			name = "thread-sync"
+		}
+		t.Run(name, func(t *testing.T) {
+			missing := filepath.Join(t.TempDir(), "gone")
+			p := &PreparedManifest{complete: true, rules: []preparedRule{{
+				fd: -1, access: 1, declared: "/declared/path", kind: AccessReadFile, resolved: missing,
+			}}}
+			ops := rulesetOperations{
+				getABI:        func() (int, error) { return ThreadSyncABI, nil },
+				createRuleset: func(*llsys.RulesetAttr, int) (int, error) { return 42, nil },
+				addPathRule:   func(int, *llsys.PathBeneathAttr, int) error { return nil },
+				restrictSelf:  func(int, uint32) error { return nil },
+				setNoNewPrivs: func() error { return nil },
+				closeFD:       func(int) error { return nil },
+			}
+			record, err := p.applyWithOperations(ops, threadSync)
+			if !errors.Is(err, ErrPolicyNarrowed) || record.State != EnforcementAppliedNarrowed || record.Enforced() {
+				t.Fatalf("record = %+v err = %v, want an applied-but-narrowed refusal", record, err)
+			}
+			if !strings.Contains(record.Reason, "/declared/path") || !strings.Contains(record.Reason, "not reachable") {
+				t.Fatalf("reason %q does not name the unreachable declared path", record.Reason)
+			}
+			if strings.Contains(record.Reason, "ancestor") {
+				t.Fatalf("reason %q asserts a cause the probe did not measure", record.Reason)
+			}
+			if got := guardThreadPinned(); got != !threadSync {
+				t.Fatalf("narrowed policy thread pinned = %v, want %v (TSYNC=%v)", got, !threadSync, threadSync)
+			}
+		})
 	}
-	record, err := p.applyWithOperations(ops, false)
-	if !errors.Is(err, ErrPolicyNarrowed) || record.State != EnforcementAppliedNarrowed || record.Enforced() {
-		t.Fatalf("record = %+v err = %v, want an applied-but-narrowed refusal", record, err)
+}
+
+// Sandbox's TestReferParity consumes these exact kernel inputs too.
+func TestReferParity(t *testing.T) {
+	for _, tc := range compatest.ReferCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			for _, threadSync := range []bool{false, true} {
+				if threadSync && tc.ABI < ThreadSyncABI {
+					continue
+				}
+				t.Run(fmt.Sprintf("tsync=%v", threadSync), func(t *testing.T) {
+					root := t.TempDir()
+					p := &PreparedManifest{complete: true, rules: []preparedRule{
+						{access: rightsWriteDir, fd: 10, resolved: root, isDir: true}, {access: rightsReadDir, fd: 11, resolved: root, isDir: true}, {access: rightsWriteDir, fd: 12, resolved: root, isDir: true},
+					}}
+					queries, adds, restricts := 0, 0, 0
+					ops := rulesetOperations{
+						getABI:    func() (int, error) { return tc.ABI, nil },
+						getErrata: func() (int, error) { queries++; return tc.Fixed, tc.QueryErr },
+						createRuleset: func(attr *llsys.RulesetAttr, flags int) (int, error) {
+							if attr.HandledAccessFS&llsys.AccessFSRefer == 0 {
+								t.Fatal("REFER must remain handled even when withheld")
+							}
+							return 42, nil
+						},
+						addPathRule: func(fd int, attr *llsys.PathBeneathAttr, flags int) error {
+							original := p.rules[adds]
+							want := original.access
+							if !tc.Allowed {
+								want &^= llsys.AccessFSRefer
+							}
+							if attr.AllowedAccess != want || attr.ParentFd != original.fd || fd != 42 || flags != 0 {
+								t.Fatalf("rule %d = %+v, want access=%d fd=%d", adds, attr, want, original.fd)
+							}
+							adds++
+							return nil
+						},
+						restrictSelf:  func(int, uint32) error { restricts++; return nil },
+						setNoNewPrivs: func() error { return nil },
+						closeFD:       func(int) error { return nil },
+					}
+					record, err := p.applyWithOperations(ops, threadSync)
+					if err != nil || !record.Enforced() || !p.applied || adds != 3 || restricts != 1 || queries != 1 {
+						t.Fatalf("record=%+v error=%v adds=%d restricts=%d queries=%d", record, err, adds, restricts, queries)
+					}
+					var wantWithheld []string
+					if !tc.Allowed {
+						wantWithheld = []string{ReferWithheldReason}
+					}
+					if !slices.Equal(record.Withheld, wantWithheld) {
+						t.Fatalf("Withheld=%v, want %v", record.Withheld, wantWithheld)
+					}
+					_, _, wantUnmediated := capabilitiesFor(tc.ABI)
+					if !slices.Equal(record.Unmediated, wantUnmediated) || record.FullyMediated() != (tc.ABI >= SocketMediationABI) {
+						t.Fatalf("REFER withholding changed mediation: %+v", record)
+					}
+					if p.rules[0].access != rightsWriteDir || p.rules[2].access != rightsWriteDir {
+						t.Fatal("withholding mutated prepared grants")
+					}
+				})
+			}
+		})
 	}
-	if !strings.Contains(record.Reason, "/declared/path") || !strings.Contains(record.Reason, "not reachable") {
-		t.Fatalf("reason %q does not name the unreachable declared path", record.Reason)
+}
+
+func TestApplyWithOperations_NoReferGrantDoesNotQueryErrata(t *testing.T) {
+	for _, access := range []uint64{rightsReadDir, rightsWriteFile} {
+		p := &PreparedManifest{complete: true, rules: []preparedRule{{access: access}}}
+		stop := errors.New("stop at ruleset creation")
+		record, err := p.applyWithOperations(rulesetOperations{
+			getABI:        func() (int, error) { return MinimumABI, nil },
+			getErrata:     func() (int, error) { t.Fatal("no REFER grant should query errata"); return 0, nil },
+			createRuleset: func(*llsys.RulesetAttr, int) (int, error) { return -1, stop },
+		}, false)
+		if !errors.Is(err, stop) || len(record.Withheld) != 0 {
+			t.Fatalf("record=%+v error=%v", record, err)
+		}
 	}
-	if strings.Contains(record.Reason, "ancestor") {
-		t.Fatalf("reason %q asserts a cause the probe did not measure", record.Reason)
+}
+
+func TestReferErratumMissing(t *testing.T) {
+	queryFailed := errors.New("query unavailable")
+	for _, tc := range []struct {
+		name     string
+		abiErr   error
+		fixed    int
+		queryErr error
+		want     bool
+	}{
+		{name: "landlock unavailable is reported elsewhere", abiErr: errors.New("ENOSYS"), want: false},
+		{name: "fixed", fixed: 0x4, want: false},
+		{name: "fixed with others", fixed: 0xf, want: false},
+		{name: "missing fix", fixed: 0x3, want: true},
+		{name: "query fails", fixed: 0x4, queryErr: queryFailed, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := referErratumMissing(
+				func() (int, error) { return MinimumABI, tc.abiErr },
+				func() (int, error) { return tc.fixed, tc.queryErr },
+			)
+			if got != tc.want {
+				t.Fatalf("referErratumMissing = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

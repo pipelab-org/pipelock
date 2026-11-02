@@ -28,10 +28,11 @@ import (
 )
 
 type discoveryFixture struct {
-	url   string
-	lists atomic.Int32
-	calls atomic.Int32
-	list  func(http.ResponseWriter, *http.Request, MCPFrame, int)
+	url         string
+	upstreamURL string
+	lists       atomic.Int32
+	calls       atomic.Int32
+	list        func(http.ResponseWriter, *http.Request, MCPFrame, int)
 }
 
 func newDiscoveryFixture(t *testing.T, opts MCPProxyOpts, list func(http.ResponseWriter, *http.Request, MCPFrame, int)) *discoveryFixture {
@@ -40,6 +41,10 @@ func newDiscoveryFixture(t *testing.T, opts MCPProxyOpts, list func(http.Respons
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		frame := ParseMCPFrame(body)
+		if r.Method != http.MethodPost || (frame.Method != "tools/list" && frame.Method != methodToolsCall) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if frame.Method == "tools/list" {
 			n := int(f.lists.Add(1))
@@ -50,8 +55,30 @@ func newDiscoveryFixture(t *testing.T, opts MCPProxyOpts, list func(http.Respons
 		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"content":[]}}`, frame.ID)
 	}))
 	t.Cleanup(up.Close)
+	f.upstreamURL = up.URL
 	f.url, _ = startListenerProxyWithOpts(t, up.URL, opts)
 	return f
+}
+
+func TestDiscoveryFixtureIgnoresUnrelatedHTTPProbe(t *testing.T) {
+	f := newDiscoveryFixture(t, paramContractOpts(t), func(w http.ResponseWriter, _ *http.Request, frame MCPFrame, _ int) {
+		discoveryList(w, frame, headerStateDefs(headerStateSchema, "Echo input"), "")
+	})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, f.upstreamURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if f.calls.Load() != 0 || f.lists.Load() != 0 {
+		t.Fatalf("unrelated probe counted as MCP traffic: lists=%d calls=%d", f.lists.Load(), f.calls.Load())
+	}
+	if status, body := f.call(t, "body", "first"); status != http.StatusOK || f.calls.Load() != 1 || f.lists.Load() != 1 {
+		t.Fatalf("MCP call after probe: status=%d lists=%d calls=%d body=%s", status, f.lists.Load(), f.calls.Load(), body)
+	}
 }
 
 func discoveryList(w http.ResponseWriter, frame MCPFrame, defs, cursor string) {

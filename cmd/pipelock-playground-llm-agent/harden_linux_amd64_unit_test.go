@@ -20,10 +20,6 @@ func TestHardenProcessWithOps(t *testing.T) {
 			calls = append(calls, "dumpable")
 			return nil
 		},
-		setNoNewPrivs: func() error {
-			calls = append(calls, "no_new_privs")
-			return nil
-		},
 		applySeccomp: func() error {
 			calls = append(calls, "seccomp")
 			return nil
@@ -33,7 +29,7 @@ func TestHardenProcessWithOps(t *testing.T) {
 	if err := hardenProcessWithOps(ops); err != nil {
 		t.Fatalf("hardenProcessWithOps: %v", err)
 	}
-	want := []string{"dumpable", "no_new_privs", "seccomp"}
+	want := []string{"dumpable", "seccomp"}
 	if strings.Join(calls, ",") != strings.Join(want, ",") {
 		t.Fatalf("calls = %v, want %v", calls, want)
 	}
@@ -50,27 +46,16 @@ func TestHardenProcessWithOpsErrors(t *testing.T) {
 		{
 			name: "dumpable",
 			ops: hardenOps{
-				setDumpable:   func() error { return errors.New("dumpable denied") },
-				setNoNewPrivs: func() error { return nil },
-				applySeccomp:  func() error { return nil },
+				setDumpable:  func() error { return errors.New("dumpable denied") },
+				applySeccomp: func() error { return nil },
 			},
 			wantErr: "set non-dumpable",
 		},
 		{
-			name: "no new privs",
-			ops: hardenOps{
-				setDumpable:   func() error { return nil },
-				setNoNewPrivs: func() error { return errors.New("nnp denied") },
-				applySeccomp:  func() error { return nil },
-			},
-			wantErr: "set no_new_privs",
-		},
-		{
 			name: "seccomp",
 			ops: hardenOps{
-				setDumpable:   func() error { return nil },
-				setNoNewPrivs: func() error { return nil },
-				applySeccomp:  func() error { return errors.New("seccomp denied") },
+				setDumpable:  func() error { return nil },
+				applySeccomp: func() error { return errors.New("seccomp denied") },
 			},
 			wantErr: "install seccomp",
 		},

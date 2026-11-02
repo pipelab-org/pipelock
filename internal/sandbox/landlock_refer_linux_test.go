@@ -18,6 +18,8 @@ import (
 
 	"github.com/landlock-lsm/go-landlock/landlock"
 	llsys "github.com/landlock-lsm/go-landlock/landlock/syscall"
+
+	"github.com/luckyPipewrench/pipelock/internal/landlockcompat/compatest"
 )
 
 func TestBuildRules_ReferABI(t *testing.T) {
@@ -250,6 +252,25 @@ func TestReferAllowed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := referAllowed(tc.abi, tc.errata); got != tc.want {
 				t.Fatalf("referAllowed(%d) = %v, want %v", tc.abi, got, tc.want)
+			}
+		})
+	}
+}
+
+// Guard's TestReferParity checks the same inputs against the actual path masks
+// passed to its ruleset operations. This side checks the sandbox builder used
+// by ApplyLandlock and the decision passed to its separate IPC layer.
+func TestReferParity(t *testing.T) {
+	policy := Policy{AllowRWDirs: []string{"/workspace", "/writable"}}
+	for _, tc := range compatest.ReferCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			rules, refer := buildRulesWithErrata(policy, tc.ABI, func() (int, error) { return tc.Fixed, tc.QueryErr })
+			want := landlock.RWDirs(policy.AllowRWDirs...).IgnoreIfMissing()
+			if tc.Allowed {
+				want = want.WithRefer()
+			}
+			if refer != tc.Allowed || !reflect.DeepEqual(rules, []landlock.Rule{want}) {
+				t.Fatalf("rules=%v refer=%v, want %v refer=%v", rules, refer, want, tc.Allowed)
 			}
 		})
 	}

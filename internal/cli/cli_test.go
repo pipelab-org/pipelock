@@ -162,15 +162,27 @@ func requireCLIOutputAfterReloadResult(reloaded <-chan struct{}, buf *cliTestBuf
 	return nil
 }
 
+// cliTestRun binds HTTP readiness to this command's output and exit channel.
+// The runtime prints Health only after binding the fetch listener. A response
+// at a selected address alone can come from an unrelated listener.
+type cliTestRun struct {
+	stderr    *cliTestBuffer
+	errCh     <-chan error
+	healthURL string
+}
+
 func waitForRunHTTPResult(
 	ctx context.Context,
 	client *http.Client,
-	errCh <-chan error,
+	run cliTestRun,
 	url string,
 	check func(*http.Response) bool,
 	label string,
 ) error {
-	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, url, check, label)
+	if err := waitForCLIOutputResult(run.stderr, run.errCh, "  Health: "+run.healthURL+"\n"); err != nil {
+		return err
+	}
+	return waitForRunHTTPWithinResult(5*time.Second, ctx, client, run.errCh, url, check, label)
 }
 
 func waitForRunHTTPWithinResult(
@@ -841,7 +853,8 @@ logging:
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--config", cfgPath, "--mode", "strict"})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -851,10 +864,8 @@ logging:
 		// Poll /health until the proxy is ready
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
-			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
-			return req
-		}, client, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1016,7 +1027,8 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--listen", addr})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1026,10 +1038,8 @@ func TestRunCmd_ListenFlagOverride(t *testing.T) {
 		// Poll /health until the proxy is ready
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunRequestWithinResult(ctx, 5*time.Second, errCh, func(reqCtx context.Context) *http.Request {
-			req, _ := http.NewRequestWithContext(reqCtx, http.MethodGet, healthURL, nil)
-			return req
-		}, client, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1183,7 +1193,8 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 		cmd.SetArgs([]string{"run", "--listen", addr, "--", "some-agent", "--flag"})
 
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1193,7 +1204,8 @@ func TestRunCmd_WithAgentArgs(t *testing.T) {
 		// Poll until healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1228,7 +1240,8 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--listen", addr})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1238,7 +1251,8 @@ func TestRunCmd_DefaultMode(t *testing.T) {
 		// Wait until healthy, then check mode.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeBalanced
@@ -1297,7 +1311,8 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--mode", "strict", "--listen", addr})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1307,7 +1322,8 @@ func TestRunCmd_ModeFlag(t *testing.T) {
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
@@ -1363,7 +1379,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1393,7 +1410,7 @@ fetch_proxy:
 			cancel()
 			return err
 		}
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["mode"] == config.ModeStrict
@@ -1478,7 +1495,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1565,7 +1583,8 @@ response_scanning:
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--config", cfgPath})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(io.Discard)
+		stderr := &cliTestBuffer{}
+		cmd.SetErr(stderr)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1575,7 +1594,8 @@ response_scanning:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1619,12 +1639,12 @@ forward_proxy:
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		var stderrBuf bytes.Buffer
+		stderrBuf := &cliTestBuffer{}
 		cmd := rootCmd()
 		cmd.SetContext(ctx)
 		cmd.SetArgs([]string{"run", "--config", cfgPath})
 		cmd.SetOut(io.Discard)
-		cmd.SetErr(&stderrBuf)
+		cmd.SetErr(stderrBuf)
 
 		errCh := make(chan error, 1)
 		go func() {
@@ -1634,7 +1654,8 @@ forward_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderrBuf, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1736,7 +1757,7 @@ fetch_proxy:
 
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -1832,7 +1853,7 @@ func TestRunCmd_StatusPostHealthBindCollisionRetries(t *testing.T) {
 		go func() { _ = other.Serve(ln) }()
 		defer func() { _ = other.Close() }()
 		client := &http.Client{Timeout: time.Second}
-		if err := waitForRunHTTPResult(ctx, client, errCh, "http://"+addr+"/health", func(resp *http.Response) bool {
+		if err := waitForRunHTTPWithinResult(5*time.Second, ctx, client, errCh, "http://"+addr+"/health", func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "foreign listener health"); err != nil {
 			return err
@@ -1874,6 +1895,12 @@ func TestRunExitWaitErrorsKeepCollisionClass(t *testing.T) {
 		name string
 		wait func(errCh <-chan error) error
 	}{
+		{"HTTP startup", func(errCh <-chan error) error {
+			const healthURL = "http://proxy.vendor.example/health"
+			return waitForRunHTTPResult(t.Context(), &http.Client{}, cliTestRun{stderr: &cliTestBuffer{}, errCh: errCh, healthURL: healthURL}, healthURL, func(resp *http.Response) bool {
+				return resp.StatusCode == http.StatusOK
+			}, "owned health")
+		}},
 		{"reload startup", func(errCh <-chan error) error {
 			_, err := prepareConfigReloadResult(t, &cliTestBuffer{}, errCh, "config.yaml")
 			return err
@@ -2003,7 +2030,8 @@ logging:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -2060,7 +2088,7 @@ logging:
 			return runErr
 		}
 
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			var health map[string]any
 			_ = json.NewDecoder(resp.Body).Decode(&health)
 			return health["forward_proxy_enabled"] == false
@@ -2183,7 +2211,8 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 		// Wait for fetch proxy health.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + fetchAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: errBuf, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "fetch proxy health"); err != nil {
 			cancel()
@@ -2192,7 +2221,7 @@ func TestRunCmd_MCPListenBanner(t *testing.T) {
 
 		// Verify MCP listener health endpoint.
 		mcpHealthURL := "http://" + mcpAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, mcpHealthURL, func(resp *http.Response) bool {
+		if err := waitForRunHTTPResult(ctx, client, run, mcpHealthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "MCP listener health"); err != nil {
 			cancel()
@@ -2296,7 +2325,8 @@ fetch_proxy:
 
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + fetchAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "fetch proxy health"); err != nil {
 			cancel()
@@ -2399,7 +2429,8 @@ fetch_proxy:
 
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + fetchAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "fetch proxy health"); err != nil {
 			cancel()
@@ -2576,7 +2607,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + mainAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -2659,7 +2691,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + mainAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -2742,7 +2775,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + mainAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -2824,7 +2858,8 @@ fetch_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + mainAddr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
@@ -2915,7 +2950,8 @@ websocket_proxy:
 		// Wait for healthy.
 		client := &http.Client{Timeout: time.Second}
 		healthURL := "http://" + addr + "/health"
-		if err := waitForRunHTTPResult(ctx, client, errCh, healthURL, func(resp *http.Response) bool {
+		run := cliTestRun{stderr: stderr, errCh: errCh, healthURL: healthURL}
+		if err := waitForRunHTTPResult(ctx, client, run, healthURL, func(resp *http.Response) bool {
 			return resp.StatusCode == http.StatusOK
 		}, "proxy health"); err != nil {
 			cancel()
