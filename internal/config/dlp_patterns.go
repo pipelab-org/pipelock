@@ -137,8 +137,9 @@ var defaultDLPPatternSet = []DLPPattern{
 	// separators match the credential body without this boundary because their
 	// adjacency is manufactured rather than present in the source text.
 	// Do not add a length floor: these provider formats are opaque.
-	// Source: https://platform.claude.com/docs/en/api/overview
-	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.anthropic.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierXAPIKey},
+	// Source: https://platform.claude.com/docs/en/api/overview (X-Api-Key)
+	// https://docs.claude.com/en/api/openai-sdk (OpenAI SDK, Bearer, /v1)
+	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.anthropic.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierXAPIKey | CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://developers.openai.com/api/reference/overview
 	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://developers.openai.com/api/reference/overview

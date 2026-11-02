@@ -56,14 +56,18 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 		return under(prefix) || under("/upload"+prefix) || under("/resumable/upload"+prefix)
 	case "GitLab PAT", "GitLab CI Job Token":
 		// https://docs.gitlab.com/api/rest/ (the public REST root is /api/v4).
+		// https://docs.gitlab.com/api/graphql/getting_started/ (access token,
+		// Authorization: Bearer, exactly /api/graphql). Job tokens stay REST-only.
 		// Explicit operator declarations retain the instance's own API root.
-		return host != "gitlab.com" || under("/api/v4")
+		return host != "gitlab.com" || under("/api/v4") ||
+			(candidate.patternName == "GitLab PAT" && path == "/api/graphql")
 	case "GitHub Token", "GitHub Fine-Grained PAT":
 		// https://docs.github.com/en/rest/releases/assets (upload host, /repos).
 		// The REST and RubyGems hosts expose their APIs at the root.
 		return host != "uploads.github.com" || under("/repos")
 	case "Anthropic API Key":
 		// https://platform.claude.com/docs/en/api/overview (x-api-key, /v1).
+		// https://docs.claude.com/en/api/openai-sdk (OpenAI SDK Bearer, /v1).
 		return under("/v1")
 	case "OpenAI API Key", "OpenAI Service Key":
 		// https://developers.openai.com/api/reference/overview (Bearer, /v1).

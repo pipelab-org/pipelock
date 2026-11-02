@@ -457,7 +457,8 @@ const (
 	// gained a bearer audience for ghcr.io.
 	// Re-bumped for the RFC 9110 section 4.1 default URI size (8000 octets).
 	// Bound to compiled API endpoint carriers and the Api-Key sensitive header.
-	goldenHashDefaults = "1e463f127f6ca2ba2a2973eaa3ff7991dc9edffa0ef8d795ae023fed80d3348e"
+	// Re-bumped when the Anthropic audience admitted its documented Bearer carrier.
+	goldenHashDefaults = "9c383e53cc5a0f37c53a5689b16972ae6c7f84dd785712816538a342eefa8481"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -698,7 +699,7 @@ const (
 	// goldenHashDefaults above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
 	// Bound to the narrowed compiled credential audiences and carriers.
-	goldenHashRichConfig = "db374fe4b18744c7d3ad712ef8c95981b6b7639a74aefef267b8483df32d9c49"
+	goldenHashRichConfig = "77034c98866a2e938863d4b7f1f4690d8557dd4aa523657844da67db2569a86a"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1273,8 +1274,8 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		// the compiled Authorization-only Google credential audience policy and the
 		// JWT Token URL-query audience.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "14a7da94486b892e6ec6c4616f38fa8ca63062e70396b5c067dda130b5b6f42e"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "c9af307a88404e7748633b1eb71095c1f9052ca35eefe1df0cceb017955e87af"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "da9f955529c42cf4a6ebe85b4b552bc559f159f7fab6bd4ddddda20dce135e53"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "1f198b95acd5afcf2f20f91d387aa1efb0ace83d6941d8a4ba9d0974f0d35409"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

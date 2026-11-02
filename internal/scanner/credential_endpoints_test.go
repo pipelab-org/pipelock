@@ -37,7 +37,9 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 		{"groq wrong route", "https://api.groq.com/unrelated", groq, "Bearer", false},
 		{"anthropic body", "https://api.anthropic.com/v1/messages", anthropic, "", false},
 		{"anthropic header", "https://api.anthropic.com/v1/messages", anthropic, "X-Api-Key", true},
-		{"anthropic wrong header", "https://api.anthropic.com/v1/messages", anthropic, "Bearer", false},
+		{"anthropic openai sdk bearer", "https://api.anthropic.com/v1/chat/completions", anthropic, "Bearer", true},
+		{"anthropic wrong scheme", "https://api.anthropic.com/v1/messages", anthropic, "Basic", false},
+		{"anthropic bearer wrong route", "https://api.anthropic.com/admin", anthropic, "Bearer", false},
 		{"anthropic subdomain", "https://other.anthropic.com/v1/messages", anthropic, "X-Api-Key", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +177,11 @@ func TestCredentialAudienceRemainingAPIRoutes(t *testing.T) {
 		{"Google OAuth Token", "ya29." + strings.Repeat("a", 24), "https://other.googleapis.com/path", "Authorization", false},
 		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "https://gitlab.com/api/v4/user", "Private-Token", true},
 		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "https://gitlab.com/project/path", "Private-Token", false},
+		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "https://gitlab.com/api/graphql", "Authorization", true},
+		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "https://gitlab.com/api/graphqlx", "Authorization", false},
+		{"GitLab PAT", "glpat-" + strings.Repeat("a", 20), "https://gitlab.com/api/graphql/extra", "Authorization", false},
+		{"GitLab CI Job Token", "glcbt-" + strings.Repeat("a", 20), "https://gitlab.com/api/graphql", "Job-Token", false},
+		{"GitLab CI Job Token", "glcbt-" + strings.Repeat("a", 20), "https://gitlab.com/api/v4/job", "Job-Token", true},
 		{"GitHub Token", "ghp_" + strings.Repeat("a", 36), "https://uploads.github.com/repos/o/r/releases/1/assets", "Authorization", true},
 		{"GitHub Token", "ghp_" + strings.Repeat("a", 36), "https://uploads.github.com/unrelated", "Authorization", false},
 	} {
