@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/url"
 	"reflect"
 	"regexp"
@@ -275,6 +276,47 @@ func TestTextURLUserinfoRepeatedTokens(t *testing.T) {
 		got := s.textURLUserinfoMatches(t.Context(), strings.Repeat(token+" ", 8), &decodingMemo{}, options)
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("repeated URL changed userinfo matches: got %d, want %d", len(got), len(want))
+		}
+	}
+}
+
+func TestTextURLUserinfoCancellation(t *testing.T) {
+	for _, floorOnly := range []bool{false, true} {
+		cfg := testConfig()
+		if floorOnly {
+			cfg.DLP.Patterns = nil
+		}
+		s := MustNew(cfg)
+		defer s.Close()
+		credential := "gh" + "p_" + strings.Repeat("aB3c", 9)
+		text := "https://reader:" + hex.EncodeToString([]byte(credential)) + "@api.vendor.example/read"
+		opts := textDLPOptions{scanSecretLeak: true}
+		if matches := s.textURLUserinfoMatches(t.Context(), text, &decodingMemo{}, opts); len(matches) == 0 {
+			t.Fatal("control: userinfo extraction did not detect the credential")
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if matches := s.textURLUserinfoMatches(ctx, text, &decodingMemo{}, opts); len(matches) != 0 {
+			t.Error("canceled extraction still scanned URL tokens")
+		}
+		benign := "https://reader:" + "ordinary@api.vendor.example/read"
+		endedDuringFirst := &errAfterCalls{Context: t.Context(), left: 1}
+		if matches := s.textURLUserinfoMatches(endedDuringFirst, benign+" "+text, &decodingMemo{}, opts); len(matches) != 0 {
+			t.Error("cancellation during the first URL did not stop the next token")
+		}
+		for name, scan := range map[string]func(context.Context, string) TextDLPResult{
+			"outbound": s.ScanTextForDLP,
+			"quiet":    s.ScanTextForDLPQuiet,
+			"body":     s.ScanRequestBodyTextForDLP,
+		} {
+			t.Run(fmt.Sprintf("floor=%t/%s", floorOnly, name), func(t *testing.T) {
+				if live := scan(t.Context(), benign); !live.Clean || live.Incomplete {
+					t.Fatalf("control: live scan of benign userinfo: %+v", live)
+				}
+				if got := scan(ctx, benign); got.Clean || !got.Incomplete {
+					t.Fatalf("canceled outbound scan must be unverified and not clean: %+v", got)
+				}
+			})
 		}
 	}
 }

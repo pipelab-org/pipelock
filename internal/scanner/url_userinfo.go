@@ -117,6 +117,9 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 	opts.emitWarns = false
 	seen := make(map[string]struct{})
 	for _, token := range textURLTokenRe.FindAllString(text, -1) {
+		if ctx.Err() != nil {
+			return matches
+		}
 		if _, ok := seen[token]; ok {
 			continue
 		}

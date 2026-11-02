@@ -1908,7 +1908,10 @@ type wsClientTextOptions struct {
 	crossMessage bool
 }
 
-func (r *wsRelay) handleClientTextResult(_ context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) bool {
+func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) bool {
+	if dlpResult.Incomplete || ctx.Err() != nil {
+		return true
+	}
 	surface := opts.surface
 	if surface == "" || opts.crossMessage {
 		surface = "websocket_frame"

@@ -18,9 +18,28 @@ import (
 	"testing"
 
 	"github.com/gobwas/ws"
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestURLUserinfoOutboundCancellation(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	text := []byte("https://reader:" + "ordinary@api.vendor.example/read")
+	relay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://api.vendor.example/")
+	if relay.scanClientText(t.Context(), audit.NewNop(), text) {
+		t.Fatal("control: live scan blocked benign userinfo")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if !relay.scanClientText(ctx, audit.NewNop(), text) {
+		t.Error("canceled outbound text scan reported clean")
+	}
+}
 
 func TestURLUserinfoAdmissionBeforeUpstream(t *testing.T) {
 	var hits atomic.Int32

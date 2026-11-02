@@ -446,14 +446,15 @@ func CardRunAction(matches []TextDLPMatch, action string) string {
 
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
 type TextDLPResult struct {
-	// Clean means no enforcing finding. Matches may still contain informational evidence.
+	// Clean means a complete scan with no enforcing finding. Matches may still
+	// contain informational evidence.
 	Clean                bool           `json:"clean"`
 	Matches              []TextDLPMatch `json:"matches,omitempty"`
 	InformationalMatches []TextDLPMatch `json:"informational_matches,omitempty"` // warn-mode matches (non-blocking)
 	// Incomplete reports that the scan context had ended by the time the
-	// scan returned. Every detector still runs, so Clean and Matches are the
-	// full result; callers that bound the scan with a deadline use the flag
-	// to tell that the deadline passed and treat the result as unverified.
+	// scan returned. Findings already collected are preserved, but Clean is
+	// false because canceled component scans may have stopped early. Callers
+	// must treat an incomplete scan as unverified.
 	Incomplete bool `json:"incomplete,omitempty"`
 }
 
@@ -818,6 +819,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	// first pass must still mark the merged result unverified.
 	if ctx.Err() != nil {
 		original.Incomplete = true
+		original.Clean = false
 	}
 	return original
 }
@@ -826,6 +828,7 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 	result := s.scanTextForDLPDetectors(ctx, text, opts, decodes)
 	if ctx.Err() != nil {
 		result.Incomplete = true
+		result.Clean = false
 	}
 	return result
 }
