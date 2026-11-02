@@ -264,8 +264,8 @@ func TestDeferredStdioReleaseKillSwitchOrdering(t *testing.T) {
 
 // countingUpstream is an MCP HTTP upstream bound through net.ListenConfig on
 // an ephemeral port that counts every request the proxy can send it: a POST,
-// or the GET that opens the server-event stream. Other local processes may
-// probe loopback ports; their requests are refused without being counted.
+// a session DELETE, or the GET that opens the server-event stream. Other local
+// processes may probe loopback ports; their requests are refused without being counted.
 func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
@@ -293,7 +293,7 @@ func countingUpstream(t *testing.T) (*httptest.Server, *atomic.Int32) {
 // HTTP client sends to an upstream.
 func isMCPUpstreamRequest(r *http.Request) bool {
 	switch r.Method {
-	case http.MethodPost:
+	case http.MethodPost, http.MethodDelete:
 		return true
 	case http.MethodGet:
 		return strings.Contains(r.Header.Get("Accept"), "text/event-stream")
@@ -329,6 +329,21 @@ func TestCountingUpstreamIgnoresUnrelatedHTTPProbe(t *testing.T) {
 	}
 	if status := send(http.MethodGet, "text/event-stream", nil); status != http.StatusOK || calls.Load() != 2 {
 		t.Fatalf("MCP event-stream GET: status=%d calls=%d, want 200 and 2", status, calls.Load())
+	}
+	// Use the listener's real forwarding path: session teardown is upstream
+	// traffic too, including when a denial test expects no upstream requests.
+	base, _ := startListenerProxyWithOpts(t, srv.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodDelete, base, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || calls.Load() != 3 {
+		t.Fatalf("MCP session DELETE: status=%d calls=%d, want 200 and 3", resp.StatusCode, calls.Load())
 	}
 }
 
