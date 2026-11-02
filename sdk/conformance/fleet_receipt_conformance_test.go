@@ -19,6 +19,7 @@ package conformance_test
 // verification is Free-tier (internal/fleetreceipt).
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
@@ -31,6 +32,9 @@ import (
 	"strings"
 	"testing"
 
+	clisigning "github.com/luckyPipewrench/pipelock/internal/cli/signing"
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
@@ -190,28 +194,23 @@ func fleetReceiptTrustedKeyMap(pub ed25519.PublicKey) map[string]ed25519.PublicK
 	}
 }
 
-// formatFleetGoldenOutput renders the human verifier output for a passing L1
-// report. It MUST mirror verifyFleetReportWithOptions in internal/cli/signing
-// (the shipped `pipelock verify-receipt --fleet-report` path) field-for-field,
-// including the "FLEET RECEIPT OK: <path>" banner (the CLI prints the verified
-// file path) and the predicate Limits block, so the auditor-facing golden
-// sample matches what the real CLI emits. A single helper keeps the generation
-// and check sides from drifting apart.
-func formatFleetGoldenOutput(result fleetreceipt.Verification, path string) string {
-	var b strings.Builder
-	_, _ = fmt.Fprintf(&b, "FLEET RECEIPT OK: %s\n", path)
-	_, _ = fmt.Fprintf(&b, "  Signer:           %s\n", result.SignerKeyID)
-	_, _ = fmt.Fprintf(&b, "  Payload SHA-256:  %s\n", result.PayloadSHA256)
-	_, _ = fmt.Fprintf(&b, "  Org/Fleet:        %s/%s\n", result.Statement.Predicate.OrgID, result.Statement.Predicate.FleetID)
-	_, _ = fmt.Fprintf(&b, "  Report ID:        %s\n", result.Statement.Predicate.ReportID)
-	_, _ = fmt.Fprintf(&b, "  Level:            %s\n", result.Statement.Predicate.VerificationLevel)
-	_, _ = fmt.Fprintf(&b, "  Source batches:   %d\n", result.SourceBatches)
-	_, _ = fmt.Fprintf(&b, "  Total actions:    %d\n", result.TotalActions)
-	_, _ = fmt.Fprintf(&b, "  Mediated fraction: %s\n", result.MediatedFraction)
-	for _, limit := range result.Statement.Predicate.Limits {
-		_, _ = fmt.Fprintf(&b, "  Limit:            %s\n", limit)
+// cliFleetGoldenOutput runs the shipped `pipelock verify-receipt
+// --fleet-report` command and returns what it prints, so the auditor-facing
+// golden sample is the real CLI output rather than a second copy of its
+// format. Current fleet formats cannot prove a final endpoint, so a report
+// that verifies exits 3 with VALID PREFIX, END UNPROVEN.
+func cliFleetGoldenOutput(t *testing.T, path string, pub ed25519.PublicKey) string {
+	t.Helper()
+	cmd := clisigning.VerifyReceiptCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	if code := cliutil.ExitCodeOf(cmd.Execute()); code != endproof.ExitPrefix {
+		t.Fatalf("verify-receipt --fleet-report exit = %d, want %d\n%s", code, endproof.ExitPrefix, out.String())
 	}
-	return b.String()
+	return out.String()
 }
 
 func fleetReceiptFixtures() []fleetReceiptFixtureSpec {
@@ -416,12 +415,10 @@ func TestGenerateFleetReceiptCorpus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read valid fixture: %v", err)
 	}
-	keyMap := fleetReceiptTrustedKeyMap(pub)
-	result, err := fleetreceipt.Verify(validData, keyMap)
-	if err != nil {
+	if _, err := fleetreceipt.Verify(validData, fleetReceiptTrustedKeyMap(pub)); err != nil {
 		t.Fatalf("verify valid fixture for golden output: %v", err)
 	}
-	golden := formatFleetGoldenOutput(result, validPath)
+	golden := cliFleetGoldenOutput(t, validPath, pub)
 	goldenPath := filepath.Join(fleetReceiptFixtureDir, "valid-l1.golden")
 	if err := os.WriteFile(goldenPath, []byte(golden), 0o600); err != nil {
 		t.Fatalf("write golden: %v", err)
@@ -498,12 +495,11 @@ func TestFleetReceiptV1Conformance(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read valid fixture: %v", err)
 		}
-		result, err := fleetreceipt.Verify(validData, keyMap)
-		if err != nil {
+		if _, err := fleetreceipt.Verify(validData, keyMap); err != nil {
 			t.Fatalf("verify valid fixture: %v", err)
 		}
 
-		actualOutput := formatFleetGoldenOutput(result, validPath)
+		actualOutput := cliFleetGoldenOutput(t, validPath, pub)
 
 		goldenPath := filepath.Join(fleetReceiptFixtureDir, "valid-l1.golden")
 		goldenData, err := os.ReadFile(filepath.Clean(goldenPath))
