@@ -253,6 +253,9 @@ func expandWords(s string) (string, bool) {
 		delta := strings.Count(w, " ") - strings.Count(word, " ")
 		if !ok || added+delta > maxWordExpansions {
 			unreadable = true
+			// A refused expansion spends the remaining work budget too.
+			// Retrying it on every later word would bound only the output.
+			added = maxWordExpansions
 			b.WriteString(word)
 			return
 		}

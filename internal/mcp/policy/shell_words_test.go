@@ -349,6 +349,18 @@ func TestWordReading_CommandBudget(t *testing.T) {
 	}
 }
 
+func TestExpandWordsStopsAfterBudgetRefusal(t *testing.T) {
+	for _, first := range []string{
+		strings.Repeat("{a,b}", 6) + " " + strings.Repeat("{a,b}", 6),
+		strings.Repeat("{a,b}", 7),
+	} {
+		got, unreadable := expandWords(first + " {x,y}")
+		if !unreadable || !strings.HasSuffix(got, " {x,y}") {
+			t.Errorf("expansion continued after a budget refusal: unreadable=%v, suffix=%q", unreadable, got[max(0, len(got)-16):])
+		}
+	}
+}
+
 // TestReadUnsetParameters_Nesting: expansions nested past maxParamNesting are
 // reported unreadable.
 func TestReadUnsetParameters_Nesting(t *testing.T) {
