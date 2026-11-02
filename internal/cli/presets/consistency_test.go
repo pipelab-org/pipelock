@@ -194,6 +194,17 @@ func TestAllPresetsRetainBuiltInPatterns(t *testing.T) {
 				// Compiled selects an equivalent precompiled expression and is not
 				// serialized; all enforcement and audience properties must survive.
 				got.Compiled = want.Compiled
+				if got.Severity != want.Severity {
+					// A preset may only raise a built-in to critical (the hostile
+					// profile). Raising it changes the pattern's identity, so the
+					// loader drops its credential audience: the key is then refused
+					// even toward its own service, which is stricter, not weaker.
+					if got.Severity != config.SeverityCritical {
+						t.Errorf("DLP pattern %q severity %q is not the built-in %q or critical", want.Name, got.Severity, want.Severity)
+						continue
+					}
+					want = raisedToCritical(want, got)
+				}
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("DLP pattern %q changed properties: got %+v, want %+v", want.Name, got, want)
 				}
@@ -218,6 +229,24 @@ func TestAllPresetsRetainBuiltInPatterns(t *testing.T) {
 			}
 		})
 	}
+}
+
+// raisedToCritical is want with the severity raised to critical and the
+// built-in-only fields taken from got, which the loader clears for a pattern
+// whose severity differs from the built-in. Each cleared field only narrows
+// what the pattern reports: a credential audience exempts the key's own
+// service, and the URL whitespace grammar drops prose-shaped matches.
+func raisedToCritical(want, got config.DLPPattern) config.DLPPattern {
+	want.Severity = config.SeverityCritical
+	want.CredentialURLWhitespaceGrammar = got.CredentialURLWhitespaceGrammar
+	wv := reflect.ValueOf(&want).Elem()
+	gv := reflect.ValueOf(got)
+	for i := range wv.NumField() {
+		if strings.HasPrefix(wv.Type().Field(i).Name, "CredentialAudience") {
+			wv.Field(i).Set(gv.Field(i))
+		}
+	}
+	return want
 }
 
 func TestModePresetsDoNotDowngradeDefaultPolicy(t *testing.T) {

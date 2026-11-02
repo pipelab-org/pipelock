@@ -118,7 +118,7 @@ dlp:
       severity: critical
     - name: "Google API Key"
       regex: 'AIza[0-9A-Za-z\-_]{35}\b'
-      severity: high
+      severity: critical
     - name: "Google OAuth Client Secret"
       regex: 'GOCSPX-[A-Za-z0-9_\-]{28,}'
       severity: critical
@@ -199,13 +199,13 @@ dlp:
       severity: critical
     - name: "Twilio API Key"
       regex: '\bSK[a-f0-9]{32}\b'
-      severity: high
+      severity: critical
     - name: "SendGrid API Key"
       regex: '(?-i:SG\.)[a-zA-Z0-9_-]{22}\.[a-zA-Z0-9_-]{43}'
       severity: critical
     - name: "Mailgun API Key"
       regex: '\bkey-[a-zA-Z0-9]{32}\b'
-      severity: high
+      severity: critical
     - name: "New Relic API Key"
       regex: 'NRAK-[A-Z0-9]{27,}'
       severity: critical
@@ -250,19 +250,19 @@ dlp:
       severity: critical
     - name: "Linear API Key"
       regex: 'lin_api_[A-Za-z0-9]{40,}\b'
-      severity: high
+      severity: critical
     - name: "Notion API Key"
       regex: 'ntn_[a-zA-Z0-9]{40,}\b'
-      severity: high
+      severity: critical
     - name: "Sentry Auth Token"
       regex: 'sntrys_[A-Za-z0-9]{40,}\b'
-      severity: high
+      severity: critical
     - name: "Private Key Header"
       regex: '-----BEGIN\s+(RSA\s+|EC\s+|DSA\s+|OPENSSH\s+|PGP\s+)?PRIVATE\s+KEY(\s+BLOCK)?-----'
       severity: critical
     - name: "JWT Token"
       regex: '(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,})\.(?:(?-i:ey[JA])[a-zA-Z0-9_\-=]{7,}|(?-i:ew[ok0])[a-zA-Z0-9_\-=]{7,}|(?-i:e30=?))\.[a-zA-Z0-9_\-=]{10,}'
-      severity: high
+      severity: critical
     - name: "Bitcoin WIF Private Key"
       regex: '(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})'
       severity: critical
@@ -281,10 +281,10 @@ dlp:
       severity: low
     - name: "Google OAuth Client ID"
       regex: '[0-9]{6,}-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com'
-      severity: medium
+      severity: critical
     - name: "Credential in URL"
       regex: '(?m)(?:^\s*(?:password|passwd|secret|token|apikey|api_key|api-key)=[A-Za-z0-9_+/=~%.-][^\s&;]{3,}|[?&;]\s*(?:password|passwd|secret|token|apikey|api_key|api-key)\s*=\s*[A-Za-z0-9_+/=~%.-][^\s&;]{3,})'
-      severity: high
+      severity: critical
     - name: "Environment Variable Secret"
       regex: '(?-i:[A-Z][A-Z0-9]*[_-](?:SECRET(?:[_-]ACCESS)?[_-]?KEY|SECRET|PASSWORD|PASSWD|TOKEN|API[_-]?KEY))\b\s*=\s*[A-Za-z0-9_+/=~.-]\S{7,}'
       severity: high
