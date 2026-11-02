@@ -689,3 +689,18 @@ func TestScanEnvSecrets_ValidatedPatternsStillFlagRealMatches(t *testing.T) {
 		t.Fatal("expected valid credit card env value to be flagged")
 	}
 }
+
+// TestCompileDLPPatterns_IncludesCoreFloor: the project audit applies every
+// core floor pattern, including core-only patterns that are not among the
+// configurable defaults, as the proxy scanner does.
+func TestCompileDLPPatterns_IncludesCoreFloor(t *testing.T) {
+	names := make(map[string]bool)
+	for _, p := range mustCompileDLPPatterns(t) {
+		names[p.name] = true
+	}
+	for _, core := range config.CoreDLPPatterns() {
+		if !names[core.Name] {
+			t.Errorf("project audit omits core floor pattern %q", core.Name)
+		}
+	}
+}

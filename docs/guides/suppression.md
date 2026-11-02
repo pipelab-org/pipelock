@@ -10,13 +10,15 @@ All three work in `pipelock audit`, `pipelock git scan-diff`, and the GitHub Act
 
 ## Layer 1: Inline Comments
 
-Add `// pipelock:ignore` to a source line to suppress findings on that line.
+Add `// pipelock:ignore` to a source line to suppress non-core findings on that line. Core DLP and core response floor patterns cannot be suppressed. They remain findings even with a bare marker or a marker naming the rule, matching the config suppression policy.
+
+`git scan-diff` applies the core DLP floor even with `dlp.include_defaults: false` or a custom pattern replacing a built-in name. This includes the core-only GCP service-account marker, which can also occur in documentation and fixtures without a private key. There is no per-rule or per-line exception for a core finding. Construct synthetic test values from fragments when possible. For files that must retain a literal example, the path exclusions below remove every finding for that path, including core findings. Generated pre-push hooks don't expose an exclusion option.
 
 ```go
 // Suppress a specific rule:
 url := buildTestURL("token", testToken) // pipelock:ignore Credential in URL
 
-// Suppress all rules on this line (use sparingly):
+// Suppress all non-core rules on this line (use sparingly):
 testValue := loadFixture("fake-key.txt") // pipelock:ignore
 ```
 
@@ -126,6 +128,8 @@ This does not add a refresh-token allowance or change the built-in audience. Avo
 
 Remove entire paths from scan results. Available on `pipelock git scan-diff` and `pipelock audit`:
 
+These exclusions also remove core findings. Use the narrowest path possible: an excluded fixture can contain a real secret that the gate will no longer report. The GitHub Action exposes the same control through `exclude-paths`.
+
 ```bash
 pipelock git scan-diff --exclude vendor/ --exclude "*.generated.go"
 pipelock audit --exclude node_modules/ --exclude dist/
@@ -178,7 +182,7 @@ Write a Pipelock config file, then pass its path with the `config` input:
 
 ### Inline comments
 
-Inline `// pipelock:ignore` comments work automatically with no action config needed.
+Inline `// pipelock:ignore` comments work automatically for non-core findings with no action config needed. Core floor findings remain in the results.
 
 ## Available Rule Names
 
@@ -242,5 +246,5 @@ When multiple layers apply to the same finding:
 
 - **Don't remove patterns from config** to suppress findings. That disables detection everywhere, including for real secrets.
 - **Don't lower severity** to avoid emission. Use `min_severity` on emit sinks instead.
-- **Don't use blanket `// pipelock:ignore`** without a rule name. It is too broad and suppresses all detection on that line.
+- **Don't use blanket `// pipelock:ignore`** without a rule name. It suppresses every non-core rule on that line.
 - **Don't suppress findings you haven't investigated.** Every suppression is a risk acceptance decision.

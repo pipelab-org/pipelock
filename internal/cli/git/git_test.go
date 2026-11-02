@@ -278,15 +278,15 @@ func TestScanDiffCmd_FailClosedMalformedInputs(t *testing.T) {
 			wantErr: ErrSecretsFound,
 		},
 		{
-			name: "suppressed orphan secret still unverifiable",
+			name: "core orphan secret retained despite inline marker",
 			diff: "+provider_token=" + key + " // pipelock:ignore\n" +
 				"diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -0,0 +1 @@\n+safe=true\n",
-			wantErr: gitprotect.ErrUnattributedAddedLines,
+			wantErr: ErrSecretsFound,
 		},
 		{
-			name:    "suppressed bare secret no headers",
+			name:    "core bare secret retained despite inline marker",
 			diff:    "+provider_token=" + key + " // pipelock:ignore\n",
-			wantErr: gitprotect.ErrNoDiffHeaders,
+			wantErr: ErrSecretsFound,
 		},
 		{
 			name: "clean orphan line before valid section",

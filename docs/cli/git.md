@@ -10,8 +10,10 @@ git diff --cached | pipelock git scan-diff --config pipelock.yaml
 git diff HEAD~1 | pipelock git scan-diff --format sarif -o results.sarif
 ```
 
-The diff arrives on stdin. Nothing is read from the repository directly, so the
-command scans exactly the range you pipe to it.
+The diff arrives on stdin, and the command scans exactly the added lines in the
+range you pipe to it. To honor `pipelock:ignore` markers it also reads the
+matching line of a file named in the diff when that file exists on disk.
+Neither kind of marker silences a core floor pattern.
 
 ## Exit codes
 

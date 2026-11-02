@@ -18,10 +18,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// suppressRe matches inline suppression comments: // pipelock:ignore or # pipelock:ignore
-// Must stay in sync with cliutil.SuppressRe - duplicated here to avoid import cycle.
+// InlineSuppressPattern matches inline suppression comments in diffs and source files.
+const InlineSuppressPattern = `(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`
+
 var (
-	suppressRe = regexp.MustCompile(`(?://|#)\s*pipelock:ignore(?:\s+(.+?))?\s*$`)
+	suppressRe = regexp.MustCompile(InlineSuppressPattern)
 
 	maxDiffLineNumber = int(^uint(0)>>1) - 1
 )
@@ -272,6 +273,12 @@ func hunkNewCountZero(rest string, startEnd int) bool {
 	return err == nil && c == 0
 }
 
+// IsCoreFloorPattern reports whether a finding belongs to a core floor.
+// Core floor patterns cannot be suppressed by inline markers or config.
+func IsCoreFloorPattern(name string) bool {
+	return config.IsCoreDLPPatternName(name) || config.IsCoreResponsePatternName(name)
+}
+
 // CompiledDLPPattern is a pre-compiled DLP regex for scanning diffs.
 type CompiledDLPPattern struct {
 	Class    redact.Class
@@ -466,7 +473,7 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 	for file, lines := range addedLines {
 		for _, al := range lines {
 			// Respect pipelock:ignore inline comments.
-			// Bare "pipelock:ignore" suppresses all patterns on the line.
+			// Bare "pipelock:ignore" suppresses non-core patterns on the line.
 			// "pipelock:ignore RuleName" suppresses only that specific pattern.
 			suppressMatch := suppressRe.FindStringSubmatch(al.content)
 			suppressAll := suppressMatch != nil && strings.TrimSpace(suppressMatch[1]) == ""
@@ -475,30 +482,42 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 				suppressRule = strings.TrimSpace(suppressMatch[1])
 			}
 
+			// Every finding on a line carries the same content, redacted for
+			// every pattern that matched it, so one finding never shows
+			// another finding's secret.
+			var hits []CompiledDLPPattern
+			var spans []redact.Match
 			for _, cp := range patterns {
-				redacted := ""
 				matched := false
 				regexMatched := cp.regexMatches(al.content)
 				if cp.Class != "" && (cp.Re == nil || regexMatched) {
 					if matcher == nil {
 						matcher = redact.NewDefaultMatcher()
 					}
-					matches := cp.classMatches(matcher.Scan(al.content))
-					if len(matches) > 0 {
-						redacted = replaceGitProtectMatches(al.content, matches)
+					if matches := cp.classMatches(matcher.Scan(al.content)); len(matches) > 0 {
+						spans = append(spans, matches...)
 						matched = true
 					}
 				}
 				if regexMatched {
-					if !matched {
-						redacted = al.content
+					// Spans are found on the original line, so redaction
+					// already applied for another pattern cannot hide part
+					// of this match. Every match is redacted, accepted by
+					// the validator or not.
+					for _, loc := range cp.Re.FindAllStringIndex(al.content, -1) {
+						spans = append(spans, redact.Match{Start: loc[0], End: loc[1]})
 					}
-					redacted = cp.Re.ReplaceAllString(redacted, "[REDACTED]")
 					matched = true
 				}
-				if !matched {
-					continue
+				if matched {
+					hits = append(hits, cp)
 				}
+			}
+			if len(hits) == 0 {
+				continue
+			}
+			redacted := replaceGitProtectMatches(al.content, spans)
+			for _, cp := range hits {
 				f := Finding{
 					File:     file,
 					Line:     al.lineNum,
@@ -506,7 +525,7 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 					Pattern:  cp.Name,
 					Severity: cp.Severity,
 				}
-				if suppressAll || (suppressRule != "" && strings.EqualFold(suppressRule, cp.Name)) {
+				if !IsCoreFloorPattern(cp.Name) && (suppressAll || (suppressRule != "" && strings.EqualFold(suppressRule, cp.Name))) {
 					suppressed = append(suppressed, f)
 				} else {
 					findings = append(findings, f)
@@ -533,16 +552,26 @@ func replaceGitProtectMatches(input string, matches []redact.Match) string {
 	if input == "" || len(matches) == 0 {
 		return input
 	}
+	// Spans come from several patterns and may overlap; sort and merge them
+	// so an overlapping span never leaves its tail unredacted.
+	spans := make([]redact.Match, 0, len(matches))
+	for _, m := range matches {
+		if m.Start >= 0 && m.End <= len(input) && m.End > m.Start {
+			spans = append(spans, m)
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].Start < spans[j].Start })
 
 	var b strings.Builder
 	cursor := 0
-	for _, match := range matches {
-		if match.Start < cursor || match.Start < 0 || match.End > len(input) || match.End <= match.Start {
-			continue
+	for i := 0; i < len(spans); {
+		start, end := spans[i].Start, spans[i].End
+		for i++; i < len(spans) && spans[i].Start <= end; i++ {
+			end = max(end, spans[i].End)
 		}
-		b.WriteString(input[cursor:match.Start])
+		b.WriteString(input[cursor:max(cursor, start)])
 		b.WriteString("[REDACTED]")
-		cursor = match.End
+		cursor = max(cursor, end)
 	}
 	b.WriteString(input[cursor:])
 	return b.String()
