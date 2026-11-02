@@ -23,7 +23,7 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := fleetReportStatementWithLimits("L1", []string{fleetLimitL1NoReplay})
+	s := fleetReportStatementWithLimits([]string{fleetLimitL1NoReplay})
 	s.PredicateType = fleetreceipt.PredicateTypeV2
 	s.Predicate.SchemaVersion = 2
 	s.Predicate.SourceBatches[0].Chain = &fleetreceipt.ChainIdentity{EntryVersion: 2, SessionID: "run-a"}

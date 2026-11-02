@@ -21,12 +21,11 @@ import (
 
 const fleetLimitL1NoReplay = "L1 does not replay raw audit-batch payloads during offline verification."
 
-// fleetReportStatementWithLimits builds a valid L1 fleet-report statement at the
-// given verification level, carrying the supplied predicate limits. It mirrors
-// the canonical fixture in writeFleetReportFixtureSigned but lets the A3 test
-// exercise the Limits output and a non-L1 rejection without mutating the shared
-// helper other tests assert against.
-func fleetReportStatementWithLimits(level string, limits []string) fleetreceipt.Statement {
+// fleetReportStatementWithLimits builds a valid L1 fleet-report statement
+// carrying the supplied predicate limits. It mirrors the canonical fixture in
+// writeFleetReportFixtureSigned but lets the A3 test exercise the Limits output
+// without mutating the shared helper other tests assert against.
+func fleetReportStatementWithLimits(limits []string) fleetreceipt.Statement {
 	return fleetreceipt.Statement{
 		Type: fleetreceipt.StatementType,
 		Subject: []fleetreceipt.Subject{{
@@ -41,7 +40,7 @@ func fleetReportStatementWithLimits(level string, limits []string) fleetreceipt.
 			OrgID:             "pipelab",
 			FleetID:           "dogfood",
 			ReportWindow:      fleetreceipt.TimeWindow{Start: "2026-06-13T11:00:00Z", End: "2026-06-13T12:00:00Z"},
-			VerificationLevel: level,
+			VerificationLevel: fleetreceipt.VerificationLevelL1,
 			Conductor:         fleetreceipt.Conductor{ID: "conductor"},
 			Limits:            limits,
 			SourceBatches: []fleetreceipt.SourceBatch{{
@@ -103,7 +102,7 @@ func writeFleetReportStatement(t *testing.T, stmt fleetreceipt.Statement) (ed255
 func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	t.Parallel()
 
-	stmt := fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, []string{
+	stmt := fleetReportStatementWithLimits([]string{
 		"L1 verifies the signed report, source-batch anchors, ordering, summary arithmetic, and completeness arithmetic.",
 		fleetLimitL1NoReplay,
 		string(evidence.LimitMetadataPrivacy),
@@ -144,7 +143,7 @@ func TestVerifyReceiptCmd_FleetReportL2StillRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	l1 := fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, []string{fleetLimitL1NoReplay})
+	l1 := fleetReportStatementWithLimits([]string{fleetLimitL1NoReplay})
 	signed, err := fleetreceipt.SignStatement(l1, hex.EncodeToString(pub), priv)
 	if err != nil {
 		t.Fatalf("SignStatement: %v", err)

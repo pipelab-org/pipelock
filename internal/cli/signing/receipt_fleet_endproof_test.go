@@ -34,7 +34,7 @@ func TestVerifyReceiptCmd_FleetReportNeedsEndProof(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stmt := fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, nil)
+			stmt := fleetReportStatementWithLimits(nil)
 			if tc.version == fleetreceipt.SchemaVersionV2 {
 				stmt.PredicateType = fleetreceipt.PredicateTypeV2
 				stmt.Predicate.SchemaVersion = fleetreceipt.SchemaVersionV2
@@ -81,7 +81,7 @@ func TestVerifyReceiptCmd_FleetReportNeedsEndProof(t *testing.T) {
 }
 
 func TestVerifyReceiptCmd_FleetReportAllowPrefix(t *testing.T) {
-	pub, path := writeFleetReportStatement(t, fleetReportStatementWithLimits(fleetreceipt.VerificationLevelL1, nil))
+	pub, path := writeFleetReportStatement(t, fleetReportStatementWithLimits(nil))
 	key := hex.EncodeToString(pub)
 
 	run := func(args ...string) (string, error) {
