@@ -57,7 +57,12 @@ func TestCardRunInputBoundariesStayStrings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			text := strings.Join([]string{"4111", "1111", "1111", "1111"}, tt.separator)
-			runs := BoundaryCardRuns(EscapeCardBoundaries(text))
+			escaped := EscapeCardBoundaries(text)
+			want := strings.Join([]string{"4111", "1111", "1111", "1111"}, ",\x1fu,")
+			if escaped != want {
+				t.Fatalf("escaped boundaries = %q, want %q", escaped, want)
+			}
+			runs := BoundaryCardRuns(escaped)
 			if !slices.ContainsFunc(runs, func(r CardRun) bool { return r.Digits == card && r.EnforcesShippedRule() }) {
 				t.Fatal("input boundary lost enforcement")
 			}
