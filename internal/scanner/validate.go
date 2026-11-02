@@ -4,6 +4,8 @@
 package scanner
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"regexp"
 	"strings"
 	"unicode"
@@ -309,6 +311,9 @@ func validateABA(s string) bool {
 // base58 character class - invalid checksums have a 1-in-2^32 chance
 // of passing.
 func validateWIF(s string) bool {
+	if ok, canonical := validateCanonicalWIF(s); canonical {
+		return ok
+	}
 	payload, version, err := addressprotect.Base58CheckDecode(s)
 	if err != nil {
 		return false
@@ -322,6 +327,72 @@ func validateWIF(s string) bool {
 	// Uncompressed: 32-byte private key.
 	// Compressed: 32-byte key + 0x01 compression flag = 33 bytes.
 	return len(payload) == 32 || (len(payload) == 33 && payload[32] == 0x01)
+}
+
+// Mainnet WIF widths: https://en.bitcoin.it/wiki/Wallet_import_format
+const (
+	wifUncompressedLen = 51
+	wifCompressedLen   = 52
+	base58Alphabet     = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+)
+
+var base58Digit = func() (digits [256]int8) {
+	for i := range digits {
+		digits[i] = -1
+	}
+	for i := 0; i < len(base58Alphabet); i++ {
+		digits[base58Alphabet[i]] = int8(i)
+	}
+	return digits
+}()
+
+func isBase58Byte(c byte) bool { return base58Digit[c] >= 0 }
+
+// validateCanonicalWIF decodes the canonical candidate shape without
+// allocating, so overlapping WIF enumeration stays cheap on long base58 runs.
+// canonical is false for any other input, which takes the general decoder.
+// The decision matches Base58CheckDecode: version 0x80, a 32-byte payload or
+// a 33-byte payload ending in 0x01, then the SHA-256d checksum.
+func validateCanonicalWIF(s string) (ok, canonical bool) {
+	switch {
+	case len(s) == wifUncompressedLen && s[0] == '5':
+	case len(s) == wifCompressedLen && (s[0] == 'K' || s[0] == 'L'):
+	default:
+		return false, false
+	}
+	// 58^52 < 2^320, so ten 32-bit limbs hold any 52-digit value.
+	var limbs [10]uint32
+	for i := 0; i < len(s); i++ {
+		digit := base58Digit[s[i]]
+		if digit < 0 {
+			return false, true
+		}
+		carry := uint64(digit)
+		for j := len(limbs) - 1; j >= 0; j-- {
+			x := uint64(limbs[j])*58 + carry
+			limbs[j] = uint32(x) // #nosec G115 -- keeps the low 32 bits; the high bits carry
+			carry = x >> 32
+		}
+	}
+	var buf [40]byte
+	for j, limb := range limbs {
+		binary.BigEndian.PutUint32(buf[4*j:], limb)
+	}
+	first := 0
+	for first < len(buf) && buf[first] == 0 {
+		first++
+	}
+	decoded := buf[first:]
+	switch {
+	case len(decoded) == 37 && decoded[0] == 0x80:
+	case len(decoded) == 38 && decoded[0] == 0x80 && decoded[33] == 0x01:
+	default:
+		return false, true
+	}
+	body, checksum := decoded[:len(decoded)-4], decoded[len(decoded)-4:]
+	h1 := sha256.Sum256(body)
+	h2 := sha256.Sum256(h1[:])
+	return h2[0] == checksum[0] && h2[1] == checksum[1] && h2[2] == checksum[2] && h2[3] == checksum[3], true
 }
 
 func isASCIILetter(c byte) bool { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') }

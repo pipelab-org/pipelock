@@ -236,10 +236,9 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 }
 
 // firstAcceptedSpan preserves whole-match and boundary semantics for ordinary
-// validators. The canonical WIF grammar has no boundaries and consumes at most
-// 52 bytes (Bitcoin's mainnet WIF format), so retrying one byte after a rejected
-// start takes O(52*n) regex work and at most n fixed-size checksum validations.
-// It also sees a candidate that starts inside a hit and ends beyond that hit.
+// validators. The canonical WIF grammar has no boundaries, so a rejected greedy
+// hit can hide a valid key that starts inside it; WIF candidates are therefore
+// enumerated at every start rather than at the regex's non-overlapping hits.
 func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
 	if !p.wifOverlapRetry {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
@@ -250,16 +249,36 @@ func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) b
 		}
 		return 0, 0, false
 	}
-	for offset := 0; offset < len(text); {
-		loc := p.re.FindStringIndex(text[offset:])
-		if loc == nil {
-			break
+	return firstWIFCandidate(text, func(start, end int) bool {
+		return p.accepts(text, start, end) && (joined == nil || joined(start, end))
+	})
+}
+
+// firstWIFCandidate visits each canonical WIF start once in one pass over
+// maximal base58 runs. A canonical candidate's width is fixed by its first
+// byte (Bitcoin's mainnet WIF format: '5' then 50 base58 characters, or 'K'/'L'
+// then 51), and validateWIF accepts only all-base58 input, so this yields every
+// candidate the case-insensitive regex could have had accepted. Re-running the
+// regex from each rejected start instead costs up to 52 regex steps per byte.
+func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int, bool) {
+	runStart := 0
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && isBase58Byte(text[i]) {
+			continue
 		}
-		start, end := offset+loc[0], offset+loc[1]
-		if p.accepts(text, start, end) && (joined == nil || joined(start, end)) {
-			return start, end, true
+		for start := runStart; i-start >= wifUncompressedLen; start++ {
+			width := 0
+			switch text[start] {
+			case '5':
+				width = wifUncompressedLen
+			case 'K', 'L':
+				width = wifCompressedLen
+			}
+			if width > 0 && start+width <= i && accept(start, start+width) {
+				return start, start + width, true
+			}
 		}
-		offset = start + 1
+		runStart = i + 1
 	}
 	return 0, 0, false
 }
