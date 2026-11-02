@@ -25,7 +25,7 @@ var dlpPresetTargets = []dlpPresetTarget{
 	{Path: filepath.Join("configs", "cursor.yaml"), Profile: DLPPresetProfileFull},
 	{Path: filepath.Join("configs", "generic-agent.yaml"), Profile: DLPPresetProfileFull},
 	{Path: filepath.Join("configs", "strict.yaml"), Profile: DLPPresetProfileFull},
-	{Path: filepath.Join("configs", "hostile-model.yaml"), Profile: DLPPresetProfileHostile},
+	{Path: filepath.Join("configs", "hostile-model.yaml"), Profile: DLPPresetProfileFull},
 	{Path: filepath.Join("examples", "quickstart", "pipelock.yaml"), Profile: DLPPresetProfileQuickstart},
 }
 
