@@ -90,7 +90,6 @@ function runAARPChain(
   let signaturesVerified = false;
   let failure = "";
   try {
-    signaturesVerified = envs.length > 0 && envs.every((env) => verify(env, opts).assertion_signed);
     if (!linked) throw new Error("chain links are not contiguous");
     const first = envs[0];
     if (
@@ -100,6 +99,9 @@ function runAARPChain(
     ) {
       throw new Error("chain does not start at the genesis link");
     }
+    // Signatures count only for a chain that links from genesis, as in the
+    // other verifiers; a rejected stream never reports verified signers.
+    signaturesVerified = envs.length > 0 && envs.every((env) => verify(env, opts).assertion_signed);
     if (!signaturesVerified)
       throw new Error(
         "no signature verified against pinned trust; pass --trust with the signer key",

@@ -145,6 +145,7 @@ func generatePacketRecorderEndCorpus(t *testing.T) {
 	if err := os.WriteFile(manifestPath, append(data, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeLegacyUnsealedCase(t)
 }
 
 var (
@@ -232,5 +233,116 @@ func TestPacketRecorderEndCorpusShape(t *testing.T) {
 				t.Fatalf("roots=%d checkpoints=%d, want %d %d", roots, checkpoints, wantRoots, wantCheckpoints)
 			}
 		})
+	}
+}
+
+// Regenerate only the legacy-session unsealed case with:
+//
+//	go test ./sdk/conformance -run TestGeneratePacketRecorderLegacyUnsealed -update-end-proof
+func TestGeneratePacketRecorderLegacyUnsealed(t *testing.T) {
+	if !*updateEndProof {
+		t.Skip("pass -update-end-proof")
+	}
+	writeLegacyUnsealedCase(t)
+}
+
+// legacyUnsealedCase is a v2 file in the shared legacy session whose
+// transcript_root is followed by another recorder entry. A legacy session
+// cannot prove its end, but the entries after the seal are still unsealed, so
+// every verifier must refuse the file rather than report a prefix.
+var legacyUnsealedCase = auditPacketEndProofCase{Name: "v2-legacy-unsealed", File: "v2-legacy-unsealed.jsonl", Exit: 1, Integrity: "invalid", Status: "CHAIN BROKEN"}
+
+func writeLegacyUnsealedCase(t *testing.T) {
+	t.Helper()
+	pub, priv := keyFromSeed(seedEndProofSigner)
+	dir := t.TempDir()
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, CheckpointInterval: 1000, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+	session := recorder.DefaultSessionBase
+	policy := strings.Repeat("c", 64)
+	actions := receipt.NewEmitter(receipt.EmitterConfig{Recorder: rec, PrivKey: priv, ConfigHash: policy, Principal: "local", Actor: "pipelock", Session: session})
+	evidence := proxydecision.NewEmitter(proxydecision.EmitterConfig{Recorder: rec, Signer: proxydecision.NewKeyedSigner(priv), Principal: "local", Actor: "pipelock", Session: session})
+	if actions == nil || evidence == nil {
+		t.Fatal("emitter construction failed")
+	}
+	decision := proxydecision.Decision{ActionType: "http_request", Transport: "fetch", Target: "https://api.vendor.example/data", Verdict: "allow", WinningSource: proxydecision.SourceScanner, PolicySources: []string{proxydecision.SourceScanner}, PolicyHash: policy}
+	if err := actions.EmitSessionOpen(); err != nil {
+		t.Fatal(err)
+	}
+	if err := actions.Emit(receipt.EmitOpts{ActionID: receipt.NewActionID(), Verdict: "allow", Transport: "fetch", Target: "https://api.vendor.example/data"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := evidence.Emit(decision); err != nil {
+		t.Fatal(err)
+	}
+	if err := actions.EmitSessionClose("graceful_shutdown"); err != nil {
+		t.Fatal(err)
+	}
+	if err := actions.EmitTranscriptRoot(session); err != nil {
+		t.Fatal(err)
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "evidence-*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("recorder files: %v %v", files, err)
+	}
+	lines := readLines(t, files[0])
+	last := len(lines) - 1
+	if entryType(t, lines[last]) != "checkpoint" || entryType(t, lines[last-1]) != "transcript_root" {
+		t.Fatal("legacy fixture must end with transcript_root and its checkpoint")
+	}
+	// An audit packet carries only receipts, the seal and checkpoints, and a
+	// receipt after the seal already fails the root checks. A second, validly
+	// signed checkpoint is the remaining entry that can follow the seal.
+	extra := recorderSeqField.ReplaceAllString(lines[last], "${1}"+strconv.Itoa(last+1)+",")
+	extra = checkpointSummary.ReplaceAllLiteralString(extra, fmt.Sprintf(`"summary":"checkpoint: %d entries [seq 0-%d]"`, last+1, last))
+	extra = checkpointSpan.ReplaceAllLiteralString(extra, fmt.Sprintf(`"detail":{"entry_count":%d,"first_seq":0,"last_seq":%d,`, last+1, last))
+	lines = rehash(t, append(lines, extra))
+	checkpoint, err := recorder.ParseEntryLine([]byte(lines[last+1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp struct{ Detail recorder.CheckpointDetail }
+	if err := json.Unmarshal([]byte(lines[last+1]), &cp); err != nil {
+		t.Fatal(err)
+	}
+	lines[last+1] = strings.Replace(lines[last+1], cp.Detail.Signature, hex.EncodeToString(ed25519.Sign(priv, []byte(checkpoint.PrevHash))), 1)
+	// The signature is hashed with its entry; it covers only prev_hash, so
+	// rehashing leaves it valid.
+	lines = rehash(t, lines)
+	if err := os.WriteFile(filepath.Join(endProofDir, legacyUnsealedCase.File), joinLines(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifestPath := filepath.Join(endProofDir, "expect.json")
+	data, err := os.ReadFile(filepath.Clean(manifestPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest struct {
+		Key         string                    `json:"key"`
+		Cases       []endProofCase            `json:"cases"`
+		AuditPacket []auditPacketEndProofCase `json:"audit_packet"`
+	}
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Key != hex.EncodeToString(pub) {
+		t.Fatalf("manifest key mismatch or invalid: %v", err)
+	}
+	retained := manifest.AuditPacket[:0]
+	for _, c := range manifest.AuditPacket {
+		if c.Name != legacyUnsealedCase.Name {
+			retained = append(retained, c)
+		}
+	}
+	manifest.AuditPacket = append(retained, legacyUnsealedCase)
+	data, err = json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

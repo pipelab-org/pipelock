@@ -249,6 +249,14 @@
       "integrity": "invalid",
       "status": "CHAIN BROKEN",
       "proven": false
+    },
+    {
+      "name": "v2-legacy-unsealed",
+      "file": "v2-legacy-unsealed.jsonl",
+      "exit": 1,
+      "integrity": "invalid",
+      "status": "CHAIN BROKEN",
+      "proven": false
     }
   ]
 }

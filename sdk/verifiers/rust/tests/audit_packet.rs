@@ -156,7 +156,7 @@ fn audit_packet_requires_endproof_and_reports_verified_prefix_counts() {
             "truncated-tail" => &partial,
             "head-cut" => &head,
             "v2-closed" | "v2-tail-cut" | "v2-no-checkpoint" | "v2-bad-seal"
-            | "v2-stripped-seal" => {
+            | "v2-stripped-seal" | "v2-legacy-unsealed" => {
                 let name = expected["name"].as_str().unwrap();
                 let dir =
                     write_packet_with_key(&format!("end-proof/{name}.jsonl"), None, ENDPROOF_KEY);

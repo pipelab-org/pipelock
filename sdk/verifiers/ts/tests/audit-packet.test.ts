@@ -806,6 +806,17 @@ test("an open action prefix still checks a present v2 recorder seal", async () =
   assert.ok(report.errors?.some((error) => error.includes("transcript_root does not match")));
 });
 
+test("audit packet refuses entries after a legacy-session seal", async () => {
+  const dir = await packetOverRun(
+    "../../conformance/testdata/end-proof/v2-legacy-unsealed.jsonl",
+    endProofKey,
+  );
+  const report = await verifyAuditPacket(dir, { ...defaultOptions, signerKey: endProofKey });
+  assert.equal(report.chain_check, "fail");
+  assert.equal(report.status, "CHAIN BROKEN");
+  assert.ok(report.errors?.some((error) => error.includes("unsealed recorder entries")));
+});
+
 test("audit-packet --key repeats to pin a trusted key set", async () => {
   const key = readFileSync(path.join(RUN_CHAINS, "signer-key.hex"), "utf8").trim();
   const dir = await packetOverRun(forgedRunFile().clean, key);

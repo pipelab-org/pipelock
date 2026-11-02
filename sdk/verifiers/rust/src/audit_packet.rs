@@ -435,10 +435,6 @@ fn verify_v2_recorder_end(
     {
         return Err("transcript_root does not match the verified action receipt chain".into());
     }
-    if !crate::chain_set::is_run_session(root_session) {
-        return Ok(false);
-    }
-
     let after_root = &lines[root_index + 1..];
     if after_root.len() > 1
         || after_root.first().is_some_and(|line| {
@@ -448,6 +444,11 @@ fn verify_v2_recorder_end(
         return Err("transcript_root is followed by unsealed recorder entries".into());
     }
     validate_checkpoints(lines, &action_indexes)?;
+    // A legacy shared session cannot prove its end, but its seal must still
+    // close the recorder before that is reported.
+    if !crate::chain_set::is_run_session(root_session) {
+        return Ok(false);
+    }
 
     let Some(checkpoint) = after_root.first() else {
         return Ok(false);

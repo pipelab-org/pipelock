@@ -95,6 +95,9 @@ func TestGenerateAARPEndProofCorpus(t *testing.T) {
 		{"pinned-seq-leading-zero", "stream.jsonl", []string{"--expect-seq", "0" + seq}, 0, "CHAIN VALID", true},
 		{"seq-hex-prefix", "stream.jsonl", []string{"--expect-seq", "0x" + seq}, 64, "", false},
 		{"seq-plus-sign", "stream.jsonl", []string{"--expect-seq", "+" + seq}, 64, "", false},
+		// The inline form is parsed by the same rule as the separate form.
+		{"pinned-seq-inline", "stream.jsonl", []string{"--expect-seq=" + seq}, 0, "CHAIN VALID", true},
+		{"seq-plus-sign-inline", "stream.jsonl", []string{"--expect-seq=+" + seq}, 64, "", false},
 	}}
 	body, err := json.MarshalIndent(corpus, "", "  ")
 	if err != nil {

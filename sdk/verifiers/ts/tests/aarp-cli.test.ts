@@ -207,6 +207,16 @@ test("cli aarp: forged signature and head cut fail", () => {
     r = runCLI(["aarp", cut, "--trust", trust, "--chain", "--json"]);
     assert.equal(r.status, 1);
     assert.equal(JSON.parse(r.stdout).integrity, "invalid");
+    // Validly signed envelopes in a rejected chain report no verified signers.
+    assert.equal(JSON.parse(r.stdout).signatures_verified, false);
+
+    const lines = readFileSync(source, "utf8").trim().split("\n");
+    const reordered = join(dir, "reordered.jsonl");
+    writeFileSync(reordered, `${[lines[0], lines[2], lines[1]].join("\n")}\n`);
+    r = runCLI(["aarp", reordered, "--trust", trust, "--chain", "--json"]);
+    assert.equal(r.status, 1);
+    assert.equal(JSON.parse(r.stdout).status, "CHAIN BROKEN");
+    assert.equal(JSON.parse(r.stdout).signatures_verified, false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

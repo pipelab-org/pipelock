@@ -162,6 +162,26 @@
       "exit": 64,
       "status": "",
       "proven": false
+    },
+    {
+      "name": "pinned-seq-inline",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq=2"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "seq-plus-sign-inline",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq=+2"
+      ],
+      "exit": 64,
+      "status": "",
+      "proven": false
     }
   ]
 }

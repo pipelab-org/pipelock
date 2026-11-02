@@ -381,9 +381,15 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
                 parsed.expect_head = arg["--expect-head=".len()..].to_string();
             }
             _ if arg.starts_with("--expect-seq=") => {
-                parsed.expect_seq = Some(arg["--expect-seq=".len()..].parse().map_err(|_| {
-                    VerifierError::Usage("--expect-seq requires an unsigned integer".to_string())
-                })?);
+                parsed.expect_seq = Some(
+                    crate::util::parse_decimal_seq(&arg["--expect-seq=".len()..]).ok_or_else(
+                        || {
+                            VerifierError::Usage(
+                                "--expect-seq requires an unsigned integer".to_string(),
+                            )
+                        },
+                    )?,
+                );
             }
             "--svid" => {
                 index += 1;
