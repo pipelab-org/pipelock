@@ -15,7 +15,9 @@ import (
 // RFC 3986 section 3.2.1 userinfo. HTTP senders should avoid this deprecated
 // carrier (RFC 9110 section 4.2.4); supported legacy Basic clients still need
 // the same inspection as other URL components. PathUnescape preserves '+'.
-func urlUserinfoValues(u *url.URL) []dlpTarget {
+// joined adds the decoded "username:password" pair, whose noise-stripped view
+// rejoins a credential split at the colon, as path and query views already do.
+func urlUserinfoValues(u *url.URL, joined bool) []dlpTarget {
 	if u.User == nil {
 		return nil
 	}
@@ -24,14 +26,23 @@ func urlUserinfoValues(u *url.URL) []dlpTarget {
 	if hasPassword {
 		password, _ := u.User.Password()
 		values = append(values, dlpTarget{rawPassword, "url_userinfo_password_escaped", ""}, dlpTarget{password, "url_userinfo_password", ""})
+		if joined {
+			values = append(values, dlpTarget{u.User.Username() + ":" + password, "url_userinfo", ""})
+		}
 	}
 	return values
 }
 
+// urlUserinfoDLPTargets includes the joined pair. Entropy keeps per-field
+// scoring so a benign Basic-auth pair is not judged as one longer string.
 func urlUserinfoDLPTargets(u *url.URL, decodes *decodingMemo) []dlpTarget {
+	return userinfoTargets(urlUserinfoValues(u, true), decodes)
+}
+
+func userinfoTargets(values []dlpTarget, decodes *decodingMemo) []dlpTarget {
 	var targets []dlpTarget
 	seen := make(map[string]bool)
-	for _, source := range urlUserinfoValues(u) {
+	for _, source := range values {
 		texts := []dlpTarget{source}
 		form, percent := IterativeDecode(source.text), normalizePercentUserinfo(source.text)
 		if form != source.text {
@@ -71,7 +82,7 @@ func (s *Scanner) checkUserinfoEntropy(u *url.URL) Result {
 		return Result{Allowed: true}
 	}
 	var decodes decodingMemo
-	for _, target := range urlUserinfoDLPTargets(u, &decodes) {
+	for _, target := range userinfoTargets(urlUserinfoValues(u, false), &decodes) {
 		if finding, blocked := s.queryValueEntropy(target.text, 0); blocked {
 			return Result{
 				Allowed: false, Scanner: ScannerEntropy, Class: ClassHeuristicEntropy,

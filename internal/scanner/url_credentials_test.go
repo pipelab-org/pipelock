@@ -179,3 +179,35 @@ func TestURLUserinfoFindingViews(t *testing.T) {
 		}
 	}
 }
+
+// TestURLUserinfoColonSplitCredential covers a credential split across the
+// username and password: the receiver rejoins the Basic-auth pair, so the
+// scanner must see the pair as path and query splits are already seen.
+func TestURLUserinfoColonSplitCredential(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	cfg.DLP.ScanEnv = true
+	s := MustNew(cfg)
+	defer s.Close()
+	env := "Envq7MZ9pL4vR2sK8h" + "F6dA0nT5cW3xB1jG"
+	s.envSecrets = []string{env}
+	for name, secret := range map[string]string{
+		"core":       "gh" + "p_" + "R7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jGuEoYi",
+		"configured": "gsk_" + "R7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jGuEoYiHkSqVfDtNr12",
+		"env":        env,
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := "https://" + secret[:12] + ":" + secret[12:] + "@api.vendor.example/read"
+			if got := s.Scan(context.Background(), target); got.Allowed {
+				t.Fatal("credential split at the userinfo colon allowed")
+			}
+			if got := s.ScanTextForDLP(context.Background(), "fetch "+target); got.Clean {
+				t.Fatal("credential split at the userinfo colon clean in text")
+			}
+		})
+	}
+	if got := s.Scan(context.Background(), "https://reader:ordinary@api.vendor.example/read"); !got.Allowed {
+		t.Fatalf("benign userinfo pair blocked: %s", got.Reason)
+	}
+}
