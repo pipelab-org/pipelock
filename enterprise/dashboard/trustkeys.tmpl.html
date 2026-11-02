@@ -53,10 +53,11 @@
       <div class="empty">The anchor-consistency audit proves receipt-chain consistency only for sessions loaded from the configured evidence source. No receipt sessions were found, so no chain-consistency claim is available. Point <code>pipelock dashboard serve</code> at a flight-recorder evidence directory with <code>--receipt-dir</code>; use <code>--anchor-local-log</code> or <code>--rekor-log-key</code> when anchor bundles need backend verification.</div>
     {{ else }}
       <div class="table"><table>
-        <thead><tr><th>Session</th><th>Result</th><th>Gaps / forks</th><th>Anchor</th><th>Heads</th></tr></thead>
+        <thead><tr><th>Session</th><th>Integrity</th><th>End proof</th><th>Gaps / forks</th><th>Anchor</th><th>Heads</th></tr></thead>
         <tbody>{{ range .Audits }}<tr>
           <td><code>{{ .SessionID }}</code></td>
-          <td class="{{ if .Consistent }}pass{{ else }}fail{{ end }}">{{ .Detail }}</td>
+          <td class="{{ if not .Consistent }}fail{{ else if .EndProof.EndProof.Proven }}pass{{ else }}warn{{ end }}">{{ .Detail }}</td>
+          <td class="{{ if not .Consistent }}fail{{ else if .EndProof.EndProof.Proven }}pass{{ else }}warn{{ end }}">{{ if and .EndProof.EndProof.Proven (eq .AnchorStatus "failure") }}ANCHOR FAILURE{{ else if and .EndProof.EndProof.Proven (eq .AnchorStatus "missing") }}ANCHOR MISSING{{ else if and .EndProof.EndProof.Proven (eq .AnchorStatus "stale") }}ANCHOR STALE{{ else }}{{ .EndProof.Status }}{{ end }}</td>
           <td>{{ .Gaps }} gaps / {{ .Forks }} forks</td>
           <td class="{{ if eq .AnchorStatus "not configured - cannot verify" }}warn{{ else if or (eq .AnchorStatus "failure") (eq .AnchorStatus "missing") (eq .AnchorStatus "stale") }}fail{{ end }}">{{ .AnchorStatus }}</td>
           <td>local: <code>{{ if .LocalHead }}{{ .LocalHead }}{{ else }}unverified{{ end }}</code><br>anchored: <code>{{ if .AnchoredHead }}{{ .AnchoredHead }}{{ else }}absent{{ end }}</code></td>

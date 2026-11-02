@@ -27,6 +27,8 @@ export function emitAuditPacket(report: AuditPacketReport, json: boolean): void 
   process.stdout.write(`  schema:       ${report.schema_check}\n`);
   process.stdout.write(`  chain:        ${report.chain_check}\n`);
   process.stdout.write(`  cross-check:  ${report.cross_check}\n`);
+  process.stdout.write(`  integrity:    ${report.integrity}\n`);
+  process.stdout.write(`  end proof:    ${String(report.end_proof.proven)}\n`);
   if (report.lifecycle_assessment !== "assessed") {
     process.stdout.write(
       `  lifecycle:    not assessed (${report.lifecycle_assessment_reason ?? "chain re-verification did not complete"})\n`,
@@ -37,6 +39,7 @@ export function emitAuditPacket(report: AuditPacketReport, json: boolean): void 
     );
   }
   process.stdout.write(`  verdict:      ${verdict}\n`);
+  process.stdout.write(`  status:       ${report.status}\n`);
   process.stdout.write(`  trusted:      ${String(report.trusted)}\n`);
   process.stdout.write(`  receipts:     ${report.summary.receipt_count}\n`);
   if (report.run.provider) process.stdout.write(`  provider:     ${report.run.provider}\n`);
@@ -51,7 +54,9 @@ export function emitAuditPacket(report: AuditPacketReport, json: boolean): void 
   }
   for (const err of report.errors ?? []) process.stderr.write(`ERROR: ${err}\n`);
   for (const warning of report.warnings ?? []) process.stderr.write(`WARN:  ${warning}\n`);
-  process.stdout.write(`  result:       ${report.valid ? "VALID" : "INVALID"}\n`);
+  process.stdout.write(
+    `  result:       ${report.valid ? "VALID" : report.status === prefixStatus ? prefixStatus : "INVALID"}\n`,
+  );
 }
 
 export function emitReceipt(report: ReceiptReport, json: boolean): void {

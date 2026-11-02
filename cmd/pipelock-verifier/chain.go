@@ -120,7 +120,7 @@ end_proof, scope, and signer trust.`,
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
 	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
 	cmd.Flags().BoolVar(&opts.allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
-	cmd.Flags().Uint64Var(&opts.expectSeq, "expect-seq", 0, "require this independently known final sequence for the selected chain")
+	cmd.Flags().Var(endproof.SeqFlag{Seq: &opts.expectSeq}, "expect-seq", "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")

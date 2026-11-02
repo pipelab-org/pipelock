@@ -5,11 +5,13 @@ package playground_test
 
 import (
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
 // TestGenerateBundle_LiveDemo_RealData drives a real uncontained live-demo run
@@ -29,6 +31,21 @@ func TestGenerateBundle_LiveDemo_RealData(t *testing.T) {
 	}
 	if !rep.OK {
 		t.Fatalf("run did not verify: %+v", rep.Checks)
+	}
+	evidence, err := os.ReadFile(filepath.Clean(filepath.Join(runDir, "packet", "evidence.jsonl")))
+	if err != nil {
+		t.Fatalf("read packet evidence: %v", err)
+	}
+	receipts, err := receipt.ExtractReceiptsBytes(evidence)
+	if err != nil {
+		t.Fatalf("extract packet receipts: %v", err)
+	}
+	if len(receipts) < 2 {
+		t.Fatalf("packet has %d receipts, want session_open and session_close", len(receipts))
+	}
+	last := receipts[len(receipts)-1].ActionRecord.SessionControl
+	if last == nil || last.Kind != receipt.SessionControlClose || last.Close == nil {
+		t.Fatalf("final packet receipt control = %+v, want session_close", last)
 	}
 
 	b, err := playground.GenerateBundle(runDir, rep.OrchestratorKey)

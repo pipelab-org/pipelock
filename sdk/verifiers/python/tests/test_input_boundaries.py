@@ -34,8 +34,10 @@ def test_signed_run_chain_larger_than_8_mib_verifies(tmp_path):
         / "evidence-proxy.run.03b13ee13e01e7f770480f62ea42f1fe-0.jsonl"
     )
     key = (
-        root / "conformance" / "testdata" / "run-chains" / "signer-key.hex"
-    ).read_text().strip()
+        (root / "conformance" / "testdata" / "run-chains" / "signer-key.hex")
+        .read_text()
+        .strip()
+    )
     target = tmp_path / fixture.name
     target.write_bytes(fixture.read_bytes() + b"\r\n" * ((8 << 20) // 2 + 1))
 
@@ -90,7 +92,9 @@ def test_jsonl_change_takes_precedence_over_parse_error(tmp_path, monkeypatch):
         receipt.load_evidence_chain(target)
 
 
-def test_jsonl_path_replacement_takes_precedence_over_parse_error(tmp_path, monkeypatch):
+def test_jsonl_path_replacement_takes_precedence_over_parse_error(
+    tmp_path, monkeypatch
+):
     from pipelock_aarp_verify import receipt
 
     target = tmp_path / "malformed.jsonl"
@@ -124,7 +128,9 @@ def test_jsonl_stream_stops_at_initial_size_when_file_is_appended(tmp_path):
     assert observed == [b"second\n"], "appended entries must not enter the snapshot"
 
 
-def test_jsonl_reader_closes_descriptor_after_initial_metadata_failure(tmp_path, monkeypatch):
+def test_jsonl_reader_closes_descriptor_after_initial_metadata_failure(
+    tmp_path, monkeypatch
+):
     from pipelock_aarp_verify import input_file
 
     target = tmp_path / "metadata-unavailable.jsonl"
@@ -136,9 +142,11 @@ def test_jsonl_reader_closes_descriptor_after_initial_metadata_failure(tmp_path,
         opened.append(fd)
         raise OSError("metadata unavailable")
 
-    monkeypatch.setattr(input_file.os, "fstat", unavailable)
-    with pytest.raises(OSError, match="metadata unavailable"):
-        next(input_file.iter_verifier_jsonl_lines(target))
+    # Restore the shared os module before pytest's descriptor capture resumes.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(input_file.os, "fstat", unavailable)
+        with pytest.raises(OSError, match="metadata unavailable"):
+            next(input_file.iter_verifier_jsonl_lines(target))
     assert len(opened) == 1
     with pytest.raises(OSError):
         real_fstat(opened[0])
@@ -149,7 +157,10 @@ def test_jsonl_path_restat_detects_late_same_inode_rewrite(tmp_path, monkeypatch
 
     target = tmp_path / "late-change.jsonl"
     target.write_bytes(b"first\nsecond\n")
-    assert list(input_file.iter_verifier_jsonl_lines(target)) == [b"first\n", b"second\n"]
+    assert list(input_file.iter_verifier_jsonl_lines(target)) == [
+        b"first\n",
+        b"second\n",
+    ]
     real_fstat = os.fstat
     calls = 0
 

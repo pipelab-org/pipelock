@@ -170,7 +170,6 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 		if extractErr != nil {
 			return extractErr
 		}
-		receipts = filterReceiptsToWindow(receipts, windowStart, windowEnd)
 		if len(receipts) == 0 {
 			return nil
 		}
@@ -184,6 +183,18 @@ func runCoverageCertGenerate(cmd *cobra.Command, opts coverageCertGenerateOption
 
 		chainResult := receipt.VerifyChainTrusted(receipts, trustedReceiptKeys)
 		report := completeness.Analyze(receipts, chainResult)
+		windowReceipts := filterReceiptsToWindow(receipts, windowStart, windowEnd)
+		if len(windowReceipts) == 0 {
+			return nil
+		}
+		report.ReceiptCount = uint64(len(windowReceipts))
+		if report.Status == completeness.StatusLimited && report.Reason == completeness.ReasonBoundedClosed &&
+			isSessionClose(receipts[len(receipts)-1]) && !isSessionClose(windowReceipts[len(windowReceipts)-1]) {
+			// Chain integrity and lifecycle are verified from the full source
+			// session. A window that excludes its terminal close still describes
+			// only a prefix of that session, so it cannot carry endpoint proof.
+			report.Reason = completeness.ReasonAbnormalEnd
+		}
 
 		intact := chainResult.Valid
 		sc := coveragecert.SessionCoverage{
@@ -290,7 +301,7 @@ func loadCoverageCertSessionReceipts(dir, sessionID string) ([]receipt.Receipt, 
 }
 
 func filterReceiptsToWindow(receipts []receipt.Receipt, start, end time.Time) []receipt.Receipt {
-	filtered := receipts[:0]
+	filtered := make([]receipt.Receipt, 0, len(receipts))
 	for _, r := range receipts {
 		ts := r.ActionRecord.Timestamp
 		if ts.Before(start) || !ts.Before(end) {
@@ -299,6 +310,11 @@ func filterReceiptsToWindow(receipts []receipt.Receipt, start, end time.Time) []
 		filtered = append(filtered, r)
 	}
 	return filtered
+}
+
+func isSessionClose(r receipt.Receipt) bool {
+	control := r.ActionRecord.SessionControl
+	return control != nil && control.Kind == receipt.SessionControlClose && control.Close != nil
 }
 
 // coverageCertAnonymousActor is pipelock's default actor for unattributed

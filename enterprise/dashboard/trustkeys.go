@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/anchor"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -258,6 +259,7 @@ func anchorBackend(bundle anchor.Bundle, localLogPath string, rekorKeys []crypto
 type ChainAudit struct {
 	SessionID    string
 	Consistent   bool
+	EndProof     endproof.Report
 	Failures     int
 	Gaps         int
 	Forks        int
@@ -271,7 +273,10 @@ type ChainAudit struct {
 // package, then verifies any external anchor with the anchor package. It never
 // treats receipt labels, key names, or bundle metadata as proof by themselves.
 func AuditReceiptChain(in ChainAuditInput) ChainAudit {
-	out := ChainAudit{SessionID: in.SessionID, AnchorStatus: AnchorNotExpected}
+	out := ChainAudit{
+		SessionID: in.SessionID, AnchorStatus: AnchorNotExpected,
+		EndProof: endproof.New(false, "receipt_chain"),
+	}
 	if len(in.Receipts) == 0 {
 		out.Failures = 1
 		out.Detail = "chain inconsistent: no receipts"
@@ -300,7 +305,12 @@ func AuditReceiptChain(in ChainAuditInput) ChainAudit {
 		return auditAnchor(in, out)
 	}
 	out.LocalHead = chainResult.RootHash
-	out.Detail = "chain consistent / 0 gaps detected"
+	out.EndProof = endproof.New(true, "receipt_chain", endproof.ActionEvidence(in.Receipts)...)
+	if out.EndProof.EndProof.Proven {
+		out.Detail = "chain consistent / 0 gaps detected; " + endproof.Valid
+	} else {
+		out.Detail = "integrity valid; " + out.EndProof.Status
+	}
 	return auditAnchor(in, out)
 }
 

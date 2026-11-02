@@ -38,6 +38,9 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 	_, _ = fmt.Fprintf(stdout, "  schema:       %s\n", r.SchemaCheck)
 	_, _ = fmt.Fprintf(stdout, "  chain:        %s\n", r.ChainCheck)
 	_, _ = fmt.Fprintf(stdout, "  cross-check:  %s\n", r.CrossCheck)
+	_, _ = fmt.Fprintf(stdout, "  integrity:    %s\n", r.Integrity)
+	_, _ = fmt.Fprintf(stdout, "  end proof:    %t\n", r.EndProof.Proven)
+	_, _ = fmt.Fprintf(stdout, "  status:       %s\n", r.Status)
 	_, _ = fmt.Fprintf(stdout, "  verdict:      %s\n", verdict)
 	_, _ = fmt.Fprintf(stdout, "  trusted:      %t\n", r.Trusted)
 	_, _ = fmt.Fprintf(stdout, "  receipts:     %d\n", r.Summary.ReceiptCount)
@@ -76,6 +79,8 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 	}
 	if r.Valid {
 		_, _ = fmt.Fprintln(stdout, "  result:       VALID")
+	} else if r.Status == endproof.Prefix {
+		_, _ = fmt.Fprintf(stdout, "  result:       %s\n", endproof.Prefix)
 	} else {
 		_, _ = fmt.Fprintln(stdout, "  result:       INVALID")
 	}
