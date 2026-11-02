@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/redact"
 )
 
 func TestScanDiffInlineCoreFloor(t *testing.T) {
@@ -96,4 +97,36 @@ func TestWithCoreDLPFloorPreservesValidation(t *testing.T) {
 		}
 	}
 	t.Fatal("configured validator replaced the immutable core detector")
+}
+
+// TestScanDiffRedactsEveryFindingOnALine: each finding on a line shows the
+// line redacted for every pattern that matched it, so a second secret on the
+// same line never appears in the first finding's content.
+func TestScanDiffRedactsEveryFindingOnALine(t *testing.T) {
+	aws := "AKIA" + "IOSFODNN7EXAMPLE"
+	gcp := "\"type\": \"service_" + "account\""
+	line := "{" + gcp + ", \"id\": \"" + aws + "\"}"
+	diff := "diff --git a/k.json b/k.json\n--- a/k.json\n+++ b/k.json\n@@ -0,0 +1 @@\n+" + line + "\n"
+	result, err := ScanDiff(diff, CompileDLPPatterns(config.WithCoreDLPFloor(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) < 2 {
+		t.Fatalf("want findings for both secrets, got %+v", result.Findings)
+	}
+	for _, f := range result.Findings {
+		if strings.Contains(f.Content, aws) || strings.Contains(f.Content, "service_"+"account") {
+			t.Fatalf("finding %q shows a secret: %q", f.Pattern, f.Content)
+		}
+	}
+}
+
+// TestReplaceGitProtectMatchesMergesOverlaps: overlapping spans from different
+// patterns are merged, so the longer span's tail is redacted too.
+func TestReplaceGitProtectMatchesMergesOverlaps(t *testing.T) {
+	in := "0123456789abcdefghij"
+	got := replaceGitProtectMatches(in, []redact.Match{{Start: 12, End: 18}, {Start: 2, End: 8}, {Start: 5, End: 14}})
+	if got != "01[REDACTED]ij" {
+		t.Fatalf("replaceGitProtectMatches = %q", got)
+	}
 }

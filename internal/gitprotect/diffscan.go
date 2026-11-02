@@ -482,30 +482,40 @@ func scanAddedLines(addedLines map[string][]addedLine, patterns []CompiledDLPPat
 				suppressRule = strings.TrimSpace(suppressMatch[1])
 			}
 
+			// Every finding on a line carries the same content, redacted for
+			// every pattern that matched it, so one finding never shows
+			// another finding's secret.
+			var hits []CompiledDLPPattern
+			var spans []redact.Match
+			var regexHits []*regexp.Regexp
 			for _, cp := range patterns {
-				redacted := ""
 				matched := false
 				regexMatched := cp.regexMatches(al.content)
 				if cp.Class != "" && (cp.Re == nil || regexMatched) {
 					if matcher == nil {
 						matcher = redact.NewDefaultMatcher()
 					}
-					matches := cp.classMatches(matcher.Scan(al.content))
-					if len(matches) > 0 {
-						redacted = replaceGitProtectMatches(al.content, matches)
+					if matches := cp.classMatches(matcher.Scan(al.content)); len(matches) > 0 {
+						spans = append(spans, matches...)
 						matched = true
 					}
 				}
 				if regexMatched {
-					if !matched {
-						redacted = al.content
-					}
-					redacted = cp.Re.ReplaceAllString(redacted, "[REDACTED]")
+					regexHits = append(regexHits, cp.Re)
 					matched = true
 				}
-				if !matched {
-					continue
+				if matched {
+					hits = append(hits, cp)
 				}
+			}
+			if len(hits) == 0 {
+				continue
+			}
+			redacted := replaceGitProtectMatches(al.content, spans)
+			for _, re := range regexHits {
+				redacted = re.ReplaceAllString(redacted, "[REDACTED]")
+			}
+			for _, cp := range hits {
 				f := Finding{
 					File:     file,
 					Line:     al.lineNum,
@@ -540,16 +550,26 @@ func replaceGitProtectMatches(input string, matches []redact.Match) string {
 	if input == "" || len(matches) == 0 {
 		return input
 	}
+	// Spans come from several patterns and may overlap; sort and merge them
+	// so an overlapping span never leaves its tail unredacted.
+	spans := make([]redact.Match, 0, len(matches))
+	for _, m := range matches {
+		if m.Start >= 0 && m.End <= len(input) && m.End > m.Start {
+			spans = append(spans, m)
+		}
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i].Start < spans[j].Start })
 
 	var b strings.Builder
 	cursor := 0
-	for _, match := range matches {
-		if match.Start < cursor || match.Start < 0 || match.End > len(input) || match.End <= match.Start {
-			continue
+	for i := 0; i < len(spans); {
+		start, end := spans[i].Start, spans[i].End
+		for i++; i < len(spans) && spans[i].Start <= end; i++ {
+			end = max(end, spans[i].End)
 		}
-		b.WriteString(input[cursor:match.Start])
+		b.WriteString(input[cursor:max(cursor, start)])
 		b.WriteString("[REDACTED]")
-		cursor = match.End
+		cursor = max(cursor, end)
 	}
 	b.WriteString(input[cursor:])
 	return b.String()
