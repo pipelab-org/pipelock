@@ -144,7 +144,7 @@ These examples target v3.8.0 after publication. The commit pin selects action so
 Use the `exclude-paths` input (one pattern per line):
 
 ```yaml
-- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0 examples; source snapshot, not release tag
   with:
     version: '3.8.0'
     exclude-paths: |
@@ -170,7 +170,7 @@ Write a Pipelock config file, then pass its path with the `config` input:
         reason: "Test tokens"
     EOF
 
-- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0 examples; source snapshot, not release tag
   with:
     version: '3.8.0'
     config: pipelock-ci.yaml

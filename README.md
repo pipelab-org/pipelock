@@ -586,11 +586,11 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ## CI Integration
 
-The commit below pins the action source; its `action.yml` matches the wrapper used for this release. The action's `version` input defaults to `latest`, so the explicit `version` keeps the binary on 3.8.0.
+The commit below pins an existing action source snapshot; the comment names the examples' release target, not a release tag. The action's `version` input defaults to `latest`, so the explicit `version` keeps the binary on 3.8.0.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0 examples; source snapshot, not release tag
   with:
     version: '3.8.0'
     scan-diff: 'true'

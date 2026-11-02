@@ -53,6 +53,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Normalize intercepted empty HTTP/2 requests, record actual response delivery outcomes, and refuse incomplete ranged or not-modified responses on the documented proxy paths. (#1937, #2023)
 - Read supported Python dependency tables with a TOML parser and apply strict installed-rule integrity policy to hooks and `mcp scan`. (#1963, #1974)
 - Carry a generated request ID and `explain event` command on ordinary HTTP block responses. Adaptive lockout responses retain their fixed, detector-neutral format. (#1931, #2038)
+- Distinguish body parsing failures from credential findings and incomplete scans in diagnostics and signed labels, and check the supplied WebSocket URL's byte length before handshake normalization. Refusal behavior and independent redaction checks remain in place. (#2056)
 
 ### Changed
 

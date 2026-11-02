@@ -25,7 +25,7 @@ jobs:
 
       - name: Pipelock Scan
         id: scan
-        uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
+        uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0 examples; source snapshot, not release tag
         with:
           version: '3.8.0'
           config: pipelock.yaml
