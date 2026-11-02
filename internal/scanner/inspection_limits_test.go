@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
@@ -496,5 +497,36 @@ func TestPercentDecodeConvergesAtTheRoundCeiling(t *testing.T) {
 	}
 	if percentDecodeConverges(strings.Repeat("x", maxDecodeRounds+1)+"v", unescape) {
 		t.Fatal("value still changing past the round ceiling reported as converged")
+	}
+}
+
+// The core floor refuses these inputs before the configured stages run; the
+// stages keep their own refusal so they stay fail closed if reached directly.
+func TestConfiguredStagesRefuseAtInspectionLimits(t *testing.T) {
+	s, err := New(testConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.Close)
+
+	parsed, err := url.Parse("https://h.example/p?q=hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := &decodingMemo{incomplete: true}
+	if res, _ := s.checkDLPWithDecodesAt(parsed, marked, time.Now()); !IsURLInspectionLimitResult(res) {
+		t.Fatalf("configured URL stage on an incompletely decoded scan: %+v", res)
+	}
+	if res, _ := s.checkDLPWithDecodesAt(parsed, &decodingMemo{}, time.Now()); !res.Allowed {
+		t.Fatalf("configured URL stage control refused: %+v", res)
+	}
+
+	values := make([]string, 0, 112)
+	for i := range 112 {
+		values = append(values, fmt.Sprintf("k%d=v", i))
+	}
+	res, _ := s.querySubsequenceDLP(strings.Join(values, "&"), "h.example", "https://h.example/p", nil, &decodingMemo{})
+	if res.Allowed || res.Reason != querySubsequenceLimitReason {
+		t.Fatalf("configured query stage past the value limit: %+v", res)
 	}
 }
