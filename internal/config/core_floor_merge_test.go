@@ -3,7 +3,11 @@
 
 package config
 
-import "testing"
+import (
+	"reflect"
+	"slices"
+	"testing"
+)
 
 func TestWithCoreDLPFloor(t *testing.T) {
 	core := CoreDLPPatterns()
@@ -28,8 +32,9 @@ func TestWithCoreDLPFloor(t *testing.T) {
 	}
 	// The input slice is not modified.
 	in := []DLPPattern{{Name: "Custom", Regex: `x`}}
+	want := slices.Clone(in)
 	_ = WithCoreDLPFloor(in)
-	if len(in) != 1 || in[0].Name != "Custom" {
-		t.Fatalf("input modified: %+v", in)
+	if !reflect.DeepEqual(in, want) {
+		t.Fatalf("input modified: got %+v, want %+v", in, want)
 	}
 }

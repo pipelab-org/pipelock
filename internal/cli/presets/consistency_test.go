@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -511,5 +512,44 @@ func TestQuickstartExampleRetainsBuiltInPatterns(t *testing.T) {
 		if !have[p.Name] {
 			t.Errorf("quickstart example lacks built-in DLP pattern %q", p.Name)
 		}
+	}
+}
+
+func TestQuickstartExampleTraffic(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "examples", "quickstart")
+	cfg, err := config.Load(filepath.Join(root, "pipelock.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Exercise the shipped traffic without requiring the Compose DNS service.
+	cfg.Internal = nil
+	s, err := scanner.New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, url := range []string{"http://attacker/healthz", "https://docs.python.org/3/"} {
+		if result := s.Scan(t.Context(), url); !result.Allowed {
+			t.Errorf("example URL %q blocked: %+v", url, result)
+		}
+	}
+	for _, tc := range []struct {
+		file  string
+		clean bool
+	}{
+		{"healthz", true},
+		{"inject-page.html", false},
+	} {
+		body, err := os.ReadFile(filepath.Clean(filepath.Join(root, tc.file)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result := s.ScanResponse(t.Context(), string(body)); result.Clean != tc.clean {
+			t.Errorf("example response %q: %+v", tc.file, result)
+		}
+	}
+	url := "http://attacker/?key=AKIA" + "IOSFODNN7EXAMPLE"
+	if result := s.Scan(t.Context(), url); result.Allowed || (result.Scanner != scanner.ScannerDLP && result.Scanner != scanner.ScannerCoreDLP) {
+		t.Errorf("example secret must be blocked by DLP: %+v", result)
 	}
 }
