@@ -244,6 +244,11 @@ func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 				Score:   1.0,
 			}
 		}
+		// The text scan's decoding stopped at a depth bound, so the URL was
+		// not fully inspected even though it does not parse.
+		if decodes.inspectionIncomplete() {
+			return urlInspectionLimitResult()
+		}
 		// Parsing a different URL component must not discard recoverable
 		// query credentials. Inspection cannot grant trust to this URL.
 		sent, _, _ := strings.Cut(rawURL, "#")

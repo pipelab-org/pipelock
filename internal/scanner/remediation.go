@@ -603,7 +603,7 @@ func GuidanceForResultWithPatterns(label, reason string, patterns []string) (Rem
 // non-empty query values than the split-credential search can cover.
 func queryValueLimitGuidance() RemediationGuidance {
 	return RemediationGuidance{
-		OperatorKnob: "Send fewer query values in one URL, or move the data into a request body. The query search bound is fixed; a URL it cannot fully search is refused, not allowed unscanned.",
+		OperatorKnob: "Send fewer non-empty query values in one URL. The query search bound is fixed; a URL it cannot fully search is refused, not allowed unscanned.",
 		Immutable:    true,
 		AgentReason:  "Request blocked: the URL has more query values than Pipelock can fully inspect.",
 	}
@@ -683,6 +683,17 @@ func inspectionLimitReasonNames(label, reason string, inNames func(string) bool)
 	return false
 }
 
+// DecodeFragmentLimitOperatorReason is the MCP operator reason for reassembled
+// fragments refused at a decoder depth bound.
+const DecodeFragmentLimitOperatorReason = "cross-request fragment refused: " + UninspectableEncodedContentPattern + "; send the content with fewer stacked encoding layers (decoder depth bounds are fixed)"
+
+// isDecodeFragmentLimitReason recognizes the HTTP and MCP reasons emitted when
+// reassembled fragments hit a decoder depth bound.
+func isDecodeFragmentLimitReason(label, reason string) bool {
+	return label == AuditCrossRequestFragment &&
+		(reason == "fragment reassembly DLP match: "+UninspectableEncodedContentPattern || reason == DecodeFragmentLimitOperatorReason)
+}
+
 // decodeInspectionLimitInNames reports the decoder inspection limit in a
 // generated ", "-joined pattern-name list.
 func decodeInspectionLimitInNames(names string) bool {
@@ -719,7 +730,7 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 		if isJSONInspectionLimitReason(label, stripped) {
 			return jsonInspectionLimitGuidance(), true
 		}
-		if inspectionLimitReasonNames(label, stripped, decodeInspectionLimitInNames) {
+		if inspectionLimitReasonNames(label, stripped, decodeInspectionLimitInNames) || isDecodeFragmentLimitReason(label, stripped) {
 			return decodeInspectionLimitGuidance(), true
 		}
 	}

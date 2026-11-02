@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -436,5 +437,35 @@ func TestQueryFourPieceSplitSurvivesWideQuery(t *testing.T) {
 		if res := s.Scan(context.Background(), raw); res.Allowed {
 			t.Errorf("n=%d: four-piece split allowed", n)
 		}
+	}
+}
+
+// A URL that does not parse is still scanned as text; a decoding stopped at a
+// depth bound there refuses it like any other incompletely inspected URL.
+func TestURLCoreFloorUnparsedRefusesIncompleteDecode(t *testing.T) {
+	t.Parallel()
+	s := inspectionLimitScanner(t)
+	raw := "https://agent.vendor.example/%zz/" + htmlNestedFirstChar("value", maxHTMLEntityDecodePasses+2)
+	if _, err := url.Parse(raw); err == nil {
+		t.Fatal("fixture parses; it must exercise the unparsed branch")
+	}
+	if res := s.ScanURLCoreFloor(raw); res.Allowed || !IsURLInspectionLimitResult(res) {
+		t.Fatalf("unparsed incomplete URL: allowed=%v reason=%q", res.Allowed, res.Reason)
+	}
+	if res := s.ScanURLCoreFloor("https://agent.vendor.example/%zz/plain"); !res.Allowed {
+		t.Fatalf("unparsed control refused: %q", res.Reason)
+	}
+}
+
+func TestDecodeFragmentLimitGuidance(t *testing.T) {
+	t.Parallel()
+	want := decodeInspectionLimitGuidance()
+	for _, reason := range []string{"fragment reassembly DLP match: " + UninspectableEncodedContentPattern, DecodeFragmentLimitOperatorReason} {
+		if got, ok := GuidanceForResult(AuditCrossRequestFragment, reason); !ok || got != want {
+			t.Fatalf("%q guidance = %+v, %v", reason, got, ok)
+		}
+	}
+	if got, _ := GuidanceForResult(AuditCrossRequestFragment, "fragment reassembly DLP match: "+UninspectableJSONNumberPattern); got == want {
+		t.Fatal("JSON number fragment limit took the decoder guidance")
 	}
 }
