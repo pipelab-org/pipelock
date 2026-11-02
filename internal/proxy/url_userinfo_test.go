@@ -19,6 +19,7 @@ import (
 
 	"github.com/gobwas/ws"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 func TestURLUserinfoAdmissionBeforeUpstream(t *testing.T) {
@@ -75,6 +76,67 @@ func TestURLUserinfoAdmissionBeforeUpstream(t *testing.T) {
 					}
 				} else if response.StatusCode != http.StatusForbidden || hits.Load() != before {
 					t.Fatalf("want refusal before upstream, status=%d hits=%d", response.StatusCode, hits.Load()-before)
+				}
+			})
+		}
+	}
+}
+
+func TestURLUserinfoRecoveredDecodeLimitAudit(t *testing.T) {
+	var hits atomic.Int32
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, "ordinary response")
+	}))
+	defer backend.Close()
+	addr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		enforce := false
+		cfg.Enforce = &enforce
+		cfg.FetchProxy.Monitoring.Blocklist = []string{"127.0.0.1"}
+		cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+		cfg.DLP.Patterns = nil
+		cfg.RequestBodyScanning.ScanHeaders = false
+	})
+	defer cleanup()
+	deep := base64.StdEncoding.EncodeToString([]byte(percentNested("ordinary", normalize.ScannerQueryUnescapeMaxRounds+20)))
+	for _, transport := range []string{"fetch", "forward"} {
+		for name, value := range map[string]string{"incomplete": deep, "benign": "ordinary"} {
+			t.Run(transport+"/"+name, func(t *testing.T) {
+				u, err := url.Parse(backend.URL + "/read")
+				if err != nil {
+					t.Fatal(err)
+				}
+				u.User = url.UserPassword("reader", value)
+				before := hits.Load()
+				var resp *http.Response
+				if transport == "fetch" {
+					req, requestErr := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+addr+"/fetch?url="+url.QueryEscape(u.String()), nil)
+					if requestErr != nil {
+						t.Fatal(requestErr)
+					}
+					resp, err = http.DefaultClient.Do(req)
+				} else {
+					conn, dialErr := (&net.Dialer{}).DialContext(t.Context(), "tcp", addr)
+					if dialErr != nil {
+						t.Fatal(dialErr)
+					}
+					defer func() { _ = conn.Close() }()
+					_, err = fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", u.String(), u.Host)
+					if err == nil {
+						resp, err = http.ReadResponse(bufio.NewReader(conn), nil)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = resp.Body.Close() }()
+				want, wantHits := http.StatusForbidden, int32(0)
+				if name == "benign" {
+					want, wantHits = http.StatusOK, 1
+				}
+				if resp.StatusCode != want || hits.Load()-before != wantHits {
+					t.Fatalf("status=%d hits=%d, want status=%d hits=%d", resp.StatusCode, hits.Load()-before, want, wantHits)
 				}
 			})
 		}

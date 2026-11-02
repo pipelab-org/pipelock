@@ -60,7 +60,7 @@ func userinfoTargets(values []dlpTarget, decodes *decodingMemo) []dlpTarget {
 			if stripped := stripURLNoise(target.text); stripped != target.text {
 				targets = append(targets, dlpTarget{stripped, spanViewLabel("url_noise_stripped", target.viewLabel), target.text})
 			}
-			for _, decoded := range decodes.decode(target.text, false) {
+			for _, decoded := range decodes.decode(target.text, true) {
 				targets = append(targets, dlpTarget{decoded.text, spanViewLabel(decoded.encoding+"_decoded", target.viewLabel), ""})
 			}
 		}
