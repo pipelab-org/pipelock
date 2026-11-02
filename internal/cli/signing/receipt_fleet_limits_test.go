@@ -15,7 +15,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
 
@@ -172,10 +174,12 @@ func TestVerifyReceiptCmd_FleetReportL2StillRejected(t *testing.T) {
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
 	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
-	if err := cmd.Execute(); err == nil {
-		t.Fatalf("expected non-L1 fleet report to be rejected, got success:\n%s", buf.String())
+	// A verified report exits 3, so the rejection must be exit 1 with no
+	// verified-prefix banner.
+	if err := cmd.Execute(); err == nil || cliutil.ExitCodeOf(err) != 1 {
+		t.Fatalf("expected non-L1 fleet report to be rejected with exit 1, got err=%v code=%d:\n%s", err, cliutil.ExitCodeOf(err), buf.String())
 	}
-	if strings.Contains(buf.String(), "FLEET RECEIPT OK:") {
-		t.Errorf("non-L1 report must not print a passing banner:\n%s", buf.String())
+	if strings.Contains(buf.String(), endproof.Prefix) {
+		t.Errorf("non-L1 report must not print a verified-prefix banner:\n%s", buf.String())
 	}
 }
