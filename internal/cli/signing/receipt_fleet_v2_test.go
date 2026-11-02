@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 )
 
@@ -74,7 +76,9 @@ func TestFleetReportV2VerificationRemainsFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(wrong)}, false, false); err == nil {
-		t.Fatal("wrong key accepted")
+	// A verified report now exits 3, so a non-nil error alone cannot show the
+	// key was refused; the refusal must not be the partial verdict.
+	if err := verifyFleetReportWithOptions(&out, path, []string{hex.EncodeToString(wrong)}, false, false); err == nil || cliutil.ExitCodeOf(err) == endproof.ExitPrefix {
+		t.Fatalf("wrong key accepted: %v (code %d)", err, cliutil.ExitCodeOf(err))
 	}
 }

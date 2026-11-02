@@ -122,7 +122,16 @@ func TestAARPChainAuthenticatedBoundary(t *testing.T) {
 			chain := append([]aarp.Envelope(nil), stream[tc.start:tc.end]...)
 			if tc.forge {
 				chain[0].Signatures = append([]aarp.Signature(nil), chain[0].Signatures...)
-				chain[0].Signatures[0].Sig = strings.Repeat("A", 86)
+				// Keep the encoding well formed and change one signature byte,
+				// so the rejection is cryptographic rather than a parse error.
+				sig := []byte(chain[0].Signatures[0].Sig)
+				i := len("ed25519:") + 10
+				if sig[i] == 'A' {
+					sig[i] = 'B'
+				} else {
+					sig[i] = 'A'
+				}
+				chain[0].Signatures[0].Sig = string(sig)
 			}
 			path := filepath.Join(t.TempDir(), "chain.jsonl")
 			writeFileT(t, path, chainJSONL(t, chain...))
@@ -135,6 +144,15 @@ func TestAARPChainAuthenticatedBoundary(t *testing.T) {
 			assertExitCode(t, err, tc.want)
 			if tc.want == 3 && !strings.Contains(out.String(), "VALID PREFIX, END UNPROVEN") {
 				t.Fatalf("missing prefix status: %s", out.String())
+			}
+			if tc.forge {
+				var report aarpChainReport
+				if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+					t.Fatalf("parse forged report: %v\n%s", err, out.String())
+				}
+				if !report.ChainLinked || report.SignaturesVerified || report.Error == "" {
+					t.Fatalf("forged report = %+v, want a linked chain whose signature fails", report)
+				}
 			}
 			if tc.noTrust {
 				var report aarpChainReport

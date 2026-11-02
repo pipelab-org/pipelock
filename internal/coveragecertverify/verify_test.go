@@ -178,6 +178,11 @@ func TestRunCertificateEndProofStatus(t *testing.T) {
 					t.Fatalf("Run err = %v, want exit code 3", err)
 				}
 			}
+			// A broken chain is a failure, never the prefix exit scripts read
+			// as a valid but unbounded chain.
+			if tc.wantErr && tc.wantStatus == "CHAIN BROKEN" && cliutil.ExitCodeOf(err) == 3 {
+				t.Fatalf("Run err = %v, broken chain exited with the prefix code 3", err)
+			}
 			if !strings.Contains(out.String(), tc.wantStatus) {
 				t.Fatalf("Run output = %q, want %q", out.String(), tc.wantStatus)
 			}
