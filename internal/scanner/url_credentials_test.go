@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -249,6 +250,28 @@ func TestURLUserinfoTextLenientAuthority(t *testing.T) {
 		}
 		if got != want {
 			t.Fatalf("lenientURLUserinfo(%q) = %q, want %q", token, got, want)
+		}
+	}
+}
+
+func TestTextURLUserinfoRepeatedTokens(t *testing.T) {
+	cfg := testConfig()
+	s := MustNew(cfg)
+	defer s.Close()
+	credential := "gh" + "p_" + strings.Repeat("aB3c", 9)
+	for _, token := range []string{
+		"https://" + credential + "@api.vendor.example/read",
+		"https://reader:" + hex.EncodeToString([]byte(credential)) + "@api.vendor.example/read",
+		"https://réader:" + hex.EncodeToString([]byte(credential)) + "@api.vendor.example/read",
+	} {
+		options := textDLPOptions{scanSecretLeak: true}
+		want := s.textURLUserinfoMatches(t.Context(), token, &decodingMemo{}, options)
+		if len(want) == 0 {
+			t.Fatal("control: URL userinfo has no DLP matches")
+		}
+		got := s.textURLUserinfoMatches(t.Context(), strings.Repeat(token+" ", 8), &decodingMemo{}, options)
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("repeated URL changed userinfo matches: got %d, want %d", len(got), len(want))
 		}
 	}
 }

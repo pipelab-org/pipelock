@@ -106,7 +106,12 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 	var matches []TextDLPMatch
 	opts.skipURLUserinfo = true
 	opts.emitWarns = false
+	seen := make(map[string]struct{})
 	for _, token := range textURLTokenRe.FindAllString(text, -1) {
+		if _, ok := seen[token]; ok {
+			continue
+		}
+		seen[token] = struct{}{}
 		u, err := url.Parse(token)
 		if err != nil {
 			u = &url.URL{User: lenientURLUserinfo(token)}
