@@ -106,7 +106,7 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ## Quick Start
 
-These examples target the published v3.7.0 release. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
+These examples target v3.8.0. Use them after the release is published. For an existing deployment, read the [3.8 upgrade guide](docs/guides/upgrading-to-3.8.md) before changing the binary or configuration.
 
 **Prebuilt releases:** Download the archive for your OS and architecture from [GitHub Releases](https://github.com/pipelab-org/pipelock/releases) and [verify release integrity](#verify-release-integrity) before installing. Release binaries include the public keyring needed by [`pipelock update`](docs/cli/update.md) to verify signed release manifests.
 
@@ -114,7 +114,7 @@ These examples target the published v3.7.0 release. For an existing deployment, 
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.7.0 --depth 1 https://github.com/pipelab-org/pipelock.git
+git clone --branch v3.8.0 --depth 1 https://github.com/pipelab-org/pipelock.git
 make -C pipelock install
 
 # Discover local agent integrations and save a config
@@ -133,7 +133,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # See https://github.com/pipelab-org/pipelock/releases
 
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
+docker pull ghcr.io/pipelab-org/pipelock:3.8.0
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -146,10 +146,10 @@ brew install luckyPipewrench/tap/pipelock
 Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 ```bash
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify pipelock_3.8.0_linux_amd64.tar.gz --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/pipelab-org/pipelock:3.8.0 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
-gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/pipelab-org/charts/pipelock:3.8.0 --repo pipelab-org/pipelock --signer-workflow pipelab-org/pipelock/.github/workflows/release.yaml
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images, and (from 3.6.0) an attested Helm chart. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
@@ -299,6 +299,8 @@ Pipelock is an [AI egress proxy](https://pipelab.org/learn/ai-egress-proxy/) and
 - **Ordered URL scanner pipeline:** URL length and parsing checks, scheme validation, CRLF and path-traversal detection, allowlist and blocklist policy, immutable literal-IP SSRF and core-DLP floors, configured DLP, path, query and subdomain entropy analysis, nested URL destinations in query parameters, DNS SSRF and rebinding protection, per-domain rate limits, data budgets, and final context checks. DLP runs before DNS resolution, so secrets are caught before a DNS query leaves the proxy. See [docs/bypass-resistance.md](docs/bypass-resistance.md).
 - **DLP:** 65 built-in patterns for API keys, tokens, credentials, cryptocurrency keys, environment secrets, and financial identifiers with checksum validation. BIP-39 seed phrase detection uses dictionary lookup, sliding windows, and SHA-256 checksum validation.
 - **Response scanning:** 34 built-in prompt-injection and state/control poisoning patterns, plus 6-pass normalization for zero-width characters, homoglyphs, leetspeak, optional whitespace, vowel folding, base64, and hex. Actions are `block`, `strip`, `warn`, or `ask`.
+- **Wording policy:** `prompt_injection_detection` controls supported regex wording checks separately from DLP and independent security controls. Omitted configuration retains existing behavior; off and warn-only reduce coverage as described in the [configuration contract](docs/configuration.md#prompt-injection-wording-detection).
+- **Large JSON responses:** forward HTTP, intercepted HTTPS and reverse proxy paths can inspect oversized complete JSON within bounded memory budgets. This is explicitly partial field and adjacent-pair inspection, with its limits recorded in evidence. See [response scanning](docs/configuration.md#response-scanning).
 - **Streaming SSE:** `text/event-stream` responses from LLM gateways and MCP HTTP/SSE flow token by token with per-event and rolling cross-event DLP and injection scanning. A detection terminates the stream fail-closed. See [SSE streaming guide](docs/guides/sse-streaming.md).
 - **Request body scanning:** headers and bodies are scanned before they leave the protected path across JSON, form data, raw text, reverse proxy requests, TLS-intercepted CONNECT traffic, and outbound WebSocket client frames.
 - **Request redaction:** optional JSON rewriting replaces matched secret values with typed placeholders such as `<pl:aws-access-key:1>` across HTTP, WebSocket, and MCP `tools/call` arguments. Receipts record the active profile and per-class counts instead of plaintext secrets.
@@ -379,7 +381,7 @@ The released 3.7.0 binary completed **1,000,000 requests with zero missing recei
 
 ### Operability
 
-- **Kill switch:** seven independent activation sources: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic. Endpoint and IP exemptions apply only to HTTP requests, never to MCP transports, the reverse proxy or established relays, and the IP allowlist is ignored during uncertain Conductor apply.
+- **Kill switch:** seven independent activation sources in `pipelock run`: config file, remote API, SIGUSR1, sentinel file, Conductor remote kill, stale-bundle detection, and uncertain Conductor apply. Any one active source blocks traffic. Standalone `pipelock mcp proxy` wires configuration and sentinel-file activation; it doesn't run the API, signal-toggle or Conductor producers. Endpoint and IP exemptions apply only to HTTP requests, never to MCP transports, the reverse proxy or established relays, and the IP allowlist is ignored during uncertain Conductor apply.
 - **Scan API:** programmatic scanning for `url`, `dlp`, `prompt_injection`, and `tool_call` verdicts with bearer token auth, per-token rate limiting, structured findings, and Prometheus metrics. See [docs/scan-api.md](docs/scan-api.md).
 - **Filesystem sentinel:** watches agent working directories for secrets written to disk and attributes writes to the MCP subprocess lineage on Linux. See [docs/guides/filesystem-sentinel.md](docs/guides/filesystem-sentinel.md).
 - **Event emission:** forwards audit events to SIEMs, webhook receivers, syslog, CEF, OTLP, and metrics outputs without blocking the proxy hot path. See [docs/guides/siem-integration.md](docs/guides/siem-integration.md).
@@ -565,9 +567,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
+docker pull ghcr.io/pipelab-org/pipelock:3.8.0
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:3.7.0 \
+  ghcr.io/pipelab-org/pipelock:3.8.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -575,7 +577,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.0
+helm install pipelock oci://ghcr.io/pipelab-org/charts/pipelock --version 3.8.0
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -584,13 +586,13 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ## CI Integration
 
-The commit below pins the action source; its `action.yml` is identical to the one at the v3.7.0 tag. The action's `version` input defaults to `latest`, so the explicit `version` keeps the binary on 3.7.0.
+The commit below pins the action source; its `action.yml` matches the wrapper used for this release. The action's `version` input defaults to `latest`, so the explicit `version` keeps the binary on 3.8.0.
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
   with:
-    version: '3.7.0'
+    version: '3.8.0'
     scan-diff: 'true'
     fail-on-findings: 'true'
 ```
@@ -650,7 +652,8 @@ Full docs directory: [docs/](docs/)
 
 | Document | What's In It |
 |----------|-------------|
-| [Upgrading to 3.7](docs/guides/upgrading-to-3.7.md) | Receipt completion, containment restart, verifier compatibility, detection tradeoffs and new policy fields |
+| [Upgrading to 3.8](docs/guides/upgrading-to-3.8.md) | Metrics listener, registry migration, exception expiry, effective policy, containment and evidence consumers |
+| [Upgrading to 3.7](docs/guides/upgrading-to-3.7.md) | Earlier receipt completion, containment restart and verifier compatibility changes |
 | [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
 | [Request Policy](docs/guides/request-policy.md) | Allow-by-default deny/warn rails on outbound API operations (GraphQL / discriminator / batch), fail-closed (v2.6) |
 | [Request Redaction](docs/guides/redaction.md) | JSON request rewriting across HTTP, WebSocket, and MCP transports |
@@ -720,12 +723,13 @@ Full docs directory: [docs/](docs/)
 ```text
 cmd/pipelock/          CLI entry point
 internal/
-  cli/                 60+ Cobra commands (run, check, init, generate, mcp, session, posture, rules, ...)
+  cli/                 Cobra commands (run, check, reload, init, generate, mcp, session, posture, rules, ...)
     diag/              `pipelock doctor` and install-verification diagnostics
     session/           `pipelock session`, `pipelock adaptive`, and `pipelock baseline` operator CLIs
     setup/             `pipelock init sidecar`: companion-proxy manifest generation (K8s)
   config/              YAML config, validation, defaults, hot-reload (fsnotify)
   scanner/             Ordered URL scanning pipeline + response injection detection
+  checker/             Versioned content-assessment protocol and HTTP client; no runtime integration
   audit/               Structured JSON logging (zerolog) + event emission dispatch
   proxy/               HTTP proxy: fetch, forward (CONNECT), WebSocket, DNS pinning, TLS
   mcp/                 MCP proxy + bidirectional scanning + tool poisoning + chains

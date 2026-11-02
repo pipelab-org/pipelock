@@ -2417,6 +2417,8 @@ See "Published agent services" in `contain-cli.md` for install, verification, an
 
 ## Kill Switch
 
+The activation-source list below describes `pipelock run`, including its integrated MCP listener. Standalone `pipelock mcp proxy` reads configuration and sentinel-file activation but doesn't run the API, SIGUSR1 toggle or Conductor producers. All sources already active in a shared controller still deny MCP traffic; source wiring and controller enforcement are separate boundaries.
+
 Emergency deny-all with seven independent activation sources: `enabled`,
 `sentinel_file`, API, `SIGUSR1`, Conductor remote kill, Conductor
 stale-bundle detection, and uncertain Conductor apply. Any one active denies

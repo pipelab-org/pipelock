@@ -137,16 +137,16 @@ Path patterns use the same matching rules as config suppress entries (exact, dir
 
 ## GitHub Action
 
-These examples target the published v3.7.0 binary. The commit pin selects action source; the `version` input selects the binary.
+These examples target v3.8.0 after publication. The commit pin selects action source; the `version` input selects the binary.
 
 ### Exclude paths
 
 Use the `exclude-paths` input (one pattern per line):
 
 ```yaml
-- uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
   with:
-    version: '3.7.0'
+    version: '3.8.0'
     exclude-paths: |
       vendor/
       *.generated.go
@@ -170,9 +170,9 @@ Write a Pipelock config file, then pass its path with the `config` input:
         reason: "Test tokens"
     EOF
 
-- uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+- uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
   with:
-    version: '3.7.0'
+    version: '3.8.0'
     config: pipelock-ci.yaml
 ```
 

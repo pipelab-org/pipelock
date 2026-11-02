@@ -38,7 +38,7 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			if !strings.Contains(tmpl, "internal: true") {
 				t.Error("expected internal: true on isolated network")
 			}
-			if !strings.Contains(tmpl, "ghcr.io/luckypipewrench/pipelock:latest") {
+			if !strings.Contains(tmpl, "ghcr.io/pipelab-org/pipelock:latest") {
 				t.Error("expected pipelock image reference")
 			}
 			if !strings.Contains(tmpl, "PIPELOCK_FETCH_URL=http://pipelock:8888/fetch") {

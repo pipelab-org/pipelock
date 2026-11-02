@@ -23,9 +23,9 @@ jobs:
           fetch-depth: 0  # needed for PR diff scanning
 
       - name: Pipelock Scan
-        uses: pipelab-org/pipelock@47c14c59b14f835f53971d22941b556f44f2baa0 # v3.7.0
+        uses: pipelab-org/pipelock@3b5140812d6c37a52a22b66af1daf92759c280ab # v3.8.0
         with:
-          version: '3.7.0'
+          version: '3.8.0'
           # config: pipelock.yaml  # uncomment if you have a config
           scan-diff: 'true'
           fail-on-findings: 'true'

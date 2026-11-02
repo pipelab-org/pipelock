@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-11-01
+
+### Breaking Changes / Upgrade Notes
+
+- **Metrics move off the agent-facing proxy port.** `/metrics` and `/stats` are available only when `metrics_listen` names a dedicated listener. Omitted, null, or blank values expose neither route. Update scraper targets and keep agents off the unauthenticated metrics listener with network controls. Changing the address requires restart. [Upgrade guide](docs/guides/upgrading-to-3.8.md). (#2044)
+- **New container and chart releases use `ghcr.io/pipelab-org`.** Update image repositories, registry policies and Helm OCI URLs when adopting this release. Releases through the maintenance patch retain their original registry addresses and signing identities. The Go module path and Homebrew tap stay unchanged. [Verified installation](README.md#verify-release-integrity). (#1911)
+- **Expired temporary scanner exceptions lapse instead of preventing startup.** A valid expired entry emits a startup or reload warning and ordinary scanning resumes for its scope. Malformed entries still reject configuration. Running scanners enforce expiry without waiting for reload; there is no separate clock-triggered warning. (#1942)
+- **The default URL ceiling increases to 8000 octets.** Explicit limits still win, and presets with tighter limits retain them. Operators who require the previous ceiling should set `fetch_proxy.monitoring.max_url_length` explicitly. Longer URLs can carry more data per request; the other URL checks still apply. (#2052)
+- **Generated audit configurations retain explicit tool-policy blocks and disable adaptive escalation.** Ordinary findings remain warnings. Regenerated strict configurations also retain their bundled actions, taint policy and tool-chain detection. Review regenerated policy before replacing a custom configuration. (#1943, #1961)
+- **Codex MCP setup forwards environment variables by name.** Export each required variable in Codex's runtime environment. Installation refuses missing values before changing server registrations and prints the required names without exposing values on command lines. (#1999)
+- **Fleet receipt reports default to v2.** The report binds authenticated recorder-run identities so a follower restart doesn't make its audit sequences conflict with earlier runs. Update consumers that assume v1 and keep the complete evidence and trusted keys. [Verification contract](docs/specs/fleet-receipt-v2-verification.md). (#1949)
+- **File-only MCP wrappers are reported as unconfirmed.** `discover`, assessment and posture output no longer equate a wrapper found in a configuration file with proven runtime protection. Discovery exits nonzero for unconfirmed coverage. (#1967)
+- **Managed containment units need reinstalling to adopt new unit definitions.** After upgrading the binary, run `contain install` with the intended configuration, then `contain verify` and `contain doctor`. New forwarders report ready only after binding; unsupported service write paths are refused before activation. Keep evidence and persistent state in their supported locations. (#1930, #1944, #1946, #1998, #2000)
+- **Guard and sandbox honor the kernel's cross-directory move restriction.** Cross-directory renames and hard links are granted only when the kernel reports Landlock erratum 3 fixed. Otherwise they remain denied with `EXDEV`; Guard records the withheld permission. Older typed Guard proof readers can reject proofs carrying that new field. [Guard limits](docs/cli/guard.md). (#1978, #2015, #2058)
+
+### Added
+
+- **Explicit prompt-injection wording policy.** `prompt_injection_detection` lets operators retain, warn on, or turn off the supported regex wording checks independently of DLP and other security controls. Receipts and diagnostics identify the effective assessment, including content that wasn't assessed. The separate checker protocol is a library contract, with no runtime provider integration. (#1980, #1987, #2024, #2025)
+- **Inspect oversized JSON without a host exception.** Forward HTTP, intercepted HTTPS and reverse proxies can inspect a complete JSON response beyond the ordinary scan cap within the existing bounded scan and in-flight budgets. This is partial field and adjacent-pair inspection, and its evidence says so; it doesn't establish whole-document safety or earn adaptive recovery credit. Fetch, MCP, encoded responses and invalid or over-budget bodies retain their existing limits. [Inspection boundary](docs/configuration.md#response-scanning). (#2048)
+- **Text inspection inside Office and ZIP uploads.** Request scanning inspects supported archive contents within documented extraction limits. Opaque, unsupported and over-limit formats retain their stated refusal or inspection limits. [Request body scanning](docs/configuration.md#request-body-scanning). (#2032)
+- **Service-aware configuration validation and synchronous reload.** `check --service` evaluates supported systemd service inputs without printing environment values. `pipelock reload` returns the activation result; `reload --status` shows active policy identity and settings awaiting restart. A rejected reload keeps the active configuration, while uncertain activation denies traffic. (#1941, #1946)
+- **Expiring per-host response scan ceilings.** Operators can set reviewed limits for exact hosts already in `size_exempt_domains`, within existing memory budgets. No host gets a grant by default. (#1948)
+- **MCP mirrored-header contracts across HTTP and the stdio bridge.** Observed tool definitions bind `x-mcp-header` fields to `Mcp-Param-*` headers. Private discovery establishes unknown contracts before a call can proceed, and stdio-to-HTTP synthesizes the required bindings. Discovery retains the caller's credentials and doesn't approve or expose tools to the client. (#1983, #1985, #1997, #2004, #2007)
+- **Session taint causes in operator diagnostics.** Session inspection, `explain` and `doctor` distinguish wording findings from other hostile causes and show where MCP history is request-local or unavailable. Older uncategorized hostile history stays hostile. (#1977, #2001)
+- **Explicit structured-identifier checksum validators.** DLP patterns and rule bundles can select DEA and NPI validation; patterns without a selected validator retain their matching behavior. Validator changes participate in reload downgrade checks. (#2047)
+- **Native OAuth endpoint grants and a systemd credential source for the kill-switch token.** Exact reviewed routes support native sign-in flows without a general content exemption. [Configuration reference](docs/configuration.md). (#2005, #2006)
+
+### Fixed
+
+- Preserve response findings across Browser Shield rewrites, keep inspection spans correct through length-changing normalization, and remove invisible characters introduced by compatibility folding. (#1913, #2019, #2034)
+- Scan typed JSON card values, preserve neighboring inspectable values around large numbers, and reject ambiguous typed field bindings. Card-shaped sequences made only from separate numeric values warn; string-containing and single-value findings retain their configured policy. (#1921, #1926, #1929, #1982, #2031)
+- Inspect supported recoverable known-secret representations and URL fragments, retain structured scan findings, and close affected streams when inspection can't complete. (#1929, #2028)
+- Cover the multipart bytes delivered to raw-body receivers, including framing-adjacent text and part headers, and refuse ambiguous transfer encodings. (#2046)
+- Keep warning observations score-neutral, credit only assessed-clean traffic, expire residual adaptive scores, and return uniform refusals during adaptive `block_all` while retaining detailed operator evidence. (#1965, #2030, #2038)
+- Preserve tool-policy decisions through command handoffs and stricter interpretations of unproven executable names. Match supported abbreviated Git options and refuse uninspectable Git subcommands; text policy retains its documented shell-resolution limits. (#2008, #2035, #2040, #2042)
+- Restrict server-issued ID allowances to supported caller identities and recorded send history, recognize colon-addressed paths, and accept registry upload URLs issued in Location headers. (#1960, #1981, #2002)
+- Reduce path-entropy false positives for package versions and default Rollup asset hashes; exact suppression URLs retain their full destination match. Explicit HTTP path exclusions remain scheme-scoped. (#1927, #1957, #1958, #2010, #2026)
+- Preserve managed containment socket and service state across install, upgrade and rollback; reconcile nftables and doorways from one plan; restore display runtime directories after reboot; and report repair advice using the observed proxy port. (#1930, #1944, #1945, #1954, #1996, #2016)
+- Accept the managed unit's own supported systemd credentials directory while retaining runtime-mask verification limits. Recheck pinned local-service file contents on every verification, keep sandbox launch and signal handling on one OS thread, and retire threads changed by a failed restriction attempt. (#2014, #2015, #2021, #2036, #2058)
+- Replace running Windows executables through recoverable rename steps, serialize update and rollback, and preserve recovery files when restoration is incomplete. An interrupted replacement can require the documented manual recovery. (#1939)
+- Keep active session enforcement when the session store is full, preserve watcher and license lifecycle state, and emit exactly one blocked event per MCP refusal. Bridge cancellation and failures settle pending requests and retain the correct refusal reason. (#1933, #1969, #2003, #2043)
+- Require signed receipt-group configuration, retain deferred shards across restart, anchor confirmed prefixes during live writes, and deliver final follower audit batches at shutdown. Required missing seals refuse success; completeness analysis resolves an unambiguous per-run chain. (#1932, #1984, #1986, #1988, #1993, #2039)
+- Give Kubernetes proxies a private writable home without relaxing the read-only root filesystem, preserve operator state-home overrides, and retain separate storage requirements for evidence and follower persistence. (#1975)
+- Normalize intercepted empty HTTP/2 requests, record actual response delivery outcomes, and refuse incomplete ranged or not-modified responses on the documented proxy paths. (#1937, #2023)
+- Read supported Python dependency tables with a TOML parser and apply strict installed-rule integrity policy to hooks and `mcp scan`. (#1963, #1974)
+- Carry a generated request ID and `explain event` command on ordinary HTTP block responses. Adaptive lockout responses retain their fixed, detector-neutral format. (#1931, #2038)
+
+### Changed
+
+- Updated Go and verifier dependencies, including the patched `golang.org/x/net` release, refreshed toolchain pins, and retained the TypeScript verifier's compatible HTML decoder dependency. Verifier source versions and published package versions remain separate; use the installation matrix to select a published artifact. (#1916, #1956, #1971, #1976, #1995, #2011, #2027)
+- Reused decoded MCP response envelopes to reduce allocation work. Benchmark comparisons now require matched clean checkouts; historical published measurements retain their measured binary and workload. (#1952, #1953)
+- Added native Go fuzz jobs, refreshed race-test shard planning, and isolated listener and receipt-matrix fixtures. CI and release workflows share the accepted target and shard contracts. (#2037, #2045, #2050, #2051, #2053, #2054, #2057)
+- Added source-bound playground build records, staged live-drift checks and verified replay-kit generation. Build provenance doesn't establish inspection of activity outside the mediated path. (#1912, #1920)
+
+## [3.7.1] - 2026-10-22
+
+### Fixed
+
+- Backported security fixes for response rewrite findings, card-number detection, embedded IPv4 destinations, bundled injection-rule matching, encoded credentials, server-issued ID history, terminal output, required receipt seals, cross-request block receipts, MCP setup policy and tool-description boundaries.
+- Updated release toolchains with standard-library security fixes. Replace the binary or image and restart to apply the patch; its configuration format and Go module path are unchanged.
+
+### Changed
+
+- Published from `pipelab-org/pipelock` while retaining the legacy image and chart namespace and Homebrew tap. See the [published maintenance release](https://github.com/pipelab-org/pipelock/releases/tag/v3.7.1).
+
 ## [3.7.0] - 2026-10-14
 
 ### Breaking Changes / Upgrade Notes

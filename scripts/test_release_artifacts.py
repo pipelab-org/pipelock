@@ -488,8 +488,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         # No image, chart or label still names a fixed account.
         # The one permitted mention is the committed chart default the package
         # step locates and replaces.
-        self.assertEqual(self.workflow.lower().count("ghcr.io/luckypipewrench"), 1)
-        self.assertIn("default_line='  repository: ghcr.io/luckypipewrench/pipelock'", self.workflow)
+        self.assertEqual(self.workflow.lower().count("ghcr.io/pipelab-org"), 1)
+        self.assertIn("default_line='  repository: ghcr.io/pipelab-org/pipelock'", self.workflow)
         self.assertNotIn("ghcr.io/luckypipewrench", self.goreleaser.lower())
         self.assertIn(
             "image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}",
