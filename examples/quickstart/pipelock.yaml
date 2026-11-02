@@ -70,7 +70,7 @@ websocket_proxy:
 
 dlp:
   scan_env: true
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Anthropic API Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -141,7 +141,7 @@ dlp:
 response_scanning:
   enabled: true
   action: block
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
@@ -159,7 +159,7 @@ response_scanning:
       regex: '(?i)from\s+now\s+on\s+(you\s+)?(will|must|should|shall)\s+'
     - name: "Encoded Payload"
       regex: '(?i)(decode\s+(this|the\s+following)\s+(from\s+)?base64\s+and\s+(execute|run|follow)|eval\s*\(\s*atob\s*\()'
-    - name: "Tool Invocation"
+    - name: "Preset Tool Invocation"
       regex: '(?i)you\s+must\s+(immediately\s+)?(call|execute|run|invoke)\s+(the|this)\s+(function|tool|command|api|endpoint)'
     - name: "Authority Escalation"
       regex: '(?i)you\s+(now\s+)?have\s+(full\s+)?(admin|root|system|superuser|elevated)\s+(access|privileges|permissions|rights)'
@@ -169,7 +169,7 @@ response_scanning:
       regex: '(?i)(\{GODMODE\s*:\s*(ENABLED|ON|TRUE)\}|!OMNI\b|RESET_CORTEX|LIBERTAS\s+FACTOR|ENABLE\s+DEV(ELOPER)?\s+MODE|JAILBREAK\s+(ENABLED|ACTIVATED|ON))'
     - name: "Roleplay Framing"
       regex: '(?i)(let''?s\s+play\s+a\s+game\s+where\s+you|pretend\s+you\s+are\s+an?\s+(character|person|AI)\s+(who|that)\s+(has\s+no|doesn''?t\s+have|ignores?|bypasses?)|(in\s+this\s+)?(hypothetical|fictional|imaginary)\s+scenario\s+(where\s+)?you\s+(are|have|can|must))'
-    - name: "Instruction Boundary"
+    - name: "Preset Instruction Boundary"
       regex: '(<\|(?:endoftext|im_start|im_end|system|end_header_id|begin_of_text)\|>|\[/?INST\]|<\|(?:user|assistant)\|>|<</?SYS>>|</s>)'
     - name: "Output Format Forcing"
       regex: '(?i)(respond\s+with|first\s+(output|write|print|say))\s*[\[\("]?\s*(FILTERED|ERROR|BLOCKED|REFUSED|DECLINED|CENSORED)\s*[\]\)"]?\s*(then|followed\s+by|and\s+then|after\s+(that|which))'
@@ -177,13 +177,13 @@ response_scanning:
       regex: '(?i)(repeat\s+(your|the)\s+(entire\s+)?(instructions|system\s+prompt|initial\s+prompt|rules)|what\s+(is|are)\s+your\s+(system\s+prompt|instructions|rules|directives)|output\s+(your|the)\s+(full\s+)?(system|initial)\s+(prompt|instructions|message)|show\s+me\s+(your|the)\s+(system\s+prompt|hidden\s+instructions|initial\s+instructions)|(disclose|expose|dump|divulge)\s+(your|the)\s+(hidden\s+|secret\s+|internal\s+)*(system\s+|initialization\s+)*(prompt|instructions|rules|directives))'
     - name: "Instruction Invalidation"
       regex: '(?i)(treat|consider|regard)\s+(all\s+)?(earlier|prior|previous|preceding|above)\s+(directions|instructions|guidelines|rules|prompts?)\s+as\s+(obsolete|void|invalid|superseded|overridden|null|cancelled|revoked|inapplicable)'
-    - name: "Instruction Dismissal"
+    - name: "Preset Instruction Dismissal"
       regex: '(?i)(set|put|cast|push|throw)\s+(all\s+)?(previous|prior|earlier|preceding|above|existing|current)\s+(\w+\s+)?(directives|instructions|guidelines|rules|prompts?|constraints|safeguards|policies|guardrails)\s+(aside|away|to\s+(one|the)\s+side)'
     - name: "Instruction Downgrade"
       regex: '(?i)(treat|consider|regard|reinterpret|downgrade)\s+((?:the|all)\s+)?(previous|prior|above|earlier|system|policy|original|existing)\s+(\w+\s+)?(text|instructions?|rules|directives|guidelines|safeguards|constraints|controls|checks|context|prompt|policies|guardrails|parameters)\s+((as|to)\s+)?(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)'
     - name: "Safety Reclassification Directive"
       regex: '(?i)(reclassif\w*|recategoriz\w*|redefin\w*|relabel\w*|downgrad\w*|deprecat\w*|treat|consider|regard|reinterpret)\s+((?:the|all|any|these|those|my|your|our)\s+)?(previous|prior|above|earlier|system|safety|security|original)\s+((?:\w+\s+){0,2})(instructions?|directives?|rules?|guardrails?|policies|constraints?|prompt|protocols?)\s+((as|to|into)\s+)?(?:\w+\s+){0,2}(historical|outdated|deprecated|optional|background|secondary|non-binding|non-authoritative|informational|advisory)\b[\s\S]{0,50}?\b(then|and|so|now|,|;)\s+\w*\s*(execut\w*|run|follow|perform|carry\s+out|proceed|comply\s+with|obey|do)\b[\s\S]{0,25}?\b(following|attached|below|user''?s?|these|this)\b'
-    - name: "Priority Override"
+    - name: "Preset Priority Override"
       regex: '(?i)prioritize\s+(the\s+)?(task|user|current|new|latest)\s+(request|message|input|instructions?|prompt)'
 
 mcp_input_scanning:
