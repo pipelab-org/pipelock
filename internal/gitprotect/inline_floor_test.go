@@ -61,21 +61,21 @@ func TestInlineSuppressPatternParity(t *testing.T) {
 // duplicating a configured copy.
 func TestWithCoreDLPFloor(t *testing.T) {
 	core := config.CoreDLPPatterns()
-	got := WithCoreDLPFloor(nil)
+	got := config.WithCoreDLPFloor(nil)
 	if len(got) != len(core) {
-		t.Fatalf("WithCoreDLPFloor(nil) = %d patterns, want %d", len(got), len(core))
+		t.Fatalf("config.WithCoreDLPFloor(nil) = %d patterns, want %d", len(got), len(core))
 	}
-	again := WithCoreDLPFloor(got)
+	again := config.WithCoreDLPFloor(got)
 	if len(again) != len(core) {
 		t.Fatalf("core patterns duplicated: %d, want %d", len(again), len(core))
 	}
 	weakened := []config.DLPPattern{{Name: core[0].Name, Regex: `never-matches-anything`, Severity: config.SeverityLow}}
-	if out := WithCoreDLPFloor(weakened); len(out) != len(core)+1 {
+	if out := config.WithCoreDLPFloor(weakened); len(out) != len(core)+1 {
 		t.Fatalf("a configured pattern reusing a core name replaced the core expression: %d patterns", len(out))
 	}
 	gcp := "{\"type\": \"service_" + "account\"}"
 	diff := "diff --git a/k.json b/k.json\n--- a/k.json\n+++ b/k.json\n@@ -0,0 +1 @@\n+" + gcp + "\n"
-	result, err := ScanDiff(diff, CompileDLPPatterns(WithCoreDLPFloor(nil)))
+	result, err := ScanDiff(diff, CompileDLPPatterns(config.WithCoreDLPFloor(nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestWithCoreDLPFloorPreservesValidation(t *testing.T) {
 	configured := core
 	configured.Validator = config.ValidatorLuhn
 	// A configured checksum must not become a prerequisite for the independent floor.
-	patterns := WithCoreDLPFloor([]config.DLPPattern{configured})
+	patterns := config.WithCoreDLPFloor([]config.DLPPattern{configured})
 	for _, p := range patterns {
 		if p.Name == core.Name && p.Regex == core.Regex && p.Validator == core.Validator {
 			return

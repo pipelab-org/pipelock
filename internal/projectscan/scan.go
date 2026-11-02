@@ -299,7 +299,7 @@ type compiledDLP struct {
 
 func compileDLPPatterns() ([]compiledDLP, error) {
 	defaults := config.Defaults()
-	return compileDLPPatternsFrom(defaults.DLP.Patterns)
+	return compileDLPPatternsFrom(config.WithCoreDLPFloor(defaults.DLP.Patterns))
 }
 
 func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, error) {

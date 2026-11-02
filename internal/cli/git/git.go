@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/gitprotect"
 	"github.com/luckyPipewrench/pipelock/internal/sarif"
 )
@@ -134,7 +135,7 @@ Examples:
 				return writeScanResult(cmd.OutOrStdout(), "No diff content on stdin.\n")
 			}
 
-			patterns := gitprotect.CompileDLPPatterns(gitprotect.WithCoreDLPFloor(cfg.DLP.Patterns))
+			patterns := gitprotect.CompileDLPPatterns(config.WithCoreDLPFloor(cfg.DLP.Patterns))
 			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", scanErr)
