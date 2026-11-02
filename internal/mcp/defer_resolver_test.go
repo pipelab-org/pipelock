@@ -212,7 +212,11 @@ func TestDeferredHTTPActivationDuringScanInvalidatesHold(t *testing.T) {
 	policyCfg := deferApprovalPolicy(config.DeferResolverProfile{})
 	policyCfg.Rules[0].ResolutionPolicy.ResolverProfile = ""
 	var calls atomic.Int32
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMCPUpstreamRequest(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		calls.Add(1)
 		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
 	}))
@@ -267,7 +271,11 @@ func testDeferredHTTPKillSwitchRelease(t *testing.T, concurrent bool) {
 	var calls atomic.Int32
 	upstreamStarted := make(chan struct{})
 	upstreamRelease := make(chan struct{})
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !isMCPUpstreamRequest(r) {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 		calls.Add(1)
 		close(upstreamStarted)
 		<-upstreamRelease
