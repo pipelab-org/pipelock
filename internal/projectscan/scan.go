@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -299,7 +300,13 @@ type compiledDLP struct {
 
 func compileDLPPatterns() ([]compiledDLP, error) {
 	defaults := config.Defaults()
-	return compileDLPPatternsFrom(defaults.DLP.Patterns)
+	patterns := config.WithCoreDLPFloor(defaults.DLP.Patterns)
+	// Audit reports one match per line or environment value. Prefer the core
+	// floor so a suppressible match cannot hide an unsuppressible one.
+	sort.SliceStable(patterns, func(i, j int) bool {
+		return config.IsCoreDLPPatternName(patterns[i].Name) && !config.IsCoreDLPPatternName(patterns[j].Name)
+	})
+	return compileDLPPatternsFrom(patterns)
 }
 
 func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, error) {
