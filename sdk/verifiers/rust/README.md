@@ -55,7 +55,7 @@ Exit codes match the Go and TypeScript verifiers:
 
 - `0` valid
 - `1` invalid
-- `3` valid prefix, end unproven (chain commands)
+- `3` valid prefix, end unproven (`chain`, `aarp --chain`, and `audit-packet`)
 - `2` runtime error
 - `64` usage error
 
@@ -124,4 +124,4 @@ Receipt-chain CLI verification returns 0 only when integrity verifies and the en
 
 A terminal signed `session_close` proves the action-chain endpoint when its run's `session_open` names a per-run recorder session (`<base>.run.<id>`). Chains written before Pipelock v3.6.0 recorded every run under one shared session and resumed it after each restart, so their closes don't prove the end; pin those or accept the prefix. A complete receipt-group close proves its group scope. `--expect-head HASH` or `--expect-seq N` checks an independently known final receipt hash or sequence. A signer key, restart link, or recovery seal alone doesn't prove an end. Mixed action/evidence input verifies both chains, with pins applied to the evidence chain. Directory verification requires proof for every selected run; select one run before supplying a pin across several runs.
 
-JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scope`, and `status` from signer trust. Low-level prefix-verification APIs and signed formats retain their existing contracts. Audit Packet, provenance, and single-receipt commands retain their existing exit codes. AARP chain mode returns `3` for a valid prefix unless an endpoint pin or `--allow-prefix` is supplied.
+JSON separates `integrity`, `end_proof` (`proven` and checked `evidence`), `scope`, and `status` from signer trust. Low-level prefix-verification APIs and signed formats retain their existing contracts. Provenance and single-receipt commands retain their existing exit codes. `audit-packet` returns `3` when the packet's chain verifies but doesn't end with a signed `session_close` from a per-run session; it has no prefix opt-in. AARP chain mode returns `3` for a valid prefix unless an endpoint pin or `--allow-prefix` is supplied.
