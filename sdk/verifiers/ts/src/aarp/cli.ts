@@ -113,7 +113,7 @@ function runAARPChain(
       failure = "empty chain";
     } else if (expectHead !== "" && payloadDigest(last) !== expectHead) {
       failure = "chain tip does not match expected head (tail truncated or different scope)";
-    } else if (expectSeq !== "" && last.chain.seq !== expectSeq) {
+    } else if (expectSeq !== "" && BigInt(last.chain.seq) !== BigInt(expectSeq)) {
       failure = `final_seq ${last.chain.seq} does not match expected seq ${expectSeq}`;
     } else {
       if (expectHead !== "") evidence.push("operator_head");
@@ -192,7 +192,7 @@ export function runAARPCommand(args: string[]): number {
     throw new AARPUsageError(`${USAGE}\nend-proof flags require --chain`);
   }
   if (expectSeq !== "") {
-    if (!/^(0|[1-9][0-9]*)$/u.test(expectSeq) || BigInt(expectSeq) > 0xffff_ffff_ffff_ffffn) {
+    if (!/^[0-9]+$/u.test(expectSeq) || BigInt(expectSeq) > 0xffff_ffff_ffff_ffffn) {
       throw new AARPUsageError(`${USAGE}\n--expect-seq requires an unsigned integer`);
     }
   }

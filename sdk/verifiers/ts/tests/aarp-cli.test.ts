@@ -234,6 +234,7 @@ test("cli aarp: shared end-proof conformance cases", () => {
       ...c.flags,
     ]);
     assert.equal(r.status, c.exit, c.name);
+    if (c.exit === 64) continue;
     const report = JSON.parse(r.stdout);
     assert.equal(report.status, c.status, c.name);
     assert.equal(report.end_proof.proven, c.proven, c.name);

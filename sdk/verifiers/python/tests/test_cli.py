@@ -159,8 +159,10 @@ def test_end_proof_shared_conformance_cases():
             *case["flags"],
             "--json",
         ])
-        report = json.loads(out)
         assert rc == case["exit"], case["name"]
+        if case["exit"] == 64:
+            continue
+        report = json.loads(out)
         assert report["status"] == case["status"], case["name"]
         assert report["end_proof"]["proven"] is case["proven"], case["name"]
 

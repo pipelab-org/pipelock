@@ -835,9 +835,10 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 if arg == "--expect-head" {
                     parsed.expect_head = value.clone();
                 } else {
-                    parsed.expect_seq = Some(value.parse().map_err(|_| {
-                        VerifierError::Usage("--expect-seq requires an unsigned integer".into())
-                    })?);
+                    parsed.expect_seq =
+                        Some(crate::util::parse_decimal_seq(value).ok_or_else(|| {
+                            VerifierError::Usage("--expect-seq requires an unsigned integer".into())
+                        })?);
                 }
             }
             "--offline" if command == "audit-packet" => parsed.offline = true,
@@ -918,14 +919,12 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                     parsed.expect_head = inline_value.expect("split flag produced value").into();
                 } else if flag == "--expect-seq" && command == "chain" {
                     parsed.expect_seq = Some(
-                        inline_value
-                            .expect("split flag produced value")
-                            .parse()
-                            .map_err(|_| {
-                                VerifierError::Usage(
-                                    "--expect-seq requires an unsigned integer".into(),
-                                )
-                            })?,
+                        crate::util::parse_decimal_seq(
+                            inline_value.expect("split flag produced value"),
+                        )
+                        .ok_or_else(|| {
+                            VerifierError::Usage("--expect-seq requires an unsigned integer".into())
+                        })?,
                     );
                 } else if flag == "--key" {
                     parsed.key = inline_value.expect("split flag produced value").to_string();

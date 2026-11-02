@@ -103,7 +103,7 @@ Otherwise the verdict is VALID PREFIX, END UNPROVEN with exit 3.
 	cmd.Flags().BoolVar(&opts.chain, "chain", false, "PATH is a JSONL stream; authenticate every envelope and verify linkage from genesis")
 	cmd.Flags().BoolVar(&opts.allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end (--chain)")
 	cmd.Flags().StringVar(&opts.expectHead, "expect-head", "", "require the final payload digest to equal this independently known hash (--chain)")
-	cmd.Flags().Uint64Var(&opts.expectSeq, "expect-seq", 0, "require this independently known final sequence (--chain)")
+	cmd.Flags().Var(endproof.SeqFlag{Seq: &opts.expectSeq}, "expect-seq", "require this independently known final sequence (--chain)")
 
 	return cmd
 }

@@ -129,6 +129,39 @@
       "exit": 0,
       "status": "CHAIN VALID",
       "proven": true
+    },
+    {
+      "name": "pinned-seq-leading-zero",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq",
+        "02"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "seq-hex-prefix",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq",
+        "0x2"
+      ],
+      "exit": 64,
+      "status": "",
+      "proven": false
+    },
+    {
+      "name": "seq-plus-sign",
+      "file": "stream.jsonl",
+      "flags": [
+        "--expect-seq",
+        "+2"
+      ],
+      "exit": 64,
+      "status": "",
+      "proven": false
     }
   ]
 }

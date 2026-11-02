@@ -205,6 +205,8 @@ for case in cases:
         ], capture_output=True, text=True, check=False)
         if result.returncode != case["exit"]:
             raise SystemExit(f"FAIL {case['name']} {name}: exit {result.returncode}, expected {case['exit']}; {result.stderr}")
+        if case["exit"] == 64:
+            continue
         report = json.loads(result.stdout)
         if report["status"] != case["status"] or report["end_proof"]["proven"] != case["proven"]:
             raise SystemExit(f"FAIL {case['name']} {name}: endpoint verdict differs")

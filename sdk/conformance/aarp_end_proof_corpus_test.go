@@ -90,6 +90,11 @@ func TestGenerateAARPEndProofCorpus(t *testing.T) {
 		{"head-allow-prefix", "head.jsonl", []string{"--allow-prefix"}, 1, "CHAIN BROKEN", false},
 		{"signature-allow-prefix", "signature.jsonl", []string{"--allow-prefix"}, 1, "CHAIN BROKEN", false},
 		{"parallel-signatures", "parallel.jsonl", []string{"--expect-seq", seq}, 0, "CHAIN VALID", true},
+		// The pinned sequence is ASCII decimal in every verifier. A leading
+		// zero is still base ten; a sign or base prefix is a usage error.
+		{"pinned-seq-leading-zero", "stream.jsonl", []string{"--expect-seq", "0" + seq}, 0, "CHAIN VALID", true},
+		{"seq-hex-prefix", "stream.jsonl", []string{"--expect-seq", "0x" + seq}, 64, "", false},
+		{"seq-plus-sign", "stream.jsonl", []string{"--expect-seq", "+" + seq}, 64, "", false},
 	}}
 	body, err := json.MarshalIndent(corpus, "", "  ")
 	if err != nil {

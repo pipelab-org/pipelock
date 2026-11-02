@@ -506,13 +506,16 @@ fn end_proof_shared_conformance_cases() {
         }
         let output = cmd.output().expect("run verifier binary");
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-        let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         let name = case["name"].as_str().unwrap();
         assert_eq!(
             output.status.code(),
             case["exit"].as_i64().map(|v| v as i32),
             "{name}: {stdout}"
         );
+        if case["exit"] == 64 {
+            continue;
+        }
+        let report: serde_json::Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(report["status"], case["status"], "{name}");
         assert_eq!(report["end_proof"]["proven"], case["proven"], "{name}");
     }

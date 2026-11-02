@@ -140,6 +140,17 @@ def _emit_fatal(stdout: IO[str], stderr: IO[str], json_mode: bool, cause: str) -
     return EXIT_GENERAL
 
 
+def _decimal_seq(value: str) -> int:
+    """Parse an operator-supplied final sequence as ASCII decimal digits.
+
+    int() also accepts signs, underscores, surrounding spaces and non-ASCII
+    digits; refusing them keeps every verifier on the same number.
+    """
+    if not value or any(c < "0" or c > "9" for c in value):
+        raise argparse.ArgumentTypeError("--expect-seq requires decimal digits")
+    return int(value)
+
+
 def _run_chain(
     stdout: IO[str],
     stderr: IO[str],
@@ -563,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     aarp_p.add_argument(
         "--expect-seq",
-        type=int,
+        type=_decimal_seq,
         default=None,
         help="independently known final sequence",
     )
@@ -597,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     receipt_p.add_argument(
         "--expect-seq",
-        type=int,
+        type=_decimal_seq,
         default=None,
         help="independently known final sequence",
     )

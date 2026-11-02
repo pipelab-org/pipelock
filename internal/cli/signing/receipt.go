@@ -362,7 +362,7 @@ Examples:
 	cmd.Flags().BoolVar(&allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit integrity, end proof, scope, and signer trust as JSON for chains")
 	cmd.Flags().StringVar(&expectHead, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
-	cmd.Flags().Uint64Var(&expectSeq, "expect-seq", 0, "require this independently known final sequence for the selected chain")
+	cmd.Flags().Var(endproof.SeqFlag{Seq: &expectSeq}, "expect-seq", "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
 	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")

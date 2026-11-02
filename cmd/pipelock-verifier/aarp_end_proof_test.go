@@ -90,6 +90,9 @@ func TestAARPEndProofCorpus(t *testing.T) {
 			} else {
 				assertExitCode(t, err, tc.Exit)
 			}
+			if tc.Exit == exitUsage {
+				return
+			}
 			var report endproof.Report
 			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 				t.Fatalf("output: %v\n%s", err, out.String())

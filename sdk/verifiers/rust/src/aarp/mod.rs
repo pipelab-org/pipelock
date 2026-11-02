@@ -197,10 +197,7 @@ fn run_chain(
             .chain
             .as_ref()
             .and_then(|link| link.seq.parse::<u64>().ok());
-        let head = last
-            .payload_digest()
-            .map(|digest| digest)
-            .unwrap_or_default();
+        let head = last.payload_digest().unwrap_or_default();
         if !expect_head.is_empty() && head != expect_head {
             failure = "chain tip does not match expected head (tail truncated or different scope)"
                 .to_string();
@@ -357,9 +354,9 @@ fn parse_aarp_args(args: &[String]) -> Result<AarpArgs> {
                                 "--expect-seq requires a value\n{}",
                                 aarp_usage()
                             ))
-                        })?
-                        .parse()
-                        .map_err(|_| {
+                        })
+                        .map(|value| crate::util::parse_decimal_seq(value))?
+                        .ok_or_else(|| {
                             VerifierError::Usage(
                                 "--expect-seq requires an unsigned integer".to_string(),
                             )
