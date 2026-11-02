@@ -64,15 +64,22 @@ func TestCredentialAudienceEndpointAndCarrier(t *testing.T) {
 			}
 		})
 	}
-	for _, fixture := range []struct{ key, target string }{
-		{"dapi" + strings.Repeat("a", 32), "https://other.cloud.databricks.com/api/2.0/clusters/list"},
-		{"pcsk_" + strings.Repeat("a", 36), "https://other.svc.us-east1-gcp.pinecone.io/query"},
+	for _, fixture := range []struct{ key, target, header string }{
+		{"dapi" + strings.Repeat("a", 32), "https://other.cloud.databricks.com/api/2.0/clusters/list", "Authorization"},
+		{"pcsk_" + strings.Repeat("a", 36), "https://other.svc.us-east1-gcp.pinecone.io/query", "Api-Key"},
 	} {
 		if got := s.Scan(context.Background(), fixture.target+"?value="+fixture.key); got.Allowed {
 			t.Fatal("credential at an arbitrary account host allowed")
 		}
 		matches := s.ScanTextForDLP(context.Background(), fixture.key).Matches
-		kept, _ := s.FilterTextDLPMatchesForDestination(matches, fixture.target, CredentialAudienceAuthorizationHeaderSurface)
+		if len(matches) == 0 {
+			t.Fatal("fixture does not match DLP")
+		}
+		value := fixture.key
+		if fixture.header == "Authorization" {
+			value = "Bearer " + value
+		}
+		kept, _ := s.FilterHeaderDLPMatches(matches, fixture.target, fixture.header, value)
 		if len(kept) == 0 {
 			t.Fatal("credential header at an arbitrary account host allowed")
 		}
