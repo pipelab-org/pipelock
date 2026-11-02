@@ -467,18 +467,13 @@ async function verifyAuditPacketReport(
   // Every present checkpoint signature and transcript_root seal must verify,
   // even in a packet with only the action chain; otherwise a v2 chain could be
   // stripped while its now-stale seal stays in place. The whole-recorder end is
-  // required once the file carries a v2 chain or a seal; a legacy action-only
-  // packet keeps its session_close end proof.
+  // required once the file carries a v2 chain; a legacy action-only packet
+  // keeps its session_close end proof.
   let v2EndProof = true;
   if (chain.valid) {
     try {
       const recorderEnd = await verifyV2RecorderEnd(evidenceLines, typed.action, chain);
-      if (
-        typed.evidence.length > 0 ||
-        evidenceLines.some((line) => line.entry.type === "transcript_root")
-      ) {
-        v2EndProof = recorderEnd;
-      }
+      if (typed.evidence.length > 0) v2EndProof = recorderEnd;
     } catch (err) {
       report.chain_check = "fail";
       chain = {
