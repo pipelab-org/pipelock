@@ -7,8 +7,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -234,9 +236,10 @@ func presetDLPPatternMatchesBuiltIn(got, want config.DLPPattern) bool {
 
 // raisedToCritical is want with the severity raised to critical and the
 // built-in-only fields cleared, as the loader does for a pattern
-// whose severity differs from the built-in. Each cleared field only narrows
-// what the pattern reports: a credential audience exempts the key's own
-// service, and the URL whitespace grammar drops prose-shaped matches.
+// whose severity differs from the built-in. Each cleared field is an
+// exception that narrows what the built-in reports (a credential audience
+// exempts the key's own service, and the URL whitespace grammar drops
+// prose-shaped matches), so clearing it makes the raised pattern report more.
 func raisedToCritical(want config.DLPPattern) config.DLPPattern {
 	want.Severity = config.SeverityCritical
 	want.CredentialURLWhitespaceGrammar = false
@@ -432,5 +435,81 @@ func TestAgentPresetsScanBuiltInResponsePatterns(t *testing.T) {
 				t.Fatalf("ordinary Spanish prose matched: %+v", result)
 			}
 		})
+	}
+}
+
+// hostileRaisedDLPPatterns pins the built-in DLP patterns the hostile-model
+// preset raises to critical. No other preset raises any built-in pattern.
+var hostileRaisedDLPPatterns = []string{
+	"Credential in URL",
+	"Google API Key",
+	"Google OAuth Client ID",
+	"JWT Token",
+	"Linear API Key",
+	"Mailgun API Key",
+	"Notion API Key",
+	"Sentry Auth Token",
+	"Twilio API Key",
+}
+
+// TestPresetsRaiseOnlyPinnedDLPPatterns: the severity exception in the
+// built-in pattern check accepts a raise to critical for any pattern, so the
+// raises themselves are pinned here; an extra raise fails.
+func TestPresetsRaiseOnlyPinnedDLPPatterns(t *testing.T) {
+	builtIn := make(map[string]string)
+	for _, p := range config.Defaults().DLP.Patterns {
+		builtIn[p.Name] = p.Severity
+	}
+	for _, name := range All {
+		t.Run(name, func(t *testing.T) {
+			cfg, err := Config(name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var raised []string
+			for _, p := range cfg.DLP.Patterns {
+				if sev, ok := builtIn[p.Name]; ok && p.Severity != sev {
+					raised = append(raised, p.Name)
+				}
+			}
+			slices.Sort(raised)
+			want := []string(nil)
+			if name == PresetHostileModel {
+				want = hostileRaisedDLPPatterns
+			}
+			if !slices.Equal(raised, want) {
+				t.Fatalf("raised built-in DLP patterns = %q, want %q", raised, want)
+			}
+		})
+	}
+}
+
+// TestQuickstartExampleRetainsBuiltInPatterns: the quickstart example new
+// users copy inherits the built-in DLP and response patterns like the presets.
+func TestQuickstartExampleRetainsBuiltInPatterns(t *testing.T) {
+	cfg, err := config.Load(filepath.Join("..", "..", "..", "examples", "quickstart", "pipelock.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DLP.IncludeDefaults == nil || !*cfg.DLP.IncludeDefaults || cfg.ResponseScanning.IncludeDefaults == nil || !*cfg.ResponseScanning.IncludeDefaults {
+		t.Fatal("quickstart example must inherit built-in patterns")
+	}
+	have := make(map[string]bool)
+	for _, p := range cfg.ResponseScanning.Patterns {
+		have[p.Name] = true
+	}
+	for _, p := range config.Defaults().ResponseScanning.Patterns {
+		if !have[p.Name] {
+			t.Errorf("quickstart example lacks built-in response pattern %q", p.Name)
+		}
+	}
+	have = make(map[string]bool)
+	for _, p := range cfg.DLP.Patterns {
+		have[p.Name] = true
+	}
+	for _, p := range config.Defaults().DLP.Patterns {
+		if !have[p.Name] {
+			t.Errorf("quickstart example lacks built-in DLP pattern %q", p.Name)
+		}
 	}
 }

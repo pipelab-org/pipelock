@@ -70,7 +70,7 @@ websocket_proxy:
 
 dlp:
   scan_env: true
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Anthropic API Key"
       regex: '(?:^|[^A-Za-z0-9_-])sk-ant-[a-zA-Z0-9\-_]{20,}'
@@ -141,7 +141,7 @@ dlp:
 response_scanning:
   enabled: true
   action: block
-  include_defaults: false  # Preset defines the complete pattern set
+  include_defaults: true  # Inherit current built-in protections alongside preset patterns
   patterns:
     - name: "Prompt Injection"
       regex: '(?i)(ignore|disregard|forget|abandon)[-,;:.\s]+\s*(?:all\s+\w+\s+|\w+\s+all\s+|all\s+|\w+\s+)?(previous|prior|above|earlier)\s+(\w+\s+)?(instructions|prompts|rules|context|directives|constraints|policies|guardrails)'
