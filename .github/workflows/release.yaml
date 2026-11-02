@@ -112,6 +112,7 @@ jobs:
         with:
           go-version: ${{ matrix.go.version }}
           check-latest: true
+          cache: false
 
       - name: Verify Go version
         run: |
@@ -257,6 +258,7 @@ jobs:
         with:
           go-version: '1.26.10'
           check-latest: true
+          cache: false
 
       - name: Verify Go version
         run: |
@@ -979,6 +981,7 @@ jobs:
         with:
           go-version: '1.26.10'
           check-latest: true
+          cache: false
 
       - name: Verify Go version
         run: test "$(go env GOVERSION)" = "go1.26.10"
@@ -1439,6 +1442,7 @@ jobs:
         with:
           go-version: '1.26.10'
           check-latest: true
+          cache: false
 
       - name: Verify Go version
         run: test "$(go env GOVERSION)" = "go1.26.10"
