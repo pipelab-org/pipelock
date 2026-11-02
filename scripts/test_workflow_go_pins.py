@@ -51,9 +51,16 @@ from __future__ import annotations
 import collections
 import pathlib
 import re
+import tempfile
 import unittest
+from unittest import mock
 
 import yaml
+
+if __package__:
+    from .yaml_contracts import WorkflowLoader
+else:
+    from yaml_contracts import WorkflowLoader
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
@@ -69,8 +76,8 @@ ASSERT_RE = re.compile(r"""=\s*['"]go(\d+\.\d+\.\d+)['"]""")
 def _jobs(workflow: pathlib.Path):
     """Yield (job_name, steps) for every job with a step list."""
     try:
-        doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
-    except yaml.YAMLError:  # a malformed workflow is another gate's problem
+        doc = yaml.load(workflow.read_text(encoding="utf-8"), Loader=WorkflowLoader)
+    except (yaml.YAMLError, ValueError):  # a malformed workflow is another gate's problem
         return
     if not isinstance(doc, dict):
         return
@@ -80,6 +87,17 @@ def _jobs(workflow: pathlib.Path):
     for name, job in jobs.items():
         if isinstance(job, dict) and isinstance(job.get("steps"), list):
             yield name, job["steps"]
+
+
+def _is_setup_go_step(step) -> bool:
+    """True for a step that runs actions/setup-go, however its owner is cased.
+
+    GitHub resolves action owners case-insensitively, so `Actions/setup-go@...`
+    runs the same action and must not slip past a guard keyed on the lowercase text.
+    """
+    return isinstance(step, dict) and str(step.get("uses", "")).lower().startswith(
+        "actions/setup-go@"
+    )
 
 
 def _live_asserted_versions(run: str) -> list[str]:
@@ -136,6 +154,53 @@ class WorkflowGoPinTest(unittest.TestCase):
         self.assertGreater(
             checked, 0, "no workflow job pinned or asserted a Go version"
         )
+
+    def test_release_setup_go_never_restores_the_shared_cache(self) -> None:
+        # Tag-triggered workflows can restore default-branch caches. Release
+        # build inputs must not depend on that mutable build/module cache.
+        checked = 0
+        for job_name, steps in _jobs(WORKFLOW_DIR / "release.yaml"):
+            for step in steps:
+                if not _is_setup_go_step(step):
+                    continue
+                checked += 1
+                with self.subTest(job=job_name):
+                    self.assertIs(
+                        step.get("with", {}).get("cache"),
+                        False,
+                        f"release.yaml job {job_name!r} must explicitly disable the setup-go cache",
+                    )
+        self.assertGreater(checked, 0, "no release setup-go steps were checked")
+
+    def test_setup_go_step_detection_ignores_owner_case(self) -> None:
+        pinned = "@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+        for owner in ("actions", "Actions", "ACTIONS"):
+            self.assertTrue(_is_setup_go_step({"uses": f"{owner}/setup-go{pinned}"}))
+        self.assertFalse(_is_setup_go_step({"uses": f"actions/setup-node{pinned}"}))
+        self.assertFalse(_is_setup_go_step({"run": "go version"}))
+        self.assertFalse(_is_setup_go_step("not a step"))
+
+    def test_release_cache_policy_uses_workflow_boolean_rules(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflow_dir = pathlib.Path(directory)
+            for value in (
+                "false", "off", "no", "'false'", "false\n          cache: true", "["
+            ):
+                with self.subTest(cache=value):
+                    (workflow_dir / "release.yaml").write_text(
+                        "jobs:\n  release:\n    steps:\n"
+                        "      - uses: actions/setup-go@pinned\n"
+                        f"        with:\n          cache: {value}\n",
+                        encoding="utf-8",
+                    )
+                    result = unittest.TestResult()
+                    policy = type(self)(
+                        "test_release_setup_go_never_restores_the_shared_cache"
+                    )
+                    with mock.patch(f"{__name__}.WORKFLOW_DIR", workflow_dir):
+                        policy.run(result)
+                    self.assertEqual(result.errors, [])
+                    self.assertEqual(len(result.failures), 0 if value == "false" else 1)
 
     def test_script_pins_match_the_workflow_each_script_names(self) -> None:
         workflow_names = {p.name for p in WORKFLOW_DIR.glob("*.y*ml")}
