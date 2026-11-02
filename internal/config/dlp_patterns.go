@@ -75,6 +75,10 @@ const (
 	CredentialAudienceCarrierGoogleAPIKey
 	CredentialAudienceCarrierAuthorizationBot
 	CredentialAudienceCarrierAPIKeyQuery
+	// CredentialAudienceCarrierDiscordGateway accepts only d.token in a
+	// validated client Identify (op 2) or Resume (op 6) JSON frame over WSS.
+	// https://docs.discord.com/developers/events/gateway-events
+	CredentialAudienceCarrierDiscordGateway
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
@@ -293,7 +297,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// natural-language prose collapses into the 3-part dotted shape (a real
 	// false positive). (?-i:...) pins the structural anchor to uppercase.
 	// Source: https://docs.discord.com/developers/reference
-	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBot},
+	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com", "gateway.discord.gg"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBot | CredentialAudienceCarrierDiscordGateway},
 
 	// Communication service keys
 	// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars
@@ -342,9 +346,10 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Source: unverified, current binding carried from defaults.
 	// Publisher documentation: https://replicate.com/docs/topics/authentication
 	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.replicate.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
-	// Source: unverified, current binding carried from defaults.
-	// Publisher documentation: https://docs.together.ai/docs/authentication
-	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// https://docs.together.ai/docs/quickstart documents api.together.ai.
+	// The publisher SDK uses api.together.xyz/v1:
+	// https://github.com/togethercomputer/together-python/blob/807b79024fdcc4c3d37f49cc65b8d885322ae6b4/src/together/constants.py
+	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 	// Source: https://docs.pinecone.io/guides/get-started/authentication
 	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.pinecone.io"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAPIKey},

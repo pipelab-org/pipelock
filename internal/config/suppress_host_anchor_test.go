@@ -75,11 +75,11 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 		"Hugging Face Token":    {"huggingface.co", "router.huggingface.co"},
 		"Databricks Token":      nil,
 		"Replicate API Token":   {"api.replicate.com"},
-		"Together AI Key":       {"api.together.ai"},
+		"Together AI Key":       {"api.together.ai", "api.together.xyz"},
 		"Pinecone API Key":      {"api.pinecone.io"},
 		"Groq API Key":          {"api.groq.com"},
 		"xAI API Key":           {"api.x.ai"},
-		"Discord Bot Token":     {"discord.com"},
+		"Discord Bot Token":     {"discord.com", "gateway.discord.gg"},
 		// Slack bot/user tokens are presented to the Web API and hosted MCP server;
 		// app-level tokens are presented only to the Web API. Slack Token is also a
 		// core-floor pattern, so these prove a compiled audience attaches to a core

@@ -458,7 +458,8 @@ const (
 	// Re-bumped for the RFC 9110 section 4.1 default URI size (8000 octets).
 	// Bound to compiled API endpoint carriers and the Api-Key sensitive header.
 	// Re-bumped when the Anthropic audience admitted its documented Bearer carrier.
-	goldenHashDefaults = "9c383e53cc5a0f37c53a5689b16972ae6c7f84dd785712816538a342eefa8481"
+	// Re-bumped for the structured Discord Gateway carrier and the publisher SDK Together host.
+	goldenHashDefaults = "6a79445ef40aa35fba583218a10c1c40c7d80b12a14635453273231dc66c1f74"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -699,7 +700,8 @@ const (
 	// goldenHashDefaults above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
 	// Bound to the narrowed compiled credential audiences and carriers.
-	goldenHashRichConfig = "77034c98866a2e938863d4b7f1f4690d8557dd4aa523657844da67db2569a86a"
+	// Re-bumped with goldenHashDefaults for compiled credential-audience metadata.
+	goldenHashRichConfig = "7dc34313691908420e97ae738348130db093e50854a2f517ae991372ec973e01"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It

@@ -221,3 +221,80 @@ func TestGoogleAPIKeyQueryRescanWithoutEntropy(t *testing.T) {
 		}
 	}
 }
+
+func TestTogetherAudiencePublishedHosts(t *testing.T) {
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	credential := "tok_" + strings.Repeat("a", 40)
+	matches := s.ScanTextForDLP(t.Context(), credential).Matches
+	if len(matches) != 1 {
+		t.Fatalf("fixture must match once: %+v", matches)
+	}
+	for _, tc := range []struct {
+		target string
+		allow  bool
+	}{
+		{"https://api.together.ai/v1/chat/completions", true},
+		{"https://api.together.xyz/v1/chat/completions", true},
+		{"https://api.together.xyz.evil.example/v1/chat/completions", false},
+		{"http://api.together.xyz/v1/chat/completions", false},
+		{"https://api.together.xyz/unrelated", false},
+	} {
+		kept, allows := s.FilterHeaderDLPMatches(matches, tc.target, "Authorization", "Bearer "+credential)
+		if (len(kept) == 0) != tc.allow || (len(allows) == 1) != tc.allow {
+			t.Fatalf("%s: kept=%+v allows=%+v", tc.target, kept, allows)
+		}
+		kept, _ = s.FilterTextDLPMatchesForDestination(matches, tc.target, "body")
+		if len(kept) != 1 {
+			t.Fatal("body carrier allowed")
+		}
+	}
+}
+
+func TestHuggingFaceDownloadAudience(t *testing.T) {
+	s := MustNew(credentialAudienceTestConfig())
+	defer s.Close()
+	credential := "hf_" + strings.Repeat("a", 34)
+	matches := s.ScanTextForDLP(t.Context(), credential).Matches
+	if len(matches) != 1 {
+		t.Fatalf("fixture must match once: %+v", matches)
+	}
+	for _, tc := range []struct {
+		path  string
+		allow bool
+	}{
+		{"/org/repo/resolve/main/model.bin", true},
+		{"/repo/resolve/main/subfolder/model.bin", true},
+		{"/datasets/org/repo/resolve/main/data.csv", true},
+		{"/spaces/org/repo/resolve/main/app.py", true},
+		{"/kernels/org/repo/resolve/main/kernel.py", true},
+		{"/org/repo/resolvex/main/model.bin", false},
+		{"/extra/org/repo/resolve/main/model.bin", false},
+		{"/org/repo/resolve/main", false},
+		{"/org/repo/resolve/main/", false},
+		{"/org/repo/blob/main/model.bin", false},
+		{"/org/repo/resolve/main/../model.bin", false},
+		{"/org/repo/resolve/main//model.bin", false},
+		{"/org/repo/resolve/refs%2Fpr%2F1/model.bin", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			target := "https://huggingface.co" + tc.path
+			kept, allows := s.FilterHeaderDLPMatches(matches, target, "Authorization", "Bearer "+credential)
+			if (len(kept) == 0) != tc.allow || (len(allows) == 1) != tc.allow {
+				t.Fatalf("kept=%+v allows=%+v", kept, allows)
+			}
+			for _, surface := range []string{"body", "url", "websocket_frame", "header"} {
+				kept, _ = s.FilterTextDLPMatchesForDestination(matches, target, surface)
+				if len(kept) != 1 {
+					t.Fatalf("undocumented %s carrier allowed", surface)
+				}
+			}
+		})
+	}
+	for _, target := range []string{"http://huggingface.co/org/repo/resolve/main/model.bin", "https://huggingface.co.evil.example/org/repo/resolve/main/model.bin", "https://cdn.vendor.example/org/repo/resolve/main/model.bin"} {
+		kept, _ := s.FilterHeaderDLPMatches(matches, target, "Authorization", "Bearer "+credential)
+		if len(kept) != 1 {
+			t.Fatalf("non-audience target allowed: %s", target)
+		}
+	}
+}

@@ -26,6 +26,7 @@ var defaultMCPListenerSensitiveHeaders = []string{
 	"Cookie",
 	listenerLastEventID,
 	"X-Api-Key",
+	"Api-Key",
 	"X-Token",
 	"Proxy-Authorization",
 	"X-Goog-Api-Key",

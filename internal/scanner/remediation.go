@@ -1004,6 +1004,12 @@ func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			}, true
 		}
 	}
+	if label == ScannerEntropy && strings.HasPrefix(reason, "high entropy URL userinfo") {
+		return RemediationGuidance{
+			OperatorKnob: "Move the credential out of the URL and into an Authorization header supported by the destination. URL userinfo entropy reads only `fetch_proxy.monitoring.entropy_threshold`; raising it affects entropy checks globally.",
+			AgentReason:  highEntropyAgentReason,
+		}, true
+	}
 	if label == ScannerEntropy && isQueryEntropyReason(reason) {
 		knob := queryEntropyOperatorKnob
 		if strings.HasPrefix(reason, queryEntropyKeyReasonPrefix) {

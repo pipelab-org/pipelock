@@ -1450,7 +1450,7 @@ func TestScanRequestBody_EmbeddedSigV4URLNeedsNoCoreSuppression(t *testing.T) {
 	}
 }
 
-func TestScanRequestBody_DefaultProviderSuppressionRemainsAvailable(t *testing.T) {
+func TestScanRequestBody_ProviderBodyCredentialRemainsBlocked(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
@@ -1464,8 +1464,8 @@ func TestScanRequestBody_DefaultProviderSuppressionRemainsAvailable(t *testing.T
 		Target:      "https://api.anthropic.com/v1/messages",
 		Suppress:    cfg.Suppress,
 	})
-	if !result.Clean {
-		t.Fatalf("default provider suppression should remain available, got %+v", result.DLPMatches)
+	if result.Clean || !hasDLPMatchName(result.DLPMatches, "Anthropic API Key") {
+		t.Fatalf("provider body credential must block, got %+v", result)
 	}
 }
 
@@ -2945,7 +2945,7 @@ func TestScanRequestHeadersForTarget_LLMProviderKeyExemptOwnProviderHost(t *test
 		target string
 	}{
 		{"openai", "sk-proj-" + strings.Repeat("A", 40), "https://api.openai.com/v1/responses"},
-		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "https://api.openrouter.ai/v1/responses"},
+		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "https://openrouter.ai/api/v1/responses"},
 		{"answer-engine", "pplx-" + strings.Repeat("C", 24), "https://api.perplexity.ai/chat/completions"},
 		{"web-research", "tvly-" + strings.Repeat("E", 24), "https://api.tavily.com/search"},
 	}
@@ -2968,7 +2968,7 @@ func TestScanRequestHeadersForTarget_LLMProviderKeyExemptOwnProviderHost(t *test
 	}
 }
 
-func TestScanRequestBody_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
+func TestScanRequestBody_LLMProviderKeyBlockedAtOwnProviderHost(t *testing.T) {
 	cfg := testScannerConfig()
 	sc := scanner.MustNew(cfg)
 	defer sc.Close()
@@ -2981,7 +2981,7 @@ func TestScanRequestBody_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 		target string
 	}{
 		{"openai", "sk-proj-" + strings.Repeat("A", 40), "api.openai.com", "/v1/responses", "https://api.openai.com/v1/responses"},
-		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "api.openrouter.ai", "/v1/responses", "https://api.openrouter.ai/v1/responses"},
+		{"llm-router", "sk-or-v1-" + strings.Repeat("B", 24), "openrouter.ai", "/api/v1/responses", "https://openrouter.ai/api/v1/responses"},
 		{"answer-engine", "pplx-" + strings.Repeat("C", 24), "api.perplexity.ai", "/chat/completions", "https://api.perplexity.ai/chat/completions"},
 		{"web-research", "tvly-" + strings.Repeat("E", 24), "api.tavily.com", "/search", "https://api.tavily.com/search"},
 	}
@@ -3000,8 +3000,8 @@ func TestScanRequestBody_LLMProviderKeyExemptOwnProviderHost(t *testing.T) {
 				Target:      tt.target,
 				Suppress:    cfg.Suppress,
 			})
-			if !ownProvider.Clean {
-				t.Fatalf("expected own-provider body to pass, got %v", dlpMatchNames(ownProvider.DLPMatches))
+			if ownProvider.Clean || len(ownProvider.DLPMatches) == 0 {
+				t.Fatalf("expected own-provider body to block, got %+v", ownProvider)
 			}
 
 			_, otherHost := scanRequestBody(context.Background(), BodyScanRequest{

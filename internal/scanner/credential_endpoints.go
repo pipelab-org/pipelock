@@ -91,7 +91,7 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 		// https://huggingface.co/docs/hub/api (Bearer, /api).
 		// https://huggingface.co/docs/api-inference/quicktour (router, /v1).
 		if host == "huggingface.co" {
-			return under("/api")
+			return under("/api") || huggingFaceDownloadPathAllowed(path)
 		}
 		return host == "router.huggingface.co" && under("/v1")
 	case "Slack Token", "Slack App Token":
@@ -103,9 +103,12 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 		return under("/api")
 	case "Discord Bot Token":
 		// https://docs.discord.com/developers/reference (Authorization Bot, /api).
-		// Gateway Identify carries a token inside JSON, not an HTTP auth header,
-		// and is not a credential-audience exception.
-		return under("/api")
+		// https://docs.discord.com/developers/events/gateway documents the WSS
+		// host; gateway-events documents d.token in Identify and Resume.
+		if host == "gateway.discord.gg" {
+			return surface == credentialAudienceDiscordGatewaySurface && u.Scheme == "wss" && path == "/"
+		}
+		return host == "discord.com" && surface != credentialAudienceDiscordGatewaySurface && under("/api")
 	case "Google API Key":
 		// https://cloud.google.com/docs/authentication/api-keys-use
 		// https://ai.google.dev/gemini-api/docs/api-key
@@ -168,4 +171,27 @@ func apiKeyQueryAllowed(p *compiledPattern, u *url.URL) bool {
 		}
 	}
 	return p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierAPIKeyQuery != 0
+}
+
+// huggingFaceDownloadPathAllowed follows hf_hub_url's published file route:
+// https://huggingface.co/docs/huggingface_hub/en/package_reference/file_download
+// That page documents authentication tokens for download and metadata calls.
+// The publisher client defines optional namespaces and repository-type prefixes:
+// https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/utils/_validators.py
+// https://github.com/huggingface/huggingface_hub/blob/main/src/huggingface_hub/constants.py
+// The caller already rejected escaped, empty interior and non-normal segments.
+func huggingFaceDownloadPathAllowed(path string) bool {
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	switch segments[0] {
+	case "datasets", "spaces", "kernels":
+		segments = segments[1:]
+	}
+	// repo_id is either a repository name or namespace/name. Both revision
+	// and filename must follow resolve; subfolders belong to the filename.
+	for _, resolveIndex := range []int{1, 2} {
+		if len(segments) >= resolveIndex+3 && segments[resolveIndex] == "resolve" && segments[len(segments)-1] != "" {
+			return true
+		}
+	}
+	return false
 }

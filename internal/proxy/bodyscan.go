@@ -895,6 +895,14 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		return buf, BodyScanResult{Clean: true}
 	}
 
+	if audienceSurface == "websocket_frame" {
+		var invalid bool
+		audienceSurface, _, invalid = req.Scanner.WebSocketCredentialAudienceSurface(ctx, buf, req.suppressTarget())
+		if invalid {
+			return nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"}
+		}
+	}
+
 	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
 	// names, record payloads and fixed-width fields. Those pieces join the
 	// ordinary body DLP pipeline below, so suppressions, disabled patterns,

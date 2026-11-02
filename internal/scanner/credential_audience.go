@@ -76,7 +76,8 @@ const (
 	// that lives only in the URL query. It reports as the existing "url"
 	// telemetry surface. The scanner earns it per match (see
 	// urlDLPAudienceSurface); a bare "url" match never carries it.
-	credentialAudienceURLQuerySurface = "url_query"
+	credentialAudienceURLQuerySurface       = "url_query"
+	credentialAudienceDiscordGatewaySurface = "discord_gateway_auth"
 )
 
 // CredentialAudienceHeaderSurface classifies the header that carried a match.
@@ -141,6 +142,8 @@ func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint1
 		return mask&config.CredentialAudienceCarrierGoogleAPIKey != 0
 	case credentialAudienceAuthorizationBotSurface:
 		return mask&config.CredentialAudienceCarrierAuthorizationBot != 0
+	case credentialAudienceDiscordGatewaySurface:
+		return mask&config.CredentialAudienceCarrierDiscordGateway != 0
 	case credentialAudienceURLQuerySurface:
 		return mask&(config.CredentialAudienceCarrierURLQuery|config.CredentialAudienceCarrierAPIKeyQuery) != 0
 	default:
@@ -196,6 +199,8 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 			recordSurface = "header"
 		case credentialAudienceURLQuerySurface:
 			recordSurface = "url"
+		case credentialAudienceDiscordGatewaySurface:
+			recordSurface = "websocket_frame"
 		}
 		allows = append(allows, CredentialAudienceAllow{
 			PatternName: candidate.patternName,

@@ -1700,6 +1700,10 @@ func (r *wsRelay) applyFrameRequestPolicy(log *audit.Logger, msg []byte) bool {
 }
 
 func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte, BodyScanResult) {
+	return r.scanClientMessageBodyWithSurface(ctx, msg, "websocket_frame")
+}
+
+func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []byte, surface string) ([]byte, BodyScanResult) {
 	maxBytes := r.maxMsg
 	if cfgMax := r.cfg.RequestBodyScanning.MaxBodyBytes; cfgMax > 0 && cfgMax < maxBytes {
 		maxBytes = cfgMax
@@ -1725,7 +1729,7 @@ func (r *wsRelay) scanClientMessageBody(ctx context.Context, msg []byte) ([]byte
 		Action:          r.cfg.RequestBodyScanning.Action,
 		DisablePatterns: r.cfg.RequestBodyScanning.DisablePatterns,
 		PatternActions:  r.cfg.RequestBodyScanning.PatternActions,
-		AudienceSurface: "websocket_frame",
+		AudienceSurface: surface,
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			r.recordClientFrameDroppedDLP(match, reason)
 		},
@@ -1768,10 +1772,10 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 	}
 	*controlTail = updateWSCrossMessageTail(prevTail, payload)
 
-	if r.scanClientText(ctx, log, scanInput) {
+	if r.handleClientTextResult(ctx, log, scanInput, r.scanner.ScanTextForDLP(ctx, string(scanInput)), true) {
 		return true
 	}
-	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok && r.scanClientText(ctx, log, joined) {
+	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), true) {
 		return true
 	}
 	return false
@@ -1887,16 +1891,24 @@ func (r *wsRelay) scanClientText(ctx context.Context, log *audit.Logger, scanInp
 
 func (r *wsRelay) scanClientTextWithCardView(ctx context.Context, log *audit.Logger, scanInput, cardInput []byte) (blocked bool) {
 	dlpResult := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
-	return r.handleClientTextResult(log, scanInput, dlpResult, false)
+	return r.handleClientTextResult(ctx, log, scanInput, dlpResult, false)
 }
 
 func (r *wsRelay) scanClientNumberText(ctx context.Context, log *audit.Logger, text, cards []byte) bool {
 	result := r.scanner.ScanTextForDLPWithTypedCardView(ctx, string(text), string(cards))
-	return r.handleClientTextResult(log, text, result, true)
+	return r.handleClientTextResult(ctx, log, text, result, true)
 }
 
-func (r *wsRelay) handleClientTextResult(log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, crossMessage bool) bool {
-	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, "websocket_frame")
+func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, crossMessage bool) bool {
+	surface := "websocket_frame"
+	if !crossMessage {
+		var invalid bool
+		surface, _, invalid = r.scanner.WebSocketCredentialAudienceSurface(ctx, scanInput, r.targetURL)
+		if invalid {
+			return r.handleClientMessageBodyResult(log, nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"})
+		}
+	}
+	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
 	for _, allow := range audienceAllows {
 		if err := r.recordCredentialAudienceAllow(allow); err != nil {
 			return r.blockOnCredentialAudienceReceiptFailure(log, err)
@@ -2942,7 +2954,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		if r.cfg.RequestBodyScanning.Enabled && r.scanText {
-			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
+			surface := "websocket_binary"
+			if isTextMessage {
+				surface = "websocket_frame"
+			}
+			buf, bodyResult := r.scanClientMessageBodyWithSurface(ctx, msg, surface)
 			if ctx.Err() != nil {
 				return
 			}
@@ -2958,9 +2974,17 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		}
 
 		if isTextMessage && r.scanText {
+			_, scanMessage, invalid := r.scanner.WebSocketCredentialAudienceSurface(ctx, msg, r.targetURL)
+			if !redactionEnabled && (scanMessage != nil || invalid) && r.scanClientText(ctx, log, msg) {
+				blocked = true
+				return
+			}
+			if scanMessage == nil {
+				scanMessage = msg
+			}
 			prevTail := crossMsgTail
 			prevCardTail := crossMsgCardTail
-			numberText, numberCard := extract.JSONNumberStreamViews(msg)
+			numberText, numberCard := extract.JSONNumberStreamViews(scanMessage)
 			if len(crossMsgNumberTail) > 0 && numberText != "" {
 				if r.scanClientNumberText(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
 					blocked = true
@@ -2973,36 +2997,38 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				crossMsgNumberTail = updateWSCrossMessageTail(crossMsgNumberTail, []byte(numberText))
 				crossMsgNumberCardTail = updateWSCrossMessageTail(crossMsgNumberCardTail, []byte(jsonnumber.NumberBoundary+numberCard))
 			}
-			// Only the complete original message establishes numeric provenance.
-			// Retained suffixes and incomplete text are never parsed as numbers.
-			cardMsg := []byte(jsonnumber.StructuredCardView(string(msg), extract.MaxExtractDepth))
+			// Only a complete frame earns a carrier. Its scan-only copy removes
+			// the authenticated value so later frames cannot reblock it or use
+			// its pattern name to hide another cross-message credential.
+			cardMsg := []byte(jsonnumber.StructuredCardView(string(scanMessage), extract.MaxExtractDepth))
 			var scanInput []byte
 			var cardInput []byte
 			if !redactionEnabled {
 				if len(prevTail) > 0 {
-					scanInput = append(prevTail, msg...)
+					scanInput = append(prevTail, scanMessage...)
 					cardInput = append(prevCardTail, cardMsg...)
 				} else {
-					scanInput = msg
+					scanInput = scanMessage
 					cardInput = cardMsg
 				}
 			}
-			crossMsgTail = updateWSCrossMessageTail(prevTail, msg)
+			crossMsgTail = updateWSCrossMessageTail(prevTail, scanMessage)
 			crossMsgCardTail = updateWSCrossMessageTail(prevCardTail, cardMsg)
 			if !redactionEnabled {
-				if len(scanInput) > 0 && r.scanClientTextWithCardView(ctx, log, scanInput, cardInput) {
+				result := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
+				if len(scanInput) > 0 && r.handleClientTextResult(ctx, log, scanInput, result, true) {
 					blocked = true
 					return
 				}
-				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, msg); ok && r.scanClientText(ctx, log, joined) {
+				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), true) {
 					blocked = true
 					return
 				}
-			} else if len(prevTail) > 0 && r.scanClientCrossMessageTextViews(ctx, log, prevTail, msg, prevCardTail, cardMsg) {
+			} else if len(prevTail) > 0 && r.scanClientCrossMessageTextViews(ctx, log, prevTail, scanMessage, prevCardTail, cardMsg) {
 				blocked = true
 				return
 			}
-			frame := fieldTail.ParseFrame(msg)
+			frame := fieldTail.ParseFrame(scanMessage)
 			for _, view := range fieldTail.Views(frame) {
 				if r.scanClientCrossMessageText(ctx, log, []byte(view.Tail), []byte(view.Value)) {
 					blocked = true
