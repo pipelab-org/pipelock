@@ -134,7 +134,7 @@ Examples:
 				return writeScanResult(cmd.OutOrStdout(), "No diff content on stdin.\n")
 			}
 
-			patterns := gitprotect.CompileDLPPatterns(cfg.DLP.Patterns)
+			patterns := gitprotect.CompileDLPPatterns(gitprotect.WithCoreDLPFloor(cfg.DLP.Patterns))
 			result, scanErr := gitprotect.ScanDiff(string(diffData), patterns)
 			if scanErr != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "ERROR: %v\n", scanErr)

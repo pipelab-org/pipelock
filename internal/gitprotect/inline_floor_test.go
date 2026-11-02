@@ -55,3 +55,31 @@ func TestInlineSuppressPatternParity(t *testing.T) {
 		t.Fatal("diff suppression expression differs from shared pattern")
 	}
 }
+
+// TestWithCoreDLPFloor: every core floor pattern reaches the git scanner,
+// including core-only patterns absent from the configured list, without
+// duplicating a configured copy.
+func TestWithCoreDLPFloor(t *testing.T) {
+	core := config.CoreDLPPatterns()
+	got := WithCoreDLPFloor(nil)
+	if len(got) != len(core) {
+		t.Fatalf("WithCoreDLPFloor(nil) = %d patterns, want %d", len(got), len(core))
+	}
+	again := WithCoreDLPFloor(got)
+	if len(again) != len(core) {
+		t.Fatalf("core patterns duplicated: %d, want %d", len(again), len(core))
+	}
+	weakened := []config.DLPPattern{{Name: core[0].Name, Regex: `never-matches-anything`, Severity: config.SeverityLow}}
+	if out := WithCoreDLPFloor(weakened); len(out) != len(core)+1 {
+		t.Fatalf("a configured pattern reusing a core name replaced the core expression: %d patterns", len(out))
+	}
+	gcp := "{\"type\": \"service_" + "account\"}"
+	diff := "diff --git a/k.json b/k.json\n--- a/k.json\n+++ b/k.json\n@@ -0,0 +1 @@\n+" + gcp + "\n"
+	result, err := ScanDiff(diff, CompileDLPPatterns(WithCoreDLPFloor(nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Pattern != "GCP Service Account Key" {
+		t.Fatalf("core-only pattern not applied: %+v", result.Findings)
+	}
+}
