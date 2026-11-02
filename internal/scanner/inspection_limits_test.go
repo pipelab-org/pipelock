@@ -469,3 +469,32 @@ func TestDecodeFragmentLimitGuidance(t *testing.T) {
 		t.Fatal("JSON number fragment limit took the decoder guidance")
 	}
 }
+
+func TestInboundDirectionMarker(t *testing.T) {
+	var unset context.Context
+	if inboundDirection(unset) {
+		t.Fatal("nil context reported inbound")
+	}
+	if inboundDirection(context.Background()) {
+		t.Fatal("unmarked context reported inbound")
+	}
+	if !inboundDirection(WithInboundDirection(unset)) {
+		t.Fatal("marker on a nil context was lost")
+	}
+	if !inboundDirection(WithInboundDirection(t.Context())) {
+		t.Fatal("marker was lost")
+	}
+}
+
+func TestPercentDecodeConvergesAtTheRoundCeiling(t *testing.T) {
+	unescape := func(s string) string { return strings.TrimPrefix(s, "x") }
+	if !percentDecodeConverges("xxv", unescape) {
+		t.Fatal("value that settles early reported as unconverged")
+	}
+	if !percentDecodeConverges(strings.Repeat("x", maxDecodeRounds)+"v", unescape) {
+		t.Fatal("value that settles in exactly the round ceiling reported as unconverged")
+	}
+	if percentDecodeConverges(strings.Repeat("x", maxDecodeRounds+1)+"v", unescape) {
+		t.Fatal("value still changing past the round ceiling reported as converged")
+	}
+}
