@@ -123,3 +123,37 @@ func TestPrepare_RefusesShapeMismatch(t *testing.T) {
 		}
 	})
 }
+
+func TestEnforcementRecord_DescribeWithheldAndUnverified(t *testing.T) {
+	for _, coverage := range []Coverage{CoverageFull, CoveragePartial} {
+		for _, n := range []int{0, 1, 2} {
+			for _, withheld := range []bool{false, true} {
+				r := EnforcementRecord{State: EnforcementEnforced, Mechanism: "landlock", Coverage: coverage}
+				if coverage == CoveragePartial {
+					r.Unmediated = []string{"unix sockets"}
+				}
+				for i := 0; i < n; i++ {
+					r.Unverified = append(r.Unverified, "/grant")
+				}
+				if withheld {
+					r.Withheld = []string{ReferWithheldReason}
+				}
+				line := r.Describe()
+				if !strings.HasPrefix(line, "ENFORCED via") || strings.Contains(line, "\n") {
+					t.Fatalf("invalid enforced headline: %q", line)
+				}
+				if n == 1 && !strings.Contains(line, "; 1 grant unverified") ||
+					n == 2 && !strings.Contains(line, "; 2 grants unverified") ||
+					n == 0 && strings.Contains(line, "unverified") {
+					t.Fatalf("unverified=%d: %q", n, line)
+				}
+				if strings.Contains(line, ReferWithheldReason) != withheld {
+					t.Fatalf("withheld=%v: %q", withheld, line)
+				}
+				if r.FullyMediated() != (coverage == CoverageFull) {
+					t.Fatalf("grant caveats changed mediation predicate: %+v", r)
+				}
+			}
+		}
+	}
+}

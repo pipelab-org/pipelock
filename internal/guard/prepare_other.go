@@ -58,6 +58,10 @@ func prepareGrants(grants []grant, _ int, _ floorEvaluator) (*PreparedManifest, 
 	return prepared, nil
 }
 
+// ReferErratumMissing reports false off Linux. Preflight already refuses the
+// platform, and there is no Landlock erratum to query.
+func ReferErratumMissing() bool { return false }
+
 // Apply always refuses off Linux.
 func (p *PreparedManifest) Apply() (EnforcementRecord, error) {
 	record := EnforcementRecord{

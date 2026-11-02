@@ -42,12 +42,7 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 	// (Documentation/userspace-api/landlock.rst, "Errata"). Kernels without
 	// the fix, or that cannot report errata, keep the pre-REFER behavior:
 	// cross-directory renames and links fail with EXDEV.
-	refer := referAllowed(abi, landlockErrata)
-	referABI := 1
-	if refer {
-		referABI = abi
-	}
-	rules := buildRules(policy, referABI)
+	rules, refer := buildRulesWithErrata(policy, abi, landlockErrata)
 	if abi >= 9 && len(proxySocket) > 0 && proxySocket[0] != "" {
 		// Admit the exact parent doorway inode, never its directory. Ordinary
 		// filesystem grants do not authorize connections to host sockets.
@@ -80,6 +75,17 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 
 	status.Active = true
 	return status, nil
+}
+
+// buildRulesWithErrata selects the same REFER gate as Guard before building
+// filesystem rules. Its decision also controls the separate IPC layer's grants.
+func buildRulesWithErrata(policy Policy, abi int, errata func() (int, error)) ([]landlock.Rule, bool) {
+	refer := referAllowed(abi, errata)
+	referABI := 1
+	if refer {
+		referABI = abi
+	}
+	return buildRules(policy, referABI), refer
 }
 
 // buildRules constructs landlock.Rule entries from the sandbox policy.

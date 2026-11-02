@@ -87,6 +87,10 @@ var (
 	ErrAlreadyApplied = errors.New("guard manifest has already been applied")
 )
 
+// ReferWithheldReason describes the functionality denied when erratum 3 is
+// unconfirmed. Withholding REFER preserves mediation rather than disabling it.
+const ReferWithheldReason = "cross-directory rename and link are denied because Landlock erratum 3 is not reported fixed."
+
 // AccessKind is the grant a manifest entry asks for.
 type AccessKind string
 
@@ -182,6 +186,10 @@ const (
 // distinguishable from "the reading was zero"; conflating them would let an
 // unread value present as the worst case and then be argued away as a default.
 type EnforcementRecord struct {
+	// threadTainted is local bookkeeping, not evidence: the calling thread has
+	// irreversible state that was not synchronized to the entire process.
+	threadTainted bool
+
 	State            EnforcementState `json:"state"`
 	Mechanism        string           `json:"mechanism"`
 	RequiredABI      int              `json:"required_abi"`
@@ -195,6 +203,9 @@ type EnforcementRecord struct {
 	// security postures, and an operator reading evidence months later needs to
 	// see which one they had.
 	Unmediated []string `json:"unmediated,omitempty"`
+	// Withheld names functionality deliberately denied while mediation remains
+	// in force. Empty values are omitted to preserve existing proof hashes.
+	Withheld []string `json:"withheld,omitempty"`
 	// Unverified names declared paths whose grant could not be confirmed after
 	// enforcement, as distinct from paths confirmed to be narrowed. A
 	// filesystem that cannot answer the question is not evidence of a problem
@@ -242,14 +253,25 @@ func (r EnforcementRecord) Describe() string {
 	}
 	switch r.State {
 	case EnforcementEnforced:
-		if r.Coverage == CoverageFull {
-			return fmt.Sprintf("ENFORCED via %s, full mediation (ABI %s)", r.Mechanism, observed)
+		mediation := "full mediation"
+		if r.Coverage != CoverageFull {
+			mediation = "PARTIAL mediation"
 		}
-		// The caveat is part of the headline, not a footnote. An operator who
-		// reads only the first line must not come away believing sockets were
-		// covered when they were not.
-		return fmt.Sprintf("ENFORCED via %s, PARTIAL mediation (ABI %s): not mediated: %s",
-			r.Mechanism, observed, strings.Join(r.Unmediated, ", "))
+		if len(r.Unverified) > 0 {
+			noun := "grants"
+			if len(r.Unverified) == 1 {
+				noun = "grant"
+			}
+			mediation += fmt.Sprintf("; %d %s unverified", len(r.Unverified), noun)
+		}
+		line := fmt.Sprintf("ENFORCED via %s, %s (ABI %s)", r.Mechanism, mediation, observed)
+		if r.Coverage != CoverageFull {
+			line += ": not mediated: " + strings.Join(r.Unmediated, ", ")
+		}
+		if len(r.Withheld) > 0 {
+			line += "; withheld: " + strings.Join(r.Withheld, "; ")
+		}
+		return line
 	case EnforcementAppliedNarrowed:
 		// The leading clause says the process IS restricted, because it is, and
 		// an operator who reads only the first line must not conclude the run

@@ -81,7 +81,7 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
     def setUp(self):
         self.verifiers = (WORKFLOWS / "verifiers.yaml").read_text(encoding="utf-8")
         self.examples = (WORKFLOWS / "example-verification.yaml").read_text(encoding="utf-8")
-        self.fuzz = (WORKFLOWS / "clusterfuzzlite.yaml").read_text(encoding="utf-8")
+        self.fuzz = (WORKFLOWS / "go-fuzz.yaml").read_text(encoding="utf-8")
         self.hardening = (WORKFLOWS / "hardening.yaml").read_text(encoding="utf-8")
         self.hardening_report = (WORKFLOWS / "hardening-report.yaml").read_text(encoding="utf-8")
 
@@ -144,7 +144,7 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
             event_paths(self.examples, "pull_request"),
         )
 
-    def test_clusterfuzz_selects_actual_fuzzer_inputs_but_not_docs(self):
+    def test_native_fuzz_selects_actual_fuzzer_inputs_but_not_docs(self):
         paths = event_paths(self.fuzz, "pull_request")
         for expected in (
             "**/*.go",
@@ -153,15 +153,22 @@ class SpecialistWorkflowTriggerTest(unittest.TestCase):
             "go.work",
             "go.work.sum",
             "**/testdata/fuzz/**",
-            ".clusterfuzzlite/**",
-            ".github/workflows/clusterfuzzlite.yaml",
+            ".github/fuzz-targets.json",
+            "scripts/fuzz-targets.py",
+            "scripts/test_go_fuzz_workflow.py",
+            "scripts/test_specialist_workflow_triggers.py",
+            "Makefile",
+            ".github/workflows/go-fuzz.yaml",
         ):
             self.assertIn(expected, paths)
         for changed in (
             "internal/scanner/scanner_fuzz_test.go",
             "cmd/pipelock/main.go",
             "internal/scanner/testdata/fuzz/FuzzScanURL/seed",
-            ".clusterfuzzlite/build.sh",
+            ".github/fuzz-targets.json",
+            "scripts/fuzz-targets.py",
+            "scripts/test_go_fuzz_workflow.py",
+            "Makefile",
             "go.mod",
         ):
             self.assertTrue(is_selected(paths, changed), changed)

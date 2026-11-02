@@ -109,11 +109,8 @@ func RunInit() {
 	llStatus, llErr := ApplyLandlock(policy, socketPath)
 	reportLayer(os.Stderr, llStatus, llErr)
 
-	// Set no_new_privs (MUST come before seccomp).
-	if err := SetNoNewPrivs(); err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] no_new_privs: %v\n", err)
-	}
-
+	// ApplySeccomp owns the pinned no_new_privs prerequisite. Setting it here
+	// could modify a different runtime thread before filter installation.
 	// Apply seccomp filter (syscall restriction).
 	// Strict mode blocks clone3 entirely (no namespace escape via BPF limitation).
 	scStatus, scErr := ApplySeccomp(strict)

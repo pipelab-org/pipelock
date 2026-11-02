@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -413,4 +414,78 @@ func checkStrictNativeThread(t *testing.T, binary string, args []string) {
 			}
 		})
 	}
+}
+
+func TestApplySeccompThreadRetirement(t *testing.T) {
+	for _, stage := range []string{"no_new_privs", "install_errno", "install_thread", "success"} {
+		t.Run(stage, func(t *testing.T) {
+			pinned := func() bool {
+				var stack [1024]byte
+				n := runtime.Stack(stack[:], false)
+				header, _, _ := strings.Cut(string(stack[:n]), "\n")
+				return strings.Contains(header, "locked to thread")
+			}
+			if pinned() {
+				t.Fatal("test starts pinned")
+			}
+			runtime.LockOSThread()
+			observed := pinned()
+			runtime.UnlockOSThread()
+			if !observed || pinned() {
+				t.Fatal("thread-pin observation failed calibration")
+			}
+			installed := false
+			nnpSet := false
+			status, err := applySeccompWith(true,
+				func() error {
+					if !pinned() {
+						t.Fatal("NNP attempted without a pin")
+					}
+					nnpSet = true
+					if stage == "no_new_privs" {
+						return errors.New("injected NNP failure")
+					}
+					return nil
+				},
+				func(*unix.SockFprog) (uintptr, unix.Errno) {
+					installed = true
+					if !nnpSet {
+						t.Fatal("filter attempted before no_new_privs")
+					}
+					if !pinned() {
+						t.Fatal("filter attempted without a pin")
+					}
+					if stage == "install_errno" {
+						return 0, unix.EINVAL
+					}
+					if stage == "install_thread" {
+						return 42, 0
+					}
+					return 0, 0
+				},
+			)
+			if (err == nil) != (stage == "success") || status.Active != (stage == "success") {
+				t.Fatalf("status=%+v error=%v", status, err)
+			}
+			if installed != (stage != "no_new_privs") {
+				t.Fatalf("filter installation reached = %v", installed)
+			}
+			wantPinned := strings.HasPrefix(stage, "install_")
+			if got := pinned(); got != wantPinned {
+				t.Fatalf("thread pinned after %s = %v, want %v", stage, got, wantPinned)
+			}
+		})
+	}
+}
+
+func TestInstallSeccompFilterReportsKernelFailure(t *testing.T) {
+	// seccomp(2), ERRORS: a zero-length filter is invalid. Do not set NNP:
+	// rejection must be reported whether or not the caller inherited NNP,
+	// and this test must not permanently change the process.
+	// https://man7.org/linux/man-pages/man2/seccomp.2.html
+	thread, errno := installSeccompFilter(&unix.SockFprog{})
+	if errno == 0 {
+		t.Fatalf("empty filter returned thread %d without a kernel error", thread)
+	}
+	t.Logf("empty filter refused: %v", errno)
 }
