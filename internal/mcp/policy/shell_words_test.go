@@ -243,6 +243,9 @@ func TestWordReading_UnreadableIsIncomplete(t *testing.T) {
 		if !v.Matched || v.Action != tt.want || !slices.Contains(v.IncompleteRules, ruleFileDelete) {
 			t.Fatalf("on_incomplete_check %q: verdict %v %q %v incomplete %v", tt.incomplete, v.Matched, v.Action, v.Rules, v.IncompleteRules)
 		}
+		if !slices.ContainsFunc(v.Notes, func(n string) bool { return strings.HasPrefix(n, "could not read every shell expansion") }) {
+			t.Fatalf("incomplete note does not name the expansion bound: %q", v.Notes)
+		}
 	}
 	if v := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()}).CheckToolCall("bash", []string{"ls {a,b}.go"}); v.Matched {
 		t.Fatalf("readable expansion reported %v", v.Rules)
@@ -328,8 +331,13 @@ func TestWordReading_QuotedText(t *testing.T) {
 // a command over it reports an incomplete check rather than a partial reading.
 func TestWordReading_CommandBudget(t *testing.T) {
 	got, unreadable := expandWords(strings.Repeat("{a,b}{a,b} ", 100))
-	if !unreadable || got != strings.Repeat("{a,b}{a,b} ", 100) {
-		t.Fatal("a command expanding to 400 words was not reported unreadable")
+	if !unreadable || !strings.HasPrefix(got, "aa ab ba bb ") || !strings.HasSuffix(got, "{a,b}{a,b} ") {
+		t.Fatalf("over-budget command: unreadable=%v, prefix/suffix wrong", unreadable)
+	}
+	// Padding after a destructive word cannot discard its reading.
+	got, unreadable = expandWords("{r,}m -rf / ; echo " + strings.Repeat("{a,b}{a,b} ", 100))
+	if !unreadable || !strings.HasPrefix(got, "rm m -rf") {
+		t.Fatalf("reading before the padding was discarded: %q", got[:min(len(got), 24)])
 	}
 	if _, unreadable := expandWords(strings.Repeat("{a,b} ", 8)); unreadable {
 		t.Fatal("a command adding 8 words was reported unreadable")

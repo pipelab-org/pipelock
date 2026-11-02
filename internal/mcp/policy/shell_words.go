@@ -229,23 +229,37 @@ func expandWords(s string) (string, bool) {
 	unreadable := false
 	// added counts the words expansion adds across the whole text. The
 	// whole command shares maxWordExpansions, so many expandable words
-	// cannot multiply the work the matcher does.
+	// cannot multiply the work the matcher does. Words expanded within the
+	// budget keep their reading; a word past it keeps its spelling and marks
+	// the reading unreadable, so padding cannot discard earlier readings.
 	added := 0
 	start := -1
 	flush := func(end int) {
 		if start < 0 {
 			return
 		}
-		w, ok := expandWord(s[start:end])
-		unreadable = unreadable || !ok
-		added += strings.Count(w, " ") - strings.Count(s[start:end], " ")
-		b.WriteString(w)
+		word := s[start:end]
 		start = -1
+		if !strings.ContainsAny(word, "{[") {
+			b.WriteString(word)
+			return
+		}
+		if added >= maxWordExpansions {
+			unreadable = true
+			b.WriteString(word)
+			return
+		}
+		w, ok := expandWord(word)
+		delta := strings.Count(w, " ") - strings.Count(word, " ")
+		if !ok || added+delta > maxWordExpansions {
+			unreadable = true
+			b.WriteString(word)
+			return
+		}
+		added += delta
+		b.WriteString(w)
 	}
 	for i := 0; i < len(s); i++ {
-		if added > maxWordExpansions {
-			return s, true
-		}
 		if strings.IndexByte(shellWordBreaks, s[i]) >= 0 {
 			flush(i)
 			b.WriteByte(s[i])
@@ -256,9 +270,6 @@ func expandWords(s string) (string, bool) {
 		}
 	}
 	flush(len(s))
-	if added > maxWordExpansions {
-		return s, true
-	}
 	return b.String(), unreadable
 }
 

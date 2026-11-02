@@ -451,7 +451,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	if len(incompleteRules) > 0 {
 		matchedRules = append(matchedRules, incompletePairCheckRule)
 		strictest = StricterAction(strictest, pc.incompleteAction())
-		linkNotes = append(linkNotes, "could not rule out a match across every token pair for: "+strings.Join(incompleteRules, ", "))
+		reason := "could not rule out a match across every token pair for: "
+		if len(views) > 0 && views[0].unreadable {
+			// Every view carries the flag; see buildArgViews.
+			reason = "could not read every shell expansion within its bounds for: "
+		}
+		linkNotes = append(linkNotes, reason+strings.Join(incompleteRules, ", "))
 	}
 
 	if len(matchedRules) == 0 {
