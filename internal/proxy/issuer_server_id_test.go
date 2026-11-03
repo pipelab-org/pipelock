@@ -381,12 +381,11 @@ func TestIssuerServerIDAddressing(t *testing.T) {
 			}
 		})
 	}
-	// Issuance accepts only bare IDs, even though lookup understands the
-	// addressing delimiter. A server returning a colon-bearing string cannot
-	// mint the bare value or its colon-addressed spelling.
+	// A literal colon is a pchar too. Returning a colon-bearing ID issues that
+	// exact value, never the different value with its final colon removed.
 	s.mintServerID("owner", origin, serverIDOther+":", now)
-	if s.serverIDIssued("owner", origin, serverIDOther+":") {
-		t.Fatal("mint accepted a delimiter as part of the ID")
+	if !s.serverIDIssued("owner", origin, serverIDOther+":") || s.serverIDIssued("owner", origin, serverIDOther) {
+		t.Fatal("literal colon ID changed identity")
 	}
 	for i := range issuerCookieMaxEntries {
 		s.mintServerID("owner", origin, fmt.Sprintf("object-identifier-%016d", i), now)
