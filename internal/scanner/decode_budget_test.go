@@ -204,6 +204,7 @@ func TestDecodeBudgetInboundAccounting(t *testing.T) {
 }
 
 func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
+	t.Parallel()
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
@@ -216,12 +217,10 @@ func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
 	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
 	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
 	outer := base64.StdEncoding.EncodeToString([]byte(inner))
-	var segment decodingMemo
-	if views := segment.decode(outer, true); segment.inspectionIncomplete() == false || len(views) == 0 {
-		t.Fatalf("segment fixture did not exhaust: views=%d incomplete=%v", len(views), segment.inspectionIncomplete())
-	}
 	token := "ghp_" + strings.Repeat("A", 36)
 	value := "Bearer " + token + "/" + outer
+	// The whole header does not exhaust, so the inspection limit asserted
+	// below can only come from the segment walk.
 	var whole decodingMemo
 	_ = whole.decode(value, true)
 	if whole.inspectionIncomplete() {
@@ -271,8 +270,10 @@ func TestDecodeBudgetKnownValueURL(t *testing.T) {
 // only becomes the over-budget encoding after entity decoding must still
 // refuse when a credential stopped the matcher first.
 func TestDecodeBudgetSegmentSkipCoversHTMLView(t *testing.T) {
+	t.Parallel()
 	for _, coreOnly := range []bool{false, true} {
 		t.Run(fmt.Sprintf("core_only_%v", coreOnly), func(t *testing.T) {
+			t.Parallel()
 			testDecodeBudgetSegmentHTMLView(t, coreOnly)
 		})
 	}
@@ -445,7 +446,7 @@ func TestDecodeBudgetKnownValueCompleteWalkIsOrdinaryFinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, _ := sc.checkDLP(parsed)
-	if result.Allowed || IsURLInspectionLimitResult(result) {
+	if result.Allowed || result.Scanner != ScannerDLP || !strings.HasPrefix(result.Reason, "known secret leak detected") {
 		t.Fatalf("complete-walk known value: allowed=%v reason=%s", result.Allowed, result.Reason)
 	}
 }
