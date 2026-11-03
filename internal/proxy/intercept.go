@@ -874,6 +874,18 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		// Count the selected scan once, as soon as the issuer rescan below has
+		// settled it. A streamed response keeps this handler open until the
+		// stream ends, so waiting for return would hide the count meanwhile.
+		// The defer covers the returns before that point.
+		urlDecisionsRecorded := false
+		recordURLDecisions := func() {
+			if !urlDecisionsRecorded {
+				urlDecisionsRecorded = true
+				ic.Metrics.RecordURLDecisions("intercept", urlResult.Decisions)
+			}
+		}
+		defer recordURLDecisions()
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
 				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
@@ -955,6 +967,7 @@ func newInterceptHandler(
 				}
 			}
 		}
+		recordURLDecisions()
 		if ic.Proxy != nil {
 			if err := ic.Proxy.recordCredentialAudienceAllows(ic.Config, actx, urlResult.CredentialAudienceAllows, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
