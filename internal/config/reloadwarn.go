@@ -1077,6 +1077,7 @@ func queryEntropyParamIdentity(entry QueryEntropyParamExclusion) string {
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
+	appendRequestPolicyBlockReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
 	appendExactRequestReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
 	appendActionDowngradeWarning(warnings, "request_policy.on_parse_error", old.RequestPolicy.OnParseError, updated.RequestPolicy.OnParseError)
 	appendActionDowngradeWarning(warnings, "request_policy.on_opaque_operation", old.RequestPolicy.OnOpaqueOperation, updated.RequestPolicy.OnOpaqueOperation)
@@ -1138,6 +1139,26 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	if old.ToolChainDetection.Enabled && updated.ToolChainDetection.Enabled {
 		appendActionDowngradeWarning(warnings, "tool_chain_detection.action", old.ToolChainDetection.Action, updated.ToolChainDetection.Action)
 		appendToolChainActionDowngrades(warnings, old.ToolChainDetection, updated.ToolChainDetection)
+	}
+}
+
+// appendRequestPolicyBlockReloadWarnings retains the existing named enforcement
+// identity across reloads. Predicate containment is not inferred here.
+func appendRequestPolicyBlockReloadWarnings(warnings *[]ReloadWarning, old, updated RequestPolicy) {
+	if !old.Enabled {
+		return
+	}
+	enforcing := make(map[string]bool, len(updated.Rules))
+	if updated.Enabled {
+		for _, rule := range updated.Rules {
+			enforcing[rule.Name] = rule.Action == ActionBlock && !rule.Shadow
+		}
+	}
+	for _, rule := range old.Rules {
+		if rule.Action == ActionBlock && !rule.Shadow && !enforcing[rule.Name] {
+			*warnings = append(*warnings, ReloadWarning{Field: "request_policy.rules", Message: "request-policy block rule removed, disabled, or renamed"})
+			return
+		}
 	}
 }
 

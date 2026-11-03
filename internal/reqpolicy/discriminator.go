@@ -37,6 +37,7 @@ type exactException struct {
 	field    string
 	values   map[string]struct{}
 	requests map[exactRequestKey]time.Time
+	now      func() time.Time // nil uses the real clock; an instance-local test seam.
 }
 
 type exactRequestKey struct {
@@ -84,7 +85,11 @@ func (e *exactException) matches(meta RequestMeta) bool {
 			return false
 		}
 		expires, ok := e.requests[exactRequestKey{url: meta.ExactURL, method: meta.Method, digest: meta.JSONBodySHA256}]
-		return ok && time.Now().Before(expires)
+		now := time.Now
+		if e.now != nil {
+			now = e.now
+		}
+		return ok && now().Before(expires)
 	}
 	obj, ok := meta.JSONBody.(map[string]any)
 	if !ok {

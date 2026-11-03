@@ -190,6 +190,8 @@ entry or extending its expiry produces a security-downgrade reload warning;
 strict or required-receipt deployments require a validated restart for that
 expansion. Removing an entry revokes it for subsequent request evaluations.
 
+Reload also warns when a named enforcing block rule is removed, renamed, changed to warn or shadow mode, or disabled with the policy. This check tracks named enforcement; it does not infer whether changed route or predicate constraints weaken protection.
+
 Deploy a binary that recognizes this configuration before loading it. Older
 binaries reject the unknown fields. The operator must approve the actual
 operation separately; adding a matching configuration entry records that

@@ -152,3 +152,33 @@ func TestCompileExactRequestRejectsInvalidEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestExactRequestExpiresAfterMatcherConstruction(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	expires := now.Add(time.Hour)
+	approval := config.RequestPolicyExactRequest{
+		URL: "https://api.service.example.com/items/1/invite", Method: http.MethodPost,
+		BodySHA256: strings.Repeat("a", 64), ExpiresAt: expires.Format(time.RFC3339),
+		Owner: "operator", Reason: "approved request",
+	}
+	rule := exactExceptionRule()
+	rule.Route.PathPatterns = []string{`/items/.+/invite$`}
+	rule.Except = &config.RequestPolicyException{Requests: []config.RequestPolicyExactRequest{approval}}
+	m, err := NewMatcher(&config.RequestPolicy{Enabled: true, Rules: []config.RequestPolicyRule{rule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.rules[0].except.now = func() time.Time { return now }
+	meta := RequestMeta{Host: "api.service.example.com", Method: http.MethodPost, Path: "/items/1/invite", JSONBodyParsed: true, JSONBody: map[string]any{}, ExactURL: approval.URL, JSONBodySHA256: approval.BodySHA256}
+	if got := m.Evaluate(meta).Action; got != "" {
+		t.Fatalf("before expiry: %q", got)
+	}
+	now = expires
+	if got := m.Evaluate(meta).Action; got != config.ActionBlock {
+		t.Fatalf("at expiry, same matcher: %q", got)
+	}
+	now = expires.Add(time.Second)
+	if got := m.Evaluate(meta).Action; got != config.ActionBlock {
+		t.Fatalf("after expiry, same matcher: %q", got)
+	}
+}

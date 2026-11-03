@@ -81,6 +81,10 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 		warn bool
 	}{
 		{"unchanged", func(*Config) {}, false},
+		{"block rule removed", func(c *Config) { c.RequestPolicy.Rules = c.RequestPolicy.Rules[1:] }, true},
+		{"block rule softened", func(c *Config) { c.RequestPolicy.Rules[0].Action = ActionWarn }, true},
+		{"block rule shadowed", func(c *Config) { c.RequestPolicy.Rules[0].Shadow = true }, true},
+		{"policy disabled", func(c *Config) { c.RequestPolicy.Enabled = false }, true},
 		{"equivalent URL spelling", func(c *Config) {
 			c.RequestPolicy.Rules[0].Except.Requests[0].URL = "https://API.VENDOR.EXAMPLE:443/items/1/invite"
 		}, false},
@@ -100,7 +104,7 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 			updated := base.Clone()
 			tc.edit(updated)
 			var warnings []ReloadWarning
-			appendExactRequestReloadWarnings(&warnings, base.RequestPolicy, updated.RequestPolicy)
+			appendActionDowngradeWarnings(&warnings, base, updated)
 			if (len(warnings) > 0) != tc.warn {
 				t.Fatalf("warnings=%v want warning=%v", warnings, tc.warn)
 			}
@@ -133,6 +137,28 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 				}
 			}
 		})
+	}
+
+	for _, shadow := range []bool{false, true} {
+		old := base.Clone()
+		old.RequestPolicy.Rules = old.RequestPolicy.Rules[:1]
+		old.RequestPolicy.Rules[0].Action = ActionWarn
+		if shadow {
+			old.RequestPolicy.Rules[0].Action = ActionBlock
+			old.RequestPolicy.Rules[0].Shadow = true
+		}
+		updated := old.Clone()
+		updated.RequestPolicy.Rules = nil
+		for _, warning := range ValidateReload(old, updated) {
+			if warning.Field == "request_policy.rules" {
+				t.Fatalf("removing non-enforcing rule warned: %v", warning)
+			}
+		}
+	}
+	for _, warning := range ValidateReload(Defaults(), base) {
+		if warning.Field == "request_policy.rules" {
+			t.Fatalf("new block policy warned as downgrade: %v", warning)
+		}
 	}
 	var warnings []ReloadWarning
 	appendExactRequestReloadWarnings(&warnings, RequestPolicy{}, base.RequestPolicy)
