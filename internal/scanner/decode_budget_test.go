@@ -348,3 +348,89 @@ func TestDecodeBudgetAPIKeyRescanKeepsDirection(t *testing.T) {
 		t.Fatal("outbound remainder rescan missed work exhaustion")
 	}
 }
+
+// A known value matched directly must not hide a carrier whose decoded
+// known-value walk passes the work budget.
+func TestDecodeBudgetKnownValueEarlyMatchKeepsRefusal(t *testing.T) {
+	known := strings.Join([]string{"Q7m2", "X9z4", "R8v3", "N6p1"}, "")
+	nested := `\u0051` + known[1:]
+	for range 80 {
+		nested = strings.ReplaceAll(nested, `\`, `\u005c`)
+	}
+	carrier := hex.EncodeToString([]byte(strings.Repeat("!", 128*1024)+nested)) + "Z"
+	sc := knownSecretEncodingScanner(t, []string{known})
+	parsed := mustParseURL(t, "https://api.vendor.example/"+carrier+"?v="+known)
+	var ordinary decodingMemo
+	ordinary.decode(carrier, true)
+	if ordinary.inspectionIncomplete() {
+		t.Fatal("ordinary graph exhausted the budget")
+	}
+	var recovery decodingMemo
+	recovery.decodeKnownSecret(carrier, min(minKnownSecretSubstringLen, sc.minEnvSecretLen))
+	if !recovery.inspectionIncomplete() {
+		t.Fatal("known-value recovery graph did not exhaust the budget")
+	}
+	var knownViews decodingMemo
+	sc.decodedKnownSecretViews(parsed.String(), &knownViews)
+	if !knownViews.inspectionIncomplete() {
+		t.Fatal("known-value URL views did not exhaust the budget")
+	}
+	secrets := sc.fileSecrets
+	canaries := sc.canaryTokens
+	sc.fileSecrets, sc.canaryTokens = nil, nil
+	ordinaryResult, _ := sc.checkDLP(parsed)
+	sc.fileSecrets, sc.canaryTokens = secrets, canaries
+	if !ordinaryResult.Allowed {
+		t.Fatalf("ordinary URL DLP did not complete cleanly: %s", ordinaryResult.Reason)
+	}
+	result, _ := sc.checkDLP(parsed)
+	if !IsURLInspectionLimitResult(result) {
+		t.Fatalf("early known-value match hid the budget refusal: allowed=%v reason=%s", result.Allowed, result.Reason)
+	}
+	inbound := decodingMemo{inbound: true}
+	result, _ = sc.checkDLPWithDecodes(parsed, &inbound)
+	if result.Allowed || IsURLInspectionLimitResult(result) {
+		t.Fatalf("inbound known-value match changed: allowed=%v reason=%s", result.Allowed, result.Reason)
+	}
+}
+
+// Canary whitespace compaction can expose work absent from the known-value views.
+func TestDecodeBudgetKnownValueEarlyMatchCanaryWalk(t *testing.T) {
+	known := strings.Join([]string{"Q7m2", "X9z4", "R8v3", "N6p1"}, "")
+	sc := knownSecretEncodingScanner(t, []string{known})
+	sc.canaryTokens = []compiledCanaryToken{{name: "budget-marker", normalizedLower: "budget-marker", canonicalLower: "budgetmarker"}}
+	carrier := hex.EncodeToString([]byte(decodeBudgetNestedText()))
+	var split strings.Builder
+	for start := 0; start < len(carrier); start += 1024 {
+		split.WriteString(carrier[start:min(start+1024, len(carrier))])
+		split.WriteByte(' ')
+	}
+	parsed := &url.URL{Scheme: "https", Host: "api.vendor.example", Path: "/", RawQuery: "carrier=" + split.String() + "&v=" + known}
+	var memo decodingMemo
+	sc.decodedKnownSecretViews(IterativeDecode(parsed.String()), &memo)
+	sc.decodedKnownSecretViews(parsed.String(), &memo)
+	if memo.inspectionIncomplete() {
+		t.Fatal("known-value walks already exhausted the budget")
+	}
+	sc.scanCanaryTextWithDecodes(parsed.String(), &memo)
+	if !memo.inspectionIncomplete() {
+		t.Fatal("canary walk did not exhaust the budget")
+	}
+	secrets := sc.fileSecrets
+	canaries := sc.canaryTokens
+	sc.fileSecrets, sc.canaryTokens = nil, nil
+	ordinaryResult, _ := sc.checkDLP(parsed)
+	sc.fileSecrets, sc.canaryTokens = secrets, canaries
+	if !ordinaryResult.Allowed {
+		t.Fatalf("ordinary URL DLP did not complete cleanly: %s", ordinaryResult.Reason)
+	}
+	result, _ := sc.checkDLP(parsed)
+	if !IsURLInspectionLimitResult(result) {
+		t.Fatalf("early match hid canary refusal: allowed=%v reason=%s", result.Allowed, result.Reason)
+	}
+	inbound := decodingMemo{inbound: true}
+	result, _ = sc.checkDLPWithDecodes(parsed, &inbound)
+	if result.Allowed || IsURLInspectionLimitResult(result) {
+		t.Fatalf("inbound known-value match changed: allowed=%v reason=%s", result.Allowed, result.Reason)
+	}
+}

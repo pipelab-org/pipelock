@@ -3820,19 +3820,41 @@ func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL
 		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percentURL), viewLabel: lowerViewLabel("control_stripped_url:percent_decoded")})
 	}
 
+	var decodedViews []spanTextView
+	decodedBuilt := false
+	buildDecodedViews := func() []spanTextView {
+		if decodedBuilt {
+			return decodedViews
+		}
+		decodedBuilt = true
+		decodedViews = s.decodedKnownSecretViews(decodedURL, decodes)
+		for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+			decodedViews = append(decodedViews, spanTextView{text: target.text, viewLabel: target.viewLabel})
+		}
+		// Form decoding turns a '+' into a space, so a nested carrier
+		// whose encoding holds '+' as data decodes only from the raw or
+		// the RFC 3986 percent-decoded URL.
+		decodedViews = append(decodedViews, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, decodes), "control_stripped_url")...)
+		if percentURL != fullURL && percentURL != decodedURL {
+			decodedViews = append(decodedViews, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, decodes), "percent_decoded")...)
+		}
+		return decodedViews
+	}
+	// An early match must not hide a work bound that a skipped walk would
+	// reach: before an outbound match returns, finish the decoded known-value
+	// views and the canary walk for the budget signal only.
+	skippedWalkIncomplete := func() bool {
+		if decodes == nil || decodes.inbound {
+			return false
+		}
+		buildDecodedViews()
+		_ = s.scanCanaryTextWithDecodes(parsed.String(), decodes)
+		return decodes.inspectionIncomplete()
+	}
+
 	for phase := range 2 {
 		if phase == 1 {
-			texts = s.decodedKnownSecretViews(decodedURL, decodes)
-			for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
-				texts = append(texts, spanTextView{text: target.text, viewLabel: target.viewLabel})
-			}
-			// Form decoding turns a '+' into a space, so a nested carrier
-			// whose encoding holds '+' as data decodes only from the raw or
-			// the RFC 3986 percent-decoded URL.
-			texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, decodes), "control_stripped_url")...)
-			if percentURL != fullURL && percentURL != decodedURL {
-				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, decodes), "percent_decoded")...)
-			}
+			texts = buildDecodedViews()
 		}
 
 		if decodes != nil && !decodes.inbound && decodes.inspectionIncomplete() {
@@ -3850,6 +3872,9 @@ func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL
 				match, start, end, viewLabel, matched = matchDecodedKnownSecret(secret, s.knownSecretWindows[secret], texts, hits)
 			}
 			if matched {
+				if skippedWalkIncomplete() {
+					return urlInspectionLimitResult()
+				}
 				reason := reasonPrefix
 				if match.partialLen > 0 {
 					reason += fmt.Sprintf(" (partial %d)", match.partialLen)
