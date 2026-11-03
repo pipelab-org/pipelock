@@ -396,6 +396,21 @@ func TestScan_NestedURLRecoveredPercentEncoding(t *testing.T) {
 	}
 }
 
+func TestScan_NestedURLRecoveredHostResolvesPrivate(t *testing.T) {
+	t.Parallel()
+	recovered := "https://rebind%2evendor%2eexample/pkg"
+	raw := nestedURLOuterHost + "?target=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(recovered)))
+	result := scanNestedWith(t, nestedURLSSRFConfig(), raw, &countingResolver{hosts: map[string][]string{
+		"mirror.vendor.example": {"93.184.216.34"},
+		"rebind.vendor.example": {"10.0.0.12"},
+	}})
+	if result.Allowed || result.Scanner != ScannerSSRF ||
+		!strings.HasPrefix(result.Reason, nestedURLReasonPrefix) ||
+		!strings.Contains(result.Reason, "10.0.0.12") {
+		t.Fatalf("recovered private host was not refused by DNS SSRF: %+v", result)
+	}
+}
+
 func TestCheckNestedURLs_RecoveredPercentLimit(t *testing.T) {
 	t.Parallel()
 	cfg := nestedURLConfig()
