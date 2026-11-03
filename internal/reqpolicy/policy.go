@@ -63,6 +63,11 @@ type RequestMeta struct {
 	// parsers disagree (first-wins vs last-wins), so a discriminator whose field
 	// is duplicated is unclassifiable and fails closed as opaque.
 	JSONDupKeys map[string]struct{}
+	// ExactURL and JSONBodySHA256 are populated only for a fully inspected,
+	// unambiguous JSON request without method overrides. Batch sub-requests
+	// carry neither and cannot use exact-request exceptions.
+	ExactURL       string
+	JSONBodySHA256 string
 }
 
 // Decision is the outcome of evaluating request policy against a request.
@@ -136,10 +141,20 @@ func NewMatcher(cfg *config.RequestPolicy) (*Matcher, error) {
 		if r.Except != nil && (r.Action != config.ActionBlock || r.Shadow || r.GraphQL != nil || r.Discriminator != nil ||
 			len(r.Route.Hosts) == 0 || len(r.Route.Methods) == 0 ||
 			(len(r.Route.PathPrefixes) == 0 && len(r.Route.PathPatterns) == 0) ||
-			r.Except.Field == "" || len(r.Except.Values) == 0) {
+			(len(r.Except.Requests) == 0 && (r.Except.Field == "" || len(r.Except.Values) == 0))) {
 			return nil, fmt.Errorf("request_policy rule %q: invalid exact exception", r.Name)
 		}
 		if r.Except != nil {
+			if len(r.Except.Requests) > 0 {
+				if r.Except.Field != "" || len(r.Except.Values) > 0 {
+					return nil, fmt.Errorf("request_policy rule %q: mixed exact exception modes", r.Name)
+				}
+				for _, request := range r.Except.Requests {
+					if err := config.ValidateRequestPolicyExactRequest(request); err != nil {
+						return nil, fmt.Errorf("request_policy rule %q: %w", r.Name, err)
+					}
+				}
+			}
 			for _, method := range r.Route.Methods {
 				switch strings.ToUpper(method) {
 				case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, "QUERY":
@@ -318,6 +333,31 @@ func (m *Matcher) ruleDecision(cr *compiledRule, meta RequestMeta) (string, bool
 		}
 	}
 	return cr.action, true
+}
+
+// NeedsExactRequest reports whether a route can use an exact-request exception.
+// Transports use it to avoid hashing bodies for policies without such entries.
+func (m *Matcher) NeedsExactRequest(meta RequestMeta) bool {
+	if m == nil || !m.enabled {
+		return false
+	}
+	for _, rule := range m.rules {
+		if rule.except != nil && len(rule.except.requests) > 0 && rule.routeMatches(meta) {
+			return true
+		}
+	}
+	return false
+}
+
+// HasMethodOverride reports whether any supported method-override header is
+// present. Exact-request approvals refuse these carriers, including empty ones.
+func HasMethodOverride(headers http.Header) bool {
+	for _, name := range methodOverrideHeaders {
+		if _, ok := headers[http.CanonicalHeaderKey(name)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // BodyPredicateKind selects which body predicates an uninspectable evaluation

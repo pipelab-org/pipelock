@@ -163,6 +163,38 @@ operation bodies.
 
 ## Rolling out safely
 
+An enforced block rule can carry `except.requests` entries for operator-approved
+JSON requests. Each entry requires `url`, `method`, `body_sha256`, `expires_at`,
+`owner`, and `reason`. This mode cannot be combined with the existing
+`except.field` and `except.values` string exception.
+
+The URL must be absolute HTTPS with the escaped path and query spelling the
+client will send. Scheme and host case and the default port `:443` are
+normalized on both sides (RFC 3986 section 6.2.3), so an approval matches an
+intercepted tunnel that always carries `host:443`; any other port is part of the
+approval. The method must be an uppercase body-carrying HTTP
+method. `body_sha256` is the lowercase SHA-256 digest of the complete JSON body
+bytes after any in-path redaction. Inspect those bytes before approving their
+digest; the digest alone doesn't describe or validate the requested action.
+Whitespace and serialization changes require a new approval. `expires_at` is an
+RFC 3339 timestamp checked on each request; an expired entry grants no relief
+even without a reload. An entry can be reused until expiry or removal. It isn't
+a single-use approval token, a client identity check, or an interactive approval
+API.
+
+Only a fully inspected `application/json` request can use this exception.
+Malformed JSON, duplicate object keys at any depth, method-override headers,
+batch envelopes and extracted batch sub-requests cannot use it. Other block
+rules, DLP, SSRF, entropy, kill switches and contracts still apply. Adding an
+entry or extending its expiry produces a security-downgrade reload warning;
+strict or required-receipt deployments require a validated restart for that
+expansion. Removing an entry revokes it for subsequent request evaluations.
+
+Deploy a binary that recognizes this configuration before loading it. Older
+binaries reject the unknown fields. The operator must approve the actual
+operation separately; adding a matching configuration entry records that
+decision but doesn't provide or expand its authority.
+
 Start a new rule in shadow before you enforce it:
 
 ```yaml

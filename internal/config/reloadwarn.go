@@ -1077,6 +1077,7 @@ func queryEntropyParamIdentity(entry QueryEntropyParamExclusion) string {
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
+	appendExactRequestReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
 	appendActionDowngradeWarning(warnings, "request_policy.on_parse_error", old.RequestPolicy.OnParseError, updated.RequestPolicy.OnParseError)
 	appendActionDowngradeWarning(warnings, "request_policy.on_opaque_operation", old.RequestPolicy.OnOpaqueOperation, updated.RequestPolicy.OnOpaqueOperation)
 	if old.ResponseScanning.Enabled && updated.ResponseScanning.Enabled {
@@ -1137,6 +1138,42 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	if old.ToolChainDetection.Enabled && updated.ToolChainDetection.Enabled {
 		appendActionDowngradeWarning(warnings, "tool_chain_detection.action", old.ToolChainDetection.Action, updated.ToolChainDetection.Action)
 		appendToolChainActionDowngrades(warnings, old.ToolChainDetection, updated.ToolChainDetection)
+	}
+}
+
+func appendExactRequestReloadWarnings(warnings *[]ReloadWarning, old, updated RequestPolicy) {
+	if !old.Enabled || !updated.Enabled {
+		return
+	}
+	previous := make(map[string]time.Time)
+	key := func(rule string, r RequestPolicyExactRequest) string {
+		return rule + "\x00" + r.Method + "\x00" + r.URL + "\x00" + r.BodySHA256
+	}
+	for _, rule := range old.Rules {
+		if rule.Except == nil {
+			continue
+		}
+		for _, request := range rule.Except.Requests {
+			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
+			if err == nil {
+				previous[key(rule.Name, request)] = expires
+			}
+		}
+	}
+	for _, rule := range updated.Rules {
+		if rule.Except == nil {
+			continue
+		}
+		for _, request := range rule.Except.Requests {
+			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
+			if err != nil || !time.Now().Before(expires) {
+				continue
+			}
+			if prior, ok := previous[key(rule.Name, request)]; !ok || expires.After(prior) {
+				*warnings = append(*warnings, ReloadWarning{Field: "request_policy.rules", Message: "exact-request exception added or extended"})
+				return
+			}
+		}
 	}
 }
 
