@@ -11,8 +11,9 @@ import (
 
 // isLoopbackPortProbe reports whether r has the shape of a local port
 // scanner's probe: a queryless GET /. Tests that assert an upstream was never
-// contacted ignore it. Every other request still counts, so a forwarding
-// regression can't hide behind it.
+// contacted ignore it, and every other request still counts. Only use this for
+// fixtures whose own traffic never arrives as a queryless GET /, or a real
+// contact of that shape would be hidden.
 func isLoopbackPortProbe(r *http.Request) bool {
 	return r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "" && !r.URL.ForceQuery
 }
