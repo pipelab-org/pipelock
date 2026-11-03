@@ -131,3 +131,41 @@ func TestURLDecisionsDNSParamExclusionRelief(t *testing.T) {
 		t.Fatalf("entropy=%v, want %v", got, want)
 	}
 }
+
+// cancelDuringLookupResolver cancels the request while its DNS lookup is in
+// flight, so the refusal comes from the resolver-error branch of the SSRF stage
+// rather than its earlier context check.
+type cancelDuringLookupResolver struct{ cancel context.CancelFunc }
+
+func (r cancelDuringLookupResolver) LookupHost(ctx context.Context, _ string) ([]string, error) {
+	r.cancel()
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestURLDecisionsSSRFLookupCancellation(t *testing.T) {
+	t.Parallel()
+	sc := decisionEdgeScanner(t, func(cfg *config.Config) {
+		cfg.Internal = []string{"10.0.0.0/8"}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	sc.resolver = cancelDuringLookupResolver{cancel: cancel}
+	result := sc.Scan(ctx, "https://api.vendor.example/items")
+	if result.Allowed || result.Scanner != ScannerContext {
+		t.Fatalf("expected the lookup-cancellation context refusal: %+v", result)
+	}
+	if got := result.Decisions.checks[urlContext]; got != DecisionFired|DecisionBlocked {
+		t.Fatalf("context=%v, want fired and blocked", got)
+	}
+	for i := urlLength; i < urlSSRF; i++ {
+		if got := result.Decisions.checks[i]; got != DecisionAllowed {
+			t.Errorf("check %d=%v, want allowed", i, got)
+		}
+	}
+	for i := urlSSRF; i < urlCheckCount; i++ {
+		if got := result.Decisions.checks[i]; got != DecisionNotEvaluated {
+			t.Errorf("check %d=%v, want not evaluated", i, got)
+		}
+	}
+}

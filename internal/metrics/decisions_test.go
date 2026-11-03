@@ -167,3 +167,50 @@ func TestURLDecisionNoScan(t *testing.T) {
 		t.Fatalf("context blocks=%v, want 2", got)
 	}
 }
+
+// The registered series and the scanner trace name their checks in two
+// separate lists. A label present in only one of them is silently dropped at
+// record time, so compare the two sets directly.
+func TestURLDecisionRegistrationMatchesTrace(t *testing.T) {
+	t.Parallel()
+	result := decisionScanner(t).Scan(t.Context(), "https://api.vendor.example/items")
+	traced := map[[2]string]bool{}
+	result.Decisions.Range(func(check, part string, _ scanner.Decision) {
+		traced[[2]string{check, part}] = true
+	})
+	if len(traced) == 0 {
+		t.Fatal("scan produced no decision trace")
+	}
+	families, err := New().Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := map[[2]string]bool{}
+	for _, family := range families {
+		if family.GetName() != "pipelock_url_check_decisions_total" {
+			continue
+		}
+		for _, metric := range family.Metric {
+			var check, part string
+			for _, label := range metric.Label {
+				switch label.GetName() {
+				case "check":
+					check = label.GetValue()
+				case "part":
+					part = label.GetValue()
+				}
+			}
+			registered[[2]string{check, part}] = true
+		}
+	}
+	for pair := range traced {
+		if !registered[pair] {
+			t.Errorf("traced check %q part %q has no registered series", pair[0], pair[1])
+		}
+	}
+	for pair := range registered {
+		if !traced[pair] {
+			t.Errorf("registered check %q part %q is never traced", pair[0], pair[1])
+		}
+	}
+}
