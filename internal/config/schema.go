@@ -379,12 +379,24 @@ type RequestPolicyRule struct {
 	Reason        string                      `yaml:"reason"`                  // operator-facing explanation (never logged with content)
 }
 
-// RequestPolicyException exempts a block only when an inspectable JSON object
-// contains one exact top-level string value. Missing, ambiguous, or unreadable
-// values never exempt the request.
+// RequestPolicyException exempts a block by an exact top-level JSON string or
+// a time-bounded exact request. The two modes cannot be combined. Unreadable
+// bodies never exempt the request.
 type RequestPolicyException struct {
-	Field  string   `yaml:"field"`
-	Values []string `yaml:"values"`
+	Field    string                      `yaml:"field"`
+	Values   []string                    `yaml:"values"`
+	Requests []RequestPolicyExactRequest `yaml:"requests,omitempty"`
+}
+
+// RequestPolicyExactRequest exempts only the approved HTTPS URL, HTTP method,
+// and complete JSON body bytes until ExpiresAt. Other security checks still run.
+type RequestPolicyExactRequest struct {
+	URL        string `yaml:"url"`
+	Method     string `yaml:"method"`
+	BodySHA256 string `yaml:"body_sha256"`
+	ExpiresAt  string `yaml:"expires_at"`
+	Owner      string `yaml:"owner"`
+	Reason     string `yaml:"reason"`
 }
 
 // RequestPolicyRoute selects which requests a rule applies to. An empty

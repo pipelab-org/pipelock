@@ -5,14 +5,19 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/reqpolicy"
 )
@@ -108,6 +113,8 @@ type requestPolicyBody struct {
 	jsonDoc     any
 	jsonDupKeys map[string]struct{}
 	jsonParsed  bool
+	exactURL    string
+	bodySHA256  string
 }
 
 func requestPolicyMeta(host, method, path, contentType string, body requestPolicyBody) reqpolicy.RequestMeta {
@@ -115,6 +122,7 @@ func requestPolicyMeta(host, method, path, contentType string, body requestPolic
 		Host: host, Method: method, Path: path, ContentType: contentType,
 		Operations: body.ops, JSONBody: body.jsonDoc, JSONBodyParsed: body.jsonParsed,
 		JSONDupKeys: body.jsonDupKeys,
+		ExactURL:    body.exactURL, JSONBodySHA256: body.bodySHA256,
 	}
 }
 
@@ -124,6 +132,9 @@ func (p *Proxy) evaluateRequestPolicy(host, baseMethod string, headers http.Head
 		return reqpolicy.Decision{}
 	}
 	eff := reqpolicy.EffectiveMethod(baseMethod, headers)
+	if reqpolicy.HasMethodOverride(headers) {
+		body.exactURL, body.bodySHA256 = "", ""
+	}
 	d := m.Evaluate(requestPolicyMeta(host, eff, path, contentType, body))
 	base := strings.ToUpper(strings.TrimSpace(baseMethod))
 	if eff != base {
@@ -330,8 +341,20 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 	}
 	ops, gqlParseOK, gqlOpaque := extractRequestPolicyOperations(in)
 	jsonDoc, jsonDupKeys, jsonParsed := parseRequestPolicyJSONBody(in)
+	body := requestPolicyBody{ops: ops, jsonDoc: jsonDoc, jsonDupKeys: jsonDupKeys, jsonParsed: jsonParsed}
+	meta := requestPolicyMeta(in.Host, in.Method, in.Path, in.ContentType, body)
+	if jsonParsed && m.NeedsExactRequest(meta) && jsonscan.RejectDuplicateKeys(in.Body) == nil {
+		u, urlErr := url.Parse(in.Target)
+		canonical, canonOK := config.CanonicalExactRequestURL(in.Target)
+		mediaType, _, typeErr := mime.ParseMediaType(in.ContentType)
+		if urlErr == nil && canonOK && typeErr == nil && mediaType == "application/json" &&
+			u.Hostname() == in.Host && u.EscapedPath() == in.Path && u.RawQuery == in.Query {
+			digest := sha256.Sum256(in.Body)
+			body.exactURL, body.bodySHA256 = canonical, hex.EncodeToString(digest[:])
+		}
+	}
 	d := p.evaluateRequestPolicy(in.Host, in.Method, in.Headers, in.Path, in.ContentType,
-		requestPolicyBody{ops: ops, jsonDoc: jsonDoc, jsonDupKeys: jsonDupKeys, jsonParsed: jsonParsed})
+		body)
 	switch {
 	case !gqlParseOK:
 		d = reqpolicy.Stricter(d, p.evaluateRequestPolicyUninspectable(in, m.OnParseError(), reqpolicy.PredGraphQL))

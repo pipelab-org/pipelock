@@ -267,6 +267,15 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	clone := *c
+	clone.RequestPolicy.Rules = slices.Clone(c.RequestPolicy.Rules)
+	for i := range clone.RequestPolicy.Rules {
+		if previous := c.RequestPolicy.Rules[i].Except; previous != nil {
+			except := *previous
+			except.Values = slices.Clone(previous.Values)
+			except.Requests = slices.Clone(previous.Requests)
+			clone.RequestPolicy.Rules[i].Except = &except
+		}
+	}
 	if c.PromptInjectionDetection != nil {
 		p := *c.PromptInjectionDetection
 		if p.Enabled != nil {
