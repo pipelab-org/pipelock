@@ -5,6 +5,7 @@ package config
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -3105,6 +3106,17 @@ func validateRequestPolicyDiscriminator(rule string, d *RequestPolicyDiscriminat
 
 func validateRequestPolicyException(rule string, e *RequestPolicyException) error {
 	e.Field = strings.TrimSpace(e.Field)
+	if len(e.Requests) > 0 {
+		if e.Field != "" || len(e.Values) != 0 {
+			return fmt.Errorf("request_policy rule %q except cannot combine requests and field/values", rule)
+		}
+		for _, request := range e.Requests {
+			if err := ValidateRequestPolicyExactRequest(request); err != nil {
+				return fmt.Errorf("request_policy rule %q: %w", rule, err)
+			}
+		}
+		return nil
+	}
 	if e.Field == "" || len(e.Values) == 0 {
 		return fmt.Errorf("request_policy rule %q except requires a field and at least one exact value", rule)
 	}
@@ -3121,6 +3133,58 @@ func validateRequestPolicyException(rule string, e *RequestPolicyException) erro
 // request body, so operators may want to name it in request_policy rules and
 // reverse_proxy allow-lists.
 const methodQuery = "QUERY"
+
+// CanonicalExactRequestURL returns the comparison form of an exact-request URL:
+// lowercase scheme and host, the https default port elided, and the path and
+// query spelled exactly as given. The scheme-based normalization is RFC 3986
+// section 6.2.3 and RFC 9110 section 4.2.3. Transports spell the same request
+// differently (an intercepted tunnel always carries host:443), so both the
+// configured URL and the observed target go through this before comparison.
+func CanonicalExactRequestURL(raw string) (string, bool) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		u.Opaque != "" || u.Path == "" || u.Fragment != "" {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" && port != "443" {
+		host += ":" + port
+	}
+	out := "https://" + host + u.EscapedPath()
+	if u.RawQuery != "" || u.ForceQuery {
+		out += "?" + u.RawQuery
+	}
+	return out, true
+}
+
+// ValidateRequestPolicyExactRequest validates an operator's exact-request
+// exception. Expired entries remain valid configuration but never grant relief.
+func ValidateRequestPolicyExactRequest(r RequestPolicyExactRequest) error {
+	u, err := url.Parse(r.URL)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil ||
+		u.Opaque != "" || u.Path == "" || strings.ContainsAny(r.URL, "*#\r\n\t ") {
+		return fmt.Errorf("exact request requires an absolute HTTPS URL without userinfo, fragment, whitespace, or wildcards")
+	}
+	switch r.Method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, methodQuery:
+	default:
+		return fmt.Errorf("exact request requires an uppercase body-carrying method")
+	}
+	digest, err := hex.DecodeString(r.BodySHA256)
+	if err != nil || len(digest) != sha256.Size || strings.ToLower(r.BodySHA256) != r.BodySHA256 {
+		return fmt.Errorf("exact request body_sha256 must be a lowercase SHA-256 hex digest")
+	}
+	if _, err := time.Parse(time.RFC3339, r.ExpiresAt); err != nil {
+		return fmt.Errorf("exact request expires_at must be an RFC3339 timestamp")
+	}
+	if strings.TrimSpace(r.Owner) == "" || strings.TrimSpace(r.Reason) == "" {
+		return fmt.Errorf("exact request requires owner and reason")
+	}
+	return nil
+}
 
 func validHTTPMethod(m string) bool {
 	switch m {

@@ -1077,6 +1077,8 @@ func queryEntropyParamIdentity(entry QueryEntropyParamExclusion) string {
 }
 
 func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Config) {
+	appendRequestPolicyBlockReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
+	appendExactRequestReloadWarnings(warnings, old.RequestPolicy, updated.RequestPolicy)
 	appendActionDowngradeWarning(warnings, "request_policy.on_parse_error", old.RequestPolicy.OnParseError, updated.RequestPolicy.OnParseError)
 	appendActionDowngradeWarning(warnings, "request_policy.on_opaque_operation", old.RequestPolicy.OnOpaqueOperation, updated.RequestPolicy.OnOpaqueOperation)
 	if old.ResponseScanning.Enabled && updated.ResponseScanning.Enabled {
@@ -1137,6 +1139,69 @@ func appendActionDowngradeWarnings(warnings *[]ReloadWarning, old, updated *Conf
 	if old.ToolChainDetection.Enabled && updated.ToolChainDetection.Enabled {
 		appendActionDowngradeWarning(warnings, "tool_chain_detection.action", old.ToolChainDetection.Action, updated.ToolChainDetection.Action)
 		appendToolChainActionDowngrades(warnings, old.ToolChainDetection, updated.ToolChainDetection)
+	}
+}
+
+// appendRequestPolicyBlockReloadWarnings retains the existing named enforcement
+// identity across reloads. Predicate containment is not inferred here.
+func appendRequestPolicyBlockReloadWarnings(warnings *[]ReloadWarning, old, updated RequestPolicy) {
+	if !old.Enabled {
+		return
+	}
+	enforcing := make(map[string]bool, len(updated.Rules))
+	if updated.Enabled {
+		for _, rule := range updated.Rules {
+			enforcing[rule.Name] = rule.Action == ActionBlock && !rule.Shadow
+		}
+	}
+	for _, rule := range old.Rules {
+		if rule.Action == ActionBlock && !rule.Shadow && !enforcing[rule.Name] {
+			*warnings = append(*warnings, ReloadWarning{Field: "request_policy.rules", Message: "request-policy block rule removed, disabled, or renamed"})
+			return
+		}
+	}
+}
+
+func appendExactRequestReloadWarnings(warnings *[]ReloadWarning, old, updated RequestPolicy) {
+	if !old.Enabled || !updated.Enabled {
+		return
+	}
+	previous := make(map[string]time.Time)
+	key := func(rule string, r RequestPolicyExactRequest) string {
+		canonical, ok := CanonicalExactRequestURL(r.URL)
+		if !ok {
+			canonical = r.URL
+		}
+		return rule + "\x00" + r.Method + "\x00" + canonical + "\x00" + r.BodySHA256
+	}
+	for _, rule := range old.Rules {
+		if rule.Except == nil {
+			continue
+		}
+		for _, request := range rule.Except.Requests {
+			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
+			if err == nil {
+				requestKey := key(rule.Name, request)
+				if prior, ok := previous[requestKey]; !ok || expires.After(prior) {
+					previous[requestKey] = expires
+				}
+			}
+		}
+	}
+	for _, rule := range updated.Rules {
+		if rule.Except == nil {
+			continue
+		}
+		for _, request := range rule.Except.Requests {
+			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
+			if err != nil || !time.Now().Before(expires) {
+				continue
+			}
+			if prior, ok := previous[key(rule.Name, request)]; !ok || expires.After(prior) {
+				*warnings = append(*warnings, ReloadWarning{Field: "request_policy.rules", Message: "exact-request exception added or extended"})
+				return
+			}
+		}
 	}
 }
 
