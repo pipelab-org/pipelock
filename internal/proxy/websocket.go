@@ -419,6 +419,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(wsScanCtx)
 	result := sc.ScanWebSocket(wsScanCtx, targetURL)
+	p.metrics.RecordURLDecisions(TransportWS, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportWS, "WS", targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		log.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

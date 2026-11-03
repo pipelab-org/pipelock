@@ -92,6 +92,10 @@ func TestInterceptIssuerQueryEndToEnd(t *testing.T) {
 			if got := do(step.path, step.agent); got != step.want {
 				t.Fatalf("status=%d, want %d", got, step.want)
 			}
+			if step.name == "issued value" {
+				assertMetricSampleValue(t, m, `pipelock_url_check_decisions_total{check="entropy",outcome="relieved",part="url",transport="intercept"}`, 1)
+				assertMetricSampleValue(t, m, `pipelock_url_check_decisions_total{check="entropy",outcome="blocked",part="url",transport="intercept"}`, 1)
+			}
 		})
 	}
 	auditBytes, err := os.ReadFile(filepath.Clean(auditPath))

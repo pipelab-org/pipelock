@@ -143,6 +143,8 @@ const (
 
 // Result describes the outcome of scanning a URL.
 type Result struct {
+	Decisions       URLDecisions `json:"-"`
+	relief          bool
 	Allowed         bool         `json:"allowed"`
 	Reason          string       `json:"reason,omitempty"`
 	Scanner         string       `json:"scanner,omitempty"` // which scanner triggered
@@ -1245,20 +1247,20 @@ func (s *Scanner) ScanPreflight(ctx context.Context, rawURL string) Result {
 	return s.scanWithRateRecording(ctx, rawURL, false, false)
 }
 
-func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate, websocket bool) Result {
+func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, recordRate, websocket bool) (result Result) {
 	defer func() {
 		if h := s.heartbeat.Load(); h != nil {
 			h.fn()
 		}
 	}()
 	if ctx == nil || ctx.Err() != nil {
-		return Result{
-			Allowed: false,
-			Reason:  "request context unavailable",
-			Scanner: ScannerContext,
-			Score:   1.0,
-			Hint:    HintForScanner(ScannerContext),
-		}
+		result.Decisions.valid = true
+		result.Decisions.checks[urlContext] = DecisionFired | DecisionBlocked
+		result.Scanner = ScannerContext
+		result.Reason = "request context unavailable"
+		result.Score = 1.0
+		result.Hint = HintForScanner(ScannerContext)
+		return result
 	}
 	r := s.scan(ctx, rawURL, recordRate, websocket)
 	if !r.Allowed && r.Hint == "" {
@@ -1277,8 +1279,13 @@ func (s *Scanner) scanWithRateRecording(ctx context.Context, rawURL string, reco
 // DLP runs on the hostname BEFORE DNS resolution to prevent secret exfiltration
 // via DNS queries (e.g., "sk-ant-xxx.evil.com" leaks the key during resolution).
 func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket bool) (result Result) {
+	decisions := URLDecisions{valid: true}
+	decisions.checks[urlContext] = DecisionAllowed
+	defer func() { result.Decisions = decisions }()
 	now := s.currentTime()
+	decisions.checks[urlLength] = DecisionAllowed
 	if s.maxURLLength > 0 && len(rawURL) > s.maxURLLength {
+		decisions.checks[urlLength] = DecisionFired | DecisionBlocked
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("URL length %d exceeds maximum %d", len(rawURL), s.maxURLLength),
@@ -1287,11 +1294,14 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 		}
 	}
 
+	decisions.checks[urlParser] = DecisionAllowed
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
+		decisions.checks[urlParser] = DecisionFired | DecisionBlocked
 		return Result{Allowed: false, Reason: "invalid URL", Scanner: ScannerParser, Score: 1.0}
 	}
 
+	decisions.checks[urlScheme] = DecisionAllowed
 	if websocket {
 		// RFC 6455 section 3 defines ws/wss handshakes over HTTP/HTTPS.
 		switch parsed.Scheme {
@@ -1300,6 +1310,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 		case "wss":
 			parsed.Scheme = "https"
 		default:
+			decisions.checks[urlScheme] = DecisionFired | DecisionBlocked
 			return Result{Allowed: false, Reason: "invalid URL: must be ws or wss", Scanner: ScannerScheme, Score: 1.0}
 		}
 		if parsed.Path == "" {
@@ -1327,6 +1338,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 
 	// Scheme check -
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		decisions.checks[urlScheme] = DecisionFired | DecisionBlocked
 		return Result{
 			Allowed: false,
 			Reason:  fmt.Sprintf("scheme %q not allowed: only http and https", parsed.Scheme),
@@ -1336,28 +1348,37 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	}
 	dest, destinationOK := urlDestination(parsed, hostname)
 	if !destinationOK {
+		decisions.checks[urlParser] = DecisionFired | DecisionBlocked
 		return Result{Allowed: false, Reason: "invalid destination host or port", Scanner: ScannerParser, Score: 1.0}
 	}
 
 	// CRLF injection check - %0D%0A in URLs enables header injection.
 	// Runs early because CRLF is never legitimate in a URL.
-	if result := checkCRLF(rawURL); !result.Allowed {
+	result = checkCRLF(rawURL)
+	decisions.record(urlCRLF, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Path traversal check - /../ sequences are defense-in-depth.
-	if result := checkPathTraversal(parsed); !result.Allowed {
+	result = checkPathTraversal(parsed)
+	decisions.record(urlTraversal, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Allowlist check - if configured, only allowlisted domains are permitted.
 	// Runs before DNS to reject disallowed domains without any network I/O.
-	if result := s.checkAllowlist(dest); !result.Allowed {
+	result = s.checkAllowlist(dest)
+	decisions.record(urlAllowlist, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Blocklist check - before DNS to avoid resolving known-bad domains.
-	if result := s.checkBlocklist(hostname); !result.Allowed {
+	result = s.checkBlocklist(hostname)
+	decisions.record(urlBlocklist, result)
+	if !result.Allowed {
 		return result
 	}
 
@@ -1365,7 +1386,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	// even when cfg.Internal is nil (SSRF disabled). Blocks direct requests
 	// to private IPs (127.0.0.1, 169.254.169.254, 10.x, etc.). Respects
 	// ssrf.ip_allowlist for operator overrides.
-	if result := s.checkCoreSSRFLiteral(dest); !result.Allowed {
+	result = s.checkCoreSSRFLiteral(dest)
+	decisions.record(urlCoreSSRF, result)
+	if !result.Allowed {
 		return result
 	}
 
@@ -1388,7 +1411,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	// Core DLP - immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
 	decodes := decodingMemo{inbound: inboundDirection(ctx)}
-	if result := s.checkCoreDLPWithDecodes(scanURL, &decodes); !result.Allowed {
+	result = s.checkCoreDLPWithDecodes(scanURL, &decodes)
+	decisions.record(urlCoreDLP, result)
+	if !result.Allowed {
 		return result
 	}
 
@@ -1397,6 +1422,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
 	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
+	dlpResult.WarnMatches = dlpWarns
+	dlpResult.relief = len(dlpResult.CredentialAudienceAllows) > 0
+	decisions.record(urlDLP, dlpResult)
 	if !dlpResult.Allowed {
 		if note := s.queryGrantValidityNoteWithMode(scanURL, now, decodes.inbound); note != "" {
 			dlpResult.Reason += "; " + note
@@ -1427,13 +1455,17 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	if allowance := s.nativeOAuthAuthorization(ctx, scanURL, now); allowance != nil {
 		ctx = context.WithValue(ctx, oauthAuthorizationAllowanceKey{}, allowance)
 	}
-	if result := s.checkEntropyWithContextAt(ctx, scanURL, now); !result.Allowed {
+	result = s.checkEntropyWithContextAt(ctx, scanURL, now)
+	decisions.record(urlEntropy, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Subdomain entropy check - catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
-	if result := s.checkSubdomainEntropy(hostname); !result.Allowed {
+	result = s.checkSubdomainEntropy(hostname)
+	decisions.record(urlSubdomainEntropy, result)
+	if !result.Allowed {
 		return result
 	}
 
@@ -1445,7 +1477,9 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	// secret was still refused, but the DLP finding never reached audit and the
 	// timeout is adaptive-neutral, so nothing was recorded. Content findings that
 	// need no network must be established before any check that can time out.
-	if result := s.checkNestedURLs(ctx, parsed); !result.Allowed {
+	result = s.checkNestedURLs(ctx, parsed)
+	decisions.record(urlNested, result)
+	if !result.Allowed {
 		return result
 	}
 
@@ -1454,23 +1488,29 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	// so private ranges (10.x, 172.16.x, 192.168.x, loopback, link-local)
 	// cannot be removed from the check set via config alone.
 	ssrfResult := s.checkSSRF(ctx, dest)
+	decisions.record(urlSSRF, ssrfResult)
 	if !ssrfResult.Allowed {
 		return ssrfResult
 	}
 
 	// Rate limit check (per-domain)
-	if result := s.checkRateLimit(hostname, recordRate); !result.Allowed {
+	result = s.checkRateLimit(hostname, recordRate)
+	decisions.record(urlRateLimit, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Data budget check (per-domain sliding window)
-	if result := s.checkDataBudget(hostname); !result.Allowed {
+	result = s.checkDataBudget(hostname)
+	decisions.record(urlDataBudget, result)
+	if !result.Allowed {
 		return result
 	}
 
 	// Final context check: catch cancellations that arrived during in-memory
 	// scanning (blocklist, DLP, entropy) before returning an allow verdict.
 	if ctx.Err() != nil {
+		decisions.checks[urlContext] = DecisionFired | DecisionBlocked
 		return Result{
 			Allowed: false,
 			Reason:  "request context cancelled",
@@ -5300,7 +5340,9 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 	return s.checkEntropyWithContextAt(ctx, parsed, s.currentTime())
 }
 
-func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL, now time.Time) Result {
+func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL, now time.Time) (result Result) {
+	relieved := false
+	defer func() { result.relief = relieved }()
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
 	}
@@ -5329,12 +5371,15 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 		entropy, blocked := s.pathEntropy(parsed.Path)
 		if blocked && issuerPathAllowed(ctx, parsed.EscapedPath()) {
 			blocked = false
+			relieved = true
 		}
 		if blocked {
 			// Rescore without the segments the origin issued as object IDs;
 			// any other high-entropy segment still blocks.
 			entropy, blocked = s.pathEntropySkipping(parsed.Path, func(segment string) bool {
-				return issuerSegmentAllowed(ctx, segment)
+				allowed := issuerSegmentAllowed(ctx, segment)
+				relieved = relieved || allowed
+				return allowed
 			})
 		}
 		if blocked {
@@ -5353,8 +5398,10 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	// protect a separate network-control invariant.
 	// Keys are checked too - secrets can be stuffed into parameter names.
 	if strings.Contains(parsed.RawQuery, ";") {
-		if result, blocked := s.scanAmbiguousRawQueryWithContext(ctx, parsed.RawQuery, !excludedQuery); blocked {
-			return result
+		ambiguous, blocked := s.scanAmbiguousRawQueryWithContext(ctx, parsed.RawQuery, !excludedQuery)
+		relieved = relieved || ambiguous.relief
+		if blocked {
+			return ambiguous
 		}
 	}
 	query := entropyQueryValues(parsed.RawQuery)
@@ -5383,6 +5430,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			if dohQuery && key == dnsQueryParam {
 				if finding, blocked := s.dnsMessageEntropy(dohMsg); blocked {
 					if s.isQueryEntropyParamExcludedAt(parsed, key, now) {
+						relieved = true
 						continue
 					}
 					return s.queryEntropyParamResult(key, finding)
@@ -5392,6 +5440,7 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 			if finding, blocked := s.queryValueEntropy(v, 0); blocked {
 				if s.isQueryEntropyParamExcludedAt(parsed, key, now) || issuerQueryAllowed(ctx, key, v) ||
 					s.queryValueIsAudienceCredentialAt(parsed.String(), v, now) || s.releaseGrantSASQueryValueAllowedAt(parsed, key, now) || nativeOAuthQueryAllowed(ctx, key, v) {
+					relieved = true
 					continue
 				}
 				return s.queryEntropyParamResult(key, finding)
@@ -5402,7 +5451,9 @@ func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL
 	return Result{Allowed: true}
 }
 
-func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery string, scanEntropy bool) (Result, bool) {
+func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery string, scanEntropy bool) (result Result, blocked bool) {
+	relieved := false
+	defer func() { result.relief = relieved }()
 	pairs := splitQueryEntropyPairs(rawQuery)
 	s256 := pkceExemptionApplies(queryEntropyPairValues(pairs, pkceMethodParam), queryEntropyPairValues(pairs, pkceChallengeParam))
 	for _, p := range pairs {
@@ -5427,6 +5478,7 @@ func (s *Scanner) scanAmbiguousRawQueryWithContext(ctx context.Context, rawQuery
 		}
 		if finding, blocked := s.queryValueEntropy(value, 0); blocked {
 			if issuerQueryAllowed(ctx, key, value) {
+				relieved = true
 				continue
 			}
 			return s.queryEntropyParamResult(key, finding), true

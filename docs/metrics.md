@@ -95,6 +95,27 @@ handshake latency, and per-request/response blocking.
 | `pipelock_tls_response_blocked_total` | counter | `reason` | Responses blocked inside intercepted tunnels. `reason` is `compressed`, `read_error`, `oversized`, or `injection`. |
 | `pipelock_tls_cert_cache_size` | gauge | (none) | Current number of cached forged leaf certificates. |
 
+## URL Check Decisions
+
+`pipelock_url_check_decisions_total{check,outcome,transport,part}` counts the selected URL scan's check outcomes before transport enforcement. Fetch, forward proxy, CONNECT, TLS interception, WebSocket URL admission, submit-profile reverse proxy, and redirect scans record it. Redirect preflights count as scans even when the proxy returns the redirect to the client. The internal watchdog probe isn't counted.
+
+| Label | Values |
+|-------|--------|
+| `check` | `context`, `length`, `parser`, `scheme`, `crlf_injection`, `path_traversal`, `allowlist`, `blocklist`, `core_ssrf`, `core_dlp`, `dlp`, `entropy`, `subdomain_entropy`, `all`, `ssrf`, `ratelimit`, `databudget` |
+| `outcome` | `fired`, `allowed`, `blocked`, `relieved`, `not_evaluated` |
+| `transport` | `fetch`, `forward`, `connect`, `intercept`, `websocket`, `reverse` |
+| `part` | `url_query` for the composite nested-destination check (`check="all"`); `url` for every other check |
+
+All 510 permitted series (17 check/part pairs × 5 outcomes × 6 transports) are created with the registry. Recording uses fixed-size scanner state, immutable counter handles and atomic increments. Unknown transports are dropped. Labels contain no hosts, URLs, paths, values, pattern names or agent names. No length or shape buckets are collected. The counter uses the existing local registry and optional metrics listener.
+
+Outcomes overlap. `allowed` means the check ran and returned an allow, including checks that return early because they're disabled or exempt. `fired` increments once when the check observes a finding or refusal; warnings increment both `fired` and `allowed`. `blocked` means the check refused the URL. Transport audit or warn policy can still release that refusal, so it isn't a count of requests denied upstream. Existing request counters report those final decisions.
+
+`relieved` increments once when the check observes at least one finding allowed by credential-audience or entropy allowances, including issuer query values, paths and server-issued segments. It also increments `fired`; a check can relieve one finding and still block a different finding. TLS interception records the selected issuer rescan once: the provisional entropy refusal doesn't add a block. If no allowance applies, only the original scan counts. Later receipt or transport failures don't undo the scanner's observations.
+
+`not_evaluated` means the pipeline returned before entering that check. It doesn't mean that an evaluated check found nothing. Context and parser labels each combine their initial and final validation sites into one outcome. The nested-destination stage is counted as a composite; its individual allowlist, blocklist and SSRF subchecks aren't counted separately.
+
+These counts cover the URL pipeline only. They don't count body, header, response, MCP, standalone Scan API, dial-time rebind checks or core-floor-only fallback scans. Existing metrics for those paths still apply. Other bypasses, including SigV4 scrubbing, domain exclusions and published-format recognizers, aren't inferred as `fired` or `relieved`. No extra scan, policy simulation, budget update or learning step runs to produce counts. Counts alone can't establish that a block was false or classify an opaque value's origin.
+
 ## Request Scanning Metrics
 
 Request body and header scanning detects secrets and prompt injection in POST/PUT/PATCH bodies,

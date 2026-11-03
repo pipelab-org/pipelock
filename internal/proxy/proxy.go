@@ -1096,6 +1096,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			} else {
 				result = currentScanner.Scan(redirectScanCtx, redirectURL)
 			}
+			p.metrics.RecordURLDecisions(redirectTransport, result.Decisions)
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
@@ -5485,6 +5486,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	scanCtx = scanner.WithOAuthAuthorizationMethod(scanCtx, http.MethodGet)
 	r = r.WithContext(scanCtx)
 	result := sc.Scan(scanCtx, targetURL)
+	p.metrics.RecordURLDecisions(TransportFetch, result.Decisions)
 	if err := p.recordCredentialAudienceAllows(cfg, actx, result.CredentialAudienceAllows, TransportFetch, http.MethodGet, targetURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

@@ -1,0 +1,169 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package metrics
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
+
+const decisionOpaque = "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6uX9"
+
+func decisionScanner(t *testing.T) *scanner.Scanner {
+	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.FetchProxy.Monitoring.MaxReqPerMinute = 0
+	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns,
+		config.DLPPattern{Name: "Decision warning", Regex: "decision_warning", Severity: config.SeverityHigh, Action: config.ActionWarn},
+		config.DLPPattern{Name: "Decision audience", Regex: "decision_audience_value", Severity: config.SeverityHigh, CredentialAudienceHosts: []string{"api.vendor.example"}},
+	)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	return sc
+}
+
+func TestURLDecisionOutcomes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		target string
+		allow  bool
+		check  string
+		// not evaluated, allowed, fired, blocked, relieved.
+		want   [decisionOutcomeCount]float64
+		issuer bool
+	}{
+		{"clean", "https://api.vendor.example/items", true, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 1, 0, 0, 0}, false},
+		{"early block", "ftp://api.vendor.example/items", false, scanner.ScannerScheme, [decisionOutcomeCount]float64{0, 0, 1, 1, 0}, false},
+		{"not evaluated", "ftp://api.vendor.example/items", false, scanner.ScannerEntropy, [decisionOutcomeCount]float64{1, 0, 0, 0, 0}, false},
+		{"warning", "https://api.vendor.example/decision_warning", true, scanner.ScannerDLP, [decisionOutcomeCount]float64{0, 1, 1, 0, 0}, false},
+		{"entropy block", "https://api.vendor.example/items?cursor=" + decisionOpaque, false, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 0, 1, 1, 0}, false},
+		{"issuer relief", "https://api.vendor.example/items?cursor=" + decisionOpaque, true, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 1, 1, 0, 1}, true},
+		{"audience relief", "https://api.vendor.example/decision_audience_value", true, scanner.ScannerDLP, [decisionOutcomeCount]float64{0, 1, 1, 0, 1}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sc := decisionScanner(t)
+			ctx := t.Context()
+			if tc.issuer {
+				ctx = scanner.WithIssuerQueryAllowance(ctx, func(key, value string) bool {
+					return key == "cursor" && value == decisionOpaque
+				})
+			}
+			result := sc.Scan(ctx, tc.target)
+			if result.Allowed != tc.allow {
+				t.Fatalf("allowed=%v, want %v: %s", result.Allowed, tc.allow, result.Reason)
+			}
+			m := New()
+			m.RecordURLDecisions("fetch", result.Decisions)
+			for i, want := range tc.want {
+				if got := testutil.ToFloat64(m.urlDecisions[urlDecisionKey{"fetch", tc.check}][i]); got != want {
+					t.Errorf("outcome %d = %v, want %v", i, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestURLDecisionLabelsBounded(t *testing.T) {
+	t.Parallel()
+	const canary = "decisionCanaryPrivateRequestData"
+	sc := decisionScanner(t)
+	m := New()
+	for _, target := range []string{
+		"https://" + canary + ".vendor.example/" + canary + "?cursor=" + canary,
+		"ftp://" + canary + ".vendor.example/",
+		"https://api.vendor.example/%xx?cursor=" + canary,
+	} {
+		result := sc.Scan(t.Context(), target)
+		m.RecordURLDecisions("fetch", result.Decisions)
+		m.RecordURLDecisions(canary, result.Decisions)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil)
+	m.PrometheusHandler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("scrape status %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), canary) {
+		t.Fatal("request canary reached metrics output")
+	}
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "pipelock_url_check_decisions_total" {
+			continue
+		}
+		if got, want := len(family.Metric), 17*5*6; got != want {
+			t.Fatalf("series = %d, want %d", got, want)
+		}
+		for _, metric := range family.Metric {
+			if len(metric.Label) != 4 {
+				t.Fatalf("labels = %d, want 4", len(metric.Label))
+			}
+			for _, label := range metric.Label {
+				if label.GetName() == "part" && label.GetValue() != "url" && label.GetValue() != "url_query" {
+					t.Fatalf("unexpected request part %q", label.GetValue())
+				}
+			}
+		}
+	}
+}
+
+func TestURLDecisionRecordingConcurrent(t *testing.T) {
+	result := decisionScanner(t).Scan(t.Context(), "https://api.vendor.example/items")
+	m := New()
+	var wg sync.WaitGroup
+	const workers = 8
+	for range workers {
+		wg.Go(func() { m.RecordURLDecisions("fetch", result.Decisions) })
+	}
+	wg.Wait()
+	if got := testutil.ToFloat64(m.urlDecisions[urlDecisionKey{"fetch", scanner.ScannerEntropy}][1]); got != workers {
+		t.Fatalf("allowed=%v, want %d", got, workers)
+	}
+	if got := testing.AllocsPerRun(10, func() { m.RecordURLDecisions("fetch", result.Decisions) }); got != 0 {
+		t.Fatalf("recording allocations=%v, want 0", got)
+	}
+}
+
+func TestURLDecisionNoScan(t *testing.T) {
+	t.Parallel()
+	var nilMetrics *Metrics
+	nilMetrics.RecordURLDecisions("fetch", scanner.URLDecisions{})
+	emptyMetrics := &Metrics{}
+	emptyMetrics.RecordURLDecisions("fetch", decisionScanner(t).Scan(t.Context(), "ftp://api.vendor.example").Decisions)
+	m := New()
+	m.RecordURLDecisions("fetch", scanner.URLDecisions{})
+	var nilContext context.Context
+	result := decisionScanner(t).Scan(nilContext, "https://api.vendor.example/items")
+	m.RecordURLDecisions("fetch", result.Decisions)
+	if got := testutil.ToFloat64(m.urlDecisions[urlDecisionKey{"fetch", scanner.ScannerContext}][3]); got != 1 {
+		t.Fatalf("context blocks=%v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.urlDecisions[urlDecisionKey{"fetch", scanner.ScannerLength}][0]); got != 1 {
+		t.Fatalf("length not evaluated=%v, want 1", got)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result = decisionScanner(t).Scan(ctx, "https://api.vendor.example/items")
+	m.RecordURLDecisions("fetch", result.Decisions)
+	if got := testutil.ToFloat64(m.urlDecisions[urlDecisionKey{"fetch", scanner.ScannerContext}][3]); got != 2 {
+		t.Fatalf("context blocks=%v, want 2", got)
+	}
+}

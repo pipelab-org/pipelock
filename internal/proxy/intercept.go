@@ -874,6 +874,7 @@ func newInterceptHandler(
 		}
 		r = r.WithContext(interceptScanCtx)
 		urlResult := ic.Scanner.Scan(interceptScanCtx, targetURL)
+		defer func() { ic.Metrics.RecordURLDecisions("intercept", urlResult.Decisions) }()
 		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
 				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
