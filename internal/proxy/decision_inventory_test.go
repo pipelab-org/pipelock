@@ -604,6 +604,7 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 				}
 			}
 			slices.Sort(row.Detectors)
+			row.Detectors = slices.Compact(row.Detectors)
 			rows = append(rows, row)
 		}
 	}
