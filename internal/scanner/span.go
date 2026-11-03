@@ -111,12 +111,7 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 		return 0, 0, false
 	}
 	if p.withoutLeftBoundary == nil {
-		for _, loc := range p.re.FindAllStringIndex(text, -1) {
-			if start, end, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
-				return start, end, true
-			}
-		}
-		return 0, 0, false
+		return p.firstAcceptedSpan(text, nil)
 	}
 	if source == text {
 		for _, loc := range p.re.FindAllStringIndex(text, -1) {
@@ -166,13 +161,9 @@ func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []i
 	if !p.shapeGate.admits(text) {
 		return 0, 0, false
 	}
-	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
-		if ok && p.validateJoined(text, start, end, source, offsets) {
-			return start, end, true
-		}
-	}
-	return 0, 0, false
+	return p.firstAcceptedSpan(text, func(start, end int) bool {
+		return p.validateJoined(text, start, end, source, offsets)
+	})
 }
 
 func sameProviderCandidate(candidate, sourceCandidate string) bool {
@@ -242,4 +233,59 @@ func (p *compiledPattern) candidateHasLeftBoundary(source string, candidateLoc [
 		}
 	}
 	return false
+}
+
+// firstAcceptedSpan preserves whole-match and boundary semantics for ordinary
+// validators. The canonical WIF grammar has no boundaries, so a rejected greedy
+// hit can hide a valid key that starts inside it; WIF candidates are therefore
+// enumerated at every start rather than at the regex's non-overlapping hits.
+func (p *compiledPattern) firstAcceptedSpan(text string, joined func(int, int) bool) (int, int, bool) {
+	if !p.wifOverlapRetry {
+		for _, loc := range p.re.FindAllStringIndex(text, -1) {
+			start, end, ok := p.acceptedSpan(text, loc[0], loc[1])
+			if ok && (joined == nil || joined(start, end)) {
+				return start, end, true
+			}
+		}
+		return 0, 0, false
+	}
+	return firstWIFCandidate(text, func(start, end int) bool {
+		return p.accepts(text, start, end) && (joined == nil || joined(start, end))
+	})
+}
+
+// firstWIFCandidate visits each canonical WIF start once in one pass over
+// maximal base58 runs. A canonical candidate's width is fixed by its first
+// byte (Bitcoin's mainnet WIF format: '5' then 50 base58 characters, or 'K'/'L'
+// then 51), and validateWIF accepts only all-base58 input, so this yields every
+// candidate the case-insensitive regex could have had accepted. Re-running the
+// regex from each rejected start instead costs up to 52 regex steps per byte.
+func firstWIFCandidate(text string, accept func(start, end int) bool) (int, int, bool) {
+	// run checks every start in the base58 run text[runStart:runEnd].
+	run := func(runStart, runEnd int) (int, int, bool) {
+		for start := runStart; runEnd-start >= wifUncompressedLen; start++ {
+			width := 0
+			switch text[start] {
+			case '5':
+				width = wifUncompressedLen
+			case 'K', 'L':
+				width = wifCompressedLen
+			}
+			if width > 0 && start+width <= runEnd && accept(start, start+width) {
+				return start, start + width, true
+			}
+		}
+		return 0, 0, false
+	}
+	runStart := 0
+	for i := range len(text) {
+		if isBase58Byte(text[i]) {
+			continue
+		}
+		if start, end, ok := run(runStart, i); ok {
+			return start, end, true
+		}
+		runStart = i + 1
+	}
+	return run(runStart, len(text))
 }

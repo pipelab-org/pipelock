@@ -456,7 +456,10 @@ const (
 	// audience, RubyGems gained Bearer, and the container-registry JWT
 	// gained a bearer audience for ghcr.io.
 	// Re-bumped for the RFC 9110 section 4.1 default URI size (8000 octets).
-	goldenHashDefaults = "6038a97f76bc091b23dc0eaf51394a0bcad758ce5b6b1e7ffa707dfde7a77e32"
+	// Bound to compiled API endpoint carriers and the Api-Key sensitive header.
+	// Re-bumped when the Anthropic audience admitted its documented Bearer carrier.
+	// Re-bumped for the structured Discord Gateway carrier and the publisher SDK Together host.
+	goldenHashDefaults = "6a79445ef40aa35fba583218a10c1c40c7d80b12a14635453273231dc66c1f74"
 
 	// goldenHashRichConfig pins the hash for goldenRichYAML loaded via
 	// config.Load, post-ApplyDefaults + Validate. Covers a broad,
@@ -696,7 +699,9 @@ const (
 	// Re-bumped for the Azure SAS Token ReleaseGrantSAS audience; see
 	// goldenHashDefaults above. The rich fixture inherits the default DLP
 	// pattern set, so the hash shifts in lockstep.
-	goldenHashRichConfig = "3dfb5e4b36f15a3e20559aa5650e5a6f1695dfbf98af6935a2730d99c43483a4"
+	// Bound to the narrowed compiled credential audiences and carriers.
+	// Re-bumped with goldenHashDefaults for compiled credential-audience metadata.
+	goldenHashRichConfig = "7dc34313691908420e97ae738348130db093e50854a2f517ae991372ec973e01"
 )
 
 // goldenRichYAML is the canonical fixture for goldenHashRichConfig. It
@@ -1265,14 +1270,13 @@ func TestCanonicalPolicyHash_NewToolAdmissionVocabularyGolden(t *testing.T) {
 		admission string
 		wantHash  string
 	}{
-		// These YAML fixtures reflect both the inherited shipped blocklist and
-		// the compiled Authorization-only Google credential audience policy, and
-		// the GitLab native token headers in the default sensitive headers.
-		// the compiled Authorization-only Google credential audience policy and the
-		// JWT Token URL-query audience.
+		// These fixtures inherit the default credential audiences and sensitive
+		// headers, including Api-Key. The hashes include the structured Discord
+		// Gateway carrier and the publisher SDK Together host, matching the
+		// default and rich-config goldens above.
 		// They inherit the RFC 9110 default URI limit of 8000 octets.
-		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "12f51d19e8f04a354cc18cd70866a81977e5dd6d3a9ace9e041f5348846823eb"},
-		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "19727c57d8836daecc0d9a7f927581f20b094f42fd496c9adb9496af84f85781"},
+		{name: "admit remains warn", admission: NewToolAdmit, wantHash: "5d115cf3363d70502c86af5be65567bea7f9a98424935de08a604a75209c7126"},
+		{name: "withhold remains block", admission: NewToolWithhold, wantHash: "390824f964b49e2fdf57f401600abc6c7268bb52e3f5d6c4b68a995e452a89f4"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

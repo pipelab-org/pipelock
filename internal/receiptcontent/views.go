@@ -152,7 +152,11 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	for _, a := range p.atoms {
 		pattern, seen := verdict[a.Text]
 		if !seen {
-			if res := det(ctx, a.Text); !res.Clean {
+			res := det(ctx, a.Text)
+			if err := res.Err(); err != nil {
+				return rep, err
+			}
+			if !res.Clean {
 				pattern = firstPattern(res)
 			}
 			verdict[a.Text] = pattern
@@ -166,7 +170,11 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	}
 
 	// (iv) The structured content projection, for context-dependent rules.
-	if res := det(ctx, string(p.structured)); !res.Clean {
+	res := det(ctx, string(p.structured))
+	if err := res.Err(); err != nil {
+		return rep, err
+	}
+	if !res.Clean {
 		rep.Findings = append(rep.Findings, Finding{View: ViewStructured, Pattern: firstPattern(res)})
 		return rep, nil
 	}
@@ -182,7 +190,11 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 		}
 	}
 	if values.Len() > 0 {
-		if res := det(ctx, values.String()); !res.Clean {
+		res := det(ctx, values.String())
+		if err := res.Err(); err != nil {
+			return rep, err
+		}
+		if !res.Clean {
 			rep.Findings = append(rep.Findings, Finding{View: ViewValues, Paths: valuePaths, Fields: valueFields, Pattern: firstPattern(res)})
 			return rep, nil
 		}
@@ -252,8 +264,8 @@ func scanFragments(ctx context.Context, det Detector, p *Projection) (*Finding, 
 		maxSize = size
 	}
 	if n >= 2 {
-		if f := combineFragments(ctx, det, parts, paths, fields, maxSize); f != nil {
-			return f, nil
+		if f, err := combineFragments(ctx, det, parts, paths, fields, maxSize); f != nil || err != nil {
+			return f, err
 		}
 	}
 	if n == 0 || len(bridges) == 0 {
@@ -315,7 +327,11 @@ func bridgeFragments(ctx context.Context, det Detector, kind string, cands, brid
 						continue
 					}
 					seen[text] = struct{}{}
-					if res := det(ctx, text); !res.Clean {
+					res := det(ctx, text)
+					if err := res.Err(); err != nil {
+						return nil, err
+					}
+					if !res.Clean {
 						hit, hitFields := make([]string, 0, k), make([]string, 0, k)
 						for _, o := range order {
 							hit = append(hit, piece[o].path)
@@ -430,7 +446,7 @@ func bridgedWork(cands, bridges []fragmentPiece, maxSize int) (int64, bool) {
 // 2 and 3 fragments is tried, and both directions of 4. Projection order is
 // fixed by the schema's sorted keys, so a caller choosing which field holds
 // which fragment controls the order.
-func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) *Finding {
+func combineFragments(ctx context.Context, det Detector, parts, paths, fields []string, maxSize int) (*Finding, error) {
 	n := len(parts)
 	var b strings.Builder
 	// Repeated occurrences retain their combination positions, but equal
@@ -452,13 +468,17 @@ func combineFragments(ctx context.Context, det Detector, parts, paths, fields []
 					continue
 				}
 				seen[text] = struct{}{}
-				if res := det(ctx, text); !res.Clean {
+				res := det(ctx, text)
+				if err := res.Err(); err != nil {
+					return nil, err
+				}
+				if !res.Clean {
 					hit, hitFields := make([]string, 0, size), make([]string, 0, size)
 					for _, o := range order {
 						hit = append(hit, paths[idx[o]])
 						hitFields = append(hitFields, fields[idx[o]])
 					}
-					return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}
+					return &Finding{View: ViewFragments, Paths: hit, Fields: hitFields, Pattern: firstPattern(res)}, nil
 				}
 			}
 			if !scanner.NextSubsequence(idx, n) {
@@ -466,7 +486,7 @@ func combineFragments(ctx context.Context, det Detector, parts, paths, fields []
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // widestFragmentSearch returns the largest size in {3, 2} whose complete

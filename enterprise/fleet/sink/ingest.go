@@ -121,6 +121,10 @@ func (h *Handler) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dlpResult := h.dlpScanner.ScanTextForDLP(r.Context(), string(upload.Payload))
+	if err := dlpResult.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	if !dlpResult.Clean {
 		writeError(w, http.StatusUnprocessableEntity, fmt.Errorf("%w: %s", ErrDLPRejected, dlpPatternNames(dlpResult.Matches)))
 		return

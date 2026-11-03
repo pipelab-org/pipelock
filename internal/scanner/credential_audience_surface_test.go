@@ -26,7 +26,7 @@ func TestCredentialAudienceHeaderSurface(t *testing.T) {
 		{"Authorization", "abc", credentialAudienceAuthorizationOtherSurface},
 		{"PRIVATE-TOKEN", "abc", credentialAudiencePrivateTokenSurface},
 		{"Job-Token", "abc", credentialAudienceJobTokenSurface},
-		{"X-Api-Key", "abc", "header"},
+		{"X-Api-Key", "abc", credentialAudienceXKeySurface},
 	} {
 		if got := CredentialAudienceHeaderSurface(tc.header, tc.value); got != tc.want {
 			t.Errorf("CredentialAudienceHeaderSurface(%q, %q) = %q, want %q", tc.header, tc.value, got, tc.want)

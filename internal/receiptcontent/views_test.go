@@ -556,3 +556,34 @@ func TestReservedOuterMemberIsNotOverwritten(t *testing.T) {
 	rep, err := Scan(context.Background(), det, p)
 	requireView(t, rep, err, ViewStructured)
 }
+
+func TestIncompleteDetectorReturnsScanError(t *testing.T) {
+	p, err := ProjectUnproven([]byte(`{"a":"first","b":"second"}`), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	control := func(context.Context, string) scanner.TextDLPResult {
+		calls++
+		return scanner.TextDLPResult{Clean: true}
+	}
+	if _, err := Scan(t.Context(), control, p); err != nil {
+		t.Fatal(err)
+	}
+	for at := 1; at <= calls; at++ {
+		n := 0
+		det := func(context.Context, string) scanner.TextDLPResult {
+			n++
+			return scanner.TextDLPResult{Clean: n != at, Incomplete: n == at}
+		}
+		rep, err := Scan(t.Context(), det, p)
+		if !errors.Is(err, scanner.ErrTextDLPIncomplete) || errors.Is(err, ErrRejected) || len(rep.Findings) != 0 {
+			t.Fatalf("detector call %d: report=%+v error=%v", at, rep, err)
+		}
+	}
+	det := func(context.Context, string) scanner.TextDLPResult { return scanner.TextDLPResult{Incomplete: true} }
+	f, err := bridgeFragments(t.Context(), det, "test", []fragmentPiece{{text: "first", pos: 0}}, []fragmentPiece{{text: "second", pos: 1}}, 2)
+	if f != nil || !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+		t.Fatalf("bridged fragments: finding=%+v error=%v", f, err)
+	}
+}

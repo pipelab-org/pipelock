@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestA2AScanVerdictPreservesScanError(t *testing.T) {
@@ -177,6 +178,36 @@ func TestMCPListenerHeaderCanceledResponseScanIsParseError(t *testing.T) {
 	}
 }
 
+func TestMCPListenerHeaderCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().RequestBodyScanning
+	cfg.Enabled, cfg.ScanHeaders, cfg.HeaderMode = true, true, config.HeaderModeAll
+	for _, headers := range []http.Header{
+		{"X-Fixture": {"ordinary", "another"}},
+		{"Mcp-Param-Mode": {"ordinary%20mode", "another%20mode"}},
+	} {
+		control := &cancelOnErrorCheck{Context: t.Context()}
+		if result := scanMCPListenerHeadersForDLP(control, headers, sc, &cfg); result != nil {
+			t.Fatalf("complete header control refused: %+v", result)
+		}
+		checks := control.checks.Load()
+		if checks == 0 {
+			t.Fatal("header control exposed no scan checkpoints")
+		}
+		for checkpoint := int32(1); checkpoint <= checks; checkpoint++ {
+			t.Run(fmt.Sprintf("%s/%d", fmt.Sprint(headers), checkpoint), func(t *testing.T) {
+				base, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				ctx := &cancelOnErrorCheck{Context: base, cancel: cancel, after: checkpoint}
+				result := scanMCPListenerHeadersForDLP(ctx, headers, sc, &cfg)
+				if base.Err() == nil || result == nil || result.reason != blockreason.ParseError || len(result.matches) != 0 {
+					t.Fatalf("incomplete headers certified or classified as a finding: canceled=%v result=%+v", base.Err(), result)
+				}
+			})
+		}
+	}
+}
+
 func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
 	cancelledCheckpoints := 0
@@ -202,9 +233,12 @@ func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 
 func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
-	for _, kind := range []string{"generic", "a2a"} {
+	for _, kind := range []string{"generic", "a2a", "a2a_metadata_numbers"} {
 		scan := func(ctx context.Context) error {
 			body := "data: {\"text\":\"ordinary response\"}\n\ndata: {\"text\":\"another response\"}\n\n"
+			if kind == "a2a_metadata_numbers" {
+				body = "id: ordinary\nevent: message\nretry: 1000\ndata: {\"value\":12}\n\nid: next\nevent: message\nretry: 1000\ndata: {\"value\":34}\n\n"
+			}
 			var out bytes.Buffer
 			if kind == "generic" {
 				return ScanGenericSSEStream(ctx, strings.NewReader(body), &out, nil, sc, enabledSSECfg())
@@ -491,5 +525,82 @@ func TestForwardScannedCancelledMalformedResponseIsScanError(t *testing.T) {
 				t.Fatalf("cancelled malformed response: error=%v found=%t output=%s log=%s", err, found, out.String(), log.String())
 			}
 		})
+	}
+}
+
+func TestTextDLPIncompleteWrappers(t *testing.T) {
+	incomplete := scanner.TextDLPResult{Incomplete: true}
+	for _, got := range []scanner.TextDLPResult{
+		mergeInputDLP(scanner.TextDLPResult{Clean: true}, incomplete),
+		mergeInputDLP(incomplete, scanner.TextDLPResult{Clean: true}),
+	} {
+		if got.Clean || !errors.Is(got.Err(), scanner.ErrTextDLPIncomplete) || len(got.Matches) != 0 {
+			t.Fatalf("merge lost incomplete scan: %+v", got)
+		}
+	}
+	suppressed, _ := keepUnsuppressedDLP(scanner.TextDLPResult{
+		Incomplete: true, Matches: []scanner.TextDLPMatch{{PatternName: "fixture"}},
+	}, "api.vendor.example", []config.SuppressEntry{{Rule: "fixture", Path: "api.vendor.example"}})
+	if suppressed.Clean || suppressed.Err() == nil || len(suppressed.Matches) != 0 {
+		t.Fatalf("suppression certified an incomplete scan: %+v", suppressed)
+	}
+	for _, at := range []int{1, 2} {
+		calls := 0
+		_, err := dropSelfMatchingSSETailWithScan(t.Context(), "ordinary text", GenericSSEScanOptions{}, func(context.Context, string) scanner.TextDLPResult {
+			calls++
+			if calls == at {
+				return incomplete
+			}
+			return scanner.TextDLPResult{Matches: []scanner.TextDLPMatch{{PatternName: "fixture"}}}
+		})
+		if !errors.Is(err, ErrSSEStreamScanError) || errors.Is(err, ErrSSEStreamFinding) {
+			t.Fatalf("tail probe %d: got %v", at, err)
+		}
+	}
+}
+
+func TestResponseDLPOnlyViewCancellationIsScanError(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	result, matches, dropped := scanResponseViewsWithCards(ctx, testA2AScanner(t), ResponseScanOptions{}, nil, []responseDLPView{{text: "ordinary", card: "ordinary"}})
+	if !result.Failed() || result.Clean || len(matches) != 0 || len(dropped) != 0 {
+		t.Fatalf("cancelled DLP-only view: result=%+v matches=%v dropped=%v", result, matches, dropped)
+	}
+}
+
+func TestRedirectOutputIncompleteDLPIsScanError(t *testing.T) {
+	verdict := mergeRedirectResponseDLP(jsonrpc.ScanVerdict{Clean: true}, scanner.TextDLPResult{Incomplete: true})
+	if verdict.Clean || verdict.Error == "" || verdict.Action != config.ActionBlock || len(verdict.DLPMatches) != 0 {
+		t.Fatalf("redirect output scan error lost: %+v", verdict)
+	}
+	audit := mcpResponseInspectionBlockAudit(verdict.Error)
+	if audit.kind != "response_inspection" {
+		t.Fatalf("redirect scan error attributed as finding: %+v", audit)
+	}
+}
+
+func TestInputTextDLPCancellationIsScanError(t *testing.T) {
+	sc := testA2AScanner(t)
+	for _, line := range []string{
+		`{"jsonrpc":"2.0","id":1,"method":"ping","extra":"ordinary"}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"echo","arguments":{"a":"ordinary","b":"response"}}}`,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"a":"ordinary"},"params":{"a":"response"}}`,
+	} {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		verdict := ScanRequest(ctx, []byte(line), sc, config.ActionWarn, config.ActionWarn)
+		if verdict.Clean || verdict.Action != config.ActionBlock || verdict.Error == "" || len(verdict.Matches) != 0 || len(verdict.Inject) != 0 {
+			t.Fatalf("cancelled input scan: %+v", verdict)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	got := scanSplitSecret(ctx, []byte(`{"a":"ordinary","b":"response"}`), "ordinary response", sc, scanner.TextDLPResult{Clean: true})
+	if got.Clean || got.Err() == nil || len(got.Matches) != 0 {
+		t.Fatalf("split-secret wrapper lost scan failure: %+v", got)
+	}
+	raw := scanRawBeforeForward(ctx, []byte(`{"a":"ordinary","b":"response"}`), sc, config.ActionWarn)
+	if raw.Clean || raw.Action != config.ActionBlock || !strings.HasPrefix(raw.Error, "response scan incomplete:") || len(raw.Matches) != 0 || len(raw.Inject) != 0 {
+		t.Fatalf("raw fallback lost scan failure: %+v", raw)
 	}
 }

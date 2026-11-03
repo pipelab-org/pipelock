@@ -1156,3 +1156,30 @@ func TestUnscannedEncodingGuidance(t *testing.T) {
 		t.Fatal("a reason without the terminal clause was treated as unread")
 	}
 }
+
+func TestGuidanceForResultUserinfoEntropy(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.SubdomainEntropyExclusions = []string{"api.vendor.example"}
+	cfg.FetchProxy.Monitoring.PathEntropyExclusions = []config.PathEntropyExclusion{{Host: "api.vendor.example", PathPrefix: "/"}}
+	s := MustNew(cfg)
+	defer s.Close()
+	credential := "Q7mZ9pL4vR2sK8hF6dA0nT5cW3xB1jG" + "uEoYiHkSqVfDtNr"
+	result := s.Scan(t.Context(), "https://reader:"+credential+"@api.vendor.example/")
+	if result.Allowed || !strings.HasPrefix(result.Reason, "high entropy URL userinfo") {
+		t.Fatalf("expected userinfo entropy block: %+v", result)
+	}
+	g, ok := GuidanceForResult(result.Scanner, result.Reason)
+	if !ok || !strings.Contains(g.OperatorKnob, "Authorization header") || !strings.Contains(g.OperatorKnob, "fetch_proxy.monitoring.entropy_threshold") {
+		t.Fatalf("incorrect guidance: %+v", g)
+	}
+	if strings.Contains(g.OperatorKnob+g.OperatorBroader, "_entropy_exclusions") {
+		t.Fatalf("inert exclusion in guidance: %+v", g)
+	}
+	cfg.FetchProxy.Monitoring.EntropyThreshold = 0
+	relaxed := MustNew(cfg)
+	defer relaxed.Close()
+	if got := relaxed.Scan(t.Context(), "https://reader:"+credential+"@api.vendor.example/"); !got.Allowed {
+		t.Fatalf("documented threshold control did not take effect: %+v", got)
+	}
+}

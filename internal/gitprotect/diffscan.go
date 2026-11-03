@@ -289,6 +289,7 @@ type CompiledDLPPattern struct {
 	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
 	// policy, so scan-diff and runtime scanning agree on card endpoints.
 	cardPrefixRetry bool
+	wifOverlapRetry bool
 }
 
 var gitProtectClassByPatternName = map[string]redact.Class{
@@ -330,6 +331,7 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 		if p.Validator != "" {
 			cp.validate = scanner.DLPValidators[p.Validator]
 			cp.cardPrefixRetry = scanner.RetriesCardPrefixes(p)
+			cp.wifOverlapRetry = scanner.RetriesWIFOverlaps(p)
 		}
 		compiled = append(compiled, cp)
 	}
@@ -354,18 +356,7 @@ func (cp *CompiledDLPPattern) classMatches(matches []redact.Match) []redact.Matc
 }
 
 func (cp *CompiledDLPPattern) regexMatches(text string) bool {
-	if cp.Re == nil {
-		return false
-	}
-	if cp.validate == nil {
-		return cp.Re.MatchString(text)
-	}
-	for _, match := range cp.Re.FindAllString(text, -1) {
-		if scanner.AcceptsMatch(match, cp.validate, cp.cardPrefixRetry) {
-			return true
-		}
-	}
-	return false
+	return scanner.ValidatedPatternMatches(text, cp.Re, cp.validate, cp.cardPrefixRetry, cp.wifOverlapRetry)
 }
 
 var (

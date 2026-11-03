@@ -3050,3 +3050,39 @@ func TestCheckCoverage_FlatFilesUnderBudgetAreNotTruncated(t *testing.T) {
 		t.Fatalf("WatchablePaths = %d, want the root directory only", report.WatchablePaths)
 	}
 }
+
+type incompleteDLPScanner struct{ matches []scanner.TextDLPMatch }
+
+func (s incompleteDLPScanner) ScanTextForDLP(context.Context, string) scanner.TextDLPResult {
+	return scanner.TextDLPResult{Incomplete: true, Matches: s.matches}
+}
+
+func TestWatcherIncompleteDLPScanIsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ordinary.txt")
+	if err := os.WriteFile(path, []byte("ordinary content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, found := range []bool{false, true} {
+		sc := incompleteDLPScanner{}
+		if found {
+			sc.matches = []scanner.TextDLPMatch{{PatternName: "fixture"}}
+		}
+		errorsFound := make(chan error, 1)
+		w := &fsWatcher{
+			cfg: &config.FileSentry{}, scanner: sc,
+			findings: make(chan Finding, 1), onError: func(err error) { errorsFound <- err },
+		}
+		w.scanFile(t.Context(), path, false)
+		select {
+		case err := <-errorsFound:
+			if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+				t.Fatalf("unscanned file error = %v", err)
+			}
+		default:
+			t.Fatal("incomplete file scan produced no error")
+		}
+		if got := len(w.findings) > 0; got != found {
+			t.Fatalf("incomplete scan finding present=%v, want %v", got, found)
+		}
+	}
+}

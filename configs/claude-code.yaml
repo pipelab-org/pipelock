@@ -92,6 +92,7 @@ request_body_scanning:
     - Authorization
     - Cookie
     - X-Api-Key
+    - Api-Key
     - X-Token
     - Proxy-Authorization
     - X-Goog-Api-Key

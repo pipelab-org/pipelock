@@ -47,11 +47,17 @@ func TestCredentialAudienceHosts_BodyAndHeaderCarriers(t *testing.T) {
 				AudienceSurface:           "body",
 				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error { bodyAllows = append(bodyAllows, allow); return nil },
 			})
-			if !bodyResult.Clean || len(bodyAllows) != 1 || bodyAllows[0].PatternName != tc.pattern {
+			if bodyResult.Clean || len(bodyAllows) != 0 {
 				t.Fatalf("body audience result=%+v allows=%+v", bodyResult, bodyAllows)
 			}
 
 			headers := http.Header{"Authorization": []string{"Bearer " + tc.credential}}
+			if tc.pattern == "Anthropic API Key" {
+				headers = http.Header{"X-Api-Key": []string{tc.credential}}
+			}
+			if tc.pattern == "Discord Bot Token" {
+				headers.Set("Authorization", "Bot "+tc.credential)
+			}
 			var headerAllows []scanner.CredentialAudienceAllow
 			headerResult := scanRequestHeadersForTargetWithAudience(context.Background(), headers, cfg, sc, tc.target, nil, func(allow scanner.CredentialAudienceAllow) error {
 				headerAllows = append(headerAllows, allow)
@@ -91,24 +97,21 @@ func TestCredentialAudienceHosts_WebSocketFrameAndFragmentedDirectText(t *testin
 
 			bodyRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
 			_, bodyResult := bodyRelay.scanClientMessageBody(context.Background(), []byte(`{"credential":"`+tc.credential+`"}`))
-			if !bodyResult.Clean {
-				t.Fatalf("WebSocket body path blocked audience credential: %+v", bodyResult)
+			if bodyResult.Clean {
+				t.Fatalf("WebSocket body path allowed a header-only credential: %+v", bodyResult)
 			}
-			assertCredentialAudienceWebSocketMetric(t, bodyRelay.proxy.metrics, tc.pattern)
 
 			directRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
-			if directRelay.scanClientText(context.Background(), audit.NewNop(), []byte(tc.credential)) {
-				t.Fatal("WebSocket direct text path blocked audience credential")
+			if !directRelay.scanClientText(context.Background(), audit.NewNop(), []byte(tc.credential)) {
+				t.Fatal("WebSocket direct text path allowed a header-only credential")
 			}
-			assertCredentialAudienceWebSocketMetric(t, directRelay.proxy.metrics, tc.pattern)
 
 			fragmentRelay := newCredentialAudienceWebSocketRelay(sc, cfg, audienceTarget)
 			// The complete match arrives across two frame-like pieces. This exercises
 			// the direct fragmented-text path, which has no independent authority.
-			if fragmentRelay.scanClientCrossMessageText(context.Background(), audit.NewNop(), []byte(tc.credential[:10]), []byte(tc.credential[10:])) {
-				t.Fatal("WebSocket fragmented direct text path blocked audience credential")
+			if !fragmentRelay.scanClientCrossMessageText(context.Background(), audit.NewNop(), []byte(tc.credential[:10]), []byte(tc.credential[10:])) {
+				t.Fatal("WebSocket fragmented direct text path allowed a header-only credential")
 			}
-			assertCredentialAudienceWebSocketMetric(t, fragmentRelay.proxy.metrics, tc.pattern)
 
 			blockedRelay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://api.vendor.example/v1")
 			_, blockedBody := blockedRelay.scanClientMessageBody(context.Background(), []byte(`{"credential":"`+tc.credential+`"}`))
@@ -278,16 +281,6 @@ func newCredentialAudienceWebSocketRelay(sc *scanner.Scanner, cfg *config.Config
 		maxMsg:       1 << 20,
 		clientConn:   discardConn{},
 		upstreamConn: discardConn{},
-	}
-}
-
-func assertCredentialAudienceWebSocketMetric(t *testing.T, m *metrics.Metrics, pattern string) {
-	t.Helper()
-	rec := httptest.NewRecorder()
-	m.PrometheusHandler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", nil))
-	want := `pipelock_dlp_credential_audience_allows_total{pattern="` + pattern + `",surface="websocket_frame"} 1`
-	if !strings.Contains(rec.Body.String(), want) {
-		t.Fatalf("credential audience WebSocket metric missing or not exactly one: want %q in %s", want, rec.Body.String())
 	}
 }
 
@@ -1350,6 +1343,89 @@ func TestAllowReceipts_RequireReceiptsNeedsDurableSync(t *testing.T) {
 				if (err != nil) != tc.wantErr {
 					t.Fatalf("%s: err = %v, wantErr %v", name, err, tc.wantErr)
 				}
+			}
+		})
+	}
+}
+
+func TestInterceptTunnel_CredentialEndpointAdmission(t *testing.T) {
+	key := "sk-" + "ant-" + strings.Repeat("a", 24)
+	discord := "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27)
+	for _, tc := range []struct {
+		name, host, path, body, header, value string
+		allow                                 bool
+	}{
+		{name: "body credential", host: "api.anthropic.com", path: "/v1/messages", body: key},
+		{name: "documented header", host: "api.anthropic.com", path: "/v1/messages", header: "X-Api-Key", value: key, allow: true},
+		{name: "wrong header route", host: "api.anthropic.com", path: "/unrelated", header: "X-Api-Key", value: key},
+		{name: "discord query", host: "discord.com", path: "/api/webhooks/1/2?value=" + discord},
+		{name: "discord body", host: "discord.com", path: "/api/webhooks/1/2", body: discord},
+		{name: "storage query", host: "storage.googleapis.com", path: "/bucket/object?value=" + "AIza" + strings.Repeat("a", 35)},
+		{name: "other provider host", host: "other.groq.com", path: "/openai/v1/chat/completions", header: "Authorization", value: "Bearer " + "gsk_" + strings.Repeat("a", 48)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var upstreamHits atomic.Int32
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamHits.Add(1)
+
+				_, _ = fmt.Fprint(w, `{"ok":false,"error":"invalid_auth"}`)
+			}))
+			defer upstream.Close()
+
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			addr := upstream.Listener.Addr().String()
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("SplitHostPort: %v", err)
+			}
+
+			cfg.RequestBodyScanning.Enabled = true
+			cfg.RequestBodyScanning.ScanHeaders = true
+			cfg.RequestBodyScanning.Action = config.ActionBlock
+			cfg.RequestBodyScanning.HeaderMode = config.HeaderModeSensitive
+
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+
+			target := "https://" + tc.host + ":" + port + tc.path
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, target, strings.NewReader(tc.body))
+			if tc.header != "" {
+				req.Header.Set(tc.header, tc.value)
+			}
+			req.Header.Set("Content-Type", "text/plain")
+
+			dialer := &net.Dialer{}
+			upstreamRT := upstream.Client().Transport.(*http.Transport).Clone()
+			upstreamRT.TLSClientConfig = upstreamRT.TLSClientConfig.Clone()
+			upstreamRT.TLSClientConfig.InsecureSkipVerify = false
+			upstreamRT.TLSClientConfig.ServerName = upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			upstreamRT.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			}
+			t.Cleanup(upstreamRT.CloseIdleConnections)
+
+			proxy := &Proxy{captureObs: capture.NopObserver{}, metrics: m}
+			resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+				Upstream:   upstream,
+				TargetHost: tc.host,
+				UpstreamRT: upstreamRT,
+				Cache:      cache,
+				Pool:       pool,
+				Config:     cfg,
+				Scanner:    sc,
+				Logger:     logger,
+				Metrics:    m,
+				Request:    req,
+				Proxy:      proxy,
+			})
+			defer func() { _ = resp.Body.Close() }()
+
+			if tc.allow {
+				if resp.StatusCode != http.StatusOK || upstreamHits.Load() != 1 {
+					t.Fatalf("documented header refused: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
+				}
+			} else if resp.StatusCode != http.StatusForbidden || upstreamHits.Load() != 0 {
+				t.Fatalf("credential reached upstream: status=%d hits=%d", resp.StatusCode, upstreamHits.Load())
 			}
 		})
 	}
