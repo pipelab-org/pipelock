@@ -99,23 +99,35 @@ func TestExplainCmd_CleanURLAllowed(t *testing.T) {
 }
 
 func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
-	key := "sk-" + "proj-" + strings.Repeat("a", 24)
-	allowed, err := decodeExplainJSON(t, "https://api.openai.com/v1/responses?key="+key)
+	// Google documents the key query on this Maps route. OpenAI's compiled
+	// audience is Bearer on api.openai.com, so the same shape in a query is a
+	// DLP block even on that host.
+	googleKey := "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+	allowed, err := decodeExplainJSON(t, "https://maps.googleapis.com/maps/api/js?key="+googleKey)
 	if err != nil || !allowed.Allowed {
 		t.Fatalf("audience explain = %+v, err=%v", allowed, err)
 	}
 	notes := strings.Join(allowed.Notes, "\n")
-	if !strings.Contains(notes, "allowed: credential audience match") || allowed.PatternName != "OpenAI API Key" {
+	if !strings.Contains(notes, "allowed: credential audience match") || allowed.PatternName != "Google API Key" {
 		t.Fatalf("audience explain lacks explicit allow: %+v", allowed)
 	}
 	// Assert the destination the decision was actually made against. Without
 	// this the test passes even if explain reports the wrong host, which is the
 	// one field an operator uses to check the allow was for the right place.
-	if !strings.Contains(notes, "canonical destination api.openai.com") {
+	if !strings.Contains(notes, "canonical destination maps.googleapis.com") {
 		t.Fatalf("allow note omits the canonical destination: %+v", allowed.Notes)
 	}
 
-	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+key)
+	openAIKey := "sk-" + "proj-" + strings.Repeat("a", 24)
+	queryBlocked, err := decodeExplainJSON(t, "https://api.openai.com/v1/responses?key="+openAIKey)
+	if err == nil || queryBlocked.Allowed {
+		t.Fatalf("query-carried OpenAI key = %+v, err=%v", queryBlocked, err)
+	}
+	if queryBlocked.PatternName != "OpenAI API Key" || queryBlocked.Host != "api.openai.com" || !strings.Contains(queryBlocked.Reason, "DLP match: OpenAI API Key") {
+		t.Fatalf("query-carried OpenAI key explain = %+v", queryBlocked)
+	}
+
+	blocked, err := decodeExplainJSON(t, "https://api.vendor.example/v1/responses?key="+openAIKey)
 	if err == nil || blocked.Allowed {
 		t.Fatalf("non-audience explain = %+v, err=%v", blocked, err)
 	}
@@ -126,7 +138,7 @@ func TestExplainCmd_CredentialAudienceVerdicts(t *testing.T) {
 	if !strings.Contains(blocked.Reason, "canonical destination api.vendor.example") {
 		t.Fatalf("block reason omits the canonical destination: %q", blocked.Reason)
 	}
-	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
+	if !strings.Contains(blocked.Reason, "blocked: credential audience mismatch") || !strings.Contains(blocked.Reason, "api.openai.com") || strings.Contains(blocked.Reason, "*.openai.com") || blocked.Remediation == nil || !blocked.Remediation.Immutable {
 		t.Fatalf("non-audience explain lacks immutable mismatch guidance: %+v", blocked)
 	}
 	if strings.Contains(blocked.Remediation.Knob, "exempt_domains") {

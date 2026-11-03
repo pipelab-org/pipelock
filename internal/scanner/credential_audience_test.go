@@ -20,10 +20,14 @@ func TestScan_CredentialAudienceHosts_AllBuiltInsURL(t *testing.T) {
 	for _, test := range credentialAudienceURLCases() {
 		t.Run(test.pattern, func(t *testing.T) {
 			result := s.Scan(context.Background(), test.audienceURL+"?credential="+test.credential)
-			if !result.Allowed {
-				t.Fatalf("audience URL blocked: %s", result.Reason)
+			if result.Allowed {
+				t.Fatal("credential in an undocumented URL carrier allowed")
 			}
-			assertCredentialAudienceAllow(t, result, test.pattern, test.destination)
+			matches := s.ScanTextForDLP(context.Background(), test.credential).Matches
+			kept, allows := s.FilterTextDLPMatchesForDestination(matches, test.audienceURL, audienceTestHeaderSurface(test.pattern))
+			if len(kept) != 0 || len(allows) != 1 || allows[0].PatternName != test.pattern {
+				t.Fatalf("documented header blocked: retained=%+v allows=%+v", kept, allows)
+			}
 
 			blocked := s.Scan(context.Background(), "https://api.vendor.example/v1?credential="+test.credential)
 			if blocked.Allowed {
@@ -119,7 +123,7 @@ func TestGoogleOAuthToken_CredentialAudience(t *testing.T) {
 	}
 	for _, target := range []string{
 		"https://gmail.googleapis.com/gmail/v1/users/me/profile",
-		"https://WWW.GOOGLEAPIS.COM./gmail/v1/users/me/profile",
+		"https://GMAIL.GOOGLEAPIS.COM./gmail/v1/users/me/profile",
 	} {
 		retained, allows := s.FilterTextDLPMatchesForDestination(matches, target, CredentialAudienceAuthorizationHeaderSurface)
 		if len(retained) != 0 || len(allows) != 1 || allows[0].PatternName != "Google OAuth Token" {
@@ -195,11 +199,11 @@ func TestFilterTextDLPMatchesForDestination_CanonicalAndFailClosed(t *testing.T)
 	if len(matches) != 1 {
 		t.Fatalf("text matches = %#v, want one OpenAI match", matches)
 	}
-	allowed, records := s.FilterTextDLPMatchesForDestination(matches, "https://API.OPENAI.COM./v1", "body")
+	allowed, records := s.FilterTextDLPMatchesForDestination(matches, "https://API.OPENAI.COM./v1", CredentialAudienceAuthorizationHeaderSurface)
 	if len(allowed) != 0 {
 		t.Fatalf("canonical audience match retained %#v", allowed)
 	}
-	if len(records) != 1 || records[0].Destination != "api.openai.com" || records[0].Surface != "body" {
+	if len(records) != 1 || records[0].Destination != "api.openai.com" || records[0].Surface != "header" {
 		t.Fatalf("canonical audience record = %#v", records)
 	}
 
@@ -257,12 +261,12 @@ func TestScan_CredentialAudienceHosts_SlackCoreAndAppToken(t *testing.T) {
 			// Allowed at the issuing authority over an encrypted scheme, on the
 			// header and body surfaces the tokens actually travel on. Failure
 			// direction: a retained match here blocks a legitimate Slack call.
-			for _, surface := range []string{"header", "body"} {
+			for _, surface := range []string{CredentialAudienceAuthorizationHeaderSurface} {
 				allowed, records := s.FilterTextDLPMatchesForDestination(matches, "https://slack.com/api/auth.test", surface)
 				if len(allowed) != 0 {
 					t.Fatalf("%s: audience match retained %#v", surface, allowed)
 				}
-				if len(records) != 1 || records[0].PatternName != tok.pattern || records[0].Destination != "slack.com" || records[0].Surface != surface {
+				if len(records) != 1 || records[0].PatternName != tok.pattern || records[0].Destination != "slack.com" || records[0].Surface != "header" {
 					t.Fatalf("%s: audience record = %#v", surface, records)
 				}
 			}
@@ -297,14 +301,14 @@ func TestScan_CredentialAudienceHosts_SlackCoreAndAppToken(t *testing.T) {
 	// Mode tokens. Keep those two credential audiences distinct and cover both
 	// carrier surfaces used by the request scanner.
 	xoxpMatches := s.ScanTextForDLP(context.Background(), xoxp).Matches
-	for _, surface := range []string{"header", "body"} {
+	for _, surface := range []string{CredentialAudienceAuthorizationHeaderSurface} {
 		retained, records := s.FilterTextDLPMatchesForDestination(xoxpMatches, "https://mcp.slack.com/mcp", surface)
-		if len(retained) != 0 || len(records) != 1 || records[0].PatternName != "Slack Token" || records[0].Destination != "mcp.slack.com" || records[0].Surface != surface {
+		if len(retained) != 0 || len(records) != 1 || records[0].PatternName != "Slack Token" || records[0].Destination != "mcp.slack.com" || records[0].Surface != "header" {
 			t.Fatalf("%s: Slack user token MCP audience retained=%#v records=%#v", surface, retained, records)
 		}
 	}
 	xappMatches := s.ScanTextForDLP(context.Background(), xapp).Matches
-	retained, records := s.FilterTextDLPMatchesForDestination(xappMatches, "https://mcp.slack.com/mcp", "header")
+	retained, records := s.FilterTextDLPMatchesForDestination(xappMatches, "https://mcp.slack.com/mcp", CredentialAudienceAuthorizationHeaderSurface)
 	if len(retained) != 1 || len(records) != 0 {
 		t.Fatalf("Slack App Token was allowed at MCP host: retained=%#v records=%#v", retained, records)
 	}
@@ -343,13 +347,13 @@ func TestFilterTextDLPMatchesForDestination_UsesMatchProvenance(t *testing.T) {
 
 	slackToken := strings.Join([]string{"xoxb", "123456789012", "123456789012", strings.Repeat("a", 24)}, "-")
 	coreMatches := coreOnly.ScanTextForDLP(context.Background(), slackToken).Matches
-	retained, allows := coreOnly.FilterTextDLPMatchesForDestination(coreMatches, "https://slack.com:443/api/auth.test", "header")
+	retained, allows := coreOnly.FilterTextDLPMatchesForDestination(coreMatches, "https://slack.com:443/api/auth.test", CredentialAudienceAuthorizationHeaderSurface)
 	if len(retained) != 0 || len(allows) != 1 || allows[0].PatternName != "Slack Token" {
 		t.Fatalf("core-only Slack audience retained=%#v allows=%#v", retained, allows)
 	}
 	userToken := "xoxp-" + strings.Repeat("a", 24)
 	userMatches := coreOnly.ScanTextForDLP(context.Background(), userToken).Matches
-	retained, allows = coreOnly.FilterTextDLPMatchesForDestination(userMatches, "https://mcp.slack.com/mcp", "header")
+	retained, allows = coreOnly.FilterTextDLPMatchesForDestination(userMatches, "https://mcp.slack.com/mcp", CredentialAudienceAuthorizationHeaderSurface)
 	if len(retained) != 0 || len(allows) != 1 || allows[0].PatternName != "Slack Token" || allows[0].Destination != "mcp.slack.com" {
 		t.Fatalf("core-only Slack MCP audience retained=%#v allows=%#v", retained, allows)
 	}
@@ -364,7 +368,7 @@ func TestFilterTextDLPMatchesForDestination_UsesMatchProvenance(t *testing.T) {
 	defer custom.Close()
 
 	customMatches := custom.ScanTextForDLP(context.Background(), "custom-abcdefghijklmnopqrst").Matches
-	retained, allows = custom.FilterTextDLPMatchesForDestination(customMatches, "https://slack.com/api/auth.test", "header")
+	retained, allows = custom.FilterTextDLPMatchesForDestination(customMatches, "https://slack.com/api/auth.test", CredentialAudienceAuthorizationHeaderSurface)
 	if len(retained) != 1 || len(allows) != 0 {
 		t.Fatalf("custom same-name pattern inherited core audience: retained=%#v allows=%#v", retained, allows)
 	}
@@ -394,14 +398,13 @@ func credentialAudienceURLCases() []credentialAudienceURLCase {
 		{"LLM Router API Key", "sk-or-v1-" + strings.Repeat("a", 24), "https://openrouter.ai/api/v1", "openrouter.ai"},
 		{"Answer Engine API Key", "pplx-" + strings.Repeat("a", 24), "https://api.perplexity.ai", "api.perplexity.ai"},
 		{"Web Research API Key", "tvly-" + strings.Repeat("a", 24), "https://api.tavily.com", "api.tavily.com"},
-		{"Google API Key", "AIza" + strings.Repeat("a", 35), "https://generativelanguage.googleapis.com", "generativelanguage.googleapis.com"},
-		{"Hugging Face Token", "hf_" + strings.Repeat("a", 34), "https://api.huggingface.co", "api.huggingface.co"},
-		{"Databricks Token", "dapi" + strings.Repeat("a", 32), "https://workspace.databricks.com", "workspace.databricks.com"},
-		{"Replicate API Token", "r8_" + strings.Repeat("a", 40), "https://api.replicate.com", "api.replicate.com"},
-		{"Together AI Key", "tok_" + strings.Repeat("a", 40), "https://api.together.ai", "api.together.ai"},
+		{"Google API Key", "AIza" + strings.Repeat("a", 35), "https://generativelanguage.googleapis.com/v1beta/models", "generativelanguage.googleapis.com"},
+		{"Hugging Face Token", "hf_" + strings.Repeat("a", 34), "https://router.huggingface.co/v1/chat/completions", "router.huggingface.co"},
+		{"Replicate API Token", "r8_" + strings.Repeat("a", 40), "https://api.replicate.com/v1/predictions", "api.replicate.com"},
+		{"Together AI Key", "tok_" + strings.Repeat("a", 40), "https://api.together.ai/v1/chat/completions", "api.together.ai"},
 		{"Pinecone API Key", "pcsk_" + strings.Repeat("a", 36), "https://api.pinecone.io", "api.pinecone.io"},
-		{"Groq API Key", "gsk_" + strings.Repeat("a", 48), "https://api.groq.com", "api.groq.com"},
-		{"xAI API Key", "xai-" + strings.Repeat("a", 80), "https://api.x.ai", "api.x.ai"},
+		{"Groq API Key", "gsk_" + strings.Repeat("a", 48), "https://api.groq.com/openai/v1/chat/completions", "api.groq.com"},
+		{"xAI API Key", "xai-" + strings.Repeat("a", 80), "https://api.x.ai/v1/responses", "api.x.ai"},
 		{"Discord Bot Token", "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27), "https://discord.com/api/v10", "discord.com"},
 	}
 }
@@ -459,7 +462,7 @@ func TestFilterTextDLPMatchesForDestination_OtherCoreCredentialsStayBlocked(t *t
 		t.Fatalf("AWS key riding with a Slack token was dropped: %#v", retained)
 	}
 	slackOnly := s.ScanTextForDLP(context.Background(), slack).Matches
-	kept, records := s.FilterTextDLPMatchesForDestination(slackOnly, "https://slack.com/api/auth.test", "header")
+	kept, records := s.FilterTextDLPMatchesForDestination(slackOnly, "https://slack.com/api/auth.test", CredentialAudienceAuthorizationHeaderSurface)
 	if len(kept) != 0 || !audienceAllowFor(records, "Slack Token") {
 		t.Fatalf("Slack control at its own authority retained=%#v records=%#v", kept, records)
 	}
@@ -505,7 +508,7 @@ func TestFilterTextDLPMatchesForDestination_SlackHostIsExactAuthority(t *testing
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			retained, records := s.FilterTextDLPMatchesForDestination(matches, tc.url, "header")
+			retained, records := s.FilterTextDLPMatchesForDestination(matches, tc.url, CredentialAudienceAuthorizationHeaderSurface)
 			if tc.allow {
 				if len(retained) != 0 || len(records) != 1 || records[0].Destination != tc.host {
 					t.Fatalf("url %q retained=%#v records=%#v", tc.url, retained, records)
@@ -545,7 +548,7 @@ func TestScanTextForDLP_CustomSameNameCannotBorrowCoreAudience(t *testing.T) {
 	// The real token on its own still reaches Slack. This test must not pass
 	// by blocking every Slack token.
 	own := s.ScanTextForDLP(context.Background(), slack).Matches
-	kept, allow := s.FilterTextDLPMatchesForDestination(own, "https://slack.com/api/auth.test", "header")
+	kept, allow := s.FilterTextDLPMatchesForDestination(own, "https://slack.com/api/auth.test", CredentialAudienceAuthorizationHeaderSurface)
 	if len(kept) != 0 || !audienceAllowFor(allow, "Slack Token") {
 		t.Fatalf("real Slack token alone was blocked: retained=%#v records=%#v", kept, allow)
 	}
@@ -583,5 +586,20 @@ func assertCredentialAudienceAllow(t *testing.T, result Result, pattern, destina
 	got := result.CredentialAudienceAllows[0]
 	if got.PatternName != pattern || got.Surface != surface || got.Destination != destination {
 		t.Fatalf("audience allow = %#v, want pattern=%q surface=%q destination=%q", got, pattern, surface, destination)
+	}
+}
+
+func audienceTestHeaderSurface(pattern string) string {
+	switch pattern {
+	case "Anthropic API Key":
+		return CredentialAudienceHeaderSurface("X-Api-Key", "value")
+	case "Google API Key":
+		return CredentialAudienceHeaderSurface("X-Goog-Api-Key", "value")
+	case "Pinecone API Key":
+		return CredentialAudienceHeaderSurface("Api-Key", "value")
+	case "Discord Bot Token":
+		return CredentialAudienceHeaderSurface("Authorization", "Bot value")
+	default:
+		return CredentialAudienceAuthorizationHeaderSurface
 	}
 }

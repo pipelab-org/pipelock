@@ -68,11 +68,16 @@ const (
 	credentialAudienceAuthorizationOtherSurface = "authorization_header_other"
 	credentialAudiencePrivateTokenSurface       = "header_private_token"
 	credentialAudienceJobTokenSurface           = "header_job_token"
+	credentialAudienceXKeySurface               = "header_x_api_key"      // #nosec G101 -- scanner surface identifier, not a credential
+	credentialAudienceKeySurface                = "header_api_key"        // #nosec G101 -- scanner surface identifier, not a credential
+	credentialAudienceGoogleKeySurface          = "header_x_goog_api_key" // #nosec G101 -- scanner surface identifier, not a credential
+	credentialAudienceAuthorizationBotSurface   = "authorization_header_bot"
 	// credentialAudienceURLQuerySurface is the decision surface for a match
 	// that lives only in the URL query. It reports as the existing "url"
 	// telemetry surface. The scanner earns it per match (see
 	// urlDLPAudienceSurface); a bare "url" match never carries it.
-	credentialAudienceURLQuerySurface = "url_query"
+	credentialAudienceURLQuerySurface       = "url_query"
+	credentialAudienceDiscordGatewaySurface = "discord_gateway_auth"
 )
 
 // CredentialAudienceHeaderSurface classifies the header that carried a match.
@@ -92,11 +97,19 @@ func CredentialAudienceHeaderSurface(headerName, value string) string {
 			return CredentialAudienceAuthorizationHeaderSurface
 		case strings.EqualFold(fields[0], "token"):
 			return credentialAudienceAuthorizationTokenSurface
+		case strings.EqualFold(fields[0], "Bot"):
+			return credentialAudienceAuthorizationBotSurface
 		case strings.EqualFold(fields[0], "Basic"):
 			return credentialAudienceAuthorizationBasicSurface
 		default:
 			return credentialAudienceAuthorizationOtherSurface
 		}
+	case strings.EqualFold(headerName, "X-Api-Key"):
+		return credentialAudienceXKeySurface
+	case strings.EqualFold(headerName, "Api-Key"):
+		return credentialAudienceKeySurface
+	case strings.EqualFold(headerName, "X-Goog-Api-Key"):
+		return credentialAudienceGoogleKeySurface
 	case strings.EqualFold(headerName, "Private-Token"):
 		return credentialAudiencePrivateTokenSurface
 	case strings.EqualFold(headerName, "Job-Token"):
@@ -121,8 +134,18 @@ func audienceSurfacePermitted(surface string, authorizationOnly bool, mask uint1
 		return mask&config.CredentialAudienceCarrierPrivateToken != 0
 	case credentialAudienceJobTokenSurface:
 		return mask&config.CredentialAudienceCarrierJobToken != 0
+	case credentialAudienceXKeySurface:
+		return mask&config.CredentialAudienceCarrierXAPIKey != 0
+	case credentialAudienceKeySurface:
+		return mask&config.CredentialAudienceCarrierAPIKey != 0
+	case credentialAudienceGoogleKeySurface:
+		return mask&config.CredentialAudienceCarrierGoogleAPIKey != 0
+	case credentialAudienceAuthorizationBotSurface:
+		return mask&config.CredentialAudienceCarrierAuthorizationBot != 0
+	case credentialAudienceDiscordGatewaySurface:
+		return mask&config.CredentialAudienceCarrierDiscordGateway != 0
 	case credentialAudienceURLQuerySurface:
-		return mask&config.CredentialAudienceCarrierURLQuery != 0
+		return mask&(config.CredentialAudienceCarrierURLQuery|config.CredentialAudienceCarrierAPIKeyQuery) != 0
 	default:
 		return false
 	}
@@ -160,7 +183,8 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 	var allows []CredentialAudienceAllow
 	for i, candidate := range candidates {
 		restAllowed := audienceSurfacePermitted(surface, candidate.authorizationOnly, candidate.carrierMask) &&
-			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts)
+			len(candidate.hosts) > 0 && destination.MatchesDomainList(host, candidate.hosts) &&
+			audienceAPIEndpointAllowed(candidate, host, target, surface)
 		if !restAllowed && !gitTransportAllowed(candidate, host, target, surface) &&
 			!releaseGrantSASCandidateAllowed(candidate, host, target, surface, now) &&
 			!registryBasicAllowed(candidate, host, target, surface) &&
@@ -171,10 +195,12 @@ func filterCredentialAudienceAt(candidates []credentialAudienceCandidate, target
 		keep[i] = false
 		recordSurface := surface
 		switch surface {
-		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationTokenSurface, credentialAudienceAuthorizationBasicSurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface:
+		case CredentialAudienceAuthorizationHeaderSurface, credentialAudienceAuthorizationTokenSurface, credentialAudienceAuthorizationBasicSurface, credentialAudiencePrivateTokenSurface, credentialAudienceJobTokenSurface, credentialAudienceXKeySurface, credentialAudienceKeySurface, credentialAudienceGoogleKeySurface, credentialAudienceAuthorizationBotSurface:
 			recordSurface = "header"
 		case credentialAudienceURLQuerySurface:
 			recordSurface = "url"
+		case credentialAudienceDiscordGatewaySurface:
+			recordSurface = "websocket_frame"
 		}
 		allows = append(allows, CredentialAudienceAllow{
 			PatternName: candidate.patternName,
@@ -917,6 +943,12 @@ func (s *Scanner) queryValueIsAudienceCredentialAt(target, value string, now tim
 				continue
 			}
 		}
+		if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierAPIKeyQuery != 0 {
+			u, err := url.Parse(target)
+			if err != nil || !apiKeyQueryAllowed(p, u) || u.Query().Get("key") != value {
+				continue
+			}
+		}
 		if _, allowed := s.credentialAudienceAllowsAt(p, target, credentialAudienceURLQuerySurface, now); allowed {
 			return true
 		}
@@ -1113,7 +1145,7 @@ func (s *Scanner) queryScanTime(memo *queryLessDLPMemo) time.Time {
 func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, memo *queryLessDLPMemo) string {
 	now := s.queryScanTime(memo)
 	const bareURLSurface = "url"
-	const queryCarrierMask = config.CredentialAudienceCarrierURLQuery | config.CredentialAudienceCarrierReleaseGrantSAS
+	const queryCarrierMask = config.CredentialAudienceCarrierURLQuery | config.CredentialAudienceCarrierReleaseGrantSAS | config.CredentialAudienceCarrierAPIKeyQuery
 	if p == nil || p.credentialAudienceCarrierMask&queryCarrierMask == 0 ||
 		parsed == nil || parsed.RawQuery == "" {
 		return bareURLSurface
@@ -1124,6 +1156,20 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 		return bareURLSurface
 	}
 	if !s.queryLessURLScansClean(parsed, memo) {
+		return bareURLSurface
+	}
+	if p.credentialAudienceCarrierMask&config.CredentialAudienceCarrierAPIKeyQuery != 0 {
+		if apiKeyQueryAllowed(p, parsed) {
+			remaining := *parsed
+			query := parsed.Query()
+			query.Del("key")
+			remaining.RawQuery = query.Encode()
+			var decodes decodingMemo
+			if result, _ := s.checkDLPWithDecodesAt(&remaining, &decodes, now); !result.Allowed {
+				return bareURLSurface
+			}
+			return credentialAudienceURLQuerySurface
+		}
 		return bareURLSurface
 	}
 	// The views mirror every query view checkDLP scans, keys included, so a

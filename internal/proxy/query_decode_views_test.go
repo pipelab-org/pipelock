@@ -105,7 +105,7 @@ func TestQueryDecodeViewsConnectHostname(t *testing.T) {
 
 func TestQueryDecodeViewsForwardBody(t *testing.T) {
 	var hits atomic.Int32
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") }))
+	upstream := newIPv4Server(t, ignoreLoopbackPortProbes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") })))
 	defer upstream.Close()
 	addr, cleanup := setupForwardProxy(t, queryViewsProxyConfig)
 	defer cleanup()
@@ -180,7 +180,7 @@ func TestQueryDecodeViewsWebSocketBody(t *testing.T) {
 
 func TestQueryDecodeViewsDoH(t *testing.T) {
 	var hits atomic.Int32
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") }))
+	upstream := newIPv4Server(t, ignoreLoopbackPortProbes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") })))
 	defer upstream.Close()
 	addr, cleanup := setupForwardProxy(t, queryViewsProxyConfig)
 	defer cleanup()
@@ -225,7 +225,7 @@ func TestQueryDecodeViewsDoH(t *testing.T) {
 
 func TestQueryDecodeViewsAuditMalformedURL(t *testing.T) {
 	var hits atomic.Int32
-	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") }))
+	upstream := newIPv4Server(t, ignoreLoopbackPortProbes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1); _, _ = io.WriteString(w, "ok") })))
 	defer upstream.Close()
 	addr, cleanup := setupForwardProxy(t, func(cfg *config.Config) { queryViewsProxyConfig(cfg); cfg.Enforce = ptrBool(false) })
 	defer cleanup()

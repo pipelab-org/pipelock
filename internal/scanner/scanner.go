@@ -231,7 +231,8 @@ func IsHostnameExfilResult(r Result) bool {
 // allowlist, traversal, CRLF, length, scheme) never reaches the core floor;
 // a caller that releases such findings, such as audit mode, asks here whether
 // the URL also carries a core credential. A URL that does not parse is checked
-// as text.
+// as text. Its userinfo is split the same way text inspection splits a token
+// Go refuses, because audit mode can release the parser finding on its own.
 func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 	return s.ScanURLCoreFloorWithContext(context.Background(), rawURL)
 }
@@ -257,10 +258,21 @@ func (s *Scanner) ScanURLCoreFloorWithContext(ctx context.Context, rawURL string
 			return urlInspectionLimitResult()
 		}
 		// Parsing a different URL component must not discard recoverable
-		// query credentials. Inspection cannot grant trust to this URL.
+		// query credentials or a credential split across userinfo. Inspection
+		// cannot grant trust to this URL.
+		userinfoFloor := Result{Allowed: true}
+		if user, second, hasSecond, present := lenientURLUserinfo(rawURL); present {
+			values := urlUserinfoValues(user, second, hasSecond, true)
+			userinfoFloor = s.checkCoreDLPWithUserinfoValues(&url.URL{}, values, &decodes)
+		}
 		sent, _, _ := strings.Cut(rawURL, "#")
 		if _, query, ok := strings.Cut(sent, "?"); ok {
-			return s.checkCoreDLPWithDecodes(&url.URL{RawQuery: query}, &decodes)
+			if queryFloor := s.checkCoreDLPWithDecodes(&url.URL{RawQuery: query}, &decodes); !queryFloor.Allowed {
+				return queryFloor
+			}
+		}
+		if !userinfoFloor.Allowed {
+			return userinfoFloor
 		}
 		return Result{Allowed: true}
 	}
@@ -450,6 +462,8 @@ type compiledPattern struct {
 	// cardPrefixRetry marks the canonical card rule with its luhn validator.
 	// Its failed greedy hits retry shorter candidates (jsonnumber.AcceptedCardEnd).
 	cardPrefixRetry bool
+	// wifOverlapRetry is restricted to the canonical, fixed-width WIF grammar.
+	wifOverlapRetry bool
 	// validateAt judges a candidate in the view it was found in, with the view
 	// around it. It is set only in scanners built for tool-command text.
 	validateAt func(view string, start, end int) bool
@@ -487,16 +501,8 @@ func (p *compiledPattern) matches(text string) bool {
 	if p.validate == nil && p.validateAt == nil {
 		return p.re.MatchString(text)
 	}
-	// Check all regex hits, not just the first. An attacker could front-load
-	// BIN-matching decoys that fail checksum before the real card/IBAN.
-	// No cap: regex specificity (BIN prefixes, IBAN format) and data budget
-	// limits already bound the match count in practice.
-	for _, loc := range p.re.FindAllStringIndex(text, -1) {
-		if _, _, ok := p.acceptedSpan(text, loc[0], loc[1]); ok {
-			return true
-		}
-	}
-	return false
+	_, _, ok := p.firstAcceptedSpan(text, nil)
+	return ok
 }
 
 // accepts reports whether a regex candidate counts as a finding after every
@@ -688,6 +694,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.validate = fn
 			cp.genericCard = p.Validator == config.ValidatorLuhn
 			cp.cardPrefixRetry = RetriesCardPrefixes(p)
+			cp.wifOverlapRetry = RetriesWIFOverlaps(p)
 		}
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)
@@ -3188,6 +3195,10 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		{parsed.Path, dlpViewLabel("url_path"), ""},
 		{decodedQuery, dlpViewLabel("url_query"), ""},
 	}
+	for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+		target.viewLabel = dlpViewLabel(target.viewLabel)
+		targets = append(targets, target)
+	}
 	fragmentTargets := urlFragmentDLPTargets(parsed, decodes)
 	for _, target := range fragmentTargets {
 		target.viewLabel = dlpViewLabel(target.viewLabel)
@@ -3368,6 +3379,11 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			{parsed.Path, "url_path", ""},
 		}
 		seedTargets = append(seedTargets, fragmentTargets...)
+		for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+			if target.proseSource == "" {
+				seedTargets = append(seedTargets, target)
+			}
+		}
 		// Individual query values: raw decoded + encoding variants (base64/hex/base32).
 		for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
 			decoded := IterativeDecode(pair.value)
@@ -3813,6 +3829,9 @@ func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(decodedURL, decodes)
+			for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+				texts = append(texts, spanTextView{text: target.text, viewLabel: target.viewLabel})
+			}
 			// Form decoding turns a '+' into a space, so a nested carrier
 			// whose encoding holds '+' as data decodes only from the raw or
 			// the RFC 3986 percent-decoded URL.
@@ -5265,6 +5284,10 @@ func (s *Scanner) checkEntropyWithContext(ctx context.Context, parsed *url.URL) 
 func (s *Scanner) checkEntropyWithContextAt(ctx context.Context, parsed *url.URL, now time.Time) Result {
 	if s.entropyThreshold <= 0 {
 		return Result{Allowed: true}
+	}
+
+	if result := s.checkUserinfoEntropy(parsed); !result.Allowed {
+		return result
 	}
 
 	hostname := parsed.Hostname()

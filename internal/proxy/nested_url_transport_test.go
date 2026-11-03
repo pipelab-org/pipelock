@@ -66,12 +66,48 @@ func TestFetchEndpoint_NestedMetadataURLBlocked(t *testing.T) {
 	}
 }
 
-func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
+// nestedURLBackendPath is the only path the forward-proxy tests below send.
+const nestedURLBackendPath = "/pkg"
+
+// newNestedURLCountingBackend excludes queryless GET / loopback probes.
+// Other requests count even if their path differs from the requested path, so
+// a forwarding regression cannot hide an upstream contact by changing the path.
+func newNestedURLCountingBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newIPv4Server(t, ignoreLoopbackPortProbes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = fmt.Fprint(w, "ok")
-	}))
+	})))
+	return backend, &hits
+}
+
+func TestNestedURLCountingBackendIgnoresForeignProbe(t *testing.T) {
+	backend, hits := newNestedURLCountingBackend(t)
+	defer backend.Close()
+	get := func(target string) int {
+		t.Helper()
+		resp := doGet(t, backend.Client(), target)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := get(backend.URL + "/"); status != http.StatusNotFound || hits.Load() != 0 {
+		t.Fatalf("foreign probe: status=%d hits=%d, want 404 and 0", status, hits.Load())
+	}
+	var wantHits int32
+	for _, path := range []string{nestedURLBackendPath, "/other", "/", "/%70kg"} {
+		wantHits++
+		if status := get(backend.URL + path + "?" + nestedMetadataQuery); status != http.StatusOK || hits.Load() != wantHits {
+			t.Fatalf("own request path=%q: status=%d hits=%d, want 200 and %d", path, status, hits.Load(), wantHits)
+		}
+	}
+	if status := get(backend.URL + "/"); status != http.StatusNotFound || hits.Load() != 4 {
+		t.Fatalf("later foreign probe: status=%d hits=%d, want 404 and 4", status, hits.Load())
+	}
+}
+
+func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
+	backend, hits := newNestedURLCountingBackend(t)
 	defer backend.Close()
 
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
@@ -80,7 +116,7 @@ func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
 	})
 	defer cleanup()
 
-	resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/pkg?"+nestedMetadataQuery)
+	resp := doGet(t, proxyClient(proxyAddr), backend.URL+nestedURLBackendPath+"?"+nestedMetadataQuery)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
@@ -158,10 +194,7 @@ func TestFetchEndpoint_RedirectNestedMetadataURLBlocked(t *testing.T) {
 }
 
 func TestSubmitProfile_NestedMetadataURLBlocked(t *testing.T) {
-	var upstreamHit atomic.Bool
-	upstream := newIPv4Server(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		upstreamHit.Store(true)
-	}))
+	upstream, upstreamHits := newNestedURLCountingBackend(t)
 	defer upstream.Close()
 
 	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
@@ -180,7 +213,7 @@ func TestSubmitProfile_NestedMetadataURLBlocked(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status=%d want 403", resp.StatusCode)
 	}
-	if upstreamHit.Load() {
+	if upstreamHits.Load() != 0 {
 		t.Fatal("upstream invoked despite nested metadata URL")
 	}
 }

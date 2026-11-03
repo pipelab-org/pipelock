@@ -320,6 +320,9 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		hostname: host, target: syntheticURL, metricAgent: agentLabel, start: start,
 		reasonPrefix: "CONNECT blocked: header DLP match",
 	})
+	if refuseTextDLPScanError(w, p.logger, headerCtx, requestID, connectHeaderReceiptErr) {
+		return
+	}
 	if connectHeaderReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(connectHeaderReceiptErr)
 		p.logger.LogBlocked(headerCtx, blockedErr.layer, blockedErr.detail)
@@ -1850,6 +1853,9 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		headers: r.Header, cfg: cfg, sc: sc, logger: p.logger, actx: actx,
 		hostname: r.URL.Hostname(), target: targetURL, metricAgent: agentLabel, start: start,
 	})
+	if refuseTextDLPScanError(w, p.logger, actx, requestID, forwardHeaderReceiptErr) {
+		return
+	}
 	if forwardHeaderReceiptErr != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(forwardHeaderReceiptErr)
 		p.logger.LogBlocked(actx, blockedErr.layer, blockedErr.detail)

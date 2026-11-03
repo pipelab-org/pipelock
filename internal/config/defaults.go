@@ -524,16 +524,7 @@ func Defaults() *Config {
 			ContentEntropyAction:      ActionWarn,
 			ContentEntropyThreshold:   4.5,
 			ContentEntropyMinLength:   32,
-			SensitiveHeaders: []string{
-				"Authorization",
-				"Cookie",
-				"X-Api-Key",
-				"X-Token",
-				"Proxy-Authorization",
-				"X-Goog-Api-Key",
-				"Private-Token",
-				"Job-Token",
-			},
+			SensitiveHeaders:          defaultSensitiveHeaders(),
 		},
 		SeedPhraseDetection: SeedPhraseDetection{
 			Enabled:        ptrBool(true),
@@ -757,4 +748,11 @@ func Defaults() *Config {
 	// redact package for the full schema.
 	cfg.Redaction = redact.DefaultConfig()
 	return cfg
+}
+
+// defaultSensitiveHeaders is shared by constructed defaults and YAML loading.
+// Api-Key is Pinecone's documented authentication header:
+// https://docs.pinecone.io/reference/api/authentication
+func defaultSensitiveHeaders() []string {
+	return []string{"Authorization", "Cookie", "X-Api-Key", "Api-Key", "X-Token", "Proxy-Authorization", "X-Goog-Api-Key", "Private-Token", "Job-Token"}
 }

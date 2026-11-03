@@ -467,14 +467,15 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		if view.text == "" {
 			continue
 		}
-		// Deliberately not ctx: TextDLPResult has no incomplete or error state,
-		// so a scan cut short by cancellation would read as clean. The work is
-		// bounded by the response size limit; finishing it is the safe choice.
 		// Response card views omit object keys. Reconstruct only that view;
 		// the ordinary text join can contain JSON-shaped key fragments.
 		// These are untrusted text views, not extractor boundary markers.
 		cardView := jsonnumber.EscapeCardBoundaries(view.card)
-		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view.text, sc.ScanTextForDLPInboundWithTypedCardView(context.Background(), view.text, cardView).Matches)
+		dlpResult := sc.ScanTextForDLPInboundWithTypedCardView(ctx, view.text, cardView)
+		if err := dlpResult.Err(); err != nil {
+			return scanner.ResponseScanResult{ScanError: err.Error()}, nil, nil
+		}
+		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view.text, dlpResult.Matches)
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, matches)
 		droppedDLP = appendUniqueA2ADLPFindings(droppedDLP, lowConfidence)
 	}

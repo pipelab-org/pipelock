@@ -6,7 +6,6 @@ package scanner
 import (
 	"context"
 	"net/url"
-	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -70,8 +69,8 @@ func TestScan_QueryEntropyHonorsCredentialAudience(t *testing.T) {
 		if r.Allowed {
 			t.Fatal("key with appended random data allowed on the audience host")
 		}
-		if r.Scanner != ScannerEntropy || !strings.Contains(r.Reason, `"key"`) {
-			t.Fatalf("appended data blocked by %q (%s), want query entropy on key", r.Scanner, r.Reason)
+		if r.Scanner != ScannerDLP {
+			t.Fatalf("appended data blocked by %q (%s), want URL DLP on the unqualified key", r.Scanner, r.Reason)
 		}
 	})
 

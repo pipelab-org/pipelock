@@ -871,6 +871,12 @@ func (w *fsWatcher) doScan(ctx context.Context, path string, isAgent, registered
 	}
 
 	result := w.scanner.ScanTextForDLP(ctx, string(data))
+	if err := result.Err(); err != nil {
+		w.logError(fmt.Errorf("filesentry: file inspection incomplete: %s: %w", path, err))
+		if len(result.Matches) == 0 {
+			return
+		}
+	}
 	if result.Clean {
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"io"
 	"net/http"
 	"net/url"
@@ -142,10 +143,16 @@ func (s *issuerQueryStore) digest(scheme, host, port, path, name, value string) 
 }
 
 func (s *issuerQueryStore) digestFields(fields ...string) [32]byte {
+	return issuerDigestFields(hmac.New(sha256.New, s.key[:]), fields...)
+}
+
+// issuerDigestFields resets a caller-owned MAC for each tuple. A request can
+// reuse its own MAC without sharing mutable hash state with another request.
+func issuerDigestFields(mac hash.Hash, fields ...string) [32]byte {
 	// Each field is written as its byte length then its raw bytes, so the
 	// tuple is unambiguous and byte-exact: no field boundary can be forged,
 	// and invalid UTF-8 is hashed as-is rather than normalized.
-	mac := hmac.New(sha256.New, s.key[:])
+	mac.Reset()
 	var size [8]byte
 	for _, field := range fields {
 		binary.BigEndian.PutUint64(size[:], uint64(len(field)))
@@ -153,7 +160,7 @@ func (s *issuerQueryStore) digestFields(fields ...string) [32]byte {
 		_, _ = mac.Write([]byte(field))
 	}
 	var out [32]byte
-	copy(out[:], mac.Sum(nil))
+	_ = mac.Sum(out[:0])
 	return out
 }
 
@@ -718,7 +725,7 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 				continue
 			}
 			observe(t, false, false)
-			if idRemaining > 0 && issuerServerIDShaped(t) {
+			if idRemaining > 0 && issuerServerIDShaped(t) && issuerServerIDIntroducible(t) {
 				idStore.mintServerID(session, response.Request.URL, t, time.Now())
 				idRemaining--
 			}

@@ -74,8 +74,8 @@ func TestMarkBuiltInCredentialAudienceHosts_OnlyExactBuiltins(t *testing.T) {
 
 	patterns := []DLPPattern{builtIn}
 	markBuiltInCredentialAudienceHosts(patterns)
-	if got := patterns[0].CredentialAudienceHosts; len(got) != 1 || got[0] != "*.anthropic.com" {
-		t.Fatalf("exact built-in audience hosts = %#v, want [*.anthropic.com]", got)
+	if got := patterns[0].CredentialAudienceHosts; len(got) != 1 || got[0] != "api.anthropic.com" {
+		t.Fatalf("exact built-in audience hosts = %#v, want [api.anthropic.com]", got)
 	}
 
 	patterns[0].CredentialAudienceHosts = nil
@@ -173,7 +173,7 @@ suppress:
 	}
 	foundAudience := false
 	for _, pattern := range cfg.DLP.Patterns {
-		if pattern.Name == "OpenAI API Key" && len(pattern.CredentialAudienceHosts) == 1 && pattern.CredentialAudienceHosts[0] == "*.openai.com" {
+		if pattern.Name == "OpenAI API Key" && len(pattern.CredentialAudienceHosts) == 1 && pattern.CredentialAudienceHosts[0] == "api.openai.com" {
 			foundAudience = true
 			break
 		}
@@ -194,7 +194,7 @@ suppress:
 		case strings.HasPrefix(warning.Field, "dlp.patterns[") && strings.HasSuffix(warning.Field, ".exempt_domains"):
 			patternWarning = strings.Contains(warning.Message, warning.Field)
 		case warning.Field == "suppress[0].path":
-			suppressWarning = strings.Contains(warning.Message, warning.Field)
+			suppressWarning = strings.Contains(warning.Message, "suppress[0]")
 		}
 	}
 	if !patternWarning || !suppressWarning {

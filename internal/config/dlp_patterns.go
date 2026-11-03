@@ -21,10 +21,13 @@ const (
 	AnthropicKeyBodyRegex        = `sk-ant-[a-zA-Z0-9\-_]{20,}`
 	OpenAIKeyBodyRegex           = `sk-proj-[a-zA-Z0-9\-_]{20,}`
 	OpenAIServiceKeyBodyRegex    = `sk-svcacct-[a-zA-Z0-9\-_]{20,}`
+	// BitcoinWIFRegex follows the mainnet Base58Check lengths documented at
+	// https://en.bitcoin.it/wiki/Wallet_import_format (51 or 52 characters).
+	BitcoinWIFRegex = `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`
 )
 
 // Compiled credential-audience carriers. A zero mask means every scanned
-// surface may earn the allow, which is the Slack-shaped rule. A non-zero mask
+// surface may earn the allow for programmatic custom patterns. A non-zero mask
 // allows only the named headers. Authorization is split by scheme so each
 // provider accepts only the schemes its clients document. Google's Bearer-only
 // rule predates the mask and stays on CredentialAudienceAuthorizationOnly.
@@ -67,6 +70,15 @@ const (
 	// only, at a CredentialAudienceRegistryHosts host, and only when the
 	// bearer value is a registry JWT whose audience is that host.
 	CredentialAudienceCarrierRegistryBearer
+	CredentialAudienceCarrierXAPIKey
+	CredentialAudienceCarrierAPIKey
+	CredentialAudienceCarrierGoogleAPIKey
+	CredentialAudienceCarrierAuthorizationBot
+	CredentialAudienceCarrierAPIKeyQuery
+	// CredentialAudienceCarrierDiscordGateway accepts only d.token in a
+	// validated client Identify (op 2) or Resume (op 6) JSON frame over WSS.
+	// https://docs.discord.com/developers/events/gateway-events
+	CredentialAudienceCarrierDiscordGateway
 )
 
 // githubTokenAudienceMask is the GitHub carriers: Authorization with the
@@ -113,7 +125,7 @@ var githubDownloadGrantAudienceHosts = []string{"release-assets.githubuserconten
 const GitHubDownloadGrantIssuer = "github.com"
 
 // gitlabTokenAudienceMask is the documented GitLab access-token carriers:
-// PRIVATE-TOKEN and Authorization Bearer for the API on any path, and
+// PRIVATE-TOKEN and Authorization Bearer on the public /api/v4 API, and
 // Authorization Basic (oauth2:<token>) through the git rule, which limits it
 // to git transport paths on the same host. Job tokens use JOB-TOKEN only.
 const gitlabTokenAudienceMask = CredentialAudienceCarrierPrivateToken | CredentialAudienceCarrierAuthorizationBearer | CredentialAudienceCarrierGitBasic
@@ -129,29 +141,30 @@ var defaultDLPPatternSet = []DLPPattern{
 	// separators match the credential body without this boundary because their
 	// adjacency is manufactured rather than present in the source text.
 	// Do not add a length floor: these provider formats are opaque.
-	// Source: https://platform.claude.com/docs/en/api/overview
-	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.anthropic.com"}},
+	// Source: https://platform.claude.com/docs/en/api/overview (X-Api-Key)
+	// https://docs.claude.com/en/api/openai-sdk (OpenAI SDK, Bearer, /v1)
+	{Name: "Anthropic API Key", Regex: ProviderKeyLeftBoundaryRegex + AnthropicKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.anthropic.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierXAPIKey | CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://developers.openai.com/api/reference/overview
-	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openai.com"}},
+	{Name: "OpenAI API Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://developers.openai.com/api/reference/overview
-	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openai.com"}},
+	{Name: "OpenAI Service Key", Regex: ProviderKeyLeftBoundaryRegex + OpenAIServiceKeyBodyRegex, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.openai.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Fireworks API keys use an "fw_" prefix with a 22-character
 	// alphanumeric suffix. Keep the trailing word boundary so longer
 	// opaque base64-ish IDs do not match a 22-character prefix.
 	// Source: unverified, current binding carried from defaults.
 	// Publisher documentation: https://docs.fireworks.ai/api-reference/authentication
-	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.fireworks.ai"}},
+	{Name: "Fireworks API Key", Regex: `fw_[A-Za-z0-9]{22}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.fireworks.ai"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// OpenRouter keys are "sk-or-v1-" + a hex token. Keep the suffix
 	// hex-only: allowing hyphens, underscores, or arbitrary letters lets
 	// the pattern match ordinary prose/slugs after the prefix.
 	// Source: https://openrouter.ai/docs/api_reference/overview
-	{Name: "LLM Router API Key", Regex: `sk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.openrouter.ai"}},
+	{Name: "LLM Router API Key", Regex: `sk-or-v1-[A-Fa-f0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"openrouter.ai"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://docs.perplexity.ai/docs/getting-started/quickstart
-	{Name: "Answer Engine API Key", Regex: `pplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.perplexity.ai"}},
+	{Name: "Answer Engine API Key", Regex: `pplx-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.perplexity.ai"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://docs.tavily.com/documentation/quickstart
-	{Name: "Web Research API Key", Regex: `tvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.tavily.com"}},
+	{Name: "Web Research API Key", Regex: `tvly-[A-Za-z0-9]{20,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.tavily.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Source: https://cloud.google.com/docs/authentication/api-keys
-	{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, CredentialAudienceHosts: []string{"*.googleapis.com"}},
+	{Name: "Google API Key", Regex: `AIza[0-9A-Za-z\-_]{35}\b`, Severity: SeverityHigh, CredentialAudienceHosts: []string{"generativelanguage.googleapis.com", "language.googleapis.com", "translation.googleapis.com", "maps.googleapis.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierGoogleAPIKey | CredentialAudienceCarrierAPIKeyQuery},
 	{Name: "Google OAuth Client Secret", Regex: `GOCSPX-[A-Za-z0-9_\-]{28,}`, Severity: SeverityCritical},
 	// Stripe keys use underscores (sk_test_) or hyphens (sk-test-) depending on version.
 	{Name: "Stripe Key", Regex: `[sr]k[-_](live|test)[-_][a-zA-Z0-9]{20,}`, Severity: SeverityCritical},
@@ -226,7 +239,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Anchored to common config key names to reduce FPs on arbitrary base64.
 	// Separator class handles YAML (: ), env (=), JSON (":"), and quoted formats.
 	{Name: "AWS Secret Key", Regex: `(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY|secret.?access.?key|SecretAccessKey)\s*["'=:\s]{1,5}\s*[A-Za-z0-9/+=]{40}`, Severity: SeverityCritical},
-	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
+	{Name: "Google OAuth Token", Regex: `ya29\.[a-zA-Z0-9_-]{20,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"gmail.googleapis.com", "www.googleapis.com", "storage.googleapis.com"}, CredentialAudienceAuthorizationOnly: true},
 	// GCP service-account JSON private_key_id. The "service_account"
 	// type marker is already an always-on CORE pattern (see
 	// scanner/core.go), so it is deliberately NOT duplicated here;
@@ -270,11 +283,11 @@ var defaultDLPPatternSet = []DLPPattern{
 	// it is deliberately not an audience host.
 	// Sources: https://docs.slack.dev/apis/web-api/
 	// https://docs.slack.dev/ai/slack-mcp-server/
-	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}},
+	{Name: "Slack Token", Regex: `xox[bpras]-[0-9a-zA-Z-]{15,}`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com", "mcp.slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The app-level token authenticates apps.connections.open, also on
 	// https://slack.com/api/..., so it shares the exact-host audience.
 	// Source: https://docs.slack.dev/reference/methods/apps.connections.open/
-	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}},
+	{Name: "Slack App Token", Regex: `xapp-[0-9]+-[A-Za-z0-9_]+-[0-9]+-[a-f0-9]+`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"slack.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// The first segment is base64 of a snowflake user ID, which is
 	// structurally an UPPERCASE M or N; the bot-token form is three
 	// dot-separated base64url parts, the mfa form is "mfa." + 84 chars.
@@ -284,7 +297,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// natural-language prose collapses into the 3-part dotted shape (a real
 	// false positive). (?-i:...) pins the structural anchor to uppercase.
 	// Source: https://docs.discord.com/developers/reference
-	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com", "gateway.discord.gg"}},
+	{Name: "Discord Bot Token", Regex: `(?:(?-i:[MN])[A-Za-z0-9]{23,}\.[A-Za-z0-9\-_]{6}\.[A-Za-z0-9\-_]{27,}|(?-i:mfa\.)[A-Za-z0-9\-_]{84,})`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"discord.com", "gateway.discord.gg"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBot | CredentialAudienceCarrierDiscordGateway},
 
 	// Communication service keys
 	// Twilio API Key SIDs are an "SK" prefix + exactly 32 hex chars
@@ -320,30 +333,32 @@ var defaultDLPPatternSet = []DLPPattern{
 	// bounded alphanumeric suffix. Keep the boundary so longer
 	// opaque IDs do not match a valid token prefix.
 	// Source: https://huggingface.co/docs/hub/security-tokens
-	{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.huggingface.co"}},
+	{Name: "Hugging Face Token", Regex: `hf_[A-Za-z0-9]{34,37}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"huggingface.co", "router.huggingface.co"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Databricks personal access tokens use a 32-character hex suffix.
+	// Workspace-specific hosts require operator policy; no wildcard audience.
 	// Keep this narrow: the previous lowercase-alphanumeric suffix
 	// produced false positives on base64 image payloads.
 	// Source: https://docs.databricks.com/aws/en/dev-tools/auth/pat
-	{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.databricks.com"}},
+	{Name: "Databricks Token", Regex: `dapi[0-9a-f]{32,}\b`, Severity: SeverityCritical},
 	// Replicate API tokens use an "r8_" prefix with a 40-character
 	// hex suffix. The previous broad alphanumeric suffix was the same
 	// short-prefix FP shape as Fireworks and Databricks.
 	// Source: unverified, current binding carried from defaults.
 	// Publisher documentation: https://replicate.com/docs/topics/authentication
-	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.replicate.com"}},
-	// Source: unverified, current binding carried from defaults.
-	// Publisher documentation: https://docs.together.ai/docs/authentication
-	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.together.ai"}},
+	{Name: "Replicate API Token", Regex: `r8_[a-f0-9]{40}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.replicate.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
+	// https://docs.together.ai/docs/quickstart documents api.together.ai.
+	// The publisher SDK uses api.together.xyz/v1:
+	// https://github.com/togethercomputer/together-python/blob/807b79024fdcc4c3d37f49cc65b8d885322ae6b4/src/together/constants.py
+	{Name: "Together AI Key", Regex: `tok_[a-z0-9]{40,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.together.ai", "api.together.xyz"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// Pinecone API keys: "pcsk_" prefix followed by alphanumeric.
 	// Source: https://docs.pinecone.io/guides/get-started/authentication
-	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.pinecone.io"}},
+	{Name: "Pinecone API Key", Regex: `pcsk_[a-zA-Z0-9]{36,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.pinecone.io"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAPIKey},
 	// Groq inference API keys: "gsk_" prefix, 48+ alphanumeric chars.
 	// Source: https://console.groq.com/docs/api-keys
-	{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.groq.com"}},
+	{Name: "Groq API Key", Regex: `gsk_[a-zA-Z0-9]{48,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.groq.com"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 	// xAI (Grok) API keys: "xai-" prefix, 80+ chars including hyphens.
 	// Source: https://docs.x.ai/docs/api-reference
-	{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"*.x.ai"}},
+	{Name: "xAI API Key", Regex: `xai-[a-zA-Z0-9\-_]{80,}\b`, Severity: SeverityCritical, CredentialAudienceHosts: []string{"api.x.ai"}, CredentialAudienceCarrierMask: CredentialAudienceCarrierAuthorizationBearer},
 
 	// Infrastructure and platform tokens
 	// DigitalOcean personal access tokens: 64 hex chars after prefix.
@@ -395,7 +410,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// Cryptocurrency private keys
 	// Bitcoin WIF: base58check. Uncompressed (5 + 50 base58 = 51 chars) or
 	// compressed (K/L + 51 base58 = 52 chars). Mainnet only; testnet deferred.
-	{Name: "Bitcoin WIF Private Key", Regex: `(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})`, Severity: SeverityCritical, Validator: ValidatorWIF},
+	{Name: "Bitcoin WIF Private Key", Regex: BitcoinWIFRegex, Severity: SeverityCritical, Validator: ValidatorWIF},
 	// Extended private keys (BIP-32/49/84): xprv/yprv/zprv (mainnet) + tprv (testnet).
 	// 111 total chars, base58check encoded.
 	{Name: "Extended Private Key", Regex: `[xyzt]prv[1-9A-HJ-NP-Za-km-z]{107,108}`, Severity: SeverityCritical},

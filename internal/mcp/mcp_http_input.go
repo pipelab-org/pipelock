@@ -1127,9 +1127,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 			}
 			httpWarnCtx := scanner.WithDLPWarnContext(inputScanCtx, wc)
 			dlpResult := sc.ScanTextForDLP(scanner.WithInboundDirection(httpWarnCtx), string(redirectResult.Response))
-			finalResponseVerdict := scanVerdict
-			finalResponseVerdict.DLPMatches = append(finalResponseVerdict.DLPMatches, dlpResult.Matches...)
-			finalResponseVerdict.Clean = scanVerdict.Clean && dlpResult.Clean
+			finalResponseVerdict := mergeRedirectResponseDLP(scanVerdict, dlpResult)
 			responseAction := config.ActionRedirect
 			if !finalResponseVerdict.Clean {
 				responseAction = config.ActionBlock
@@ -1153,7 +1151,15 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 				receiptLayer = mcpReceiptLayerResponse
 				receiptPattern, receiptSeverity = redirectResponseAttribution(finalResponseVerdict)
 			}
-			if !scanVerdict.Clean {
+			if finalResponseVerdict.Error != "" {
+				denialAudit = mcpResponseInspectionBlockAudit(finalResponseVerdict.Error)
+				br = &BlockedRequest{
+					ID: verdict.ID, IsNotification: isNotification,
+					LogMessage: "blocked (redirect output scan failed)", ErrorCode: -32001,
+					ErrorMessage: "pipelock: redirect handler output scan failed",
+					ErrorData:    mcpBlockReasonData(blockreason.ParseError),
+				}
+			} else if !scanVerdict.Clean {
 				denialAudit = mcpRedirectOutputBlockAudit(scanner.AuditMCPRedirectOutputInjection, mcpRedirectOutputInjectionReason)
 				_, _ = fmt.Fprintf(logW, "pipelock: input: blocked redirect response (injection detected in handler output)\n")
 				recordAdaptiveSignal(session.SignalBlock)

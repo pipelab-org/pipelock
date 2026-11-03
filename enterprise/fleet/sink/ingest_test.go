@@ -507,3 +507,25 @@ func TestHandler_RejectsNoncanonicalSignedEnvelope(t *testing.T) {
 		})
 	}
 }
+
+type incompleteDLPScanner struct{}
+
+func (incompleteDLPScanner) ScanTextForDLP(context.Context, string) scanner.TextDLPResult {
+	return scanner.TextDLPResult{Incomplete: true}
+}
+
+func TestHandlerIncompleteDLPScanIsInternalError(t *testing.T) {
+	handler, _, priv := testHandler(t)
+	handler.dlpScanner = incompleteDLPScanner{}
+	payload := []byte(`{"events":[{"message":"ordinary"}]}`)
+	env := signedEnvelope(t, "incomplete-scan", 1, 1, payload, priv)
+	resp := postBatch(t, handler, env, payload)
+	if resp.Code != http.StatusInternalServerError || !strings.Contains(resp.Body.String(), scanner.ErrTextDLPIncomplete.Error()) || strings.Contains(resp.Body.String(), ErrDLPRejected.Error()) {
+		t.Fatalf("incomplete scan: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	// A failed scan must not persist the upload or prevent a later complete scan.
+	handler.dlpScanner = containsDLPScanner("never-match-fixture")
+	if resp := postBatch(t, handler, env, payload); resp.Code != http.StatusAccepted || strings.Contains(resp.Body.String(), `"status":"duplicate"`) {
+		t.Fatalf("retry: status=%d body=%s", resp.Code, resp.Body.String())
+	}
+}

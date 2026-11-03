@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/llmagent"
@@ -1547,5 +1549,35 @@ func TestLiveSession_Finalize_NoProviderModelLeavesWitnessEmpty(t *testing.T) {
 	}
 	if got, _ := w["provider_model"].(string); got != "" {
 		t.Fatalf("witness.json provider_model = %q, want empty when the runner never observed a provider model", got)
+	}
+}
+
+func TestScanAgentReplyIncompleteDLPIsError(t *testing.T) {
+	sc := scanner.MustNew(config.Defaults())
+	defer sc.Close()
+	s := &LiveSession{lr: &LiveRun{sc: sc}}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	capture, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = capture.Close() }()
+	previous := os.Stderr
+	os.Stderr = capture
+	defer func() { os.Stderr = previous }()
+	ev, blocked := s.scanAgentReply(ctx, LiveEvent{Text: "ordinary reply"})
+	if !blocked || ev.Text != redactedReplyNotice {
+		t.Fatalf("incomplete reply leaked: blocked=%v event=%+v", blocked, ev)
+	}
+	if _, err := capture.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	logged, err := io.ReadAll(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(logged), "scan error") || strings.Contains(string(logged), "trigger=generic-dlp") {
+		t.Fatalf("incomplete reply misattributed: %s", logged)
 	}
 }

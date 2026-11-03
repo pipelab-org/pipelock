@@ -26,6 +26,7 @@ var defaultMCPListenerSensitiveHeaders = []string{
 	"Cookie",
 	listenerLastEventID,
 	"X-Api-Key",
+	"Api-Key",
 	"X-Token",
 	"Proxy-Authorization",
 	"X-Goog-Api-Key",
@@ -67,7 +68,7 @@ func scanMCPListenerHeadersForTarget(
 		if mcpListenerShouldScanHeaderNames(cfg) {
 			result := sc.ScanTextForDLP(ctx, name)
 			if !result.Clean {
-				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+				return mcpListenerHeaderDLPFinding(name, result)
 			}
 			allValues = append(allValues, name)
 		}
@@ -87,7 +88,7 @@ func scanMCPListenerHeadersForTarget(
 			allValues = append(allValues, scanVal)
 			result := sc.ScanTextForDLP(ctx, scanVal)
 			if !result.Clean {
-				return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+				return mcpListenerHeaderDLPFinding(name, result)
 			}
 			if strings.HasPrefix(strings.ToLower(name), mcpParamHeaderPrefix) {
 				decoded, ok := decodeMCPHeaderValue(value)
@@ -104,14 +105,14 @@ func scanMCPListenerHeadersForTarget(
 				if decoded != value {
 					result = sc.ScanTextForDLP(ctx, decoded)
 					if !result.Clean {
-						return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+						return mcpListenerHeaderDLPFinding(name, result)
 					}
 				}
 			}
 			if mcpListenerShouldScanHeaderNames(cfg) {
 				result = sc.ScanTextForDLP(ctx, name+scanVal)
 				if !result.Clean {
-					return &mcpListenerHeaderDLPResult{header: name, matches: result.Matches}
+					return mcpListenerHeaderDLPFinding(name, result)
 				}
 			}
 		}
@@ -121,7 +122,7 @@ func scanMCPListenerHeadersForTarget(
 		sort.Strings(allValues)
 		result := sc.ScanTextForDLP(ctx, strings.Join(allValues, "\n"))
 		if !result.Clean {
-			return &mcpListenerHeaderDLPResult{header: "(joined)", matches: result.Matches}
+			return mcpListenerHeaderDLPFinding("(joined)", result)
 		}
 	}
 	if len(decodedParamValues) > 1 {
@@ -137,10 +138,20 @@ func scanMCPListenerHeadersForTarget(
 		}
 		result := sc.ScanTextForDLP(ctx, strings.Join(joined, "\n"))
 		if !result.Clean {
-			return &mcpListenerHeaderDLPResult{header: "(joined decoded parameters)", matches: result.Matches}
+			return mcpListenerHeaderDLPFinding("(joined decoded parameters)", result)
 		}
 	}
 	return nil
+}
+
+// mcpListenerHeaderDLPFinding reports an unclean header scan. A scan that
+// ended before it finished carries no match; it is reported as a parse error,
+// the same reason an unfinished response scan of a decoded parameter gets.
+func mcpListenerHeaderDLPFinding(header string, result scanner.TextDLPResult) *mcpListenerHeaderDLPResult {
+	if result.Err() != nil && len(result.Matches) == 0 {
+		return &mcpListenerHeaderDLPResult{header: header, reason: blockreason.ParseError}
+	}
+	return &mcpListenerHeaderDLPResult{header: header, matches: result.Matches}
 }
 
 func mcpListenerHeadersToScan(headers http.Header, cfg *config.RequestBodyScanning) map[string][]string {

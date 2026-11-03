@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/json"
 	"net/http"
 	"net/url"
@@ -44,8 +45,9 @@ const (
 	// Evicting one would let that token be minted later, so a full set stops
 	// minting for the session instead.
 	issuerSentMaxEntries = 8192
-	// issuerSentMaxTokensPerRequest bounds the tokens one request records. A
-	// request over the bound marks the session unreadable.
+	// issuerSentMaxTokensPerRequest bounds the input tokens one request
+	// records. Repeated tokens still count toward this workload limit even
+	// when their digest needs only one retained history entry.
 	issuerSentMaxTokensPerRequest = 4096
 	// issuerUnreadableMaxSessions bounds retained ID-history buckets, including
 	// incomplete-history tombstones. New buckets are refused at capacity.
@@ -55,10 +57,14 @@ const (
 	issuerSentAllMaxEntries = 1 << 17
 )
 
-// issuerServerIDShaped reports whether value can be one whole URL path
-// segment naming an object: unreserved characters plus the base64 padding
-// and plus signs some providers keep in IDs. No separator, escape or space
-// can occur, so the value is the segment exactly as written and as decoded.
+// RFC 3986 sections 2.2 and 3.3: literal pchar punctuation is sub-delims plus
+// ':' and '@'. Percent escapes are handled by URL parsing, not admitted as
+// literal ID bytes. The same alphabet applies to every origin.
+const issuerIDDelimiters = "!$&'()*+,;=:@"
+
+// issuerServerIDShaped reports whether value can name one literal ASCII URL
+// path segment. Slashes, escapes, whitespace and controls cannot occur, so the
+// ID is the same string as written and decoded. Shape alone grants nothing.
 func issuerServerIDShaped(value string) bool {
 	if len(value) < issuerServerIDMinLen || len(value) > issuerServerIDMaxLen {
 		return false
@@ -72,6 +78,13 @@ func issuerServerIDShaped(value string) bool {
 }
 
 func issuerServerIDByte(c byte) bool {
+	return issuerSentWordByte(c) || strings.IndexByte(issuerIDDelimiters, c) >= 0
+}
+
+// issuerSentWordByte preserves the unreserved/base64 token boundaries used
+// by the original input-work budget. Supporting more URI punctuation must
+// not change how many input tokens an existing request consumes.
+func issuerSentWordByte(c byte) bool {
 	switch {
 	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
 		return true
@@ -83,36 +96,34 @@ func issuerServerIDByte(c byte) bool {
 	return false
 }
 
-// issuerSentTokens splits text into maximal runs of ID characters and keeps
-// those long enough to be minted. Every way a value could later come back as
-// an ID is a run of these characters, so recording runs covers the value
-// whatever surrounds it.
+// issuerSentTokens records input words under the original workload budget.
+// The same tokenization checks whether a response introduces a new word.
 func issuerSentTokens(text string, emit func(string) bool) bool {
 	start := -1
 	for i := 0; i < len(text); i++ {
-		if issuerServerIDByte(text[i]) {
+		if issuerSentWordByte(text[i]) {
 			if start < 0 {
 				start = i
 			}
 			continue
 		}
 		if start >= 0 {
-			if !emitSentRun(text[start:i], emit) {
+			if !emitSentFormRun(text[start:i], emit) {
 				return false
 			}
 			start = -1
 		}
 	}
 	if start >= 0 {
-		return emitSentRun(text[start:], emit)
+		return emitSentFormRun(text[start:], emit)
 	}
 	return true
 }
 
-// emitSentRun records one maximal run, and each side of every "=" in it:
+// emitSentFormRun records one run, and each side of every "=" in it:
 // "=" is an ID character (base64 padding) and also the form key/value
 // separator, so "payload=<value>" must record <value> on its own.
-func emitSentRun(run string, emit func(string) bool) bool {
+func emitSentFormRun(run string, emit func(string) bool) bool {
 	if len(run) >= issuerServerIDMinLen && !emit(run) {
 		return false
 	}
@@ -130,11 +141,15 @@ func emitSentRun(run string, emit func(string) bool) bool {
 // any scheme or port has reached that host, so it must never mint as an ID
 // the host issued, whatever port the ID is later used on.
 func (s *issuerQueryStore) sentDigest(target *url.URL, value string) ([32]byte, bool) {
-	host := strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
+	host := issuerSentHost(target)
 	if host == "" {
 		return [32]byte{}, false
 	}
 	return s.digestFields("sent_host", host, value), true
+}
+
+func issuerSentHost(target *url.URL) string {
+	return strings.ToLower(strings.TrimSuffix(target.Hostname(), "."))
 }
 
 func (s *issuerQueryStore) originDigest(tag string, target *url.URL, value string) ([32]byte, bool) {
@@ -239,19 +254,26 @@ func (s *issuerQueryStore) recordSent(session string, target *url.URL, header ht
 	}
 
 	var digests [][32]byte
+	var inputTokens int
+	seenTokens := make(map[string]struct{})
+	mac := hmac.New(sha256.New, s.key[:])
+	host := issuerSentHost(originTarget)
 	overflow := false
-	for _, text := range texts {
-		complete := issuerSentTokens(text, func(token string) bool {
-			if len(digests) >= issuerSentMaxTokensPerRequest {
-				overflow = true
-				return false
-			}
-			if digest, ok := s.sentDigest(originTarget, token); ok {
-				digests = append(digests, digest)
-			}
+	recordToken := func(token string) bool {
+		if inputTokens >= issuerSentMaxTokensPerRequest {
+			overflow = true
+			return false
+		}
+		inputTokens++
+		if _, exists := seenTokens[token]; exists {
 			return true
-		})
-		if !complete {
+		}
+		seenTokens[token] = struct{}{}
+		digests = append(digests, issuerDigestFields(mac, "sent_host", host, token))
+		return true
+	}
+	for _, text := range texts {
+		if !issuerSentTokens(text, recordToken) {
 			break
 		}
 	}
@@ -402,10 +424,44 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 			return
 		}
 	}
+	if !s.idIntroducedLocked(session, target, value) {
+		return
+	}
 	if len(issued) >= issuerCookieMaxEntries {
 		issued = issued[1:]
 	}
 	s.ids[session] = append(issued, idDigest)
+}
+
+// issuerServerIDIntroducible reports whether value carries any word that
+// idIntroducedLocked could count as an introduction. A shaped string with none
+// (an ISO timestamp, for one) can never mint, so it must not spend the
+// per-response mint budget that later IDs in the same listing need.
+func issuerServerIDIntroducible(value string) bool {
+	found := false
+	_ = issuerSentTokens(value, func(string) bool {
+		found = true
+		return false
+	})
+	return found
+}
+
+// idIntroducedLocked requires at least one eligible word the caller never sent
+// to this host. An exact reflection contains only recorded words; recombining
+// already-sent words is conservatively refused too. IDs consisting solely of
+// short fields have no introduction proof and keep ordinary entropy scoring.
+// This uses existing history without adding delimiter-specific state or cost.
+func (s *issuerQueryStore) idIntroducedLocked(session string, target *url.URL, value string) bool {
+	introduced := false
+	mac := hmac.New(sha256.New, s.key[:])
+	host := issuerSentHost(target)
+	_ = issuerSentTokens(value, func(token string) bool {
+		digest := issuerDigestFields(mac, "sent_host", host, token)
+		_, sent := s.sent[session][digest]
+		introduced = !sent
+		return sent
+	})
+	return introduced
 }
 
 // serverIDIssued reports whether the origin in target issued segment to the
@@ -415,13 +471,29 @@ func (s *issuerQueryStore) mintServerID(session string, target *url.URL, value s
 // and https://learn.microsoft.com/en-us/graph/api/driveitem-put-content.
 // No other punctuation or content is removed; minting still requires a bare ID.
 func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segment string) bool {
-	segment = strings.TrimSuffix(segment, ":")
-	if s == nil || s.disabled || session == "" || !issuerServerIDShaped(segment) {
+	if s == nil || s.disabled || session == "" {
 		return false
 	}
-	digest, ok := s.originDigest("server_id", target, segment)
-	if !ok {
+	relative := strings.TrimSuffix(segment, ":")
+	exact := issuerServerIDShaped(segment)
+	hasRelativeDelimiter := relative != segment && issuerServerIDShaped(relative)
+	if !exact && !hasRelativeDelimiter {
 		return false
+	}
+	var digest, relativeDigest [32]byte
+	if exact {
+		var ok bool
+		digest, ok = s.originDigest("server_id", target, segment)
+		if !ok {
+			return false
+		}
+	}
+	if hasRelativeDelimiter {
+		var ok bool
+		relativeDigest, ok = s.originDigest("server_id", target, relative)
+		if !ok {
+			return false
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -429,7 +501,7 @@ func (s *issuerQueryStore) serverIDIssued(session string, target *url.URL, segme
 		return false
 	}
 	for _, existing := range s.ids[session] {
-		if hmac.Equal(existing[:], digest[:]) {
+		if (exact && hmac.Equal(existing[:], digest[:])) || (hasRelativeDelimiter && hmac.Equal(existing[:], relativeDigest[:])) {
 			return true
 		}
 	}

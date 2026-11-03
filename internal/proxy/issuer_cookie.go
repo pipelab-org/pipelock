@@ -855,7 +855,11 @@ func loggableCookieName(ctx context.Context, pair string, sc *scanner.Scanner) s
 	switch {
 	case !found || name == "":
 		return issuerCookieUnnamed
-	case len(name) > issuerCookieMaxLoggedName || len(sc.ScanTextForDLP(ctx, name).Matches) > 0:
+	case len(name) > issuerCookieMaxLoggedName:
+		return issuerCookieRedactedName
+	}
+	result := sc.ScanTextForDLP(ctx, name)
+	if result.Err() != nil || len(result.Matches) > 0 {
 		return issuerCookieRedactedName
 	}
 	return name

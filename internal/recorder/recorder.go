@@ -278,7 +278,14 @@ func (r *Recorder) checkBoundOuter(e Entry, scan *ReceiptScan) error {
 	}
 	fields := []string{e.EventKind, e.Transport, e.Summary, e.TraceID}
 	for _, text := range append(fields, strings.Join(fields, "")) {
-		if text != "" && !det(context.Background(), text).Clean {
+		if text == "" {
+			continue
+		}
+		result := det(context.Background(), text)
+		if err := result.Err(); err != nil {
+			return err
+		}
+		if !result.Clean {
 			return &receiptcontent.RejectionError{View: receiptcontent.ViewAtom, Path: receiptcontent.OuterKey, Reason: "unattested mirror field contains sensitive data"}
 		}
 	}
@@ -857,7 +864,11 @@ func (r *Recorder) PreflightSignedReceiptDetail(detail any) (ReceiptScan, error)
 		return ReceiptScan{}, fmt.Errorf("scan signed receipt detail before recording: marshal detail: %w", err)
 	}
 	if r.cfg.Redact && r.redactFn != nil {
-		if result := r.redactFn(context.Background(), string(raw)); !result.Clean {
+		result := r.redactFn(context.Background(), string(raw))
+		if err := result.Err(); err != nil {
+			return ReceiptScan{}, fmt.Errorf("scan signed receipt detail before recording: %w", err)
+		}
+		if !result.Clean {
 			return ReceiptScan{}, errors.New("signed receipt detail contains sensitive data; refusing to record unverifiable redaction")
 		}
 	}
@@ -1235,6 +1246,10 @@ func (r *Recorder) redactDetail(detail any) any {
 	result := r.redactFn(context.Background(), string(raw))
 	if result.Clean {
 		return detail
+	}
+
+	if err := result.Err(); err != nil {
+		return map[string]any{"redacted": true, "scan_error": err.Error(), "original_size": len(raw)}
 	}
 
 	// Build redaction markers from detected patterns

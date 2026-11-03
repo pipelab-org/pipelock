@@ -28,6 +28,11 @@ func TestAdaptiveUniformRefusalMCPListenerInFlightResponse(t *testing.T) {
 		t.Run(wire, func(t *testing.T) {
 			rec := &listenerDiagnosisRecorder{}
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// A local port probe must not escalate the shared session.
+				if !isMCPUpstreamRequest(r) {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				request, _ := io.ReadAll(r.Body)
 				if bytes.Contains(request, []byte(`"initialize"`)) {
 					w.Header().Set("Content-Type", "application/json")
@@ -335,7 +340,11 @@ func TestAdaptiveUniformRefusalMCPHTTPListener(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
 			var calls atomic.Int32
-			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !isMCPUpstreamRequest(r) {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
 				calls.Add(1)
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{}}\n\n")

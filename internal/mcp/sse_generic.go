@@ -672,6 +672,9 @@ func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts Gene
 		if err := checkSSEDLPContext(ctx); err != nil {
 			return "", err
 		}
+		if err := result.Err(); err != nil {
+			return "", fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
+		}
 		if result.Clean {
 			return tail, nil
 		}
@@ -689,6 +692,9 @@ func dropSelfMatchingSSETailWithScan(ctx context.Context, tail string, opts Gene
 				result, _ := keepUnsuppressedDLP(scan(ctx, prefix), opts.Target, opts.Suppress)
 				if err := checkSSEDLPContext(ctx); err != nil {
 					return false, err
+				}
+				if err := result.Err(); err != nil {
+					return false, fmt.Errorf("%w: %w", ErrSSEStreamScanError, err)
 				}
 				return !result.Clean, nil
 			})
@@ -862,7 +868,7 @@ func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []co
 		}
 	}
 	res.Matches = kept
-	res.Clean = !scanner.HasEnforcingMatch(kept)
+	res.Clean = !res.Incomplete && !scanner.HasEnforcingMatch(kept)
 	return res, dropped
 }
 
