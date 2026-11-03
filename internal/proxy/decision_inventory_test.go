@@ -452,6 +452,7 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		{name: "clean", part: "sse-response", response: "ordinary streamed content"},
 		{name: "prompt-injection", part: "sse-response", response: inventoryInjection},
 		{name: "core-credential", part: "sse-response", response: core},
+		{name: "incomplete-field-limit-warn", part: "sse-response", variant: "sse-warn"},
 	}
 	var rows []decisionInventoryRow
 	for _, tc := range cases {
@@ -471,6 +472,9 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 			c.Enforce = new(true)
 		case "body-trusted":
 			c.RequestBodyScanning.TrustedHosts = append(c.RequestBodyScanning.TrustedHosts, inventoryHost)
+		case "sse-warn":
+			c.ResponseScanning.SSEStreaming.Enabled = true
+			c.ResponseScanning.SSEStreaming.Action = config.ActionWarn
 		case "body-warn":
 			c.RequestBodyScanning.Action = config.ActionWarn
 		case "opaque-without-passthrough", "opaque-passthrough", "opaque-expired-passthrough":
@@ -507,6 +511,9 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 				t.Fatal(err)
 			}
 			response = "data: " + string(data) + "\n\n"
+			if tc.name == "incomplete-field-limit-warn" {
+				response = fieldLimitSSEBody()
+			}
 			mediaType = "text/event-stream"
 		}
 		p, obs, rt := h.proxy(t, c, response, mediaType)
@@ -647,9 +654,10 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 			// The row's verdict comes from this probe, not the handler. The
 			// probe omits handler-only options (suppression, scan exemption,
 			// receipt confirmation), so require it to agree with the handler's
-			// delivery; a stream finding in warn mode is delivered by design.
-			if probeRefused := err != nil && c.ResponseScanning.SSEStreaming.Action != config.ActionWarn; probeRefused == row.Delivered {
-				t.Errorf("SSE row %s/%s %s: dispatcher probe refused=%v but the forward handler delivered=%v", base.Preset, base.Runtime, tc.name, probeRefused, row.Delivered)
+			// delivery. Warn mode can still withhold an uninspectable event,
+			// so compare delivered bytes rather than inferring from the action.
+			if probeDelivered := probe.Body.String() == response; probeDelivered != row.Delivered {
+				t.Errorf("SSE row %s/%s %s: dispatcher probe delivered=%v but the forward handler delivered=%v", base.Preset, base.Runtime, tc.name, probeDelivered, row.Delivered)
 			}
 		}
 		if !row.Delivered {
