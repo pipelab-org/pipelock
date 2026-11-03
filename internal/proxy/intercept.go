@@ -2581,7 +2581,7 @@ func newInterceptHandler(
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: ic.Config.ResponseScanning.SizeExemptDomains,
-					Now:               time.Now(),
+					Now:               responseScanNow(),
 				}, ic.Config.ResponseScanning.UnscannablePassthrough); ok {
 					reason := unscannablePassthroughReason(ic.TargetHost, r.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					ic.Logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
