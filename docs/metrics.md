@@ -105,10 +105,10 @@ handshake latency, and per-request/response blocking.
 
 | Label | Values |
 |-------|--------|
-| `check` | `context`, `length`, `parser`, `scheme`, `crlf_injection`, `path_traversal`, `allowlist`, `blocklist`, `core_ssrf`, `core_dlp`, `dlp`, `entropy`, `subdomain_entropy`, `all`, `ssrf`, `ratelimit`, `databudget` |
+| `check` | `context`, `length`, `parser`, `scheme`, `crlf_injection`, `path_traversal`, `allowlist`, `blocklist`, `core_ssrf`, `core_dlp`, `dlp`, `entropy`, `subdomain_entropy`, `nested_destination`, `ssrf`, `ratelimit`, `databudget` |
 | `outcome` | `fired`, `allowed`, `blocked`, `relieved`, `not_evaluated` |
 | `transport` | `fetch`, `forward`, `connect`, `intercept`, `websocket`, `reverse` |
-| `part` | `url_query` for the composite nested-destination check (`check="all"`); `url` for every other check |
+| `part` | `url_query` for the composite nested-destination check (`check="nested_destination"`); `url` for every other check |
 
 All 510 permitted series (17 check/part pairs × 5 outcomes × 6 transports) are created with the registry. Recording uses fixed-size scanner state, immutable counter handles and atomic increments. Unknown transports are dropped. Labels contain no hosts, URLs, paths, values, pattern names or agent names. No length or shape buckets are collected. The counter uses the existing local registry and optional metrics listener.
 

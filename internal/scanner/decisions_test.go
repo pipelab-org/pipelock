@@ -149,7 +149,7 @@ func TestURLDecisionsRange(t *testing.T) {
 		}
 		seen[check] = true
 		wantPart := "url"
-		if check == ScannerAll {
+		if check == DecisionCheckNestedDestination {
 			wantPart = "url_query"
 		}
 		if part != wantPart {

@@ -34,11 +34,11 @@ func (m *Metrics) registerDecisionMetrics(reg *prometheus.Registry) {
 			scanner.ScannerScheme, scanner.ScannerCRLF, scanner.ScannerPathTraversal,
 			scanner.ScannerAllowlist, scanner.ScannerBlocklist, scanner.ScannerCoreSSRF,
 			scanner.ScannerCoreDLP, scanner.ScannerDLP, scanner.ScannerEntropy,
-			scanner.ScannerSubdomainEntropy, scanner.ScannerAll, scanner.ScannerSSRF, scanner.ScannerRateLimit,
+			scanner.ScannerSubdomainEntropy, scanner.DecisionCheckNestedDestination, scanner.ScannerSSRF, scanner.ScannerRateLimit,
 			scanner.ScannerDataBudget,
 		} {
 			part := "url"
-			if check == scanner.ScannerAll {
+			if check == scanner.DecisionCheckNestedDestination {
 				part = "url_query"
 			}
 			var handles [decisionOutcomeCount]prometheus.Counter

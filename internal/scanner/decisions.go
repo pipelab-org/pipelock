@@ -40,10 +40,15 @@ const (
 	urlCheckCount
 )
 
+// DecisionCheckNestedDestination labels the composite check that scans
+// destinations nested in query values. It has its own name because the
+// scanner's ScannerAll label reads as an aggregate of every check.
+const DecisionCheckNestedDestination = "nested_destination"
+
 // URLDecisions holds bounded execution state for the top-level URL checks.
 // It contains no request data and is excluded from result serialization.
-// Nested destinations use the existing composite ScannerAll label with
-// part=url_query; individual nested subchecks are not represented.
+// Nested destinations are one composite check with part=url_query;
+// individual nested subchecks are not represented.
 type URLDecisions struct {
 	valid  bool
 	checks [urlCheckCount]Decision
@@ -58,7 +63,7 @@ func (d URLDecisions) Range(visit func(check, part string, outcome Decision)) {
 		ScannerContext, ScannerLength, ScannerParser, ScannerScheme,
 		ScannerCRLF, ScannerPathTraversal, ScannerAllowlist, ScannerBlocklist,
 		ScannerCoreSSRF, ScannerCoreDLP, ScannerDLP, ScannerEntropy,
-		ScannerSubdomainEntropy, ScannerAll, ScannerSSRF, ScannerRateLimit, ScannerDataBudget,
+		ScannerSubdomainEntropy, DecisionCheckNestedDestination, ScannerSSRF, ScannerRateLimit, ScannerDataBudget,
 	}
 	for i, name := range names {
 		part := "url"
