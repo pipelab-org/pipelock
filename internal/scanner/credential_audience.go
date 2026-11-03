@@ -1164,7 +1164,7 @@ func (s *Scanner) urlDLPAudienceSurface(p *compiledPattern, parsed *url.URL, mem
 			query := parsed.Query()
 			query.Del("key")
 			remaining.RawQuery = query.Encode()
-			var decodes decodingMemo
+			decodes := decodingMemo{inbound: memo != nil && memo.inbound}
 			if result, _ := s.checkDLPWithDecodesAt(&remaining, &decodes, now); !result.Allowed {
 				return bareURLSurface
 			}

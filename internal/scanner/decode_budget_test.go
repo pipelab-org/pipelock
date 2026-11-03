@@ -318,3 +318,33 @@ func testDecodeBudgetSegmentHTMLView(t *testing.T, coreOnly bool) {
 		t.Fatal("inbound HTML segment budget refused a response")
 	}
 }
+
+// The API-key remainder rescan keeps the outer scan's work accounting, like
+// the query-less rescan beside it.
+func TestDecodeBudgetAPIKeyRescanKeepsDirection(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.DLP.ScanEnv = false
+	key := "AIza" + strings.Repeat("a", 35)
+	raw := "https://generativelanguage.googleapis.com/v1beta/models?key=" + key + "&x=" + url.QueryEscape(decodeBudgetNestedText())
+	cfg.FetchProxy.Monitoring.MaxURLLength = len(raw) + 1
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var google *compiledPattern
+	for _, p := range sc.dlpPatterns {
+		if p.name == "Google API Key" {
+			google = p
+		}
+	}
+	if google == nil {
+		t.Fatal("Google API Key pattern not compiled")
+	}
+	parsed := mustParseURL(t, raw)
+	if got := sc.urlDLPAudienceSurface(google, parsed, &queryLessDLPMemo{inbound: true}); got != credentialAudienceURLQuerySurface {
+		t.Fatalf("inbound remainder rescan used outbound accounting: surface=%q", got)
+	}
+	if got := sc.urlDLPAudienceSurface(google, parsed, &queryLessDLPMemo{}); got == credentialAudienceURLQuerySurface {
+		t.Fatal("outbound remainder rescan missed work exhaustion")
+	}
+}
