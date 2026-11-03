@@ -19,6 +19,10 @@ import (
 
 const decisionOpaque = "aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0iL3oR6uX9"
 
+// decisionGoogleKey matches the shipped Google API Key pattern, whose audience
+// is compiled in. Built at runtime so no credential literal sits in source.
+var decisionGoogleKey = "AI" + "za" + "Sy9fK2qLmR7xWvT4bNcZ8pH3jD6gE1uYo0A"
+
 func decisionScanner(t *testing.T) *scanner.Scanner {
 	t.Helper()
 	cfg := config.Defaults()
@@ -28,7 +32,6 @@ func decisionScanner(t *testing.T) *scanner.Scanner {
 	cfg.FetchProxy.Monitoring.MaxDataPerMinute = 0
 	cfg.DLP.Patterns = append(cfg.DLP.Patterns,
 		config.DLPPattern{Name: "Decision warning", Regex: "decision_warning", Severity: config.SeverityHigh, Action: config.ActionWarn},
-		config.DLPPattern{Name: "Decision audience", Regex: "decision_audience_value", Severity: config.SeverityHigh, CredentialAudienceHosts: []string{"api.vendor.example"}},
 	)
 	sc := scanner.MustNew(cfg)
 	t.Cleanup(sc.Close)
@@ -47,12 +50,14 @@ func TestURLDecisionOutcomes(t *testing.T) {
 		issuer bool
 	}{
 		{"clean", "https://api.vendor.example/items", true, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 1, 0, 0, 0}, false},
+		// decisionScanner clears cfg.Internal, so the SSRF check runs and allows.
+		{"ssrf", "https://api.vendor.example/items", true, scanner.ScannerSSRF, [decisionOutcomeCount]float64{0, 1, 0, 0, 0}, false},
 		{"early block", "ftp://api.vendor.example/items", false, scanner.ScannerScheme, [decisionOutcomeCount]float64{0, 0, 1, 1, 0}, false},
 		{"not evaluated", "ftp://api.vendor.example/items", false, scanner.ScannerEntropy, [decisionOutcomeCount]float64{1, 0, 0, 0, 0}, false},
 		{"warning", "https://api.vendor.example/decision_warning", true, scanner.ScannerDLP, [decisionOutcomeCount]float64{0, 1, 1, 0, 0}, false},
 		{"entropy block", "https://api.vendor.example/items?cursor=" + decisionOpaque, false, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 0, 1, 1, 0}, false},
 		{"issuer relief", "https://api.vendor.example/items?cursor=" + decisionOpaque, true, scanner.ScannerEntropy, [decisionOutcomeCount]float64{0, 1, 1, 0, 1}, true},
-		{"audience relief", "https://api.vendor.example/decision_audience_value", true, scanner.ScannerDLP, [decisionOutcomeCount]float64{0, 1, 1, 0, 1}, false},
+		{"audience relief", "https://maps.googleapis.com/maps/api/js?key=" + decisionGoogleKey, true, scanner.ScannerDLP, [decisionOutcomeCount]float64{0, 1, 1, 0, 1}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -213,4 +218,24 @@ func TestURLDecisionRegistrationMatchesTrace(t *testing.T) {
 			t.Errorf("registered check %q part %q is never traced", pair[0], pair[1])
 		}
 	}
+}
+
+// Every series exists from registry creation, before any scan is recorded,
+// so a scrape never has to infer a missing check from an absent series.
+func TestURLDecisionSeriesCreatedAtStartup(t *testing.T) {
+	t.Parallel()
+	families, err := New().Registry().Gather()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, family := range families {
+		if family.GetName() != "pipelock_url_check_decisions_total" {
+			continue
+		}
+		if got, want := len(family.Metric), 17*5*6; got != want {
+			t.Fatalf("series at startup = %d, want %d", got, want)
+		}
+		return
+	}
+	t.Fatal("pipelock_url_check_decisions_total not registered at startup")
 }

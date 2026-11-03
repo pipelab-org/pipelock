@@ -63,6 +63,11 @@ func TestURLDecisionsShortCircuit(t *testing.T) {
 			if got := result.Decisions.checks[tc.check]; got != DecisionFired|DecisionBlocked {
 				t.Fatalf("check %d outcome=%v, want fired and blocked; result=%+v", tc.check, got, result)
 			}
+			for i := urlLength; i < tc.check; i++ {
+				if got := result.Decisions.checks[i]; got != DecisionAllowed {
+					t.Errorf("earlier check %d=%v, want allowed", i, got)
+				}
+			}
 			for i := tc.check + 1; i < urlCheckCount; i++ {
 				// Destination validation follows the scheme check under the parser label.
 				if tc.name == "destination" && i == urlScheme {
