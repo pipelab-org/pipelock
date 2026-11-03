@@ -96,6 +96,17 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 		{"wrapped URL error", func(l *Logger, value string) {
 			l.LogError(LogContext{url: value}, fmt.Errorf("fetch: %w", &url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")}))
 		}, []string{"url"}},
+		{"nested URL error", func(l *Logger, value string) {
+			// A redirect with an unparseable Location nests a second URL in the cause.
+			nested := "https://other.vendor.example:payloadcanary/" + value
+			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: fmt.Errorf("failed to parse Location header %q: %w", nested,
+				&url.Error{Op: "parse", URL: nested, Err: errors.New(`invalid port ":payloadcanary" after host`)})})
+		}, []string{"url"}},
+		{"joined URL errors", func(l *Logger, value string) {
+			l.LogError(LogContext{url: value}, errors.Join(
+				&url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")},
+				&url.Error{Op: "Get", URL: "https://second.vendor.example/payloadcanary?token=payloadcanary", Err: errors.New("also unavailable")}))
+		}, []string{"url"}},
 		{"identity collision", func(l *Logger, value string) {
 			l.LogAgentIdentityCollision(LogContext{method: testMethodGet, url: value, target: value}, "reserved")
 		}, []string{"url", "target"}},

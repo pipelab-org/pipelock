@@ -6,6 +6,8 @@ package audit
 import (
 	"errors"
 	"net/url"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -117,14 +119,7 @@ func (e *logEntry) strs(key string, values []string) *logEntry {
 }
 
 func (e *logEntry) errField(err error) *logEntry {
-	// HTTP client errors carry a second URL outside the request context.
-	// Keep the operation and cause, but apply the same destination policy.
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		logged := *urlErr
-		logged.URL = dropURLContentSegments(urlErr.URL, false)
-		err = errors.New(strings.ReplaceAll(err.Error(), urlErr.Error(), logged.Error()))
-	}
+	err = redactURLErrors(err)
 	e.event = e.event.Err(err)
 	errStr := ""
 	if err != nil {
@@ -132,6 +127,51 @@ func (e *logEntry) errField(err error) *logEntry {
 	}
 	e.fields["error"] = errStr
 	return e
+}
+
+// redactURLErrors applies the destination policy to every *url.Error in err's
+// chain. The HTTP client reports the request URL in one, and a redirect
+// failure nests another (the unparseable Location header) inside its cause, so
+// redacting only the outermost would leave the second URL in the message. A
+// parse failure also echoes fragments of its input (the offending port or
+// escape) in its reason, so that reason is replaced rather than passed through.
+func redactURLErrors(err error) error {
+	var found []*url.Error
+	collectURLErrors(err, &found)
+	if len(found) == 0 {
+		return err
+	}
+	// Longest first so a URL that is a prefix of another cannot leave a tail.
+	sort.SliceStable(found, func(i, j int) bool { return len(found[i].URL) > len(found[j].URL) })
+	msg := err.Error()
+	for _, ue := range found {
+		if ue.Op == "parse" && ue.Err != nil {
+			msg = strings.ReplaceAll(msg, ue.Err.Error(), "invalid URL")
+		}
+		if ue.URL != "" {
+			msg = strings.ReplaceAll(msg, ue.URL, dropURLContentSegments(ue.URL, false))
+		}
+	}
+	return errors.New(msg)
+}
+
+// collectURLErrors visits every node of err's tree, including errors.Join and
+// multi-%w branches. errors.As returns the first match at or below a node, so
+// stepping node by node with errors.Unwrap reaches each *url.Error; duplicates
+// are skipped by pointer.
+func collectURLErrors(err error, found *[]*url.Error) {
+	for ; err != nil; err = errors.Unwrap(err) {
+		var ue *url.Error
+		if errors.As(err, &ue) && !slices.Contains(*found, ue) {
+			*found = append(*found, ue)
+		}
+		var multi interface{ Unwrap() []error }
+		if errors.As(err, &multi) {
+			for _, inner := range multi.Unwrap() {
+				collectURLErrors(inner, found)
+			}
+		}
+	}
 }
 
 // bundleRulesField adds "bundle_rules" to both zerolog and emit. All
