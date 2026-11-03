@@ -15,31 +15,31 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-func decodeBudgetBody(name string) (string, string) {
+func decodeBudgetBody(name string) string {
 	switch name {
 	case "nested":
 		nested := `\u0068ello`
 		for range 80 {
 			nested = strings.ReplaceAll(nested, `\`, `\u005c`)
 		}
-		return strings.Repeat("!", 128*1024) + nested, "text/plain"
-	case "json":
-		return `{"message":"` + strings.Repeat("!", 5_240_000-20) + `\u0061"}`, "application/json"
-	case "hex":
-		return strings.Repeat("21", 3*1024*1024/2), "text/plain"
+		return strings.Repeat("!", 128*1024) + nested
 	case "base64":
 		n := 9 * 1024 * 1024 / 4 * 3
 		plain := bytes.Repeat([]byte{0xff}, n)
-		return base64.StdEncoding.EncodeToString(plain), "text/plain"
+		return base64.StdEncoding.EncodeToString(plain)
 	default:
 		panic("unknown decode workload")
 	}
 }
 
 func TestDecodeBudgetLargeStdioInput(t *testing.T) {
-	for _, name := range []string{"json", "hex", "base64", "nested"} {
+	t.Parallel()
+	// The HTTP and WebSocket tests cover JSON and hex bodies of this size; stdio
+	// keeps one large single-layer body and one over-budget nested body.
+	for _, name := range []string{"base64", "nested"} {
 		t.Run(name, func(t *testing.T) {
-			body, _ := decodeBudgetBody(name)
+			t.Parallel()
+			body := decodeBudgetBody(name)
 			msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "upload", "arguments": map[string]string{"text": body}}})
 			if err != nil {
 				t.Fatal(err)
