@@ -30,7 +30,10 @@ func TestSeedPhraseRawQueryPairs(t *testing.T) {
 }
 
 func TestNestedURLRawQueryPairs(t *testing.T) {
-	candidates := nestedURLCandidates("x=1;next=https%3A%2F%2Fapi.vendor.example%2F%ZZ", 4096)
+	candidates, complete := nestedURLCandidates("x=1;next=https%3A%2F%2Fapi.vendor.example%2F%ZZ", 4096)
+	if !complete {
+		t.Fatal("ordinary nested query decoding was incomplete")
+	}
 	for _, candidate := range candidates {
 		if candidate.key == "next" && candidate.text == "https://api.vendor.example/%ZZ" {
 			return

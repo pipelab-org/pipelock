@@ -1777,8 +1777,11 @@ type nestedURLCandidate struct {
 // candidates, in raw form, iteratively percent-decoded, and through the same
 // hex/base64/base32 layers DLP applies. A scheme-relative "//host/..." is
 // completed with https so the host is evaluated like any other destination.
-func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
-	return nestedURLCandidatesWithDecodes(rawQuery, maxLen, nil)
+// complete is false when a recovered encoding exceeds the decoder bounds.
+func nestedURLCandidates(rawQuery string, maxLen int) (out []nestedURLCandidate, complete bool) {
+	var decodes decodingMemo
+	out = nestedURLCandidatesWithDecodes(rawQuery, maxLen, &decodes)
+	return out, !decodes.inspectionIncomplete()
 }
 
 func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodingMemo) []nestedURLCandidate {
@@ -1809,11 +1812,9 @@ func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodi
 				continue
 			}
 			add(decodedKey, component)
-			decoded := IterativeDecode(component)
-			if decoded != component {
-				add(decodedKey, decoded)
-			}
-			for _, d := range decodes.decode(decoded, false) {
+			// RFC 3986 section 2.1 escapes can appear after another encoding
+			// is recovered. Keep them in the same bounded decoding walk.
+			for _, d := range decodes.decode(component, true) {
 				add(decodedKey, d.text)
 			}
 		}
