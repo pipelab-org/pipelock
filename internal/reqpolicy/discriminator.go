@@ -6,6 +6,7 @@ package reqpolicy
 import (
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
@@ -33,8 +34,16 @@ type discPredicate struct {
 }
 
 type exactException struct {
-	field  string
-	values map[string]struct{}
+	field    string
+	values   map[string]struct{}
+	requests map[exactRequestKey]time.Time
+	now      func() time.Time // nil uses the real clock; an instance-local test seam.
+}
+
+type exactRequestKey struct {
+	url    string
+	method string
+	digest string
 }
 
 func compileExactException(e *config.RequestPolicyException) *exactException {
@@ -42,6 +51,23 @@ func compileExactException(e *config.RequestPolicyException) *exactException {
 		return nil
 	}
 	x := &exactException{field: strings.TrimSpace(e.Field), values: make(map[string]struct{}, len(e.Values))}
+	if len(e.Requests) > 0 {
+		x.requests = make(map[exactRequestKey]time.Time, len(e.Requests))
+		for _, request := range e.Requests {
+			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
+			if err != nil {
+				continue
+			} // NewMatcher rejects invalid configuration.
+			canonical, ok := config.CanonicalExactRequestURL(request.URL)
+			if !ok {
+				continue
+			}
+			key := exactRequestKey{url: canonical, method: request.Method, digest: request.BodySHA256}
+			if previous, ok := x.requests[key]; !ok || expires.After(previous) {
+				x.requests[key] = expires
+			}
+		}
+	}
 	for _, value := range e.Values {
 		x.values[value] = struct{}{}
 	}
@@ -53,6 +79,17 @@ func compileExactException(e *config.RequestPolicyException) *exactException {
 func (e *exactException) matches(meta RequestMeta) bool {
 	if !meta.JSONBodyParsed {
 		return false
+	}
+	if len(e.requests) > 0 {
+		if meta.ExactURL == "" || meta.JSONBodySHA256 == "" {
+			return false
+		}
+		expires, ok := e.requests[exactRequestKey{url: meta.ExactURL, method: meta.Method, digest: meta.JSONBodySHA256}]
+		now := time.Now
+		if e.now != nil {
+			now = e.now
+		}
+		return ok && now().Before(expires)
 	}
 	obj, ok := meta.JSONBody.(map[string]any)
 	if !ok {
