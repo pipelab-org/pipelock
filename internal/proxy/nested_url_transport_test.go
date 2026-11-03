@@ -69,14 +69,14 @@ func TestFetchEndpoint_NestedMetadataURLBlocked(t *testing.T) {
 // nestedURLBackendPath is the only path the forward-proxy tests below send.
 const nestedURLBackendPath = "/pkg"
 
-// newNestedURLCountingBackend counts only requests for nestedURLBackendPath.
-// Anything else is a foreign loopback probe, such as a local port scanner's
-// GET /, and gets 404 without counting, so it can't fake an upstream contact.
+// newNestedURLCountingBackend excludes queryless GET / loopback probes.
+// Other requests count even if their path differs from the requested path, so
+// a forwarding regression cannot hide an upstream contact by changing the path.
 func newNestedURLCountingBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var hits atomic.Int32
 	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != nestedURLBackendPath {
+		if r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "" && !r.URL.ForceQuery {
 			http.NotFound(w, r)
 			return
 		}
@@ -98,8 +98,15 @@ func TestNestedURLCountingBackendIgnoresForeignProbe(t *testing.T) {
 	if status := get(backend.URL + "/"); status != http.StatusNotFound || hits.Load() != 0 {
 		t.Fatalf("foreign probe: status=%d hits=%d, want 404 and 0", status, hits.Load())
 	}
-	if status := get(backend.URL + nestedURLBackendPath + "?" + nestedMetadataQuery); status != http.StatusOK || hits.Load() != 1 {
-		t.Fatalf("own request: status=%d hits=%d, want 200 and 1", status, hits.Load())
+	var wantHits int32
+	for _, path := range []string{nestedURLBackendPath, "/other", "/", "/%70kg"} {
+		wantHits++
+		if status := get(backend.URL + path + "?" + nestedMetadataQuery); status != http.StatusOK || hits.Load() != wantHits {
+			t.Fatalf("own request path=%q: status=%d hits=%d, want 200 and %d", path, status, hits.Load(), wantHits)
+		}
+	}
+	if status := get(backend.URL + "/"); status != http.StatusNotFound || hits.Load() != 4 {
+		t.Fatalf("later foreign probe: status=%d hits=%d, want 404 and 4", status, hits.Load())
 	}
 }
 
