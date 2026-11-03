@@ -6,6 +6,9 @@ package audit
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -97,10 +100,18 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 			l.LogError(LogContext{url: value}, fmt.Errorf("fetch: %w", &url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")}))
 		}, []string{"url"}},
 		{"nested URL error", func(l *Logger, value string) {
-			// A redirect with an unparseable Location nests a second URL in the cause.
+			// Typed wrappers can retain a second URL in the cause.
 			nested := "https://other.vendor.example:payloadcanary/" + value
 			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: fmt.Errorf("failed to parse Location header %q: %w", nested,
 				&url.Error{Op: "parse", URL: nested, Err: errors.New(`invalid port ":payloadcanary" after host`)})})
+		}, []string{"url"}},
+		{"quoted URL error", func(l *Logger, value string) {
+			value += `?token="payloadcanary"\payloadcanary`
+			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")})
+		}, []string{"url"}},
+		{"parse URL error", func(l *Logger, value string) {
+			_, err := url.Parse("https://api.vendor.example:payloadcanary/" + value)
+			l.LogError(LogContext{url: value}, err)
 		}, []string{"url"}},
 		{"joined URL errors", func(l *Logger, value string) {
 			l.LogError(LogContext{url: value}, errors.Join(
@@ -271,5 +282,164 @@ func TestAdaptiveAuditSanitizesBothOutputs(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHTTPAuditMalformedRedirect(t *testing.T) {
+	for _, location := range []string{
+		"https://other.vendor.example:payloadcanary/path",
+		`https://other.vendor.example:payloadcanary/path?token="payloadcanary"`,
+		`https://other.vendor.example:payloadcanary/path?token=\payloadcanary`,
+		"/payloadcanary%zz",
+	} {
+		t.Run(location, func(t *testing.T) {
+			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Location", location)
+				w.WriteHeader(http.StatusFound)
+			}))
+			defer origin.Close()
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, origin.URL, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response, err := origin.Client().Do(req)
+			if response != nil {
+				_ = response.Body.Close()
+			}
+			if err == nil {
+				t.Fatal("expected malformed redirect error")
+			}
+			t.Logf("net/http producer: %v", err)
+			path := filepath.Join(t.TempDir(), "audit.log")
+			logger, logErr := New("json", "file", path, true, true)
+			if logErr != nil {
+				t.Fatal(logErr)
+			}
+			t.Cleanup(logger.Close)
+			sink := &collectingSink{}
+			emitter := emit.NewEmitter("test-instance", sink)
+			t.Cleanup(func() { _ = emitter.Close() })
+			logger.SetEmitter(emitter)
+			logger.LogError(LogContext{url: origin.URL}, err)
+			logger.Close()
+			entries := readInterceptEntries(t, path)
+			if len(entries) != 1 {
+				t.Fatalf("local entries=%d, want 1", len(entries))
+			}
+			event := sink.onlyEvent(t)
+			for _, fields := range []map[string]any{entries[0], event.Fields} {
+				message, ok := fields["error"].(string)
+				if !ok || !strings.Contains(message, "invalid redirect URL") {
+					t.Errorf("error=%v, want safe redirect diagnostic", fields["error"])
+				}
+				if strings.Contains(message, "payloadcanary") {
+					t.Errorf("payload reached error: %s", message)
+				}
+			}
+		})
+	}
+}
+
+type auditCyclicError struct{}
+
+func (*auditCyclicError) Error() string   { return "cycle" }
+func (e *auditCyclicError) Unwrap() error { return e }
+
+type auditSliceError []error
+
+func (auditSliceError) Error() string     { return "slice wrapper" }
+func (e auditSliceError) Unwrap() []error { return e }
+
+type auditValueError []byte
+
+func (auditValueError) Error() string { return "ordinary value error" }
+
+type auditSingleValueError []byte
+
+func (auditSingleValueError) Error() string   { return "value wrapper" }
+func (e auditSingleValueError) Unwrap() error { return e }
+
+type auditURLAliasError struct{ err *url.Error }
+
+func (e auditURLAliasError) Error() string { return e.err.Error() }
+func (e auditURLAliasError) As(target any) bool {
+	if p, ok := target.(**url.Error); ok {
+		*p = e.err
+		return true
+	}
+	return false
+}
+
+func TestAuditURLErrorTree(t *testing.T) {
+	leaf := &url.Error{Op: "Get", URL: "https://api.vendor.example/payloadcanary", Err: errors.New("upstream unavailable")}
+	var deep error = leaf
+	for range 1000 {
+		deep = fmt.Errorf("context: %w", errors.Join(deep))
+	}
+	var nilURL *url.Error
+	for _, tt := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"plain", errors.New("ordinary failure"), "ordinary failure"},
+		{"custom As", auditURLAliasError{leaf}, "upstream unavailable"},
+		{"nil custom As", auditURLAliasError{}, "[redacted invalid error tree]"},
+		{"deep", deep, "upstream unavailable"},
+		{"shared subtree", errors.Join(leaf, leaf), `Get "https://api.vendor.example": upstream unavailable`},
+		{"multi wrapping", fmt.Errorf("first %w; second %w", leaf, leaf), "upstream unavailable"},
+		{"cycle", &auditCyclicError{}, "[redacted invalid error tree]"},
+		{"URL cycle", nil, "[redacted invalid error tree]"},
+		{"typed nil", nilURL, "[redacted invalid error tree]"},
+		{"noncomparable wrapper", auditSliceError{leaf}, "[redacted invalid error tree]"},
+		{"noncomparable single wrapper", auditSingleValueError{1}, "[redacted invalid error tree]"},
+		{"noncomparable leaf", auditValueError{1}, "ordinary value error"},
+		{"DNS diagnostic", &url.Error{Op: "Get", URL: leaf.URL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Name: "api.vendor.example", Err: "no such host"}}}, "no such host"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "URL cycle" {
+				cyclic := &url.Error{Op: "Get", URL: leaf.URL}
+				cyclic.Err = cyclic
+				tt.err = cyclic
+			}
+			got := redactURLErrors(tt.err)
+			if tt.err == nil {
+				if got != nil {
+					t.Fatal(got)
+				}
+				return
+			}
+			if got == nil || !strings.Contains(got.Error(), tt.want) {
+				t.Fatalf("got %v, want %q", got, tt.want)
+			}
+			if strings.Contains(got.Error(), "payloadcanary") {
+				t.Fatal("payload reached error")
+			}
+		})
+	}
+}
+
+type auditCountedError struct {
+	child  error
+	visits *int
+}
+
+func (*auditCountedError) Error() string { return "wrapper" }
+func (e *auditCountedError) Unwrap() error {
+	*e.visits++
+	return e.child
+}
+
+func TestAuditErrorTreeVisitsOnce(t *testing.T) {
+	visits := 0
+	err := errors.New("ordinary failure")
+	const wrappers = 8
+	for range wrappers {
+		err = &auditCountedError{child: err, visits: &visits}
+	}
+	found, valid := collectURLErrors(err)
+	if !valid || len(found) != 0 || visits != wrappers {
+		t.Fatalf("valid=%v URL errors=%d unwrap calls=%d, want true, 0, %d", valid, len(found), visits, wrappers)
 	}
 }

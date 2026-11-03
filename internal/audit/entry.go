@@ -6,8 +6,9 @@ package audit
 import (
 	"errors"
 	"net/url"
-	"slices"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -129,15 +130,13 @@ func (e *logEntry) errField(err error) *logEntry {
 	return e
 }
 
-// redactURLErrors applies the destination policy to every *url.Error in err's
-// chain. The HTTP client reports the request URL in one, and a redirect
-// failure nests another (the unparseable Location header) inside its cause, so
-// redacting only the outermost would leave the second URL in the message. A
-// parse failure also echoes fragments of its input (the offending port or
-// escape) in its reason, so that reason is replaced rather than passed through.
+// redactURLErrors applies the destination policy to typed URL errors. Parse
+// reasons and malformed-redirect details can echo input outside the URL field.
 func redactURLErrors(err error) error {
-	var found []*url.Error
-	collectURLErrors(err, &found)
+	found, valid := collectURLErrors(err)
+	if !valid {
+		return errors.New("[redacted invalid error tree]")
+	}
 	if len(found) == 0 {
 		return err
 	}
@@ -145,33 +144,97 @@ func redactURLErrors(err error) error {
 	sort.SliceStable(found, func(i, j int) bool { return len(found[i].URL) > len(found[j].URL) })
 	msg := err.Error()
 	for _, ue := range found {
-		if ue.Op == "parse" && ue.Err != nil {
-			msg = strings.ReplaceAll(msg, ue.Err.Error(), "invalid URL")
+		if ue.Err != nil {
+			cause := ue.Err.Error()
+			switch {
+			case ue.Op == "parse":
+				msg = strings.ReplaceAll(msg, cause, "invalid URL")
+			case strings.HasPrefix(cause, "failed to parse Location header "):
+				// net/http.Client formats the Location parse error with %v, not %w.
+				// The URL and parse reason in this detail aren't in the error tree.
+				msg = strings.ReplaceAll(msg, cause, "invalid redirect URL")
+			}
 		}
 		if ue.URL != "" {
-			msg = strings.ReplaceAll(msg, ue.URL, dropURLContentSegments(ue.URL, false))
+			destination := dropURLContentSegments(ue.URL, false)
+			// url.Error uses %q; the raw URL won't match quotes or backslashes.
+			msg = strings.ReplaceAll(msg, strconv.Quote(ue.URL), strconv.Quote(destination))
+			msg = strings.ReplaceAll(msg, ue.URL, destination)
 		}
 	}
 	return errors.New(msg)
 }
 
-// collectURLErrors visits every node of err's tree, including errors.Join and
-// multi-%w branches. errors.As returns the first match at or below a node, so
-// stepping node by node with errors.Unwrap reaches each *url.Error; duplicates
-// are skipped by pointer.
-func collectURLErrors(err error, found *[]*url.Error) {
-	for ; err != nil; err = errors.Unwrap(err) {
-		var ue *url.Error
-		if errors.As(err, &ue) && !slices.Contains(*found, ue) {
-			*found = append(*found, ue)
+// collectURLErrors walks direct children once. Calling errors.As at each node
+// would recursively search descendants again, and wouldn't terminate on cycles.
+// Active/done marks distinguish cycles from a shared errors.Join subtree.
+func collectURLErrors(err error) ([]*url.Error, bool) {
+	type visit struct {
+		err   error
+		leave bool
+	}
+	stack := []visit{{err: err}}
+	state := make(map[error]bool)
+	var found []*url.Error
+	for len(stack) > 0 {
+		item := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		node := item.err
+		if node == nil {
+			continue
 		}
-		var multi interface{ Unwrap() []error }
-		if errors.As(err, &multi) {
-			for _, inner := range multi.Unwrap() {
-				collectURLErrors(inner, found)
+		value := reflect.ValueOf(node)
+		switch value.Kind() {
+		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+			if value.IsNil() {
+				return nil, false
 			}
 		}
+		canCompare := value.Comparable()
+		if canCompare {
+			if item.leave {
+				state[node] = true
+				continue
+			}
+			if done, seen := state[node]; seen {
+				if !done {
+					return nil, false
+				}
+				continue
+			}
+			state[node] = false
+			stack = append(stack, visit{err: node, leave: true})
+		}
+		//nolint:errorlint // Inspect this node only; errors.As recursively searches descendants.
+		if ue, ok := node.(*url.Error); ok {
+			found = append(found, ue)
+		} else if alias, ok := node.(interface{ As(any) bool }); ok {
+			var ue *url.Error
+			if alias.As(&ue) {
+				if ue == nil {
+					return nil, false
+				}
+				stack = append(stack, visit{err: ue})
+			}
+		}
+		//nolint:errorlint // Visit direct children; errors.As recursively revisits descendants.
+		switch wrapped := node.(type) {
+		case interface{ Unwrap() []error }:
+			// Non-comparable wrappers have no stable identity for cycle detection.
+			if !canCompare {
+				return nil, false
+			}
+			for _, child := range wrapped.Unwrap() {
+				stack = append(stack, visit{err: child})
+			}
+		case interface{ Unwrap() error }:
+			if !canCompare {
+				return nil, false
+			}
+			stack = append(stack, visit{err: wrapped.Unwrap()})
+		}
 	}
+	return found, true
 }
 
 // bundleRulesField adds "bundle_rules" to both zerolog and emit. All
