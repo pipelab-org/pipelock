@@ -1,6 +1,6 @@
 [package]
 name = "pipelock-verifier-rs"
-version = "0.6.10"
+version = "0.6.11"
 edition = "2021"
 rust-version = "1.95"
 license = "Apache-2.0"
@@ -23,7 +23,7 @@ path = "src/main.rs"
 [dependencies]
 base64 = "=0.23.1"
 data-encoding = "=2.11.1"
-ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "=3.0.0", default-features = false, features = ["alloc", "zeroize"] }
 hex = "=0.4.3"
 html-escape = "=0.3.0"
 hmac = "=0.12.1"
