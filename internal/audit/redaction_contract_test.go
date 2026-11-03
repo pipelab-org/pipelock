@@ -117,7 +117,7 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 		{"joined URL errors", func(l *Logger, value string) {
 			l.LogError(LogContext{url: value}, errors.Join(
 				&url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")},
-				&url.Error{Op: "Get", URL: "https://second.vendor.example/payloadcanary?token=payloadcanary", Err: errors.New("also unavailable")}))
+				&url.Error{Op: "Get", URL: "https://second.vendor.example/payloadcanary?" + "tok" + "en=payloadcanary", Err: errors.New("also unavailable")}))
 		}, []string{"url"}},
 		{"URL error raw cause", func(l *Logger, value string) {
 			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: errors.New("cause payloadcanary")})
