@@ -6,6 +6,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/configs"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/cli/presets"
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -31,6 +33,8 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -47,22 +51,29 @@ const (
 )
 
 // Each line is one observable decision, not a second policy resolver.
-// PolicyHash binds the resolved preset before the named fixture adjustments.
 type decisionInventoryRow struct {
-	Preset      string               `json:"preset"`
-	Runtime     string               `json:"runtime"`
-	PolicyHash  string               `json:"policy_hash"`
-	Variant     string               `json:"variant"`
-	Part        string               `json:"transport_part"`
-	Input       string               `json:"input_class"`
-	Detectors   []string             `json:"detectors"`
-	Action      string               `json:"resolved_action"`
-	Disposition string               `json:"disposition"`
-	Inspection  string               `json:"inspection"`
-	Status      int                  `json:"http_status,omitempty"`
-	Delivered   bool                 `json:"delivered"`
-	Class       *scanner.ResultClass `json:"result_class,omitempty"`
-	Diagnostic  string               `json:"diagnostic,omitempty"`
+	Preset            string               `json:"preset"`
+	Runtime           string               `json:"runtime"`
+	Variant           string               `json:"variant"`
+	Part              string               `json:"transport_part"`
+	Input             string               `json:"input_class"`
+	Detectors         []string             `json:"detectors"`
+	Action            string               `json:"resolved_action"`
+	Disposition       string               `json:"disposition"`
+	Inspection        string               `json:"inspection"`
+	Status            int                  `json:"http_status,omitempty"`
+	Delivered         bool                 `json:"delivered"`
+	Class             *scanner.ResultClass `json:"result_class,omitempty"`
+	Diagnostic        string               `json:"diagnostic,omitempty"`
+	InspectionSource  string               `json:"inspection_source,omitempty"`
+	BlockReason       string               `json:"block_reason,omitempty"`
+	BlockReasonSource string               `json:"block_reason_source,omitempty"`
+}
+
+// One line per preset keeps runtime hashes separate from behavior changes.
+type inventoryPolicyRow struct {
+	Preset        string            `json:"preset"`
+	RuntimeHashes map[string]string `json:"runtime_hashes"`
 }
 
 type inventoryResolver struct{}
@@ -77,11 +88,16 @@ func (inventoryResolver) LookupHost(_ context.Context, host string) ([]string, e
 type inventoryObserver struct {
 	capture.NopObserver
 	body     *capture.DLPVerdictRecord
+	header   *capture.DLPVerdictRecord
+	receipts chan *receipt.Receipt
 	response *capture.ResponseVerdictRecord
 	tool     *capture.ToolScanRecord
 }
 
 func (o *inventoryObserver) ObserveDLPVerdict(_ context.Context, r *capture.DLPVerdictRecord) {
+	if r.Subsurface == "dlp_header_forward" {
+		o.header = r
+	}
 	if r.Subsurface == "dlp_body_forward" {
 		o.body = r
 	}
@@ -145,7 +161,11 @@ func (h *inventoryHarness) proxy(t *testing.T, cfg *config.Config, response, med
 	t.Helper()
 	sc := h.scanner(t, cfg)
 	obs := &inventoryObserver{}
-	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithCaptureObserver(obs))
+	opts := []Option{WithCaptureObserver(obs)}
+	if mediaType == "text/event-stream" {
+		opts = append(opts, WithReceiptEmitter(obs.receiptEmitter(t, cfg)))
+	}
+	p, err := New(cfg, audit.NewNop(), sc, metrics.New(), opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +175,54 @@ func (h *inventoryHarness) proxy(t *testing.T, cfg *config.Config, response, med
 	p.client.Transport = rt
 	p.client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	return p, obs, rt
+}
+
+func (o *inventoryObserver) receiptEmitter(t *testing.T, cfg *config.Config) *receipt.Emitter {
+	t.Helper()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: t.TempDir(), CheckpointInterval: 1000}, nil, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := rec.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	o.receipts = make(chan *receipt.Receipt, 32)
+	return receipt.NewEmitter(receipt.EmitterConfig{
+		Recorder: rec, PrivKey: key, ConfigHash: cfg.CanonicalPolicyHash(),
+		Principal: "inventory", Actor: "inventory",
+		OnReceipt: func(r *receipt.Receipt) {
+			select {
+			case o.receipts <- r:
+			default:
+				t.Error("inventory receipt buffer overflow")
+			}
+		},
+	})
+}
+
+func (o *inventoryObserver) blockReceipt() (string, string) {
+	for len(o.receipts) > 0 {
+		r := <-o.receipts
+		if r.ActionRecord.Verdict == config.ActionBlock {
+			return r.ActionRecord.Layer, "receipt-layer"
+		}
+	}
+	return "", "not-emitted"
+}
+
+func inventoryBlockHeader(t *testing.T, row *decisionInventoryRow, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if row.Disposition != config.ActionBlock && row.Disposition != "refuse" {
+		return
+	}
+	info, ok := blockreason.FromHeader(w.Result().Header)
+	if !ok {
+		t.Fatalf("blocked HTTP row %s/%s/%s has no production block reason", row.Preset, row.Part, row.Input)
+	}
+	row.BlockReason, row.BlockReasonSource = string(info.Reason), "http-header"
 }
 
 func inventoryFindings(findings []capture.Finding) []string {
@@ -186,6 +254,7 @@ func TestDecisionInventory(t *testing.T) {
 	responseScanNow = func() time.Time { return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { responseScanNow = priorClock })
 	var rows []decisionInventoryRow
+	var policies []inventoryPolicyRow
 	names := append([]string{"defaults"}, presets.All...)
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
@@ -203,6 +272,7 @@ func TestDecisionInventory(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			policy := inventoryPolicyRow{Preset: name, RuntimeHashes: make(map[string]string)}
 			for _, mode := range []struct {
 				name string
 				mode config.RuntimeMode
@@ -213,9 +283,10 @@ func TestDecisionInventory(t *testing.T) {
 				{"mcp-scan", config.RuntimeMCPScan},
 			} {
 				resolved, _ := cfg.ResolveRuntime(config.RuntimeResolveOpts{Mode: mode.mode})
+				policy.RuntimeHashes[mode.name] = resolved.CanonicalPolicyHash()
 				base := decisionInventoryRow{
 					Preset: name, Runtime: mode.name,
-					PolicyHash: resolved.CanonicalPolicyHash(), Variant: "stock",
+					Variant:   "stock",
 					Detectors: []string{}, Inspection: inventoryInspected,
 				}
 				if mode.mode == config.RuntimeForward {
@@ -227,11 +298,19 @@ func TestDecisionInventory(t *testing.T) {
 					rows = append(rows, h.mcpRows(t, resolved, base, mode.mode != config.RuntimeMCPScan)...)
 				}
 			}
+			policies = append(policies, policy)
 		})
 	}
 	if t.Failed() {
 		return
 	}
+	inventoryCheckGolden(t, "decision-inventory.golden.jsonl", rows)
+	inventoryCheckGolden(t, "decision-inventory-policy.golden.jsonl", policies)
+	t.Logf("verified %d production decision rows across %d presets/defaults", len(rows), len(names))
+}
+
+func inventoryCheckGolden[T any](t *testing.T, name string, rows []T) {
+	t.Helper()
 	var got bytes.Buffer
 	for _, row := range rows {
 		data, err := json.Marshal(row)
@@ -241,7 +320,7 @@ func TestDecisionInventory(t *testing.T) {
 		got.Write(data)
 		got.WriteByte('\n')
 	}
-	path := filepath.Join("testdata", "decision-inventory.golden.jsonl")
+	path := filepath.Join("testdata", name)
 	if *updateDecisionInventory {
 		if err := os.WriteFile(path, got.Bytes(), 0o600); err != nil {
 			t.Fatal(err)
@@ -255,12 +334,11 @@ func TestDecisionInventory(t *testing.T) {
 		wantLines, gotLines := bytes.Split(want, []byte{'\n'}), bytes.Split(got.Bytes(), []byte{'\n'})
 		for i := 0; i < min(len(wantLines), len(gotLines)); i++ {
 			if !bytes.Equal(wantLines[i], gotLines[i]) {
-				t.Fatalf("decision inventory differs at row %d\nwant: %s\ngot:  %s\nregenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory", i+1, wantLines[i], gotLines[i])
+				t.Fatalf("decision inventory %s differs at row %d\nwant: %s\ngot:  %s\nregenerate: go test ./internal/proxy -run '^TestDecisionInventory$' -update-decision-inventory", name, i+1, wantLines[i], gotLines[i])
 			}
 		}
-		t.Fatalf("decision inventory row count changed: want %d, got %d", len(wantLines)-1, len(gotLines)-1)
+		t.Fatalf("decision inventory %s row count changed: want %d, got %d", name, len(wantLines)-1, len(gotLines)-1)
 	}
-	t.Logf("verified %d production decision rows across %d presets/defaults", len(rows), len(names))
 }
 
 func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisionInventoryRow) []decisionInventoryRow {
@@ -304,6 +382,7 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 		row.Part, row.Input, row.Variant = "url", tc.name, tc.variant
 		row.Class = &result.Class
 		row.Delivered = !urlResultBlocks(c, sc, tc.target, result)
+		var outcome *httptest.ResponseRecorder
 		{
 			// The handler adds request context the bare scanner call lacks, so
 			// corroborate the URL decision against the real forward handler.
@@ -312,6 +391,7 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 			req.RemoteAddr = "192.0.2.10:12345"
 			w := httptest.NewRecorder()
 			p.handleForwardHTTP(w, req)
+			outcome = w
 			if hd := w.Code == http.StatusOK && rt.called; hd != row.Delivered {
 				t.Errorf("URL row %s/%s %s disagrees with the forward handler: handler delivered=%v (status %d), row delivered=%v", base.Preset, base.Runtime, tc.name, hd, w.Code, row.Delivered)
 			}
@@ -325,6 +405,7 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 				row.Disposition = config.ActionBlock
 			}
 		}
+		inventoryBlockHeader(t, &row, outcome)
 		for _, allow := range result.CredentialAudienceAllows {
 			row.Detectors = append(row.Detectors, "credential_audience:"+allow.PatternName)
 		}
@@ -335,13 +416,17 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 
 type inventoryHTTPCase struct {
 	name, part, body, response, contentType, encoding, variant string
+	target, authorization                                      string
 }
 
 func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decisionInventoryRow) []decisionInventoryRow {
 	t.Helper()
 	core := "AKIA" + "IOSFODNN7EXAMPLE"
 	nonCore := "sk-ant-" + "IOSFODNN7EXAMPLE1234567890abcdef"
+	provider := "sk-" + "proj-" + strings.Repeat("a", 24)
 	cases := []inventoryHTTPCase{
+		{name: "audience-credential-bearer", part: "header", target: "https://api.openai.com/v1", authorization: "Bearer " + provider},
+		{name: "audience-lookalike-bearer", part: "header", target: "https://api.openai.com.evil.example/v1", authorization: "Bearer " + provider, variant: "admit-lookalike-host"},
 		{name: "clean", part: "body", body: `{"message":"ordinary content"}`},
 		{name: "core-critical", part: "body", body: `{"key":"` + core + `"}`},
 		{name: "noncore-critical", part: "body", body: `{"key":"` + nonCore + `"}`},
@@ -374,6 +459,8 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		inventoryAdmitHost(c)
 		variant := "admit-fixture-host"
 		switch tc.variant {
+		case "admit-lookalike-host":
+			c.APIAllowlist = append(c.APIAllowlist, "api.openai.com.evil.example")
 		case "noncore-warn-override":
 			c.RequestBodyScanning.PatternActions = map[string]string{"Anthropic API Key": config.ActionWarn}
 		case "core-warn-override":
@@ -427,7 +514,14 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		if tc.part == "body" {
 			method = http.MethodPost
 		}
-		req := httptest.NewRequestWithContext(t.Context(), method, inventoryTarget, strings.NewReader(tc.body))
+		target := tc.target
+		if target == "" {
+			target = inventoryTarget
+		}
+		req := httptest.NewRequestWithContext(t.Context(), method, target, strings.NewReader(tc.body))
+		if tc.authorization != "" {
+			req.Header.Set("Authorization", tc.authorization)
+		}
 		req.RemoteAddr = "192.0.2.10:12345"
 		contentType := tc.contentType
 		if contentType == "" {
@@ -456,10 +550,15 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 		row.Delivered = w.Code == http.StatusOK && (tc.part != "body" || rt.called)
 		row.Inspection = inventorySkipped
-		if tc.part == "body" && obs.body != nil {
+		if tc.part == "header" && obs.header != nil {
+			row.Action = obs.header.EffectiveAction
+			row.Detectors = inventoryFindings(obs.header.RawFindings)
+			row.Inspection = inventoryInspected
+		} else if tc.part == "body" && obs.body != nil {
 			row.Action = obs.body.EffectiveAction
 			row.Detectors = inventoryFindings(obs.body.RawFindings)
 			row.Inspection = inventoryInspected
+			row.InspectionSource = "handler-capture"
 		} else if tc.part == "response" && obs.response != nil {
 			row.Action = obs.response.EffectiveAction
 			row.Detectors = inventoryFindings(obs.response.RawFindings)
@@ -472,6 +571,7 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		if tc.part == "body" && (bodyMetadata.FileInspectionIncomplete != "" || bodyMetadata.UnscannedEncoding ||
 			bodyMetadata.ScanError != "" || bodyMetadata.Reason != "" && len(bodyMetadata.DLPMatches) == 0 && len(bodyMetadata.InjectionMatches) == 0 && bodyMetadata.EntropyFinding == nil) {
 			row.Inspection = inventoryIncomplete
+			row.InspectionSource = "scan-request-body-probe"
 			row.Diagnostic = bodyMetadata.Reason
 			if row.Diagnostic == "" {
 				row.Diagnostic = bodyMetadata.FileInspectionIncomplete
@@ -547,8 +647,18 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 			if row.Inspection == inventoryIncomplete {
 				row.Disposition = "refuse"
 			}
-		} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || row.Inspection == inventoryIncomplete || tc.part == "sse-response" && tc.name != "clean") {
+		} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || row.Inspection == inventoryIncomplete || tc.part == "header" || tc.part == "sse-response" && tc.name != "clean") {
 			row.Disposition = config.ActionWarn
+		}
+		if row.Disposition == config.ActionBlock || row.Disposition == "refuse" {
+			if tc.part == "sse-response" {
+				row.BlockReason, row.BlockReasonSource = obs.blockReceipt()
+				if row.BlockReason == "" {
+					t.Fatal("blocked SSE row has no emitted block receipt")
+				}
+			} else {
+				inventoryBlockHeader(t, &row, w)
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -570,10 +680,12 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 			v := mcp.ScanRequest(t.Context(), []byte(tc.message), sc, cfg.MCPInputScanning.Action, cfg.MCPInputScanning.OnParseError)
 			var forwarded, inputLog bytes.Buffer
 			blocked := make(chan mcp.BlockedRequest, 1)
+			obs := &inventoryObserver{}
+			emitter := obs.receiptEmitter(t, cfg)
 			mcp.ForwardScannedInput(transport.NewStdioReader(strings.NewReader(tc.message+"\n")),
 				transport.NewStdioWriter(&forwarded), &inputLog,
 				cfg.MCPInputScanning.Action, cfg.MCPInputScanning.OnParseError, blocked, nil, nil,
-				mcp.MCPProxyOpts{Scanner: sc, Transport: "mcp_stdio"})
+				mcp.MCPProxyOpts{Scanner: sc, Transport: "mcp_stdio", ReceiptEmitter: emitter})
 
 			row := base
 			row.Part, row.Input = "mcp/stdio-input", tc.name
@@ -603,6 +715,23 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 					row.Action = config.ActionBlock
 				}
 			}
+			if row.Disposition == config.ActionBlock || row.Disposition == "refuse" {
+				row.BlockReason, row.BlockReasonSource = obs.blockReceipt()
+				select {
+				case denied := <-blocked:
+					var data struct {
+						Reason string `json:"block_reason"`
+					}
+					if len(denied.ErrorData) > 0 {
+						if err := json.Unmarshal(denied.ErrorData, &data); err != nil {
+							t.Fatal(err)
+						}
+						row.BlockReason, row.BlockReasonSource = data.Reason, "mcp-denial"
+					}
+				default:
+					t.Fatal("blocked MCP row has no handler denial")
+				}
+			}
 			slices.Sort(row.Detectors)
 			row.Detectors = slices.Compact(row.Detectors)
 			rows = append(rows, row)
@@ -623,9 +752,10 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 		var err error
 		var diagnostic jsonrpc.ScanVerdict
 		if input {
+			emitter := obs.receiptEmitter(t, cfg)
 			found, err = mcp.ForwardScanned(transport.NewStdioReader(strings.NewReader(tc.message+"\n")),
 				transport.NewStdioWriter(&out), &log, nil,
-				mcp.MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg, CaptureObs: obs})
+				mcp.MCPProxyOpts{Scanner: sc, ToolCfg: toolCfg, CaptureObs: obs, ReceiptEmitter: emitter, Transport: "mcp_stdio"})
 		} else {
 			found, _, err = mcp.ScanStreamResult(strings.NewReader(tc.message+"\n"), &out, sc, true, toolCfg)
 			if err == nil {
@@ -670,6 +800,12 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 			}
 			if diagnostic.Error != "" || len(diagnostic.Unscanned) > 0 {
 				row.Inspection, row.Diagnostic = inventoryIncomplete, diagnostic.Error
+			}
+		}
+		if row.Disposition == config.ActionBlock || row.Disposition == "refuse" {
+			row.BlockReasonSource = "not-emitted:scan-verdict"
+			if input {
+				row.BlockReason, row.BlockReasonSource = obs.blockReceipt()
 			}
 		}
 		slices.Sort(row.Detectors)
@@ -721,6 +857,9 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 				if !row.Delivered {
 					row.Disposition = config.ActionBlock
 				}
+			}
+			if row.Disposition == config.ActionBlock {
+				row.BlockReasonSource = "not-emitted:scanner-decision"
 			}
 			rows = append(rows, row)
 		}
