@@ -4,16 +4,23 @@
 package audit
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/url"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/rs/zerolog"
+	"golang.org/x/net/http2"
 )
 
 // logEntry builds zerolog event and emit fields in parallel, eliminating
@@ -130,59 +137,122 @@ func (e *logEntry) errField(err error) *logEntry {
 	return e
 }
 
-// redactURLErrors applies the destination policy to typed URL errors. Parse
-// reasons and malformed-redirect details can echo input outside the URL field.
+// redactURLErrors summarizes URL-bearing trees from typed fields only. Neither
+// a wrapper nor a cause's free-form text is safe: either can echo request data.
+// Non-URL errors retain their existing diagnostic text.
 func redactURLErrors(err error) error {
-	found, valid := collectURLErrors(err)
+	found, details, valid := collectURLErrors(err)
 	if !valid {
 		return errors.New("[redacted invalid error tree]")
 	}
 	if len(found) == 0 {
 		return err
 	}
-	msg := err.Error()
-	// Replace every cause before any URL: a URL replacement rewrites the copy
-	// of a URL echoed inside another error's cause, so that cause would no
-	// longer match and its parse reason would survive. Longest first so a cause
-	// that contains another is replaced whole.
-	type replacement struct{ from, to string }
-	var causes []replacement
+	var destinations []string
 	for _, ue := range found {
-		if ue.Err == nil {
-			continue
+		op := auditURLOperation(ue.Op)
+		destination := op + " " + strconv.Quote(dropURLContentSegments(ue.URL, false))
+		if op == "parse" {
+			destination += ": invalid URL"
 		}
-		cause := ue.Err.Error()
+		destinations = append(destinations, destination)
+	}
+	if len(details) == 0 {
+		details = append(details, "request failed")
+	}
+	return errors.New(strings.Join(destinations, "; ") + ": " + strings.Join(details, "; "))
+}
+
+// net/http uses these operations for the standard methods (net/http/client.go,
+// urlErrorOp); net/url uses parse. Custom methods remain a fixed label.
+func auditURLOperation(op string) string {
+	switch op {
+	case "Get", "Head", "Post", "Put", "Patch", "Delete", "Connect", "Options", "Trace", "parse":
+		return op
+	default:
+		return "request"
+	}
+}
+
+// auditErrorDetail reads the published net, tls, x509, io and http2 error fields,
+// never their formatted messages, addresses, certificate names or cause text.
+func auditErrorDetail(err error) string {
+	//nolint:errorlint // Inspect only this node; errors.Is would walk descendants again.
+	switch err {
+	case context.Canceled:
+		return "context canceled"
+	case context.DeadlineExceeded:
+		return "deadline exceeded"
+	case io.EOF:
+		return "EOF"
+	case io.ErrUnexpectedEOF:
+		return "unexpected EOF"
+	case syscall.ECONNREFUSED:
+		return "connection refused"
+	case syscall.ECONNRESET:
+		return "connection reset"
+	case syscall.EPIPE:
+		return "broken pipe"
+	case syscall.ENETUNREACH:
+		return "network unreachable"
+	case syscall.EHOSTUNREACH:
+		return "host unreachable"
+	}
+	//nolint:errorlint // Inspect direct typed fields, not recursively formatted errors.
+	switch e := err.(type) {
+	case *url.Error:
+		return ""
+	case *net.OpError:
+		op := "network operation"
+		switch e.Op {
+		case "dial", "read", "write", "listen", "accept":
+			op = e.Op
+		}
+		network := "network"
+		switch e.Net {
+		case "tcp", "tcp4", "tcp6", "udp", "udp4", "udp6", "unix", "unixgram", "unixpacket":
+			network = e.Net
+		}
+		return op + " " + network + " failed"
+	case *net.DNSError:
 		switch {
-		case ue.Op == "parse":
-			causes = append(causes, replacement{cause, "invalid URL"})
-		case strings.HasPrefix(cause, "failed to parse Location header "):
-			// net/http.Client formats the Location parse error with %v, not %w.
-			// The URL and parse reason in this detail aren't in the error tree.
-			causes = append(causes, replacement{cause, "invalid redirect URL"})
+		case e.IsTimeout:
+			return "DNS timeout"
+		case e.IsNotFound:
+			return "DNS name not found"
+		case e.IsTemporary:
+			return "DNS temporary failure"
+		default:
+			return "DNS lookup failed"
 		}
-	}
-	sort.SliceStable(causes, func(i, j int) bool { return len(causes[i].from) > len(causes[j].from) })
-	for _, c := range causes {
-		msg = strings.ReplaceAll(msg, c.from, c.to)
-	}
-	// Longest first so a URL that is a prefix of another cannot leave a tail.
-	sort.SliceStable(found, func(i, j int) bool { return len(found[i].URL) > len(found[j].URL) })
-	for _, ue := range found {
-		if ue.URL == "" {
-			continue
+	case tls.RecordHeaderError:
+		return "TLS record header error"
+	case *tls.CertificateVerificationError:
+		return "TLS certificate verification failed"
+	case x509.UnknownAuthorityError:
+		return "TLS unknown certificate authority"
+	case x509.HostnameError:
+		return "TLS certificate hostname mismatch"
+	case x509.CertificateInvalidError:
+		return "TLS certificate invalid"
+	case x509.SystemRootsError:
+		return "TLS system roots unavailable"
+	case tls.AlertError:
+		return fmt.Sprintf("TLS alert %d", uint8(e))
+	case http2.StreamError:
+		return fmt.Sprintf("HTTP/2 stream error code %d", uint32(e.Code))
+	default:
+		if timeout, ok := err.(interface{ Timeout() bool }); ok && timeout.Timeout() {
+			return "timeout"
 		}
-		destination := dropURLContentSegments(ue.URL, false)
-		// url.Error uses %q; the raw URL won't match quotes or backslashes.
-		msg = strings.ReplaceAll(msg, strconv.Quote(ue.URL), strconv.Quote(destination))
-		msg = strings.ReplaceAll(msg, ue.URL, destination)
+		return ""
 	}
-	return errors.New(msg)
 }
 
 // collectURLErrors walks direct children once. Calling errors.As at each node
 // would recursively search descendants again, and wouldn't terminate on cycles.
 // Active/done marks distinguish cycles from a shared errors.Join subtree.
-func collectURLErrors(err error) ([]*url.Error, bool) {
+func collectURLErrors(err error) ([]*url.Error, []string, bool) {
 	type visit struct {
 		err   error
 		leave bool
@@ -190,6 +260,7 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 	stack := []visit{{err: err}}
 	state := make(map[error]bool)
 	var found []*url.Error
+	var nodes []error
 	for len(stack) > 0 {
 		item := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
@@ -201,13 +272,13 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 		switch value.Kind() {
 		case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 			if value.IsNil() {
-				return nil, false
+				return nil, nil, false
 			}
 		}
 		canCompare := value.Comparable()
 		// A value unequal to itself (a NaN field) can't be marked and found again.
 		if canCompare && !sameError(node, node) {
-			return nil, false
+			return nil, nil, false
 		}
 		if canCompare {
 			if item.leave {
@@ -216,13 +287,14 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 			}
 			if done, seen := state[node]; seen {
 				if !done {
-					return nil, false
+					return nil, nil, false
 				}
 				continue
 			}
 			state[node] = false
 			stack = append(stack, visit{err: node, leave: true})
 		}
+		nodes = append(nodes, node)
 		//nolint:errorlint // Inspect this node only; errors.As recursively searches descendants.
 		if ue, ok := node.(*url.Error); ok {
 			found = append(found, ue)
@@ -230,7 +302,7 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 			var ue *url.Error
 			if alias.As(&ue) {
 				if ue == nil {
-					return nil, false
+					return nil, nil, false
 				}
 				stack = append(stack, visit{err: ue})
 			}
@@ -240,19 +312,29 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 		case interface{ Unwrap() []error }:
 			// Non-comparable wrappers have no stable identity for cycle detection.
 			if !canCompare {
-				return nil, false
+				return nil, nil, false
 			}
 			for _, child := range wrapped.Unwrap() {
 				stack = append(stack, visit{err: child})
 			}
 		case interface{ Unwrap() error }:
 			if !canCompare {
-				return nil, false
+				return nil, nil, false
 			}
 			stack = append(stack, visit{err: wrapped.Unwrap()})
 		}
 	}
-	return found, true
+	var details []string
+	if len(found) > 0 {
+		seenDetails := make(map[string]bool)
+		for _, node := range nodes {
+			if detail := auditErrorDetail(node); detail != "" && !seenDetails[detail] {
+				details = append(details, detail)
+				seenDetails[detail] = true
+			}
+		}
+	}
+	return found, details, true
 }
 
 // bundleRulesField adds "bundle_rules" to both zerolog and emit. All

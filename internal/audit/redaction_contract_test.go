@@ -119,6 +119,12 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 				&url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")},
 				&url.Error{Op: "Get", URL: "https://second.vendor.example/payloadcanary?token=payloadcanary", Err: errors.New("also unavailable")}))
 		}, []string{"url"}},
+		{"URL error raw cause", func(l *Logger, value string) {
+			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: errors.New("cause payloadcanary")})
+		}, []string{"url"}},
+		{"URL error raw wrapper", func(l *Logger, value string) {
+			l.LogError(LogContext{url: value}, fmt.Errorf("wrapper payloadcanary: %w", &url.Error{Op: "Get", URL: value, Err: auditUnformattableError{}}))
+		}, []string{"url"}},
 		{"identity collision", func(l *Logger, value string) {
 			l.LogAgentIdentityCollision(LogContext{method: testMethodGet, url: value, target: value}, "reserved")
 		}, []string{"url", "target"}},
@@ -330,7 +336,7 @@ func TestHTTPAuditMalformedRedirect(t *testing.T) {
 			event := sink.onlyEvent(t)
 			for _, fields := range []map[string]any{entries[0], event.Fields} {
 				message, ok := fields["error"].(string)
-				if !ok || !strings.Contains(message, "invalid redirect URL") {
+				if !ok || !strings.Contains(message, "request failed") {
 					t.Errorf("error=%v, want safe redirect diagnostic", fields["error"])
 				}
 				if strings.Contains(message, "payloadcanary") {
@@ -385,18 +391,18 @@ func TestAuditURLErrorTree(t *testing.T) {
 	}{
 		{"nil", nil, ""},
 		{"plain", errors.New("ordinary failure"), "ordinary failure"},
-		{"custom As", auditURLAliasError{leaf}, "upstream unavailable"},
+		{"custom As", auditURLAliasError{leaf}, "request failed"},
 		{"nil custom As", auditURLAliasError{}, "[redacted invalid error tree]"},
-		{"deep", deep, "upstream unavailable"},
-		{"shared subtree", errors.Join(leaf, leaf), `Get "https://api.vendor.example": upstream unavailable`},
-		{"multi wrapping", fmt.Errorf("first %w; second %w", leaf, leaf), "upstream unavailable"},
+		{"deep", deep, "request failed"},
+		{"shared subtree", errors.Join(leaf, leaf), `Get "https://api.vendor.example": request failed`},
+		{"multi wrapping", fmt.Errorf("first %w; second %w", leaf, leaf), "request failed"},
 		{"cycle", &auditCyclicError{}, "[redacted invalid error tree]"},
 		{"URL cycle", nil, "[redacted invalid error tree]"},
 		{"typed nil", nilURL, "[redacted invalid error tree]"},
 		{"noncomparable wrapper", auditSliceError{leaf}, "[redacted invalid error tree]"},
 		{"noncomparable single wrapper", auditSingleValueError{1}, "[redacted invalid error tree]"},
 		{"noncomparable leaf", auditValueError{1}, "ordinary value error"},
-		{"DNS diagnostic", &url.Error{Op: "Get", URL: leaf.URL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Name: "api.vendor.example", Err: "no such host"}}}, "no such host"},
+		{"DNS diagnostic", &url.Error{Op: "Get", URL: leaf.URL, Err: &net.OpError{Op: "dial", Net: "tcp", Err: &net.DNSError{Name: "api.vendor.example", Err: "no such host"}}}, "DNS lookup failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.name == "URL cycle" {
@@ -439,7 +445,7 @@ func TestAuditErrorTreeVisitsOnce(t *testing.T) {
 	for range wrappers {
 		err = &auditCountedError{child: err, visits: &visits}
 	}
-	found, valid := collectURLErrors(err)
+	found, _, valid := collectURLErrors(err)
 	if !valid || len(found) != 0 || visits != wrappers {
 		t.Fatalf("valid=%v URL errors=%d unwrap calls=%d, want true, 0, %d", valid, len(found), visits, wrappers)
 	}
@@ -458,7 +464,7 @@ func TestAuditRedirectCauseSurvivesLongerURL(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := redactURLErrors(err).Error()
-			if !strings.Contains(got, "invalid redirect URL") || strings.Contains(got, "payloadcanary") || strings.Contains(got, "%zz") {
+			if !strings.Contains(got, "request failed") || strings.Contains(got, "payloadcanary") || strings.Contains(got, "%zz") {
 				t.Fatalf("redirect cause survived URL replacement: %q", got)
 			}
 		})
@@ -475,7 +481,7 @@ func TestAuditErrorTreeNaNIdentity(t *testing.T) {
 	// active in the walk; it must fail closed rather than loop.
 	done := make(chan bool, 1)
 	go func() {
-		_, valid := collectURLErrors(auditNaNError{math.NaN()})
+		_, _, valid := collectURLErrors(auditNaNError{math.NaN()})
 		done <- valid
 	}()
 	select {
@@ -498,7 +504,7 @@ func TestAuditErrorTreeSharedSubtreeLinear(t *testing.T) {
 	}
 	done := make(chan []*url.Error, 1)
 	go func() {
-		found, _ := collectURLErrors(tree)
+		found, _, _ := collectURLErrors(tree)
 		done <- found
 	}()
 	select {
