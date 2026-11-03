@@ -239,6 +239,38 @@ func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
 	}
 }
 
+// The nested-escape segment tests above spend the budget through cumulative
+// expansions. This is the other bound: a segment whose first decode layer is
+// past the recursive budget must be decoded once more, and that second layer
+// must report incomplete. Only the decode of each segment is exercised, so the
+// over-budget carrier costs a base64 decode rather than a full scan.
+func TestDecodeBudgetSegmentNoteLargeIntermediate(t *testing.T) {
+	t.Parallel()
+	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
+	one := base64.StdEncoding.EncodeToString([]byte(terminal))
+	two := base64.StdEncoding.EncodeToString([]byte(one))
+	token := "ghp_" + strings.Repeat("A", 36)
+	for _, tc := range []struct {
+		name       string
+		segment    string
+		inbound    bool
+		incomplete bool
+	}{
+		{"one layer is covered by the transport limit", one, false, false},
+		{"over-budget intermediate refuses", two, false, true},
+		{"inbound keeps the partial-view policy", two, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			memo := decodingMemo{inbound: tc.inbound}
+			noteTextSegmentDecodeBudget([]string{"Bearer " + token + "/" + tc.segment}, &memo)
+			if got := memo.inspectionIncomplete(); got != tc.incomplete {
+				t.Fatalf("inspectionIncomplete=%v, want %v", got, tc.incomplete)
+			}
+		})
+	}
+}
+
 func TestDecodeBudgetKnownValueURL(t *testing.T) {
 	known := strings.Join([]string{"Q7m2", "X9z4", "R8v3", "N6p1"}, "")
 	nested := `\u0051` + known[1:]
