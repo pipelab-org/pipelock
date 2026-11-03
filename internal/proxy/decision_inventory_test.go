@@ -564,6 +564,9 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		row.Part, row.Input, row.Variant, row.Status = "forward/"+tc.part, tc.name, variant, w.Code
 		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 		row.Delivered = w.Code == http.StatusOK && (tc.part != "body" || rt.called)
+		if tc.part == "body" && w.Code != http.StatusOK && rt.called {
+			t.Errorf("body row %s/%s %s: refused body reached upstream (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
+		}
 		if tc.part == "body" && rt.called && !bytes.Equal(rt.requestBody, []byte(tc.body)) {
 			t.Errorf("body row %s/%s %s: forwarded bytes = %q, want %q", base.Preset, base.Runtime, tc.name, rt.requestBody, tc.body)
 		}
@@ -861,7 +864,7 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 		ic := &InterceptContext{
 			Proxy: p, Config: c, Agent: "inventory-agent", ActorAuth: envelope.ActorAuthBound,
 			TargetHost: inventoryHost, TargetPort: "443", Scanner: p.scannerPtr.Load(),
-			Logger: p.logger, Metrics: p.metrics,
+			Logger: p.logger, Metrics: p.metrics, ClientIP: "192.0.2.10",
 		}
 		issuer, err := url.Parse("https://" + inventoryHost + "/list")
 		if err != nil {
@@ -871,17 +874,27 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, state := range []string{"none", "populated", "wrong-session"} {
+		for _, state := range []string{"none", "populated", "wrong-session", "wrong-client-ip"} {
 			if state == "populated" {
 				response := &http.Response{Request: &http.Request{URL: issuer}, Header: http.Header{"Content-Type": {contentTypeJSON}}}
 				recordDeliveredIssuerQuery(ic, response, []byte(`{"next":"`+target.String()+`"}`), true)
 			}
-			session := sessionKeyFor(c, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			handlerIC := *ic
+			if state == "wrong-session" {
+				handlerIC.Agent = "unrelated-agent"
+			}
+			if state == "wrong-client-ip" {
+				handlerIC.ClientIP = "192.0.2.11"
+			}
+			session := sessionKeyFor(c, handlerIC.Agent, handlerIC.ClientIP, handlerIC.ActorAuth)
 			if state == "wrong-session" {
 				session = "unrelated-session"
 			}
 			store := ic.issuerQueryStore()
 			allow := func(key, value string) bool { return store != nil && store.allows(session, target, key, value) }
+			if state == "wrong-client-ip" && allow("next", inventoryOpaque) {
+				t.Errorf("issuer row %s/%s tls=%t: query allowance crossed client IPs", base.Preset, base.Runtime, enabled)
+			}
 			ctx := scanner.WithIssuerQueryAllowance(t.Context(), allow)
 			sc := h.scanner(t, c)
 			result := sc.Scan(ctx, target.String())
@@ -891,10 +904,6 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 			row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 			row.Delivered = !urlResultBlocks(c, sc, target.String(), result)
 			// Join the package's direct handler harness: no TLS listener is needed.
-			handlerIC := *ic
-			if state == "wrong-session" {
-				handlerIC.Agent = "unrelated-agent"
-			}
 			rt.called = false
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
 			w := httptest.NewRecorder()
