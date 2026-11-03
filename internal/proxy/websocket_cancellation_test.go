@@ -8,7 +8,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,7 +19,6 @@ import (
 )
 
 func TestWSRelayClientScanCancellationIsNotBlocked(t *testing.T) {
-	credential := "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27)
 	for _, tc := range []struct {
 		name     string
 		op       ws.OpCode
@@ -34,7 +32,10 @@ func TestWSRelayClientScanCancellationIsNotBlocked(t *testing.T) {
 		{"labeled", ws.OpText, []string{"part1: first message", "part2: second message"}, false, ""},
 		{"numbers", ws.OpText, []string{`{"value":12}`, `{"value":34}`}, false, ""},
 		{"redaction_cross_message", ws.OpText, []string{`{"text":"part1: first message"}`, `{"text":"part2: second message"}`}, true, ""},
-		{"gateway", ws.OpText, []string{fmt.Sprintf(`{"op":2,"d":{"token":%q}}`, credential)}, false, "wss://gateway.discord.gg/"},
+		// A heartbeat carries no credential. A cancelled Identify frame cannot
+		// verify its carrier allowance, so its token stays a policy block; see
+		// TestWSRelayClientTextResultKeepsFindingsAfterContextEnds.
+		{"gateway", ws.OpText, []string{`{"op":1,"d":null}`}, false, "wss://gateway.discord.gg/"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testScannerConfig()
@@ -228,3 +229,47 @@ func (c *cancelPayloadConn) SetReadDeadline(d time.Time) error {
 }
 func (*cancelPayloadConn) SetWriteDeadline(time.Time) error { return nil }
 func (*cancelPayloadConn) Close() error                     { return nil }
+
+// A credential collected before the scan context ended is still a policy
+// block. Only a cancel with nothing found is a quiet teardown, and a deadline
+// counts as a block like the relay loop's own timeout path.
+func TestWSRelayClientTextResultKeepsFindingsAfterContextEnds(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	p := newTestProxyWithConfig(t, cfg)
+	secret := []byte("key=" + "AKIA" + "IOSFODNN7EXAMPLE")
+	found := sc.ScanTextForDLP(context.Background(), string(secret))
+	if len(found.Matches) == 0 {
+		t.Fatal("fixture credential produced no match")
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	expired, cancelExpired := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer cancelExpired()
+
+	for _, tc := range []struct {
+		name        string
+		ctx         context.Context
+		result      scanner.TextDLPResult
+		wantBlocked bool
+	}{
+		{"match_then_cancel", canceled, scanner.TextDLPResult{Matches: found.Matches, Incomplete: true}, true},
+		{"cancel_without_match", canceled, scanner.TextDLPResult{Incomplete: true}, false},
+		{"deadline_without_match", expired, scanner.TextDLPResult{Incomplete: true}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &cancelPayloadConn{}
+			relay := &wsRelay{proxy: p, cfg: cfg, scanner: sc, clientConn: client, upstreamConn: &cancelPayloadConn{}, scanText: true, targetURL: "wss://api.vendor.example/events"}
+			halt, blocked := relay.handleClientTextResult(tc.ctx, p.logger, secret, tc.result, wsClientTextOptions{})
+			if !halt {
+				t.Fatal("frame forwarded after the scan context ended")
+			}
+			if blocked != tc.wantBlocked {
+				t.Fatalf("blocked = %v, want %v", blocked, tc.wantBlocked)
+			}
+		})
+	}
+}

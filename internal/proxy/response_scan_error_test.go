@@ -685,11 +685,12 @@ func TestRequestHeaderTextDLPIncompleteIsScanError(t *testing.T) {
 }
 
 func TestWebSocketCrossMessageTextDLPIncompleteClosesRelay(t *testing.T) {
-	sc := scanner.MustNew(testScannerConfig())
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
 	defer sc.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	relay := &wsRelay{scanner: sc}
+	relay := &wsRelay{scanner: sc, cfg: cfg}
 	if !relay.scanClientCrossMessageText(ctx, nil, []byte("ordinary"), []byte("reply")) {
 		t.Fatal("incomplete quiet cross-message scans did not close the relay")
 	}

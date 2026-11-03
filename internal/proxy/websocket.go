@@ -1763,8 +1763,13 @@ func applyWebSocketContentEntropyConfig(req *BodyScanRequest, cfg *config.Config
 // transforming it. Control payloads are opaque keepalive bytes with a strict
 // 125-byte limit, so redaction or stripping would break protocol semantics.
 func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Logger, payload []byte, controlTail *[]byte) bool {
+	halt, _ := r.decideClientControlPayload(ctx, log, payload, controlTail)
+	return halt
+}
+
+func (r *wsRelay) decideClientControlPayload(ctx context.Context, log *audit.Logger, payload []byte, controlTail *[]byte) (halt, blocked bool) {
 	if len(payload) == 0 || !r.scanText {
-		return false
+		return false, false
 	}
 	r.resetCredentialAudienceAllows()
 	r.resetDroppedDLP()
@@ -1778,13 +1783,15 @@ func (r *wsRelay) enforceClientControlPayload(ctx context.Context, log *audit.Lo
 	}
 	*controlTail = updateWSCrossMessageTail(prevTail, payload)
 
-	if r.handleClientTextResult(ctx, log, scanInput, r.scanner.ScanTextForDLP(ctx, string(scanInput)), wsClientTextOptions{crossMessage: true}) {
-		return true
+	if halt, blocked := r.handleClientTextResult(ctx, log, scanInput, r.scanner.ScanTextForDLP(ctx, string(scanInput)), wsClientTextOptions{crossMessage: true}); halt {
+		return true, blocked
 	}
-	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}) {
-		return true
+	if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, payload); ok {
+		if halt, blocked := r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}); halt {
+			return true, blocked
+		}
 	}
-	return false
+	return false, false
 }
 
 func (r *wsRelay) enforceClientCEE(ctx context.Context, log *audit.Logger, msg []byte, includeFragments bool) bool {
@@ -1901,10 +1908,16 @@ func (r *wsRelay) scanClientTextWithCardView(ctx context.Context, log *audit.Log
 		return r.handleClientMessageBodyResult(log, nil, BodyScanResult{Action: config.ActionBlock, Reason: "uninspectable Discord Gateway JSON frame"})
 	}
 	dlpResult := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
-	return r.handleClientTextResult(ctx, log, scanInput, dlpResult, wsClientTextOptions{surface: surface})
+	halt, _ := r.handleClientTextResult(ctx, log, scanInput, dlpResult, wsClientTextOptions{surface: surface})
+	return halt
 }
 
 func (r *wsRelay) scanClientNumberText(ctx context.Context, log *audit.Logger, text, cards []byte) bool {
+	halt, _ := r.decideClientNumberText(ctx, log, text, cards)
+	return halt
+}
+
+func (r *wsRelay) decideClientNumberText(ctx context.Context, log *audit.Logger, text, cards []byte) (halt, blocked bool) {
 	result := r.scanner.ScanTextForDLPWithTypedCardView(ctx, string(text), string(cards))
 	return r.handleClientTextResult(ctx, log, text, result, wsClientTextOptions{crossMessage: true})
 }
@@ -1914,12 +1927,13 @@ type wsClientTextOptions struct {
 	crossMessage bool
 }
 
-// handleClientTextResult returns true when the frame must not be forwarded.
-// Callers distinguish cancellation from a policy block using ctx.Err().
-func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) bool {
-	if dlpResult.Incomplete || ctx.Err() != nil {
-		return true
-	}
+// handleClientTextResult reports whether the frame must not be forwarded and
+// whether that stop is a policy block. Findings already collected are applied
+// even when the context ended during the scan, so cancellation cannot relabel
+// a credential match as a clean teardown. Cooperative cancellation with no
+// policy decision stops the frame and is not a block. A deadline is a block,
+// matching the relay loop's context.DeadlineExceeded path.
+func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) (halt, blocked bool) {
 	surface := opts.surface
 	if surface == "" || opts.crossMessage {
 		surface = "websocket_frame"
@@ -1927,28 +1941,39 @@ func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger,
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, surface)
 	for _, allow := range audienceAllows {
 		if err := r.recordCredentialAudienceAllow(allow); err != nil {
-			return r.blockOnCredentialAudienceReceiptFailure(log, err)
+			return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 		}
 	}
 	if opts.crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
-		return true
+		return true, true
 	}
 	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
 	var addrFindings []addressprotect.Finding
 	if checker := r.scanner.AddressChecker(); checker != nil {
 		addrFindings = checker.CheckText(string(scanInput), r.agent).Findings
 	}
-
-	return r.handleClientTextFindings(log, dlpResult.Matches, addrFindings)
+	if r.handleClientTextFindings(log, dlpResult.Matches, addrFindings) {
+		return true, true
+	}
+	if dlpResult.Incomplete || ctx.Err() != nil {
+		return true, errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+	return false, false
 }
 
 func (r *wsRelay) scanClientCrossMessageText(ctx context.Context, log *audit.Logger, tail []byte, msg []byte) (blocked bool) {
-	return r.scanClientCrossMessageTextViews(ctx, log, tail, msg, tail, msg)
+	halt, _ := r.decideClientCrossMessageTextViews(ctx, log, tail, msg, tail, msg)
+	return halt
 }
 
 func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audit.Logger, tail, msg, cardTail, cardMsg []byte) (blocked bool) {
+	halt, _ := r.decideClientCrossMessageTextViews(ctx, log, tail, msg, cardTail, cardMsg)
+	return halt
+}
+
+func (r *wsRelay) decideClientCrossMessageTextViews(ctx context.Context, log *audit.Logger, tail, msg, cardTail, cardMsg []byte) (halt, blocked bool) {
 	if len(tail) == 0 {
-		return false
+		return false, false
 	}
 
 	combined := make([]byte, 0, len(tail)+len(msg))
@@ -1959,14 +1984,14 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 	prevDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(tail), string(cardTail))
 	currDLP := r.scanner.ScanTextForDLPQuietWithCardView(ctx, string(msg), string(cardMsg))
 
-	if combinedDLP.Err() != nil || prevDLP.Err() != nil || currDLP.Err() != nil {
-		return true
-	}
+	// An interrupted scan still carries matches collected before it stopped.
+	// Those decide a policy block; the error only stops forwarding when they do not.
+	unverified := combinedDLP.Err() != nil || prevDLP.Err() != nil || currDLP.Err() != nil
 	crossDLP, crossWarns := wsCrossMessageDLPMatches(combinedDLP, prevDLP, currDLP)
 	if joined, ok := joinLabeledWSCrossMessageSuffixes(tail, msg); ok {
 		joinedDLP := r.scanner.ScanTextForDLPQuiet(ctx, string(joined))
 		if joinedDLP.Err() != nil {
-			return true
+			unverified = true
 		}
 		crossDLP = append(crossDLP, joinedDLP.Matches...)
 		crossWarns = append(crossWarns, joinedDLP.InformationalMatches...)
@@ -1977,7 +2002,7 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 	crossDLP, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(crossDLP, r.targetURL, "websocket_frame")
 	for _, allow := range audienceAllows {
 		if err := r.recordCredentialAudienceAllow(allow); err != nil {
-			return r.blockOnCredentialAudienceReceiptFailure(log, err)
+			return true, r.blockOnCredentialAudienceReceiptFailure(log, err)
 		}
 	}
 
@@ -1991,11 +2016,17 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 		}
 	}
 	if r.blockCrossMessageRedaction(log, crossDLP) {
-		return true
+		return true, true
 	}
 
 	crossDLP = r.filterClientFrameDLPMatches(crossDLP)
-	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+	if r.handleClientTextFindings(log, crossDLP, crossAddr) {
+		return true, true
+	}
+	if unverified || ctx.Err() != nil {
+		return true, errors.Is(ctx.Err(), context.DeadlineExceeded)
+	}
+	return false, false
 }
 
 func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanner.TextDLPMatch) bool {
@@ -2848,8 +2879,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if ctx.Err() != nil {
 				return
 			}
-			if r.enforceClientControlPayload(ctx, log, payload, &controlMsgTail) {
-				blocked = ctx.Err() == nil
+			if halt, policy := r.decideClientControlPayload(ctx, log, payload, &controlMsgTail); halt {
+				blocked = policy
 				return
 			}
 			if ctx.Err() != nil {
@@ -3002,9 +3033,11 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				blocked = true
 				return
 			}
-			if !redactionEnabled && scanMessage != nil && r.handleClientTextResult(ctx, log, msg, r.scanner.ScanTextForDLP(ctx, string(msg)), wsClientTextOptions{surface: surface}) {
-				blocked = ctx.Err() == nil
-				return
+			if !redactionEnabled && scanMessage != nil {
+				if halt, policy := r.handleClientTextResult(ctx, log, msg, r.scanner.ScanTextForDLP(ctx, string(msg)), wsClientTextOptions{surface: surface}); halt {
+					blocked = policy
+					return
+				}
 			}
 			if scanMessage == nil {
 				scanMessage = msg
@@ -3013,8 +3046,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			prevCardTail := crossMsgCardTail
 			numberText, numberCard := extract.JSONNumberStreamViews(scanMessage)
 			if len(crossMsgNumberTail) > 0 && numberText != "" {
-				if r.scanClientNumberText(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
-					blocked = ctx.Err() == nil
+				if halt, policy := r.decideClientNumberText(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)); halt {
+					blocked = policy
 					return
 				}
 			}
@@ -3043,22 +3076,28 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			crossMsgCardTail = updateWSCrossMessageTail(prevCardTail, cardMsg)
 			if !redactionEnabled {
 				result := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
-				if len(scanInput) > 0 && r.handleClientTextResult(ctx, log, scanInput, result, wsClientTextOptions{crossMessage: true}) {
-					blocked = ctx.Err() == nil
+				if len(scanInput) > 0 {
+					if halt, policy := r.handleClientTextResult(ctx, log, scanInput, result, wsClientTextOptions{crossMessage: true}); halt {
+						blocked = policy
+						return
+					}
+				}
+				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok {
+					if halt, policy := r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}); halt {
+						blocked = policy
+						return
+					}
+				}
+			} else if len(prevTail) > 0 {
+				if halt, policy := r.decideClientCrossMessageTextViews(ctx, log, prevTail, scanMessage, prevCardTail, cardMsg); halt {
+					blocked = policy
 					return
 				}
-				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}) {
-					blocked = ctx.Err() == nil
-					return
-				}
-			} else if len(prevTail) > 0 && r.scanClientCrossMessageTextViews(ctx, log, prevTail, scanMessage, prevCardTail, cardMsg) {
-				blocked = ctx.Err() == nil
-				return
 			}
 			frame := fieldTail.ParseFrame(scanMessage)
 			for _, view := range fieldTail.Views(frame) {
-				if r.scanClientCrossMessageText(ctx, log, []byte(view.Tail), []byte(view.Value)) {
-					blocked = ctx.Err() == nil
+				if halt, policy := r.decideClientCrossMessageTextViews(ctx, log, []byte(view.Tail), []byte(view.Value), []byte(view.Tail), []byte(view.Value)); halt {
+					blocked = policy
 					return
 				}
 			}
