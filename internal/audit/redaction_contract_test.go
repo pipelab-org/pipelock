@@ -455,8 +455,9 @@ func TestAuditRedirectCauseSurvivesLongerURL(t *testing.T) {
 	// A longer URL error is replaced before a redirect failure whose Location
 	// echoes that URL; the redirect's cause must still be replaced whole.
 	long := "https://api.vendor.example/v1/secret/payloadcanary"
-	//nolint:errorlint // net/http formats the Location parse error with %v, so it is not wrapped.
-	redirect := &url.Error{Op: "Get", URL: "https://api.vendor.example/v1", Err: fmt.Errorf("failed to parse Location header %q: %v", long+"/%zz", errors.New(`invalid URL escape "%zz"`))}
+	// net/http formats the Location parse error with %v, so its cause is text,
+	// not a wrapped error. Build the same text directly.
+	redirect := &url.Error{Op: "Get", URL: "https://api.vendor.example/v1", Err: fmt.Errorf("failed to parse Location header %q: %s", long+"/%zz", `invalid URL escape "%zz"`)}
 	other := &url.Error{Op: "Get", URL: long, Err: errors.New("upstream unavailable")}
 	for name, err := range map[string]error{
 		"longer first":  errors.Join(other, redirect),

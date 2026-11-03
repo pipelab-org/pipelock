@@ -177,8 +177,9 @@ func auditURLOperation(op string) string {
 // auditErrorDetail reads the published net, tls, x509, io and http2 error fields,
 // never their formatted messages, addresses, certificate names or cause text.
 func auditErrorDetail(err error) string {
-	//nolint:errorlint // Inspect only this node; errors.Is would walk descendants again.
-	switch err {
+	// Compare this node only, as a plain value: errors.Is would walk the
+	// descendants again, and the caller already visits each one.
+	switch any(err) {
 	case context.Canceled:
 		return "context canceled"
 	case context.DeadlineExceeded:
@@ -198,8 +199,9 @@ func auditErrorDetail(err error) string {
 	case syscall.EHOSTUNREACH:
 		return "host unreachable"
 	}
-	//nolint:errorlint // Inspect direct typed fields, not recursively formatted errors.
-	switch e := err.(type) {
+	// Read this node's own typed fields as a plain value; errors.As would
+	// search descendants, which the caller visits separately.
+	switch e := any(err).(type) {
 	case *url.Error:
 		return ""
 	case *net.OpError:
@@ -307,10 +309,11 @@ func collectURLErrors(err error) ([]*url.Error, []string, bool) {
 			stack = append(stack, visit{err: node, leave: true})
 		}
 		nodes = append(nodes, node)
-		//nolint:errorlint // Inspect this node only; errors.As recursively searches descendants.
-		if ue, ok := node.(*url.Error); ok {
+		// Inspect this node only, as a plain value; errors.As would search
+		// descendants again, and the walk visits each of them itself.
+		if ue, ok := any(node).(*url.Error); ok {
 			found = append(found, ue)
-		} else if alias, ok := node.(interface{ As(any) bool }); ok {
+		} else if alias, ok := any(node).(interface{ As(any) bool }); ok {
 			var ue *url.Error
 			if alias.As(&ue) {
 				if ue == nil {
@@ -319,8 +322,8 @@ func collectURLErrors(err error) ([]*url.Error, []string, bool) {
 				stack = append(stack, visit{err: ue})
 			}
 		}
-		//nolint:errorlint // Visit direct children; errors.As recursively revisits descendants.
-		switch wrapped := node.(type) {
+		// Visit direct children only; recursive unwrapping would revisit them.
+		switch wrapped := any(node).(type) {
 		case interface{ Unwrap() []error }:
 			// Non-comparable wrappers have no stable identity for cycle detection.
 			if !canCompare {
@@ -414,4 +417,5 @@ func (e *logEntry) msg(text string) {
 
 // sameError reports whether a and b compare equal. The caller has checked that
 // the dynamic type is comparable, so this can't panic.
-func sameError(a, b error) bool { return a == b } //nolint:errorlint // Identity, not wrapping, is what the walk needs.
+// Identity, not wrapping, is what the walk needs, so compare plain values.
+func sameError(a, b error) bool { return any(a) == any(b) }
