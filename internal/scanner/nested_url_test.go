@@ -352,25 +352,30 @@ func TestScan_NestedURLRecoveredPercentEncoding(t *testing.T) {
 	t.Parallel()
 	partial := strings.ReplaceAll(nestedURLMetadataPath, ".", "%2e")
 	benign := "https://api.vendor.example/read"
+	blocked := "https://blocked%2evendor%2eexample/"
 	cases := []struct {
-		name      string
-		value     string
-		wantAllow bool
+		name        string
+		value       string
+		wantAllow   bool
+		wantScanner string
 	}{
-		{"plaintext", nestedURLMetadataPath, false},
-		{"percent", percentEncodeN(nestedURLMetadataPath, 1), false},
-		{"base64", base64.StdEncoding.EncodeToString([]byte(nestedURLMetadataPath)), false},
-		{"base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(partial)), false},
-		{"hex_partial_percent", hex.EncodeToString([]byte(partial)), false},
-		{"base32_partial_percent", base32.StdEncoding.EncodeToString([]byte(partial)), false},
-		{"benign", benign, true},
-		{"benign_base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(benign, ".", "%2e"))), true},
+		{"plaintext", nestedURLMetadataPath, false, ""},
+		{"percent", percentEncodeN(nestedURLMetadataPath, 1), false, ""},
+		{"base64", base64.StdEncoding.EncodeToString([]byte(nestedURLMetadataPath)), false, ""},
+		{"base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(partial)), false, ""},
+		{"hex_partial_percent", hex.EncodeToString([]byte(partial)), false, ""},
+		{"base32_partial_percent", base32.StdEncoding.EncodeToString([]byte(partial)), false, ""},
+		{"benign", benign, true, ""},
+		{"benign_base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(benign, ".", "%2e"))), true, ""},
+		{"blocklist_base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(blocked)), false, ScannerBlocklist},
+		{"blocklist_hex_partial_percent", hex.EncodeToString([]byte(blocked)), false, ScannerBlocklist},
 	}
 	for _, tc := range cases {
 		for _, field := range []string{"value", "key"} {
 			t.Run(tc.name+"/"+field, func(t *testing.T) {
 				cfg := nestedURLConfig()
 				cfg.Internal = nil
+				cfg.FetchProxy.Monitoring.Blocklist = []string{"blocked.vendor.example"}
 				query := "target=" + url.QueryEscape(tc.value)
 				if field == "key" {
 					query = url.QueryEscape(tc.value) + "=x"
@@ -379,8 +384,12 @@ func TestScan_NestedURLRecoveredPercentEncoding(t *testing.T) {
 				if result.Allowed != tc.wantAllow {
 					t.Fatalf("Allowed=%v, want %v: %s", result.Allowed, tc.wantAllow, result.Reason)
 				}
-				if !tc.wantAllow && (result.Scanner != ScannerCoreSSRF || !strings.Contains(result.Reason, nestedURLReasonPrefix)) {
-					t.Fatalf("expected nested metadata refusal, got %+v", result)
+				wantScanner := tc.wantScanner
+				if wantScanner == "" {
+					wantScanner = ScannerCoreSSRF
+				}
+				if !tc.wantAllow && (result.Scanner != wantScanner || !strings.Contains(result.Reason, nestedURLReasonPrefix)) {
+					t.Fatalf("expected nested %s refusal, got %+v", wantScanner, result)
 				}
 			})
 		}

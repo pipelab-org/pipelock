@@ -126,6 +126,7 @@ func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
 		{"plaintext", nestedMetadataQuery, false},
 		{"base64_partial_percent", "target=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(partial))), false},
 		{"benign", "target=" + url.QueryEscape("https://api.vendor.example/read"), true},
+		{"benign_base64", "target=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte("https://api.vendor.example/read"))), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := hits.Load()
