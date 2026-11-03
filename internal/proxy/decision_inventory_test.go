@@ -304,6 +304,18 @@ func (h *inventoryHarness) urlRows(t *testing.T, cfg *config.Config, base decisi
 		row.Part, row.Input, row.Variant = "url", tc.name, tc.variant
 		row.Class = &result.Class
 		row.Delivered = !urlResultBlocks(c, sc, tc.target, result)
+		{
+			// The handler adds request context the bare scanner call lacks, so
+			// corroborate the URL decision against the real forward handler.
+			p, _, rt := h.proxy(t, c, "ok", "text/plain")
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.target, nil)
+			req.RemoteAddr = "192.0.2.10:12345"
+			w := httptest.NewRecorder()
+			p.handleForwardHTTP(w, req)
+			if hd := w.Code == http.StatusOK && rt.called; hd != row.Delivered {
+				t.Errorf("URL row %s/%s %s disagrees with the forward handler: handler delivered=%v (status %d), row delivered=%v", base.Preset, base.Runtime, tc.name, hd, w.Code, row.Delivered)
+			}
+		}
 		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 		if !result.Allowed {
 			row.Detectors = []string{result.Scanner}
@@ -466,7 +478,11 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 			}
 		}
 		if tc.part == "body" && row.Inspection == inventoryIncomplete {
-			row.Detectors = append(row.Detectors, bodyFailureLayer(bodyMetadata, []byte(tc.body)))
+			// An incomplete file inspection has no failure layer; an empty name
+			// would record a detector that never existed.
+			if layer := bodyFailureLayer(bodyMetadata, []byte(tc.body)); layer != "" {
+				row.Detectors = append(row.Detectors, layer)
+			}
 		}
 		if strings.HasPrefix(tc.variant, "opaque-") {
 			row.Delivered = w.Code == http.StatusOK && w.Body.String() == response
@@ -477,6 +493,11 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 				Now: responseScanNow(),
 			}, c.ResponseScanning.UnscannablePassthrough)
 			if !row.Delivered && obs.response == nil {
+				// The oversize label must be what the handler reported, not an
+				// assumption: any other refusal here would otherwise be mislabelled.
+				if !strings.Contains(w.Body.String(), "exceeding bounded scan ceiling") {
+					t.Fatalf("opaque response was refused for a reason other than the scan ceiling: %s/%s: %q", base.Preset, tc.name, w.Body.String())
+				}
 				row.Inspection = inventoryIncomplete
 				row.Detectors = []string{string(sizeExemptReadFailureOversize)}
 			}
@@ -526,7 +547,7 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 			if row.Inspection == inventoryIncomplete {
 				row.Disposition = "refuse"
 			}
-		} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || tc.part == "sse-response" && tc.name != "clean") {
+		} else if row.Action != config.ActionAllow && (len(row.Detectors) > 0 || row.Inspection == inventoryIncomplete || tc.part == "sse-response" && tc.name != "clean") {
 			row.Disposition = config.ActionWarn
 		}
 		rows = append(rows, row)
