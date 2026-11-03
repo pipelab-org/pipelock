@@ -31,6 +31,7 @@ type Metrics struct {
 	// Proxy / tunnel / SNI / reverse proxy (proxy.go).
 	requestsTotal           *prometheus.CounterVec
 	scannerHits             *prometheus.CounterVec
+	urlDecisions            map[urlDecisionKey][decisionOutcomeCount]prometheus.Counter
 	denialOfWalletEvents    *prometheus.CounterVec
 	requestLatency          prometheus.Histogram
 	tunnelsTotal            *prometheus.CounterVec
@@ -254,6 +255,7 @@ func New() *Metrics {
 	}
 
 	m.registerProxyMetrics(reg)
+	m.registerDecisionMetrics(reg)
 	m.registerWSMetrics(reg)
 	m.registerDLPMetrics(reg)
 	m.registerIssuerIDMetrics(reg)
