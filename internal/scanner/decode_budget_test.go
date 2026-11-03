@@ -434,3 +434,18 @@ func TestDecodeBudgetKnownValueEarlyMatchCanaryWalk(t *testing.T) {
 		t.Fatalf("inbound known-value match changed: allowed=%v reason=%s", result.Allowed, result.Reason)
 	}
 }
+
+// A known value on a small outbound URL keeps its ordinary finding: the
+// early-match budget check applies only when a skipped walk is exhausted.
+func TestDecodeBudgetKnownValueCompleteWalkIsOrdinaryFinding(t *testing.T) {
+	known := strings.Join([]string{"Q7m2", "X9z4", "R8v3", "N6p1"}, "")
+	sc := knownSecretEncodingScanner(t, []string{known})
+	parsed, err := url.Parse("https://api.vendor.example/upload?v=" + known)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, _ := sc.checkDLP(parsed)
+	if result.Allowed || IsURLInspectionLimitResult(result) {
+		t.Fatalf("complete-walk known value: allowed=%v reason=%s", result.Allowed, result.Reason)
+	}
+}
