@@ -6,6 +6,7 @@ package audit
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -441,5 +442,71 @@ func TestAuditErrorTreeVisitsOnce(t *testing.T) {
 	found, valid := collectURLErrors(err)
 	if !valid || len(found) != 0 || visits != wrappers {
 		t.Fatalf("valid=%v URL errors=%d unwrap calls=%d, want true, 0, %d", valid, len(found), visits, wrappers)
+	}
+}
+
+func TestAuditRedirectCauseSurvivesLongerURL(t *testing.T) {
+	// A longer URL error is replaced before a redirect failure whose Location
+	// echoes that URL; the redirect's cause must still be replaced whole.
+	long := "https://api.vendor.example/v1/secret/payloadcanary"
+	//nolint:errorlint // net/http formats the Location parse error with %v, so it is not wrapped.
+	redirect := &url.Error{Op: "Get", URL: "https://api.vendor.example/v1", Err: fmt.Errorf("failed to parse Location header %q: %v", long+"/%zz", errors.New(`invalid URL escape "%zz"`))}
+	other := &url.Error{Op: "Get", URL: long, Err: errors.New("upstream unavailable")}
+	for name, err := range map[string]error{
+		"longer first":  errors.Join(other, redirect),
+		"shorter first": errors.Join(redirect, other),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := redactURLErrors(err).Error()
+			if !strings.Contains(got, "invalid redirect URL") || strings.Contains(got, "payloadcanary") || strings.Contains(got, "%zz") {
+				t.Fatalf("redirect cause survived URL replacement: %q", got)
+			}
+		})
+	}
+}
+
+type auditNaNError struct{ f float64 }
+
+func (auditNaNError) Error() string   { return "nan" }
+func (e auditNaNError) Unwrap() error { return e }
+
+func TestAuditErrorTreeNaNIdentity(t *testing.T) {
+	// A NaN field makes the value unequal to itself, so it can't be marked
+	// active in the walk; it must fail closed rather than loop.
+	done := make(chan bool, 1)
+	go func() {
+		_, valid := collectURLErrors(auditNaNError{math.NaN()})
+		done <- valid
+	}()
+	select {
+	case valid := <-done:
+		if valid {
+			t.Fatal("self-wrapping NaN error accepted")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("collectURLErrors did not terminate on a NaN self-cycle")
+	}
+}
+
+func TestAuditErrorTreeSharedSubtreeLinear(t *testing.T) {
+	// Each level joins the level below twice; without the done mark the walk
+	// takes 2^levels steps and reports the leaf repeatedly.
+	leaf := &url.Error{Op: "Get", URL: "https://api.vendor.example/payloadcanary", Err: errors.New("upstream unavailable")}
+	var tree error = leaf
+	for range 60 {
+		tree = errors.Join(tree, tree)
+	}
+	done := make(chan []*url.Error, 1)
+	go func() {
+		found, _ := collectURLErrors(tree)
+		done <- found
+	}()
+	select {
+	case found := <-done:
+		if len(found) != 1 {
+			t.Fatalf("URL errors=%d, want 1", len(found))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shared subtrees were revisited")
 	}
 }

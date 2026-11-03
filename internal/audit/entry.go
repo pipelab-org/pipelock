@@ -140,27 +140,41 @@ func redactURLErrors(err error) error {
 	if len(found) == 0 {
 		return err
 	}
+	msg := err.Error()
+	// Replace every cause before any URL: a URL replacement rewrites the copy
+	// of a URL echoed inside another error's cause, so that cause would no
+	// longer match and its parse reason would survive. Longest first so a cause
+	// that contains another is replaced whole.
+	type replacement struct{ from, to string }
+	var causes []replacement
+	for _, ue := range found {
+		if ue.Err == nil {
+			continue
+		}
+		cause := ue.Err.Error()
+		switch {
+		case ue.Op == "parse":
+			causes = append(causes, replacement{cause, "invalid URL"})
+		case strings.HasPrefix(cause, "failed to parse Location header "):
+			// net/http.Client formats the Location parse error with %v, not %w.
+			// The URL and parse reason in this detail aren't in the error tree.
+			causes = append(causes, replacement{cause, "invalid redirect URL"})
+		}
+	}
+	sort.SliceStable(causes, func(i, j int) bool { return len(causes[i].from) > len(causes[j].from) })
+	for _, c := range causes {
+		msg = strings.ReplaceAll(msg, c.from, c.to)
+	}
 	// Longest first so a URL that is a prefix of another cannot leave a tail.
 	sort.SliceStable(found, func(i, j int) bool { return len(found[i].URL) > len(found[j].URL) })
-	msg := err.Error()
 	for _, ue := range found {
-		if ue.Err != nil {
-			cause := ue.Err.Error()
-			switch {
-			case ue.Op == "parse":
-				msg = strings.ReplaceAll(msg, cause, "invalid URL")
-			case strings.HasPrefix(cause, "failed to parse Location header "):
-				// net/http.Client formats the Location parse error with %v, not %w.
-				// The URL and parse reason in this detail aren't in the error tree.
-				msg = strings.ReplaceAll(msg, cause, "invalid redirect URL")
-			}
+		if ue.URL == "" {
+			continue
 		}
-		if ue.URL != "" {
-			destination := dropURLContentSegments(ue.URL, false)
-			// url.Error uses %q; the raw URL won't match quotes or backslashes.
-			msg = strings.ReplaceAll(msg, strconv.Quote(ue.URL), strconv.Quote(destination))
-			msg = strings.ReplaceAll(msg, ue.URL, destination)
-		}
+		destination := dropURLContentSegments(ue.URL, false)
+		// url.Error uses %q; the raw URL won't match quotes or backslashes.
+		msg = strings.ReplaceAll(msg, strconv.Quote(ue.URL), strconv.Quote(destination))
+		msg = strings.ReplaceAll(msg, ue.URL, destination)
 	}
 	return errors.New(msg)
 }
@@ -191,6 +205,10 @@ func collectURLErrors(err error) ([]*url.Error, bool) {
 			}
 		}
 		canCompare := value.Comparable()
+		// A value unequal to itself (a NaN field) can't be marked and found again.
+		if canCompare && !sameError(node, node) {
+			return nil, false
+		}
 		if canCompare {
 			if item.leave {
 				state[node] = true
@@ -299,3 +317,7 @@ func selectPrimaryBundleHit(hits []BundleRuleHit) BundleRuleHit {
 func (e *logEntry) msg(text string) {
 	e.event.Msg(text)
 }
+
+// sameError reports whether a and b compare equal. The caller has checked that
+// the dynamic type is comparable, so this can't panic.
+func sameError(a, b error) bool { return a == b } //nolint:errorlint // Identity, not wrapping, is what the walk needs.
