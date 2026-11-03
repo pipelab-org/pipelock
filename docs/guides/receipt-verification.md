@@ -665,9 +665,9 @@ gaps without modifying the directory.
 
 ## Receipt URL retention
 
-New v1 action receipts and v2 proxy-decision receipts retain only the scheme, host and port of a URL target. Userinfo, path, query and fragment are removed before signing, regardless of DLP matches or the `flight_recorder.redact` setting. The same policy applies to v1 taint-source URLs. CONNECT authorities and opaque MCP tool identifiers retain their existing form, subject to DLP redaction when enabled.
+New v1 action receipts and v2 proxy-decision receipts retain only the scheme, host and port of a URL target. Userinfo, path, query and fragment are removed before signing, regardless of DLP matches or the `flight_recorder.redact` setting. The same policy applies to v1 taint-source URLs. A blocked request's reason text can still name the query parameter that triggered the block. CONNECT authorities and opaque MCP tool identifiers retain their existing form, subject to DLP redaction when enabled.
 
-The `target` field keeps its name and string type. Verification authenticates the value that was signed, so existing receipts with full URLs still verify and existing verifiers accept destination-only values. Use the request ID, method, host, port and verdict to correlate new receipts with audit logs.
+The `target` field keeps its name and string type. Verification authenticates the value that was signed, so existing receipts with full URLs still verify and existing verifiers accept destination-only values. Use the request ID, method, host, port and verdict to correlate new receipts with audit logs. The receipt-load harness reports aggregate receipt attribution for destination-only targets. It still checks each sink request, but v2 receipts and best-effort allowed receipts no longer identify individual workload requests.
 
 ## Receipt content boundary
 

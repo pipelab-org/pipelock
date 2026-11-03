@@ -74,7 +74,8 @@ func (o *slotObservation) addActionID(id string) {
 // recorderObservation is the harness's reading of a recorder directory,
 // attributed to planned requests by identity.
 type recorderObservation struct {
-	slots []slotObservation
+	slots     []slotObservation
+	aggregate *aggregateObservation
 
 	// orphans are receipts for the sink that name a workload key outside the
 	// plan, per kind. uncorrelatable receipts target the sink (or were
@@ -267,6 +268,7 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 			Phase      string                  `json:"decision_phase"`
 			Verdict    string                  `json:"verdict"`
 			Target     string                  `json:"target"`
+			Layer      string                  `json:"layer"`
 			Method     string                  `json:"method"`
 			Transport  string                  `json:"transport"`
 			ActionType string                  `json:"action_type"`
@@ -315,6 +317,9 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	kind := v1Kind(ar.Phase, ar.Verdict)
 	switch s.classify(ar.Target) {
 	case targetControl:
+		if s.obs.aggregate != nil && s.obs.aggregate.actions[ar.ActionID] != nil {
+			return errors.New("control ActionID also owns an aggregate action")
+		}
 		if _, seen := s.actionSlot[ar.ActionID]; seen {
 			return errors.New("control ActionID also owns a workload request")
 		}
@@ -325,6 +330,11 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	case targetUncorrelatable:
 		s.obs.uncorrelatable[kind]++
 		s.obs.sampleOrphan(kind.String() + " without a usable workload key: " + ar.Target)
+	case targetAggregate:
+		if err := s.observeAggregateV1(aggregateActionInput{session: env.Session, id: ar.ActionID, method: ar.Method, transport: ar.Transport, action: ar.ActionType, phase: ar.Phase, verdict: ar.Verdict, layer: ar.Layer}); err != nil {
+			return err
+		}
+		s.noteReceiptTime(env.TS)
 	case targetWorkload:
 		key, _ := keyFromTarget(ar.Target)
 		slot, ok := s.plan.parseKey(key)
@@ -368,10 +378,11 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 		EventID     string                      `json:"event_id"`
 		PayloadKind contractreceipt.PayloadKind `json:"payload_kind"`
 		Payload     struct {
-			Target     string `json:"target"`
-			Transport  string `json:"transport"`
-			ActionType string `json:"action_type"`
-			Verdict    string `json:"verdict"`
+			Target        string `json:"target"`
+			Transport     string `json:"transport"`
+			ActionType    string `json:"action_type"`
+			Verdict       string `json:"verdict"`
+			WinningSource string `json:"winning_source"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(env.Detail, &detail); err != nil {
@@ -390,6 +401,14 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 	case targetUncorrelatable:
 		s.obs.uncorrelatable[kindV2]++
 		s.obs.sampleOrphan("v2 without a usable workload key: " + detail.Payload.Target)
+	case targetAggregate:
+		if (detail.PayloadKind != contractreceipt.PayloadProxyDecision && detail.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans) || detail.Payload.Transport != workloadTransport || detail.Payload.ActionType != "http_request" || detail.Payload.WinningSource != "scanner" || (detail.Payload.Verdict != verdictAllow && detail.Payload.Verdict != verdictBlock) {
+			return errors.New("aggregate v2 receipt differs from the planned decision")
+		}
+		a := s.aggregateObservation()
+		a.counts[kindV2]++
+		a.v2[aggregateBucket{session: env.Session, verdict: detail.Payload.Verdict}]++
+		s.noteReceiptTime(env.TS)
 	case targetWorkload:
 		key, _ := keyFromTarget(detail.Payload.Target)
 		slot, ok := s.plan.parseKey(key)
@@ -428,6 +447,7 @@ const (
 	targetControl targetClass = iota
 	targetWorkload
 	targetUncorrelatable
+	targetAggregate
 )
 
 // classify decides whether a receipt target belongs to the workload. A target
@@ -441,6 +461,11 @@ func (s *recorderScanner) classify(target string) targetClass {
 	switch target {
 	case "pipelock://session/open", "pipelock://session/heartbeat", "pipelock://session/close":
 		return targetControl
+	}
+	// Exact spelling is the new producer contract. No path, query, fragment
+	// or userinfo may be hidden by a parsed-URL equality comparison.
+	if target == "http://"+s.sinkAddr {
+		return targetAggregate
 	}
 	u, err := url.Parse(target)
 	if err != nil || u.Scheme != "http" || u.Host != s.sinkAddr || !workloadURLPath(u) {
@@ -497,6 +522,16 @@ func (s *recorderScanner) attributeAEL() error {
 		id := activity.id
 		if run, ok := s.actionRuns[id]; ok && run != activity.run {
 			return errors.New("AEL activity belongs to another native run")
+		}
+		if s.obs.aggregate != nil {
+			if action := s.obs.aggregate.actions[id]; action != nil {
+				if activity.class != string(receipt.ActionRead) || activity.direction != "in" {
+					return errors.New("native aggregate activity differs from the planned action")
+				}
+				action.counts[kindAEL]++
+				s.obs.aggregate.counts[kindAEL]++
+				continue
+			}
 		}
 		if slot, ok := s.actionSlot[id]; ok {
 			if activity.class != string(receipt.ActionRead) || activity.direction != "in" {

@@ -243,7 +243,7 @@ func warmupBlocked(r *result) int {
 
 // The key must be readable in the receipts the real proxy writes, and the
 // credential that rides along with blocked requests must not be.
-func TestWorkloadKeySurvivesTheRealProxy(t *testing.T) {
+func TestDestinationOnlyReceiptsUseAggregateAccounting(t *testing.T) {
 	bin := realPipelock(t)
 	opt := smallOptions(t, bin)
 	opt.requests, opt.warmup = 60, 10
@@ -266,23 +266,24 @@ func TestWorkloadKeySurvivesTheRealProxy(t *testing.T) {
 	evidence := text.String()
 	plan := newWorkload(opt.seed, opt.warmup, opt.requests)
 	plan.runNonce = strings.TrimPrefix(res.Inputs.Workload.Tag, plan.tag()+"-r")
-	for slot := range plan.total() {
-		if !strings.Contains(evidence, workloadKeyParam+"="+plan.key(slot)) {
-			t.Fatalf("key %s was not found in any receipt", plan.key(slot))
-		}
+	if strings.Contains(evidence, fakeToken) || strings.Contains(evidence, "wk="+plan.tag()) {
+		t.Fatal("request content reached the receipts")
 	}
-	if strings.Contains(evidence, fakeToken) {
-		t.Fatal("the synthetic credential reached the evidence files")
-	}
-	obs, err := scanRecorder(dir, plan, strings.SplitN(extractSinkHost(t, evidence), "/", 2)[0])
+	obs, err := scanRecorder(dir, plan, extractSinkHost(t, evidence))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if obs.aggregate == nil || res.Integrity.ReceiptAttribution != "aggregate" || res.Integrity.Verdict != verdictPass {
+		t.Fatalf("aggregate attribution unavailable: %+v", res.Integrity)
+	}
+	var expected [kindCount]int
 	for slot := range plan.total() {
-		want := expectedFor(modeBest, plan.blocked(slot))
-		if obs.slots[slot].counts != want {
-			t.Fatalf("slot %d (%s): receipts %v, want %v", slot, plan.key(slot), obs.slots[slot].counts, want)
+		for kind, n := range expectedFor(modeBest, plan.blocked(slot)) {
+			expected[kind] += int(n)
 		}
+	}
+	if obs.aggregate.counts != expected {
+		t.Fatalf("counts=%v want=%v", obs.aggregate.counts, expected)
 	}
 }
 
