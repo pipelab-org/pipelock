@@ -568,6 +568,12 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 				row.Diagnostic = obs.response.SkipReason
 			}
 		}
+		// bodyMetadata comes from a separate probe call, so a clean probe must
+		// not coexist with a handler refusal (the handler also holds the core
+		// credential floor, so only this direction is a fixed contract).
+		if tc.part == "body" && bodyMetadata.Clean && !row.Delivered {
+			t.Errorf("body row %s/%s %s: scan probe was clean but the forward handler refused (status %d)", base.Preset, base.Runtime, tc.name, w.Code)
+		}
 		if tc.part == "body" && (bodyMetadata.FileInspectionIncomplete != "" || bodyMetadata.UnscannedEncoding ||
 			bodyMetadata.ScanError != "" || bodyMetadata.Reason != "" && len(bodyMetadata.DLPMatches) == 0 && len(bodyMetadata.InjectionMatches) == 0 && bodyMetadata.EntropyFinding == nil) {
 			row.Inspection = inventoryIncomplete
@@ -637,6 +643,13 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 				row.Diagnostic = warning.Error()
 			default:
 				row.Action = config.ActionAllow
+			}
+			// The row's verdict comes from this probe, not the handler. The
+			// probe omits handler-only options (suppression, scan exemption,
+			// receipt confirmation), so require it to agree with the handler's
+			// delivery; a stream finding in warn mode is delivered by design.
+			if probeRefused := err != nil && c.ResponseScanning.SSEStreaming.Action != config.ActionWarn; probeRefused == row.Delivered {
+				t.Errorf("SSE row %s/%s %s: dispatcher probe refused=%v but the forward handler delivered=%v", base.Preset, base.Runtime, tc.name, probeRefused, row.Delivered)
 			}
 		}
 		if !row.Delivered {
