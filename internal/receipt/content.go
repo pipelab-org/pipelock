@@ -361,6 +361,12 @@ func (e *Emitter) ValidateConfigHash(hash string) error {
 // contentRecord builds every field of an action record that does not depend
 // on chain state. The emitter adds only generated stamps under its chain lock.
 func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect SideEffectClass, reversibility Reversibility, policyHash string) ActionRecord {
+	// Source URLs are signed alongside the target. Copy before reducing them
+	// so receipt retention cannot mutate the session's live taint state.
+	sources := append([]session.TaintSourceRef(nil), opts.RecentTaintSources...)
+	for i := range sources {
+		sources[i].URL = sanitizeTarget(sources[i].URL, nil)
+	}
 	return ActionRecord{
 		Version:               ActionRecordVersion,
 		ActionID:              opts.ActionID,
@@ -369,7 +375,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 		Principal:             e.principal,
 		Actor:                 e.actorLabel(opts),
 		DelegationChain:       nil, // Populated when delegation tracking ships
-		Target:                opts.Target,
+		Target:                sanitizeTarget(opts.Target, nil),
 		SideEffectClass:       sideEffect,
 		Reversibility:         reversibility,
 		PolicyHash:            policyHash,
@@ -382,7 +388,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 		SessionIDOriginal:     opts.SessionIDOriginal,
 		SessionTaintLevel:     opts.SessionTaintLevel,
 		SessionContaminated:   opts.SessionContaminated,
-		RecentTaintSources:    append([]session.TaintSourceRef(nil), opts.RecentTaintSources...),
+		RecentTaintSources:    sources,
 		SessionTaskID:         opts.SessionTaskID,
 		SessionTaskLabel:      opts.SessionTaskLabel,
 		AuthorityKind:         opts.AuthorityKind,

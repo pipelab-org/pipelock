@@ -343,8 +343,8 @@ dlp:
 		if strings.Contains(out, secret) {
 			t.Fatalf("output leaked active-config DLP value for args %v:\n%s", args, out)
 		}
-		if !strings.Contains(out, "state=public") {
-			t.Fatalf("output should preserve non-sensitive query context for args %v:\n%s", args, out)
+		if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+			t.Fatalf("output should retain only destination context for args %v:\n%s", args, out)
 		}
 	}
 }
@@ -378,8 +378,8 @@ func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 			t.Fatalf("text output leaked token-family query value %q:\n%s", leaked, out)
 		}
 	}
-	if !strings.Contains(out, "state=public") {
-		t.Fatalf("text output should preserve non-sensitive query context:\n%s", out)
+	if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+		t.Fatalf("text output should retain only destination context:\n%s", out)
 	}
 
 	out, err = runExplainCmd(t, "event", "req-token-family", "--log", logPath, "--json")
@@ -391,8 +391,8 @@ func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 			t.Fatalf("JSON output leaked token-family query value %q:\n%s", leaked, out)
 		}
 	}
-	if !strings.Contains(out, "state=public") {
-		t.Fatalf("JSON output should preserve non-sensitive query context:\n%s", out)
+	if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+		t.Fatalf("JSON output should retain only destination context:\n%s", out)
 	}
 }
 

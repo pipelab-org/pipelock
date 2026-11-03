@@ -862,7 +862,7 @@ func TestEmitRecorderRejectsOversizedLineBeforeV2Advance(t *testing.T) {
 		Principal: "local", Actor: "pipelock",
 	})
 	tooLarge := validDecision()
-	tooLarge.Target = "https://api.vendor.example/" + strings.Repeat("x", recorder.MaxEntryLineBytes)
+	tooLarge.Target = "opaque-" + strings.Repeat("x", recorder.MaxEntryLineBytes)
 	if err := em.Emit(tooLarge); !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
 		t.Fatalf("oversized live recorder entry = %v", err)
 	}

@@ -83,11 +83,8 @@ func TestExplainEventSanitizerTargetRedactsSecretQuery(t *testing.T) {
 	if strings.Contains(got, "abc") {
 		t.Fatalf("secret query value leaked: %q", got)
 	}
-	if !strings.Contains(got, explainEventRedactedValue) && !strings.Contains(got, "%5Bredacted-value%5D") {
-		t.Fatalf("secret query was not replaced: %q", got)
-	}
-	if !strings.Contains(got, "page=2") || !strings.Contains(got, "ref=ok") {
-		t.Fatalf("benign query params were dropped: %q", got)
+	if got != "https://api.vendor.example" {
+		t.Fatalf("target should retain only the destination: %q", got)
 	}
 	if s.target("") != "" {
 		t.Fatal("empty target was rewritten")

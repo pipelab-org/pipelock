@@ -312,10 +312,9 @@ func (e *Emitter) emit(d Decision, durable bool) error {
 
 	// Sanitize secret-bearing fields BEFORE signing, byte-identically to the v1
 	// emitter (#676). The signed target must never carry raw secret bytes.
-	target := d.Target
+	target := receipt.SanitizeTarget(d.Target, e.sanitize)
 	ruleID := d.RuleID
 	if e.sanitize != nil {
-		target = receipt.SanitizeTarget(target, e.sanitize)
 		ruleID = receipt.CleanOrRedacted(ruleID, e.sanitize)
 	}
 

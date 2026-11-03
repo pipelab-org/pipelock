@@ -96,7 +96,7 @@ Every receipt contains these fields:
 | `verdict` | `block`, `allow`, `warn` | Enforcement outcome |
 | `transport` | `fetch`, `websocket`, `connect`, `forward`, `intercept`, `mcp_stdio`, `mcp_http_upstream`, `mcp_http_listener`, `mcp_ws`, `reverse` | Which proxy mode handled the action |
 | `method` | HTTP method or `WS` | Request method |
-| `target` | URL | Target URL |
+| `target` | Destination or tool identifier | HTTP/WebSocket URLs retain scheme, host and port; CONNECT authorities and MCP tool names retain their identifiers |
 | `layer` | Scanner layer name | Which scanning layer triggered |
 | `pattern` | Reason string | What was matched |
 | `request_id` | Proxy-minted `req-` UUIDv7 or caller value | Request correlation; only a process-proven generated ID is excluded from receipt content scanning |
@@ -122,6 +122,8 @@ Taint-aware fields (when session profiling is active):
 | `task_override_applied` | True when a runtime task-scoped override allowed the action |
 
 When request-side redaction succeeds, the receipt keeps the underlying transport verdict and adds the `redaction` summary block. When no values were rewritten, the field is omitted so legacy receipts remain byte-identical.
+
+URL targets and `recent_taint_sources[].url` drop userinfo, path, query and fragment before signing, even when DLP finds no match or `flight_recorder.redact` is false. The destination, method, request ID, verdict and layer remain available for correlation. DLP redaction still applies to retained content when enabled. Existing signed receipts retain their original values and remain verifiable.
 
 ## Chain Integrity
 
