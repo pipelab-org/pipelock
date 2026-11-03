@@ -4,6 +4,9 @@
 package audit
 
 import (
+	"errors"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -114,6 +117,14 @@ func (e *logEntry) strs(key string, values []string) *logEntry {
 }
 
 func (e *logEntry) errField(err error) *logEntry {
+	// HTTP client errors carry a second URL outside the request context.
+	// Keep the operation and cause, but apply the same destination policy.
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		logged := *urlErr
+		logged.URL = dropURLContentSegments(urlErr.URL, false)
+		err = errors.New(strings.ReplaceAll(err.Error(), urlErr.Error(), logged.Error()))
+	}
 	e.event = e.event.Err(err)
 	errStr := ""
 	if err != nil {

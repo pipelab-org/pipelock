@@ -4,6 +4,9 @@
 package audit
 
 import (
+	"errors"
+	"fmt"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,6 +84,60 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 		log    func(*Logger, string)
 		fields []string
 	}{
+		{"allowed", func(l *Logger, value string) {
+			l.LogAllowed(LogContext{method: testMethodGet, url: value, target: value}, 200, 10, time.Millisecond)
+		}, []string{"url", "target"}},
+		{"error", func(l *Logger, value string) {
+			l.LogError(LogContext{method: testMethodGet, url: value, target: value}, errors.New("upstream unavailable"))
+		}, []string{"url", "target"}},
+		{"URL error", func(l *Logger, value string) {
+			l.LogError(LogContext{url: value}, &url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")})
+		}, []string{"url"}},
+		{"wrapped URL error", func(l *Logger, value string) {
+			l.LogError(LogContext{url: value}, fmt.Errorf("fetch: %w", &url.Error{Op: "Get", URL: value, Err: errors.New("upstream unavailable")}))
+		}, []string{"url"}},
+		{"identity collision", func(l *Logger, value string) {
+			l.LogAgentIdentityCollision(LogContext{method: testMethodGet, url: value, target: value}, "reserved")
+		}, []string{"url", "target"}},
+		{"response exemption", func(l *Logger, value string) {
+			l.LogResponseScanExempt(LogContext{method: testMethodGet, url: value, target: value}, "api.vendor.example")
+		}, []string{"url", "target"}},
+		{"full trust exemption", func(l *Logger, value string) {
+			l.LogResponseScanExemptFullTrust(LogContext{method: testMethodGet, url: value, target: value}, "api.vendor.example")
+		}, []string{"url", "target"}},
+		{"over cap exemption", func(l *Logger, value string) {
+			l.LogResponseScanExemptOverCapUnscanned(LogContext{method: testMethodGet, url: value, target: value}, "api.vendor.example", "fetch", 20, 10)
+		}, []string{"url", "target"}},
+		{"media", func(l *Logger, value string) {
+			l.LogMediaExposure(LogContext{method: testMethodGet, url: value}, MediaExposureInfo{Transport: "fetch"})
+		}, []string{"url"}},
+		{"taint", func(l *Logger, value string) {
+			l.LogTaintDecision(LogContext{method: testMethodGet, url: value}, TaintDecision{SourceURL: value, Decision: "allow"})
+		}, []string{"url", "source_url"}},
+		{"header DLP", func(l *Logger, value string) {
+			l.LogHeaderDLP(LogContext{method: testMethodGet, url: value, target: value}, "Authorization", "warn", nil, nil)
+		}, []string{"url", "target"}},
+		{"shield", func(l *Logger, value string) {
+			l.LogShieldRewrite("tracking", 1, "fetch", value, testClientIP, testReqID)
+		}, []string{"url"}},
+		{"authority", func(l *Logger, value string) {
+			l.LogAuthorityVerification(LogContext{method: testMethodGet, url: value, target: value}, AuthorityVerification{Decision: "allow"})
+		}, []string{"url", "target"}},
+		{"tunnel open", func(l *Logger, value string) {
+			l.LogTunnelOpen(LogContext{target: value})
+		}, []string{"target"}},
+		{"tunnel close", func(l *Logger, value string) {
+			l.LogTunnelClose(LogContext{target: value}, 10, time.Millisecond)
+		}, []string{"target"}},
+		{"websocket open", func(l *Logger, value string) {
+			l.LogWSOpen(value, testClientIP, testReqID, "")
+		}, []string{"target"}},
+		{"websocket close", func(l *Logger, value string) {
+			l.LogWSClose(WSCloseEvent{Target: value})
+		}, []string{"target"}},
+		{"websocket blocked", func(l *Logger, value string) {
+			l.LogWSBlocked(WSBlockedEvent{Target: value, Scanner: "dlp"})
+		}, []string{"target"}},
 		{"intercept", func(l *Logger, value string) {
 			l.LogInterceptHTTP(LogContext{method: testMethodGet, url: value, target: value}, InterceptTiming{StatusCode: 200})
 		}, []string{"url", "target"}},
@@ -120,6 +177,10 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 					t.Fatalf("local entries=%d, want 1", len(entries))
 				}
 				event := sink.onlyEvent(t)
+				if entries[0]["event"] != event.Type {
+					t.Errorf("local event=%v, emitted event=%s", entries[0]["event"], event.Type)
+				}
+
 				for _, fields := range []map[string]any{entries[0], event.Fields} {
 					for _, field := range tt.fields {
 						if fields[field] != input.want {

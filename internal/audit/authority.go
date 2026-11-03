@@ -55,8 +55,8 @@ func (l *Logger) LogAuthorityVerification(ctx LogContext, verification Authority
 		optStr("issuer", verification.Issuer).
 		optStr("reference", verification.Reference).
 		str("method", ctx.Method()).
-		optStr("url", ctx.URL()).
-		optStr("target", ctx.Target()).
+		optStr("url", dropURLContentSegments(ctx.URL(), false)).
+		optStr("target", dropURLContentSegments(ctx.Target(), false)).
 		optStr("resource", ctx.Resource()).
 		optStr("client_ip", ctx.ClientIP()).
 		optStr("request_id", ctx.RequestID()).
