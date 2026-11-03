@@ -236,9 +236,9 @@ Pipelock runs in three modes:
 | **balanced** | URL DLP and entropy checks; body policy varies | Via fetch or forward proxy | Most developers (default) |
 | **audit** | Ordinary policy warns with `enforce: false`; core floors can block | Via fetch or forward proxy, with core destination checks | Evaluate policy with core protection active |
 
-For agents running uncensored or abliterated models, the [`hostile-model` preset](configs/hostile-model.yaml) layers defenses on strict mode: aggressive entropy thresholds, blanket network-tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains through dependency signals.
-
 The table describes the shipped presets for traffic Pipelock can inspect. `mode: audit` alone doesn't turn off enforcement; the `audit` preset also sets `enforce: false`.
+
+For agents running uncensored or abliterated models, the [`hostile-model` preset](configs/hostile-model.yaml) layers defenses on strict mode: aggressive entropy thresholds, blanket network-tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains through dependency signals.
 
 | Attack Vector | Strict | Balanced | Audit |
 |---------------|--------|----------|-------|
@@ -246,7 +246,7 @@ The table describes the shipped presets for traffic Pipelock can inspect. `mode:
 | Secret in URL query params | Blocks unlisted hosts; scans allowed hosts | Blocks matching DLP; unrecognized data can pass | Core credentials block; other findings warn |
 | Encoded data in URL | Blocks unlisted hosts; scans allowed hosts | Decoded DLP and entropy checks; limited coverage | Core matches block; other findings warn |
 | DNS tunneling | Blocks unlisted hosts through the proxy | Limited DLP and entropy checks on hostnames | Core matches block; other findings warn |
-| Chunked exfiltration | Blocks unlisted hosts; configured limits apply | Rate limits apply; budgets and fragment checks need configuration | Ordinary findings warn |
+| Chunked exfiltration | Blocks unlisted hosts; configured limits apply | Rate limits apply; budgets and fragment checks need configuration | Preset turns rate limits off; ordinary findings warn |
 | Encrypted data in URL | Blocks unlisted hosts; scans allowed hosts | Entropy may block; some data passes | Ordinary findings warn |
 
 HTTPS inside CONNECT requires [TLS interception](docs/guides/tls-interception.md) for content scanning. CONNECT passthrough doesn't expose URL paths, query values or bodies. Pipelock checks hostnames in proxied requests; direct DNS needs containment. Audit safety checks can still refuse traffic. See [coverage limits](docs/bypass-resistance.md).

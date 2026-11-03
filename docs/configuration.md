@@ -108,7 +108,7 @@ explain_blocks: true
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
 | **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
 
-`mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions.
+`mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions. Where this reference describes what "audit mode" does, it means `enforce: false`.
 
 ## API Allowlist
 
