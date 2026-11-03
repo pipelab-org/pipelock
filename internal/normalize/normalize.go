@@ -697,7 +697,7 @@ func ASCIIUpper(s string) string {
 // byte that does not start a valid encoding becomes U+FFFD, as strings.Map
 // writes it, and valid multi-byte scalars are copied unchanged.
 func asciiUpperRepairing(s string) string {
-	b := make([]byte, 0, len(s)+2*utf8.UTFMax)
+	b := make([]byte, 0, len(s))
 	for i := 0; i < len(s); {
 		c := s[i]
 		if c < utf8.RuneSelf {

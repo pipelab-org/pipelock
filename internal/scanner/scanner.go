@@ -3186,11 +3186,7 @@ func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedRes
 	return out, complete
 }
 
-func decodeEncodingsOnce(s string, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
-	return decodeEncodingsOnceInto(nil, s, includeURL, minPrefix, withHTML)
-}
-
-// decodeEncodingsOnceInto appends decodeEncodingsOnce's views to out. A walk
+// decodeEncodingsOnceInto appends one decode step's views of s to out. A walk
 // copies each view it admits, so it reuses one scratch slice for every step.
 func decodeEncodingsOnceInto(out []decodedResult, s string, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
 	out = decodeEncodingsModeInto(out, s, minPrefix)
