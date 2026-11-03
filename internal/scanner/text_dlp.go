@@ -848,10 +848,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// not drop a later segment whose decode hits a work bound: the outer
 	// refusal reads the memo after this function returns, and an audience
 	// allow can remove the credential that stopped the match.
-	var budgetText string
+	var budgetViews []string
 	if decodes != nil && !decodes.inbound {
 		defer func() {
-			noteTextSegmentDecodeBudget(budgetText, decodes)
+			noteTextSegmentDecodeBudget(budgetViews, decodes)
 		}()
 	}
 	text = exciseImagesRetainingDecodedForDLP(text)
@@ -859,7 +859,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if decodes != nil {
 		// Same normalized text the segment matcher uses, including the
 		// early return that runs before that matcher.
-		budgetText = decodes.normalize(text)
+		budgetViews = []string{decodes.normalize(text)}
 	}
 
 	// Core DLP runs FIRST - immutable safety floor. Core matches are
@@ -1005,7 +1005,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	cleaned := decodes.normalize(text)
-	budgetText = cleaned
+	budgetViews = []string{cleaned}
 	if opts.patterns != textDLPCardPatterns {
 		matches = append(matches, s.scanCanaryTextWithDecodes(cleaned, decodes)...)
 	}
@@ -1049,6 +1049,11 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, encodingHTML))...)
 		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(decoded, decodes))...)
 		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
+	}
+	// The budget walk covers every view the segment matcher may skip.
+	budgetViews = budgetViews[:0]
+	for _, view := range segmentDecodeViews {
+		budgetViews = append(budgetViews, view.text)
 	}
 
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
@@ -1555,21 +1560,23 @@ func hasEnforcedMatch(matches []TextDLPMatch) bool {
 	return false
 }
 
-// noteTextSegmentDecodeBudget decodes every text segment the pattern walk
-// might have skipped. It adds no findings. A bound reached here sticks on
-// the memo and the caller refuses outbound text. Inbound scans keep the
-// partial-view policy and do not call it.
-func noteTextSegmentDecodeBudget(text string, decodes *decodingMemo) {
-	if decodes == nil || decodes.inbound || decodes.inspectionIncomplete() || text == "" {
+// noteTextSegmentDecodeBudget decodes every segment of every view the
+// pattern walk might have skipped. It adds no findings. A bound reached here
+// sticks on the memo and the caller refuses outbound text. Inbound scans keep
+// the partial-view policy and do not call it.
+func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
+	if decodes == nil || decodes.inbound {
 		return
 	}
-	for _, seg := range textDLPSegments(text) {
-		if len(seg) < 10 {
-			continue
-		}
-		decodes.decode(seg, true)
-		if decodes.inspectionIncomplete() {
-			return
+	for _, text := range views {
+		for _, seg := range textDLPSegments(text) {
+			if decodes.inspectionIncomplete() {
+				return
+			}
+			if len(seg) < 10 {
+				continue
+			}
+			decodes.decode(seg, true)
 		}
 	}
 }

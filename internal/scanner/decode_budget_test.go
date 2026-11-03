@@ -266,3 +266,35 @@ func TestDecodeBudgetKnownValueURL(t *testing.T) {
 		t.Fatalf("inbound known-value policy changed: %s", result.Reason)
 	}
 }
+
+// The segment matcher also walks the HTML-entity-decoded view. A segment that
+// only becomes the over-budget encoding after entity decoding must still
+// refuse when a credential stopped the matcher first.
+func TestDecodeBudgetSegmentSkipCoversHTMLView(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.APIAllowlist = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
+	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
+	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	entity := fmt.Sprintf("&#%d;", outer[0]) + outer[1:]
+	token := "ghp_" + strings.Repeat("A", 36)
+	value := "Bearer " + token + "/" + entity
+
+	var plain decodingMemo
+	for _, seg := range textDLPSegments(value) {
+		if len(seg) >= 10 {
+			_ = plain.decode(seg, true)
+		}
+	}
+	if plain.inspectionIncomplete() {
+		t.Fatal("plain view exhausted; the HTML view is not isolated")
+	}
+	result := sc.ScanTextForDLP(t.Context(), value)
+	if !HasInspectionLimit(result.Matches) {
+		t.Fatalf("HTML view segment walk skipped: clean=%v matches=%v", result.Clean, matchNames(result.Matches))
+	}
+}
