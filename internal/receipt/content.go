@@ -365,7 +365,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 	// so receipt retention cannot mutate the session's live taint state.
 	sources := append([]session.TaintSourceRef(nil), opts.RecentTaintSources...)
 	for i := range sources {
-		sources[i].URL = sanitizeTarget(sources[i].URL, nil)
+		sources[i].URL = sanitizeSignedTarget(sources[i].URL, nil)
 	}
 	return ActionRecord{
 		Version:               ActionRecordVersion,
@@ -375,7 +375,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 		Principal:             e.principal,
 		Actor:                 e.actorLabel(opts),
 		DelegationChain:       nil, // Populated when delegation tracking ships
-		Target:                sanitizeTarget(opts.Target, nil),
+		Target:                sanitizeSignedTarget(opts.Target, nil),
 		SideEffectClass:       sideEffect,
 		Reversibility:         reversibility,
 		PolicyHash:            policyHash,
@@ -450,7 +450,7 @@ func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentSca
 		}
 		redacted, err := actionReceiptProducer.RedactValues(raw, paths, func(path, value string) string {
 			if path == "action_record.target" {
-				return sanitizeTarget(value, clean)
+				return sanitizeSignedTarget(value, clean)
 			}
 			return redactedTarget
 		})

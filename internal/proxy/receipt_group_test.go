@@ -88,7 +88,9 @@ func TestReceiptGroupPreAdvanceRejectPreservesBestEffortHealth(t *testing.T) {
 	} {
 		t.Run(emit.name, func(t *testing.T) {
 			oversized := testReceiptFailureOpts()
-			oversized.Target += strings.Repeat("x", recorder.MaxEntryLineBytes)
+			// A bare identifier keeps its spelling; a URL target would be
+			// reduced to its destination before it could exceed the line limit.
+			oversized.Target = "opaque-" + strings.Repeat("x", recorder.MaxEntryLineBytes)
 			if err := emit.call(oversized); err == nil {
 				t.Fatal("oversized receipt accepted")
 			}
@@ -291,7 +293,7 @@ func TestReceiptGroupPairsV1V2AndFailureMarkerOnAdmissionShard(t *testing.T) {
 	}
 	large := withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
-		Transport: "forward", Method: "GET", Target: "https://api.vendor.example/" + strings.Repeat("x", recorder.MaxEntryLineBytes),
+		Transport: "forward", Method: "GET", Target: "opaque-" + strings.Repeat("x", recorder.MaxEntryLineBytes),
 		PolicyHash: strings.Repeat("a", 64),
 	}, p.admitReceiptShard())
 	if err := p.emitRequiredReceiptWithEmitter(large, p.receiptEmitterPtr.Load()); err == nil {

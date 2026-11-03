@@ -84,12 +84,11 @@ receipt emission is configured. Operators should size receipt storage for
 browser-heavy workflows and treat future aggregation or rate limits as an
 evidence-retention policy decision, not as a transport safety requirement.
 
-Shield receipt targets strip URL userinfo, query strings, and fragments before
-signing. They also redact common path-borne token shapes, including JWT-like
-path segments, long opaque token segments, and sensitive path parameters such
-as `;jsessionid=`. This is a defensive scrubber, not a full PII classifier;
-operators should still avoid routing credential-bearing paths through
-shareable receipt stores.
+Shield receipt targets, like every other receipt target, keep only the URL
+scheme, host and port. Userinfo, path, query strings, and fragments are removed
+before signing, so a credential-bearing path no longer reaches a shareable
+receipt store even when no pattern recognizes it. Correlate a shield receipt
+with the request through its request ID.
 
 ## HUMAN and PerimeterX class systems
 

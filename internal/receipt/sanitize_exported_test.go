@@ -155,12 +155,52 @@ func TestSanitizeTargetProtocolDestinations(t *testing.T) {
 		{"https://[invalid]:443/path", "[redacted-url]"},
 		{"https://" + strings.Repeat("a", 254) + "/path", "[redacted-url]"},
 		{"https://has_underscore.example/path", "[redacted-url]"},
+		// Diagnostic output reads unsigned logs: relative targets keep their context.
+		{"/path?ref=value", "/path?ref=value"},
+		// Opaque identifiers and bare authorities hold no URL delimiter.
+		{"api.vendor.example:443", "api.vendor.example:443"},
+		{"read_file", "read_file"},
+		{"tasks/get", "tasks/get"},
+		// Operator-named MCP servers are identifiers, not DNS hosts.
+		{"mcp://my_server/response", "mcp://my_server/response"},
+		{"mcp://my_server/tools/list", "mcp://my_server/tools/list"},
+		{"mcp://npx:fs/response", "mcp://npx:fs/response"},
+		{"mcp://user:pw@api.vendor.example/response", "mcp://api.vendor.example"},
+		{"mcp://srv/extra/response", "mcp://srv"},
+		{"mcp://Code Assistant/response", "[redacted-url]"},
+		{"mcp:///response", "[redacted-url]"},
 		{sessionOpenTarget, sessionOpenTarget},
 		{sessionHeartbeatTarget, sessionHeartbeatTarget},
 		{sessionCloseTarget, sessionCloseTarget},
 	} {
 		t.Run(tc.target, func(t *testing.T) {
 			if got := SanitizeTarget(tc.target, nil); got != tc.want {
+				t.Fatalf("target=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A signed target must never keep request content. Inbound server-side request
+// URLs are origin-form ("/fetch?url=..."): no scheme or host precedes the path,
+// so the whole value is request content and reduces to the marker.
+func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ target, want string }{
+		{"/fetch?url=https%3A%2F%2Fapi.vendor.example%2F%3Fref%3Dvalue", "[redacted-url]"},
+		{"/v1/hooks/opaque-segment", "[redacted-url]"},
+		{"api.vendor.example/path?ref=value", "[redacted-url]"},
+		{"api.vendor.example/path#fragment", "[redacted-url]"},
+		// Absolute URLs, identifiers and exempt shapes behave as SanitizeTarget does.
+		{"https://api.vendor.example/path?ref=value", "https://api.vendor.example"},
+		{"api.vendor.example:443", "api.vendor.example:443"},
+		{"read_file", "read_file"},
+		{"tasks/get", "tasks/get"},
+		{"mcp://my_server/tools/list", "mcp://my_server/tools/list"},
+		{sessionOpenTarget, sessionOpenTarget},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			if got := SanitizeSignedTarget(tc.target, nil); got != tc.want {
 				t.Fatalf("target=%q want=%q", got, tc.want)
 			}
 		})

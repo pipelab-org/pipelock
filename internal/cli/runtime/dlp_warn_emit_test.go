@@ -99,8 +99,8 @@ func TestEmitDLPWarnWritesReceiptAndMetric(t *testing.T) {
 	if rcpt.ActionRecord.Severity != "high" {
 		t.Fatalf("receipt severity = %q, want high", rcpt.ActionRecord.Severity)
 	}
-	if rcpt.ActionRecord.Target != "https://example.com/api" {
-		t.Fatalf("receipt target = %q, want https://example.com/api", rcpt.ActionRecord.Target)
+	if rcpt.ActionRecord.Target != "https://example.com" {
+		t.Fatalf("receipt target = %q, want https://example.com", rcpt.ActionRecord.Target)
 	}
 	if rcpt.ActionRecord.PolicyHash != runtimeTestPolicyHash {
 		t.Fatalf("receipt policy_hash = %q, want %q", rcpt.ActionRecord.PolicyHash, runtimeTestPolicyHash)

@@ -5,6 +5,7 @@ package receipt
 
 import (
 	"strings"
+	"unicode"
 
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
@@ -31,13 +32,63 @@ func sanitizeTarget(target string, clean dlpClean) string {
 	case sessionOpenTarget, sessionHeartbeatTarget, sessionCloseTarget:
 		return target
 	}
-	if strings.Contains(target, "://") || strings.HasPrefix(target, "//") {
+	switch {
+	case mcpServerTarget(target):
+		// Producer-synthesized, operator-named identifier; see mcpServerTarget.
+	case strings.Contains(target, "://") || strings.HasPrefix(target, "//"):
 		target = destination.RedactURLTarget(target)
 	}
 	if target == "" || clean == nil {
 		return target
 	}
 	return cleanOrRedacted(target, clean)
+}
+
+// sanitizeSignedTarget is sanitizeTarget for values that enter a signed
+// receipt. A signed target must never keep request content, so it also reduces
+// URL syntax that is not an absolute URL: an origin-form request target (RFC
+// 9112 section 3.2.1; inbound server-side request URLs such as "/path?query"
+// carry no scheme or host) and any value holding the query or fragment
+// delimiter (RFC 3986 sections 3.4 and 3.5). These have no destination, so
+// they reduce to the redaction marker. Bare CONNECT authorities and opaque
+// tool names hold none of these and keep their spelling.
+//
+// sanitizeTarget alone serves diagnostic output that reads unsigned logs, where
+// relative targets keep their non-secret context.
+func sanitizeSignedTarget(target string, clean dlpClean) string {
+	if !mcpServerTarget(target) && !strings.Contains(target, "://") &&
+		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#")) {
+		target = destination.RedactURLTarget(target)
+	}
+	return sanitizeTarget(target, clean)
+}
+
+// mcpServerTarget reports whether target is one of the two MCP producer
+// targets built from an operator-chosen server name: "mcp://<server>/response"
+// (internal/mcp/opts.go) and "mcp://<server>/tools/list"
+// (internal/mcp/proxy.go). validateMCPServerName permits any non-space name
+// without slashes, so the name is an identifier, not a DNS host, and the DNS
+// authority check would collapse names such as "my_server" to the marker. The
+// name must be free of URL delimiters, userinfo marker and whitespace so a
+// request-supplied URL cannot ride this exemption.
+func mcpServerTarget(target string) bool {
+	rest, ok := strings.CutPrefix(target, "mcp://")
+	if !ok {
+		return false
+	}
+	name, ok := strings.CutSuffix(rest, "/response")
+	if !ok {
+		name, ok = strings.CutSuffix(rest, "/tools/list")
+	}
+	if !ok || name == "" || strings.ContainsAny(name, "/?#@\\") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // cleanOrRedacted returns s unchanged when DLP-clean, else the coarse marker.
@@ -70,4 +121,15 @@ func CleanOrRedacted(s string, clean func(string) bool) string {
 		return s
 	}
 	return cleanOrRedacted(s, dlpClean(clean))
+}
+
+// SanitizeSignedTarget is SanitizeTarget for a value that will be signed into
+// a receipt: it additionally reduces origin-form and query-bearing values (see
+// sanitizeSignedTarget). The v2 proxy_decision emitter calls it so both
+// receipt formats share one signed-target policy.
+func SanitizeSignedTarget(target string, clean func(string) bool) string {
+	if clean == nil {
+		return sanitizeSignedTarget(target, nil)
+	}
+	return sanitizeSignedTarget(target, dlpClean(clean))
 }
