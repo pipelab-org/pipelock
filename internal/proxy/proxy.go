@@ -1096,8 +1096,29 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 			} else {
 				result = currentScanner.Scan(redirectScanCtx, redirectURL)
 			}
+			// Fetch follows its own redirects, so the response that produced this
+			// hop is first-hand proof of what the source issued. A delegated
+			// source route lets that exact Location past the entropy heuristic
+			// only; forward redirects return to the client and mint at delivery.
+			issuedRelief := false
+			if redirectTransport != TransportForward && entropyFinding(result) {
+				if allowCtx, used, ok := p.fetchIssuedRedirectContext(redirectScanCtx, currentCfg, req); ok {
+					if rescanned := currentScanner.Scan(allowCtx, redirectURL); used.Load() {
+						result, issuedRelief = rescanned, true
+					}
+				}
+			}
 			p.metrics.RecordURLDecisions(redirectTransport, result.Decisions)
 			redirectAuditCtx := newHTTPAuditContext(req.Context(), logger, httpAuditEvent{Method: req.Method, TargetURL: redirectURL, ClientIP: clientIP, RequestID: requestID, Agent: agentName})
+			if issuedRelief && result.Allowed {
+				shard := receiptShardFromContext(req.Context())
+				shard.Transport = redirectTransport
+				if err := p.recordIssuerQueryAllow(currentCfg, redirectAuditCtx, redirectURL, requestID, agentName, req.Method, issuerQueryIssuedRedirect, shard); err != nil {
+					blockedErr := newIssuerAllowReceiptBlockedRequest(err)
+					logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)
+					return blockedErr
+				}
+			}
 			if err := p.recordCredentialAudienceAllows(currentCfg, redirectAuditCtx, result.CredentialAudienceAllows, redirectTransport, req.Method, redirectURL, requestID, agentName, receiptShardFromContext(req.Context())); err != nil {
 				blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 				logger.LogBlocked(redirectAuditCtx, blockedErr.layer, blockedErr.detail)

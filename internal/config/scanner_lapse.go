@@ -39,6 +39,9 @@ func (c *Config) validateScannerExceptions() error {
 	if err := validateOAuthAuthorizationEndpoints(c); err != nil {
 		return err
 	}
+	if err := validateIssuedRedirectDelegations(c); err != nil {
+		return err
+	}
 	if err := validatePathEntropyExclusions(c.FetchProxy.Monitoring.PathEntropyExclusions); err != nil {
 		return err
 	}
@@ -85,6 +88,7 @@ func (c *Config) LapseExpiredScannerExceptions(now time.Time) ([]Warning, error)
 	c.FetchProxy.Monitoring.PathEntropyExclusions = candidate.FetchProxy.Monitoring.PathEntropyExclusions
 	c.FetchProxy.Monitoring.QueryEntropyParamExclusions = candidate.FetchProxy.Monitoring.QueryEntropyParamExclusions
 	c.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = candidate.FetchProxy.Monitoring.OAuthAuthorizationEndpoints
+	c.FetchProxy.Monitoring.IssuedRedirectDelegations = candidate.FetchProxy.Monitoring.IssuedRedirectDelegations
 	c.RequestBodyScanning.ContentEntropyWarnRoutes = candidate.RequestBodyScanning.ContentEntropyWarnRoutes
 	c.RequestBodyScanning.SigV4CredentialRoutes = candidate.RequestBodyScanning.SigV4CredentialRoutes
 	c.RequestBodyScanning.ContentEntropyExclusions = candidate.RequestBodyScanning.ContentEntropyExclusions
@@ -132,6 +136,9 @@ func (c *Config) partitionScannerExceptions(now time.Time) {
 	}, now, &warnings)
 	m.OAuthAuthorizationEndpoints = partitionScannerExceptions(m.OAuthAuthorizationEndpoints, "fetch_proxy.monitoring.oauth_authorization_endpoints", func(e OAuthAuthorizationEndpoint) (string, string) {
 		return e.Expires, "https://" + e.Host + e.Path
+	}, now, &warnings)
+	m.IssuedRedirectDelegations = partitionScannerExceptions(m.IssuedRedirectDelegations, issuedRedirectDelegationsField, func(e IssuedRedirectDelegation) (string, string) {
+		return e.Expires, e.Name + " (owner " + e.Owner + ")"
 	}, now, &warnings)
 	r := &c.RequestBodyScanning
 	r.ContentEntropyWarnRoutes = partitionScannerExceptions(r.ContentEntropyWarnRoutes, "request_body_scanning.content_entropy_warn_routes", func(e RequestBodyEntropyWarnRoute) (string, string) {

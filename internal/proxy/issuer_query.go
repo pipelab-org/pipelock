@@ -65,6 +65,9 @@ type issuerQueryStore struct {
 	// HTML document. A request's page-origin value is accepted only for an
 	// origin in this list, so a header the agent wrote cannot name one.
 	documents map[string][][32]byte
+	// locations holds keyed digests of redirect targets a delegated source
+	// route issued to the session (issued_redirect_delegation.go).
+	locations map[string][]issuedLocationEntry
 	// ids holds keyed digests of object IDs an origin introduced in a JSON
 	// response; sent holds digests of every token the session sent to an
 	// origin, so a reflected value is never minted as an ID; sentUnreadable
@@ -93,6 +96,7 @@ func newIssuerQueryStoreWithReader(reader io.Reader) *issuerQueryStore {
 		redirects: make(map[string][][32]byte),
 		paths:     make(map[string][][32]byte),
 		documents: make(map[string][][32]byte),
+		locations: make(map[string][]issuedLocationEntry),
 		ids:       make(map[string][][32]byte),
 		sent:      make(map[string]map[[32]byte]struct{}),
 		used:      make(map[string]time.Time),
@@ -187,6 +191,7 @@ func (s *issuerQueryStore) admitSessionLocked(session string) {
 	delete(s.redirects, oldest)
 	delete(s.paths, oldest)
 	delete(s.documents, oldest)
+	delete(s.locations, oldest)
 	// ID history has its own bounded admission and must outlive query LRU
 	// eviction. Losing query evidence cannot erase reflection history or
 	// revoke another caller's IDs.
@@ -556,6 +561,9 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		return
 	}
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	// A delegated source route's delivered redirect carries relief for its
+	// exact target URL only; it adds no link, path or value evidence.
+	ic.recordIssuedLocation(store, session, response)
 	// An OAuth authorization request names where the code must go. Record the
 	// declaration only once the request was allowed and its response
 	// delivered, which is the only way this function is reached.
@@ -808,7 +816,7 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if p.logger != nil {
 		p.logger.LogIssuerQueryAllow(ctx, strings.ToLower(parsed.Hostname()))
 	}
-	if kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID {
+	if kind != issuerQueryIssuedRedirect && kind != issuerQueryOAuthRedirect && kind != issuerQueryPageOrigin && kind != issuerQueryServerID {
 		kind = issuerQueryObserved
 	}
 	safeTarget := parsed.Scheme + "://" + parsed.Host + parsed.EscapedPath()
@@ -817,10 +825,16 @@ func (p *Proxy) recordIssuerQueryAllow(cfg *config.Config, ctx audit.LogContext,
 	if len(selected) > 0 {
 		shard = selected[0]
 	}
+	// Existing allowances are intercept-only. A delegated redirect also runs on
+	// fetch and at CONNECT, and its caller names the transport it ran on.
+	transport := "intercept"
+	if kind == issuerQueryIssuedRedirect && shard.Transport != "" {
+		transport = shard.Transport
+	}
 	emitErr := p.emitCredentialAudienceReceipt(cfg, withReceiptShard(receipt.EmitOpts{
 		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
 		Layer: issuerQueryReceiptExtensionKey, Pattern: issuerQueryReceiptExtensionKey,
-		Transport: "intercept", Method: method, Target: safeTarget,
+		Transport: transport, Method: method, Target: safeTarget,
 		RequestID: requestID, Agent: agent, Extension: extension,
 	}, shard))
 	if emitErr != nil {

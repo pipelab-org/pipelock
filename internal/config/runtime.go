@@ -279,6 +279,7 @@ func (c *Config) Clone() *Config {
 	clone.FetchProxy.Monitoring.PathEntropyExclusions = slices.Clone(c.FetchProxy.Monitoring.PathEntropyExclusions)
 	clone.FetchProxy.Monitoring.QueryEntropyParamExclusions = slices.Clone(c.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	clone.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = slices.Clone(c.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)
+	clone.FetchProxy.Monitoring.IssuedRedirectDelegations = cloneIssuedRedirectDelegations(c.FetchProxy.Monitoring.IssuedRedirectDelegations)
 	clone.RequestBodyScanning.ContentEntropyExclusions = slices.Clone(c.RequestBodyScanning.ContentEntropyExclusions)
 	clone.WebSocketProxy.ContentEntropyExclusions = slices.Clone(c.WebSocketProxy.ContentEntropyExclusions)
 	clone.DestinationGrants = append([]DestinationGrant(nil), c.DestinationGrants...)

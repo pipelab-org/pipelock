@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -886,17 +887,30 @@ func newInterceptHandler(
 			}
 		}
 		defer recordURLDecisions()
-		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
+		// A host label is relieved only for a URL a delegated source issued, so
+		// a blocked subdomain finding enters the rescan only with that evidence.
+		issuedHostFinding := entropyFinding(urlResult) && urlResult.Scanner == scanner.ScannerSubdomainEntropy
+		if (!urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
-				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
+				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding {
 			store, idStore := ic.issuerQueryStore(), ic.issuerServerIDStore()
-			if store != nil || idStore != nil {
-				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			// Evidence that the delegated source issued exactly this URL. It is
+			// checked only on a blocked result, so ordinary traffic pays nothing.
+			issuedURL := ic.issuedLocationAllowed(store, session, r.URL)
+			if (store != nil || idStore != nil) && (!issuedHostFinding || issuedURL) {
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
-				// a cross-host OAuth callback outranks a same-host issue.
+				// a delegated redirect outranks a cross-host OAuth callback,
+				// which outranks a same-host issue.
 				allowKind := issuerQueryObserved
+				issuedUsed := false
 				allowCtx := scanner.WithIssuerPathAllowance(interceptScanCtx, func(escapedPath string) bool {
+					if issuedURL && escapedPath == r.URL.EscapedPath() {
+						issuedUsed = true
+						allowed = true
+						return true
+					}
 					// Whole path, same origin: a link the origin itself served.
 					if store == nil || escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
 						return false
@@ -916,9 +930,26 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
+				if issuedURL {
+					allowCtx = scanner.WithIssuerHostAllowance(allowCtx, func(hostname string) bool {
+						if canonicalRedirectHost(hostname) != canonicalRedirectHost(r.URL.Hostname()) {
+							return false
+						}
+						issuedUsed = true
+						allowed = true
+						return true
+					})
+				}
 				allowCtx = scanner.WithIssuerQueryAllowance(allowCtx, func(key, value string) bool {
 					if store == nil {
 						return false
+					}
+					// Only this request's own query values: the whole URL matched
+					// evidence above, so nothing carried by another URL qualifies.
+					if issuedURL && slices.Contains(r.URL.Query()[key], value) {
+						issuedUsed = true
+						allowed = true
+						return true
 					}
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
@@ -950,6 +981,9 @@ func newInterceptHandler(
 					return true
 				})
 				rescanned := ic.Scanner.Scan(allowCtx, targetURL)
+				if issuedUsed {
+					allowKind = issuerQueryIssuedRedirect
+				}
 				if allowed {
 					urlResult = rescanned
 					if rescanned.Allowed {
