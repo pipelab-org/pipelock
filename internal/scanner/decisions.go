@@ -70,6 +70,13 @@ func (d URLDecisions) Range(visit func(check, part string, outcome Decision)) {
 }
 
 func (d *URLDecisions) record(check int, result Result) {
+	// A cancelled request context aborts whichever check was running, so the
+	// refusal belongs to the context, not to that check. The check reached no
+	// verdict and stays not evaluated.
+	if !result.Allowed && result.Scanner == ScannerContext {
+		d.checks[urlContext] = DecisionFired | DecisionBlocked
+		return
+	}
 	outcome := DecisionAllowed
 	if !result.Allowed {
 		outcome = DecisionFired | DecisionBlocked
