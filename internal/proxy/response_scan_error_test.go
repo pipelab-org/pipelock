@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/gobwas/ws"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/capture"
@@ -690,6 +693,34 @@ func TestWebSocketCrossMessageTextDLPIncompleteClosesRelay(t *testing.T) {
 	if !relay.scanClientCrossMessageText(ctx, nil, []byte("ordinary"), []byte("reply")) {
 		t.Fatal("incomplete quiet cross-message scans did not close the relay")
 	}
+}
+
+func TestWebSocketUninspectableGatewayFrameIsBlocked(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.RequestBodyScanning.Enabled = false
+	p := newTestProxyWithConfig(t, cfg)
+	sc := p.ScannerPtr().Load()
+	relay := newCredentialAudienceWebSocketRelay(sc, cfg, "wss://gateway.discord.gg/")
+	relay.proxy = p
+	var wire bytes.Buffer
+	if err := ws.WriteFrame(&wire, ws.MaskFrameInPlace(ws.NewTextFrame([]byte(`{"op":"2"}`)))); err != nil {
+		t.Fatal(err)
+	}
+	source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
+	sink := &cancelPayloadConn{}
+	relay.clientConn, relay.upstreamConn, relay.scanText = source, sink, true
+	n, _, _, blocked := relay.clientToUpstream(t.Context(), func() {}, time.Second)
+	if !blocked || n != 0 || relay.panicked.Load() {
+		t.Fatalf("uninspectable frame not refused: blocked=%v bytes=%d panic=%v", blocked, n, relay.panicked.Load())
+	}
+	for sink.written.Len() > 0 {
+		frame, err := ws.ReadFrame(&sink.written)
+		if err != nil || frame.Header.OpCode != ws.OpClose {
+			t.Fatalf("uninspectable frame forwarded: frame=%+v err=%v", frame, err)
+		}
+	}
+	p.recordWSRelayCompletion(wsRelayStats{blocked: blocked}, false)
+	assertMetricsContain(t, p.metrics, `pipelock_ws_connections_total{result="blocked"} 1`)
 }
 
 func TestReverseURLTextDLPIncompleteIsScanError(t *testing.T) {

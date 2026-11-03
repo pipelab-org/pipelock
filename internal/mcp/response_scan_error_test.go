@@ -178,6 +178,36 @@ func TestMCPListenerHeaderCanceledResponseScanIsParseError(t *testing.T) {
 	}
 }
 
+func TestMCPListenerHeaderCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
+	sc := testA2AScanner(t)
+	cfg := config.Defaults().RequestBodyScanning
+	cfg.Enabled, cfg.ScanHeaders, cfg.HeaderMode = true, true, config.HeaderModeAll
+	for _, headers := range []http.Header{
+		{"X-Fixture": {"ordinary", "another"}},
+		{"Mcp-Param-Mode": {"ordinary%20mode", "another%20mode"}},
+	} {
+		control := &cancelOnErrorCheck{Context: t.Context()}
+		if result := scanMCPListenerHeadersForDLP(control, headers, sc, &cfg); result != nil {
+			t.Fatalf("complete header control refused: %+v", result)
+		}
+		checks := control.checks.Load()
+		if checks == 0 {
+			t.Fatal("header control exposed no scan checkpoints")
+		}
+		for checkpoint := int32(1); checkpoint <= checks; checkpoint++ {
+			t.Run(fmt.Sprintf("%s/%d", fmt.Sprint(headers), checkpoint), func(t *testing.T) {
+				base, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				ctx := &cancelOnErrorCheck{Context: base, cancel: cancel, after: checkpoint}
+				result := scanMCPListenerHeadersForDLP(ctx, headers, sc, &cfg)
+				if base.Err() == nil || result == nil || result.reason != blockreason.ParseError || len(result.matches) != 0 {
+					t.Fatalf("incomplete headers certified or classified as a finding: canceled=%v result=%+v", base.Err(), result)
+				}
+			})
+		}
+	}
+}
+
 func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
 	cancelledCheckpoints := 0
@@ -203,9 +233,12 @@ func TestA2ABodyCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 
 func TestResponseStreamCancellationAtSuccessiveScanCheckpoints(t *testing.T) {
 	sc := testA2AScanner(t)
-	for _, kind := range []string{"generic", "a2a"} {
+	for _, kind := range []string{"generic", "a2a", "a2a_metadata_numbers"} {
 		scan := func(ctx context.Context) error {
 			body := "data: {\"text\":\"ordinary response\"}\n\ndata: {\"text\":\"another response\"}\n\n"
+			if kind == "a2a_metadata_numbers" {
+				body = "id: ordinary\nevent: message\nretry: 1000\ndata: {\"value\":12}\n\nid: next\nevent: message\nretry: 1000\ndata: {\"value\":34}\n\n"
+			}
 			var out bytes.Buffer
 			if kind == "generic" {
 				return ScanGenericSSEStream(ctx, strings.NewReader(body), &out, nil, sc, enabledSSECfg())
