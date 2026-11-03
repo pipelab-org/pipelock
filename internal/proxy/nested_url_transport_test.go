@@ -66,12 +66,45 @@ func TestFetchEndpoint_NestedMetadataURLBlocked(t *testing.T) {
 	}
 }
 
-func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
+// nestedURLBackendPath is the only path the forward-proxy tests below send.
+const nestedURLBackendPath = "/pkg"
+
+// newNestedURLCountingBackend counts only requests for nestedURLBackendPath.
+// Anything else is a foreign loopback probe, such as a local port scanner's
+// GET /, and gets 404 without counting, so it can't fake an upstream contact.
+func newNestedURLCountingBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != nestedURLBackendPath {
+			http.NotFound(w, r)
+			return
+		}
 		hits.Add(1)
 		_, _ = fmt.Fprint(w, "ok")
 	}))
+	return backend, &hits
+}
+
+func TestNestedURLCountingBackendIgnoresForeignProbe(t *testing.T) {
+	backend, hits := newNestedURLCountingBackend(t)
+	defer backend.Close()
+	get := func(target string) int {
+		t.Helper()
+		resp := doGet(t, backend.Client(), target)
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	if status := get(backend.URL + "/"); status != http.StatusNotFound || hits.Load() != 0 {
+		t.Fatalf("foreign probe: status=%d hits=%d, want 404 and 0", status, hits.Load())
+	}
+	if status := get(backend.URL + nestedURLBackendPath + "?" + nestedMetadataQuery); status != http.StatusOK || hits.Load() != 1 {
+		t.Fatalf("own request: status=%d hits=%d, want 200 and 1", status, hits.Load())
+	}
+}
+
+func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
+	backend, hits := newNestedURLCountingBackend(t)
 	defer backend.Close()
 
 	proxyAddr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
@@ -80,7 +113,7 @@ func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
 	})
 	defer cleanup()
 
-	resp := doGet(t, proxyClient(proxyAddr), backend.URL+"/pkg?"+nestedMetadataQuery)
+	resp := doGet(t, proxyClient(proxyAddr), backend.URL+nestedURLBackendPath+"?"+nestedMetadataQuery)
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
