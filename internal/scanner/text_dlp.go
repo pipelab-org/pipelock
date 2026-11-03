@@ -1076,7 +1076,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 	if htmlDecoded != cleaned {
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(htmlDecoded, encodingHTML))...)
-		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(htmlDecoded, decodes))...)
+		matches = append(matches, s.decodeAndMatchWithDecodes(htmlDecoded, decodes, opts.patterns)...)
 	}
 
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
@@ -1131,7 +1131,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
 	// until no new bounded candidates appear. Catches base64(secret),
 	// hex(secret), and nested chains (e.g., base64(hex(secret))).
-	matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(cleaned, decodes))...)
+	matches = append(matches, s.decodeAndMatchWithDecodes(cleaned, decodes, opts.patterns)...)
 
 	// Segment-level encoding detection: split text on URL/path delimiters and
 	// try decoding each segment individually. Catches encoded secrets embedded
@@ -1212,10 +1212,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 // decodeAndMatchWithDecodes runs DLP patterns over every bounded fixpoint
 // decode candidate, reusing views within the calling scan.
-func (s *Scanner) decodeAndMatchWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+func (s *Scanner) decodeAndMatchWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, d := range decodes.decode(text, true) {
-		matches = append(matches, decodes.matchDecoded(s, d.text, d.encoding)...)
+		matches = append(matches, decodes.matchDecodedFor(s, d.text, d.encoding, patterns)...)
 	}
 	return matches
 }
@@ -1237,16 +1237,19 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 func (s *Scanner) matchDLPPatternsNormalized(text, encoding, proseSource string) []TextDLPMatch {
 	var lowered dlpLoweredBytes
 	lowered.add(text)
-	return s.matchDLPPatternsLowered(text, encoding, proseSource, &lowered)
+	return s.matchDLPPatternsLowered(text, encoding, proseSource, &lowered, textDLPAllPatterns)
 }
 
 // matchDLPPatternsLowered is matchDLPPatternsNormalized for a text whose
-// lowered bytes are already recorded.
-func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lowered *dlpLoweredBytes) []TextDLPMatch {
+// lowered bytes are already recorded, limited to the rules in patterns.
+func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
 	var shape dlpShapeSummary
 	for _, idx := range s.dlpPreFilter.patternsToCheckWith(text, lowered) {
 		p := s.dlpPatterns[idx]
+		if !patterns.includes(p.genericCard) {
+			continue
+		}
 		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
@@ -1632,7 +1635,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 			continue // too short to be a meaningful encoded secret
 		}
 		for _, d := range decodes.decode(seg, true) {
-			if m := patterns.selectMatches(decodes.matchDecoded(s, d.text, d.encoding)); len(m) > 0 {
+			if m := decodes.matchDecodedFor(s, d.text, d.encoding, patterns); len(m) > 0 {
 				matches = append(matches, m...)
 				if hasEnforcedMatch(m) {
 					return matches
@@ -1667,7 +1670,7 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 				continue
 			}
 			d := string(decoded)
-			if m := patterns.selectMatches(decodes.matchDecoded(s, d, encodingHex)); len(m) > 0 {
+			if m := decodes.matchDecodedFor(s, d, encodingHex, patterns); len(m) > 0 {
 				matches = append(matches, m...)
 				if hasEnforcedMatch(m) {
 					return matches

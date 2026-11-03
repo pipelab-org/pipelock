@@ -8,7 +8,9 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
+	"math/rand"
 	"reflect"
+	"regexp/syntax"
 	"strings"
 	"sync"
 	"testing"
@@ -219,6 +221,42 @@ func TestSharedDecodesRecycleWithoutCarryOver(t *testing.T) {
 		for _, view := range views[:3] {
 			if got, want := sc.ScanTextForDLPInboundWithTypedCardView(ctx, view[0], view[1]), sc.ScanTextForDLPInboundWithTypedCardView(context.Background(), view[0], view[1]); !reflect.DeepEqual(got, want) {
 				t.Fatalf("a scan after release of view %q differs", view[0])
+			}
+		}
+	}
+}
+
+// A card-only lookup must return exactly the card rules' share of a match over
+// every configured rule, whether or not the full result is already cached.
+func TestMatchDecodedForCardOnlyParity(t *testing.T) {
+	sc := MustNew(testConfig())
+	t.Cleanup(sc.Close)
+	rnd := rand.New(rand.NewSource(31)) // #nosec G404 -- deterministic property corpus.
+	texts := []string{"4111111111111111", "4111 1111 1111 1111", "card 5500-0000-0000-0004 end", "AKIA" + strings.Repeat("Q", 16) + " 4111111111111111", "\xff4111111111111111\xc3"}
+	for _, p := range sc.dlpPatterns {
+		tree, err := syntax.Parse(p.re.String(), syntax.Perl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 5 {
+			texts = append(texts, genMatch(tree.Simplify(), rnd, 0))
+		}
+	}
+	for _, text := range texts {
+		for _, encoding := range []string{"base64", "hex", "url"} {
+			var reference decodingMemo
+			want := textDLPCardPatterns.selectMatches(reference.matchDecoded(sc, text, encoding))
+			var cold decodingMemo
+			// Callers only append and test length, so an empty result in
+			// either nil or non-nil form is the same result.
+			same := func(a, b []TextDLPMatch) bool { return len(a) == len(b) && (len(a) == 0 || reflect.DeepEqual(a, b)) }
+			if got := cold.matchDecodedFor(sc, text, encoding, textDLPCardPatterns); !same(got, want) {
+				t.Fatalf("%q/%s: card-only %+v, selected %+v", text, encoding, got, want)
+			}
+			var warm decodingMemo
+			_ = warm.matchDecoded(sc, text, encoding)
+			if got := warm.matchDecodedFor(sc, text, encoding, textDLPCardPatterns); !same(got, want) {
+				t.Fatalf("%q/%s: cached card-only %+v, selected %+v", text, encoding, got, want)
 			}
 		}
 	}

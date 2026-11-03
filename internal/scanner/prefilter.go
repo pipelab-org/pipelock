@@ -449,8 +449,14 @@ func (l *dlpLoweredBytes) add(text string) {
 		// malformed byte as U+FFFD; DecodeRuneInString yields that rune.
 		r, size := utf8.DecodeRuneInString(text[i:])
 		var buf [utf8.UTFMax]byte
-		n := utf8.EncodeRune(buf[:], unicode.ToLower(r))
-		for _, b := range buf[:n] {
+		var lowered []byte
+		if r == utf8.RuneError && size == 1 {
+			// unicode.ToLower(U+FFFD) is U+FFFD; skip the lookup.
+			lowered = append(buf[:0], "\uFFFD"...)
+		} else {
+			lowered = buf[:utf8.EncodeRune(buf[:], unicode.ToLower(r))]
+		}
+		for _, b := range lowered {
 			l.present[b/64] |= uint64(1) << (b % 64)
 			if !first {
 				idx := bytePairIndex(prev, b)

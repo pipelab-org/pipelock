@@ -73,13 +73,19 @@ type decodedMatchKey struct {
 	text     string
 	encoding string
 	core     bool
+	// cardOnly marks a configured-pattern result restricted to card rules.
+	cardOnly bool
 }
 
 func (k decodedMatchKey) match(normalized string, lowered *dlpLoweredBytes) []TextDLPMatch {
 	if k.core {
 		return k.scanner.matchCoreDLPPatternsLowered(normalized, k.encoding, lowered)
 	}
-	return k.scanner.matchDLPPatternsLowered(normalized, k.encoding, k.text, lowered)
+	patterns := textDLPAllPatterns
+	if k.cardOnly {
+		patterns = textDLPCardPatterns
+	}
+	return k.scanner.matchDLPPatternsLowered(normalized, k.encoding, k.text, lowered, patterns)
 }
 
 // sharedDecodes lets the scans of one message's views reuse each other's
@@ -304,6 +310,38 @@ func (m *decodingMemo) retainNormalized(text, normalized string) {
 // fresh slice the caller may filter.
 func (m *decodingMemo) matchDecoded(sc *Scanner, text, encoding string) []TextDLPMatch {
 	return m.matchDecodedKey(decodedMatchKey{scanner: sc, text: text, encoding: encoding})
+}
+
+// matchDecodedFor returns patterns.selectMatches of matchDecoded. A card-only
+// scan reuses a cached result for every configured pattern when one exists,
+// and otherwise runs only the card rules: the same rules, in the same order,
+// select the same matches.
+func (m *decodingMemo) matchDecodedFor(sc *Scanner, text, encoding string, patterns textDLPPatternSet) []TextDLPMatch {
+	full := decodedMatchKey{scanner: sc, text: text, encoding: encoding}
+	if patterns != textDLPCardPatterns {
+		return patterns.selectMatches(m.matchDecodedKey(full))
+	}
+	if cached, ok := m.cachedDecodedMatches(full); ok {
+		return patterns.selectMatches(cached)
+	}
+	card := full
+	card.cardOnly = true
+	return patterns.selectMatches(m.matchDecodedKey(card))
+}
+
+// cachedDecodedMatches returns a copy of a retained result without computing.
+func (m *decodingMemo) cachedDecodedMatches(key decodedMatchKey) ([]TextDLPMatch, bool) {
+	if m == nil {
+		return nil, false
+	}
+	if m.shared != nil {
+		m.shared.mu.Lock()
+		defer m.shared.mu.Unlock()
+		cached, ok := m.shared.store.decodedMatches[key]
+		return slices.Clone(cached), ok
+	}
+	cached, ok := m.decodedMatches[key]
+	return slices.Clone(cached), ok
 }
 
 func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []TextDLPMatch {
