@@ -69,7 +69,7 @@ explain_blocks: false         # true = include fix hints in block responses
 | `metrics_listen` | string | `""` | Dedicated listener for `/metrics` and `/stats`; omitted, null, or blank exposes neither route. Never served on the proxy port. Requires restart; restrict agent network access. |
 | `version` | int | `1` | Config schema version |
 | `mode` | string | `"balanced"` | Operating mode (see [Modes](#modes)) |
-| `enforce` | bool | `true` | When false, normal policy blocks become warnings; SSRF, fail-closed transport checks, and adaptive escalation can still block |
+| `enforce` | bool | `true` | When false, normal policy blocks become warnings; core credentials, SSRF, fail-closed transport checks, and adaptive escalation can still block |
 | `explain_blocks` | bool | `false` | Include actionable hints in block responses |
 
 ### Sentry Crash Reporting
@@ -106,7 +106,9 @@ explain_blocks: true
 |------|----------|----------|
 | **strict** | Allowlist-only. Only `api_allowlist` domains pass. | Regulated industries, high-security |
 | **balanced** | Blocks known-bad, detects suspicious. All domains reachable. | Most developers (default) |
-| **audit** | Warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset disables adaptive escalation; operators can enable it explicitly. | Evaluation before enforcement |
+| **audit** | With `enforce: false`, warns on ordinary findings. Core credentials, SSRF, fail-closed transport checks, and explicit tool-policy rules can still block. The audit preset sets `enforce: false` and disables adaptive escalation. | Evaluation before enforcement |
+
+`mode: audit` alone leaves `enforce` at its default of `true`, so ordinary URL DLP, entropy and blocklist findings still block. Use the bundled `audit` preset for an observation trial. Changing only the mode name doesn't select that preset or change its scanning actions.
 
 ## API Allowlist
 
@@ -949,7 +951,7 @@ dlp:
 
 There is no top-level `dlp.action` setting. DLP enforcement is transport-specific:
 
-- URL/query scanning uses global `mode` plus `enforce` (`mode: audit` or `enforce: false` logs but does not block, except a core credential, which blocks in every mode).
+- Ordinary URL/query block findings use `enforce`, which defaults to `true`, including with `mode: audit`. With `enforce: false`, ordinary findings are logged and forwarded unless an independent control blocks the request. Core credentials still block; SSRF, transport safety checks and configured adaptive escalation can also refuse traffic.
 - HTTP request body/header scanning uses `request_body_scanning.action`.
 - MCP input scanning uses `mcp_input_scanning.action`.
 - `response_scanning.action: strip` is for inbound prompt-injection response rewriting, not DLP.
@@ -3028,7 +3030,7 @@ The `claude-code`, `cursor`, `generic-agent`, and `hostile-model` presets use al
 
 For example, `set system instructions aside` matches `Instruction Dismissal`, while `cast all previous directives aside` matches `Preset Instruction Dismissal`. A suppression for one doesn't cover the other. Use the `Preset` name when updating alerts or suppressions for supplemental findings.
 
-Each preset sets a five-minute tool-chain window. `pipelock init` preserves preset scanning actions, disabled sections, drift settings, and tool-chain windows when it discovers MCP servers. In audit mode, ordinary MCP input and tool-policy findings use `warn` by default. The bundled audit preset retains explicit built-in tool-policy blocks and disables adaptive escalation. Compared with the previous bundled audit YAML and configurations generated from it, users gain these explicit blocks and lose adaptive escalation. Core and transport safety protections can still block, and individual tool rules can override the tool-policy default, including with `block`. Malformed MCP messages (`mcp_input_scanning.on_parse_error: block`) and binary WebSocket frames (`websocket_proxy.allow_binary_frames: false`) are refused, even during evaluation. Regenerating an older audit configuration replaces its previous parse-error forwarding and binary-frame allowance with these refusals. MCP input scanning blocks findings in the `strict` and `balanced` presets. The response and default tool-policy actions in the table below describe those separate scanning paths; individual tool rules can override that default.
+Each preset sets a five-minute tool-chain window. `pipelock init` preserves preset scanning actions, disabled sections, drift settings, and tool-chain windows when it discovers MCP servers. In the audit preset, ordinary MCP input and tool-policy findings use `warn` by default. The bundled audit preset retains explicit built-in tool-policy blocks and disables adaptive escalation. Compared with the previous bundled audit YAML and configurations generated from it, users gain these explicit blocks and lose adaptive escalation. Core and transport safety protections can still block, and individual tool rules can override the tool-policy default, including with `block`. Malformed MCP messages (`mcp_input_scanning.on_parse_error: block`) and binary WebSocket frames (`websocket_proxy.allow_binary_frames: false`) are refused, even during evaluation. Regenerating an older audit configuration replaces its previous parse-error forwarding and binary-frame allowance with these refusals. MCP input scanning blocks findings in the `strict` and `balanced` presets. The response and default tool-policy actions in the table below describe those separate scanning paths; individual tool rules can override that default.
 
 Run `pipelock presets` or `pipelock generate config --list` to list the current built-in names with mode, default action, and reachability posture:
 

