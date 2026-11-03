@@ -1615,15 +1615,12 @@ const (
 	githubActionsValidityNote       = "GitHub Actions results SAS outside its validity window; check the host clock or obtain a current log or artifact URL"
 )
 
-// queryGrantValidityNote names a validity window as the cause of a URL DLP
-// block. A grant outside its window at now nominates a time inside that
+// queryGrantValidityNoteWithMode names a validity window as the cause of a URL
+// DLP block. A grant outside its window at now nominates a time inside that
 // window, and the note is returned only when DLP at that time allows the URL.
 // A block that any other match causes keeps its own reason and guidance, so
 // the clock advice is never attached to a block the clock cannot clear.
-func (s *Scanner) queryGrantValidityNote(parsed *url.URL, now time.Time) string {
-	return s.queryGrantValidityNoteWithMode(parsed, now, false)
-}
-
+// inbound keeps the inbound decode-work accounting for the recheck.
 func (s *Scanner) queryGrantValidityNoteWithMode(parsed *url.URL, now time.Time, inbound bool) string {
 	note, at, ok := queryGrantValidityCandidate(parsed, now)
 	if !ok {

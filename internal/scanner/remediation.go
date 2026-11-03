@@ -738,7 +738,7 @@ func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
 }
 
 // hasQueryGrantValidityNote recognizes only a terminal annotation emitted by
-// queryGrantValidityNote. Pattern names precede the severity and audience
+// queryGrantValidityNoteWithMode. Pattern names precede the severity and audience
 // explanations end in a closing parenthesis, so neither supplies this suffix.
 func hasQueryGrantValidityNote(reason string) bool {
 	if !strings.HasPrefix(reason, "DLP match: ") {

@@ -2953,12 +2953,6 @@ func base32PrefixPossible(value string, hexAlphabet bool) bool {
 	return true
 }
 
-// decodeEncodingsRecursive returns all bounded fixpoint decoding candidates for
-// a possibly stacked-encoded string.
-func decodeEncodingsRecursive(s string) []decodedResult {
-	return decodeEncodingsFixpoint(s, false)
-}
-
 // decodeEncodingsRecursiveWithDecodes decodes reconstructed URL targets through
 // the scan memo. Joining components, or decoding another encoding, can expose
 // percent escapes absent from every original component.
