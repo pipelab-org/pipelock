@@ -5801,7 +5801,20 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		headers: r.Header, cfg: cfg, sc: sc, logger: log, actx: actx,
 		hostname: parsed.Hostname(), target: displayURL, metricAgent: agentLabel, start: start,
 	})
-	if refuseTextDLPScanError(w, log, actx, requestID, headerReceiptErr) {
+	if errors.Is(headerReceiptErr, scanner.ErrTextDLPIncomplete) {
+		reason := "request scan failed: " + headerReceiptErr.Error()
+		log.LogBlocked(actx, scanner.ScannerContext, headerReceiptErr.Error())
+		p.metrics.RecordBlocked(parsed.Hostname(), scanner.ScannerContext, time.Since(start), agentLabel)
+		emitFetchReceipt(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+			Layer: scanner.ScannerContext, Pattern: reason, Transport: TransportFetch,
+			Method: http.MethodGet, Target: displayURL, RequestID: requestID, Agent: agent,
+		})
+		writeBlockedJSON(w,
+			blockInfoFor(blockreason.ParseError, scanner.ScannerContext).WithRequestID(requestID),
+			http.StatusServiceUnavailable, FetchResponse{
+				URL: displayURL, Agent: agent, Blocked: true, BlockReason: reason,
+			})
 		return
 	}
 	if headerReceiptErr != nil {

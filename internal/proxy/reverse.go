@@ -817,6 +817,24 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 			blockreason.SetRecordedReceipt(w.Header(), opts.ActionID)
 		}
 	}
+	refuseRequestScanError := func(err error) bool {
+		if !errors.Is(err, scanner.ErrTextDLPIncomplete) {
+			return false
+		}
+		targetURL := reverseTargetURL(rp.upstream, r)
+		reason := "request scan failed: " + err.Error()
+		rp.logger.LogBlocked(newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), scanner.ScannerContext, err.Error())
+		rp.metrics.RecordReverseProxyRequest(r.Method, "503")
+		rp.metrics.RecordReverseProxyScanBlocked(scanDirectionRequest, "scan_error")
+		emitReverseReceipt(receipt.EmitOpts{
+			ActionID: receipt.NewActionID(), Verdict: config.ActionBlock,
+			Layer: scanner.ScannerContext, Pattern: reason, Transport: TransportReverse,
+			Method: r.Method, Target: targetURL, RequestID: requestID, Agent: agent,
+		})
+		writeReverseProxyBlock(w, http.StatusServiceUnavailable,
+			blockInfoFor(blockreason.ParseError, scanner.ScannerContext).WithRequestID(requestID), reason)
+		return true
+	}
 	if !scOK {
 		// Reload thrash or no live scanner. Fail closed at the request
 		// level rather than scan on an unpinned, possibly-closed scanner.
@@ -1042,7 +1060,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 	requestScannerVerdict := config.ActionAllow
 	if pathQuery := r.URL.RequestURI(); pathQuery != "" {
 		pathDLP := sc.ScanTextForDLP(r.Context(), pathQuery)
-		if refuseTextDLPScanError(w, rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), requestID, pathDLP.Err()) {
+		if refuseRequestScanError(pathDLP.Err()) {
 			return
 		}
 		filteredMatches, audienceAllows := sc.FilterTextDLPMatchesForDestination(pathDLP.Matches, targetURL, "url")
@@ -1160,7 +1178,7 @@ func (rp *ReverseProxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request)
 		}, func(allow scanner.CredentialAudienceAllow) error {
 			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: r.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: agent}), allow, r.Method, targetURL, requestID, agent, receiptShardFromContext(r.Context()))
 		})
-		if headerResult != nil && headerResult.ScanError != "" && refuseTextDLPScanError(w, rp.logger, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent}), requestID, scanner.ErrTextDLPIncomplete) {
+		if headerResult != nil && headerResult.ScanError != "" && refuseRequestScanError(scanner.ErrTextDLPIncomplete) {
 			return
 		}
 		if headerResult != nil && headerResult.CredentialAudienceReceiptErr != nil {
