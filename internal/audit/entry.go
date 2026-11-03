@@ -205,7 +205,11 @@ func auditErrorDetail(err error) string {
 	case *net.OpError:
 		op := "network operation"
 		switch e.Op {
-		case "dial", "read", "write", "listen", "accept":
+		// net, net/http (proxyconnect) and crypto/tls (remote/local error, a
+		// peer alert or our own) set these; any other operation stays generic.
+		case "remote error", "local error":
+			return e.Op
+		case "dial", "read", "write", "listen", "accept", "proxyconnect":
 			op = e.Op
 		}
 		network := "network"
@@ -239,8 +243,16 @@ func auditErrorDetail(err error) string {
 		return "TLS system roots unavailable"
 	case tls.AlertError:
 		return fmt.Sprintf("TLS alert %d", uint8(e))
+	case syscall.Errno:
+		// The text comes from the operating system's fixed error table.
+		if e.Timeout() {
+			return "timeout"
+		}
+		return e.Error()
 	case http2.StreamError:
 		return fmt.Sprintf("HTTP/2 stream error code %d", uint32(e.Code))
+	case http2.ConnectionError:
+		return fmt.Sprintf("HTTP/2 connection error code %d", uint32(e))
 	default:
 		if timeout, ok := err.(interface{ Timeout() bool }); ok && timeout.Timeout() {
 			return "timeout"

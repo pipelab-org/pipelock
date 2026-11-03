@@ -108,6 +108,12 @@ func TestAuditURLErrorCategories(t *testing.T) {
 		{"TLS roots", x509.SystemRootsError{Err: errors.New("payloadcanary")}, "TLS system roots unavailable"},
 		{"TLS alert", tls.AlertError(42), "TLS alert 42"},
 		{"HTTP2", http2.StreamError{Code: http2.ErrCodeCancel, Cause: errors.New("payloadcanary")}, "HTTP/2 stream error code 8"},
+		{"proxy connect", &net.OpError{Op: "proxyconnect", Net: "tcp", Err: errors.New("payloadcanary")}, "proxyconnect tcp failed"},
+		{"remote alert", &net.OpError{Op: "remote error", Net: "payloadcanary", Err: errors.New("payloadcanary")}, "remote error"},
+		{"local alert", &net.OpError{Op: "local error", Err: errors.New("payloadcanary")}, "local error"},
+		{"errno", syscall.EMFILE, syscall.EMFILE.Error()},
+		{"errno timeout", syscall.ETIMEDOUT, "timeout"},
+		{"HTTP2 connection", http2.ConnectionError(http2.ErrCodeProtocol), "HTTP/2 connection error code 1"},
 		{"unknown", auditUnformattableError{}, "request failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -120,7 +126,7 @@ func TestAuditURLErrorCategories(t *testing.T) {
 }
 
 func TestAuditHTTPErrorDiagnostics(t *testing.T) {
-	for _, name := range []string{"connection refused", "canceled", "deadline", "client timeout", "TLS authority", "TLS hostname", "HTTPS to HTTP", "HTTP2 stdlib", "EOF", "redirect loop"} {
+	for _, name := range []string{"connection refused", "canceled", "deadline", "client timeout", "TLS authority", "TLS hostname", "TLS client certificate", "HTTPS to HTTP", "HTTP2 stdlib", "EOF", "redirect loop"} {
 		t.Run(name, func(t *testing.T) {
 			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch name {
@@ -146,6 +152,9 @@ func TestAuditHTTPErrorDiagnostics(t *testing.T) {
 				}
 			})
 			ts := httptest.NewUnstartedServer(handler)
+			if name == "TLS client certificate" {
+				ts.TLS = &tls.Config{ClientAuth: tls.RequireAnyClientCert}
+			}
 			ts.Config.ErrorLog = log.New(io.Discard, "", 0)
 			tlsServer := strings.HasPrefix(name, "TLS ") || strings.HasPrefix(name, "HTTP2 ")
 			ts.EnableHTTP2 = strings.HasPrefix(name, "HTTP2 ")
@@ -187,6 +196,8 @@ func TestAuditHTTPErrorDiagnostics(t *testing.T) {
 			case "TLS hostname":
 				target = strings.Replace(target, "127.0.0.1", "localhost", 1)
 				want = "TLS certificate hostname mismatch"
+			case "TLS client certificate":
+				want = "remote error"
 			case "HTTPS to HTTP":
 				target = strings.Replace(target, "http:", "https:", 1)
 			case "EOF":
