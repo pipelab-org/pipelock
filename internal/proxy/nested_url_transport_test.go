@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,14 +117,32 @@ func TestForwardHTTP_NestedMetadataURLBlocked(t *testing.T) {
 	})
 	defer cleanup()
 
-	resp := doGet(t, proxyClient(proxyAddr), backend.URL+nestedURLBackendPath+"?"+nestedMetadataQuery)
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusForbidden {
-		body, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status=%d want 403 body=%s", resp.StatusCode, body)
-	}
-	if hits.Load() != 0 {
-		t.Fatal("upstream invoked despite nested metadata URL")
+	partial := "http://169%2e254.169.254/latest/meta-data/"
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantAllow bool
+	}{
+		{"plaintext", nestedMetadataQuery, false},
+		{"base64_partial_percent", "target=" + url.QueryEscape(base64.StdEncoding.EncodeToString([]byte(partial))), false},
+		{"benign", "target=" + url.QueryEscape("https://api.vendor.example/read"), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := hits.Load()
+			resp := doGet(t, proxyClient(proxyAddr), backend.URL+nestedURLBackendPath+"?"+tc.query)
+			defer func() { _ = resp.Body.Close() }()
+			wantStatus, wantHits := http.StatusForbidden, before
+			if tc.wantAllow {
+				wantStatus, wantHits = http.StatusOK, before+1
+			}
+			if resp.StatusCode != wantStatus {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d want %d body=%s", resp.StatusCode, wantStatus, body)
+			}
+			if got := hits.Load(); got != wantHits {
+				t.Fatalf("upstream hits=%d want %d", got, wantHits)
+			}
+		})
 	}
 }
 

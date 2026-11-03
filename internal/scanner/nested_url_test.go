@@ -348,6 +348,71 @@ func TestScan_NestedURLDecodingParity(t *testing.T) {
 	}
 }
 
+func TestScan_NestedURLRecoveredPercentEncoding(t *testing.T) {
+	t.Parallel()
+	partial := strings.ReplaceAll(nestedURLMetadataPath, ".", "%2e")
+	benign := "https://api.vendor.example/read"
+	cases := []struct {
+		name      string
+		value     string
+		wantAllow bool
+	}{
+		{"plaintext", nestedURLMetadataPath, false},
+		{"percent", percentEncodeN(nestedURLMetadataPath, 1), false},
+		{"base64", base64.StdEncoding.EncodeToString([]byte(nestedURLMetadataPath)), false},
+		{"base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(partial)), false},
+		{"hex_partial_percent", hex.EncodeToString([]byte(partial)), false},
+		{"base32_partial_percent", base32.StdEncoding.EncodeToString([]byte(partial)), false},
+		{"benign", benign, true},
+		{"benign_base64_partial_percent", base64.StdEncoding.EncodeToString([]byte(strings.ReplaceAll(benign, ".", "%2e"))), true},
+	}
+	for _, tc := range cases {
+		for _, field := range []string{"value", "key"} {
+			t.Run(tc.name+"/"+field, func(t *testing.T) {
+				cfg := nestedURLConfig()
+				cfg.Internal = nil
+				query := "target=" + url.QueryEscape(tc.value)
+				if field == "key" {
+					query = url.QueryEscape(tc.value) + "=x"
+				}
+				result := scanNested(t, cfg, "https://api.vendor.example/read?"+query)
+				if result.Allowed != tc.wantAllow {
+					t.Fatalf("Allowed=%v, want %v: %s", result.Allowed, tc.wantAllow, result.Reason)
+				}
+				if !tc.wantAllow && (result.Scanner != ScannerCoreSSRF || !strings.Contains(result.Reason, nestedURLReasonPrefix)) {
+					t.Fatalf("expected nested metadata refusal, got %+v", result)
+				}
+			})
+		}
+	}
+}
+
+func TestCheckNestedURLs_RecoveredPercentLimit(t *testing.T) {
+	t.Parallel()
+	cfg := nestedURLConfig()
+	cfg.Internal = nil
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, rounds := range []int{1, maxDecodeRounds, maxDecodeRounds + 1} {
+		partial := "http://169" + percentEncodeN(".", rounds) + "254.169.254/"
+		for encoding, value := range map[string]string{
+			"base64": base64.StdEncoding.EncodeToString([]byte(partial)),
+			"hex":    hex.EncodeToString([]byte(partial)),
+		} {
+			t.Run(fmt.Sprintf("%s/%d", encoding, rounds), func(t *testing.T) {
+				parsed, err := url.Parse("https://api.vendor.example/read?target=" + url.QueryEscape(value))
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := s.checkNestedURLs(t.Context(), parsed)
+				if result.Allowed || IsURLInspectionLimitResult(result) != (rounds > maxDecodeRounds) {
+					t.Fatalf("Allowed=%v limit=%v: %s", result.Allowed, IsURLInspectionLimitResult(result), result.Reason)
+				}
+			})
+		}
+	}
+}
+
 func TestCheckNestedURLs_SkipsOversizeValues(t *testing.T) {
 	t.Parallel()
 	cfg := nestedURLConfig()

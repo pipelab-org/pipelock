@@ -29,7 +29,7 @@ func TestURLUserinfoRecoveredPercentLimit(t *testing.T) {
 			} {
 				for field, user := range map[string]*url.Userinfo{"username": url.User(encoded), "password": url.UserPassword("reader", encoded)} {
 					u := &url.URL{Scheme: "https", Host: "api.vendor.example", Path: "/read", User: user}
-					for parse, target := range map[string]string{"parsed": u.String(), "unparsed": u.String() + "%zz"} {
+					for parse, target := range map[string]string{"parsed": u.String(), "invalid_escape_suffix": u.String() + "%zz"} {
 						t.Run(fmt.Sprintf("%s/%d/%s/%s/%s", name, rounds, encoding, field, parse), func(t *testing.T) {
 							got := s.ScanURLCoreFloor(target)
 							wantLimit := rounds > maxDecodeRounds
