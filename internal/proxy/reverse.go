@@ -2877,7 +2877,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
-					Now:               time.Now(),
+					Now:               responseScanNow(),
 				}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 					rp.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
@@ -2947,7 +2947,7 @@ responseScanning:
 					Header:            resp.Header,
 					ContentLength:     resp.ContentLength,
 					SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
-					Now:               time.Now(),
+					Now:               responseScanNow(),
 				}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 					actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 					reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
@@ -3283,7 +3283,7 @@ responseScanning:
 				Header:            resp.Header,
 				ContentLength:     resp.ContentLength,
 				SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
-				Now:               time.Now(),
+				Now:               responseScanNow(),
 			}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 				actx := newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""})
 				reason := unscannablePassthroughReason(revHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
