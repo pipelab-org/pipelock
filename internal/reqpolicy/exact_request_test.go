@@ -129,3 +129,26 @@ func TestExactRequestMethodOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileExactRequestRejectsInvalidEntries(t *testing.T) {
+	approval := config.RequestPolicyExactRequest{URL: "https://api.vendor.example/items/1/invite", Method: http.MethodPost, BodySHA256: strings.Repeat("a", 64), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+	for _, tc := range []struct {
+		name string
+		edit func(*config.RequestPolicyExactRequest)
+	}{
+		{"invalid expiry", func(r *config.RequestPolicyExactRequest) { r.ExpiresAt = "invalid" }},
+		{"invalid URL", func(r *config.RequestPolicyExactRequest) { r.URL = "https://%" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidate := approval
+			tc.edit(&candidate)
+			compiled := compileExactException(&config.RequestPolicyException{Requests: []config.RequestPolicyExactRequest{candidate}})
+			if len(compiled.requests) != 0 {
+				t.Fatal("invalid approval compiled")
+			}
+			if compiled.matches(RequestMeta{JSONBodyParsed: true, JSONBody: map[string]any{}, ExactURL: approval.URL, JSONBodySHA256: approval.BodySHA256, Method: approval.Method}) {
+				t.Fatal("invalid approval granted relief")
+			}
+		})
+	}
+}

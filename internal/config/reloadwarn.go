@@ -1147,7 +1147,11 @@ func appendExactRequestReloadWarnings(warnings *[]ReloadWarning, old, updated Re
 	}
 	previous := make(map[string]time.Time)
 	key := func(rule string, r RequestPolicyExactRequest) string {
-		return rule + "\x00" + r.Method + "\x00" + r.URL + "\x00" + r.BodySHA256
+		canonical, ok := CanonicalExactRequestURL(r.URL)
+		if !ok {
+			canonical = r.URL
+		}
+		return rule + "\x00" + r.Method + "\x00" + canonical + "\x00" + r.BodySHA256
 	}
 	for _, rule := range old.Rules {
 		if rule.Except == nil {
@@ -1156,7 +1160,10 @@ func appendExactRequestReloadWarnings(warnings *[]ReloadWarning, old, updated Re
 		for _, request := range rule.Except.Requests {
 			expires, err := time.Parse(time.RFC3339, request.ExpiresAt)
 			if err == nil {
-				previous[key(rule.Name, request)] = expires
+				requestKey := key(rule.Name, request)
+				if prior, ok := previous[requestKey]; !ok || expires.After(prior) {
+					previous[requestKey] = expires
+				}
 			}
 		}
 	}

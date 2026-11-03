@@ -4,6 +4,8 @@
 package config
 
 import (
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,10 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 	r := RequestPolicyExactRequest{URL: "https://api.vendor.example/items/1/invite", Method: "POST", BodySHA256: strings.Repeat("a", 64), ExpiresAt: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Owner: "operator", Reason: "approved access"}
 	base := Defaults()
 	base.RequestPolicy = RequestPolicy{Enabled: true, OnParseError: ActionBlock, OnOpaqueOperation: ActionBlock, Rules: []RequestPolicyRule{{Name: "sharing", Action: ActionBlock, Route: RequestPolicyRoute{Hosts: []string{"api.vendor.example"}, Methods: []string{"POST"}, PathPrefixes: []string{"/items/"}}, Except: &RequestPolicyException{Requests: []RequestPolicyExactRequest{r}}}}}
+	base.RequestPolicy.Rules = append(base.RequestPolicy.Rules, RequestPolicyRule{
+		Name: "unrelated", Action: ActionBlock,
+		Route: RequestPolicyRoute{Hosts: []string{"api.vendor.example"}, Methods: []string{"POST"}, PathPrefixes: []string{"/unrelated/"}},
+	})
 	if _, err := base.ValidateWithWarnings(); err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +81,9 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 		warn bool
 	}{
 		{"unchanged", func(*Config) {}, false},
+		{"equivalent URL spelling", func(c *Config) {
+			c.RequestPolicy.Rules[0].Except.Requests[0].URL = "https://API.VENDOR.EXAMPLE:443/items/1/invite"
+		}, false},
 		{"new digest", func(c *Config) { c.RequestPolicy.Rules[0].Except.Requests[0].BodySHA256 = strings.Repeat("b", 64) }, true},
 		{"extended", func(c *Config) {
 			c.RequestPolicy.Rules[0].Except.Requests[0].ExpiresAt = time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
@@ -94,6 +103,34 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 			appendExactRequestReloadWarnings(&warnings, base.RequestPolicy, updated.RequestPolicy)
 			if (len(warnings) > 0) != tc.warn {
 				t.Fatalf("warnings=%v want warning=%v", warnings, tc.warn)
+			}
+			found := false
+			for _, warning := range ValidateReload(base.Clone(), updated) {
+				found = found || warning.Field == "request_policy.rules"
+			}
+			if found != tc.warn {
+				t.Fatalf("ValidateReload warning=%v want %v", found, tc.warn)
+			}
+		})
+	}
+
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprintf("duplicate order reversed=%v", reverse), func(t *testing.T) {
+			old := base.Clone()
+			short := r
+			short.URL = "https://API.VENDOR.EXAMPLE:443/items/1/invite"
+			short.ExpiresAt = time.Now().Add(time.Minute).UTC().Format(time.RFC3339)
+			old.RequestPolicy.Rules[0].Except.Requests = []RequestPolicyExactRequest{r, short}
+			if reverse {
+				slices.Reverse(old.RequestPolicy.Rules[0].Except.Requests)
+			}
+			updated := base.Clone()
+			updated.RequestPolicy.Rules[0].Except.Requests[0].URL = short.URL
+			updated.RequestPolicy.Rules[0].Except.Requests[0].ExpiresAt = time.Now().Add(30 * time.Minute).UTC().Format(time.RFC3339)
+			for _, warning := range ValidateReload(old, updated) {
+				if warning.Field == "request_policy.rules" {
+					t.Fatalf("shortening equivalent duplicate approval warned: %v", warning)
+				}
 			}
 		})
 	}

@@ -170,7 +170,7 @@ JSON requests. Each entry requires `url`, `method`, `body_sha256`, `expires_at`,
 
 The URL must be absolute HTTPS with the escaped path and query spelling the
 client will send. Scheme and host case and the default port `:443` are
-normalized on both sides (RFC 3986 section 6.2.3), so an approval matches an
+normalized on both sides ([RFC 3986 scheme-based normalization](https://www.rfc-editor.org/rfc/rfc3986)), so an approval matches an
 intercepted tunnel that always carries `host:443`; any other port is part of the
 approval. The method must be an uppercase body-carrying HTTP
 method. `body_sha256` is the lowercase SHA-256 digest of the complete JSON body
