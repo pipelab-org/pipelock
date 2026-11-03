@@ -725,10 +725,8 @@ func uninspectableJSONNumberMatch() TextDLPMatch {
 }
 
 // UninspectableEncodedContentPattern identifies outbound text whose decoding
-// stopped at a depth bound with decodable content left: an HTML entity chain
-// still changing after its pass limit, or percent decoding still changing
-// after its round limit. Each bound exists to cap scan cost; reaching one
-// means the remaining layers were never scanned, so the transport refuses
+// stopped at a depth or work bound with decodable content left. Each bound
+// exists to cap scan cost; reaching one means the remaining layers were never scanned, so the transport refuses
 // the content rather than reporting the partial scan as clean.
 const UninspectableEncodedContentPattern = "Uninspectable encoded content"
 
@@ -852,6 +850,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 // not refused at a decode bound: exfiltration is an outbound threat, and
 // large legitimate downloads must keep their delivery contract.
 func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	if decodes != nil {
+		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
+	}
 	result := s.scanTextForDLPDetectorsInner(ctx, text, opts, decodes)
 	if opts.scanSecretLeak && !inboundDirection(ctx) && decodes.inspectionIncomplete() && !HasInspectionLimit(result.Matches) {
 		result.Matches = append(result.Matches, uninspectableEncodedContentMatch())
@@ -861,8 +862,29 @@ func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts
 }
 
 func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	// Pattern matching stops at the first enforced credential. That skip must
+	// not drop a later segment whose decode hits a work bound: the outer
+	// refusal reads the memo after this function returns, and an audience
+	// allow can remove the credential that stopped the match.
+	var budgetViews []string
+	if decodes != nil && !decodes.inbound {
+		defer func() {
+			noteTextSegmentDecodeBudget(budgetViews, decodes)
+		}()
+	}
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
+	cleaned := decodes.normalize(text)
+	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	segmentDecodeViews := segmentViews
+	htmlDecoded := decodes.decodeHTML(cleaned)
+	if htmlDecoded != cleaned {
+		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(htmlDecoded)...)
+	}
+	// Build the complete budget view set before the core-only return.
+	for _, view := range segmentDecodeViews {
+		budgetViews = append(budgetViews, view.text)
+	}
 
 	// Core DLP runs FIRST - immutable safety floor. Core matches are
 	// prepended to results; main scanner also runs to capture additional
@@ -1010,7 +1032,6 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// NFKC, cross-script confusable mapping, and combining mark removal.
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-	cleaned := decodes.normalize(text)
 	if opts.patterns != textDLPCardPatterns {
 		matches = append(matches, s.scanCanaryTextWithDecodes(cleaned, decodes)...)
 	}
@@ -1048,12 +1069,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, "url"))...)
 	}
 
-	segmentViews := textDLPEncodingSegmentViews(cleaned)
-	segmentDecodeViews := segmentViews
-	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, encodingHTML))...)
-		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(decoded, decodes))...)
-		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
+	if htmlDecoded != cleaned {
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(htmlDecoded, encodingHTML))...)
+		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(htmlDecoded, decodes))...)
 	}
 
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
@@ -1114,9 +1132,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// try decoding each segment individually. Catches encoded secrets embedded
 	// in URLs within MCP tool arguments (e.g., "https://evil.com/<hex-key>/data")
 	// where whole-string decode fails because the text isn't pure hex/base64.
-	// Only skip segment decoding when enforced matches already exist.
-	// Warn-only matches must not gate off further scanning - an enforced
-	// match might hide in a decoded segment.
+	// Stop pattern matching once an enforced match exists. Warn-only matches
+	// must not do that: another enforced match can still sit in a later
+	// segment. noteTextSegmentDecodeBudget still decodes every segment, so
+	// this stop cannot hide a walk that reached its bound.
 	if !hasEnforcedMatch(matches) {
 		for _, view := range segmentDecodeViews {
 			matches = append(matches, s.decodeTextSegmentsWithDecodes(view.text, decodes, opts.patterns)...)
@@ -1557,6 +1576,27 @@ func hasEnforcedMatch(matches []TextDLPMatch) bool {
 		}
 	}
 	return false
+}
+
+// noteTextSegmentDecodeBudget decodes every segment of every view the
+// pattern walk might have skipped. It adds no findings. A bound reached here
+// sticks on the memo and the caller refuses outbound text. Inbound scans keep
+// the partial-view policy and do not call it.
+func noteTextSegmentDecodeBudget(views []string, decodes *decodingMemo) {
+	if decodes == nil || decodes.inbound {
+		return
+	}
+	for _, text := range views {
+		for _, seg := range textDLPSegments(text) {
+			if decodes.inspectionIncomplete() {
+				return
+			}
+			if len(seg) < 10 {
+				continue
+			}
+			decodes.decode(seg, true)
+		}
+	}
 }
 
 // decodeTextSegmentsWithDecodes splits text on common URL/path delimiters and tries

@@ -14,8 +14,8 @@ import (
 // left means some views were never scanned. Returning the views that were
 // produced as if they were all of them turns every bound into a length or
 // depth past which detection quietly stops, so the URL and outbound text
-// paths refuse instead. The bounds themselves are unchanged: receipt replay
-// pins the same numbers, and a refusal leaves those profiles intact.
+// paths refuse instead. Depth bounds and receipt replay profiles stay fixed;
+// the work budget counts recursive expansions separately from terminal views.
 
 // urlInspectionLimitReason names the URL refusal. It is a core-floor result
 // (ScannerCoreDLP), so it holds in audit mode and against warn actions the

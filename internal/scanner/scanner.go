@@ -234,7 +234,14 @@ func IsHostnameExfilResult(r Result) bool {
 // as text. Its userinfo is split the same way text inspection splits a token
 // Go refuses, because audit mode can release the parser finding on its own.
 func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
-	var decodes decodingMemo
+	return s.ScanURLCoreFloorWithContext(context.Background(), rawURL)
+}
+
+// ScanURLCoreFloorWithContext preserves inbound work accounting when ctx is
+// marked by WithInboundDirection. URL depth limits and credential findings
+// still hold on both directions.
+func (s *Scanner) ScanURLCoreFloorWithContext(ctx context.Context, rawURL string) Result {
+	decodes := decodingMemo{inbound: inboundDirection(ctx)}
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		if matches := s.scanCoreDLPWithDecodes(rawURL, &decodes); len(matches) > 0 {
@@ -245,7 +252,7 @@ func (s *Scanner) ScanURLCoreFloor(rawURL string) Result {
 				Score:   1.0,
 			}
 		}
-		// The text scan's decoding stopped at a depth bound, so the URL was
+		// The text scan's decoding stopped at an inspection bound, so the URL was
 		// not fully inspected even though it does not parse.
 		if decodes.inspectionIncomplete() {
 			return urlInspectionLimitResult()
@@ -1380,7 +1387,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 
 	// Core DLP - immutable safety floor. Runs BEFORE main DLP, BEFORE DNS.
 	// Core findings are FINAL; the main scanner cannot override a core block.
-	var decodes decodingMemo
+	decodes := decodingMemo{inbound: inboundDirection(ctx)}
 	if result := s.checkCoreDLPWithDecodes(scanURL, &decodes); !result.Allowed {
 		return result
 	}
@@ -1391,7 +1398,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	dlpResult, dlpWarns := s.checkDLPWithDecodesAt(scanURL, &decodes, now)
 	dlpWarns = deduplicateWarnMatches(dlpWarns)
 	if !dlpResult.Allowed {
-		if note := s.queryGrantValidityNote(scanURL, now); note != "" {
+		if note := s.queryGrantValidityNoteWithMode(scanURL, now, decodes.inbound); note != "" {
 			dlpResult.Reason += "; " + note
 		}
 		dlpResult.WarnMatches = dlpWarns
@@ -1771,6 +1778,10 @@ type nestedURLCandidate struct {
 // hex/base64/base32 layers DLP applies. A scheme-relative "//host/..." is
 // completed with https so the host is evaluated like any other destination.
 func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
+	return nestedURLCandidatesWithDecodes(rawQuery, maxLen, nil)
+}
+
+func nestedURLCandidatesWithDecodes(rawQuery string, maxLen int, decodes *decodingMemo) []nestedURLCandidate {
 	var out []nestedURLCandidate
 	add := func(key, text string) {
 		text = strings.TrimSpace(text)
@@ -1802,7 +1813,7 @@ func nestedURLCandidates(rawQuery string, maxLen int) []nestedURLCandidate {
 			if decoded != component {
 				add(decodedKey, decoded)
 			}
-			for _, d := range decodeEncodingsRecursive(decoded) {
+			for _, d := range decodes.decode(decoded, false) {
 				add(decodedKey, d.text)
 			}
 		}
@@ -1819,7 +1830,11 @@ func (s *Scanner) checkNestedURLs(ctx context.Context, parsed *url.URL) Result {
 	if !s.scanNestedURLs || parsed == nil || parsed.RawQuery == "" {
 		return Result{Allowed: true}
 	}
-	candidates := nestedURLCandidates(nativeOAuthNestedTarget(ctx, parsed).RawQuery, s.maxURLLength)
+	decodes := decodingMemo{inbound: inboundDirection(ctx)}
+	candidates := nestedURLCandidatesWithDecodes(nativeOAuthNestedTarget(ctx, parsed).RawQuery, s.maxURLLength, &decodes)
+	if !decodes.inbound && decodes.inspectionIncomplete() {
+		return urlInspectionLimitResult()
+	}
 	if len(candidates) == 0 {
 		return Result{Allowed: true}
 	}
@@ -2323,15 +2338,11 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string, de
 
 // appendPathQueryConcatViews adds one seam concatenation and its derived views.
 //
-// Derived views are skipped for an oversized concatenation. The recursive
-// decoder already refuses an input past maxDecodeTotalBytes, so this only makes
-// the same ceiling explicit one step earlier and keeps the strip views from
-// allocating another copy of a very large URL. The plain concatenation is still
-// scanned, so the bound trims amplification without creating a length above
-// which detection quietly stops.
+// Outbound concatenations use the same recursive budget as other decode
+// roots. Inbound callers retain their previous size shortcut.
 func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string, decodes *decodingMemo) []dlpTarget {
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat"), proseSource})
-	if len(concat) > maxDecodeTotalBytes {
+	if len(concat) > maxDecodeTotalBytes && decodes != nil && decodes.inbound {
 		return targets
 	}
 	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
@@ -2384,15 +2395,10 @@ const (
 
 const (
 	maxDecodeCandidates = 4096
-	// maxDecodeTotalBytes bounds the SUM of decoded-candidate bytes processed in
-	// one fixpoint walk. It is the real work ceiling (decode + DLP match cost),
-	// and it replaces a per-candidate ceiling: a low per-candidate cap is itself
-	// a bypass, because an attacker can pad a stacked-encoded secret past it. The
-	// budget sits above the 5MB request-body scan limit so a secret encoded
-	// inside a large body is still fully decoded, while a bushy decode tree
-	// cannot amplify into unbounded CPU/memory. Standard decodes (base64, hex,
-	// base32, URL) only shrink their input, so no single candidate exceeds the
-	// entry size, which is itself bounded by this budget.
+	// maxDecodeTotalBytes bounds recursive expansion beyond the first decode
+	// layer in each walk. Terminal views are inspected without charging their
+	// size again. Request/transport limits bound the original input; this bound
+	// limits additional nested work without refusing a large single-layer upload.
 	maxDecodeTotalBytes = 8 * 1024 * 1024
 )
 
@@ -2947,12 +2953,6 @@ func base32PrefixPossible(value string, hexAlphabet bool) bool {
 	return true
 }
 
-// decodeEncodingsRecursive returns all bounded fixpoint decoding candidates for
-// a possibly stacked-encoded string.
-func decodeEncodingsRecursive(s string) []decodedResult {
-	return decodeEncodingsFixpoint(s, false)
-}
-
 // decodeEncodingsRecursiveWithDecodes decodes reconstructed URL targets through
 // the scan memo. Joining components, or decoding another encoding, can expose
 // percent escapes absent from every original component.
@@ -2966,10 +2966,8 @@ func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
 }
 
 // decodeEncodingsFixpointMode walks the decode graph breadth first. complete
-// is false when a decode step stopped at a depth bound with decodable content
-// left: an HTML entity chain still changing after its pass limit, or percent
-// decoding still changing after its round limit. Callers refuse incomplete
-// outbound content.
+// is false when a depth or work bound leaves a new view uninspected.
+// Callers refuse incomplete outbound content.
 //
 // The walk runs in two parts so the HTML entity layer only adds views. The
 // first part is the hex, base64, base32, JSON-escape and URL graph, with its
@@ -2979,18 +2977,25 @@ func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
 // view that copies most of a large input therefore cannot spend the budget
 // the other views had.
 //
-// The byte and candidate budgets still return the views produced so far.
-// Ordinary large bodies under the request size cap can exhaust them, for
-// example through whole-text views that copy most of the input or a hex run
-// that also decodes as base64, so refusing at the budget would block
-// legitimate uploads. Budget accounting has to change before its exhaustion
-// can become a refusal.
+// The first decode layer is covered by the input's transport size limit.
+// Recursive expansions that reveal new views share the byte budget; terminal
+// probes and duplicate views don't spend it. The candidate cap bounds all
+// distinct retained views, including the HTML roots.
 func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) (out []decodedResult, complete bool) {
-	if s == "" || len(s) > maxDecodeTotalBytes {
+	return decodeEncodingsBudgetMode(s, includeURL, minPrefix, false)
+}
+
+// Inbound scans retain their existing work accounting and partial-view policy.
+func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound bool) (out []decodedResult, complete bool) {
+	if s == "" || inbound && len(s) > maxDecodeTotalBytes {
 		return nil, true
 	}
+	walk := decodeEncodingsWalk
+	if inbound {
+		walk = decodeEncodingsInboundWalk
+	}
 	seen := map[string]struct{}{s: {}}
-	out, complete = decodeEncodingsWalk([]string{s}, nil, seen, includeURL, minPrefix, false)
+	out, complete = walk([]string{s}, nil, seen, includeURL, minPrefix, false)
 
 	// Entity roots: the input and every first-part view whose entity decoding
 	// differs. The first part already expanded those texts' other layers.
@@ -3013,51 +3018,59 @@ func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) (out 
 	if len(roots) == 0 {
 		return out, complete
 	}
-	htmlViews, htmlComplete := decodeEncodingsWalk(nil, roots, seen, includeURL, minPrefix, true)
+	htmlViews, htmlComplete := walk(nil, roots, seen, includeURL, minPrefix, true)
 	return append(out, htmlViews...), complete && htmlComplete
 }
 
-// decodeEncodingsWalk expands queue breadth first under one byte and
-// candidate budget. start lists views to admit, under the same budget, before
-// expanding them. seen is shared so a text is expanded once across walks.
+// decodeEncodingsWalk expands queue breadth first. Each non-root expansion
+// that produces a new view charges its input bytes. Terminal/duplicate-only
+// expansions cost no additional recursive budget. The initial input has
+// already been bounded by the caller's transport limit. HTML roots use the
+// same admission rule and their own recursive budget.
 func decodeEncodingsWalk(queue []string, start []decodedResult, seen map[string]struct{}, includeURL bool, minPrefix int, withHTML bool) (out []decodedResult, complete bool) {
 	consumed := 0
+	freeRoots := len(queue)
 	complete = true
-	// admit records one view and reports whether the walk may continue.
-	admit := func(d decodedResult) (added, more bool) {
+	admit := func(d decodedResult) bool {
 		if len(d.text) < max(minPrefix, 1) {
-			return false, true
+			return true
 		}
 		if _, ok := seen[d.text]; ok {
-			return false, true
+			return true
 		}
-		if minPrefix > 0 && len(d.text) > maxDecodeTotalBytes-consumed {
-			return false, false
+		if len(out) >= maxDecodeCandidates {
+			return false
 		}
 		seen[d.text] = struct{}{}
 		out = append(out, d)
-		consumed += len(d.text)
-		return true, len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes
+		queue = append(queue, d.text)
+		return true
 	}
 	for _, d := range start {
-		added, more := admit(d)
-		if added {
-			queue = append(queue, d.text)
-		}
-		if !more {
-			return out, complete
+		if !admit(d) {
+			return out, false
 		}
 	}
-	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
+	for head := 0; head < len(queue); head++ {
 		views, stepComplete := decodeEncodingsOnce(queue[head], includeURL, minPrefix, withHTML)
 		complete = complete && stepComplete
+		charged := head < freeRoots
 		for _, d := range views {
-			added, more := admit(d)
-			if !more {
-				return out, complete
+			if len(d.text) < max(minPrefix, 1) {
+				continue
 			}
-			if added {
-				queue = append(queue, d.text)
+			if _, ok := seen[d.text]; ok {
+				continue
+			}
+			if !charged {
+				if len(queue[head]) > maxDecodeTotalBytes-consumed {
+					return out, false
+				}
+				consumed += len(queue[head])
+				charged = true
+			}
+			if !admit(d) {
+				return out, false
 			}
 		}
 	}
@@ -3157,7 +3170,7 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (R
 }
 
 func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, now time.Time) (result Result, warnMatches []WarnMatch) {
-	queryLessMemo := queryLessDLPMemo{now: now, nowSet: true}
+	queryLessMemo := queryLessDLPMemo{now: now, nowSet: true, inbound: decodes != nil && decodes.inbound}
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
 	// "Canary Token"). Canary is the safety net for synthetic tokens that
@@ -3284,6 +3297,11 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// keep their more precise view labels when both views match.
 	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
 
+	// A configured content finding must not hide an exhausted outbound walk
+	// from callers that release ordinary findings under warn or audit policy.
+	if decodes != nil && !decodes.inbound && decodes.inspectionIncomplete() {
+		return urlInspectionLimitResult(), warnMatches
+	}
 	for _, target := range targets {
 		if target.text == "" {
 			continue
@@ -3430,20 +3448,26 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		}
 	}
 
+	// Share outbound incompleteness with the URL floor. Inbound URL secret
+	// checks historically had independent memos and unreported partial views.
+	secretDecodes := decodes
+	if decodes != nil && decodes.inbound {
+		secretDecodes = &decodingMemo{inbound: true}
+	}
 	// Check for environment variable leaks
-	if result := s.checkSecretsInURL(s.envSecrets, parsed, "environment variable leak detected"); !result.Allowed {
+	if result := s.checkSecretsInURLWithDecodes(s.envSecrets, parsed, "environment variable leak detected", secretDecodes); !result.Allowed {
 		return result, warnMatches
 	}
 
 	// Check for known file secret leaks
-	if result := s.checkSecretsInURL(s.fileSecrets, parsed, "known secret leak detected"); !result.Allowed {
+	if result := s.checkSecretsInURLWithDecodes(s.fileSecrets, parsed, "known secret leak detected", secretDecodes); !result.Allowed {
 		return result, warnMatches
 	}
 	// Both helpers return early for an empty secret list. Configured canaries
 	// must still run in a hermetic process with no ambient/file secrets. Keep
 	// the existing helper calls above so their attribution priority is unchanged.
 	if len(s.envSecrets) == 0 && len(s.fileSecrets) == 0 {
-		if result := s.checkCanaryInURL(parsed); !result.Allowed {
+		if result := s.checkCanaryInURLWithDecodes(parsed, secretDecodes); !result.Allowed {
 			return result, warnMatches
 		}
 	}
@@ -3769,6 +3793,11 @@ func deduplicateWarnMatches(matches []WarnMatch) []WarnMatch {
 // checkSecretsInURL scans a URL for leaked secrets (env vars or file-based).
 // It URL-decodes, strips control chars, and checks all encoded forms of each secret.
 func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPrefix string) Result {
+	var decodes decodingMemo
+	return s.checkSecretsInURLWithDecodes(secrets, parsed, reasonPrefix, &decodes)
+}
+
+func (s *Scanner) checkSecretsInURLWithDecodes(secrets []string, parsed *url.URL, reasonPrefix string, decodes *decodingMemo) Result {
 	if len(secrets) == 0 {
 		return Result{Allowed: true}
 	}
@@ -3791,22 +3820,46 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		lowerTexts = append(lowerTexts, spanTextView{text: strings.ToLower(percentURL), viewLabel: lowerViewLabel("control_stripped_url:percent_decoded")})
 	}
 
+	var decodedViews []spanTextView
+	decodedBuilt := false
+	buildDecodedViews := func() []spanTextView {
+		if decodedBuilt {
+			return decodedViews
+		}
+		decodedBuilt = true
+		decodedViews = s.decodedKnownSecretViews(decodedURL, decodes)
+		for _, target := range urlUserinfoDLPTargets(parsed, decodes) {
+			decodedViews = append(decodedViews, spanTextView{text: target.text, viewLabel: target.viewLabel})
+		}
+		// Form decoding turns a '+' into a space, so a nested carrier
+		// whose encoding holds '+' as data decodes only from the raw or
+		// the RFC 3986 percent-decoded URL.
+		decodedViews = append(decodedViews, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, decodes), "control_stripped_url")...)
+		if percentURL != fullURL && percentURL != decodedURL {
+			decodedViews = append(decodedViews, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, decodes), "percent_decoded")...)
+		}
+		return decodedViews
+	}
+	// An early match must not hide a work bound that a skipped walk would
+	// reach: before an outbound match returns, finish the decoded known-value
+	// views and the canary walk for the budget signal only.
+	skippedWalkIncomplete := func() bool {
+		if decodes == nil || decodes.inbound {
+			return false
+		}
+		buildDecodedViews()
+		_ = s.scanCanaryTextWithDecodes(parsed.String(), decodes)
+		return decodes.inspectionIncomplete()
+	}
+
 	for phase := range 2 {
 		if phase == 1 {
-			var decodes decodingMemo
-			texts = s.decodedKnownSecretViews(decodedURL, &decodes)
-			for _, target := range urlUserinfoDLPTargets(parsed, &decodes) {
-				texts = append(texts, spanTextView{text: target.text, viewLabel: target.viewLabel})
-			}
-			// Form decoding turns a '+' into a space, so a nested carrier
-			// whose encoding holds '+' as data decodes only from the raw or
-			// the RFC 3986 percent-decoded URL.
-			texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(fullURL, &decodes), "control_stripped_url")...)
-			if percentURL != fullURL && percentURL != decodedURL {
-				texts = append(texts, relabelKnownSecretViews(s.decodedKnownSecretViews(percentURL, &decodes), "percent_decoded")...)
-			}
+			texts = buildDecodedViews()
 		}
 
+		if decodes != nil && !decodes.inbound && decodes.inspectionIncomplete() {
+			return urlInspectionLimitResult()
+		}
 		hits := newKnownValueWindowHits(texts)
 		for _, secret := range secrets {
 			var match knownSecretMatch
@@ -3819,6 +3872,9 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 				match, start, end, viewLabel, matched = matchDecodedKnownSecret(secret, s.knownSecretWindows[secret], texts, hits)
 			}
 			if matched {
+				if skippedWalkIncomplete() {
+					return urlInspectionLimitResult()
+				}
 				reason := reasonPrefix
 				if match.partialLen > 0 {
 					reason += fmt.Sprintf(" (partial %d)", match.partialLen)
@@ -3837,13 +3893,17 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 			}
 		}
 	}
-	return s.checkCanaryInURL(parsed)
+	return s.checkCanaryInURLWithDecodes(parsed, decodes)
 }
 
 // checkCanaryInURL uses the shared canary views and preserves their span labels.
 // Callers keep the existing DLP and known-secret attribution order.
-func (s *Scanner) checkCanaryInURL(parsed *url.URL) Result {
-	if matches := s.scanCanaryText(parsed.String()); len(matches) > 0 {
+func (s *Scanner) checkCanaryInURLWithDecodes(parsed *url.URL, decodes *decodingMemo) Result {
+	matches := s.scanCanaryTextWithDecodes(parsed.String(), decodes)
+	if decodes != nil && !decodes.inbound && decodes.inspectionIncomplete() {
+		return urlInspectionLimitResult()
+	}
+	if len(matches) > 0 {
 		m := matches[0]
 		reason := fmt.Sprintf("DLP match: %s (%s)", m.PatternName, m.Severity)
 		if m.Encoded != "" {
@@ -6240,4 +6300,49 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 		addDecoded(htmlDecoded)
 	}
 	return targets
+}
+
+// decodeEncodingsInboundWalk preserves response inspection accounting.
+func decodeEncodingsInboundWalk(queue []string, start []decodedResult, seen map[string]struct{}, includeURL bool, minPrefix int, withHTML bool) (out []decodedResult, complete bool) {
+	consumed := 0
+	complete = true
+	// admit records one view and reports whether the walk may continue.
+	admit := func(d decodedResult) (added, more bool) {
+		if len(d.text) < max(minPrefix, 1) {
+			return false, true
+		}
+		if _, ok := seen[d.text]; ok {
+			return false, true
+		}
+		if minPrefix > 0 && len(d.text) > maxDecodeTotalBytes-consumed {
+			return false, false
+		}
+		seen[d.text] = struct{}{}
+		out = append(out, d)
+		consumed += len(d.text)
+		return true, len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes
+	}
+	for _, d := range start {
+		added, more := admit(d)
+		if added {
+			queue = append(queue, d.text)
+		}
+		if !more {
+			return out, complete
+		}
+	}
+	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
+		views, stepComplete := decodeEncodingsOnce(queue[head], includeURL, minPrefix, withHTML)
+		complete = complete && stepComplete
+		for _, d := range views {
+			added, more := admit(d)
+			if !more {
+				return out, complete
+			}
+			if added {
+				queue = append(queue, d.text)
+			}
+		}
+	}
+	return out, complete
 }

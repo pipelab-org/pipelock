@@ -196,7 +196,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				} else {
 					action = config.StrongestAction(action, defaultFindingAction)
 				}
-				if core, ok := a2aHiddenCoreFloor(sc, value, urlResult); ok {
+				if core, ok := a2aHiddenCoreFloor(ctx, sc, value, urlResult); ok {
 					result.URLFindings = append(result.URLFindings, core)
 					action = config.StrongestAction(action, config.ActionBlock)
 				}
@@ -606,11 +606,11 @@ func a2aURLResultForcesBlock(r scanner.Result) bool {
 // a2aHiddenCoreFloor returns the core credential finding a URL carries when
 // its scan stopped at an earlier stage, such as the blocklist, and so never
 // reached the core floor.
-func a2aHiddenCoreFloor(sc *scanner.Scanner, uri string, urlResult scanner.Result) (scanner.Result, bool) {
+func a2aHiddenCoreFloor(ctx context.Context, sc *scanner.Scanner, uri string, urlResult scanner.Result) (scanner.Result, bool) {
 	if urlResult.Allowed || scanner.IsCoreCriticalResult(urlResult) {
 		return scanner.Result{}, false
 	}
-	core := sc.ScanURLCoreFloor(uri)
+	core := sc.ScanURLCoreFloorWithContext(ctx, uri)
 	return core, !core.Allowed
 }
 
@@ -653,7 +653,7 @@ func ScanA2AHeaders(ctx context.Context, headers http.Header, sc *scanner.Scanne
 			if a2aURLResultForcesBlock(urlResult) {
 				forceBlock = true
 			}
-			if core, ok := a2aHiddenCoreFloor(sc, uri, urlResult); ok {
+			if core, ok := a2aHiddenCoreFloor(ctx, sc, uri, urlResult); ok {
 				result.URLFindings = append(result.URLFindings, core)
 				forceBlock = true
 			}

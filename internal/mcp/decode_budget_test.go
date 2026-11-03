@@ -1,0 +1,156 @@
+// Copyright 2026 Pipelock contributors
+// SPDX-License-Identifier: Apache-2.0
+
+package mcp
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
+)
+
+func decodeBudgetBody(name string) string {
+	switch name {
+	case "nested":
+		nested := `\u0068ello`
+		for range 80 {
+			nested = strings.ReplaceAll(nested, `\`, `\u005c`)
+		}
+		return strings.Repeat("!", 128*1024) + nested
+	case "base64":
+		n := 9 * 1024 * 1024 / 4 * 3
+		plain := bytes.Repeat([]byte{0xff}, n)
+		return base64.StdEncoding.EncodeToString(plain)
+	default:
+		panic("unknown decode workload")
+	}
+}
+
+func TestDecodeBudgetLargeStdioInput(t *testing.T) {
+	t.Parallel()
+	// The HTTP and WebSocket tests cover JSON and hex bodies of this size; stdio
+	// keeps one large single-layer body and one over-budget nested body.
+	for _, name := range []string{"base64", "nested"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			body := decodeBudgetBody(name)
+			msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "upload", "arguments": map[string]string{"text": body}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			msg = append(msg, '\n')
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.DLP.ScanEnv = false
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			if name == "nested" && !scanner.HasInspectionLimit(sc.ScanTextForDLP(t.Context(), body).Matches) {
+				t.Fatal("nested fixture did not exhaust the decode budget")
+			}
+			var server, logs bytes.Buffer
+			blocked := make(chan BlockedRequest, 1)
+			ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(msg)), transport.NewStdioWriter(&server), &logs, config.ActionBlock, config.ActionBlock, blocked, nil, nil, buildTestOpts(sc))
+
+			if name == "nested" {
+				select {
+				case request, ok := <-blocked:
+					if !ok {
+						t.Fatal("nested input did not produce a blocked request")
+					}
+					if string(request.ID) != "1" {
+						t.Fatalf("blocked request ID=%s, want 1", request.ID)
+					}
+				default:
+					t.Fatal("nested input did not produce a blocked request")
+				}
+				if server.Len() != 0 {
+					t.Fatalf("refused input forwarded %d bytes", server.Len())
+				}
+				return
+			}
+			select {
+			case request, ok := <-blocked:
+				if ok {
+					t.Fatalf("%d-byte input refused: %+v", len(body), request)
+				}
+			default:
+			}
+			if !bytes.Equal(server.Bytes(), msg) {
+				t.Fatalf("stdio forwarded %d bytes, want %d", server.Len(), len(msg))
+			}
+			t.Logf("delivered %d-byte body (%d-byte message)", len(body), len(msg))
+		})
+	}
+}
+
+func TestDecodeBudgetInboundURLPolicy(t *testing.T) {
+	nested := `\u0068ello`
+	for range 80 {
+		nested = strings.ReplaceAll(nested, `\`, `\u005c`)
+	}
+	uri := "https://api.vendor.example/" + strings.Repeat("!", 128*1024) + nested
+	for _, largeLimit := range []bool{false, true} {
+		name := "fallback floor"
+		if largeLimit {
+			name = "direct floor"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.APIAllowlist = nil
+			cfg.DLP.ScanEnv = false
+			if largeLimit {
+				cfg.FetchProxy.Monitoring.MaxURLLength = len(uri) + 1
+			}
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			a2a := enabledA2ACfg()
+			a2a.Action = config.ActionWarn
+			body, err := json.Marshal(map[string]any{"file": map[string]string{"uri": uri}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := ScanA2ARequestBody(t.Context(), body, sc, a2a)
+			if out.Action != config.ActionBlock {
+				t.Fatal("outbound URL work limit did not block")
+			}
+			found := false
+			for _, finding := range out.URLFindings {
+				found = found || scanner.IsURLInspectionLimitResult(finding)
+			}
+			if !found {
+				t.Fatal("outbound refusal did not include the URL work limit")
+			}
+			in := ScanA2AResponseBody(t.Context(), body, sc, a2a)
+			if in.Action == config.ActionBlock {
+				t.Fatal("inbound URL refused at a work limit")
+			}
+			for _, finding := range in.URLFindings {
+				if scanner.IsURLInspectionLimitResult(finding) {
+					t.Fatal("inbound URL acquired a new work limit")
+				}
+			}
+			// The prior URL depth and credential floors still hold for responses.
+			// docs/bypass-resistance.md pins 500 rounds; this needs 501.
+			percent := "%68"
+			for range 500 {
+				percent = strings.ReplaceAll(percent, "%", "%25")
+			}
+			for _, protectedURI := range []string{"https://api.vendor.example/" + percent + "ello", "https://api.vendor.example/" + "AK" + "IA" + "Q9W8E7R6T5Y4U3I2"} {
+				protected, marshalErr := json.Marshal(map[string]any{"file": map[string]string{"uri": protectedURI}})
+				if marshalErr != nil {
+					t.Fatal(marshalErr)
+				}
+				if result := ScanA2AResponseBody(t.Context(), protected, sc, a2a); result.Action != config.ActionBlock {
+					t.Fatal("inbound URL lost an existing depth or credential floor")
+				}
+			}
+		})
+	}
+}
