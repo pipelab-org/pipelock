@@ -2866,7 +2866,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 						Header:            resp.Header,
 						ContentLength:     resp.ContentLength,
 						SizeExemptDomains: cfg.ResponseScanning.SizeExemptDomains,
-						Now:               time.Now(),
+						Now:               responseScanNow(),
 					}, cfg.ResponseScanning.UnscannablePassthrough); ok {
 						reason := unscannablePassthroughReason(fwdRespHost, resp.Request.URL.EscapedPath(), match.ContentType, match.Entry.Reason)
 						p.logger.LogAnomaly(actx, "unscannable_passthrough", reason, 0)
