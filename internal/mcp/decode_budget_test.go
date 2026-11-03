@@ -17,6 +17,12 @@ import (
 
 func decodeBudgetBody(name string) (string, string) {
 	switch name {
+	case "nested":
+		nested := `\u0068ello`
+		for range 80 {
+			nested = strings.ReplaceAll(nested, `\`, `\u005c`)
+		}
+		return strings.Repeat("!", 128*1024) + nested, "text/plain"
 	case "json":
 		return `{"message":"` + strings.Repeat("!", 5_240_000-20) + `\u0061"}`, "application/json"
 	case "hex":
@@ -31,7 +37,7 @@ func decodeBudgetBody(name string) (string, string) {
 }
 
 func TestDecodeBudgetLargeStdioInput(t *testing.T) {
-	for _, name := range []string{"json", "hex", "base64"} {
+	for _, name := range []string{"json", "hex", "base64", "nested"} {
 		t.Run(name, func(t *testing.T) {
 			body, _ := decodeBudgetBody(name)
 			msg, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": "upload", "arguments": map[string]string{"text": body}}})
@@ -44,11 +50,36 @@ func TestDecodeBudgetLargeStdioInput(t *testing.T) {
 			cfg.DLP.ScanEnv = false
 			sc := scanner.MustNew(cfg)
 			t.Cleanup(sc.Close)
+			if name == "nested" && !scanner.HasInspectionLimit(sc.ScanTextForDLP(t.Context(), body).Matches) {
+				t.Fatal("nested fixture did not exhaust the decode budget")
+			}
 			var server, logs bytes.Buffer
 			blocked := make(chan BlockedRequest, 1)
 			ForwardScannedInput(transport.NewStdioReader(bytes.NewReader(msg)), transport.NewStdioWriter(&server), &logs, config.ActionBlock, config.ActionBlock, blocked, nil, nil, buildTestOpts(sc))
-			if request, ok := <-blocked; ok {
-				t.Fatalf("%d-byte input refused: %+v", len(body), request)
+
+			if name == "nested" {
+				select {
+				case request, ok := <-blocked:
+					if !ok {
+						t.Fatal("nested input did not produce a blocked request")
+					}
+					if string(request.ID) != "1" {
+						t.Fatalf("blocked request ID=%s, want 1", request.ID)
+					}
+				default:
+					t.Fatal("nested input did not produce a blocked request")
+				}
+				if server.Len() != 0 {
+					t.Fatalf("refused input forwarded %d bytes", server.Len())
+				}
+				return
+			}
+			select {
+			case request, ok := <-blocked:
+				if ok {
+					t.Fatalf("%d-byte input refused: %+v", len(body), request)
+				}
+			default:
 			}
 			if !bytes.Equal(server.Bytes(), msg) {
 				t.Fatalf("stdio forwarded %d bytes, want %d", server.Len(), len(msg))
