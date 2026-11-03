@@ -27,8 +27,7 @@ pipelock status --config /etc/pipelock/pipelock.yaml
 pipelock status --config /etc/pipelock/pipelock.yaml --json
 ```
 
-The JSON form is suitable for local automation that needs to confirm which
-config and scanner set a process would use before starting it.
+The JSON form shows local config and scanner settings. Its ordinary URL and DLP action labels report `warn` for `mode: audit` even when `enforce` is `true`. Check the top-level `enforce` value. `mode: audit` alone still blocks ordinary URL findings. Use the [audit preset](../configuration.md#presets) for an observation trial; independent safety controls can still block.
 
 ## `pipelock presets`
 

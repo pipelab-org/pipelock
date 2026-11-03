@@ -78,7 +78,7 @@ This adds DLP / SSRF / response-injection scanning to outbound HTTP requests fro
 | `strict` | block | High-security repos |
 | `hostile-model` | block | If you're running an uncensored model |
 
-Start in `balanced` to surface false positives in audit mode. Promote to a blocking preset once a workload is clean.
+The `balanced` preset blocks ordinary URL DLP and entropy findings; the action column describes response scanning. For an isolated observation trial, use the [audit preset](../false-positive-tuning.md#deliberate-audit-rollouts), which sets `enforce: false` and retains safety blocks. Review the trial events before switching to a balanced or strict preset.
 
 ## Containment for Local Multi-User Hosts
 
