@@ -82,8 +82,14 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 	}{
 		{"unchanged", func(*Config) {}, false},
 		{"block rule removed", func(c *Config) { c.RequestPolicy.Rules = c.RequestPolicy.Rules[1:] }, true},
-		{"block rule softened", func(c *Config) { c.RequestPolicy.Rules[0].Action = ActionWarn }, true},
-		{"block rule shadowed", func(c *Config) { c.RequestPolicy.Rules[0].Shadow = true }, true},
+		{"block rule softened", func(c *Config) {
+			c.RequestPolicy.Rules[0].Except = nil
+			c.RequestPolicy.Rules[0].Action = ActionWarn
+		}, true},
+		{"block rule shadowed", func(c *Config) {
+			c.RequestPolicy.Rules[0].Except = nil
+			c.RequestPolicy.Rules[0].Shadow = true
+		}, true},
 		{"policy disabled", func(c *Config) { c.RequestPolicy.Enabled = false }, true},
 		{"equivalent URL spelling", func(c *Config) {
 			c.RequestPolicy.Rules[0].Except.Requests[0].URL = "https://API.VENDOR.EXAMPLE:443/items/1/invite"
@@ -103,6 +109,9 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			updated := base.Clone()
 			tc.edit(updated)
+			if _, err := updated.ValidateWithWarnings(); err != nil {
+				t.Fatalf("invalid updated fixture: %v", err)
+			}
 			var warnings []ReloadWarning
 			appendActionDowngradeWarnings(&warnings, base, updated)
 			if (len(warnings) > 0) != tc.warn {
@@ -140,15 +149,45 @@ func TestExactRequestExceptionLifecycle(t *testing.T) {
 	}
 
 	for _, shadow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plain block downgrade shadow=%v", shadow), func(t *testing.T) {
+			old := base.Clone()
+			old.RequestPolicy.Rules[0].Except = nil
+			updated := old.Clone()
+			if shadow {
+				updated.RequestPolicy.Rules[0].Shadow = true
+			} else {
+				updated.RequestPolicy.Rules[0].Action = ActionWarn
+			}
+			for _, cfg := range []*Config{old, updated} {
+				if _, err := cfg.ValidateWithWarnings(); err != nil {
+					t.Fatalf("invalid plain block fixture: %v", err)
+				}
+			}
+			found := false
+			for _, warning := range ValidateReload(old, updated) {
+				found = found || warning.Field == "request_policy.rules"
+			}
+			if !found {
+				t.Fatal("plain block downgrade did not warn")
+			}
+		})
+	}
+
+	for _, shadow := range []bool{false, true} {
 		old := base.Clone()
-		old.RequestPolicy.Rules = old.RequestPolicy.Rules[:1]
+		old.RequestPolicy.Rules[0].Except = nil
 		old.RequestPolicy.Rules[0].Action = ActionWarn
 		if shadow {
 			old.RequestPolicy.Rules[0].Action = ActionBlock
 			old.RequestPolicy.Rules[0].Shadow = true
 		}
 		updated := old.Clone()
-		updated.RequestPolicy.Rules = nil
+		updated.RequestPolicy.Rules = updated.RequestPolicy.Rules[1:]
+		for _, cfg := range []*Config{old, updated} {
+			if _, err := cfg.ValidateWithWarnings(); err != nil {
+				t.Fatalf("invalid non-enforcing fixture: %v", err)
+			}
+		}
 		for _, warning := range ValidateReload(old, updated) {
 			if warning.Field == "request_policy.rules" {
 				t.Fatalf("removing non-enforcing rule warned: %v", warning)
