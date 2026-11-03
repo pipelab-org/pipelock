@@ -113,11 +113,19 @@ func (o *inventoryObserver) ObserveToolScanVerdict(_ context.Context, r *capture
 
 type inventoryRoundTripper struct {
 	body, mediaType string
+	requestBody     []byte
 	called          bool
 }
 
 func (r *inventoryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	r.called = true
+	if req.Body != nil {
+		var err error
+		r.requestBody, err = io.ReadAll(req.Body)
+		if err != nil {
+			return nil, err
+		}
+	}
 	headers := http.Header{"Content-Type": {r.mediaType}}
 	if r.mediaType == "application/octet-stream" {
 		headers.Set("Content-Disposition", "attachment")
@@ -556,6 +564,12 @@ func (h *inventoryHarness) httpRows(t *testing.T, cfg *config.Config, base decis
 		row.Part, row.Input, row.Variant, row.Status = "forward/"+tc.part, tc.name, variant, w.Code
 		row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 		row.Delivered = w.Code == http.StatusOK && (tc.part != "body" || rt.called)
+		if tc.part == "body" && rt.called && !bytes.Equal(rt.requestBody, []byte(tc.body)) {
+			t.Errorf("body row %s/%s %s: forwarded bytes = %q, want %q", base.Preset, base.Runtime, tc.name, rt.requestBody, tc.body)
+		}
+		if tc.part == "response" && tc.name == "clean" {
+			row.Delivered = row.Delivered && w.Body.String() == response
+		}
 		row.Inspection = inventorySkipped
 		if tc.part == "header" && obs.header != nil {
 			row.Action = obs.header.EffectiveAction
@@ -843,8 +857,12 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 		c := cfg.Clone()
 		inventoryAdmitHost(c)
 		c.TLSInterception.Enabled = enabled
-		p, _, _ := h.proxy(t, c, "", "text/plain")
-		ic := &InterceptContext{Proxy: p, Config: c, Agent: "inventory-agent", ActorAuth: envelope.ActorAuthBound}
+		p, _, rt := h.proxy(t, c, "issuer accepted", "text/plain")
+		ic := &InterceptContext{
+			Proxy: p, Config: c, Agent: "inventory-agent", ActorAuth: envelope.ActorAuthBound,
+			TargetHost: inventoryHost, TargetPort: "443", Scanner: p.scannerPtr.Load(),
+			Logger: p.logger, Metrics: p.metrics,
+		}
 		issuer, err := url.Parse("https://" + inventoryHost + "/list")
 		if err != nil {
 			t.Fatal(err)
@@ -872,6 +890,18 @@ func (h *inventoryHarness) issuerRows(t *testing.T, cfg *config.Config, base dec
 			row.Variant = fmt.Sprintf("admit-fixture-host+tls-interception=%t", enabled)
 			row.Action, row.Disposition = config.ActionAllow, config.ActionAllow
 			row.Delivered = !urlResultBlocks(c, sc, target.String(), result)
+			// Join the package's direct handler harness: no TLS listener is needed.
+			handlerIC := *ic
+			if state == "wrong-session" {
+				handlerIC.Agent = "unrelated-agent"
+			}
+			rt.called = false
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, target.String(), nil)
+			w := httptest.NewRecorder()
+			newInterceptHandler(&handlerIC, rt).ServeHTTP(w, req)
+			if delivered := rt.called && w.Code == http.StatusOK && w.Body.String() == "issuer accepted"; delivered != row.Delivered {
+				t.Errorf("issuer row %s/%s tls=%t %s: handler delivered=%v (status %d), scanner decision delivered=%v", base.Preset, base.Runtime, enabled, state, delivered, w.Code, row.Delivered)
+			}
 			if !result.Allowed {
 				row.Action, row.Disposition = config.ActionBlock, config.ActionWarn
 				row.Detectors = []string{result.Scanner}
