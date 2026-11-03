@@ -1914,6 +1914,8 @@ type wsClientTextOptions struct {
 	crossMessage bool
 }
 
+// handleClientTextResult returns true when the frame must not be forwarded.
+// Callers distinguish cancellation from a policy block using ctx.Err().
 func (r *wsRelay) handleClientTextResult(ctx context.Context, log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, opts wsClientTextOptions) bool {
 	if dlpResult.Incomplete || ctx.Err() != nil {
 		return true
@@ -2847,7 +2849,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if r.enforceClientControlPayload(ctx, log, payload, &controlMsgTail) {
-				blocked = true
+				blocked = ctx.Err() == nil
 				return
 			}
 			if ctx.Err() != nil {
@@ -3001,7 +3003,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 			if !redactionEnabled && scanMessage != nil && r.handleClientTextResult(ctx, log, msg, r.scanner.ScanTextForDLP(ctx, string(msg)), wsClientTextOptions{surface: surface}) {
-				blocked = true
+				blocked = ctx.Err() == nil
 				return
 			}
 			if scanMessage == nil {
@@ -3012,7 +3014,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			numberText, numberCard := extract.JSONNumberStreamViews(scanMessage)
 			if len(crossMsgNumberTail) > 0 && numberText != "" {
 				if r.scanClientNumberText(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
-					blocked = true
+					blocked = ctx.Err() == nil
 					return
 				}
 			}
@@ -3042,21 +3044,21 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			if !redactionEnabled {
 				result := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
 				if len(scanInput) > 0 && r.handleClientTextResult(ctx, log, scanInput, result, wsClientTextOptions{crossMessage: true}) {
-					blocked = true
+					blocked = ctx.Err() == nil
 					return
 				}
 				if joined, ok := joinLabeledWSCrossMessageSuffixes(prevTail, scanMessage); ok && r.handleClientTextResult(ctx, log, joined, r.scanner.ScanTextForDLP(ctx, string(joined)), wsClientTextOptions{crossMessage: true}) {
-					blocked = true
+					blocked = ctx.Err() == nil
 					return
 				}
 			} else if len(prevTail) > 0 && r.scanClientCrossMessageTextViews(ctx, log, prevTail, scanMessage, prevCardTail, cardMsg) {
-				blocked = true
+				blocked = ctx.Err() == nil
 				return
 			}
 			frame := fieldTail.ParseFrame(scanMessage)
 			for _, view := range fieldTail.Views(frame) {
 				if r.scanClientCrossMessageText(ctx, log, []byte(view.Tail), []byte(view.Value)) {
-					blocked = true
+					blocked = ctx.Err() == nil
 					return
 				}
 			}

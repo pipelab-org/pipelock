@@ -6,7 +6,9 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,81 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
+
+func TestWSRelayClientScanCancellationIsNotBlocked(t *testing.T) {
+	credential := "M" + strings.Repeat("a", 23) + "." + strings.Repeat("b", 6) + "." + strings.Repeat("c", 27)
+	for _, tc := range []struct {
+		name     string
+		op       ws.OpCode
+		messages []string
+		redact   bool
+		target   string
+	}{
+		{"text", ws.OpText, []string{"ordinary message"}, false, ""},
+		{"control", ws.OpPing, []string{"ordinary ping"}, false, ""},
+		{"cross_message", ws.OpText, []string{"first message", "second message"}, false, ""},
+		{"labeled", ws.OpText, []string{"part1: first message", "part2: second message"}, false, ""},
+		{"numbers", ws.OpText, []string{`{"value":12}`, `{"value":34}`}, false, ""},
+		{"redaction_cross_message", ws.OpText, []string{`{"text":"part1: first message"}`, `{"text":"part2: second message"}`}, true, ""},
+		{"gateway", ws.OpText, []string{fmt.Sprintf(`{"op":2,"d":{"token":%q}}`, credential)}, false, "wss://gateway.discord.gg/"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.DLP.ScanEnv = false
+			cfg.RequestBodyScanning.Enabled = false
+			sc := scanner.MustNew(cfg)
+			t.Cleanup(sc.Close)
+			p := newTestProxyWithConfig(t, cfg)
+			var wire bytes.Buffer
+			for _, message := range tc.messages {
+				if err := ws.WriteFrame(&wire, ws.MaskFrameInPlace(ws.NewFrame(tc.op, true, []byte(message)))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Measure reachable checkpoints using a complete control run. Each
+			// cancellation then checks teardown during inspection.
+			var checks int32
+			completed := 0
+			for checkpoint := int32(0); checkpoint <= checks; checkpoint++ {
+				t.Run(fmt.Sprint(checkpoint), func(t *testing.T) {
+					base, cancel := context.WithCancel(t.Context())
+					defer cancel()
+					ctx := &bodyScanCheckpointContext{Context: base, cancel: cancel, after: checkpoint}
+					source := &cancelPayloadConn{reader: bytes.NewReader(wire.Bytes()), cancel: func() {}}
+					sink := &cancelPayloadConn{}
+					relay := &wsRelay{proxy: p, cfg: cfg, scanner: sc, clientConn: source, upstreamConn: sink, maxMsg: 1024, scanText: true, targetURL: "wss://api.vendor.example/events"}
+					if tc.target != "" {
+						relay.targetURL = tc.target
+					}
+					if tc.redact {
+						relay.redaction = &redactionRuntime{required: true}
+					}
+					n, _, _, blocked := relay.clientToUpstream(ctx, func() {}, time.Second)
+					if checkpoint == 0 {
+						checks = ctx.checks.Load() - 1 // final check follows inspection
+						if checks < 1 || n == 0 || blocked {
+							t.Fatalf("complete control: checks=%d bytes=%d blocked=%v", checks, n, blocked)
+						}
+						return
+					}
+					if base.Err() == nil || blocked || relay.panicked.Load() || source.writes != 0 {
+						t.Fatalf("cancellation counted as a block: canceled=%v bytes=%d blocked=%v panic=%v writes=%d", base.Err(), n, blocked, relay.panicked.Load(), source.writes)
+					}
+					if len(tc.messages) == 1 && (n != 0 || sink.writes != 0) {
+						t.Fatalf("cancelled frame forwarded: bytes=%d writes=%d", n, sink.writes)
+					}
+					if n != 0 && n != int64(len(tc.messages[0])) {
+						t.Fatalf("cancelled final frame forwarded: bytes=%d", n)
+					}
+					p.recordWSRelayCompletion(wsRelayStats{blocked: blocked}, false)
+					completed++
+					assertMetricsNotContain(t, p.metrics, `pipelock_ws_connections_total{result="blocked"} 1`)
+					assertMetricsContain(t, p.metrics, fmt.Sprintf(`pipelock_ws_connections_total{result="completed"} %d`, completed))
+				})
+			}
+		})
+	}
+}
 
 // Cancel at payload completion, after the loop's initial context check.
 func TestWSRelayCancellationAfterPayloadRead(t *testing.T) {
