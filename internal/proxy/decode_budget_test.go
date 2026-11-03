@@ -20,16 +20,34 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// Under the race detector keep modest delivery cases for each encoding and
+// transport; the full sizes run in TestDecodeBudgetLargeForwardJSONBody,
+// TestDecodeBudgetLargeForwardHexBody, TestDecodeBudgetLargeForwardBase64Body
+// and their WebSocket counterparts in normal builds. Scanner decode-budget
+// tests retain the recursive refusal and large-first-layer boundary coverage.
 func decodeBudgetBody(name string) (string, string) {
+	const raceBodyBytes = 128 * 1024
 	switch name {
 	case "json":
-		return `{"message":"` + strings.Repeat("!", 5_240_000-20) + `\u0061"}`, "application/json"
+		size := 5_240_000
+		if raceEnabled {
+			size = raceBodyBytes
+		}
+		return `{"message":"` + strings.Repeat("!", size-20) + `\u0061"}`, "application/json"
 	case "hex":
-		return strings.Repeat("21", 3*1024*1024/2), "text/plain"
+		size := 3 * 1024 * 1024
+		if raceEnabled {
+			size = raceBodyBytes
+		}
+		return strings.Repeat("21", size/2), "text/plain"
 	case "base64":
-		n := 9 * 1024 * 1024 / 4 * 3
+		size := 9 * 1024 * 1024
+		if raceEnabled {
+			size = raceBodyBytes
+		}
+		n := size / 4 * 3
 		// Repeated '}' encodes to fX19: no form-query '+' and neither base32
-		// alphabet. This isolates the 9 MiB first decode layer from unrelated
+		// alphabet. This isolates the base64 layer from unrelated
 		// decode branches and malformed-UTF-8 normalization.
 		plain := bytes.Repeat([]byte{'}'}, n)
 		return base64.StdEncoding.EncodeToString(plain), "text/plain"
