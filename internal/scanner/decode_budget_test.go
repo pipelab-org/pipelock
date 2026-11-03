@@ -211,12 +211,11 @@ func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	// Two-layer base64 whose intermediate is past the recursive budget.
-	// The surrounding header is not itself that encoding, so only a segment
-	// walk reaches the bound. A compiled audience then drops the credential.
-	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
-	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
-	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	// A base64 segment reveals enough nested JSON escapes to spend the
+	// recursive budget. The surrounding header isn't that encoding, so only
+	// a segment walk reaches the bound. An audience then drops the credential.
+	// Large first-layer and terminal views are covered by the walk boundaries.
+	outer := base64.StdEncoding.EncodeToString([]byte(decodeBudgetNestedText()))
 	token := "ghp_" + strings.Repeat("A", 36)
 	value := "Bearer " + token + "/" + outer
 	// The whole header does not exhaust, so the inspection limit asserted
@@ -290,9 +289,7 @@ func testDecodeBudgetSegmentHTMLView(t *testing.T, coreOnly bool) {
 	}
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
-	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
-	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	outer := base64.StdEncoding.EncodeToString([]byte(decodeBudgetNestedText()))
 	entity := fmt.Sprintf("&#%d;", outer[0]) + outer[1:]
 	token := "ghp_" + strings.Repeat("A", 36)
 	value := "Bearer " + token + "/" + entity
