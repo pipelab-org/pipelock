@@ -121,6 +121,20 @@ func TestDecodeBudgetURLDirection(t *testing.T) {
 	}
 }
 
+// Keep the production bounds pinned independently of the fixture sizes.
+func TestDecodeBudgetProductionDefaults(t *testing.T) {
+	if maxDecodeTotalBytes != 8*1024*1024 {
+		t.Fatalf("recursive decode budget = %d, want 8 MiB", maxDecodeTotalBytes)
+	}
+	cfg := config.Defaults()
+	if cfg.RequestBodyScanning.MaxBodyBytes != 5*1024*1024 {
+		t.Fatalf("default body cap = %d, want 5 MiB", cfg.RequestBodyScanning.MaxBodyBytes)
+	}
+	if cfg.WebSocketProxy.MaxMessageBytes != 1024*1024 {
+		t.Fatalf("default frame cap = %d, want 1 MiB", cfg.WebSocketProxy.MaxMessageBytes)
+	}
+}
+
 func TestDecodeBudgetWalkBoundaries(t *testing.T) {
 	// HTML roots have an independent candidate budget, including its admission
 	// loop before any root is expanded. Plain terminal roots need no byte budget.
