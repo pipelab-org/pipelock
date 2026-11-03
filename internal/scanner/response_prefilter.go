@@ -61,9 +61,12 @@ func newResponsePreFilter(patterns []*compiledPattern) *responsePreFilter {
 					pf.prefixes[i] = newResponsePrefixProof(p.re)
 				}
 			}
-		} else if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
-			for _, re := range []*regexp.Regexp{p.re, externalTransferURLCandidateRE, externalTransferFileDirectiveRE} {
-				pf.companionProofs[i] = append(pf.companionProofs[i], newResponsePrefixProof(re))
+		} else {
+			pf.gates[i] = externalTransferGate(p.re)
+			if p.responseMemoRegexp != nil && p.responseMemoRegexp == p.re {
+				for _, re := range externalTransferExpressions(p.re) {
+					pf.companionProofs[i] = append(pf.companionProofs[i], newResponsePrefixProof(re))
+				}
 			}
 		}
 		if pf.gates[i] == nil {
@@ -93,11 +96,16 @@ func (pf *responsePreFilter) patternsToCheckWithMemo(content string, cached *res
 		cached.literals = make(responseLiteralMemo)
 	}
 	folded, distanceText, literals := cached.folded, cached.distance, cached.literals
+	// Rebuilt per call on the stack: a pass over the text costs less than
+	// retaining two filters on every cached view.
+	var pairs responseGatePairs
+	pairs.raw.add(content)
+	pairs.fold.add(folded)
 	var view *responseFoldView
 	var forward *responseFoldView
 	hits := make([]int, 0, len(pf.gates))
 	for i, gate := range pf.gates {
-		if gate != nil && !gate.matchesWithMemo(content, folded, distanceText, literals) {
+		if gate != nil && !gate.matchesWithPairs(content, folded, distanceText, literals, &pairs) {
 			continue
 		}
 		if len(content) >= responseMemoMinBytes && len(content) <= responseMemoMaxBytes && i < len(pf.prefixes) && pf.prefixes[i] != nil {
@@ -165,4 +173,31 @@ func hasEncodedRun(content string) bool {
 		}
 	}
 	return false
+}
+
+// externalTransferExpressions lists every expression that can report a match
+// for the transfer directive: the pattern itself and its companion arms.
+func externalTransferExpressions(re *regexp.Regexp) []*regexp.Regexp {
+	return []*regexp.Regexp{re, externalTransferURLCandidateRE, externalTransferFileDirectiveRE}
+}
+
+// externalTransferGate admits text that holds the mandatory literals of at
+// least one of the directive's expressions. responsePatternMatchLocations
+// reports a match only from one of them, so text no expression can match is
+// skipped for all three. Any expression without a gate keeps the pattern
+// ungated.
+func externalTransferGate(re *regexp.Regexp) *responseGate {
+	var branches []*responseGate
+	for _, expr := range externalTransferExpressions(re) {
+		tree, err := syntax.Parse(expr.String(), syntax.Perl)
+		if err != nil {
+			return nil
+		}
+		gate := responseLiteralGate(tree)
+		if gate == nil {
+			return nil
+		}
+		branches = append(branches, gate)
+	}
+	return &responseGate{any: branches}
 }

@@ -294,13 +294,13 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	var dlpViews []responseDLPView
 	if includeDLP {
 		dlpViews = []responseDLPView{
-			{joined, joinResponseText(cardText, envelope.card)},
-			{text, cardText},
-			{envelopeText, envelope.card},
+			{text: joined, card: joinResponseText(cardText, envelope.card)},
+			{text: text, card: cardText},
+			{text: envelopeText, card: envelope.card, structural: true},
 		}
 		// Whole keys remain ordinary text, but never join one another or values.
 		for _, key := range cardKeys {
-			dlpViews = append(dlpViews, responseDLPView{key, key})
+			dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 		}
 	}
 	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(opts.scanContext(), sc, opts, views, dlpViews)
@@ -425,7 +425,11 @@ func uniqueResponseMatches(matches []scanner.ResponseMatch) []scanner.ResponseMa
 	return unique
 }
 
-type responseDLPView struct{ text, card string }
+// structural marks a key or envelope view, which repeats across responses.
+type responseDLPView struct {
+	text, card string
+	structural bool
+}
 
 // scanResponseViewsWithCards scans each non-empty view on its own and merges
 // the findings, so a string seen by two views is reported once. A failed
@@ -463,6 +467,9 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		}
 	}
 	var dlpMatches, droppedDLP []scanner.TextDLPMatch
+	// The views overlap, so their scans reuse one another's decoded text.
+	ctx, release := scanner.WithSharedDecodes(ctx)
+	defer release()
 	for _, view := range dlpViews {
 		if view.text == "" {
 			continue
@@ -471,7 +478,12 @@ func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts R
 		// the ordinary text join can contain JSON-shaped key fragments.
 		// These are untrusted text views, not extractor boundary markers.
 		cardView := jsonnumber.EscapeCardBoundaries(view.card)
-		dlpResult := sc.ScanTextForDLPInboundWithTypedCardView(ctx, view.text, cardView)
+		var dlpResult scanner.TextDLPResult
+		if view.structural {
+			dlpResult = sc.ScanTextForDLPInboundStructuralView(ctx, view.text, cardView)
+		} else {
+			dlpResult = sc.ScanTextForDLPInboundWithTypedCardView(ctx, view.text, cardView)
+		}
 		if err := dlpResult.Err(); err != nil {
 			return scanner.ResponseScanResult{ScanError: err.Error()}, nil, nil
 		}
@@ -869,9 +881,9 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	// As on every other response path, sibling, error, params and envelope
 	// strings form one view so a finding split across them still matches.
 	// Tool text joins only the DLP view; the tool scanner owns its injection.
-	dlpViews := []responseDLPView{{joinResponseText(dlpText, envelopeText), joinResponseText(cardText, toolCardText, envelope.card)}}
+	dlpViews := []responseDLPView{{text: joinResponseText(dlpText, envelopeText), card: joinResponseText(cardText, toolCardText, envelope.card)}}
 	for _, key := range cardKeys {
-		dlpViews = append(dlpViews, responseDLPView{key, key})
+		dlpViews = append(dlpViews, responseDLPView{text: key, card: key, structural: true})
 	}
 	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(ctx, sc, opts, []string{joinResponseText(text, envelopeText)}, dlpViews)
 	if result.Failed() {

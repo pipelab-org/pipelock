@@ -184,12 +184,20 @@ func TestResponseGateDifferentialCorpus(t *testing.T) {
 			check(raw, -1)
 		}
 		for i, pattern := range group.patterns {
-			tree, err := syntax.Parse(pattern.re.String(), syntax.Perl)
-			if err != nil {
-				t.Fatal(err)
+			expressions := []*regexp.Regexp{pattern.re}
+			if hasExternalTransferCompanions(pattern) {
+				// The companion arms report matches for this pattern too, so
+				// the gate must admit text generated from each of them.
+				expressions = externalTransferExpressions(pattern.re)
 			}
-			for attempt := 0; attempt < 20; attempt++ {
-				check(genMatch(tree.Simplify(), rnd, 0), i)
+			for _, expr := range expressions {
+				tree, err := syntax.Parse(expr.String(), syntax.Perl)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for attempt := 0; attempt < 20; attempt++ {
+					check(genMatch(tree.Simplify(), rnd, 0), i)
+				}
 			}
 		}
 	}
