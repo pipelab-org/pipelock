@@ -75,14 +75,10 @@ const nestedURLBackendPath = "/pkg"
 func newNestedURLCountingBackend(t *testing.T) (*httptest.Server, *atomic.Int32) {
 	t.Helper()
 	var hits atomic.Int32
-	backend := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.RawQuery == "" && !r.URL.ForceQuery {
-			http.NotFound(w, r)
-			return
-		}
+	backend := newIPv4Server(t, ignoreLoopbackPortProbes(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = fmt.Fprint(w, "ok")
-	}))
+	})))
 	return backend, &hits
 }
 
@@ -198,10 +194,7 @@ func TestFetchEndpoint_RedirectNestedMetadataURLBlocked(t *testing.T) {
 }
 
 func TestSubmitProfile_NestedMetadataURLBlocked(t *testing.T) {
-	var upstreamHit atomic.Bool
-	upstream := newIPv4Server(t, http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		upstreamHit.Store(true)
-	}))
+	upstream, upstreamHits := newNestedURLCountingBackend(t)
 	defer upstream.Close()
 
 	cfg, upstreamURL := submitProfileTestConfig(upstream.URL)
@@ -220,7 +213,7 @@ func TestSubmitProfile_NestedMetadataURLBlocked(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status=%d want 403", resp.StatusCode)
 	}
-	if upstreamHit.Load() {
+	if upstreamHits.Load() != 0 {
 		t.Fatal("upstream invoked despite nested metadata URL")
 	}
 }
