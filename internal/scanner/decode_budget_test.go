@@ -271,10 +271,22 @@ func TestDecodeBudgetKnownValueURL(t *testing.T) {
 // only becomes the over-budget encoding after entity decoding must still
 // refuse when a credential stopped the matcher first.
 func TestDecodeBudgetSegmentSkipCoversHTMLView(t *testing.T) {
+	for _, coreOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("core_only_%v", coreOnly), func(t *testing.T) {
+			testDecodeBudgetSegmentHTMLView(t, coreOnly)
+		})
+	}
+}
+
+func testDecodeBudgetSegmentHTMLView(t *testing.T, coreOnly bool) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.APIAllowlist = nil
 	cfg.DLP.ScanEnv = false
+	if coreOnly {
+		cfg.DLP.Patterns = nil
+		cfg.SeedPhraseDetection.Enabled = new(bool)
+	}
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
 	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
@@ -296,5 +308,13 @@ func TestDecodeBudgetSegmentSkipCoversHTMLView(t *testing.T) {
 	result := sc.ScanTextForDLP(t.Context(), value)
 	if !HasInspectionLimit(result.Matches) {
 		t.Fatalf("HTML view segment walk skipped: clean=%v matches=%v", result.Clean, matchNames(result.Matches))
+	}
+	kept, allows := sc.FilterHeaderDLPMatches(result.Matches, "https://api.github.com/repos/example", "Authorization", value)
+	if len(allows) == 0 || !HasInspectionLimit(kept) {
+		t.Fatalf("audience filter removed the HTML budget refusal: kept=%v allows=%v", matchNames(kept), allows)
+	}
+	inbound := sc.ScanTextForDLP(WithInboundDirection(t.Context()), value)
+	if HasInspectionLimit(inbound.Matches) {
+		t.Fatal("inbound HTML segment budget refused a response")
 	}
 }

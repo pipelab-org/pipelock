@@ -856,10 +856,16 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	}
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
-	if decodes != nil {
-		// Same normalized text the segment matcher uses, including the
-		// early return that runs before that matcher.
-		budgetViews = []string{decodes.normalize(text)}
+	cleaned := decodes.normalize(text)
+	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	segmentDecodeViews := segmentViews
+	htmlDecoded := decodes.decodeHTML(cleaned)
+	if htmlDecoded != cleaned {
+		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(htmlDecoded)...)
+	}
+	// Build the complete budget view set before the core-only return.
+	for _, view := range segmentDecodeViews {
+		budgetViews = append(budgetViews, view.text)
 	}
 
 	// Core DLP runs FIRST - immutable safety floor. Core matches are
@@ -1004,8 +1010,6 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// NFKC, cross-script confusable mapping, and combining mark removal.
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
-	cleaned := decodes.normalize(text)
-	budgetViews = []string{cleaned}
 	if opts.patterns != textDLPCardPatterns {
 		matches = append(matches, s.scanCanaryTextWithDecodes(cleaned, decodes)...)
 	}
@@ -1043,17 +1047,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, "url"))...)
 	}
 
-	segmentViews := textDLPEncodingSegmentViews(cleaned)
-	segmentDecodeViews := segmentViews
-	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, encodingHTML))...)
-		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(decoded, decodes))...)
-		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decoded)...)
-	}
-	// The budget walk covers every view the segment matcher may skip.
-	budgetViews = budgetViews[:0]
-	for _, view := range segmentDecodeViews {
-		budgetViews = append(budgetViews, view.text)
+	if htmlDecoded != cleaned {
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(htmlDecoded, encodingHTML))...)
+		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(htmlDecoded, decodes))...)
 	}
 
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
