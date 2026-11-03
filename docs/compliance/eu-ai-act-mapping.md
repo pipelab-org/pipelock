@@ -127,7 +127,7 @@ Note: Art. 15(5) uses "adversarial examples" and "model evasion," not "prompt in
 | **Resilient against unauthorized alteration** (Art. 15(5)) | Pipelock blocks mediated exfiltration attempts and SSRF probes by inspecting traffic at the network and tool boundary. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked. Coverage is bounded to traffic that traverses the Pipelock proxy (forward, intercept, reverse, fetch, MCP, WebSocket, A2A surfaces); capability separation reduces risk further when deployment topology or sandboxing forces agent traffic through Pipelock, but the topology that routes traffic through the proxy is deployment-enforced, not binary-enforced. Out-of-band channels not routed through Pipelock fall outside this control. | Partial |
 | **Technical redundancy / fail-safe** (Art. 15(4)) | Fail-closed architecture: scan error, HITL timeout, parse failure, DNS error, context cancellation all default to block | Full |
 | **Resilient to errors and faults** (Art. 15(4)) | DNS rebinding protection (resolve-validate-dial); IPv4-mapped IPv6 normalization; CRLF normalization in diff parsing | Full |
-| **Accuracy metrics declared** (Art. 15(1-3)) | Prometheus counters per scanner layer; false positive tuning via audit mode | Partial |
+| **Accuracy metrics declared** (Art. 15(1-3)) | Prometheus counters per scanner layer; false positive tuning with the audit preset (`enforce: false`) | Partial |
 
 **Gap:** Data poisoning in Art. 15(5) refers to training data manipulation. Pipelock's integrity monitoring protects workspace files, not training datasets. Model poisoning and model flaws are out of scope.
 
@@ -198,7 +198,7 @@ How Pipelock maps to NIST AI Risk Management Framework functions, with EU AI Act
 | MEASURE 2.6 | Evaluated for misuse and abuse | Scanning layers target misuse: DLP catches exfiltration, SSRF catches internal probing of agent-chosen destinations, injection detection catches hijacking. Configured MCP upstream dialing still blocks cloud metadata endpoints. | Art. 9, 15 |
 | MEASURE 2.7 | Security and resilience evaluated | Security audit completed (26 of 32 items fixed); DNS rebinding protection; fail-closed architecture | Art. 15 |
 | MEASURE 3.1 | Risks tracked on ongoing basis | Prometheus real-time tracking; zerolog persistent timeline; both queryable and alertable | Art. 12 |
-| MEASURE 3.3 | Feedback mechanisms for improvement | HITL `ask` action: human decisions logged for policy refinement; audit mode measures before enforcing | Art. 14 |
+| MEASURE 3.3 | Feedback mechanisms for improvement | HITL `ask` action: human decisions logged for policy refinement; the audit preset (`enforce: false`) measures before enforcing | Art. 14 |
 
 ### MANAGE - Risk Mitigation Controls
 
