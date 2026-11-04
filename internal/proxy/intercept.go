@@ -2421,6 +2421,7 @@ func newInterceptHandler(
 			}
 			if streamErr == nil {
 				recordDeliveredIssuerCookies(ic, r, resp, true)
+				recordDeliveredIssuerQuery(ic, resp, nil, true)
 			}
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
@@ -2671,6 +2672,7 @@ func newInterceptHandler(
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
+					recordDeliveredIssuerQuery(ic, resp, nil, true)
 					interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {

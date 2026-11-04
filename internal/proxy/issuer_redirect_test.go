@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,10 +59,11 @@ type delegationEnv struct {
 	p        *Proxy
 	rt       http.RoundTripper
 
-	status    atomic.Int64
-	locations atomic.Pointer[[]string]
-	fileHits  atomic.Int32
-	sourceHit atomic.Int32
+	status        atomic.Int64
+	locations     atomic.Pointer[[]string]
+	fileHits      atomic.Int32
+	sourceHit     atomic.Int32
+	sourcePayload atomic.Pointer[struct{ contentType, body string }]
 }
 
 func newDelegationEnv(t *testing.T, mutate func(*config.Config)) *delegationEnv {
@@ -72,12 +74,23 @@ func newDelegationEnv(t *testing.T, mutate func(*config.Config)) *delegationEnv 
 		switch strings.Split(r.Host, ":")[0] {
 		case delegationSourceHost:
 			e.sourceHit.Add(1)
+			payload := e.sourcePayload.Load()
+			if payload != nil {
+				w.Header().Set("Content-Type", payload.contentType)
+				w.Header().Set("Content-Length", strconv.Itoa(len(payload.body)))
+				if payload.contentType == "application/octet-stream" {
+					w.Header().Set("Content-Disposition", "attachment")
+				}
+			}
 			if locs := e.locations.Load(); locs != nil {
 				for _, l := range *locs {
 					w.Header().Add("Location", l)
 				}
 			}
 			w.WriteHeader(int(e.status.Load()))
+			if payload != nil {
+				_, _ = io.WriteString(w, payload.body)
+			}
 		default:
 			e.fileHits.Add(1)
 			_, _ = io.WriteString(w, "file-bytes")
@@ -153,6 +166,43 @@ func delegationSourceURL() string { return "https://" + delegationSourceHost + d
 
 func delegationTicketQuery() string {
 	return "tempauth=" + issuedTestToken() + "&ApiVersion=2.0"
+}
+
+func TestInterceptIssuedRedirectDeliveryPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name, contentType, body string
+		passthrough             bool
+	}{
+		{"SSE", "text/event-stream", "data: ready\n\n", false},
+		{"opaque passthrough", "application/octet-stream", strings.Repeat("x", (1<<20)+1), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newDelegationEnv(t, func(c *config.Config) {
+				if tc.passthrough {
+					c.FetchProxy.MaxResponseMB = 1
+					c.TLSInterception.MaxResponseBytes = 1 << 20
+					c.ResponseScanning.SizeExemptDomains = []string{delegationSourceHost}
+					c.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+						Host: delegationSourceHost, Paths: []string{delegationSourcePath},
+						ContentTypes: []string{tc.contentType}, Reason: "operator-approved binary route",
+						Expires: delegationFixture().Expires,
+					}}
+				}
+			})
+			e.sourcePayload.Store(&struct{ contentType, body string }{tc.contentType, tc.body})
+			good := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			if got := e.do("agent-one", http.MethodGet, good); got != http.StatusForbidden {
+				t.Fatalf("unissued target status = %d, want 403", got)
+			}
+			e.issue(http.StatusFound, good)
+			if got := e.issueAndFollow(good); got != http.StatusOK {
+				t.Fatalf("delivered redirect target status = %d, want 200", got)
+			}
+			if got := e.do("agent-two", http.MethodGet, good); got != http.StatusForbidden {
+				t.Fatalf("other session status = %d, want 403", got)
+			}
+		})
+	}
 }
 
 // issueAndFollow issues a redirect from the source and follows location as

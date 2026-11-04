@@ -5,6 +5,7 @@ package config
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -136,7 +137,7 @@ func normalizeIssuedRedirectSource(route RequestPolicyRoute, label string) (Requ
 		return route, fmt.Errorf("%s.methods must name at least one method", label)
 	}
 	if len(route.PathPrefixes) == 0 && len(route.PathPatterns) == 0 {
-		return route, fmt.Errorf("%s needs path_prefixes or path_patterns; a host-wide source is not a delegation", label)
+		return route, fmt.Errorf("%s needs explicit path_prefixes or path_patterns", label)
 	}
 	if err := validateRequestPolicyRoute(&route, label); err != nil {
 		return route, err
@@ -269,7 +270,7 @@ func cloneIssuedRedirectDelegations(entries []IssuedRedirectDelegation) []Issued
 }
 
 // canonicalIssuedRedirectDelegations is the policy-hash view: normalized,
-// sorted, and without the reason and owner text. Entries that do not validate
+// sorted, and without the name, reason and owner text. Entries that do not validate
 // keep their spelling so the hash still distinguishes them.
 func canonicalIssuedRedirectDelegations(entries []IssuedRedirectDelegation) []IssuedRedirectDelegation {
 	if len(entries) == 0 {
@@ -280,9 +281,15 @@ func canonicalIssuedRedirectDelegations(entries []IssuedRedirectDelegation) []Is
 		out = normalized
 	}
 	for i := range out {
-		out[i].Reason, out[i].Owner = "", ""
+		out[i].Name, out[i].Reason, out[i].Owner = "", "", ""
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		// Every field is JSON-marshalable. Compare the complete enforcement
+		// view so renamed entries and invalid spellings have stable ordering.
+		left, _ := json.Marshal(out[i])
+		right, _ := json.Marshal(out[j])
+		return string(left) < string(right)
+	})
 	return out
 }
 

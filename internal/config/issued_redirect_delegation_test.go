@@ -236,9 +236,14 @@ func TestIssuedRedirectDelegationPolicyHash(t *testing.T) {
 		t.Fatal("entry order changed the policy hash")
 	}
 	noText := testDelegation()
+	noText.Name = "renamed-route"
 	noText.Reason, noText.Owner = "edited reason", "edited owner"
 	if delegationConfig(noText).CanonicalPolicyHash() != base {
 		t.Fatal("reason and owner text changed the policy hash")
+	}
+	other.Name = "aaa-renamed-second"
+	if delegationConfig(other, noText).CanonicalPolicyHash() != ab {
+		t.Fatal("renaming entries changed the policy hash or canonical order")
 	}
 	respelled := testDelegation()
 	respelled.TargetOrigins = []string{"HTTPS://FILES.VENDOR.EXAMPLE:443"}
