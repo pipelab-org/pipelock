@@ -121,7 +121,7 @@ func TestStatusLicenseStateExpiryWarning(t *testing.T) {
 func TestModeActionFollowsEnforce(t *testing.T) {
 	t.Parallel()
 
-	off := false
+	off, on := false, true
 	for _, tc := range []struct {
 		name    string
 		mode    string
@@ -129,8 +129,10 @@ func TestModeActionFollowsEnforce(t *testing.T) {
 		want    string
 	}{
 		{"audit enforce default", config.ModeAudit, nil, config.ActionBlock},
+		{"audit enforce true", config.ModeAudit, &on, config.ActionBlock},
 		{"audit enforce false", config.ModeAudit, &off, config.ActionWarn},
 		{"balanced enforce default", config.ModeBalanced, nil, config.ActionBlock},
+		{"balanced enforce true", config.ModeBalanced, &on, config.ActionBlock},
 		{"balanced enforce false", config.ModeBalanced, &off, config.ActionWarn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

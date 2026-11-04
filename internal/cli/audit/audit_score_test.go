@@ -465,6 +465,12 @@ func TestScoreEnforcement_AuditMode(t *testing.T) {
 			t.Errorf("enforce=true audit finding claims traffic is forwarded: %q", f.Message)
 		}
 	}
+	for _, f := range findings {
+		if f.Severity == scoreSevInfo && strings.Contains(f.Message, "ordinary URL findings still block") {
+			return
+		}
+	}
+	t.Errorf("enforce=true audit finding should say ordinary URL findings still block, got %+v", findings)
 }
 
 func TestScoreEnforcement_AuditModeEnforceFalse(t *testing.T) {
