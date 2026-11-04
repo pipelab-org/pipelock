@@ -191,6 +191,13 @@ func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
 		{"/v1/hooks/opaque-segment", "[redacted-url]"},
 		{"api.vendor.example/path?ref=value", "[redacted-url]"},
 		{"api.vendor.example/path#fragment", "[redacted-url]"},
+		// A scheme with a path but no authority is request content too.
+		{"https:/opaque-segment", "[redacted-url]"},
+		{"https:/opaque/segment", "[redacted-url]"},
+		{"mcp:/opaque-segment", "[redacted-url]"},
+		// Colon-bearing identifiers parse as opaque, not path-absolute.
+		{"server:read_file", "server:read_file"},
+		{"localhost:8080", "localhost:8080"},
 		// Absolute URLs, identifiers and exempt shapes behave as SanitizeTarget does.
 		{"https://api.vendor.example/path?ref=value", "https://api.vendor.example"},
 		{"api.vendor.example:443", "api.vendor.example:443"},

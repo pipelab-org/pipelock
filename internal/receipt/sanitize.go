@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"net/url"
 	"strings"
 	"unicode"
 
@@ -48,19 +49,31 @@ func sanitizeTarget(target string, clean dlpClean) string {
 // receipt. A signed target must never keep request content, so it also reduces
 // URL syntax that is not an absolute URL: an origin-form request target (RFC
 // 9112 section 3.2.1; inbound server-side request URLs such as "/path?query"
-// carry no scheme or host) and any value holding the query or fragment
-// delimiter (RFC 3986 sections 3.4 and 3.5). These have no destination, so
-// they reduce to the redaction marker. Bare CONNECT authorities and opaque
-// tool names hold none of these and keep their spelling.
+// carry no scheme or host), any value holding the query or fragment delimiter
+// (RFC 3986 sections 3.4 and 3.5), and a scheme followed directly by an
+// absolute path (see schemePathAbsolute). These have no destination, so they
+// reduce to the redaction marker. Bare CONNECT authorities and opaque tool
+// names hold none of these and keep their spelling.
 //
 // sanitizeTarget alone serves diagnostic output that reads unsigned logs, where
 // relative targets keep their non-secret context.
 func sanitizeSignedTarget(target string, clean dlpClean) string {
 	if !mcpServerTarget(target) && !strings.Contains(target, "://") &&
-		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#")) {
+		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#") || schemePathAbsolute(target)) {
 		target = destination.RedactURLTarget(target)
 	}
 	return sanitizeTarget(target, clean)
+}
+
+// schemePathAbsolute reports a scheme followed directly by an absolute path
+// with no "//" authority, such as "https:/opaque-segment" (RFC 3986 section 3,
+// the path-absolute form of hier-part). url.URL.String produces this spelling
+// for a URL with a scheme and path but no host. Bare CONNECT authorities
+// ("host:443") and colon-bearing tool names ("server:tool") parse with an
+// opaque part instead, so they keep their spelling.
+func schemePathAbsolute(target string) bool {
+	u, err := url.Parse(target)
+	return err == nil && u.Scheme != "" && u.Opaque == "" && u.Host == "" && strings.HasPrefix(u.Path, "/")
 }
 
 // mcpServerTarget reports whether target is one of the two MCP producer

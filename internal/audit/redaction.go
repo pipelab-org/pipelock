@@ -57,6 +57,13 @@ func scannerContentFieldMode(scanner string) contentFieldMode {
 	}
 }
 
+// KeepsDiagnosticPath reports whether audit logs keep the URL path for events
+// attributed to scanner because the path is the finding (path traversal,
+// CRLF). Readers of those logs use it to render the same retained path.
+func KeepsDiagnosticPath(scanner string) bool {
+	return scannerContentFieldMode(scanner) == contentFieldModePathDiagnostic
+}
+
 // IsContentScanner reports whether blocks attributed to the given scanner
 // name imply the URL/target contains the secret-shaped bytes that fired
 // the match. Callers constructing client-facing block responses (fetch,
