@@ -4255,7 +4255,7 @@ For local model gateways such as LiteLLM, a log line like this can appear when
 the agent sends chat requests through the forward proxy:
 
 ```json
-{"event":"taint_decision","method":"POST","url":"http://litellm:4000/v1/chat/completions","decision":"ask","reason":"external_publish_after_untrusted_external_exposure","source_url":"http://litellm:4000/v1/chat/completions"}
+{"event":"taint_decision","method":"POST","url":"http://litellm:4000","decision":"ask","reason":"external_publish_after_untrusted_external_exposure","source_url":"http://litellm:4000"}
 ```
 
 If that gateway is operator-trusted and clean model responses from it should not

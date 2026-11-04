@@ -277,8 +277,8 @@ func (l *Logger) LogAllowed(ctx LogContext, statusCode, sizeBytes int, duration 
 	}
 	e := newLogEntry(l.zl.Info(), EventAllowed).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
@@ -416,8 +416,8 @@ func (l *Logger) LogBlockedDetail(ctx LogContext, scanner, reason string, detail
 func (l *Logger) LogError(ctx LogContext, err error) {
 	e := newLogEntry(l.zl.Error(), EventError).
 		optStr("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
@@ -493,8 +493,8 @@ func (l *Logger) LogAgentIdentityCollision(ctx LogContext, reservedAgent string)
 
 	e := newLogEntry(l.zl.Warn(), EventAnomaly).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("resource", ctx.resource).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
@@ -542,10 +542,10 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 		Str("event", string(EventResponseScanExempt)).
 		Str("method", ctx.method)
 	if ctx.url != "" {
-		event = event.Str("url", sanitizeString(ctx.url))
+		event = event.Str("url", sanitizeString(dropURLContentSegments(ctx.url, false)))
 	}
 	if ctx.target != "" {
-		event = event.Str("target", sanitizeString(ctx.target))
+		event = event.Str("target", sanitizeString(dropURLContentSegments(ctx.target, false)))
 	}
 	if ctx.resource != "" {
 		event = event.Str("resource", sanitizeString(ctx.resource))
@@ -579,10 +579,10 @@ func (l *Logger) logResponseScanExempt(ctx LogContext, hostname, effect string) 
 			fields["effect"] = effect
 		}
 		if ctx.url != "" {
-			fields["url"] = sanitizeString(ctx.url)
+			fields["url"] = sanitizeString(dropURLContentSegments(ctx.url, false))
 		}
 		if ctx.target != "" {
-			fields["target"] = sanitizeString(ctx.target)
+			fields["target"] = sanitizeString(dropURLContentSegments(ctx.target, false))
 		}
 		if ctx.resource != "" {
 			fields["resource"] = sanitizeString(ctx.resource)
@@ -613,10 +613,10 @@ func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname,
 		Str("event", string(EventResponseScanExempt)).
 		Str("method", ctx.method)
 	if ctx.url != "" {
-		event = event.Str("url", sanitizeString(ctx.url))
+		event = event.Str("url", sanitizeString(dropURLContentSegments(ctx.url, false)))
 	}
 	if ctx.target != "" {
-		event = event.Str("target", sanitizeString(ctx.target))
+		event = event.Str("target", sanitizeString(dropURLContentSegments(ctx.target, false)))
 	}
 	if ctx.resource != "" {
 		event = event.Str("resource", sanitizeString(ctx.resource))
@@ -652,10 +652,10 @@ func (l *Logger) LogResponseScanExemptOverCapUnscanned(ctx LogContext, hostname,
 			"effect":           responseScanExemptFullTrustEffect,
 		}
 		if ctx.url != "" {
-			fields["url"] = sanitizeString(ctx.url)
+			fields["url"] = sanitizeString(dropURLContentSegments(ctx.url, false))
 		}
 		if ctx.target != "" {
-			fields["target"] = sanitizeString(ctx.target)
+			fields["target"] = sanitizeString(dropURLContentSegments(ctx.target, false))
 		}
 		if ctx.resource != "" {
 			fields["resource"] = sanitizeString(ctx.resource)
@@ -710,7 +710,7 @@ type MediaExposureInfo struct {
 func (l *Logger) LogMediaExposure(ctx LogContext, info MediaExposureInfo) {
 	e := newLogEntry(l.zl.Warn(), EventMediaExposure).
 		optStr("method", ctx.method).
-		str("url", ctx.url).
+		str("url", dropURLContentSegments(ctx.url, false)).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
@@ -876,7 +876,7 @@ type TaintDecision struct {
 func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 	e := newLogEntry(l.zl.Warn(), EventTaintDecision).
 		optStr("method", ctx.method).
-		str("url", ctx.url).
+		str("url", dropURLContentSegments(ctx.url, false)).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
@@ -888,7 +888,7 @@ func (l *Logger) LogTaintDecision(ctx LogContext, d TaintDecision) {
 		str("decision", d.Decision).
 		str("reason", d.Reason).
 		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.AuditTaintPolicy, d.Reason)).
-		optStr("source_url", d.SourceURL).
+		optStr("source_url", dropURLContentSegments(d.SourceURL, false)).
 		optStr("source_kind", d.SourceKind)
 	e.msg("taint policy decision")
 
@@ -1184,8 +1184,8 @@ func (l *Logger) LogHeaderDLP(ctx LogContext, headerName, action string, pattern
 
 	e := newLogEntry(l.zl.Warn(), EventHeaderDLP).
 		str("method", ctx.method).
-		optStr("url", ctx.url).
-		optStr("target", ctx.target).
+		optStr("url", dropURLContentSegments(ctx.url, false)).
+		optStr("target", dropURLContentSegments(ctx.target, false)).
 		optStr("resource", ctx.resource).
 		str("header", headerName).
 		str("action", action).
@@ -1352,7 +1352,7 @@ func (l *Logger) LogShieldRewrite(category string, hits int, transport, targetUR
 		str("category", category).
 		intField("hits", hits).
 		str("transport", transport).
-		str("url", targetURL).
+		str("url", dropURLContentSegments(targetURL, false)).
 		optStr("client_ip", clientIP).
 		optStr("request_id", requestID)
 	e.msg("browser shield rewrote content")
