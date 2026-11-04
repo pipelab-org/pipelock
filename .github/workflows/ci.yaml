@@ -134,6 +134,8 @@ jobs:
     outputs:
       ci_policy: ${{ steps.check.outputs.ci_policy }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
+      benchmark_smoke: ${{ steps.check.outputs.benchmark_smoke }}
+      benchmark_alloc: ${{ steps.check.outputs.benchmark_alloc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -158,6 +160,29 @@ jobs:
           else
             echo "PR touches no CI-policy files"
             echo "ci_policy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Benchmark compilation is substantial, so limit PR smoke to Go and
+          # benchmark inputs. Main pushes always exercise the complete graph.
+          benchmark_changes="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
+            '*.go' go.mod go.sum Makefile .github/workflows/ci.yaml \
+            scripts/bench_run.py scripts/e2e/browser_repro/ \
+            ':(glob)**/testdata/**' configs/)"
+          if [ -n "$benchmark_changes" ]; then
+            echo "benchmark_smoke=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "benchmark_smoke=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Module files affect all three benchmarked dependency graphs; the
+          # workflow and runner paths exercise changes to this report itself.
+          allocation_changes="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
+            internal/scanner/ internal/proxy/ internal/mcp/ go.mod go.sum \
+            .github/workflows/ci.yaml scripts/bench_run.py scripts/test_bench_compare.py scripts/test_bench_regression.py)"
+          if [ -n "$allocation_changes" ]; then
+            echo "benchmark_alloc=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "benchmark_alloc=false" >> "$GITHUB_OUTPUT"
           fi
 
       # A pull request that changes only prose skips the Go build, test, lint
@@ -1589,6 +1614,60 @@ jobs:
             exit 1
           fi
 
+  # Informational only: deliberately absent from the required build gate.
+  benchmark-allocations:
+    needs: [security-scan, changed-files]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.security-scan.result == 'success' && needs.changed-files.outputs.benchmark_alloc == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      # The default checkout is the pull request merged into its base, so the
+      # base tip is the comparison point and the delta is exactly this change.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Compare base and merged allocations
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          baseline="$RUNNER_TEMP/benchmark-base"
+          output="$RUNNER_TEMP/benchmark-allocations"
+          git worktree add --detach "$baseline" "$BASE_SHA"
+          mkdir -m 750 "$output"
+          python3 scripts/bench_run.py --alloc-report \
+            --baseline "$baseline" --candidate "$PWD" --output "$output"
+          cat "$output/allocation-summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+  benchmark-smoke:
+    needs: [security-scan, changed-files]
+    # Go-change PRs and benchmark-input changes; every main push also runs.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && (github.event_name == 'push' || needs.changed-files.outputs.benchmark_smoke == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Run every benchmark once
+        # Includes fixture-backed cases using credential-free generated inputs.
+        run: make bench-smoke
+
   # Compile in parallel with tests and lint so a successful critical path does
   # not pay the build cost after the slowest test shard has already finished.
   build-binaries:
@@ -1761,7 +1840,7 @@ jobs:
   # so a compilation failure cannot present as a successful required build check.
   # The agent review caller contract flows through it too and never skips.
   build:
-    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-enterprise, lint-policy, config-examples, test-cross-target, helm, build-binaries, agent-review-contract]
+    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-enterprise, lint-policy, config-examples, test-cross-target, helm, build-binaries, agent-review-contract, benchmark-smoke]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1777,6 +1856,8 @@ jobs:
           CONFIG_EXAMPLES_RESULT: ${{ needs.config-examples.result }}
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
+          BENCHMARK_SMOKE_RESULT: ${{ needs.benchmark-smoke.result }}
+          BENCHMARK_SMOKE_REQUIRED: ${{ needs.changed-files.outputs.benchmark_smoke }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
           AGENT_REVIEW_CONTRACT_RESULT: ${{ needs.agent-review-contract.result }}
           CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
@@ -1791,6 +1872,15 @@ jobs:
           if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" != success ]; then
             echo "changed-files did not succeed, so skipped upper-lane tests are not evidence" >&2
             exit 1
+          fi
+          # A skipped smoke is intentional only when the successful classifier
+          # ruled out benchmark inputs. Failure or cancellation never qualifies.
+          if [ "$BENCHMARK_SMOKE_RESULT" != success ]; then
+            if [ "$BENCHMARK_SMOKE_RESULT" != skipped ] || [ "$EVENT_NAME" = push ] || \
+               [ "$CHANGED_FILES_RESULT" != success ] || [ "$BENCHMARK_SMOKE_REQUIRED" != false ]; then
+              echo "benchmark smoke evidence is incomplete or failed" >&2
+              exit 1
+            fi
           fi
           # A documentation-only pull request skips these producers on purpose.
           # The skip is evidence only with a successful classifier that said so.

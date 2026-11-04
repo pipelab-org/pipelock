@@ -25,10 +25,10 @@ ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yaml"
 
 
-def classifier_script() -> str:
+def classifier_script(step_id: str = "docs") -> str:
     jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
     steps = jobs["changed-files"]["steps"]
-    matches = [step["run"] for step in steps if step.get("id") == "docs"]
+    matches = [step["run"] for step in steps if step.get("id") == step_id]
     if len(matches) != 1:
         raise AssertionError("changed-files must have exactly one docs classifier step")
     return matches[0]
@@ -167,7 +167,7 @@ class DocsClassifierTest(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true")
+            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true\nbenchmark_smoke=true\nbenchmark_alloc=true")
 
     def test_empty_diff_runs_everything(self) -> None:
         self.commit("empty")
@@ -179,6 +179,54 @@ class DocsClassifierTest(unittest.TestCase):
         status, output = self.classify(base="0" * 40)
         self.assertNotEqual(status, 0)
         self.assertNotIn("docs_only=true", output)
+
+    def test_benchmark_inputs_select_smoke(self) -> None:
+        self.script = classifier_script("check")
+        for path in ("internal/scanner/new.go", "internal/config/new.go", "go.mod", "go.sum",
+                     "Makefile", ".github/workflows/ci.yaml", "scripts/bench_run.py",
+                     "scripts/e2e/browser_repro/fixture.py", "internal/scanner/testdata/body.json", "configs/new.yaml"):
+            with self.subTest(path=path):
+                base = self.rev()
+                self.write(path, "new benchmark input\n")
+                self.commit("input")
+                status, output = self.classify(base=base)
+                self.assertEqual(status, 0)
+                self.assertIn("benchmark_smoke=true", output)
+        base = self.rev()
+        (self.repo / "internal/scanner/new.go").unlink()
+        self.commit("remove")
+        self.assertIn("benchmark_smoke=true", self.classify(base=base)[1])
+
+    def test_unrelated_files_skip_benchmark_smoke_but_git_errors_do_not(self) -> None:
+        self.script = classifier_script("check")
+        self.write("README.md", "prose edit\n")
+        self.commit("prose")
+        self.assertIn("benchmark_smoke=false", self.classify()[1])
+        status, output = self.classify(base="0" * 40)
+        self.assertNotEqual(status, 0)
+        self.assertNotIn("benchmark_smoke=false", output)
+
+    def test_required_build_rejects_failed_or_unproven_smoke(self) -> None:
+        job = yaml.safe_load(WORKFLOW.read_text())["jobs"]["build"]
+        step = job["steps"][0]
+        env = {**os.environ, **{key: "success" for key in step["env"]},
+               "EVENT_NAME": "pull_request", "DOCS_ONLY": "false"}
+        for result, required, classifier, event, expected in (
+                ("success", "true", "success", "pull_request", 0),
+                ("failure", "false", "success", "pull_request", 1),
+                ("cancelled", "false", "success", "pull_request", 1),
+                ("skipped", "false", "success", "pull_request", 0),
+                ("skipped", "true", "success", "pull_request", 1),
+                ("skipped", "", "success", "pull_request", 1),
+                ("skipped", "false", "failure", "pull_request", 1),
+                ("skipped", "false", "success", "push", 1)):
+            with self.subTest(result=result, required=required, classifier=classifier, event=event):
+                run = subprocess.run(["bash", "-c", step["run"]], cwd=self.repo,
+                                     env={**env, "BENCHMARK_SMOKE_RESULT": result,
+                                          "BENCHMARK_SMOKE_REQUIRED": required,
+                                          "CHANGED_FILES_RESULT": classifier, "EVENT_NAME": event},
+                                     capture_output=True, text=True, check=False)
+                self.assertEqual(run.returncode, expected, run.stdout + run.stderr)
 
 
 if __name__ == "__main__":

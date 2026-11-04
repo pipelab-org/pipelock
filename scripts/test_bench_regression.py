@@ -201,6 +201,36 @@ class PairTest(unittest.TestCase):
             mock.start()
             self.addCleanup(mock.stop)
 
+    def test_allocation_capture_retains_in_process_repetitions(self):
+        def measurement(command, *, cwd, check, stdout, stderr):
+            self.calls.append((cwd, list(command)))
+            stdout.write(samples() * RUN.ALLOCATION_REPETITIONS)
+        with patch.object(RUN.subprocess, "run", side_effect=measurement):
+            RUN.capture_allocations(self.base, self.cur, self.out)
+        self.assertEqual(len(self.calls), 2)
+        for _, command in self.calls:
+            self.assertIn(f"-count={RUN.ALLOCATION_REPETITIONS}", command)
+            self.assertIn("-benchtime=20x", command)
+        self.assertIn("Unchanged benchmarks: 1", (self.out / "allocation-summary.md").read_text())
+
+    def test_allocation_capture_reports_deltas_without_failure(self):
+        def measurement(command, *, cwd, check, stdout, stderr):
+            rows = samples() * RUN.ALLOCATION_REPETITIONS
+            if cwd == self.cur:
+                rows = rows.replace("0 allocs/op", "3 allocs/op")
+            stdout.write(rows)
+        with patch.object(RUN.subprocess, "run", side_effect=measurement):
+            RUN.capture_allocations(self.base, self.cur, self.out)
+        self.assertIn("| 0 | 3 | +3 |", (self.out / "allocation-summary.md").read_text())
+
+    def test_allocation_capture_fails_on_benchmark_failure(self):
+        self.failure = self.base
+        with contextlib.redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(subprocess.CalledProcessError):
+                RUN.capture_allocations(self.base, self.cur, self.out)
+        self.assertIn("synthetic stderr", errors.getvalue())
+        self.assertFalse((self.out / "allocation-summary.md").exists())
+
     def measurement(self, command, *, cwd, check, stdout, stderr):
         self.assertTrue(check)
         self.calls.append((cwd, list(command)))

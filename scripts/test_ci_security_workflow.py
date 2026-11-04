@@ -29,6 +29,7 @@ BUILD_GATE_RESULTS = (
     "HELM_RESULT",
     "BUILD_BINARIES_RESULT",
     "AGENT_REVIEW_CONTRACT_RESULT",
+    "BENCHMARK_SMOKE_RESULT",
 )
 # The subset a documentation-only pull request skips on purpose.
 DOCS_SKIPPABLE_RESULTS = (
@@ -37,6 +38,8 @@ DOCS_SKIPPABLE_RESULTS = (
     "CROSS_TARGET_RESULT",
     "HELM_RESULT",
     "BUILD_BINARIES_RESULT",
+    # Skippable only because the classifier ruled out benchmark inputs.
+    "BENCHMARK_SMOKE_RESULT",
 )
 
 
@@ -186,6 +189,7 @@ exit "$DEFAULT_STATUS"
                 "helm",
                 "build-binaries",
                 "agent-review-contract",
+                "benchmark-smoke",
             },
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )
@@ -198,6 +202,7 @@ exit "$DEFAULT_STATUS"
         result_names = BUILD_GATE_RESULTS
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in result_names})
+        base_env["BENCHMARK_SMOKE_REQUIRED"] = "true"
         base_env.update({
             "CHANGED_FILES_RESULT": "success",
             "DOCS_ONLY": "false",
@@ -233,6 +238,7 @@ exit "$DEFAULT_STATUS"
         script = step_script(self.build, "Report required build evidence")
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in BUILD_GATE_RESULTS})
+        base_env["BENCHMARK_SMOKE_REQUIRED"] = "true"
 
         def run(event: str, classifier: str) -> int:
             env = base_env.copy()
@@ -257,9 +263,11 @@ exit "$DEFAULT_STATUS"
         script = step_script(self.build, "Report required build evidence")
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in BUILD_GATE_RESULTS})
+        base_env["BENCHMARK_SMOKE_REQUIRED"] = "true"
 
         def run(event: str, classifier: str, docs: str, **results: str) -> int:
-            env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": docs} | results
+            env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": docs,
+                              "BENCHMARK_SMOKE_REQUIRED": "false"} | results
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
@@ -283,6 +291,29 @@ exit "$DEFAULT_STATUS"
             for name in sorted(set(BUILD_GATE_RESULTS) - set(DOCS_SKIPPABLE_RESULTS)):
                 with self.subTest(always_required=name):
                     self.assertNotEqual(0, run(event, "success", "true", **(skipped | {name: "skipped"})))
+
+    def test_benchmark_smoke_skip_needs_classifier_proof(self) -> None:
+        script = step_script(self.build, "Report required build evidence")
+        base_env = os.environ.copy() | {name: "success" for name in BUILD_GATE_RESULTS}
+
+        def run(event: str, classifier: str, required: str, smoke: str) -> int:
+            env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": "false",
+                              "BENCHMARK_SMOKE_REQUIRED": required, "BENCHMARK_SMOKE_RESULT": smoke}
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
+            ).returncode
+
+        for event in ("pull_request", "merge_group"):
+            self.assertEqual(0, run(event, "success", "false", "skipped"))
+            self.assertEqual(0, run(event, "success", "true", "success"))
+            for required in ("true", "", "FALSE"):
+                with self.subTest(event=event, required=required):
+                    self.assertNotEqual(0, run(event, "success", required, "skipped"))
+            for smoke in ("failure", "cancelled", ""):
+                with self.subTest(event=event, smoke=smoke):
+                    self.assertNotEqual(0, run(event, "success", "false", smoke))
+        self.assertNotEqual(0, run("push", "skipped", "", "skipped"))
+        self.assertEqual(0, run("push", "skipped", "", "success"))
 
     def test_cross_target_compile_has_an_independent_timeout_and_required_gate(self) -> None:
         self.assertIn("timeout-minutes: 15", self.cross_target)
