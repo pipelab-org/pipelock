@@ -669,12 +669,54 @@ func matchingPipelineFull(s string, recompose, stripFolded bool) string {
 //
 //pipelock:provenance-transform ascii_upper
 func ASCIIUpper(s string) string {
-	return strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' {
-			return r - ('a' - 'A')
+	if !utf8.ValidString(s) {
+		return asciiUpperRepairing(s)
+	}
+	// Valid UTF-8 needs no rune decoding: every byte of a multi-byte scalar
+	// is at or above 0x80, so folding only the bytes a-z gives the same result.
+	first := -1
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c >= 'a' && c <= 'z' {
+			first = i
+			break
 		}
-		return r
-	}, s)
+	}
+	if first < 0 {
+		return s
+	}
+	b := []byte(s)
+	for i := first; i < len(b); i++ {
+		if c := b[i]; c >= 'a' && c <= 'z' {
+			b[i] = c - ('a' - 'A')
+		}
+	}
+	return string(b)
+}
+
+// asciiUpperRepairing is ASCIIUpper for malformed UTF-8 in one pass: each
+// byte that does not start a valid encoding becomes U+FFFD, as strings.Map
+// writes it, and valid multi-byte scalars are copied unchanged.
+func asciiUpperRepairing(s string) string {
+	b := make([]byte, 0, len(s))
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			if c >= 'a' && c <= 'z' {
+				c -= 'a' - 'A'
+			}
+			b = append(b, c)
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b = utf8.AppendRune(b, utf8.RuneError)
+		} else {
+			b = append(b, s[i:i+size]...)
+		}
+		i += size
+	}
+	return string(b)
 }
 
 // DecodeJSONUnicodeEscapes replaces JSON-style \uXXXX escapes with their
