@@ -199,6 +199,7 @@ func TestConnectIssuedHostContext(t *testing.T) {
 		}},
 		"delegation expired": {call: func(p *Proxy, cfg *config.Config, host string) bool {
 			c := cfg.Clone()
+			// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 			c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].Expires = "2000-01-01"
 			p.cfgPtr.Store(c)
 			_, _, ok := p.connectIssuedHostContext(t.Context(), c, host, "443", agent, clientIP, auth)

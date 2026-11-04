@@ -432,7 +432,8 @@ func TestCompileIssuedRedirectDelegationsFailsClosed(t *testing.T) {
 	}
 	for name, cfg := range map[string]*config.Config{
 		"malformed": mk(func(d *config.IssuedRedirectDelegation) { d.Name = "" }),
-		"expired":   mk(func(d *config.IssuedRedirectDelegation) { d.Expires = "2000-01-01" }),
+		// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
+		"expired": mk(func(d *config.IssuedRedirectDelegation) { d.Expires = "2000-01-01" }),
 		"no valid route": mk(func(d *config.IssuedRedirectDelegation) {
 			d.Source.PathPatterns = []string{"("}
 			d.Source.PathPrefixes = nil

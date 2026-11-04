@@ -83,10 +83,15 @@ func TestIssuedRedirectDelegationValidation(t *testing.T) {
 		{"control reason", func(d *IssuedRedirectDelegation) { d.Reason = "line\nbreak" }, "control"},
 		{"long owner", func(d *IssuedRedirectDelegation) { d.Owner = strings.Repeat("o", 101) }, "100"},
 		{"no expiry", func(d *IssuedRedirectDelegation) { d.Expires = "" }, "expires is required"},
+		// clock-literal-ok: malformed date syntax is rejected before expiry evaluation.
 		{"bad expiry", func(d *IssuedRedirectDelegation) { d.Expires = "2099-13-45" }, "YYYY-MM-DD"},
+		// clock-literal-ok: malformed date syntax is rejected before expiry evaluation.
 		{"rfc3339 expiry", func(d *IssuedRedirectDelegation) { d.Expires = "2099-01-01T00:00:00Z" }, "YYYY-MM-DD"},
+		// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 		{"past expiry lapses instead of failing", func(d *IssuedRedirectDelegation) { d.Expires = "2000-01-01" }, ""},
-		{"far future expiry has no horizon", func(d *IssuedRedirectDelegation) { d.Expires = "2999-01-01" }, ""},
+		{"far future expiry has no horizon", func(d *IssuedRedirectDelegation) {
+			d.Expires = time.Now().UTC().AddDate(1000, 0, 0).Format(time.DateOnly)
+		}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -174,6 +179,7 @@ func TestIssuedRedirectDelegationScope(t *testing.T) {
 	scope := IssuedRedirectDelegationScope(base)
 
 	same := base
+	// clock-literal-ok: expiry metadata is excluded from the scope digest; no clock reads it.
 	same.Name, same.Reason, same.Owner, same.Expires = "renamed", "other", "other", "2999-01-01"
 	same.Source.Hosts = []string{delegationSourceHost, delegationSourceHost}
 	if IssuedRedirectDelegationScope(same) != scope {
@@ -295,6 +301,7 @@ fetch_proxy:
 func TestIssuedRedirectDelegationLapsesAtLoad(t *testing.T) {
 	t.Parallel()
 	expired, live := testDelegation(), testDelegation()
+	// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 	expired.Name, expired.Expires = "expired-route", "2000-01-01"
 	cfg := delegationConfig(expired, live)
 	warnings, err := cfg.LapseExpiredScannerExceptions(time.Now().UTC())

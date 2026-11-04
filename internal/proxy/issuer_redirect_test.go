@@ -400,6 +400,7 @@ func TestInterceptIssuedRedirectDelegation(t *testing.T) {
 
 	t.Run("an expired delegation delegates nothing", func(t *testing.T) {
 		e := newDelegationEnv(t, func(c *config.Config) {
+			// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 			c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].Expires = "2000-01-01"
 		})
 		e.issue(http.StatusFound, good)
@@ -517,6 +518,7 @@ func TestInterceptIssuedRedirectRevocation(t *testing.T) {
 		cfg  *config.Config
 	}{
 		{"removed", withdrawn(nil)},
+		// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 		{"expired", withdrawn(func(d *config.IssuedRedirectDelegation) { d.Expires = "2000-01-01" })},
 		{"source narrowed", withdrawn(func(d *config.IssuedRedirectDelegation) { d.Source.PathPrefixes = []string{"/v1/other/"} })},
 		{"target changed", withdrawn(func(d *config.IssuedRedirectDelegation) { d.TargetOrigins = []string{"https://other.vendor.example"} })},

@@ -110,6 +110,7 @@ func TestFetchRedirectIssuedDelegation(t *testing.T) {
 		},
 		{
 			name: "expired", target: good, status: http.StatusFound, locations: []string{good},
+			// clock-literal-ok: deliberately expired negative case, independent of future clock changes.
 			mutate: func(c *config.Config) { c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].Expires = "2000-01-01" },
 		},
 		{name: "not a redirect status", target: good, status: http.StatusOK, locations: []string{good}},
