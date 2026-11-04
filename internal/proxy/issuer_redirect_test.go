@@ -382,14 +382,19 @@ func TestInterceptIssuedRedirectDelegation(t *testing.T) {
 
 	t.Run("an http target is never delegated", func(t *testing.T) {
 		e := newDelegationEnv(t, nil)
-		plain := "http://" + delegationFilesHost + delegationFilesPath + "?" + delegationTicketQuery()
+		plain := "http://" + delegationFilesHost + ":443" + delegationFilesPath + "?" + delegationTicketQuery()
 		e.issue(http.StatusFound, plain)
 		e.do("agent-one", http.MethodGet, delegationSourceURL())
 		if _, ok := issuedRedirectLocation(&http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {plain}}, Request: httptest.NewRequestWithContext(context.Background(), http.MethodGet, delegationSourceURL(), nil)}, 0); !ok {
 			t.Fatal("premise: the Location parses")
 		}
-		if (issuedRedirectDelegation{targets: map[string]struct{}{delegationFilesHost + "\x00" + "443": {}}}).admits(
-			httptest.NewRequestWithContext(context.Background(), http.MethodGet, delegationSourceURL(), nil), mustIssuerQueryURL(t, plain)) {
+		source := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+		delegations := e.p.issuedRedirects(e.cfg, time.Now())
+		if len(delegations) != 1 || !delegations[0].admits(source, mustIssuerQueryURL(t, good)) {
+			t.Fatal("premise: matching source admits the listed HTTPS target")
+		}
+		// Keep the listed port so only the HTTP scheme changes admission.
+		if delegations[0].admits(source, mustIssuerQueryURL(t, plain)) {
 			t.Fatal("an http target was admitted")
 		}
 	})
@@ -1137,5 +1142,35 @@ func TestIssuedRedirectDisabledStoreFlush(t *testing.T) {
 				t.Fatalf("disabled store follow-up = %d, want 403", got)
 			}
 		})
+	}
+}
+
+func TestIssuedRedirectEnabledStoreSaturation(t *testing.T) {
+	e := newDelegationEnv(t, nil)
+	ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+	store := ic.issuerQueryStore()
+	target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, delegationTicketQuery()))
+	scopes := issuedRedirectScopes(e.p.issuedRedirects(e.cfg, time.Now()))
+	for i := 0; i < issuerCookieMaxSessions; i++ {
+		session := strconv.Itoa(i)
+		delivery, err := store.beginIssuedRedirectDelivery(session, target, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { store.finishIssuedRedirectDelivery(session, delivery) })
+	}
+	source := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+	response := &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target.String()}}, Request: source}
+	wroteStatus := false
+	w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder(), afterWriteHeader: func() { wroteStatus = true }}
+	w.Header().Set("Location", target.String())
+	if err := ic.flushIssuedRedirectHeaders(w, response); err == nil {
+		t.Fatal("enabled store saturation did not refuse delivery")
+	}
+	if wroteStatus || w.calls != 0 || w.Body.Len() != 0 {
+		t.Fatalf("failed reservation wrote status/body or flushed: %t/%d/%d", wroteStatus, w.Body.Len(), w.calls)
+	}
+	if got := e.do("agent-one", http.MethodGet, target.String()); got != http.StatusForbidden {
+		t.Fatalf("unflushed saturated-store follow-up = %d, want403", got)
 	}
 }
