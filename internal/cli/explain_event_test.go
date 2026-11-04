@@ -475,38 +475,46 @@ func TestExplainEventCmd_RedactsRelativeTargetSecretQueryParams(t *testing.T) {
 }
 
 func TestExplainEventCmd_KeepsPathDiagnosticTargetPath(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, "audit.log")
-	line := map[string]any{
-		"event":      "blocked",
-		"request_id": "req-path-traversal",
-		"url":        "https://api.vendor.example/files/../../etc/passwd?ref=private#frag",
-		"target":     "https://api.vendor.example/files/../../etc/passwd?ref=private#frag",
-		"scanner":    "path_traversal",
-		"reason":     "path traversal detected",
-	}
-	data, err := json.Marshal(line)
-	if err != nil {
-		t.Fatalf("marshal audit line: %v", err)
-	}
-	if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
-		t.Fatalf("write audit log: %v", err)
-	}
-
-	for _, args := range [][]string{
-		{"event", "req-path-traversal", "--log", logPath},
-		{"event", "req-path-traversal", "--log", logPath, "--json"},
+	for _, tc := range []struct{ scanner, path string }{
+		{"path_traversal", "/files/../../etc/passwd"},
+		{"crlf_injection", "/files/%0d%0aSet-Cookie:x"},
 	} {
-		out, err := runExplainCmd(t, args...)
-		if err != nil {
-			t.Fatalf("explain %v failed: %v\n%s", args, err, out)
-		}
-		if !strings.Contains(out, "https://api.vendor.example/files/../../etc/passwd") {
-			t.Fatalf("explain %v dropped the path that carries the finding:\n%s", args, out)
-		}
-		if strings.Contains(out, "ref=private") || strings.Contains(out, "frag") {
-			t.Fatalf("explain %v kept query or fragment for a path-diagnostic event:\n%s", args, out)
-		}
+		t.Run(tc.scanner, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "audit.log")
+			target := "https://api.vendor.example" + tc.path + "?ref=private#frag"
+			line := map[string]any{
+				"event":      "blocked",
+				"request_id": "req-path-diagnostic",
+				"url":        target,
+				"target":     target,
+				"scanner":    tc.scanner,
+				"reason":     "path diagnostic",
+			}
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatalf("marshal audit line: %v", err)
+			}
+			if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("write audit log: %v", err)
+			}
+
+			for _, args := range [][]string{
+				{"event", "req-path-diagnostic", "--log", logPath},
+				{"event", "req-path-diagnostic", "--log", logPath, "--json"},
+			} {
+				out, err := runExplainCmd(t, args...)
+				if err != nil {
+					t.Fatalf("explain %v failed: %v\n%s", args, err, out)
+				}
+				if !strings.Contains(out, "https://api.vendor.example"+tc.path) {
+					t.Fatalf("explain %v dropped the path that carries the finding:\n%s", args, out)
+				}
+				if strings.Contains(out, "ref=private") || strings.Contains(out, "frag") {
+					t.Fatalf("explain %v kept query or fragment for a path-diagnostic event:\n%s", args, out)
+				}
+			}
+		})
 	}
 }
 

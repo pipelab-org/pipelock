@@ -191,10 +191,14 @@ func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
 		{"/v1/hooks/opaque-segment", "[redacted-url]"},
 		{"api.vendor.example/path?ref=value", "[redacted-url]"},
 		{"api.vendor.example/path#fragment", "[redacted-url]"},
-		// A scheme with a path but no authority is request content too.
+		// A scheme with no authority names no destination.
 		{"https:/opaque-segment", "[redacted-url]"},
 		{"https:/opaque/segment", "[redacted-url]"},
 		{"mcp:/opaque-segment", "[redacted-url]"},
+		{"https:opaque-segment/more", "[redacted-url]"},
+		{"HTTP:opaque-segment", "[redacted-url]"},
+		{"wss:opaque-segment", "[redacted-url]"},
+		{"https:", "[redacted-url]"},
 		// Colon-bearing identifiers parse as opaque, not path-absolute.
 		{"server:read_file", "server:read_file"},
 		{"localhost:8080", "localhost:8080"},

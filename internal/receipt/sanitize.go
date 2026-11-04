@@ -50,30 +50,40 @@ func sanitizeTarget(target string, clean dlpClean) string {
 // URL syntax that is not an absolute URL: an origin-form request target (RFC
 // 9112 section 3.2.1; inbound server-side request URLs such as "/path?query"
 // carry no scheme or host), any value holding the query or fragment delimiter
-// (RFC 3986 sections 3.4 and 3.5), and a scheme followed directly by an
-// absolute path (see schemePathAbsolute). These have no destination, so they
-// reduce to the redaction marker. Bare CONNECT authorities and opaque tool
+// (RFC 3986 sections 3.4 and 3.5), and a scheme with no authority (see
+// schemeWithoutAuthority). These have no destination, so they reduce to the
+// redaction marker. Bare CONNECT authorities and opaque tool
 // names hold none of these and keep their spelling.
 //
 // sanitizeTarget alone serves diagnostic output that reads unsigned logs, where
 // relative targets keep their non-secret context.
 func sanitizeSignedTarget(target string, clean dlpClean) string {
 	if !mcpServerTarget(target) && !strings.Contains(target, "://") &&
-		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#") || schemePathAbsolute(target)) {
+		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#") || schemeWithoutAuthority(target)) {
 		target = destination.RedactURLTarget(target)
 	}
 	return sanitizeTarget(target, clean)
 }
 
-// schemePathAbsolute reports a scheme followed directly by an absolute path
-// with no "//" authority, such as "https:/opaque-segment" (RFC 3986 section 3,
-// the path-absolute form of hier-part). url.URL.String produces this spelling
-// for a URL with a scheme and path but no host. Bare CONNECT authorities
-// ("host:443") and colon-bearing tool names ("server:tool") parse with an
-// opaque part instead, so they keep their spelling.
-func schemePathAbsolute(target string) bool {
+// schemeWithoutAuthority reports a scheme-prefixed value that has no "//"
+// authority and therefore names no destination. Web schemes require a host
+// (RFC 9110 sections 4.2.1 and 4.2.2 for http and https, RFC 6455 section 3
+// for ws and wss), so any host-less http, https, ws or wss value is request
+// content, whether it parses as a path ("https:/segment") or as opaque text
+// ("https:segment/more"). For other schemes only the path-absolute form
+// (RFC 3986 section 3) is reduced: bare CONNECT authorities ("host:443") and
+// colon-bearing tool names ("server:tool") parse as opaque and keep their
+// spelling.
+func schemeWithoutAuthority(target string) bool {
 	u, err := url.Parse(target)
-	return err == nil && u.Scheme != "" && u.Opaque == "" && u.Host == "" && strings.HasPrefix(u.Path, "/")
+	if err != nil || u.Scheme == "" || u.Host != "" {
+		return false
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https", "ws", "wss":
+		return true
+	}
+	return u.Opaque == "" && strings.HasPrefix(u.Path, "/")
 }
 
 // mcpServerTarget reports whether target is one of the two MCP producer
