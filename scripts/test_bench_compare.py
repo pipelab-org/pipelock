@@ -7,7 +7,6 @@ from __future__ import annotations
 import importlib.util
 import re
 import subprocess
-import importlib.util
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -170,6 +169,27 @@ class AllocationReportTest(unittest.TestCase):
     def test_skip_pattern_escapes_literal_subcase_names(self):
         pattern = RUN.allocation_skip_pattern(("BenchmarkExample/case.v1+",))
         self.assertEqual(pattern, r"^BenchmarkExample$/^case\.v1\+$")
+
+    def test_summary_fails_when_nothing_was_compared(self):
+        excluded_only = allocation_rows(allocs=(100, 10, 11, 10))
+        for baseline, current in (("", ""), (excluded_only, excluded_only)):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "baseline.txt").write_text(baseline)
+                (output / "current.txt").write_text(current)
+                with self.assertRaisesRegex(RUN.RunError, "no comparable allocation samples"):
+                    RUN.write_allocation_summary(output)
+                self.assertIn("No comparable allocation samples were captured.",
+                              (output / "allocation-summary.md").read_text())
+
+    def test_summary_passes_when_one_side_has_samples(self):
+        for baseline, current in ((allocation_rows(), ""), ("", allocation_rows())):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "baseline.txt").write_text(baseline)
+                (output / "current.txt").write_text(current)
+                RUN.write_allocation_summary(output)
+                self.assertIn("| example/pkg / BenchmarkExample |", (output / "allocation-summary.md").read_text())
 
     def test_skipped_exclusions_are_listed_not_new_or_removed(self):
         report = RUN.allocation_report("", "")

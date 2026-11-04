@@ -419,8 +419,17 @@ def capture_allocations(baseline: Path, current: Path, output: Path) -> None:
             raise
     if any(checkout_state(path) != source for path, source in zip((baseline, current), sources)):
         raise RunError("source changed during allocation measurement")
+    write_allocation_summary(output)
+
+
+def write_allocation_summary(output: Path) -> None:
+    texts = [(output / f"{name}.txt").read_text() for name in ("baseline", "current")]
     with exclusive_file(output / "allocation-summary.md") as summary:
-        summary.write(allocation_report((output / "baseline.txt").read_text(), (output / "current.txt").read_text()))
+        summary.write(allocation_report(*texts))
+    # A run that compared nothing, such as a skip pattern matching every
+    # benchmark, fails rather than passing with an empty report.
+    if not any(allocation_samples(text)[0] for text in texts):
+        raise RunError("no comparable allocation samples were captured")
 
 
 def main() -> int:
