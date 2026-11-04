@@ -317,6 +317,43 @@ func TestDecisionInventory(t *testing.T) {
 	t.Logf("verified %d production decision rows across %d presets/defaults", len(rows), len(names))
 }
 
+// ScanRequest returns a string after redaction flattens the JSON error, so
+// errors.Is/As cannot reach the decoder error here. Go 1.26.10 reports EOF for
+// the truncated MCP object; Go 1.27.2 reports unexpected end of JSON input.
+// Preserve the entire Pipelock prefix and normalize only these exact tails.
+func inventoryMCPInputDiagnostic(diagnostic string) string {
+	const prefix = "invalid JSON: redact: blocked (body_unparseable): invalid JSON: "
+	switch diagnostic {
+	case prefix + "EOF", prefix + "unexpected end of JSON input":
+		return prefix + "[incomplete JSON]"
+	default:
+		return diagnostic
+	}
+}
+
+func TestInventoryMCPInputDiagnostic(t *testing.T) {
+	const prefix = "invalid JSON: redact: blocked (body_unparseable): invalid JSON: "
+	for _, tc := range []struct {
+		name, diagnostic, want string
+	}{
+		{"Go 1.26 EOF", prefix + "EOF", prefix + "[incomplete JSON]"},
+		{"Go 1.27 truncated JSON", prefix + "unexpected end of JSON input", prefix + "[incomplete JSON]"},
+		{"empty", "", ""},
+		{"bare EOF", "EOF", "EOF"},
+		{"other syntax", prefix + "invalid character 'x' looking for beginning of value", prefix + "invalid character 'x' looking for beginning of value"},
+		{"changed prefix", "changed: " + prefix + "EOF", "changed: " + prefix + "EOF"},
+		{"changed reason", "invalid JSON: redact: blocked (body_too_large): invalid JSON: EOF", "invalid JSON: redact: blocked (body_too_large): invalid JSON: EOF"},
+		{"extra suffix", prefix + "EOF: additional detail", prefix + "EOF: additional detail"},
+		{"stable class", prefix + "[incomplete JSON]", prefix + "[incomplete JSON]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inventoryMCPInputDiagnostic(tc.diagnostic); got != tc.want {
+				t.Errorf("diagnostic = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func inventoryCheckGolden[T any](t *testing.T, name string, rows []T) {
 	t.Helper()
 	var got bytes.Buffer
@@ -739,7 +776,7 @@ func (h *inventoryHarness) mcpRows(t *testing.T, cfg *config.Config, base decisi
 				row.Detectors = append(row.Detectors, "injection:"+m.PatternName)
 			}
 			if v.Error != "" {
-				row.Diagnostic, row.Inspection = v.Error, inventoryIncomplete
+				row.Diagnostic, row.Inspection = inventoryMCPInputDiagnostic(v.Error), inventoryIncomplete
 			}
 			if !v.Clean {
 				row.Disposition = config.ActionWarn
