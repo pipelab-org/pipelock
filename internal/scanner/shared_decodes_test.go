@@ -286,3 +286,44 @@ func TestRetainDecodedMatchesChargesMatchStorage(t *testing.T) {
 		t.Fatal("a match-free result that fits the remaining budget was not retained")
 	}
 }
+
+// A retained match slice keeps its whole backing array, so spare capacity is
+// charged too.
+func TestRetainDecodedMatchesChargesSpareCapacity(t *testing.T) {
+	key := decodedMatchKey{text: "abc", encoding: "hex"}
+	matches := make([]TextDLPMatch, 1, 4)
+	var m decodingMemo
+	m.retainDecodedMatches(key, matches)
+	if want := len(key.text) + len(key.encoding) + 4*textDLPMatchSize; m.decodedMatchesBytes != want {
+		t.Fatalf("charged %d bytes, want %d", m.decodedMatchesBytes, want)
+	}
+}
+
+// Scans sharing a store can both miss one key and both retain it. The map
+// keeps one entry, so the budget is charged once.
+func TestRetainChargesEachKeyOnce(t *testing.T) {
+	var m decodingMemo
+	matchKey := decodedMatchKey{text: "abc", encoding: "hex"}
+	m.retainDecodedMatches(matchKey, make([]TextDLPMatch, 2))
+	charged := m.decodedMatchesBytes
+	m.retainDecodedMatches(matchKey, make([]TextDLPMatch, 2))
+	if m.decodedMatchesBytes != charged || len(m.decodedMatches) != 1 {
+		t.Fatalf("second retain of one match key charged %d bytes, first %d", m.decodedMatchesBytes, charged)
+	}
+
+	viewKey := decodingMemoKey{text: "aGVsbG8="}
+	views := []decodedResult{{text: "hello"}}
+	m.retainDecode(viewKey, views, true)
+	charged = m.retainedBytes
+	m.retainDecode(viewKey, views, true)
+	if m.retainedBytes != charged || len(m.views) != 1 {
+		t.Fatalf("second retain of one view key charged %d bytes, first %d", m.retainedBytes, charged)
+	}
+
+	m.retainNormalized("Text", "text")
+	charged = m.retainedBytes
+	m.retainNormalized("Text", "text")
+	if m.retainedBytes != charged || len(m.normalized) != 1 {
+		t.Fatalf("second retain of one normalized text charged %d bytes, first %d", m.retainedBytes, charged)
+	}
+}

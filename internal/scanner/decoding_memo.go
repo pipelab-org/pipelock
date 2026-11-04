@@ -250,6 +250,11 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 }
 
 func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult, complete bool) {
+	// Two scans sharing a store can both miss a key and both retain it. The
+	// map keeps one entry, so only the first may charge the budget.
+	if _, ok := m.views[key]; ok {
+		return
+	}
 	if key.text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return
 	}
@@ -289,6 +294,9 @@ func (m *decodingMemo) normalize(text string) string {
 }
 
 func (m *decodingMemo) retainNormalized(text, normalized string) {
+	if _, ok := m.normalized[text]; ok {
+		return
+	}
 	if text == "" || len(m.views)+len(m.normalized) >= maxDecodeCandidates {
 		return
 	}
@@ -370,13 +378,17 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	return slices.Clone(matches)
 }
 
-// textDLPMatchSize is the storage one retained match takes in its slice.
+// textDLPMatchSize is the storage one retained match slot takes in its slice.
 // Match strings are pattern labels shared with the scanner, so they are not
 // charged again.
 var textDLPMatchSize = int(reflect.TypeFor[TextDLPMatch]().Size())
 
 func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextDLPMatch) {
-	cost := len(key.text) + len(key.encoding) + len(matches)*textDLPMatchSize
+	if _, ok := m.decodedMatches[key]; ok {
+		return
+	}
+	// The retained slice holds its whole backing array, spare capacity included.
+	cost := len(key.text) + len(key.encoding) + cap(matches)*textDLPMatchSize
 	if key.text == "" || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes {
 		return
 	}
