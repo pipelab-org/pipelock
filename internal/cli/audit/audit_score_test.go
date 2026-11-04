@@ -537,3 +537,17 @@ func TestEffectiveAction(t *testing.T) {
 		})
 	}
 }
+
+func TestScoreEnforcementObservationScope(t *testing.T) {
+	off := false
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeAudit
+	cfg.Enforce = &off
+	var findings []ScoreFinding
+	scoreEnforcement(cfg, &findings)
+	for _, f := range findings {
+		if !strings.Contains(f.Message, "ordinary URL") || !strings.Contains(f.Message, "still block") {
+			t.Errorf("finding overstates observation scope: %q", f.Message)
+		}
+	}
+}

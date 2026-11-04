@@ -30,7 +30,7 @@ func TestValidateWithWarnings_UnboundAgentPolicy(t *testing.T) {
 	}
 	var matches []Warning
 	for _, warning := range warnings {
-		if strings.HasPrefix(warning.Field, "agents.") {
+		if strings.HasPrefix(warning.Field, "agents.") && !strings.HasSuffix(warning.Field, ".mode") {
 			matches = append(matches, warning)
 		}
 	}

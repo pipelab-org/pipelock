@@ -460,7 +460,7 @@ func scoreEnforcement(cfg *config.Config, findings *[]ScoreFinding) ScoreCategor
 		*findings = append(*findings, ScoreFinding{
 			Severity: scoreSevCritical,
 			Category: "Enforcement",
-			Message:  "Enforcement is disabled (enforce: false) — pipelock will detect but not block",
+			Message:  "Enforcement is disabled for ordinary URL findings (enforce: false); core credentials, SSRF and independently configured protections can still block",
 		})
 	}
 	switch cfg.Mode {
@@ -470,9 +470,9 @@ func scoreEnforcement(cfg *config.Config, findings *[]ScoreFinding) ScoreCategor
 		score += 3
 	case config.ModeAudit:
 		score += 1
-		message := "Mode is 'audit' with enforce: false, so ordinary findings are logged and forwarded; core credential and SSRF floors still block"
+		message := "Mode is 'audit' with enforce: false, so ordinary URL findings are logged and forwarded unless an independent control blocks; core credential and SSRF floors still block"
 		if enforce {
-			message = "Mode is 'audit' but enforce is true, so ordinary findings still block; set enforce: false to log without blocking"
+			message = "Mode is 'audit' but enforce is true, so ordinary URL findings still block; set enforce: false to observe ordinary URL findings; core credentials, SSRF and independently configured protections can still block"
 		}
 		*findings = append(*findings, ScoreFinding{
 			Severity: scoreSevInfo,

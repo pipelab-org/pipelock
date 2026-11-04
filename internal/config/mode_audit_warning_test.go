@@ -89,7 +89,11 @@ func TestModeAuditEnforcedProfileInheritance(t *testing.T) {
 func TestModeAuditEnforcedWarningRetainsSafetyCaveat(t *testing.T) {
 	cfg := Defaults()
 	cfg.Mode = ModeAudit
-	for _, w := range cfg.ModeAuditEnforcedWarnings() {
+	warnings := cfg.ModeAuditEnforcedWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings=%v, want one audit notice", warnings)
+	}
+	for _, w := range warnings {
 		if !strings.Contains(w.Message, "ordinary URL") || !strings.Contains(w.Message, "still block") {
 			t.Fatalf("remedy overstates observation scope: %s", w.Message)
 		}
