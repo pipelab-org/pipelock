@@ -204,18 +204,18 @@ class PairTest(unittest.TestCase):
     def test_allocation_capture_retains_in_process_repetitions(self):
         def measurement(command, *, cwd, check, stdout, stderr):
             self.calls.append((cwd, list(command)))
-            stdout.write(samples() * 2)
+            stdout.write(samples() * RUN.ALLOCATION_REPETITIONS)
         with patch.object(RUN.subprocess, "run", side_effect=measurement):
             RUN.capture_allocations(self.base, self.cur, self.out)
         self.assertEqual(len(self.calls), 2)
         for _, command in self.calls:
-            self.assertIn("-count=2", command)
+            self.assertIn(f"-count={RUN.ALLOCATION_REPETITIONS}", command)
             self.assertIn("-benchtime=20x", command)
         self.assertIn("Unchanged benchmarks: 1", (self.out / "allocation-summary.md").read_text())
 
     def test_allocation_capture_reports_deltas_without_failure(self):
         def measurement(command, *, cwd, check, stdout, stderr):
-            rows = samples() * 2
+            rows = samples() * RUN.ALLOCATION_REPETITIONS
             if cwd == self.cur:
                 rows = rows.replace("0 allocs/op", "3 allocs/op")
             stdout.write(rows)

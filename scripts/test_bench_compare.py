@@ -109,11 +109,26 @@ SPEC.loader.exec_module(RUN)
 
 
 def allocation_rows(name="BenchmarkExample", allocs=(999, 10), package="example/pkg", bytes_op=100):
+    # A (warm-up, steady) pair expands to the real repetition count.
+    if len(allocs) == 2:
+        allocs = (allocs[0],) + (allocs[1],) * (RUN.ALLOCATION_REPETITIONS - 1)
     return f"pkg: {package}\n" + "".join(
         f"{name}-4 200 100 ns/op {bytes_op} B/op {value} allocs/op\n" for value in allocs)
 
 
 class AllocationReportTest(unittest.TestCase):
+    def test_default_repetitions_catch_variation_after_warmup(self):
+        values, notes = RUN.allocation_samples(allocation_rows(allocs=(100, 10, 11, 10)))
+        self.assertEqual(values, {})
+        self.assertIn("allocs/op varies after warm-up: 10, 11, 10", next(iter(notes.values())))
+        self.assertGreaterEqual(RUN.ALLOCATION_REPETITIONS, 3)
+
+    def test_command_covers_subpackages_with_matching_count(self):
+        command = RUN.ALLOCATION_COMMAND
+        for root in ("scanner", "proxy", "mcp"):
+            self.assertIn(f"./internal/{root}/...", command)
+        self.assertIn(f"-count={RUN.ALLOCATION_REPETITIONS}", command)
+
     def test_warmup_discard_and_bytes_not_compared(self):
         report = RUN.allocation_report(allocation_rows(allocs=(999, 10)),
                                        allocation_rows(allocs=(123, 10), bytes_op=101))

@@ -226,10 +226,12 @@ def smoke_benchmarks() -> int:
         return result.returncode
 
 
-# Fixed iterations and two in-process repetitions follow Go's -benchtime=Nx
-# and -count contracts. Repetition one is initialization, not a steady sample.
-ALLOCATION_COMMAND = ["go", "test", "./internal/scanner", "./internal/proxy", "./internal/mcp",
-                      "-run=^$", "-bench=.", "-benchtime=20x", "-count=2", "-benchmem"]
+# Fixed iterations and in-process repetitions follow Go's -benchtime=Nx and
+# -count contracts. Repetition one is initialization; the remaining three must
+# agree, so a benchmark that varies is excluded at run time, not reported.
+ALLOCATION_REPETITIONS = 4
+ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
+                      "-run=^$", "-bench=.", "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 # Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
 # These are observed post-warm-up allocs/op values, never a numerical tolerance.
 ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
@@ -302,7 +304,7 @@ ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
 }
 
 
-def allocation_samples(text: str, repetitions: int = 2) -> tuple[dict, dict]:
+def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> tuple[dict, dict]:
     """Read package-qualified Go benchmark rows; never silently overwrite one."""
     samples: dict[tuple[str, str], list[tuple[int, int]]] = {}
     notes = {}
@@ -356,9 +358,9 @@ def allocation_report(baseline: str, current: str) -> str:
     shared = (base.keys() & head.keys()) - excluded
     changed = sorted(key for key in shared if base[key][0] != head[key][0])
     lines = ["## Benchmark allocation report", "",
-             "Report only; first repetition discarded. Fixed 20 iterations, two repetitions per process.",
+             f"Report only; first repetition discarded. Fixed 20 iterations, {ALLOCATION_REPETITIONS} repetitions per process.",
              "Only allocs/op is compared. B/op and timing are not compared.",
-             "Two repetitions do not prove stability; known varying cases are excluded below.",
+             "A benchmark whose remaining repetitions disagree is excluded below, as are known varying cases.",
              "Opt-in fixture benchmarks remain skipped unless their fixture environment is configured.", "",
              f"Changed rows: {len(changed)}", "",
              "| Package / benchmark | Base allocs/op | Head allocs/op | Delta | Base B/op (not compared) | Head B/op (not compared) |",
