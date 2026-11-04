@@ -230,8 +230,6 @@ def smoke_benchmarks() -> int:
 # -count contracts. Repetition one is initialization; the remaining three must
 # agree, so a benchmark that varies is excluded at run time, not reported.
 ALLOCATION_REPETITIONS = 4
-ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
-                      "-run=^$", "-bench=.", "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 # Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
 # These are observed post-warm-up allocs/op values, never a numerical tolerance.
 ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
@@ -302,6 +300,16 @@ ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
     ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkWIFOverlapScan"):
         "allocs/op varies after warm-up: 115011, 115014, 115014 (20 iterations)",
 }
+# A family with a stable case keeps running so that case stays compared.
+ALLOCATION_PARTIAL_FAMILIES = frozenset({"BenchmarkScanResponse_Large"})
+# Every case of the other excluded benchmarks varies; running them took most of
+# the job only to be discarded. Go's -skip drops them by top-level name in every
+# listed package, so a test keeps each skipped name defined in one package only.
+ALLOCATION_SKIPPED = tuple(sorted({name.split("/", 1)[0] for _, name in ALLOCATION_EXCLUSIONS}
+                                  - ALLOCATION_PARTIAL_FAMILIES))
+ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
+                      "-run=^$", "-bench=.", f"-skip=^({'|'.join(ALLOCATION_SKIPPED)})$",
+                      "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 
 
 def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> tuple[dict, dict]:
@@ -342,9 +350,11 @@ def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> 
             notes[key] = "allocs/op varies after warm-up: " + ", ".join(str(row[0]) for row in rows[1:])
         elif key not in notes:
             values[key] = (*rows[-1], next(iter(processors[key])))
-    for key in samples.keys() | notes.keys():
-        if key in ALLOCATION_EXCLUSIONS:
-            notes[key] = ALLOCATION_EXCLUSIONS[key]
+    for key, reason in ALLOCATION_EXCLUSIONS.items():
+        if key in samples or key in notes:
+            notes[key] = reason
+        elif key[1].split("/", 1)[0] in ALLOCATION_SKIPPED:
+            notes[key] = reason + " (skipped, not run)"
     return {key: value for key, value in values.items() if key not in notes}, notes
 
 
@@ -361,6 +371,7 @@ def allocation_report(baseline: str, current: str) -> str:
              f"Report only; first repetition discarded. Fixed 20 iterations, {ALLOCATION_REPETITIONS} repetitions per process.",
              "Only allocs/op is compared. B/op and timing are not compared.",
              "A benchmark whose remaining repetitions disagree is excluded below, as are known varying cases.",
+             "Known varying benchmarks with no stable case are skipped rather than run.",
              "Opt-in fixture benchmarks remain skipped unless their fixture environment is configured.", "",
              f"Changed rows: {len(changed)}", "",
              "| Package / benchmark | Base allocs/op | Head allocs/op | Delta | Base B/op (not compared) | Head B/op (not compared) |",
