@@ -98,6 +98,9 @@ class SmokeRunTest(unittest.TestCase):
                     self.assertTrue(Path(kwargs["env"]["PIPELOCK_RESPONSE_PASS_SAMPLE"]).is_file())
                     self.assertIn("-run=^$", command)
                     self.assertIn("-benchtime=1x", command)
+                    self.assertIn("-bench=.", command)
+                    self.assertIn("./...", command)
+                    self.assertEqual(command[command.index("-tags") + 1], "enterprise")
                     return subprocess.CompletedProcess(command, status)
                 with patch.object(RUN.subprocess, "run", side_effect=run):
                     self.assertEqual(RUN.smoke_benchmarks(), status)
