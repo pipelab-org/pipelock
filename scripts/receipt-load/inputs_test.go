@@ -376,12 +376,13 @@ func TestHoldLockSerializesRuns(t *testing.T) {
 func TestParseFlags(t *testing.T) {
 	good := []string{"--binary", os.Args[0], "--out", filepath.Join(t.TempDir(), "o"), "--requests", "10"}
 	opt, modes, lock, err := parseFlags(good)
-	if err != nil || opt.requests != 10 || opt.rules != rulesEmpty || opt.warmup != 1000 || len(modes) != 3 || lock != "" {
+	if err != nil || opt.destinations != destinationsSingle || opt.requests != 10 || opt.rules != rulesEmpty || opt.warmup != 1000 || len(modes) != 3 || lock != "" {
 		t.Fatalf("parseFlags = %+v %v %q %v", opt, modes, lock, err)
 	}
 	for _, bad := range [][]string{
 		{"--binary", os.Args[0]},
 		append(append([]string{}, good...), "--modes", "sideways"),
+		append(append([]string{}, good...), "--destinations", "sideways"),
 		append(append([]string{}, good...), "--chains", "33"),
 		append(append([]string{}, good...), "--window", "0s"),
 		append(append([]string{}, good...), "--verify-timeout", "0s"),

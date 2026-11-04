@@ -126,6 +126,9 @@ func TestCleanOffRunPassesBothVerdicts(t *testing.T) {
 	if got.Integrity.Verdict != verdictPass || got.Performance.Verdict != perfMeasured {
 		t.Fatalf("result = %+v", got)
 	}
+	if got.Inputs.Workload.Destinations != destinationsSingle || got.Inputs.Workload.DestinationPool != nil {
+		t.Fatalf("default destination workload changed: %+v", got.Inputs.Workload)
+	}
 	if got.Requests != 40 || got.WarmupRequests != 10 || got.Performance.Allowed+got.Performance.Blocked != 40 {
 		t.Fatalf("warmup must not count toward the measured requests: %+v", got.Performance)
 	}
@@ -241,8 +244,8 @@ func warmupBlocked(r *result) int {
 	return n
 }
 
-// The key must be readable in the receipts the real proxy writes, and the
-// credential that rides along with blocked requests must not be.
+// The default workload signs only the destination. Request query content,
+// including the workload key and synthetic credential, must not survive.
 func TestDestinationOnlyReceiptsUseAggregateAccounting(t *testing.T) {
 	bin := realPipelock(t)
 	opt := smallOptions(t, bin)

@@ -109,7 +109,11 @@ feed:
 
 func (p loadParams) issue(ctx context.Context, slot int, base time.Time) (requestOutcome, []byte) {
 	out := requestOutcome{ran: true}
-	target := "http://" + p.sinkAddr + p.plan.pathAndQuery(slot)
+	authority := p.sinkAddr
+	if p.plan.destinations != nil {
+		authority = p.plan.destinations.authority(slot)
+	}
+	target := "http://" + authority + p.plan.pathAndQuery(slot)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
 		out.transportErr = true

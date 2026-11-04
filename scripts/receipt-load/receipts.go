@@ -24,7 +24,7 @@ import (
 
 // Receipt kinds the harness accounts for. v2 receipts carry neither an
 // ActionID nor a decision phase by design, so they are only ever attributed to
-// a request through the workload key in their target.
+// a request through its planned destination or a retained workload key.
 type receiptKind int
 
 const (
@@ -336,8 +336,8 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 		}
 		s.noteReceiptTime(env.TS)
 	case targetWorkload:
+		slot, ok := s.targetSlot(ar.Target)
 		key, _ := keyFromTarget(ar.Target)
-		slot, ok := s.plan.parseKey(key)
 		if !ok {
 			s.obs.orphans[kind]++
 			s.obs.sampleOrphan(kind.String() + " for key outside the plan: " + key)
@@ -346,7 +346,7 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 		if _, control := s.controlIDs[ar.ActionID]; control {
 			return errors.New("workload ActionID also owns a control receipt")
 		}
-		if ar.Method != http.MethodGet || ar.Transport != workloadTransport || ar.ActionType != string(receipt.ActionRead) || !s.plan.matchesTargetQuery(ar.Target, slot, true) {
+		if ar.Method != http.MethodGet || ar.Transport != workloadTransport || ar.ActionType != string(receipt.ActionRead) || !s.matchesReceiptTarget(ar.Target, slot) {
 			return errors.New("v1 workload receipt differs from the planned request shape")
 		}
 		if ar.ActionID == "" {
@@ -410,8 +410,8 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 		a.v2[aggregateBucket{session: env.Session, verdict: detail.Payload.Verdict}]++
 		s.noteReceiptTime(env.TS)
 	case targetWorkload:
+		slot, ok := s.targetSlot(detail.Payload.Target)
 		key, _ := keyFromTarget(detail.Payload.Target)
-		slot, ok := s.plan.parseKey(key)
 		if !ok {
 			s.obs.orphans[kindV2]++
 			s.obs.sampleOrphan("v2 for key outside the plan: " + key)
@@ -421,7 +421,7 @@ func (s *recorderScanner) v2Receipt(env evidenceEnvelope) error {
 		if s.plan.blocked(slot) {
 			wantVerdict = verdictBlock
 		}
-		if (detail.PayloadKind != contractreceipt.PayloadProxyDecision && detail.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans) || detail.Payload.Transport != workloadTransport || detail.Payload.ActionType != "http_request" || detail.Payload.Verdict != wantVerdict || !s.plan.matchesTargetQuery(detail.Payload.Target, slot, true) {
+		if (detail.PayloadKind != contractreceipt.PayloadProxyDecision && detail.PayloadKind != contractreceipt.PayloadProxyDecisionWithSpans) || detail.Payload.Transport != workloadTransport || detail.Payload.ActionType != "http_request" || detail.Payload.Verdict != wantVerdict || !s.matchesReceiptTarget(detail.Payload.Target, slot) || (s.plan.destinations != nil && detail.Payload.WinningSource != "scanner") {
 			return errors.New("v2 workload receipt differs from the planned decision")
 		}
 		o := s.obs.slot(slot)
@@ -464,6 +464,12 @@ func (s *recorderScanner) classify(target string) targetClass {
 	}
 	// Exact spelling is the new producer contract. No path, query, fragment
 	// or userinfo may be hidden by a parsed-URL equality comparison.
+	if s.plan.destinations != nil {
+		if _, ok := s.plan.destinations.targetSlot(target, s.plan.total()); ok {
+			return targetWorkload
+		}
+		return targetUncorrelatable
+	}
 	if target == "http://"+s.sinkAddr {
 		return targetAggregate
 	}
