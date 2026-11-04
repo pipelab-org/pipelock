@@ -409,6 +409,16 @@ func applyConfig(base []byte, p configParams) ([]byte, error) {
 	fr["enabled"] = p.mode != modeOff
 	fr["require_receipts"] = p.mode == modeRequired
 	fr["receipt_chains"] = p.chains
+	// Enterprise builds write a dashboard runtime snapshot, by default under
+	// the recorder directory, whenever that directory is set, including in off
+	// mode. It is not receipt evidence, so keep it running but outside the
+	// recorder directory the integrity check inventories.
+	snapshot, err := configSection(cfg, "dashboard_snapshot")
+	if err != nil {
+		snapshot = map[string]any{}
+		cfg["dashboard_snapshot"] = snapshot
+	}
+	snapshot["path"] = filepath.Join(p.dirs.root, "dashboard-runtime-snapshot.json")
 	rules, err := configSection(cfg, "rules")
 	if err != nil {
 		rules = map[string]any{}
