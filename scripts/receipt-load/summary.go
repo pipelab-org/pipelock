@@ -13,12 +13,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 )
 
-const maxSummarySamples = 1000
+const (
+	maxSummarySamples = 1000
+	profileFull       = "full"
+	profileRelease    = "release"
+)
 
 var summaryColumns = []string{
 	"cpu_cores", "chains", "mode", "samples",
@@ -32,6 +37,7 @@ var summaryColumns = []string{
 
 type summaryParams struct {
 	root    string
+	profile string
 	samples int
 	modes   []string
 	cpus    []int
@@ -42,6 +48,7 @@ type summaryParams struct {
 // directory of result.json files into summary.csv.
 func summarizeCommand(args []string) (string, error) {
 	fs := flag.NewFlagSet("summarize", flag.ContinueOnError)
+	profile := fs.String("profile", profileFull, "matrix profile: full or release")
 	root := fs.String("root", "", "matrix output directory")
 	samples := fs.Int("samples", 1, "samples per cell")
 	modes := fs.String("modes", "off,best,required", "comma-separated modes")
@@ -69,7 +76,7 @@ func summarizeCommand(args []string) (string, error) {
 		}
 		seenModes[mode] = true
 	}
-	p := summaryParams{root: *root, samples: *samples, modes: modeList, cpus: cpuList, chains: chainList}
+	p := summaryParams{root: *root, profile: *profile, samples: *samples, modes: modeList, cpus: cpuList, chains: chainList}
 	return filepath.Join(p.root, "summary.csv"), writeSummary(p)
 }
 
@@ -85,41 +92,90 @@ func parseInts(list string) ([]int, error) {
 	return out, nil
 }
 
-// writeSummary writes one row per CPU quota, chain count, and mode. A cell with
-// an unreadable result.json counts as a failure of both verdicts: a missing
-// result cannot have passed.
+// summaryCell describes one population to aggregate, including all its samples.
+type summaryCell struct {
+	cores, chains, samples int
+	mode                   string
+}
+
+func summaryPlan(p summaryParams) ([]summaryCell, error) {
+	if p.profile == "" {
+		p.profile = profileFull
+	}
+	if p.profile != profileFull && p.profile != profileRelease {
+		return nil, fmt.Errorf("unknown matrix profile %q", p.profile)
+	}
+	recorded, err := os.ReadFile(filepath.Clean(filepath.Join(p.root, "profile")))
+	// Older full-grid captures predate the profile marker. A reduced capture
+	// always needs an explicit marker, so it cannot silently become a full grid.
+	if err != nil && (!errors.Is(err, os.ErrNotExist) || p.profile != profileFull) {
+		return nil, fmt.Errorf("read matrix profile: %w", err)
+	}
+	if err == nil && strings.TrimSpace(string(recorded)) != p.profile {
+		return nil, fmt.Errorf("matrix profile mismatch: recorded %q, requested %q", strings.TrimSpace(string(recorded)), p.profile)
+	}
+	if p.profile == profileRelease && (p.samples != 3 || !slices.Equal(p.cpus, []int{2, 4, 8}) ||
+		!slices.Equal(p.chains, []int{1, 8}) || !slices.Equal(p.modes, []string{modeOff, modeBest, modeRequired})) {
+		return nil, errors.New("release profile requires 3 samples, CPUs 2,4,8, chains 1,8 and modes off,best,required")
+	}
+	var cells []summaryCell
+	for _, cores := range p.cpus {
+		for _, chains := range p.chains {
+			for _, mode := range p.modes {
+				count := p.samples
+				if p.profile == profileRelease {
+					switch {
+					case mode == modeRequired && (chains == 1 || chains == 8):
+					case mode == modeOff && chains == 1, mode == modeBest && chains == 8:
+						count = 1
+					default:
+						continue
+					}
+				}
+				cells = append(cells, summaryCell{cores: cores, chains: chains, mode: mode, samples: count})
+			}
+		}
+	}
+	return cells, nil
+}
+
+// writeSummary counts unreadable or missing planned results as failed samples.
 func writeSummary(p summaryParams) error {
 	if p.samples < 1 || p.samples > maxSummarySamples {
 		return fmt.Errorf("--samples must be from 1 to %d", maxSummarySamples)
 	}
+	cells, err := summaryPlan(p)
+	if err != nil {
+		return err
+	}
 	var rows [][]string
 	failed := false
-	for _, cores := range p.cpus {
-		for _, chains := range p.chains {
-			for _, mode := range p.modes {
-				name := mode
-				if chains > 1 {
-					name = fmt.Sprintf("chains-%d-%s", chains, mode)
+	for _, cell := range cells {
+		name := cell.mode
+		if cell.chains > 1 {
+			name = fmt.Sprintf("chains-%d-%s", cell.chains, cell.mode)
+		}
+		var results []result
+		for sample := 1; sample <= cell.samples; sample++ {
+			path := filepath.Join(p.root, fmt.Sprintf("cpu-%d", cell.cores), fmt.Sprintf("chains-%d", cell.chains), fmt.Sprintf("sample-%d", sample), name, "result.json")
+			if r, err := readResultFile(path); err == nil {
+				status, statusErr := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(path)), "scope.exit"))
+				if statusErr != nil || strings.TrimSpace(string(status)) != "0" {
+					r.Integrity.fail("matrix scope did not exit successfully")
+					r.Performance.invalidate("matrix scope did not exit successfully")
 				}
-				var results []result
-				for sample := 1; sample <= p.samples; sample++ {
-					path := filepath.Join(p.root, fmt.Sprintf("cpu-%d", cores), fmt.Sprintf("chains-%d", chains), fmt.Sprintf("sample-%d", sample), name, "result.json")
-					if r, err := readResultFile(path); err == nil {
-						status, statusErr := os.ReadFile(filepath.Join(filepath.Dir(filepath.Dir(path)), "scope.exit"))
-						if statusErr != nil || strings.TrimSpace(string(status)) != "0" {
-							r.Integrity.fail("matrix scope did not exit successfully")
-							r.Performance.invalidate("matrix scope did not exit successfully")
-						}
-						results = append(results, r)
-					}
+				if p.profile == profileRelease && (r.Requests != 20000 || r.WarmupRequests != 1000 || r.Concurrency != 128) {
+					r.Integrity.fail("result does not match release profile workload")
+					r.Performance.invalidate("result does not match release profile workload")
 				}
-				row := summaryRow(cores, chains, mode, p.samples, results)
-				if row[4] != verdictPass || row[6] != "0" {
-					failed = true
-				}
-				rows = append(rows, row)
+				results = append(results, r)
 			}
 		}
+		row := summaryRow(cell.cores, cell.chains, cell.mode, cell.samples, results)
+		if row[4] != verdictPass || row[6] != "0" {
+			failed = true
+		}
+		rows = append(rows, row)
 	}
 	path := filepath.Clean(filepath.Join(p.root, "summary.csv"))
 	out, err := os.CreateTemp(filepath.Dir(path), ".summary-*.tmp")

@@ -5,9 +5,13 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -245,5 +249,306 @@ func TestReviewSummaryEquivalentScopes(t *testing.T) {
 	row = summaryRow(2, 1, modeRequired, 2, []result{a, b})
 	if row[4] != verdictFail || row[7] != "" {
 		t.Fatalf("unequal quotas accepted: %v", row)
+	}
+}
+
+func TestMatrixProfilesRecordExactPlan(t *testing.T) {
+	for _, profile := range []string{"", profileFull, profileRelease} {
+		t.Run("profile="+profile, func(t *testing.T) {
+			root := t.TempDir()
+			argv := filepath.Join(root, "argv")
+			scope := filepath.Join(root, "systemd-run")
+			if err := os.WriteFile(scope, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" -- >> \""+argv+"\"\nexit 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Chmod(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			load := newFakePipelock(t, "harness")
+			out := filepath.Join(root, "matrix")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), load, out)
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_PROFILE="+profile, "RECEIPT_LOAD_MODES=off,best,required", "RECEIPT_LOAD_VERIFY_TIMEOUT=180s")
+			log, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("missing result files passed: %s", log)
+			}
+			data, err := os.ReadFile(filepath.Clean(argv))
+			if err != nil {
+				t.Fatalf("read argv: %v; %s", err, log)
+			}
+			got := map[string]bool{}
+			scopes := strings.Split(strings.TrimSuffix(string(data), "--\n"), "--\n")
+			for _, scope := range scopes {
+				args := strings.Split(strings.TrimSpace(scope), "\n")
+				at := slices.Index(args, load)
+				if at < 0 {
+					t.Fatalf("load missing from argv: %v", args)
+				}
+				flags := args[at+1:]
+				cpu := flagValue(args, "-p")
+				chain := flagValue(flags, "--chains")
+				sample := filepath.Base(flagValue(flags, "--out"))
+				if flagValue(flags, "--requests") != "20000" || flagValue(flags, "--warmup") != "1000" || flagValue(flags, "--concurrency") != "128" || flagValue(flags, "--verify-timeout") != "180s" {
+					t.Fatalf("workload changed: %v", flags)
+				}
+				cores := strings.TrimSuffix(strings.TrimPrefix(cpu, "CPUQuota="), "00%")
+				if want := string(filepath.Separator) + filepath.Join("cpu-"+cores, "chains-"+chain, sample); !strings.HasSuffix(flagValue(flags, "--out"), want) {
+					t.Fatalf("output directory differs from plan: %v", flags)
+				}
+				if !slices.Contains(args[:at], "GOMAXPROCS="+cores) {
+					t.Fatalf("quota and scheduler differ: %v", args)
+				}
+				for _, mode := range strings.Split(flagValue(flags, "--modes"), ",") {
+					key := cores + "/" + chain + "/" + sample + "/" + mode
+					if got[key] {
+						t.Fatalf("duplicate result: %s", key)
+					}
+					got[key] = true
+				}
+			}
+			want := map[string]bool{}
+			for _, cpu := range []int{2, 4, 8} {
+				for _, chain := range []int{1, 2, 4, 8} {
+					for sample := 1; sample <= 3; sample++ {
+						for _, mode := range []string{modeOff, modeBest, modeRequired} {
+							selected := (mode == modeRequired && (chain == 1 || chain == 8)) || (sample == 1 && ((mode == modeOff && chain == 1) || (mode == modeBest && chain == 8)))
+							if profile == profileRelease && !selected {
+								continue
+							}
+							want[fmt.Sprintf("%d/%d/sample-%d/%s", cpu, chain, sample, mode)] = true
+						}
+					}
+				}
+			}
+			if len(got) != len(want) {
+				t.Fatalf("got %d results, want %d", len(got), len(want))
+			}
+			for key := range want {
+				if !got[key] {
+					t.Errorf("missing %s", key)
+				}
+			}
+			expectedCount := 108
+			if profile == profileRelease {
+				expectedCount = 24
+			}
+			if len(got) != expectedCount {
+				t.Fatalf("got %d results, want %d", len(got), expectedCount)
+			}
+			marker, err := os.ReadFile(filepath.Clean(filepath.Join(out, "profile")))
+			expectedProfile := profile
+			if profile == "" {
+				expectedProfile = profileFull
+			}
+			if err != nil || string(marker) != expectedProfile+"\n" {
+				t.Fatalf("profile marker %q: %v", marker, err)
+			}
+			rows := readSummary(t, out)
+			samples := 0
+			for _, row := range rows {
+				n, err := strconv.Atoi(row["samples"])
+				if err != nil {
+					t.Fatal(err)
+				}
+				samples += n
+			}
+			if samples != expectedCount {
+				t.Fatalf("summary planned %d samples, want %d", samples, expectedCount)
+			}
+		})
+	}
+}
+
+func releaseSummaryFixture(t *testing.T) summaryParams {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "profile"), []byte(profileRelease+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := summaryParams{root: root, profile: profileRelease, samples: 3, cpus: []int{2, 4, 8}, chains: []int{1, 8}, modes: []string{modeOff, modeBest, modeRequired}}
+	for _, cpu := range []int{2, 4, 8} {
+		for _, mode := range []string{modeOff, modeBest, modeRequired} {
+			chains, samples := []int{1, 8}, 3
+			if mode == modeOff {
+				chains, samples = []int{1}, 1
+			}
+			if mode == modeBest {
+				chains, samples = []int{8}, 1
+			}
+			for _, chain := range chains {
+				for sample := 1; sample <= samples; sample++ {
+					r := fakeResult(150, 140, 145, verdictPass, perfMeasured)
+					r.Requests, r.WarmupRequests, r.Concurrency = 20000, 1000, 128
+					putResult(t, root, cpu, chain, sample, mode, r)
+				}
+			}
+		}
+	}
+	return p
+}
+
+func TestReleaseSummaryRequiresEveryPlannedResult(t *testing.T) {
+	p := releaseSummaryFixture(t)
+	if _, err := summarizeCommand([]string{"--root", p.root, "--profile", profileRelease, "--samples", "3", "--chains", "1,8"}); err != nil {
+		t.Fatal(err)
+	}
+	rows := readSummary(t, p.root)
+	if len(rows) != 12 || rows["8/1/required"]["samples"] != "3" || rows["2/8/best"]["samples"] != "1" || rows["4/1/off"]["samples"] != "1" {
+		t.Fatalf("wrong populations: %v", rows)
+	}
+	for _, path := range []string{"cpu-8/chains-8/sample-3/chains-8-required/result.json", "cpu-2/chains-1/sample-1/off/result.json", "cpu-4/chains-8/sample-1/chains-8-best/result.json"} {
+		t.Run(path, func(t *testing.T) {
+			p := releaseSummaryFixture(t)
+			if err := os.Remove(filepath.Join(p.root, path)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writeSummary(p); err == nil {
+				t.Fatal("missing planned result passed")
+			}
+		})
+	}
+}
+
+func TestSummaryRefusesProfileMismatch(t *testing.T) {
+	p := releaseSummaryFixture(t)
+	if err := writeSummary(p); err != nil {
+		t.Fatalf("positive control: %v", err)
+	}
+	// All release results pass. Only the producer's declared profile differs.
+	if err := os.WriteFile(filepath.Join(p.root, "profile"), []byte(profileFull+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSummary(p); err == nil || !strings.Contains(err.Error(), "profile mismatch") {
+		t.Fatalf("profile mismatch accepted: %v", err)
+	}
+	// A full summary must also refuse a release capture before judging its grid.
+	if err := os.WriteFile(filepath.Join(p.root, "profile"), []byte(profileRelease+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p.profile = profileFull
+	if err := writeSummary(p); err == nil || !strings.Contains(err.Error(), "profile mismatch") {
+		t.Fatalf("reverse profile mismatch accepted: %v", err)
+	}
+}
+
+func TestReleaseSummaryRefusesInvalidPlanAndWorkload(t *testing.T) {
+	for _, scenario := range []string{
+		"missing-marker", "unreadable-marker", "unknown-profile", "samples", "cpus", "chains", "modes", "requests", "warmup", "concurrency",
+		"all-requests", "all-warmup", "all-concurrency", "singleton-off", "singleton-best",
+	} {
+		t.Run(scenario, func(t *testing.T) {
+			p := releaseSummaryFixture(t)
+			switch scenario {
+			case "missing-marker":
+				if err := os.Remove(filepath.Join(p.root, "profile")); err != nil {
+					t.Fatal(err)
+				}
+			case "unreadable-marker":
+				if err := os.Remove(filepath.Join(p.root, "profile")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(filepath.Join(p.root, "profile"), 0o750); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown-profile":
+				p.profile = "unknown"
+			case "samples":
+				p.samples = 1
+			case "cpus":
+				p.cpus = []int{8}
+			case "chains":
+				p.chains = []int{1}
+			case "modes":
+				p.modes = []string{modeRequired}
+			case "all-requests", "all-warmup", "all-concurrency", "singleton-off", "singleton-best":
+				// Every sample of a population carries the wrong workload, or the
+				// population has one sample, so sample identity comparison can't
+				// refuse it; only the release workload guard can.
+				for _, cpu := range []int{2, 4, 8} {
+					for _, cell := range []struct {
+						mode           string
+						chain, samples int
+					}{{modeOff, 1, 1}, {modeBest, 8, 1}, {modeRequired, 1, 3}, {modeRequired, 8, 3}} {
+						for sample := 1; sample <= cell.samples; sample++ {
+							r := fakeResult(150, 140, 145, verdictPass, perfMeasured)
+							r.Requests, r.WarmupRequests, r.Concurrency = 20000, 1000, 128
+							switch {
+							case scenario == "all-requests":
+								r.Requests--
+							case scenario == "all-warmup":
+								r.WarmupRequests--
+							case scenario == "all-concurrency":
+								r.Concurrency--
+							case scenario == "singleton-off" && cell.mode == modeOff && cpu == 2:
+								r.Requests--
+							case scenario == "singleton-best" && cell.mode == modeBest && cpu == 4:
+								r.Concurrency--
+							}
+							putResult(t, p.root, cpu, cell.chain, sample, cell.mode, r)
+						}
+					}
+				}
+			default:
+				r := fakeResult(150, 140, 145, verdictPass, perfMeasured)
+				r.Requests, r.WarmupRequests, r.Concurrency = 20000, 1000, 128
+				switch scenario {
+				case "requests":
+					r.Requests--
+				case "warmup":
+					r.WarmupRequests--
+				case "concurrency":
+					r.Concurrency--
+				}
+				putResult(t, p.root, 2, 1, 1, modeRequired, r)
+			}
+			if err := writeSummary(p); err == nil {
+				t.Fatal("invalid release capture passed")
+			}
+		})
+	}
+}
+
+func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
+	for _, scenario := range []string{"profile", "requests", "samples", "modes"} {
+		t.Run(scenario, func(t *testing.T) {
+			profile, requests, samples, modes := profileRelease, "20000", "3", "off,best,required"
+			switch scenario {
+			case "profile":
+				profile = "unknown"
+			case "requests":
+				requests = "1"
+			case "samples":
+				samples = "1"
+			case "modes":
+				modes = "required"
+			}
+			// A present systemd-run keeps the refusal on the settings check
+			// instead of the missing-tool check, which also exits early.
+			root := t.TempDir()
+			scope := filepath.Join(root, "systemd-run")
+			if err := os.WriteFile(scope, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Chmod(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(root, "matrix")
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, requests, samples)
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_PROFILE="+profile, "RECEIPT_LOAD_MODES="+modes)
+			log, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("invalid settings did not exit 2: %v; %s", err, log)
+			}
+			if _, err := os.Stat(out); !os.IsNotExist(err) {
+				t.Fatalf("invalid settings created output: %v", err)
+			}
+		})
 	}
 }
