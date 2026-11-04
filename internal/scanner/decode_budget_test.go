@@ -121,6 +121,20 @@ func TestDecodeBudgetURLDirection(t *testing.T) {
 	}
 }
 
+// Keep the production bounds pinned independently of the fixture sizes.
+func TestDecodeBudgetProductionDefaults(t *testing.T) {
+	if maxDecodeTotalBytes != 8*1024*1024 {
+		t.Fatalf("recursive decode budget = %d, want 8 MiB", maxDecodeTotalBytes)
+	}
+	cfg := config.Defaults()
+	if cfg.RequestBodyScanning.MaxBodyBytes != 5*1024*1024 {
+		t.Fatalf("default body cap = %d, want 5 MiB", cfg.RequestBodyScanning.MaxBodyBytes)
+	}
+	if cfg.WebSocketProxy.MaxMessageBytes != 1024*1024 {
+		t.Fatalf("default frame cap = %d, want 1 MiB", cfg.WebSocketProxy.MaxMessageBytes)
+	}
+}
+
 func TestDecodeBudgetWalkBoundaries(t *testing.T) {
 	// HTML roots have an independent candidate budget, including its admission
 	// loop before any root is expanded. Plain terminal roots need no byte budget.
@@ -211,12 +225,11 @@ func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	// Two-layer base64 whose intermediate is past the recursive budget.
-	// The surrounding header is not itself that encoding, so only a segment
-	// walk reaches the bound. A compiled audience then drops the credential.
-	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
-	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
-	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	// A base64 segment reveals enough nested JSON escapes to spend the
+	// recursive budget. The surrounding header isn't that encoding, so only
+	// a segment walk reaches the bound. An audience then drops the credential.
+	// Large first-layer and terminal views are covered by the walk boundaries.
+	outer := base64.StdEncoding.EncodeToString([]byte(decodeBudgetNestedText()))
 	token := "ghp_" + strings.Repeat("A", 36)
 	value := "Bearer " + token + "/" + outer
 	// The whole header does not exhaust, so the inspection limit asserted
@@ -237,6 +250,38 @@ func TestDecodeBudgetSegmentSkipKeepsRefusal(t *testing.T) {
 	inbound := sc.ScanTextForDLP(WithInboundDirection(t.Context()), value)
 	if HasInspectionLimit(inbound.Matches) {
 		t.Fatal("inbound segment budget refused a response")
+	}
+}
+
+// The nested-escape segment tests above spend the budget through cumulative
+// expansions. This is the other bound: a segment whose first decode layer is
+// past the recursive budget must be decoded once more, and that second layer
+// must report incomplete. Only the decode of each segment is exercised, so the
+// over-budget carrier costs a base64 decode rather than a full scan.
+func TestDecodeBudgetSegmentNoteLargeIntermediate(t *testing.T) {
+	t.Parallel()
+	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
+	one := base64.StdEncoding.EncodeToString([]byte(terminal))
+	two := base64.StdEncoding.EncodeToString([]byte(one))
+	token := "ghp_" + strings.Repeat("A", 36)
+	for _, tc := range []struct {
+		name       string
+		segment    string
+		inbound    bool
+		incomplete bool
+	}{
+		{"one layer is covered by the transport limit", one, false, false},
+		{"over-budget intermediate refuses", two, false, true},
+		{"inbound keeps the partial-view policy", two, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			memo := decodingMemo{inbound: tc.inbound}
+			noteTextSegmentDecodeBudget([]string{"Bearer " + token + "/" + tc.segment}, &memo)
+			if got := memo.inspectionIncomplete(); got != tc.incomplete {
+				t.Fatalf("inspectionIncomplete=%v, want %v", got, tc.incomplete)
+			}
+		})
 	}
 }
 
@@ -290,9 +335,7 @@ func testDecodeBudgetSegmentHTMLView(t *testing.T, coreOnly bool) {
 	}
 	sc := MustNew(cfg)
 	t.Cleanup(sc.Close)
-	terminal := strings.Repeat("!", maxDecodeTotalBytes+1)
-	inner := base64.StdEncoding.EncodeToString([]byte(terminal))
-	outer := base64.StdEncoding.EncodeToString([]byte(inner))
+	outer := base64.StdEncoding.EncodeToString([]byte(decodeBudgetNestedText()))
 	entity := fmt.Sprintf("&#%d;", outer[0]) + outer[1:]
 	token := "ghp_" + strings.Repeat("A", 36)
 	value := "Bearer " + token + "/" + entity

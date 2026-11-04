@@ -242,6 +242,12 @@ func (h *uploadHarness) exercise(t *testing.T, headers http.Header, body []byte)
 
 func TestUploadInspectionProducerTransports(t *testing.T) {
 	names := []string{"libreoffice-clean.docx", "libreoffice-seeded.docx", "pandoc-clean.docx", "pandoc-seeded.docx", "pandoc-clean.odt", "pandoc-clean.epub", "pandoc-seeded.odt", "split-run.docx", "clean.xlsx", "seeded.xlsx", "clean.pptx", "seeded.pptx", "clean.odt", "seeded.odt", "clean.ods", "seeded.ods", "libreoffice-chart.ods", "libreoffice-embedded-font.odt", "libreoffice-embedded-font.docx", "clean.pdf"}
+	if raceEnabled {
+		// Under the race detector keep every container format, both outcomes
+		// and the split-run case on every surface and carrier; the full
+		// producer list runs in normal builds.
+		names = []string{"libreoffice-clean.docx", "pandoc-seeded.docx", "split-run.docx", "clean.xlsx", "seeded.pptx", "seeded.odt", "clean.ods", "pandoc-clean.epub", "clean.pdf"}
+	}
 	fixtures := make(map[string][]byte, len(names))
 	for _, name := range names {
 		data, err := os.ReadFile(filepath.Clean(filepath.Join("..", "fileinspect", "testdata", name)))
