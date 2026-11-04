@@ -3,9 +3,10 @@
 
 // Command receipt-load drives a real Pipelock forward proxy and a local sink
 // and reports two separate verdicts: performance (rates and latency to a fully
-// read response body) and integrity (every request left exactly the receipts
-// its mode requires). Sink requests are matched by identity; destination-only
-// receipts use aggregate counts and authenticated per-action/chain checks.
+// read response body) and integrity. The single-destination workload checks
+// aggregate receipt accounting and authenticated per-action/chain links. The
+// per-request destination workload also checks each planned request left its
+// expected receipt families. Neither mode distinguishes v2 decision phases.
 package main
 
 import (
@@ -96,6 +97,7 @@ func parseFlags(args []string) (options, []string, string, error) {
 	warmup := fs.Int("warmup", 1000, "warmup requests per mode, sent through the same proxy process and excluded from performance")
 	concurrency := fs.Int("concurrency", 128, "concurrent clients")
 	modes := fs.String("modes", "off,best,required", "comma-separated modes")
+	destinations := fs.String("destinations", destinationsSingle, "destination workload: single or per-request")
 	chains := fs.Int("chains", 1, "number of signed receipt chains (1 to 32)")
 	rules := fs.String("rules", rulesEmpty, `rule bundles to load: "empty" for none, or a directory that is copied and hashed`)
 	seed := fs.Uint64("seed", 1, "workload seed; fixes request keys and which requests are blocked")
@@ -105,6 +107,9 @@ func parseFlags(args []string) (options, []string, string, error) {
 	lock := fs.String("lock-file", "", "advisory lock file held for the whole invocation, to serialize runs on one machine")
 	if err := fs.Parse(args); err != nil {
 		return options{}, nil, "", err
+	}
+	if *destinations != destinationsSingle && *destinations != destinationsPerRequest {
+		return options{}, nil, "", fmt.Errorf("invalid --destinations %q", *destinations)
 	}
 	maxInt := int(^uint(0) >> 1)
 	if *restartAfter != 0 && (*restartAfter < 0 || *restartAfter >= *n) {
@@ -135,7 +140,7 @@ func parseFlags(args []string) (options, []string, string, error) {
 		list = append(list, mode)
 	}
 	return options{
-		binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
+		destinations: *destinations, binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
 		chains: *chains, seed: *seed, window: *window, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
 	}, list, *lock, nil
 }

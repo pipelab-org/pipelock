@@ -28,6 +28,7 @@ go run ./scripts/receipt-load --binary "$repo/pipelock" --out "$1" \
   --warmup "${RECEIPT_LOAD_WARMUP:-1000}" \
   --concurrency "${RECEIPT_LOAD_CONCURRENCY:-128}" \
   --chains "${RECEIPT_LOAD_CHAINS:-1}" \
+  --destinations "${RECEIPT_LOAD_DESTINATIONS:-single}" \
   --modes "${RECEIPT_LOAD_MODES:-off,best,required}" \
   --rules "${RECEIPT_LOAD_RULES:-empty}" \
   --seed "${RECEIPT_LOAD_SEED:-1}" \

@@ -46,12 +46,14 @@ type inputsReport struct {
 }
 
 type workloadReport struct {
-	Seed          uint64  `json:"seed"`
-	Tag           string  `json:"tag"`
-	KeyParam      string  `json:"key_param"`
-	BlockEvery    int     `json:"block_every"`
-	BlockOffset   int     `json:"block_offset"`
-	WindowSeconds float64 `json:"window_seconds"`
+	Destinations    string           `json:"destinations"`
+	DestinationPool *destinationPlan `json:"destination_pool,omitempty"`
+	Seed            uint64           `json:"seed"`
+	Tag             string           `json:"tag"`
+	KeyParam        string           `json:"key_param"`
+	BlockEvery      int              `json:"block_every"`
+	BlockOffset     int              `json:"block_offset"`
+	WindowSeconds   float64          `json:"window_seconds"`
 }
 
 type latencyReport struct {

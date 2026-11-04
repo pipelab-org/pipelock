@@ -242,3 +242,31 @@ func TestLogSummaryNamesStatusCountsOnFailure(t *testing.T) {
 		t.Errorf("clean run logged status counts:\n%s", out)
 	}
 }
+
+func TestSampleIdentityDestinationPools(t *testing.T) {
+	a := fakeResult(100, 100, 100, verdictPass, perfMeasured)
+	a.Inputs.Workload.Destinations = destinationsPerRequest
+	a.Inputs.Workload.DestinationPool = newDestinationPlan(4, []string{"10001", "10002"})
+	b := a
+	b.Inputs.Workload.DestinationPool = newDestinationPlan(4, []string{"20001", "20002"})
+	if sampleIdentity(a) != sampleIdentity(b) {
+		t.Fatal("ephemeral ports changed sample identity")
+	}
+	if a.Inputs.Workload.DestinationPool.Ports[0] != "10001" {
+		t.Fatal("comparison mutated recorded ports")
+	}
+	b.Inputs.Workload.Destinations = destinationsSingle
+	b.Inputs.Workload.DestinationPool = nil
+	if sampleIdentity(a) == sampleIdentity(b) {
+		t.Fatal("different destination modes shared sample identity")
+	}
+	b = a
+	b.Inputs.Workload.DestinationPool = newDestinationPlan(4, []string{"10001"})
+	if sampleIdentity(a) == sampleIdentity(b) {
+		t.Fatal("different pool dimensions shared sample identity")
+	}
+	b.Inputs.Workload.DestinationPool = newDestinationPlan(4, []string{"10001", "10002", "10003"})
+	if len(b.Inputs.Workload.DestinationPool.Aliases) != len(a.Inputs.Workload.DestinationPool.Aliases) || sampleIdentity(a) == sampleIdentity(b) {
+		t.Fatal("different port counts with equal aliases shared sample identity")
+	}
+}
