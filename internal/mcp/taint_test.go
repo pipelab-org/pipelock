@@ -427,8 +427,9 @@ func TestScanHTTPInputDecision_ApprovedTaintAskEmitsAudit(t *testing.T) {
 		if ev.Fields["authority_kind"] != session.AuthorityUserBroad.String() {
 			t.Fatalf("authority_kind = %v, want %q", ev.Fields["authority_kind"], session.AuthorityUserBroad.String())
 		}
-		if ev.Fields["source_url"] != "https://evil.example/issue/123" {
-			t.Fatalf("source_url = %v, want sticky taint origin", ev.Fields["source_url"])
+		// Audit records keep the taint origin's destination only.
+		if ev.Fields["source_url"] != "https://evil.example" {
+			t.Fatalf("source_url = %v, want sticky taint origin destination", ev.Fields["source_url"])
 		}
 		if ev.Fields["source_kind"] != "http_response" {
 			t.Fatalf("source_kind = %v, want http_response", ev.Fields["source_kind"])

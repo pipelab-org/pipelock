@@ -64,6 +64,13 @@ func redactURLDestination(u *url.URL, keepPath bool) string {
 	return out
 }
 
+// ValidAuthority reports whether u's authority is a DNS name or IP literal
+// with an optional numeric port, the destination check every redaction
+// caller shares.
+func ValidAuthority(u *url.URL) bool {
+	return validRedactionAuthority(u)
+}
+
 // validRedactionAuthority accepts DNS names and IP literals with an optional
 // numeric port. URL parsing alone also accepts opaque scheme-shaped inputs
 // and malformed DNS labels, which must not become destination diagnostics.

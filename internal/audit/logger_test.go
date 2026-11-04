@@ -1540,7 +1540,7 @@ func TestLogAllowed_IncludesAllFields(t *testing.T) {
 	checks := map[string]any{
 		"event":      "allowed",
 		"method":     testMethodGet,
-		"url":        "https://example.com/page",
+		"url":        "https://example.com",
 		"component":  "pipelock",
 		"client_ip":  "10.0.0.5",
 		"request_id": "req-100",
@@ -2504,7 +2504,7 @@ func TestLogWSOpen_JSONFormat(t *testing.T) {
 	if entry["event"] != "ws_open" {
 		t.Errorf("expected event=ws_open, got %v", entry["event"])
 	}
-	if entry["target"] != "ws://example.com/stream" {
+	if entry["target"] != "ws://example.com" {
 		t.Errorf("expected target, got %v", entry["target"])
 	}
 	if entry["agent"] != "test-agent" {
@@ -2559,7 +2559,7 @@ func TestLogWSClose_JSONFormat(t *testing.T) {
 	if entry["event"] != "ws_close" {
 		t.Errorf("expected event=ws_close, got %v", entry["event"])
 	}
-	if entry["target"] != "ws://example.com/stream" {
+	if entry["target"] != "ws://example.com" {
 		t.Errorf("expected target, got %v", entry["target"])
 	}
 	c2s, ok := entry["client_to_server_bytes"].(float64)
@@ -3075,7 +3075,7 @@ func TestEmit_OperationalLifecycleEvents(t *testing.T) {
 				l.LogWSOpen("ws://example.com/stream", testClientIP, testReqID, testAgentName)
 			},
 			want: map[string]any{
-				"target":     "ws://example.com/stream",
+				"target":     "ws://example.com",
 				"client_ip":  testClientIP,
 				"request_id": testReqID,
 				"agent":      testAgentName,
@@ -3098,7 +3098,7 @@ func TestEmit_OperationalLifecycleEvents(t *testing.T) {
 				})
 			},
 			want: map[string]any{
-				"target":                 "ws://example.com/stream",
+				"target":                 "ws://example.com",
 				"client_ip":              testClientIP,
 				"request_id":             testReqID,
 				"agent":                  testAgentName,
@@ -3470,7 +3470,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventAllowed),
 			wantKey:   "url",
-			wantValue: "https://fetch.example/path",
+			wantValue: "https://fetch.example",
 			absent:    []string{"target", "resource"},
 		},
 		{
@@ -3500,7 +3500,7 @@ func TestEmit_LogContextFieldRouting(t *testing.T) {
 			},
 			wantType:  string(EventResponseScanExempt),
 			wantKey:   "url",
-			wantValue: "ws://socket.example/stream",
+			wantValue: "ws://socket.example",
 			absent:    []string{"target", "resource"},
 		},
 		{
@@ -6084,7 +6084,7 @@ func TestLogTaintDecision_LocalLogAndEmit(t *testing.T) {
 		"authority_kind":      "agent",
 		"decision":            "block",
 		"reason":              "external content reached sensitive action",
-		"source_url":          "https://untrusted.example.org/page",
+		"source_url":          "https://untrusted.example.org",
 		"source_kind":         "fetch",
 	}
 	for k, want := range cases {
