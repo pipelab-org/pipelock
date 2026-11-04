@@ -1,6 +1,6 @@
 # Copyright 2026 Pipelock contributors
 # SPDX-License-Identifier: Apache-2.0
-"""Capture and validate a local benchmark pair; scoring stays in bench-compare.awk."""
+"""Capture validated benchmark pairs and smoke-test all benchmarks."""
 
 from __future__ import annotations
 
@@ -13,6 +13,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 
 
 class RunError(ValueError):
@@ -200,8 +202,36 @@ def capture_pair(baseline: Path, current: Path, output: Path, command: list[str]
     validate_outputs(output / "baseline.txt", output / "current.txt", base_inputs)
 
 
+def smoke_benchmarks() -> int:
+    """Exercise all benchmarks, including opt-in fixture-backed cases."""
+    root = Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory(prefix="benchmark-smoke-") as directory:
+        Path(directory).chmod(0o750)
+        fixtures = Path(directory) / "fixtures"
+        subprocess.run([sys.executable, str(root / "scripts/e2e/browser_repro/fixture.py"),
+                        "--output", str(fixtures)], check=True, stdout=subprocess.DEVNULL)
+        fixtures.chmod(0o750)
+        for name in ("echarts.js", "monaco.js", "react-dom.js"):
+            shutil.copyfile(fixtures / "generated-js.js", fixtures / name)
+            (fixtures / name).chmod(0o600)
+        env = dict(os.environ)
+        for key in ("PIPELOCK_BROWSER_REPRO_BENCH_DIR", "RESPONSE_BENCH_DIR", "PIPELOCK_RESPONSE_BENCH_DIR"):
+            env[key] = str(fixtures)
+        env["PIPELOCK_RESPONSE_PASS_SAMPLE"] = str(fixtures / "generated-js.js")
+        start = time.monotonic()
+        # Enterprise includes every default benchmark plus enterprise-only ones.
+        result = subprocess.run(["go", "test", "-tags", "enterprise", "./...", "-run=^$", "-bench=.",
+                                 "-benchtime=1x", "-benchmem", "-count=1"], cwd=root, env=env, check=False)
+        print(f"benchmark-smoke: elapsed={time.monotonic() - start:.2f}s exit={result.returncode}", flush=True)
+        return result.returncode
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--smoke", action="store_true", help="run every benchmark once with generated fixtures")
+    if "--smoke" in sys.argv[1:]:
+        parser.parse_args()
+        return smoke_benchmarks()
     parser.add_argument("--baseline", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)

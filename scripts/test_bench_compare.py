@@ -5,9 +5,15 @@
 from __future__ import annotations
 
 import subprocess
+import importlib.util
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
+
+SPEC = importlib.util.spec_from_file_location("bench_run", Path(__file__).with_name("bench_run.py"))
+RUN = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RUN)
 
 AWK = Path(__file__).resolve().parent / "bench-compare.awk"
 
@@ -73,6 +79,27 @@ class BenchCompareTest(unittest.TestCase):
         rc, _, missing = self.run_compare(_line("BenchmarkAlpha", 100), _line("BenchmarkGamma", 100))
         self.assertEqual(rc, 3)
         self.assertEqual(missing, ["BenchmarkAlpha"])
+
+
+
+class SmokeRunTest(unittest.TestCase):
+    def test_smoke_propagates_benchmark_failure_and_supplies_fixtures(self):
+        real_run = subprocess.run
+        for status in (0, 1):
+            with self.subTest(status=status):
+                def run(command, **kwargs):
+                    if command[0] != "go":
+                        return real_run(command, **kwargs)
+                    for key in ("PIPELOCK_BROWSER_REPRO_BENCH_DIR", "RESPONSE_BENCH_DIR", "PIPELOCK_RESPONSE_BENCH_DIR"):
+                        directory = Path(kwargs["env"][key])
+                        self.assertTrue((directory / "generated-js-marker.js").is_file())
+                        self.assertTrue((directory / "monaco.js").is_file())
+                    self.assertTrue(Path(kwargs["env"]["PIPELOCK_RESPONSE_PASS_SAMPLE"]).is_file())
+                    self.assertIn("-run=^$", command)
+                    self.assertIn("-benchtime=1x", command)
+                    return subprocess.CompletedProcess(command, status)
+                with patch.object(RUN.subprocess, "run", side_effect=run):
+                    self.assertEqual(RUN.smoke_benchmarks(), status)
 
 
 if __name__ == "__main__":
