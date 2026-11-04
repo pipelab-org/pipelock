@@ -135,16 +135,18 @@ class AllocationReportTest(unittest.TestCase):
 
     def test_command_skips_only_benchmarks_without_a_stable_case(self):
         skip = [arg for arg in RUN.ALLOCATION_COMMAND if arg.startswith("-skip=")]
-        self.assertEqual(skip, [f"-skip=^({'|'.join(RUN.ALLOCATION_SKIPPED)})$"])
-        self.assertIn("BenchmarkDecodeBudget", RUN.ALLOCATION_SKIPPED)
+        self.assertEqual(skip, [f"-skip={RUN.allocation_skip_pattern(RUN.ALLOCATION_SKIPPED)}"])
+        self.assertIn("BenchmarkDecodeBudget/hex", RUN.ALLOCATION_SKIPPED)
         self.assertNotIn("BenchmarkScanResponse_Large", RUN.ALLOCATION_SKIPPED)
+        self.assertIn("^BenchmarkDecodeBudget$/^hex$", skip[0])
+        self.assertNotIn("^BenchmarkScanResponse_Large$", skip[0].removeprefix("-skip=").split("|"))
         for name in RUN.ALLOCATION_SKIPPED:
-            self.assertRegex(name, r"^Benchmark\w+$")
+            self.assertRegex(name.split("/", 1)[0], r"^Benchmark\w+$")
 
     def test_skipped_names_are_defined_only_in_their_excluded_package(self):
         root = Path(__file__).resolve().parent.parent
         prefix = "github.com/luckyPipewrench/pipelock/"
-        for name in RUN.ALLOCATION_SKIPPED:
+        for name in {benchmark.split("/", 1)[0] for benchmark in RUN.ALLOCATION_SKIPPED}:
             with self.subTest(name=name):
                 excluded = {package.removeprefix(prefix) for package, benchmark in RUN.ALLOCATION_EXCLUSIONS
                             if benchmark.split("/", 1)[0] == name}
@@ -154,13 +156,29 @@ class AllocationReportTest(unittest.TestCase):
                            if re.search(rf"^func {name}\(", path.read_text(encoding="utf-8"), re.M)}
                 self.assertEqual(defined, excluded)
 
+    def test_new_subcase_exclusion_keeps_its_stable_siblings_running(self):
+        names = (*RUN.ALLOCATION_SKIPPED, "BenchmarkMatchDomain/exact")
+        pattern = RUN.allocation_skip_pattern(names)
+        self.assertIn("^BenchmarkMatchDomain$/^exact$", pattern.split("|"))
+        self.assertNotIn("^BenchmarkMatchDomain$", pattern.split("|"))
+        self.assertNotIn("^BenchmarkMatchDomain$/^wildcard$", pattern.split("|"))
+
+    def test_new_whole_benchmark_exclusion_is_skipped(self):
+        pattern = RUN.allocation_skip_pattern((*RUN.ALLOCATION_SKIPPED, "BenchmarkNewVarying"))
+        self.assertIn("^BenchmarkNewVarying$", pattern.split("|"))
+
+    def test_skip_pattern_escapes_literal_subcase_names(self):
+        pattern = RUN.allocation_skip_pattern(("BenchmarkExample/case.v1+",))
+        self.assertEqual(pattern, r"^BenchmarkExample$/^case\.v1\+$")
+
     def test_skipped_exclusions_are_listed_not_new_or_removed(self):
         report = RUN.allocation_report("", "")
         self.assertIn("internal/scanner / BenchmarkDecodeBudget/hex: allocs/op varies", report)
         self.assertIn("(skipped, not run)", report)
         self.assertNotIn("| new |", report)
         self.assertNotIn("| removed |", report)
-        self.assertNotIn("BenchmarkScanResponse_Large", report)
+        self.assertIn("BenchmarkScanResponse_Large/JSONLike_64KiB_InjectionEarly: allocs/op varies", report)
+        self.assertNotIn("BenchmarkScanResponse_Large/JSONLike_64KiB_Clean", report)
 
     def test_warmup_discard_and_bytes_not_compared(self):
         report = RUN.allocation_report(allocation_rows(allocs=(999, 10)),
