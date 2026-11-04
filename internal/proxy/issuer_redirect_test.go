@@ -1078,16 +1078,64 @@ func TestIssuedRedirectPendingScopeCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.finishIssuedRedirectDelivery("session", full)
 	one := map[[32]byte]struct{}{{1}: {}}
 	if extra, err := s.beginIssuedRedirectDelivery("session", target, one); err == nil {
 		s.finishIssuedRedirectDelivery("session", extra)
 		t.Fatal("overlapping delegation scopes exceeded the per-session entry budget")
 	}
+	s.finishIssuedRedirectDelivery("session", full)
+	again, err := s.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatalf("finished multi-scope delivery kept pending capacity: %v", err)
+	}
+	s.finishIssuedRedirectDelivery("session", again)
 	// A single oversized delivery must also be refused before allocating its entries.
 	scopes[s.digestFields("overflow")] = struct{}{}
 	if extra, err := s.beginIssuedRedirectDelivery("other", target, scopes); err == nil {
 		s.finishIssuedRedirectDelivery("other", extra)
 		t.Fatal("oversized scope set admitted")
+	}
+}
+
+func TestIssuedRedirectDisabledStoreFlush(t *testing.T) {
+	for _, saturated := range []bool{false, true} {
+		t.Run(strconv.FormatBool(saturated), func(t *testing.T) {
+			e := newDelegationEnv(t, nil)
+			ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+			store := newIssuerQueryStoreWithReader(&errorReader{err: io.ErrUnexpectedEOF})
+			if !store.disabled {
+				t.Fatal("failed random source did not disable issuer store")
+			}
+			e.p.issuerCookieRuntime.Load().query = store
+			store.deliveries = make(map[string]*issuedRedirectDeliverySet)
+			if saturated {
+				for i := 0; i < issuerCookieMaxSessions; i++ {
+					store.deliveries[strconv.Itoa(i)] = &issuedRedirectDeliverySet{}
+				}
+			}
+			target := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			source := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+			response := &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target}}, Request: source}
+			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+			w.Header().Set("Location", target)
+			w.afterWriteHeader = func() {
+				store.mu.Lock()
+				defer store.mu.Unlock()
+				for _, bucket := range store.deliveries {
+					if bucket.entries != 0 {
+						t.Error("disabled store reserved pending capacity")
+					}
+				}
+			}
+			if err := ic.flushIssuedRedirectHeaders(w, response); err != nil {
+				t.Fatal(err)
+			}
+			if w.Code != http.StatusFound || w.calls != 0 {
+				t.Fatalf("disabled store response/flushes = %d/%d, want 302/0", w.Code, w.calls)
+			}
+			if got := e.do("agent-one", http.MethodGet, target); got != http.StatusForbidden {
+				t.Fatalf("disabled store follow-up = %d, want 403", got)
+			}
+		})
 	}
 }

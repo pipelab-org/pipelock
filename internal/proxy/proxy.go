@@ -614,6 +614,10 @@ func resolvedVersion(version, cliVersion string) string {
 // editionSnapshot wraps an Edition for atomic pointer storage.
 type editionSnapshot struct{ edition.Edition }
 
+type contextDialer interface {
+	DialContext(context.Context, string, string) (net.Conn, error)
+}
+
 // Proxy is the Pipelock fetch proxy server.
 type Proxy struct {
 	cfgPtr               atomic.Pointer[config.Config]
@@ -635,7 +639,7 @@ type Proxy struct {
 	ks                   *killswitch.Controller
 	ksAPI                *killswitch.APIHandler
 	sessionAPI           *SessionAPIHandler
-	dialer               *net.Dialer
+	dialer               contextDialer
 	client               *http.Client
 	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
 	server               *http.Server

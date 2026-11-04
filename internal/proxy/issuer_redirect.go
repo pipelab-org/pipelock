@@ -598,7 +598,7 @@ func (ic *InterceptContext) flushIssuedRedirectHeaders(w http.ResponseWriter, re
 		return writeHeaders()
 	}
 	store := ic.issuerQueryStore()
-	if store == nil {
+	if store == nil || store.disabled {
 		return writeHeaders()
 	}
 	emitted := *response

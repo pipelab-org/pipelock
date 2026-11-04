@@ -278,11 +278,15 @@ func TestIssuedRedirectCONNECTTransport(t *testing.T) {
 		c.DefaultAgentIdentity = "agent-one"
 		c.ForwardProxy.Enabled = true
 		c.APIAllowlist = nil
-		c.DNS.HostOverrides = map[string][]string{host: {"127.0.0.1"}}
+		c.DNS.HostOverrides = map[string][]string{host: {"127.0.0.1"}, delegationSourceHost: {"127.0.0.1"}}
 		c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].TargetOrigins = []string{"https://" + net.JoinHostPort(host, port)}
 	})
 	e.p.certCachePtr.Store(e.cache)
 	e.p.tlsTransport = e.rt.(*http.Transport)
+	// Keep the source route's required authority on 443 while the actual
+	// preflight listener uses an ephemeral port. SSRF checks still run before
+	// this dial boundary; the production dialer remains net.Dialer.
+	e.p.dialer = issuedRedirectTestDialer{address: preflight.Listener.Addr().String()}
 	proxy := httptest.NewServer(e.p.buildHandler(http.NewServeMux()))
 	defer proxy.Close()
 	issued := "https://" + net.JoinHostPort(host, port) + "/dl/archive.bin?id=7"
@@ -315,7 +319,7 @@ func TestIssuedRedirectCONNECTTransport(t *testing.T) {
 			_ = resp.Body.Close()
 			return resp.StatusCode, 0
 		}
-		tunnel := tls.Client(readerConn{Reader: reader, Conn: conn}, &tls.Config{RootCAs: e.pool, ServerName: host, MinVersion: tls.VersionTLS12})
+		tunnel := tls.Client(readerConn{Reader: reader, Conn: conn}, &tls.Config{RootCAs: e.pool, ServerName: target.Hostname(), MinVersion: tls.VersionTLS12})
 		if err := tunnel.HandshakeContext(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -341,14 +345,11 @@ func TestIssuedRedirectCONNECTTransport(t *testing.T) {
 		t.Fatalf("unissued CONNECT = %d, want 403", connect)
 	}
 	e.issue(http.StatusFound, issued)
-	ic := &InterceptContext{
-		Proxy: e.p, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
-		TargetHost: delegationSourceHost, TargetPort: "443", ClientIP: "127.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthConfigDefault,
+	if connect, inner := request(delegationSourceURL()); connect != http.StatusOK || inner != http.StatusFound {
+		t.Fatalf("source CONNECT/GET = %d/%d, want 200/302", connect, inner)
 	}
-	w := httptest.NewRecorder()
-	newInterceptHandler(ic, e.rt).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil))
-	if w.Code != http.StatusFound {
-		t.Fatalf("source = %d, want 302", w.Code)
+	if e.sourceHit.Load() != 1 {
+		t.Fatalf("source upstream hits = %d, want 1", e.sourceHit.Load())
 	}
 	if connect, inner := request(issued); connect != http.StatusOK || inner != http.StatusOK {
 		t.Fatalf("issued CONNECT/GET = %d/%d, want 200/200", connect, inner)
@@ -356,4 +357,14 @@ func TestIssuedRedirectCONNECTTransport(t *testing.T) {
 	if connect, inner := request(strings.Replace(issued, "id=7", "id=8", 1)); connect != http.StatusOK || inner != http.StatusForbidden {
 		t.Fatalf("altered URL CONNECT/GET = %d/%d, want 200/403", connect, inner)
 	}
+}
+
+// issuedRedirectTestDialer redirects the validated CONNECT preflight to the
+// local fixture without reserving a fixed port for the source authority.
+type issuedRedirectTestDialer struct {
+	address string
+}
+
+func (d issuedRedirectTestDialer) DialContext(ctx context.Context, network, _ string) (net.Conn, error) {
+	return (&net.Dialer{}).DialContext(ctx, network, d.address)
 }

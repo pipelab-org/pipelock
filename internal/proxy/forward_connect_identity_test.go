@@ -38,7 +38,7 @@ func installConnectDialRecorder(t *testing.T, p *Proxy) (*atomic.Int32, <-chan s
 
 	var calls atomic.Int32
 	targets := make(chan string, 1)
-	p.dialer.ControlContext = func(_ context.Context, _ string, address string, _ syscall.RawConn) error {
+	p.dialer.(*net.Dialer).ControlContext = func(_ context.Context, _ string, address string, _ syscall.RawConn) error {
 		calls.Add(1)
 		select {
 		case targets <- address:
