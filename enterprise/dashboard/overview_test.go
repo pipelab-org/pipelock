@@ -450,3 +450,29 @@ func assertOverviewAttention(t *testing.T, page OverviewPage, severity, kind, fa
 	}
 	t.Fatalf("missing attention item %s/%s/%q in %+v", severity, kind, fact, page.Attention)
 }
+
+func TestOverviewCoverageFollowsEnforce(t *testing.T) {
+	off, on := false, true
+	for _, tc := range []struct {
+		name    string
+		enforce *bool
+		profile config.AgentProfile
+		want    bool
+	}{
+		{"audit inherits true", nil, config.AgentProfile{Mode: config.ModeAudit}, false},
+		{"audit explicit true", &off, config.AgentProfile{Mode: config.ModeAudit, Enforce: &on}, false},
+		{"audit explicit false", nil, config.AgentProfile{Mode: config.ModeAudit, Enforce: &off}, true},
+		{"balanced inherits false", &off, config.AgentProfile{Mode: config.ModeBalanced}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Enforce = tc.enforce
+			cfg.Agents = map[string]config.AgentProfile{"review-agent": tc.profile}
+			m := &ReadModel{cfg: cfg}
+			got := m.overviewCoverage(nil, OverviewFleetPosture{})
+			if (len(got.MonitorOnlyAgents) > 0) != tc.want {
+				t.Fatalf("monitor-only agents=%v, want present=%v", got.MonitorOnlyAgents, tc.want)
+			}
+		})
+	}
+}
