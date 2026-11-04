@@ -343,8 +343,8 @@ dlp:
 		if strings.Contains(out, secret) {
 			t.Fatalf("output leaked active-config DLP value for args %v:\n%s", args, out)
 		}
-		if !strings.Contains(out, "state=public") {
-			t.Fatalf("output should preserve non-sensitive query context for args %v:\n%s", args, out)
+		if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+			t.Fatalf("output should retain only destination context for args %v:\n%s", args, out)
 		}
 	}
 }
@@ -378,8 +378,8 @@ func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 			t.Fatalf("text output leaked token-family query value %q:\n%s", leaked, out)
 		}
 	}
-	if !strings.Contains(out, "state=public") {
-		t.Fatalf("text output should preserve non-sensitive query context:\n%s", out)
+	if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+		t.Fatalf("text output should retain only destination context:\n%s", out)
 	}
 
 	out, err = runExplainCmd(t, "event", "req-token-family", "--log", logPath, "--json")
@@ -391,8 +391,8 @@ func TestExplainEventCmd_RedactsTokenFamilyQueryParams(t *testing.T) {
 			t.Fatalf("JSON output leaked token-family query value %q:\n%s", leaked, out)
 		}
 	}
-	if !strings.Contains(out, "state=public") {
-		t.Fatalf("JSON output should preserve non-sensitive query context:\n%s", out)
+	if strings.Contains(out, "state=public") || !strings.Contains(out, "https://api.vendor.example") {
+		t.Fatalf("JSON output should retain only destination context:\n%s", out)
 	}
 }
 
@@ -471,6 +471,50 @@ func TestExplainEventCmd_RedactsRelativeTargetSecretQueryParams(t *testing.T) {
 	}
 	if !strings.Contains(out, "state=public") {
 		t.Fatalf("JSON output should preserve non-sensitive query context:\n%s", out)
+	}
+}
+
+func TestExplainEventCmd_KeepsPathDiagnosticTargetPath(t *testing.T) {
+	for _, tc := range []struct{ scanner, path string }{
+		{"path_traversal", "/files/../../etc/passwd"},
+		{"crlf_injection", "/files/%0d%0aSet-Cookie:x"},
+	} {
+		t.Run(tc.scanner, func(t *testing.T) {
+			dir := t.TempDir()
+			logPath := filepath.Join(dir, "audit.log")
+			target := "https://api.vendor.example" + tc.path + "?ref=private#frag"
+			line := map[string]any{
+				"event":      "blocked",
+				"request_id": "req-path-diagnostic",
+				"url":        target,
+				"target":     target,
+				"scanner":    tc.scanner,
+				"reason":     "path diagnostic",
+			}
+			data, err := json.Marshal(line)
+			if err != nil {
+				t.Fatalf("marshal audit line: %v", err)
+			}
+			if err := os.WriteFile(logPath, append(data, '\n'), 0o600); err != nil {
+				t.Fatalf("write audit log: %v", err)
+			}
+
+			for _, args := range [][]string{
+				{"event", "req-path-diagnostic", "--log", logPath},
+				{"event", "req-path-diagnostic", "--log", logPath, "--json"},
+			} {
+				out, err := runExplainCmd(t, args...)
+				if err != nil {
+					t.Fatalf("explain %v failed: %v\n%s", args, err, out)
+				}
+				if !strings.Contains(out, "https://api.vendor.example"+tc.path) {
+					t.Fatalf("explain %v dropped the path that carries the finding:\n%s", args, out)
+				}
+				if strings.Contains(out, "ref=private") || strings.Contains(out, "frag") {
+					t.Fatalf("explain %v kept query or fragment for a path-diagnostic event:\n%s", args, out)
+				}
+			}
+		})
 	}
 }
 

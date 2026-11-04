@@ -4,9 +4,7 @@
 package audit
 
 import (
-	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"unicode"
 
@@ -59,6 +57,13 @@ func scannerContentFieldMode(scanner string) contentFieldMode {
 	}
 }
 
+// KeepsDiagnosticPath reports whether audit logs keep the URL path for events
+// attributed to scanner because the path is the finding (path traversal,
+// CRLF). Readers of those logs use it to render the same retained path.
+func KeepsDiagnosticPath(scanner string) bool {
+	return scannerContentFieldMode(scanner) == contentFieldModePathDiagnostic
+}
+
 // IsContentScanner reports whether blocks attributed to the given scanner
 // name imply the URL/target contains the secret-shaped bytes that fired
 // the match. Callers constructing client-facing block responses (fetch,
@@ -100,82 +105,25 @@ func redactedContentFields(ctx LogContext, scanner string) (loggedURL, loggedTar
 	}
 }
 
-// dropURLContentSegments removes the query and fragment from raw, and removes
-// the path as well unless keepPath is set. A value that does not parse as an
-// absolute URL is parsed as a schemeless authority, so CONNECT destinations
-// survive while opaque payloads and malformed destinations are redacted.
-// Ambiguous single-label host:port text is redacted except for localhost;
-// callers can use an explicit URL or //authority for other single-label hosts.
+// dropURLContentSegments shares the destination policy used by signed receipts.
 func dropURLContentSegments(raw string, keepPath bool) string {
-	if raw == "" {
-		return ""
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		u, err = url.Parse("//" + raw)
-		if err == nil && u.Port() != "" && !strings.Contains(u.Hostname(), ".") &&
-			!strings.Contains(u.Hostname(), ":") && !strings.EqualFold(u.Hostname(), "localhost") {
-			return "[redacted-url]"
-		}
-	}
-	if err != nil || !validAuditAuthority(u) {
-		return "[redacted-url]"
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "", "http", "https", "ws", "wss":
-	default:
-		return "[redacted-url]"
-	}
-	out := u.Host
-	if u.Scheme != "" {
-		out = u.Scheme + "://" + u.Host
-	}
-	if keepPath {
-		out += u.EscapedPath()
-	}
-	return out
+	return destination.RedactURLContent(raw, keepPath)
 }
 
-// validAuditAuthority accepts DNS names and IP literals with an optional
-// numeric port. URL parsing alone also accepts opaque scheme-shaped inputs
-// and malformed DNS labels, which must not become destination diagnostics.
-func validAuditAuthority(u *url.URL) bool {
-	host := u.Hostname()
-	if host == "" || strings.HasSuffix(u.Host, ":") {
-		return false
+// connectAuthority returns a CONNECT target's host:port. The proxy only
+// tunnels to an authority, so a single-label host such as an internal service
+// name is a destination there, not the ambiguous host:port text the generic
+// URL path refuses. Anything that isn't a bare authority takes the generic
+// destination policy.
+func connectAuthority(raw string) string {
+	if raw == "" || strings.ContainsAny(raw, "/?#@") {
+		return dropURLContentSegments(raw, false)
 	}
-	if port := u.Port(); port != "" {
-		n, err := strconv.ParseUint(port, 10, 16)
-		if err != nil || n == 0 {
-			return false
-		}
+	u, err := url.Parse("//" + raw)
+	if err != nil || u.Port() == "" || !destination.ValidAuthority(u) {
+		return dropURLContentSegments(raw, false)
 	}
-	if addr, err := netip.ParseAddr(host); err == nil {
-		return addr.Zone() == ""
-	}
-	if strings.ContainsAny(host, "[]:") || strings.HasPrefix(u.Host, "[") {
-		return false
-	}
-	ascii, err := destination.LookupASCII(host)
-	if err != nil {
-		return false
-	}
-	ascii = strings.TrimSuffix(ascii, ".")
-	if ascii == "" || len(ascii) > 253 {
-		return false
-	}
-	for label := range strings.SplitSeq(ascii, ".") {
-		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
-			return false
-		}
-		for _, c := range label {
-			if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' {
-				continue
-			}
-			return false
-		}
-	}
-	return true
+	return u.Host
 }
 
 // RedactContentBearingURL returns a URL safe to echo when a

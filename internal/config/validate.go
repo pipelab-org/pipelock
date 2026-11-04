@@ -589,6 +589,43 @@ func (c *Config) Validate() error {
 	return err
 }
 
+// ModeAuditEnforcedWarnings reports a config whose mode name suggests
+// observation while blocking stays on. Runtime blocking follows enforce
+// (EnforceEnabled), not the mode name, so mode: audit with enforce left at its
+// default of true still blocks ordinary findings.
+func (c *Config) ModeAuditEnforcedWarnings() []Warning {
+	var warnings []Warning
+	add := func(mode string, enforce *bool, field, control string) {
+		effective := Config{Mode: mode, Enforce: enforce}
+		if effective.Mode != ModeAudit || !effective.EnforceEnabled() {
+			return
+		}
+		warnings = append(warnings, Warning{Field: field, Message: fmt.Sprintf("mode: audit does not turn off blocking. Effective enforce is true, so ordinary URL findings still block. Set %s: false to observe ordinary URL findings, or use the audit preset; core credentials, SSRF and independently configured protections can still block.", control)})
+	}
+	add(c.Mode, c.Enforce, "mode", "enforce")
+	names := make([]string, 0, len(c.Agents))
+	for name := range c.Agents {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		profile := c.Agents[name]
+		if profile.Mode == "" && profile.Enforce == nil {
+			// Fully inherited: the top-level notice already covers it.
+			continue
+		}
+		mode, enforce := c.Mode, c.Enforce
+		if profile.Mode != "" {
+			mode = profile.Mode
+		}
+		if profile.Enforce != nil {
+			enforce = profile.Enforce
+		}
+		add(mode, enforce, "agents."+name+".mode", "agents."+name+".enforce")
+	}
+	return warnings
+}
+
 // MCPCompatibilityWarnings returns advisories for ambiguous legacy MCP settings.
 // These describe the loaded source, independently of later runtime resolution.
 func (c *Config) MCPCompatibilityWarnings() []Warning {
@@ -620,6 +657,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMode(); err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, c.ModeAuditEnforcedWarnings()...)
 	c.validateAPIAllowlistWarnings(&warnings)
 	c.validateTrustedDomainTenancyWarnings(&warnings)
 	if err := c.validateLogging(); err != nil {

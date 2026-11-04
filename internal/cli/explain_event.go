@@ -21,8 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -287,7 +289,7 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string, saniti
 		Event:           sanitizer.field(eventName),
 		Outcome:         explainEventOutcome(eventName, firstEventField(raw, "action", "verdict"), raw),
 		Method:          sanitizer.field(eventFieldString(raw, "method")),
-		Target:          sanitizer.target(target),
+		Target:          sanitizer.eventTarget(target, scannerName),
 		TargetView:      explainEventTargetView(scannerName, reason, target, raw),
 		Scanner:         sanitizer.field(scannerName),
 		Layer:           sanitizer.field(scannerName),
@@ -546,6 +548,22 @@ func (s explainEventSanitizer) field(value string) string {
 		return explainEventRedacted
 	}
 	return escapeExplainEventTerminalControls(value)
+}
+
+// eventTarget renders a logged target the way the audit writer retained it.
+// Path-diagnostic events (path traversal, CRLF) keep the URL path because it
+// is the finding; query, fragment and userinfo are still dropped and the DLP
+// check still applies. Every other event shows only the destination.
+func (s explainEventSanitizer) eventTarget(value, scannerName string) string {
+	if value != "" && audit.KeepsDiagnosticPath(scannerName) &&
+		(strings.Contains(value, "://") || strings.HasPrefix(value, "//")) {
+		value = destination.RedactURLContent(value, true)
+		if !s.clean(value) {
+			return explainEventRedacted
+		}
+		return escapeExplainEventTerminalControls(value)
+	}
+	return s.target(value)
 }
 
 func (s explainEventSanitizer) target(value string) string {

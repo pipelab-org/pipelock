@@ -717,7 +717,7 @@ func newInterceptHandler(
 					Pattern:   pattern,
 					Transport: "intercept",
 					Method:    r.Method,
-					Target:    r.Host + r.URL.Path,
+					Target:    schemeHTTPS + "://" + r.Host + r.URL.RequestURI(),
 					RequestID: ic.RequestID,
 					Agent:     ic.Agent,
 				})
@@ -756,7 +756,7 @@ func newInterceptHandler(
 				Pattern:   "authority mismatch: " + mismatch,
 				Transport: "intercept",
 				Method:    r.Method,
-				Target:    r.Host + r.URL.Path,
+				Target:    schemeHTTPS + "://" + r.Host + r.URL.RequestURI(),
 				RequestID: ic.RequestID,
 				Agent:     ic.Agent,
 			})

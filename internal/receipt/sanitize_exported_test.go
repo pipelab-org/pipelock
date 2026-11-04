@@ -4,14 +4,14 @@
 package receipt
 
 import (
+	"net/url"
 	"strings"
 	"testing"
 )
 
 // SanitizeTarget and CleanOrRedacted are the exported pre-sign sanitization
 // boundary that internal/contract/proxydecision reuses instead of duplicating
-// this logic (#676), plus internal/cli explain rendering. Ten production call
-// sites stamp their results into a SIGNED payload, so the guarantee those
+// this logic (#676), plus internal/cli explain rendering. Production callers stamp their results into a SIGNED payload, so the guarantee those
 // callers depend on is that the returned value is DLP-clean under the same
 // predicate they passed in. These tests assert that property directly rather
 // than asserting a fixed output string, which would only restate the
@@ -50,7 +50,7 @@ func TestSanitizeTargetExportedOutputIsClean(t *testing.T) {
 		{"mcp tool name carrying secret", "@vendor/" + secret, secret},
 		{"connect authority", "api.vendor.example:443", ""},
 		{"mcp tool name", "@vendor/integrity_checker", ""},
-		{"clean url is preserved", "https://api.vendor.example/v1/things?page=2", ""},
+		{"clean destination is preserved", "https://api.vendor.example", ""},
 		{"empty target", "", ""},
 	}
 
@@ -82,41 +82,15 @@ func TestSanitizeTargetExportedOutputIsClean(t *testing.T) {
 	}
 }
 
-// A target that is already clean must survive byte-for-byte. Coarsening a
-// clean target would destroy forensic detail for no security gain, and the
-// callers stamp this value into evidence an operator later reads.
-func TestSanitizeTargetExportedPreservesCleanTarget(t *testing.T) {
+func TestSanitizeTargetExportedDropsCleanURLContent(t *testing.T) {
 	t.Parallel()
-
-	const target = "https://api.vendor.example/v1/things?page=2&sort=desc"
-	clean := exportedClean("AKIA" + "IOSFODNN7EXAMPLE")
-
-	if got := SanitizeTarget(target, clean); got != target {
-		t.Fatalf("SanitizeTarget(%q) = %q, want it unchanged", target, got)
-	}
-}
-
-// The nil predicate means flight-recorder redaction is DISABLED, and the
-// documented contract is that the target passes through unchanged. That is a
-// deliberate fail-direction, not an oversight: with redaction off there is no
-// scanner to decide what is secret. Pinning it keeps a later change from
-// quietly turning redaction-off into redaction-on (which would rewrite signed
-// evidence operators did not ask to be rewritten) or from assuming this call
-// sanitizes when it does not.
-func TestSanitizeTargetExportedNilPredicatePassesThrough(t *testing.T) {
-	t.Parallel()
-
-	const secret = "AKIA" + "IOSFODNN7EXAMPLE"
-	targets := []string{
-		"https://user:" + secret + "@api.vendor.example/v1",
-		"https://api.vendor.example/v1?token=" + secret,
-		"api.vendor.example:443",
-		"",
-	}
-
-	for _, target := range targets {
-		if got := SanitizeTarget(target, nil); got != target {
-			t.Errorf("SanitizeTarget(%q, nil) = %q, want the target unchanged when redaction is off", target, got)
+	secret := strings.Join([]string{"unrecognized", "credential"}, "-")
+	target := "https://" + url.UserPassword("user", secret).String() +
+		"@api.vendor.example:8443/" + secret + "?key=" + secret + "#" + secret
+	for _, clean := range []func(string) bool{nil, func(string) bool { return true }} {
+		got := SanitizeTarget(target, clean)
+		if got != "https://api.vendor.example:8443" || strings.Contains(got, secret) {
+			t.Fatalf("URL content survived: %q", got)
 		}
 	}
 }
@@ -163,6 +137,104 @@ func TestCleanOrRedactedExportedNilPredicatePassesThrough(t *testing.T) {
 	for _, value := range values {
 		if got := CleanOrRedacted(value, nil); got != value {
 			t.Errorf("CleanOrRedacted(%q, nil) = %q, want the value unchanged when redaction is off", value, got)
+		}
+	}
+}
+
+// The target field also carries MCP protocol URLs. Its value is reduced using
+// the same authority validation as audit logs without changing its scheme.
+func TestSanitizeTargetProtocolDestinations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ target, want string }{
+		{"mcp://tools.vendor.example:8443/tool?arg=value#fragment", "mcp://tools.vendor.example:8443"},
+		{"wss://api.vendor.example:9443/socket?ref=value", "wss://api.vendor.example:9443"},
+		{"https://[2001:db8::1]:8443/path?ref=value", "https://[2001:db8::1]:8443"},
+		{"//api.vendor.example/path?ref=value", "api.vendor.example"},
+		{"https://api.vendor.example:70000/path", "[redacted-url]"},
+		{"https://api.vendor.example/%zz", "[redacted-url]"},
+		{"https://[invalid]:443/path", "[redacted-url]"},
+		{"https://" + strings.Repeat("a", 254) + "/path", "[redacted-url]"},
+		{"https://has_underscore.example/path", "[redacted-url]"},
+		// Diagnostic output reads unsigned logs: relative targets keep their context.
+		{"/path?ref=value", "/path?ref=value"},
+		// Opaque identifiers and bare authorities hold no URL delimiter.
+		{"api.vendor.example:443", "api.vendor.example:443"},
+		{"read_file", "read_file"},
+		{"tasks/get", "tasks/get"},
+		// Operator-named MCP servers are identifiers, not DNS hosts.
+		{"mcp://my_server/response", "mcp://my_server/response"},
+		{"mcp://my_server/tools/list", "mcp://my_server/tools/list"},
+		{"mcp://npx:fs/response", "mcp://npx:fs/response"},
+		{"mcp://user:pw@api.vendor.example/response", "mcp://api.vendor.example"},
+		{"mcp://srv/extra/response", "mcp://srv"},
+		{"mcp://Code Assistant/response", "[redacted-url]"},
+		{"mcp:///response", "[redacted-url]"},
+		{sessionOpenTarget, sessionOpenTarget},
+		{sessionHeartbeatTarget, sessionHeartbeatTarget},
+		{sessionCloseTarget, sessionCloseTarget},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			if got := SanitizeTarget(tc.target, nil); got != tc.want {
+				t.Fatalf("target=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A signed target must never keep request content. Inbound server-side request
+// URLs are origin-form ("/fetch?url=..."): no scheme or host precedes the path,
+// so the whole value is request content and reduces to the marker.
+func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ target, want string }{
+		{"/fetch?url=https%3A%2F%2Fapi.vendor.example%2F%3Fref%3Dvalue", "[redacted-url]"},
+		{"/v1/hooks/opaque-segment", "[redacted-url]"},
+		{"api.vendor.example/path?ref=value", "[redacted-url]"},
+		{"api.vendor.example/path#fragment", "[redacted-url]"},
+		// A scheme with no authority names no destination.
+		{"https:/opaque-segment", "[redacted-url]"},
+		{"https:/opaque/segment", "[redacted-url]"},
+		{"mcp:/opaque-segment", "[redacted-url]"},
+		{"https:opaque-segment/more", "[redacted-url]"},
+		{"HTTP:opaque-segment", "[redacted-url]"},
+		{"wss:opaque-segment", "[redacted-url]"},
+		{"https:", "[redacted-url]"},
+		// Values url.Parse rejects are classified from their scheme text.
+		{"https:/%zz", "[redacted-url]"},
+		{"wss:%zz/more", "[redacted-url]"},
+		{"mcp:/%zz", "[redacted-url]"},
+		{"server:%zz", "server:%zz"},
+		// Colon-bearing identifiers parse as opaque, not path-absolute.
+		{"server:read_file", "server:read_file"},
+		{"localhost:8080", "localhost:8080"},
+		// Absolute URLs, identifiers and exempt shapes behave as SanitizeTarget does.
+		{"https://api.vendor.example/path?ref=value", "https://api.vendor.example"},
+		{"api.vendor.example:443", "api.vendor.example:443"},
+		{"read_file", "read_file"},
+		{"tasks/get", "tasks/get"},
+		{"mcp://my_server/tools/list", "mcp://my_server/tools/list"},
+		{sessionOpenTarget, sessionOpenTarget},
+	} {
+		t.Run(tc.target, func(t *testing.T) {
+			if got := SanitizeSignedTarget(tc.target, nil); got != tc.want {
+				t.Fatalf("target=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Signed targets keep scheme, host and port, so a secret in the retained host
+// depends on the DLP predicate the production emitters pass.
+func TestSanitizeSignedTargetAppliesPredicateToRetainedHost(t *testing.T) {
+	t.Parallel()
+	clean := func(s string) bool { return !strings.Contains(s, "secret") }
+	for _, tc := range []struct{ target, want string }{
+		{"https://secret-host.example/path?ref=value", "[redacted-target]"},
+		{"secret-host.example:443", "[redacted-target]"},
+		{"https://api.vendor.example/secret-path", "https://api.vendor.example"},
+	} {
+		if got := SanitizeSignedTarget(tc.target, clean); got != tc.want {
+			t.Fatalf("SanitizeSignedTarget(%q) = %q, want %q", tc.target, got, tc.want)
 		}
 	}
 }

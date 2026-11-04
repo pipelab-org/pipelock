@@ -246,11 +246,49 @@ func TestApplyConfigPinsRulesAndPaths(t *testing.T) {
 			if fr["enabled"] != tt.enabled || fr["require_receipts"] != tt.required {
 				t.Fatalf("mode %s: flight_recorder.enabled=%v require_receipts=%v, want %v and %v", tt.mode, fr["enabled"], fr["require_receipts"], tt.enabled, tt.required)
 			}
+			assertSnapshotOutsideRecorder(t, generated, dirs)
 		})
 	}
+	t.Run("generated snapshot path under the recorder is moved", func(t *testing.T) {
+		base := fakeConfig + "dashboard_snapshot:\n  interval: 30s\n  path: " + filepath.Join(dirs.recorder, "dashboard", "runtime-snapshot.json") + "\n"
+		out, err := applyConfig([]byte(base), configParams{mode: modeOff, chains: 1, dirs: dirs})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var generated map[string]any
+		if err := yaml.Unmarshal(out, &generated); err != nil {
+			t.Fatal(err)
+		}
+		snapshot := assertSnapshotOutsideRecorder(t, generated, dirs)
+		if snapshot["interval"] != "30s" {
+			t.Fatalf("snapshot interval not preserved: %v", snapshot["interval"])
+		}
+	})
 	if _, err := applyConfig([]byte("a: b\n"), configParams{mode: modeOff, chains: 1, dirs: dirs}); err == nil {
 		t.Fatal("a config without the expected sections was accepted")
 	}
+}
+
+// assertSnapshotOutsideRecorder checks that the dashboard runtime snapshot stays
+// enabled by default but is written inside the run directory and outside the
+// recorder directory, whose every file off mode counts as receipt evidence.
+func assertSnapshotOutsideRecorder(t *testing.T, generated map[string]any, dirs runDirs) map[string]any {
+	t.Helper()
+	snapshot, err := configSection(generated, "dashboard_snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _ := snapshot["path"].(string)
+	if path != filepath.Join(dirs.root, "dashboard-runtime-snapshot.json") {
+		t.Fatalf("dashboard_snapshot.path = %q, want it in the run directory", path)
+	}
+	if rel, err := filepath.Rel(dirs.recorder, path); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("dashboard snapshot %q is inside the recorder directory", path)
+	}
+	if _, set := snapshot["enabled"]; set {
+		t.Fatalf("the harness must not change whether the snapshot runs: %v", snapshot["enabled"])
+	}
+	return snapshot
 }
 
 func TestDescribeConfigHashesAndFlagsExternalPaths(t *testing.T) {

@@ -282,8 +282,8 @@ func TestForwardHTTP_Adaptive_BlockAll(t *testing.T) {
 		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
-		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL+"/ok")
+	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportForward || ar.Target != upstream.URL {
+		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL)
 	}
 }
 
@@ -572,7 +572,7 @@ func TestConnect_Adaptive_BlockAll(t *testing.T) {
 		t.Fatalf("CONNECT session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	wantTarget := "https://" + targetLn.Addr().String() + "/"
+	wantTarget := "https://" + targetLn.Addr().String()
 	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
 		t.Fatalf("CONNECT session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
 	}
@@ -1398,7 +1398,7 @@ func TestConnect_Adaptive_WarnUpgradeToBlock(t *testing.T) {
 		t.Fatalf("CONNECT adaptive-upgrade receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	wantTarget := "https://" + dlpHost + "/"
+	wantTarget := "https://" + dlpHost
 	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
 		t.Fatalf("CONNECT adaptive-upgrade action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
 	}
@@ -1552,7 +1552,7 @@ func TestConnect_Adaptive_ExistingBlockAllReceipt(t *testing.T) {
 		t.Fatalf("CONNECT CEE session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	wantTarget := "https://" + target + "/"
+	wantTarget := "https://" + target
 	if ar.Layer != adaptiveSessionDeny || ar.Verdict != config.ActionBlock || ar.Transport != TransportConnect || ar.Method != http.MethodConnect || ar.Target != wantTarget {
 		t.Fatalf("CONNECT CEE session deny action record = %+v, want block/%s/%s for %s", ar, adaptiveSessionDeny, TransportConnect, wantTarget)
 	}
@@ -1669,8 +1669,8 @@ func TestForwardHTTP_Adaptive_HeaderDLPWarnCannotTriggerBlockAll(t *testing.T) {
 		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	if ar.Verdict != config.ActionWarn || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok" {
-		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL+"/ok")
+	if ar.Verdict != config.ActionWarn || ar.Transport != TransportForward || ar.Target != upstream.URL {
+		t.Fatalf("session deny action record = %+v, want warn/%s for %s", ar, TransportForward, upstream.URL)
 	}
 }
 
@@ -2561,8 +2561,8 @@ func TestForwardHTTP_CEE_EntropyWarnDoesNotEscalate(t *testing.T) {
 		t.Fatalf("session deny receipts = %+v, want exactly one", receipts)
 	}
 	ar := receipts[0].ActionRecord
-	if ar.Verdict != config.ActionAllow || ar.Transport != TransportForward || ar.Target != upstream.URL+"/ok?x=abc123" {
-		t.Fatalf("forward action record = %+v, want allow/%s for %s", ar, TransportForward, upstream.URL+"/ok?x=abc123")
+	if ar.Verdict != config.ActionAllow || ar.Transport != TransportForward || ar.Target != upstream.URL {
+		t.Fatalf("forward action record = %+v, want allow/%s for %s", ar, TransportForward, upstream.URL)
 	}
 }
 
