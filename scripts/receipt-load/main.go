@@ -4,7 +4,8 @@
 // Command receipt-load drives a real Pipelock forward proxy and a local sink
 // and reports two separate verdicts: performance (rates and latency to a fully
 // read response body) and integrity (every request left exactly the receipts
-// its mode requires, matched by identity).
+// its mode requires). Sink requests are matched by identity; destination-only
+// receipts use aggregate counts and authenticated per-action/chain checks.
 package main
 
 import (

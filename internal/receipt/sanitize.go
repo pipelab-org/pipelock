@@ -6,74 +6,141 @@ package receipt
 import (
 	"net/url"
 	"strings"
+	"unicode"
+
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
 
-// Placeholders substituted into a target when sanitizing secret-bearing
-// components before signing. They share one consistent, self-describing
-// [redacted-<scope>] format and are deliberately distinct from the recorder's
-// own "[REDACTED]" field marker (recorder.go). That distinction matters in an
-// audit trail: a receipt carrying these markers was sanitized normally pre-sign
-// and still verifies, whereas a receipt carrying the recorder's "[REDACTED]"
-// means the fail-closed post-sign redaction fired (an unexpected secret-bearing
-// field) and that receipt no longer verifies. None of them match a DLP pattern.
-const (
-	// redactedTarget fully replaces a target whose secret cannot be isolated
-	// to userinfo, a query value, the path, or fragment.
-	redactedTarget = "[redacted-target]"
-	// redactedValue replaces an individual secret-bearing query parameter value
-	// while preserving its key and the URL's overall shape.
-	redactedValue = "[redacted-value]"
-	// redactedSegment replaces a secret-bearing URL path while keeping the
-	// scheme and host meaningful for forensics.
-	redactedSegment = "[redacted-path]"
-)
+// redactedTarget replaces content that cannot safely be retained in signed
+// evidence. It differs from the recorder's post-sign "[REDACTED]" tombstone:
+// this marker is signed normally and the receipt still verifies.
+const redactedTarget = "[redacted-target]"
 
 // dlpClean reports whether text is free of DLP matches. It wraps the same
 // redaction function the recorder uses so the emitter's pre-sign sanitization
 // is guaranteed consistent with the recorder's post-sign scan.
 type dlpClean func(string) bool
 
-// sanitizeTarget removes secret-bearing components from a target while
-// preserving as much structure as possible, returning a value that is
-// guaranteed DLP-clean under clean. This lets the recorder's receipt redaction
-// be a no-op, so a signed receipt survives the recorder's redaction pass and
-// verifies from the evidence file alone.
-//
-// For URL targets it strips userinfo (user:pass@) unconditionally, replaces
-// secret-bearing query values with a placeholder (keys and order preserved),
-// and then coarsens progressively (drop query+fragment, then path, then to a
-// bare marker) only as far as needed to reach a clean result. Non-URL targets
-// (CONNECT host:port authorities, MCP tool names) pass through unless they are
-// themselves dirty, in which case they collapse to the marker.
-//
-// clean must be non-nil; callers gate on redaction being enabled.
+// sanitizeTarget reduces URL targets to scheme and authority before signing,
+// using the audit-log destination policy. Userinfo, path, query and fragment
+// are dropped even when DLP does not recognize their content or is disabled.
+// CONNECT authorities and opaque MCP tool names keep their existing spelling.
+// A non-nil clean predicate additionally redacts unsafe retained content.
 func sanitizeTarget(target string, clean dlpClean) string {
+	// These exact producer constants are protocol identifiers, not URLs
+	// supplied by a request. Their spelling is part of lifecycle verification.
+	switch target {
+	case sessionOpenTarget, sessionHeartbeatTarget, sessionCloseTarget:
+		return target
+	}
+	switch {
+	case mcpServerTarget(target):
+		// Producer-synthesized, operator-named identifier; see mcpServerTarget.
+	case strings.Contains(target, "://") || strings.HasPrefix(target, "//"):
+		target = destination.RedactURLTarget(target)
+	}
 	if target == "" || clean == nil {
 		return target
 	}
+	return cleanOrRedacted(target, clean)
+}
 
-	// CONNECT authorities (host:port) and opaque targets (tool names) have no
-	// userinfo or query to strip; url.Parse would also misread "host:443" as a
-	// scheme. Only structurally rewrite when a real scheme is present.
-	if !strings.Contains(target, "://") {
-		return cleanOrRedacted(target, clean)
+// sanitizeSignedTarget is sanitizeTarget for values that enter a signed
+// receipt. A signed target must never keep request content, so it also reduces
+// URL syntax that is not an absolute URL: an origin-form request target (RFC
+// 9112 section 3.2.1; inbound server-side request URLs such as "/path?query"
+// carry no scheme or host), any value holding the query or fragment delimiter
+// (RFC 3986 sections 3.4 and 3.5), and a scheme with no authority (see
+// schemeWithoutAuthority). These have no destination, so they reduce to the
+// redaction marker. Bare CONNECT authorities and opaque tool
+// names hold none of these and keep their spelling.
+//
+// sanitizeTarget alone serves diagnostic output that reads unsigned logs, where
+// relative targets keep their non-secret context.
+func sanitizeSignedTarget(target string, clean dlpClean) string {
+	if !mcpServerTarget(target) && !strings.Contains(target, "://") &&
+		(strings.HasPrefix(target, "/") || strings.ContainsAny(target, "?#") || schemeWithoutAuthority(target)) {
+		target = destination.RedactURLTarget(target)
 	}
+	return sanitizeTarget(target, clean)
+}
 
+// schemeWithoutAuthority reports a scheme-prefixed value that has no "//"
+// authority and therefore names no destination. Web schemes require a host
+// (RFC 9110 sections 4.2.1 and 4.2.2 for http and https, RFC 6455 section 3
+// for ws and wss), so any host-less http, https, ws or wss value is request
+// content, whether it parses as a path ("https:/segment") or as opaque text
+// ("https:segment/more"). For other schemes only the path-absolute form
+// (RFC 3986 section 3) is reduced: bare CONNECT authorities ("host:443") and
+// colon-bearing tool names ("server:tool") parse as opaque and keep their
+// spelling. A value url.Parse rejects (such as "https:/%zz") is classified
+// from its scheme text, so malformed request content is not kept.
+func schemeWithoutAuthority(target string) bool {
 	u, err := url.Parse(target)
 	if err != nil {
-		return cleanOrRedacted(target, clean)
+		scheme, rest, ok := strings.Cut(target, ":")
+		if !ok || !uriScheme(scheme) {
+			return false
+		}
+		return webScheme(scheme) || strings.HasPrefix(rest, "/")
 	}
-
-	// Userinfo is credentials by definition - always strip it.
-	u.User = nil
-
-	// Redact secret-bearing query values, preserving keys and order so the
-	// receipt stays meaningful for non-secret parameters.
-	if u.RawQuery != "" {
-		u.RawQuery = redactQueryValues(u.RawQuery, clean)
+	if u.Scheme == "" || u.Host != "" {
+		return false
 	}
+	if webScheme(u.Scheme) {
+		return true
+	}
+	return u.Opaque == "" && strings.HasPrefix(u.Path, "/")
+}
 
-	return coarsenUntilClean(u, clean)
+func webScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https", "ws", "wss":
+		return true
+	}
+	return false
+}
+
+// uriScheme reports RFC 3986 section 3.1 scheme syntax:
+// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+func uriScheme(s string) bool {
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
+// mcpServerTarget reports whether target is one of the two MCP producer
+// targets built from an operator-chosen server name: "mcp://<server>/response"
+// (internal/mcp/opts.go) and "mcp://<server>/tools/list"
+// (internal/mcp/proxy.go). validateMCPServerName permits any non-space name
+// without slashes, so the name is an identifier, not a DNS host, and the DNS
+// authority check would collapse names such as "my_server" to the marker. The
+// name must be free of URL delimiters, userinfo marker and whitespace so a
+// request-supplied URL cannot ride this exemption.
+func mcpServerTarget(target string) bool {
+	rest, ok := strings.CutPrefix(target, "mcp://")
+	if !ok {
+		return false
+	}
+	name, ok := strings.CutSuffix(rest, "/response")
+	if !ok {
+		name, ok = strings.CutSuffix(rest, "/tools/list")
+	}
+	if !ok || name == "" || strings.ContainsAny(name, "/?#@\\") {
+		return false
+	}
+	for _, r := range name {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // cleanOrRedacted returns s unchanged when DLP-clean, else the coarse marker.
@@ -84,66 +151,12 @@ func cleanOrRedacted(s string, clean dlpClean) string {
 	return redactedTarget
 }
 
-// redactQueryValues replaces each secret-bearing query parameter value with a
-// placeholder, preserving parameter keys and their original order. It operates
-// on the raw query string (not url.Values) so order is stable and the per-value
-// scan sees exactly what the agent sent (including percent-encoding, which the
-// DLP function decodes internally).
-func redactQueryValues(rawQuery string, clean dlpClean) string {
-	parts := strings.Split(rawQuery, "&")
-	for i, p := range parts {
-		key, val, hasEq := strings.Cut(p, "=")
-		if !hasEq || val == "" {
-			continue
-		}
-		if !clean(val) {
-			parts[i] = key + "=" + redactedValue
-		}
-	}
-	return strings.Join(parts, "&")
-}
-
-// coarsenUntilClean returns the least-redacted form of u that is DLP-clean.
-// It tries, in order: the URL as-is (after per-value query redaction); with the
-// query and fragment dropped; with the path replaced; and finally a bare
-// marker. Each step is a strict superset removal of the previous, so the loop
-// terminates with a guaranteed-clean result.
-func coarsenUntilClean(u *url.URL, clean dlpClean) string {
-	if s := u.String(); clean(s) {
-		return s
-	}
-
-	// Secret survived in the query (e.g. split across params) or fragment.
-	u.RawQuery = ""
-	u.ForceQuery = false
-	u.Fragment = ""
-	u.RawFragment = ""
-	if s := u.String(); clean(s) {
-		return s
-	}
-
-	// Secret in the path. Keep scheme and host; replace the path with a literal
-	// marker. Built by string concatenation rather than u.Path assignment so
-	// the bracketed marker is not percent-encoded by url.String().
-	if u.Host != "" {
-		hostForm := u.Scheme + "://" + u.Host + "/" + redactedSegment
-		if clean(hostForm) {
-			return hostForm
-		}
-	}
-
-	// Secret in the host/authority (e.g. encoded subdomain exfiltration).
-	// Nothing structural is safe to keep.
-	return redactedTarget
-}
-
 // SanitizeTarget exposes the v1 emitter's pre-sign target sanitization to the
 // v2 proxy_decision emitter (internal/contract/proxydecision). The v2 receipt
 // stamps the same secret-bearing target field into a SIGNED payload, so it MUST
 // apply byte-identical sanitization (#676) rather than duplicate this
-// security-critical logic. clean is gated on flight-recorder redaction being
-// enabled; pass nil (or build it from recorder.ReceiptRedactor) to leave
-// targets unchanged when redaction is off.
+// security-critical logic. A nil clean predicate disables DLP scanning of the
+// retained destination; URL content segments are still dropped.
 func SanitizeTarget(target string, clean func(string) bool) string {
 	if clean == nil {
 		return sanitizeTarget(target, nil)
@@ -160,4 +173,15 @@ func CleanOrRedacted(s string, clean func(string) bool) string {
 		return s
 	}
 	return cleanOrRedacted(s, dlpClean(clean))
+}
+
+// SanitizeSignedTarget is SanitizeTarget for a value that will be signed into
+// a receipt: it additionally reduces origin-form and query-bearing values (see
+// sanitizeSignedTarget). The v2 proxy_decision emitter calls it so both
+// receipt formats share one signed-target policy.
+func SanitizeSignedTarget(target string, clean func(string) bool) string {
+	if clean == nil {
+		return sanitizeSignedTarget(target, nil)
+	}
+	return sanitizeSignedTarget(target, dlpClean(clean))
 }

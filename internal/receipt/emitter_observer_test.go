@@ -101,8 +101,8 @@ func TestEmitter_OnReceipt_NilIsNoOp(t *testing.T) {
 	}
 	// The durable receipt must still be on disk.
 	got := readReceiptFromDir(t, dir, pub)
-	if got.ActionRecord.Target != testTarget {
-		t.Errorf("recorded target = %q, want %q", got.ActionRecord.Target, testTarget)
+	if got.ActionRecord.Target != "https://example.com" {
+		t.Errorf("recorded target = %q, want %q", got.ActionRecord.Target, "https://example.com")
 	}
 }
 
@@ -144,8 +144,8 @@ func TestEmitter_OnReceipt_ObserverGetsCopy(t *testing.T) {
 	}
 
 	got := readReceiptFromDir(t, dir, pub)
-	if got.ActionRecord.Target != testTarget {
-		t.Errorf("on-disk target = %q, want %q (observer mutation leaked into the chain)", got.ActionRecord.Target, testTarget)
+	if got.ActionRecord.Target != "https://example.com" {
+		t.Errorf("on-disk target = %q, want %q (observer mutation leaked into the chain)", got.ActionRecord.Target, "https://example.com")
 	}
 	if got.ActionRecord.ChainSeq != 0 {
 		t.Errorf("on-disk chain_seq = %d, want 0 (observer mutation leaked)", got.ActionRecord.ChainSeq)

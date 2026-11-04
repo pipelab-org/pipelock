@@ -286,7 +286,7 @@ func TestEmitterNativeAELInitializationFailureQuarantinesAfterReceiptPersistence
 			if !isSessionOpenControl(receipts[1].ActionRecord.SessionControl) {
 				t.Fatal("recovered receipt 0 is not session_open")
 			}
-			if action := receipts[2].ActionRecord; action.SessionControl != nil || action.Method != http.MethodGet || action.Target != "https://api.vendor.example/recovered" || action.Verdict != config.ActionAllow {
+			if action := receipts[2].ActionRecord; action.SessionControl != nil || action.Method != http.MethodGet || action.Target != "https://api.vendor.example" || action.Verdict != config.ActionAllow {
 				t.Fatalf("recovered receipt 1 = %#v, want recovered allowed action", action)
 			}
 			if !isSessionCloseControl(receipts[3].ActionRecord.SessionControl) {

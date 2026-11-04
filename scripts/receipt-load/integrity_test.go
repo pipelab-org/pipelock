@@ -326,29 +326,23 @@ func TestIntegritySinkCorrelation(t *testing.T) {
 	}
 }
 
-// The production sanitizer keeps a DLP-clean query value and redacts a dirty
-// one. The workload key must be clean, and the scanner must treat a redacted
-// key as unusable.
-func TestWorkloadKeySurvivesProductionSanitation(t *testing.T) {
+// The origin key survives only in requests, not in destination-only receipts.
+func TestWorkloadReceiptDropsQueryIdentity(t *testing.T) {
 	plan := newWorkload(1, 2, 40)
-	clean := func(s string) bool { return !strings.Contains(s, fakeToken) }
 	for slot := range plan.total() {
 		target := "http://" + synthSink + plan.pathAndQuery(slot)
-		got := receipt.SanitizeTarget(target, clean)
-		key, ok := keyFromTarget(got)
-		if !ok || key != plan.key(slot) {
-			t.Fatalf("slot %d: key lost in sanitation: %q -> %q", slot, target, got)
+		if key, ok := keyFromTarget(target); !ok || key != plan.key(slot) {
+			t.Fatal("origin key lost")
 		}
-		if plan.blocked(slot) && strings.Contains(got, fakeToken) {
-			t.Fatalf("slot %d: credential survived sanitation: %q", slot, got)
+		got := receipt.SanitizeSignedTarget(target, nil)
+		if got != "http://"+synthSink {
+			t.Fatalf("target retained request content: %q", got)
 		}
-	}
-	dirty := receipt.SanitizeTarget("http://"+synthSink+"/ok?wk="+fakeToken, clean)
-	if _, ok := keyFromTarget(dirty); !ok || !strings.Contains(dirty, "[redacted-value]") {
-		t.Fatalf("expected a redacted placeholder, got %q", dirty)
-	}
-	s := &recorderScanner{plan: plan, sinkAddr: synthSink}
-	if s.classify(dirty) != targetUncorrelatable {
-		t.Fatal("a redacted workload key must be uncorrelatable")
+		if _, ok := keyFromTarget(got); ok {
+			t.Fatal("receipt pretends to retain query identity")
+		}
+		if (&recorderScanner{plan: plan, sinkAddr: synthSink}).classify(got) != targetAggregate {
+			t.Fatal("destination was not classified for aggregate accounting")
+		}
 	}
 }

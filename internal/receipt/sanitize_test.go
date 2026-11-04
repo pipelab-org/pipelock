@@ -71,32 +71,32 @@ func TestSanitizeTarget(t *testing.T) {
 		mustNotHave []string // substrings that must be absent from output
 	}{
 		{
-			name:      "clean url unchanged",
+			name:      "clean url reduced to destination",
 			target:    "https://api.vendor.example/v1/models?name=gpt",
-			wantExact: "https://api.vendor.example/v1/models?name=gpt",
+			wantExact: "https://api.vendor.example",
 		},
 		{
 			name:        "userinfo stripped",
 			target:      "https://user:" + creds + "@api.vendor.example/v1/keys",
-			wantExact:   "https://api.vendor.example/v1/keys",
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{creds, "user:", "@api.vendor.example"},
 		},
 		{
-			name:        "secret query value redacted, key and siblings preserved",
+			name:        "query values and keys dropped",
 			target:      "https://api.vendor.example/v1/keys?model=gpt&token=" + secret,
-			wantExact:   "https://api.vendor.example/v1/keys?model=gpt&token=" + redactedValue,
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret},
 		},
 		{
-			name:        "secret in path coarsens to redacted path, host kept",
+			name:        "path dropped, host kept",
 			target:      "https://api.vendor.example/v1/" + secret + "/info",
-			wantPrefix:  "https://api.vendor.example/" + redactedSegment,
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret},
 		},
 		{
 			name:        "secret split across query params caught by backstop",
 			target:      "https://api.vendor.example/v1/keys?a=AKIAIOSFOD&b=NN7EXAMPLE",
-			wantExact:   "https://api.vendor.example/v1/keys",
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret, "AKIAIOSFOD", "NN7EXAMPLE"},
 		},
 		{
@@ -107,13 +107,13 @@ func TestSanitizeTarget(t *testing.T) {
 		{
 			name:        "secret in fragment dropped",
 			target:      "https://api.vendor.example/v1/keys#" + secret,
-			wantExact:   "https://api.vendor.example/v1/keys",
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret},
 		},
 		{
 			name:        "non-standard param name still redacted",
 			target:      "https://api.vendor.example/cb?xyzzy=" + secret,
-			wantExact:   "https://api.vendor.example/cb?xyzzy=" + redactedValue,
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret},
 		},
 		{
@@ -136,13 +136,13 @@ func TestSanitizeTarget(t *testing.T) {
 		{
 			name:        "unparseable url with secret collapses to marker",
 			target:      "https://h\x7fost.example/" + secret,
-			wantExact:   redactedTarget,
+			wantExact:   "[redacted-url]",
 			mustNotHave: []string{secret},
 		},
 		{
-			name:        "valueless query param skipped, secret param redacted",
+			name:        "valueless query and secret dropped",
 			target:      "https://api.vendor.example/x?flag&token=" + secret,
-			wantExact:   "https://api.vendor.example/x?flag&token=" + redactedValue,
+			wantExact:   "https://api.vendor.example",
 			mustNotHave: []string{secret},
 		},
 		{
@@ -189,16 +189,12 @@ func TestSanitizeTarget(t *testing.T) {
 	}
 }
 
-// TestSanitizeTarget_NilClean verifies the defensive no-op when no DLP function
-// is supplied (redaction disabled): the target passes through untouched.
+// URL minimization is independent of the DLP predicate.
 func TestSanitizeTarget_NilClean(t *testing.T) {
 	t.Parallel()
-	// Userinfo (added by credURL) is the sanitize trigger under test; the query
-	// param is deliberately benign so pipelock's own credential-in-URL scanner
-	// does not flag this fixture line in the self-scan dogfood check.
 	in := credURL("api.vendor.example/x?ref=abc")
-	if got := sanitizeTarget(in, nil); got != in {
-		t.Errorf("sanitizeTarget with nil clean = %q, want unchanged %q", got, in)
+	if got := sanitizeTarget(in, nil); got != "https://api.vendor.example" {
+		t.Errorf("sanitizeTarget with nil clean = %q", got)
 	}
 }
 

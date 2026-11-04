@@ -120,19 +120,20 @@ func (h *headerReport) noteProblem(text string) {
 
 // integrityReport is the integrity verdict and the accounting behind it.
 type integrityReport struct {
-	Verdict           string                `json:"verdict"`
-	Reasons           []string              `json:"reasons"`
-	Kinds             map[string]kindReport `json:"kinds"`
-	Sink              kindReport            `json:"sink"`
-	ReceiptHeader     headerReport          `json:"receipt_header"`
-	ReceiptMissing    int                   `json:"receipt_missing"`
-	AmbiguousRequests int                   `json:"ambiguous_requests"`
-	ControlReceipts   int                   `json:"control_receipts"`
-	RecorderFiles     int                   `json:"recorder_files"`
-	AELFiles          int                   `json:"ael_files"`
-	OrphanSamples     []string              `json:"orphan_samples,omitempty"`
-	Shutdown          shutdownReport        `json:"shutdown"`
-	Verify            verifyReport          `json:"verify"`
+	Verdict            string                `json:"verdict"`
+	ReceiptAttribution string                `json:"receipt_attribution,omitempty"`
+	Reasons            []string              `json:"reasons"`
+	Kinds              map[string]kindReport `json:"kinds"`
+	Sink               kindReport            `json:"sink"`
+	ReceiptHeader      headerReport          `json:"receipt_header"`
+	ReceiptMissing     int                   `json:"receipt_missing"`
+	AmbiguousRequests  int                   `json:"ambiguous_requests"`
+	ControlReceipts    int                   `json:"control_receipts"`
+	RecorderFiles      int                   `json:"recorder_files"`
+	AELFiles           int                   `json:"ael_files"`
+	OrphanSamples      []string              `json:"orphan_samples,omitempty"`
+	Shutdown           shutdownReport        `json:"shutdown"`
+	Verify             verifyReport          `json:"verify"`
 }
 
 type shutdownReport struct {
@@ -165,6 +166,9 @@ type integrityInput struct {
 // evaluateIntegrity compares what each planned request should have left
 // behind with what the recorder and the sink actually hold, by identity.
 func evaluateIntegrity(in integrityInput) integrityReport {
+	if in.obs != nil && in.obs.aggregate != nil {
+		return evaluateAggregateIntegrity(in)
+	}
 	rep := integrityReport{Verdict: verdictPass, Kinds: make(map[string]kindReport, kindCount), Reasons: []string{}}
 	obs := in.obs
 	if obs == nil {

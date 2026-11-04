@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 // fakeSecret is built at runtime so the literal never appears in the binary or
@@ -173,8 +175,8 @@ func TestEmitter_SecretTargetVerifiesAfterRedaction(t *testing.T) {
 		t.Errorf("on-disk receipt leaks userinfo creds %q in: %s", creds, raw)
 	}
 
-	// 3. The target stays structurally meaningful: scheme/host/path preserved.
-	if !strings.HasPrefix(got.ActionRecord.Target, "https://api.vendor.example/v1/keys") {
+	// 3. The target retains the destination.
+	if got.ActionRecord.Target != "https://api.vendor.example" {
 		t.Errorf("sanitized target lost structure: %q", got.ActionRecord.Target)
 	}
 }
@@ -262,14 +264,7 @@ func TestEmitter_AdversarialSecretShapes_RealDLP(t *testing.T) {
 	}
 }
 
-// TestEmitter_SplitQuerySecret_VerifiesAsRecorderNoOp documents and pins the
-// behavior for a secret split across two query params. The production text DLP
-// (the recorder's own function) does not reassemble such a split, so the
-// recorder treats the receipt as clean and performs no redaction. The fix's
-// guarantee for this case is therefore: the receipt VERIFIES from disk and the
-// recorder's redaction is a no-op (emitter and recorder agree because they use
-// the same DLP function). Whether the split bytes remain is a scanner-detection
-// concern, not a sign/redact desync, and is identical to pre-fix behavior.
+// Split query values are dropped before signing even when text DLP misses them.
 func TestEmitter_SplitQuerySecret_VerifiesAsRecorderNoOp(t *testing.T) {
 	t.Parallel()
 
@@ -304,9 +299,8 @@ func TestEmitter_SplitQuerySecret_VerifiesAsRecorderNoOp(t *testing.T) {
 	if err := VerifyWithKey(got, hex.EncodeToString(pub)); err != nil {
 		t.Fatalf("split-query receipt must still verify: %v", err)
 	}
-	// Recorder no-op: the on-disk target is exactly what the emitter signed
-	// (the text DLP did not flag it, so neither emitter nor recorder altered it).
-	if got.ActionRecord.Target != target {
+	// Recorder no-op: the reduced destination is what the emitter signed.
+	if got.ActionRecord.Target != "https://api.vendor.example" {
 		t.Errorf("expected recorder no-op on undetected split; target = %q", got.ActionRecord.Target)
 	}
 }
@@ -555,12 +549,8 @@ func TestEmitter_ResumeChainAfterRedactedRestart(t *testing.T) {
 	}
 }
 
-// TestEmitter_RedactOff_TargetUnchanged proves done-state #6: with redaction
-// disabled, the recorder's ReceiptRedactor() returns nil, so the emitter does
-// NOT sanitize and the full target is preserved (no regression for
-// redact:false deployments). The receipt still verifies and the recorder,
-// also with redaction off, writes it unchanged.
-func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
+// Disabling DLP does not retain URL content segments in signed evidence.
+func TestEmitter_RedactOff_DestinationOnly(t *testing.T) {
 	t.Parallel()
 
 	secret := fakeSecret()
@@ -568,8 +558,7 @@ func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
 
 	dir := t.TempDir()
 	pub, priv := generateTestKey(t)
-	// Recorder with redaction OFF (newTestRecorder): ReceiptRedactor() is nil,
-	// so the emitter performs no sanitization.
+	// DLP redaction is off; URL minimization still applies.
 	rec := newTestRecorder(t, dir, priv)
 	e := NewEmitter(EmitterConfig{
 		Recorder:   rec,
@@ -595,8 +584,8 @@ func TestEmitter_RedactOff_TargetUnchanged(t *testing.T) {
 	if err := VerifyWithKey(got, hex.EncodeToString(pub)); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	if got.ActionRecord.Target != target {
-		t.Errorf("redact-off target = %q, want unchanged %q", got.ActionRecord.Target, target)
+	if got.ActionRecord.Target != "https://api.vendor.example" {
+		t.Errorf("redact-off target = %q, want destination only", got.ActionRecord.Target)
 	}
 }
 
@@ -709,10 +698,9 @@ func TestEmitter_RecorderRedactionIsNoOpOnReceipts(t *testing.T) {
 
 	got := readReceiptsRaw(t, dir)[0]
 
-	// The on-disk target is exactly the emitter's pre-sign sanitized form (the
-	// secret query value swapped for the sanitizer's marker, structure intact),
+	// The on-disk target is the destination-only form signed by the emitter,
 	// proving the recorder did not mutate the signed receipt.
-	wantTarget := "https://api.vendor.example/v1/keys?token=" + redactedValue
+	wantTarget := "https://api.vendor.example"
 	if got.ActionRecord.Target != wantTarget {
 		t.Errorf("on-disk target = %q, want %q", got.ActionRecord.Target, wantTarget)
 	}
@@ -731,5 +719,54 @@ func TestEmitter_RecorderRedactionIsNoOpOnReceipts(t *testing.T) {
 	// is "[REDACTED]", so its presence would mean a post-sign redaction fired.
 	if strings.Contains(string(raw), "[REDACTED]") || strings.Contains(string(raw), "redacted_fields") {
 		t.Errorf("receipt was redacted by the recorder post-sign: %s", raw)
+	}
+}
+
+func TestEmitterDestinationTaintSources(t *testing.T) {
+	for _, redact := range []bool{false, true} {
+		t.Run(fmt.Sprintf("redact=%t", redact), func(t *testing.T) {
+			secret := strings.Join([]string{"unrecognized", "source", "credential"}, "-")
+			target := credURL("api.vendor.example:8443/" + secret + "?ref=" + secret + "#" + secret)
+			pub, priv := generateTestKey(t)
+			dir := t.TempDir()
+			rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, Redact: redact},
+				secretFlaggingDLP(fakeSecret()), priv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = rec.Close() })
+			emitter := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: priv})
+			sources := []session.TaintSourceRef{{URL: target, Kind: "http_response", Level: session.TaintExternalUntrusted}}
+			if err := emitter.Emit(EmitOpts{
+				ActionID: NewActionID(), Target: target, Transport: "fetch",
+				Method: http.MethodGet, Verdict: config.ActionAllow, RecentTaintSources: sources, Layer: "dlp", Pattern: "test-rule",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if sources[0].URL != target {
+				t.Fatal("receipt sanitation mutated live session source")
+			}
+			if err := rec.Close(); err != nil {
+				t.Fatal(err)
+			}
+			receipts := readReceiptsRaw(t, dir)
+			if len(receipts) != 1 {
+				t.Fatalf("receipts=%d", len(receipts))
+			}
+			if result := VerifyChainIntegrity(receipts, hex.EncodeToString(pub)); !result.Valid {
+				t.Fatalf("verified chain: %+v", result)
+			}
+			ar := receipts[0].ActionRecord
+			if ar.Target != "https://api.vendor.example:8443" || ar.RecentTaintSources[0].URL != ar.Target || ar.Layer != "dlp" || ar.Pattern != "test-rule" {
+				t.Fatalf("retained URL content: %+v", ar)
+			}
+			raw, err := Marshal(receipts[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), secret) {
+				t.Fatalf("source credential retained: %s", raw)
+			}
+		})
 	}
 }

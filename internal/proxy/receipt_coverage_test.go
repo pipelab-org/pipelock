@@ -212,6 +212,8 @@ const (
 	coverageTestTarget       = "https://example.com/coverage"
 	coverageTestAgent        = "coverage-agent"
 	redirectDeniedTestTarget = "https://blocked.vendor.example/raw/redirect-denied"
+	// redirectDeniedTestDestination is what a signed receipt keeps of it.
+	redirectDeniedTestDestination = "https://blocked.vendor.example"
 )
 
 // extractReceiptsFromDir reads all JSONL files from dir and returns parsed receipts.
@@ -1863,8 +1865,8 @@ func TestReceiptCoverage_FetchAllowlistBlock_EmitsReceiptBeforeEgress(t *testing
 	if r.ActionRecord.Method != http.MethodGet {
 		t.Errorf("method = %q, want %q", r.ActionRecord.Method, http.MethodGet)
 	}
-	if r.ActionRecord.Target != target {
-		t.Errorf("target = %q, want %q", r.ActionRecord.Target, target)
+	if r.ActionRecord.Target != upstream.URL {
+		t.Errorf("target = %q, want %q", r.ActionRecord.Target, upstream.URL)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
@@ -1896,8 +1898,8 @@ func TestReceiptCoverage_FetchRedirectDenyRecordsRefusedDestination(t *testing.T
 	if r.ActionRecord.Transport != TransportFetch {
 		t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportFetch)
 	}
-	if r.ActionRecord.Target != redirectDeniedTestTarget {
-		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestTarget)
+	if r.ActionRecord.Target != redirectDeniedTestDestination {
+		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestDestination)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
@@ -1931,7 +1933,9 @@ func TestReceiptCoverage_FetchRedirectDenySanitizesRefusedDestination(t *testing
 	}
 
 	r := rph.requireReceipt(t, "blocklist")
-	want := redirectDeniedTestTarget + "?token=[redacted-value]"
+	// The refused destination keeps scheme and host only; the path and the
+	// query value never reach the signed receipt.
+	want := redirectDeniedTestDestination
 	if r.ActionRecord.Target != want {
 		t.Fatalf("target = %q, want sanitized refused destination %q", r.ActionRecord.Target, want)
 	}
@@ -1977,8 +1981,8 @@ func TestReceiptCoverage_ForwardRedirectDenyRecordsRefusedDestination(t *testing
 	if r.ActionRecord.Transport != TransportForward {
 		t.Errorf("transport = %q, want %q", r.ActionRecord.Transport, TransportForward)
 	}
-	if r.ActionRecord.Target != redirectDeniedTestTarget {
-		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestTarget)
+	if r.ActionRecord.Target != redirectDeniedTestDestination {
+		t.Errorf("target = %q, want refused redirect destination %q", r.ActionRecord.Target, redirectDeniedTestDestination)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
@@ -2450,8 +2454,8 @@ func TestReceiptCoverage_ForwardAllowlistBlock_EmitsReceiptBeforeEgress(t *testi
 	if r.ActionRecord.Method != http.MethodGet {
 		t.Errorf("method = %q, want %q", r.ActionRecord.Method, http.MethodGet)
 	}
-	if r.ActionRecord.Target != upstream.URL+"/grab" {
-		t.Errorf("target = %q, want %q", r.ActionRecord.Target, upstream.URL+"/grab")
+	if r.ActionRecord.Target != upstream.URL {
+		t.Errorf("target = %q, want %q", r.ActionRecord.Target, upstream.URL)
 	}
 	if r.ActionRecord.Verdict != config.ActionBlock {
 		t.Errorf("verdict = %q, want %q", r.ActionRecord.Verdict, config.ActionBlock)
@@ -2510,7 +2514,7 @@ func TestReceiptCoverage_ConnectAllowlistBlock_EmitsReceiptBeforeEgress(t *testi
 	if r.ActionRecord.Method != http.MethodConnect {
 		t.Errorf("method = %q, want %q", r.ActionRecord.Method, http.MethodConnect)
 	}
-	wantTarget := upstream.URL + "/"
+	wantTarget := upstream.URL
 	if r.ActionRecord.Target != wantTarget {
 		t.Errorf("target = %q, want %q", r.ActionRecord.Target, wantTarget)
 	}
