@@ -156,7 +156,9 @@ func TestReviewMatrixForwardsVerifyTimeout(t *testing.T) {
 			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
 			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), filepath.Join(root, "matrix"), "1", "1")
 			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_MODES=off", "RECEIPT_LOAD_VERIFY_TIMEOUT="+value)
-			_, _ = cmd.CombinedOutput()
+			// The fixture writes no results, so summarize exits nonzero; keep the
+			// output for the failure message instead of asserting success.
+			log, _ := cmd.CombinedOutput()
 			data, err := os.ReadFile(filepath.Clean(argv))
 			if err != nil {
 				t.Fatal(err)
@@ -166,7 +168,48 @@ func TestReviewMatrixForwardsVerifyTimeout(t *testing.T) {
 				got = strings.Count(string(data), "--verify-timeout")
 			}
 			if want := map[string]int{"": 0, "180s": 12}[value]; got != want {
-				t.Fatalf("got %d forwarded verify timeouts across 12 cells, want %d", got, want)
+				t.Fatalf("got %d forwarded verify timeouts across 12 cells, want %d\n%s", got, want, log)
+			}
+		})
+	}
+}
+
+func TestReviewRunForwardsVerifyTimeout(t *testing.T) {
+	for _, value := range []string{"", "180s"} {
+		t.Run("timeout="+value, func(t *testing.T) {
+			root := t.TempDir()
+			argv := filepath.Join(root, "argv")
+			stubs := map[string]string{
+				"make": "#!/bin/sh\nexit 0\n",
+				"go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argv + "\"\nexit 0\n",
+			}
+			for name, body := range stubs {
+				path := filepath.Join(root, name)
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Chmod(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./run.sh")
+			cmd.Args = append(cmd.Args, filepath.Join(root, "out"))
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_VERIFY_TIMEOUT="+value)
+			if log, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run.sh failed: %v\n%s", err, log)
+			}
+			data, err := os.ReadFile(filepath.Clean(argv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(string(data), "\n--verify-timeout\n180s\n")
+			if value == "" {
+				got = strings.Contains(string(data), "--verify-timeout")
+			}
+			if got != (value != "") {
+				t.Fatalf("verify timeout forwarded=%v for %q; go argv:\n%s", got, value, data)
 			}
 		})
 	}
