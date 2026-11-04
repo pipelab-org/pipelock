@@ -139,6 +139,100 @@ func TestReviewMatrixScopeFailureOverridesResult(t *testing.T) {
 	}
 }
 
+// verifyTimeoutAfter reports whether "--verify-timeout value" appears as two
+// arguments after the anchor argument in a newline-separated argv record. A pair
+// placed before the program would be parsed by the launcher, not receipt-load.
+func verifyTimeoutAfter(argv, anchor, value string) bool {
+	at := strings.Index(argv, "\n"+anchor+"\n")
+	return at >= 0 && strings.Index(argv[at:], "\n--verify-timeout\n"+value+"\n") > 0
+}
+
+func TestReviewMatrixForwardsVerifyTimeout(t *testing.T) {
+	for _, value := range []string{"", "180s"} {
+		t.Run("timeout="+value, func(t *testing.T) {
+			root := t.TempDir()
+			argv := filepath.Join(root, "argv")
+			scope := filepath.Join(root, "systemd-run")
+			if err := os.WriteFile(scope, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" -- >> \""+argv+"\"\nexit 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Chmod(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			load := newFakePipelock(t, "harness")
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), load, filepath.Join(root, "matrix"), "1", "1")
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_MODES=off", "RECEIPT_LOAD_VERIFY_TIMEOUT="+value)
+			// The fixture writes no results, so summarize exits nonzero; keep the
+			// output for the failure message instead of asserting success.
+			log, _ := cmd.CombinedOutput()
+			data, err := os.ReadFile(filepath.Clean(argv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cells := strings.Split(strings.TrimSuffix("\n"+string(data), "--\n"), "--\n")
+			if len(cells) != 12 {
+				t.Fatalf("got %d cell launches, want 12\n%s", len(cells), log)
+			}
+			for i, cell := range cells {
+				if !strings.HasPrefix(cell, "\n") {
+					cell = "\n" + cell
+				}
+				forwarded := verifyTimeoutAfter(cell, load, value)
+				if value == "" {
+					forwarded = strings.Contains(cell, "--verify-timeout")
+				}
+				if forwarded != (value != "") {
+					t.Fatalf("cell %d: verify timeout after the load binary=%v for %q\n%s", i, forwarded, value, cell)
+				}
+			}
+		})
+	}
+}
+
+func TestReviewRunForwardsVerifyTimeout(t *testing.T) {
+	for _, value := range []string{"", "180s"} {
+		t.Run("timeout="+value, func(t *testing.T) {
+			root := t.TempDir()
+			argv := filepath.Join(root, "argv")
+			stubs := map[string]string{
+				"make": "#!/bin/sh\nexit 0\n",
+				"go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argv + "\"\nexit 0\n",
+			}
+			for name, body := range stubs {
+				path := filepath.Join(root, name)
+				if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := syscall.Chmod(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./run.sh")
+			cmd.Args = append(cmd.Args, filepath.Join(root, "out"))
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_VERIFY_TIMEOUT="+value)
+			if log, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("run.sh failed: %v\n%s", err, log)
+			}
+			data, err := os.ReadFile(filepath.Clean(argv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := verifyTimeoutAfter("\n"+string(data), "./scripts/receipt-load", "180s")
+			if value == "" {
+				got = strings.Contains(string(data), "--verify-timeout")
+			}
+			if got != (value != "") {
+				t.Fatalf("verify timeout forwarded=%v for %q; go argv:\n%s", got, value, data)
+			}
+		})
+	}
+}
+
 func TestReviewSummaryEquivalentScopes(t *testing.T) {
 	a, b := fakeResult(100, 80, 90, verdictPass, perfMeasured), fakeResult(200, 180, 190, verdictPass, perfMeasured)
 	a.Inputs.Host.CgroupCPUQuota = "200000/100000 us (/scope-one)"
