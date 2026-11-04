@@ -199,6 +199,11 @@ func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
 		{"HTTP:opaque-segment", "[redacted-url]"},
 		{"wss:opaque-segment", "[redacted-url]"},
 		{"https:", "[redacted-url]"},
+		// Values url.Parse rejects are classified from their scheme text.
+		{"https:/%zz", "[redacted-url]"},
+		{"wss:%zz/more", "[redacted-url]"},
+		{"mcp:/%zz", "[redacted-url]"},
+		{"server:%zz", "server:%zz"},
 		// Colon-bearing identifiers parse as opaque, not path-absolute.
 		{"server:read_file", "server:read_file"},
 		{"localhost:8080", "localhost:8080"},

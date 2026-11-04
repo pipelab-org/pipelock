@@ -73,17 +73,46 @@ func sanitizeSignedTarget(target string, clean dlpClean) string {
 // ("https:segment/more"). For other schemes only the path-absolute form
 // (RFC 3986 section 3) is reduced: bare CONNECT authorities ("host:443") and
 // colon-bearing tool names ("server:tool") parse as opaque and keep their
-// spelling.
+// spelling. A value url.Parse rejects (such as "https:/%zz") is classified
+// from its scheme text, so malformed request content is not kept.
 func schemeWithoutAuthority(target string) bool {
 	u, err := url.Parse(target)
-	if err != nil || u.Scheme == "" || u.Host != "" {
+	if err != nil {
+		scheme, rest, ok := strings.Cut(target, ":")
+		if !ok || !uriScheme(scheme) {
+			return false
+		}
+		return webScheme(scheme) || strings.HasPrefix(rest, "/")
+	}
+	if u.Scheme == "" || u.Host != "" {
 		return false
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https", "ws", "wss":
+	if webScheme(u.Scheme) {
 		return true
 	}
 	return u.Opaque == "" && strings.HasPrefix(u.Path, "/")
+}
+
+func webScheme(scheme string) bool {
+	switch strings.ToLower(scheme) {
+	case "http", "https", "ws", "wss":
+		return true
+	}
+	return false
+}
+
+// uriScheme reports RFC 3986 section 3.1 scheme syntax:
+// ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ).
+func uriScheme(s string) bool {
+	for i, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case i > 0 && (c >= '0' && c <= '9' || c == '+' || c == '-' || c == '.'):
+		default:
+			return false
+		}
+	}
+	return s != ""
 }
 
 // mcpServerTarget reports whether target is one of the two MCP producer
