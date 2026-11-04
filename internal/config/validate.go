@@ -589,6 +589,17 @@ func (c *Config) Validate() error {
 	return err
 }
 
+// ModeAuditEnforcedWarnings reports a config whose mode name suggests
+// observation while blocking stays on. Runtime blocking follows enforce
+// (EnforceEnabled), not the mode name, so mode: audit with enforce left at its
+// default of true still blocks ordinary findings.
+func (c *Config) ModeAuditEnforcedWarnings() []Warning {
+	if c.Mode != ModeAudit || !c.EnforceEnabled() {
+		return nil
+	}
+	return []Warning{{Field: "mode", Message: "mode: audit does not turn off blocking. enforce is true, so ordinary findings still block. Set enforce: false, or use the audit preset, to log findings without blocking."}}
+}
+
 // MCPCompatibilityWarnings returns advisories for ambiguous legacy MCP settings.
 // These describe the loaded source, independently of later runtime resolution.
 func (c *Config) MCPCompatibilityWarnings() []Warning {
@@ -620,6 +631,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateMode(); err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, c.ModeAuditEnforcedWarnings()...)
 	c.validateAPIAllowlistWarnings(&warnings)
 	c.validateTrustedDomainTenancyWarnings(&warnings)
 	if err := c.validateLogging(); err != nil {

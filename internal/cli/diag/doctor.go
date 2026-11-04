@@ -171,6 +171,16 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 			Detail:  warning.Message,
 		})
 	}
+	// Informational: this config blocks more than its mode name suggests, which
+	// is the fail-closed direction, so it does not raise doctor's warning exit.
+	for _, warning := range cfg.ModeAuditEnforcedWarnings() {
+		report.Checks = append(report.Checks, doctorReportCheck{
+			Name:    "mode_audit_enforced",
+			Surface: doctorSurfaceConfig,
+			Status:  doctorStatusInfo,
+			Detail:  cfgLabel + ": " + warning.Message,
+		})
+	}
 	for _, warning := range cfg.ResponseScanning.SizeExemptScanLimitWarnings(time.Now()) {
 		report.Checks = append(report.Checks, doctorReportCheck{
 			Name:    warning.Field,

@@ -186,8 +186,10 @@ func statusScanners(cfg *config.Config) []statusScanner {
 	return scanners
 }
 
+// modeAction reports the action runtime takes on an ordinary finding. Blocking
+// follows enforce alone; mode: audit does not change it.
 func modeAction(cfg *config.Config) string {
-	if !cfg.EnforceEnabled() || cfg.Mode == config.ModeAudit {
+	if !cfg.EnforceEnabled() {
 		return config.ActionWarn
 	}
 	return config.ActionBlock

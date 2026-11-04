@@ -116,19 +116,33 @@ func TestStatusLicenseStateExpiryWarning(t *testing.T) {
 	})
 }
 
-func TestModeActionAuditWarns(t *testing.T) {
+// modeAction reports runtime behavior: blocking follows enforce, and the
+// mode name alone does not turn it off.
+func TestModeActionFollowsEnforce(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.Defaults()
-	cfg.Internal = nil
-	cfg.Mode = config.ModeAudit
-	if got := modeAction(cfg); got != config.ActionWarn {
-		t.Fatalf("audit mode = %q, want warn", got)
-	}
-
-	cfg.Mode = config.ModeBalanced
-	if got := modeAction(cfg); got != config.ActionBlock {
-		t.Fatalf("balanced enforce = %q, want block", got)
+	off := false
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		enforce *bool
+		want    string
+	}{
+		{"audit enforce default", config.ModeAudit, nil, config.ActionBlock},
+		{"audit enforce false", config.ModeAudit, &off, config.ActionWarn},
+		{"balanced enforce default", config.ModeBalanced, nil, config.ActionBlock},
+		{"balanced enforce false", config.ModeBalanced, &off, config.ActionWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.Defaults()
+			cfg.Internal = nil
+			cfg.Mode = tc.mode
+			cfg.Enforce = tc.enforce
+			if got := modeAction(cfg); got != tc.want {
+				t.Fatalf("modeAction = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

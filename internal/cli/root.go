@@ -67,7 +67,7 @@ web browsing capability.
 Three modes:
   strict    - Agent can only reach allowlisted API domains (airtight)
   balanced  - Capability separation with monitored web browsing (default)
-  audit     - Log everything, restrict nothing (evaluation)
+  audit     - Evaluation label; still blocks unless enforce: false is set
 
 Quick start:
   pipelock run

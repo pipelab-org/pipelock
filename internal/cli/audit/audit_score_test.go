@@ -460,6 +460,27 @@ func TestScoreEnforcement_AuditMode(t *testing.T) {
 	if !hasAuditInfo {
 		t.Error("audit mode should produce info finding")
 	}
+	for _, f := range findings {
+		if strings.Contains(f.Message, "forwarded") {
+			t.Errorf("enforce=true audit finding claims traffic is forwarded: %q", f.Message)
+		}
+	}
+}
+
+func TestScoreEnforcement_AuditModeEnforceFalse(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeAudit
+	off := false
+	cfg.Enforce = &off
+
+	var findings []ScoreFinding
+	scoreEnforcement(cfg, &findings)
+	for _, f := range findings {
+		if f.Severity == scoreSevInfo && strings.Contains(f.Message, "logged and forwarded") {
+			return
+		}
+	}
+	t.Errorf("audit mode with enforce=false should explain forwarding, got %+v", findings)
 }
 
 func TestScoreEnforcement_BalancedMode(t *testing.T) {

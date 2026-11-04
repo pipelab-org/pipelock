@@ -470,10 +470,14 @@ func scoreEnforcement(cfg *config.Config, findings *[]ScoreFinding) ScoreCategor
 		score += 3
 	case config.ModeAudit:
 		score += 1
+		message := "Mode is 'audit' with enforce: false, so ordinary findings are logged and forwarded; core credential and SSRF floors still block"
+		if enforce {
+			message = "Mode is 'audit' but enforce is true, so ordinary findings still block; set enforce: false to log without blocking"
+		}
 		*findings = append(*findings, ScoreFinding{
 			Severity: scoreSevInfo,
 			Category: "Enforcement",
-			Message:  "Mode is 'audit' — all traffic is forwarded regardless of scan results",
+			Message:  message,
 		})
 	}
 	return ScoreCategory{Name: "Enforcement", Score: min(score, maxEnforcementScore), MaxScore: maxEnforcementScore, Detail: fmt.Sprintf("mode=%s, enforce=%v", cfg.Mode, enforce)}
