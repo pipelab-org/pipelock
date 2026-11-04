@@ -191,6 +191,16 @@ class AllocationReportTest(unittest.TestCase):
                 RUN.write_allocation_summary(output)
                 self.assertIn("| example/pkg / BenchmarkExample |", (output / "allocation-summary.md").read_text())
 
+    def test_summary_passes_when_only_processor_counts_differ(self):
+        head = allocation_rows().replace("BenchmarkExample-4", "BenchmarkExample-8")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "baseline.txt").write_text(allocation_rows())
+            (output / "current.txt").write_text(head)
+            RUN.write_allocation_summary(output)
+            self.assertIn("- example/pkg / BenchmarkExample: effective GOMAXPROCS differs between base and head",
+                          (output / "allocation-summary.md").read_text())
+
     def test_skipped_exclusions_are_listed_not_new_or_removed(self):
         report = RUN.allocation_report("", "")
         self.assertIn("internal/scanner / BenchmarkDecodeBudget/hex: allocs/op varies", report)

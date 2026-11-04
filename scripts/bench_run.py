@@ -426,8 +426,10 @@ def write_allocation_summary(output: Path) -> None:
     texts = [(output / f"{name}.txt").read_text() for name in ("baseline", "current")]
     with exclusive_file(output / "allocation-summary.md") as summary:
         summary.write(allocation_report(*texts))
-    # A run that compared nothing, such as a skip pattern matching every
-    # benchmark, fails rather than passing with an empty report.
+    # A run where neither side kept a sample, such as a skip pattern matching
+    # every benchmark, fails rather than passing with an empty report. Samples
+    # excluded only by a base/head GOMAXPROCS mismatch still pass; the report
+    # names that reason.
     if not any(allocation_samples(text)[0] for text in texts):
         raise RunError("no comparable allocation samples were captured")
 
