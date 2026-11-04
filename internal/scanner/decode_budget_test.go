@@ -130,7 +130,7 @@ func TestDecodeBudgetWalkBoundaries(t *testing.T) {
 	}
 	for _, n := range []int{maxDecodeCandidates - 1, maxDecodeCandidates, maxDecodeCandidates + 1} {
 		t.Run(fmt.Sprint(n), func(t *testing.T) {
-			out, complete := decodeEncodingsWalk(nil, roots[:n], map[string]struct{}{}, true, 0, true)
+			out, complete := decodeEncodingsWalk(nil, nil, roots[:n], newDecodeSeen(), true, 0, true)
 			if len(out) != min(n, maxDecodeCandidates) || complete != (n <= maxDecodeCandidates) {
 				t.Fatalf("views=%d complete=%v", len(out), complete)
 			}
@@ -139,7 +139,7 @@ func TestDecodeBudgetWalkBoundaries(t *testing.T) {
 	for _, size := range []int{maxDecodeTotalBytes - 2, maxDecodeTotalBytes, maxDecodeTotalBytes + 2} {
 		t.Run(fmt.Sprintf("bytes_%d", size), func(t *testing.T) {
 			root := decodedResult{strings.Repeat("21", size/2), encodingHTML}
-			_, complete := decodeEncodingsWalk(nil, []decodedResult{root}, map[string]struct{}{}, true, 0, true)
+			_, complete := decodeEncodingsWalk(nil, nil, []decodedResult{root}, newDecodeSeen(), true, 0, true)
 			if complete != (size <= maxDecodeTotalBytes) {
 				t.Fatalf("%d recursive bytes: complete=%v", size, complete)
 			}
@@ -148,26 +148,26 @@ func TestDecodeBudgetWalkBoundaries(t *testing.T) {
 	t.Run("candidate limit during expansion", func(t *testing.T) {
 		expanding := append([]decodedResult(nil), roots[:maxDecodeCandidates]...)
 		expanding[len(expanding)-1] = decodedResult{"616263646566", encodingHTML}
-		out, complete := decodeEncodingsWalk(nil, expanding, map[string]struct{}{}, true, 0, true)
+		out, complete := decodeEncodingsWalk(nil, nil, expanding, newDecodeSeen(), true, 0, true)
 		if complete || len(out) != maxDecodeCandidates {
 			t.Fatalf("views=%d complete=%v", len(out), complete)
 		}
 	})
 	t.Run("short roots", func(t *testing.T) {
-		out, complete := decodeEncodingsWalk(nil, []decodedResult{{"!", encodingHTML}}, map[string]struct{}{}, true, 4, true)
+		out, complete := decodeEncodingsWalk(nil, nil, []decodedResult{{"!", encodingHTML}}, newDecodeSeen(), true, 4, true)
 		if !complete || len(out) != 0 {
 			t.Fatal("unmatchable root spent the budget")
 		}
 	})
 	t.Run("short decoded view", func(t *testing.T) {
-		out, complete := decodeEncodingsWalk([]string{"%41"}, nil, map[string]struct{}{"%41": {}}, true, 4, true)
+		out, complete := decodeEncodingsWalk(nil, []string{"%41"}, nil, newDecodeSeen("%41"), true, 4, true)
 		if !complete || len(out) != 0 {
 			t.Fatal("unmatchable child spent the budget")
 		}
 	})
 	// Repeated roots and a view equal to the root spend no admission budget.
 	duplicate := decodedResult{"!!!!", encodingHTML}
-	out, complete := decodeEncodingsWalk([]string{duplicate.text}, []decodedResult{duplicate, duplicate}, map[string]struct{}{duplicate.text: {}}, true, 0, true)
+	out, complete := decodeEncodingsWalk(nil, []string{duplicate.text}, []decodedResult{duplicate, duplicate}, newDecodeSeen(duplicate.text), true, 0, true)
 	if !complete || len(out) != 0 {
 		t.Fatal("duplicate exhausted the budget")
 	}

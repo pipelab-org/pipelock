@@ -5,8 +5,11 @@ package scanner
 
 import (
 	"regexp/syntax"
+	"slices"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // dlpPreFilter provides fast prefix-based pre-screening for DLP patterns.
@@ -26,11 +29,26 @@ type dlpPreFilter struct {
 	// (e.g., SSN with \d digits, generic credential patterns with alternations).
 	// These patterns must always be evaluated regardless of pre-filter results.
 	alwaysRun []int
+
+	// shapeClass is the union of every pattern's shape-gate class and
+	// shapeBypass the union of their bypass runes; see shapeRejects.
+	shapeClass  asciiByteSet
+	shapeBypass []rune
+}
+
+// dlpShapeSummary is one text's longest run of shapeClass bytes and whether
+// it holds a bypass rune, computed once for all of a scan's shape gates.
+type dlpShapeSummary struct {
+	longest int
+	bypass  bool
+	ready   bool
 }
 
 type dlpPrefix struct {
 	text    string
 	indices []int
+	// pairs lists the byte pairs of text for the pair filter in candidates.
+	pairs []uint16
 }
 
 // newDLPPreFilter builds a pre-filter from compiled DLP patterns.
@@ -39,6 +57,19 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 	pf := &dlpPreFilter{}
 	prefixes := make(map[string][]int)
 
+	bypass := make(map[rune]struct{})
+	for _, p := range patterns {
+		if p.shapeGate == nil {
+			continue
+		}
+		pf.shapeClass.union(p.shapeGate.class)
+		for _, r := range p.shapeGate.nonASCII {
+			if _, ok := bypass[r]; !ok {
+				bypass[r] = struct{}{}
+				pf.shapeBypass = append(pf.shapeBypass, r)
+			}
+		}
+	}
 	for i, p := range patterns {
 		anchors := extractRequiredLiteralAnchors(p.re.String())
 		if len(anchors) == 0 {
@@ -55,7 +86,7 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 	// slice once so every decoded view avoids walking the map's iterator.
 	pf.prefixes = make([]dlpPrefix, 0, len(prefixes))
 	for prefix, indices := range prefixes {
-		pf.prefixes = append(pf.prefixes, dlpPrefix{text: prefix, indices: indices})
+		pf.prefixes = append(pf.prefixes, dlpPrefix{text: prefix, indices: indices, pairs: literalBytePairs(prefix)})
 	}
 	sort.Slice(pf.prefixes, func(i, j int) bool { return pf.prefixes[i].text < pf.prefixes[j].text })
 
@@ -63,6 +94,49 @@ func newDLPPreFilter(patterns []*compiledPattern) *dlpPreFilter {
 }
 
 const minPreFilterAnchorLength = 3
+
+// shapeRejects reports that gate cannot admit text, deciding every gate of a
+// scan from one summary pass. gate.class is within shapeClass, so any run the
+// gate admits lies inside a shapeClass run at least gate.minLen bytes long;
+// with no such run and none of the bypass runes that make admits accept
+// outright, admits is false. A false result proves nothing and the caller
+// runs the gate itself.
+func (pf *dlpPreFilter) shapeRejects(gate *regexShapeGate, text string, summary *dlpShapeSummary) bool {
+	if gate == nil || !gate.class.subsetOf(pf.shapeClass) {
+		return false
+	}
+	if !summary.ready {
+		*summary = pf.summarizeShape(text)
+	}
+	return !summary.bypass && summary.longest < gate.minLen
+}
+
+func (pf *dlpPreFilter) summarizeShape(text string) dlpShapeSummary {
+	summary := dlpShapeSummary{ready: true}
+	run := 0
+	for i := 0; i < len(text); {
+		c := text[i]
+		if c < utf8.RuneSelf {
+			if pf.shapeClass.has(c) {
+				run++
+				summary.longest = max(summary.longest, run)
+			} else {
+				run = 0
+			}
+			i++
+			continue
+		}
+		run = 0
+		// strings.ContainsRune, which admits uses, finds U+FFFD at a
+		// malformed byte; DecodeRuneInString reports that byte the same way.
+		r, size := utf8.DecodeRuneInString(text[i:])
+		if !summary.bypass && slices.Contains(pf.shapeBypass, r) {
+			summary.bypass = true
+		}
+		i += size
+	}
+	return summary
+}
 
 // extractRequiredLiteralAnchors returns literal alternatives where every match
 // of the regex must contain at least one returned string. The full syntax tree
@@ -340,20 +414,77 @@ func (pf *dlpPreFilter) candidates(text string) []int {
 	if len(pf.prefixes) == 0 {
 		return nil
 	}
-	lower := strings.ToLower(text)
-	// A missing first byte rules out a literal without searching the string
-	// again. This is only a necessary condition; every possible prefix still
-	// goes through the same complete substring check.
-	var present [4]uint64
-	for i := 0; i < len(lower); i++ {
-		c := lower[i]
-		present[c/64] |= uint64(1) << (c % 64)
+	var lowered dlpLoweredBytes
+	lowered.add(text)
+	return pf.candidatesWith(text, &lowered)
+}
+
+// dlpLoweredBytes records which bytes and adjacent byte pairs (see
+// bytePairFilter) the bytes strings.ToLower(text) produces contain, without
+// building that string. One record serves every prefilter scanning the text.
+type dlpLoweredBytes struct {
+	present [4]uint64
+	pairs   bytePairFilter
+}
+
+func (l *dlpLoweredBytes) add(text string) {
+	var prev byte
+	first := true
+	for i := 0; i < len(text); {
+		c := text[i]
+		if c < utf8.RuneSelf {
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			l.present[c/64] |= uint64(1) << (c % 64)
+			if !first {
+				idx := bytePairIndex(prev, c)
+				l.pairs[idx>>6] |= 1 << (idx & 63)
+			}
+			prev, first = c, false
+			i++
+			continue
+		}
+		// strings.ToLower maps each rune with unicode.ToLower and writes a
+		// malformed byte as U+FFFD; DecodeRuneInString yields that rune.
+		r, size := utf8.DecodeRuneInString(text[i:])
+		var buf [utf8.UTFMax]byte
+		var lowered []byte
+		if r == utf8.RuneError && size == 1 {
+			// unicode.ToLower(U+FFFD) is U+FFFD; skip the lookup.
+			lowered = append(buf[:0], "\uFFFD"...)
+		} else {
+			lowered = buf[:utf8.EncodeRune(buf[:], unicode.ToLower(r))]
+		}
+		for _, b := range lowered {
+			l.present[b/64] |= uint64(1) << (b % 64)
+			if !first {
+				idx := bytePairIndex(prev, b)
+				l.pairs[idx>>6] |= 1 << (idx & 63)
+			}
+			prev, first = b, false
+		}
+		i += size
 	}
+}
+
+// candidatesWith is candidates for a text whose lowered bytes are recorded.
+// The record is only a necessary condition: every surviving prefix still goes
+// through the same complete substring check of strings.ToLower(text), which
+// is built only when some prefix survives.
+func (pf *dlpPreFilter) candidatesWith(text string, lowered *dlpLoweredBytes) []int {
+	var lower string
 	var hits []int
 	for _, prefix := range pf.prefixes {
 		first := prefix.text[0]
-		if present[first/64]&(uint64(1)<<(first%64)) == 0 {
+		if lowered.present[first/64]&(uint64(1)<<(first%64)) == 0 {
 			continue
+		}
+		if !lowered.pairs.mayContain(prefix.pairs) {
+			continue
+		}
+		if lower == "" {
+			lower = strings.ToLower(text)
 		}
 		if strings.Contains(lower, prefix.text) {
 			hits = append(hits, prefix.indices...)
@@ -367,7 +498,19 @@ func (pf *dlpPreFilter) candidates(text string) []int {
 // Returns nil only when both candidates and alwaysRun are empty.
 // Indices are returned in ascending order for deterministic match reporting.
 func (pf *dlpPreFilter) patternsToCheck(text string) []int {
-	hits := pf.candidates(text)
+	return pf.mergeAlwaysRun(pf.candidates(text))
+}
+
+// patternsToCheckWith is patternsToCheck for a text whose lowered bytes are
+// already recorded.
+func (pf *dlpPreFilter) patternsToCheckWith(text string, lowered *dlpLoweredBytes) []int {
+	if len(pf.prefixes) == 0 {
+		return pf.mergeAlwaysRun(nil)
+	}
+	return pf.mergeAlwaysRun(pf.candidatesWith(text, lowered))
+}
+
+func (pf *dlpPreFilter) mergeAlwaysRun(hits []int) []int {
 	if len(hits) == 0 {
 		if len(pf.alwaysRun) == 0 {
 			return nil
