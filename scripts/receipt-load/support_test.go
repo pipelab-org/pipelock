@@ -225,6 +225,9 @@ func realPipelock(t *testing.T) string {
 		}
 		realPath = filepath.Join(dir, "pipelock")
 		cmd := exec.CommandContext(context.Background(), "go", "build")
+		if realBuildTags != "" {
+			cmd.Args = append(cmd.Args, "-tags", realBuildTags)
+		}
 		cmd.Args = append(cmd.Args, "-o", realPath, "./cmd/pipelock")
 		cmd.Dir = filepath.Join("..", "..")
 		if out, err := cmd.CombinedOutput(); err != nil {
