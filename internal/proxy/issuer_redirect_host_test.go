@@ -4,7 +4,15 @@
 package proxy
 
 import (
+	"bufio"
+	"context"
+	"crypto/tls"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -250,5 +258,102 @@ func TestFetchRedirectIssuedDelegationHostRelief(t *testing.T) {
 	hop, via = fetchRedirectHop(t, cfg, sc, "", http.StatusFound, "https://"+host+"/dl/other.bin?id=7", issued)
 	if err := p.client.CheckRedirect(hop, via); err == nil {
 		t.Fatal("a URL that is not the issued Location was followed")
+	}
+}
+
+func TestIssuedRedirectCONNECTTransport(t *testing.T) {
+	// CONNECT's preflight dial uses the configured host override and an
+	// ephemeral local port. The intercepted request uses the TLS fixture.
+	preflight := newIPv4Server(t, http.NotFoundHandler())
+	defer preflight.Close()
+	_, port, err := net.SplitHostPort(preflight.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var host string
+	e := newDelegationEnv(t, func(c *config.Config) {
+		probe := scanner.MustNew(c)
+		host = heuristicEntropyHost(t, probe)
+		probe.Close()
+		c.DefaultAgentIdentity = "agent-one"
+		c.ForwardProxy.Enabled = true
+		c.APIAllowlist = nil
+		c.DNS.HostOverrides = map[string][]string{host: {"127.0.0.1"}}
+		c.FetchProxy.Monitoring.IssuedRedirectDelegations[0].TargetOrigins = []string{"https://" + net.JoinHostPort(host, port)}
+	})
+	e.p.certCachePtr.Store(e.cache)
+	e.p.tlsTransport = e.rt.(*http.Transport)
+	proxy := httptest.NewServer(e.p.buildHandler(http.NewServeMux()))
+	defer proxy.Close()
+	issued := "https://" + net.JoinHostPort(host, port) + "/dl/archive.bin?id=7"
+	request := func(raw string) (int, int) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", proxy.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		deadline, _ := ctx.Deadline()
+		if err := conn.SetDeadline(deadline); err != nil {
+			t.Fatal(err)
+		}
+		target, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target.Host, target.Host); err != nil {
+			t.Fatal(err)
+		}
+		reader := bufio.NewReader(conn)
+		resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodConnect})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			_ = resp.Body.Close()
+			return resp.StatusCode, 0
+		}
+		tunnel := tls.Client(readerConn{Reader: reader, Conn: conn}, &tls.Config{RootCAs: e.pool, ServerName: host, MinVersion: tls.VersionTLS12})
+		if err := tunnel.HandshakeContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Close = true
+		if err := req.Write(tunnel); err != nil {
+			t.Fatal(err)
+		}
+		inner, err := http.ReadResponse(bufio.NewReader(tunnel), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = inner.Body.Close() }()
+		if _, err := io.Copy(io.Discard, inner.Body); err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, inner.StatusCode
+	}
+	if connect, _ := request(issued); connect != http.StatusForbidden {
+		t.Fatalf("unissued CONNECT = %d, want 403", connect)
+	}
+	e.issue(http.StatusFound, issued)
+	ic := &InterceptContext{
+		Proxy: e.p, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
+		TargetHost: delegationSourceHost, TargetPort: "443", ClientIP: "127.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthConfigDefault,
+	}
+	w := httptest.NewRecorder()
+	newInterceptHandler(ic, e.rt).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil))
+	if w.Code != http.StatusFound {
+		t.Fatalf("source = %d, want 302", w.Code)
+	}
+	if connect, inner := request(issued); connect != http.StatusOK || inner != http.StatusOK {
+		t.Fatalf("issued CONNECT/GET = %d/%d, want 200/200", connect, inner)
+	}
+	if connect, inner := request(strings.Replace(issued, "id=7", "id=8", 1)); connect != http.StatusOK || inner != http.StatusForbidden {
+		t.Fatalf("altered URL CONNECT/GET = %d/%d, want 200/403", connect, inner)
 	}
 }

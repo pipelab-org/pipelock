@@ -74,7 +74,7 @@ func newDelegationEnv(t *testing.T, mutate func(*config.Config)) *delegationEnv 
 	e.status.Store(http.StatusFound)
 	e.upstream = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch strings.Split(r.Host, ":")[0] {
-		case delegationSourceHost:
+		case delegationSourceHost, "elsewhere.vendor.example":
 			e.sourceHit.Add(1)
 			payload := e.sourcePayload.Load()
 			if payload != nil {
@@ -362,7 +362,9 @@ func TestInterceptIssuedRedirectDelegation(t *testing.T) {
 		t.Run("source mismatch: "+tc.name, func(t *testing.T) {
 			e := newDelegationEnv(t, nil)
 			e.issue(http.StatusFound, good)
-			e.do("agent-one", tc.method, tc.url)
+			if got := e.do("agent-one", tc.method, tc.url); got != http.StatusFound {
+				t.Fatalf("source status = %d, want 302", got)
+			}
 			if got := e.do("agent-one", http.MethodGet, good); got != http.StatusForbidden {
 				t.Fatalf("follow-up status = %d, want 403", got)
 			}
@@ -867,11 +869,15 @@ func TestIssuedRedirectPendingDelivery(t *testing.T) {
 				}
 				flushed := make(chan error, 1)
 				go func() { flushed <- ic.flushIssuedRedirectHeaders(w, response) }()
-				<-entered
 				var releaseOnce sync.Once
 				t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 				base, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 				defer cancel()
+				select {
+				case <-entered:
+				case <-base.Done():
+					t.Fatal("header write or flush callback did not run")
+				}
 				ctx := &issuedRedirectWaitContext{Context: base, waiting: make(chan struct{})}
 				result := make(chan bool, 1)
 				go func() {
@@ -1058,5 +1064,30 @@ func TestIssuedRedirectAdaptiveFlushCompatibility(t *testing.T) {
 	base.err = io.ErrClosedPipe
 	if err := http.NewResponseController(w).Flush(); !errors.Is(err, io.ErrClosedPipe) {
 		t.Fatalf("ResponseController flush error = %v", err)
+	}
+}
+
+func TestIssuedRedirectPendingScopeCapacity(t *testing.T) {
+	s := delegationTestStore(t)
+	target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, "id=7"))
+	scopes := make(map[[32]byte]struct{}, issuerCookieMaxEntries)
+	for i := 0; i < issuerCookieMaxEntries; i++ {
+		scopes[s.digestFields(strconv.Itoa(i))] = struct{}{}
+	}
+	full, err := s.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.finishIssuedRedirectDelivery("session", full)
+	one := map[[32]byte]struct{}{{1}: {}}
+	if extra, err := s.beginIssuedRedirectDelivery("session", target, one); err == nil {
+		s.finishIssuedRedirectDelivery("session", extra)
+		t.Fatal("overlapping delegation scopes exceeded the per-session entry budget")
+	}
+	// A single oversized delivery must also be refused before allocating its entries.
+	scopes[s.digestFields("overflow")] = struct{}{}
+	if extra, err := s.beginIssuedRedirectDelivery("other", target, scopes); err == nil {
+		s.finishIssuedRedirectDelivery("other", extra)
+		t.Fatal("oversized scope set admitted")
 	}
 }

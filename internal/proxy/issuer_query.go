@@ -70,7 +70,7 @@ type issuerQueryStore struct {
 	locations map[string][]issuedLocationEntry
 	// deliveries coordinates only matching follow-ups while headers are being
 	// flushed. It never grants authority and does not evict delivered evidence.
-	deliveries map[string]map[*issuedRedirectDelivery]struct{}
+	deliveries map[string]*issuedRedirectDeliverySet
 	// ids holds keyed digests of object IDs an origin introduced in a JSON
 	// response; sent holds digests of every token the session sent to an
 	// origin, so a reflected value is never minted as an ID; sentUnreadable
