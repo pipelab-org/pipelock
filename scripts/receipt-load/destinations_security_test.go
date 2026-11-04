@@ -17,7 +17,7 @@ import (
 func TestDestinationReceiptAssociations(t *testing.T) {
 	plan := newWorkload(1, 0, 4)
 	plan.destinations = newDestinationPlan(plan.total(), []string{"10001", "10002"})
-	for _, mutation := range []string{"complete", "missing", "duplicate", "unknown", "redacted", "path", "conflicting_action", "bad_header", "aggregate"} {
+	for _, mutation := range []string{"complete", "missing", "duplicate", "unknown", "redacted", "path", "conflicting_action", "non_scanner", "bad_header", "aggregate"} {
 		t.Run(mutation, func(t *testing.T) {
 			receipts := perfectReceipts(plan, modeRequired)
 			for i := range receipts {
@@ -49,11 +49,29 @@ func TestDestinationReceiptAssociations(t *testing.T) {
 				t.Fatal(err)
 			}
 			// The synthetic helper predates scanner provenance on destination receipts.
-			writeReviewFile(t, path, strings.ReplaceAll(string(data), `"transport":"forward"`, `"transport":"forward","winning_source":"scanner"`))
+			text := strings.ReplaceAll(string(data), `"transport":"forward"`, `"transport":"forward","winning_source":"scanner"`)
+			if mutation == "non_scanner" {
+				// A destination receipt decided by anything but the scanner is not the planned decision.
+				lines := strings.Split(text, "\n")
+				for i, line := range lines {
+					if strings.Contains(line, `"payload_kind"`) && strings.Contains(line, `"winning_source":"scanner"`) {
+						lines[i] = strings.Replace(line, `"winning_source":"scanner"`, `"winning_source":"policy"`, 1)
+						break
+					}
+				}
+				text = strings.Join(lines, "\n")
+			}
+			writeReviewFile(t, path, text)
 			obs, err := scanRecorder(dir, plan, "")
 			if mutation == "conflicting_action" {
 				if err == nil || !strings.Contains(err.Error(), "ActionID maps to multiple") {
 					t.Fatalf("conflicting association: %v", err)
+				}
+				return
+			}
+			if mutation == "non_scanner" {
+				if err == nil || !strings.Contains(err.Error(), "differs from the planned decision") {
+					t.Fatalf("non-scanner provenance: %v", err)
 				}
 				return
 			}

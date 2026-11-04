@@ -379,6 +379,10 @@ func TestParseFlags(t *testing.T) {
 	if err != nil || opt.destinations != destinationsSingle || opt.requests != 10 || opt.rules != rulesEmpty || opt.warmup != 1000 || len(modes) != 3 || lock != "" {
 		t.Fatalf("parseFlags = %+v %v %q %v", opt, modes, lock, err)
 	}
+	perRequest, _, _, err := parseFlags(append(append([]string{}, good...), "--destinations", destinationsPerRequest))
+	if err != nil || perRequest.destinations != destinationsPerRequest {
+		t.Fatalf("parseFlags per-request = %+v %v", perRequest, err)
+	}
 	for _, bad := range [][]string{
 		{"--binary", os.Args[0]},
 		append(append([]string{}, good...), "--modes", "sideways"),

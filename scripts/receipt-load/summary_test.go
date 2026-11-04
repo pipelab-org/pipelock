@@ -265,4 +265,8 @@ func TestSampleIdentityDestinationPools(t *testing.T) {
 	if sampleIdentity(a) == sampleIdentity(b) {
 		t.Fatal("different pool dimensions shared sample identity")
 	}
+	b.Inputs.Workload.DestinationPool = newDestinationPlan(4, []string{"10001", "10002", "10003"})
+	if len(b.Inputs.Workload.DestinationPool.Aliases) != len(a.Inputs.Workload.DestinationPool.Aliases) || sampleIdentity(a) == sampleIdentity(b) {
+		t.Fatal("different port counts with equal aliases shared sample identity")
+	}
 }
