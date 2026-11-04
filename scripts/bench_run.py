@@ -230,8 +230,6 @@ def smoke_benchmarks() -> int:
 # -count contracts. Repetition one is initialization; the remaining three must
 # agree, so a benchmark that varies is excluded at run time, not reported.
 ALLOCATION_REPETITIONS = 4
-ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
-                      "-run=^$", "-bench=.", "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 # Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
 # These are observed post-warm-up allocs/op values, never a numerical tolerance.
 ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
@@ -302,6 +300,20 @@ ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
     ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkWIFOverlapScan"):
         "allocs/op varies after warm-up: 115011, 115014, 115014 (20 iterations)",
 }
+# Go splits -skip at top-level alternations and slashes. Anchor each path
+# component so excluding one sub-case keeps its siblings running.
+ALLOCATION_SKIPPED = tuple(sorted({name for _, name in ALLOCATION_EXCLUSIONS}))
+
+
+def allocation_skip_pattern(names: tuple[str, ...]) -> str:
+    return "|".join("/".join(f"^{re.escape(part)}$" for part in name.split("/")) for name in names)
+
+
+# Go applies -skip in every listed package, so a test keeps each skipped
+# top-level name defined in one package only.
+ALLOCATION_COMMAND = ["go", "test", "./internal/scanner/...", "./internal/proxy/...", "./internal/mcp/...",
+                      "-run=^$", "-bench=.", f"-skip={allocation_skip_pattern(ALLOCATION_SKIPPED)}",
+                      "-benchtime=20x", f"-count={ALLOCATION_REPETITIONS}", "-benchmem"]
 
 
 def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> tuple[dict, dict]:
@@ -342,9 +354,11 @@ def allocation_samples(text: str, repetitions: int = ALLOCATION_REPETITIONS) -> 
             notes[key] = "allocs/op varies after warm-up: " + ", ".join(str(row[0]) for row in rows[1:])
         elif key not in notes:
             values[key] = (*rows[-1], next(iter(processors[key])))
-    for key in samples.keys() | notes.keys():
-        if key in ALLOCATION_EXCLUSIONS:
-            notes[key] = ALLOCATION_EXCLUSIONS[key]
+    for key, reason in ALLOCATION_EXCLUSIONS.items():
+        if key in samples or key in notes:
+            notes[key] = reason
+        elif key[1] in ALLOCATION_SKIPPED:
+            notes[key] = reason + " (skipped, not run)"
     return {key: value for key, value in values.items() if key not in notes}, notes
 
 
@@ -361,6 +375,7 @@ def allocation_report(baseline: str, current: str) -> str:
              f"Report only; first repetition discarded. Fixed 20 iterations, {ALLOCATION_REPETITIONS} repetitions per process.",
              "Only allocs/op is compared. B/op and timing are not compared.",
              "A benchmark whose remaining repetitions disagree is excluded below, as are known varying cases.",
+             "Known varying benchmark cases are skipped rather than run; their other cases remain compared.",
              "Opt-in fixture benchmarks remain skipped unless their fixture environment is configured.", "",
              f"Changed rows: {len(changed)}", "",
              "| Package / benchmark | Base allocs/op | Head allocs/op | Delta | Base B/op (not compared) | Head B/op (not compared) |",
@@ -404,8 +419,19 @@ def capture_allocations(baseline: Path, current: Path, output: Path) -> None:
             raise
     if any(checkout_state(path) != source for path, source in zip((baseline, current), sources)):
         raise RunError("source changed during allocation measurement")
+    write_allocation_summary(output)
+
+
+def write_allocation_summary(output: Path) -> None:
+    texts = [(output / f"{name}.txt").read_text() for name in ("baseline", "current")]
     with exclusive_file(output / "allocation-summary.md") as summary:
-        summary.write(allocation_report((output / "baseline.txt").read_text(), (output / "current.txt").read_text()))
+        summary.write(allocation_report(*texts))
+    # A run where neither side kept a sample, such as a skip pattern matching
+    # every benchmark, fails rather than passing with an empty report. Samples
+    # excluded only by a base/head GOMAXPROCS mismatch still pass; the report
+    # names that reason.
+    if not any(allocation_samples(text)[0] for text in texts):
+        raise RunError("no comparable allocation samples were captured")
 
 
 def main() -> int:

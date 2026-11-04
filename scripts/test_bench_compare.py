@@ -5,8 +5,8 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import subprocess
-import importlib.util
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -131,6 +131,84 @@ class AllocationReportTest(unittest.TestCase):
         for root in ("scanner", "proxy", "mcp"):
             self.assertIn(f"./internal/{root}/...", command)
         self.assertIn(f"-count={RUN.ALLOCATION_REPETITIONS}", command)
+
+    def test_command_skips_only_benchmarks_without_a_stable_case(self):
+        skip = [arg for arg in RUN.ALLOCATION_COMMAND if arg.startswith("-skip=")]
+        self.assertEqual(skip, [f"-skip={RUN.allocation_skip_pattern(RUN.ALLOCATION_SKIPPED)}"])
+        self.assertIn("BenchmarkDecodeBudget/hex", RUN.ALLOCATION_SKIPPED)
+        self.assertNotIn("BenchmarkScanResponse_Large", RUN.ALLOCATION_SKIPPED)
+        self.assertIn("^BenchmarkDecodeBudget$/^hex$", skip[0])
+        self.assertNotIn("^BenchmarkScanResponse_Large$", skip[0].removeprefix("-skip=").split("|"))
+        for name in RUN.ALLOCATION_SKIPPED:
+            self.assertRegex(name.split("/", 1)[0], r"^Benchmark\w+$")
+
+    def test_skipped_names_are_defined_only_in_their_excluded_package(self):
+        root = Path(__file__).resolve().parent.parent
+        prefix = "github.com/luckyPipewrench/pipelock/"
+        for name in {benchmark.split("/", 1)[0] for benchmark in RUN.ALLOCATION_SKIPPED}:
+            with self.subTest(name=name):
+                excluded = {package.removeprefix(prefix) for package, benchmark in RUN.ALLOCATION_EXCLUSIONS
+                            if benchmark.split("/", 1)[0] == name}
+                defined = {path.parent.relative_to(root).as_posix()
+                           for tree in ("scanner", "proxy", "mcp")
+                           for path in (root / "internal" / tree).rglob("*_test.go")
+                           if re.search(rf"^func {name}\(", path.read_text(encoding="utf-8"), re.M)}
+                self.assertEqual(defined, excluded)
+
+    def test_new_subcase_exclusion_keeps_its_stable_siblings_running(self):
+        names = (*RUN.ALLOCATION_SKIPPED, "BenchmarkMatchDomain/exact")
+        pattern = RUN.allocation_skip_pattern(names)
+        self.assertIn("^BenchmarkMatchDomain$/^exact$", pattern.split("|"))
+        self.assertNotIn("^BenchmarkMatchDomain$", pattern.split("|"))
+        self.assertNotIn("^BenchmarkMatchDomain$/^wildcard$", pattern.split("|"))
+
+    def test_new_whole_benchmark_exclusion_is_skipped(self):
+        pattern = RUN.allocation_skip_pattern((*RUN.ALLOCATION_SKIPPED, "BenchmarkNewVarying"))
+        self.assertIn("^BenchmarkNewVarying$", pattern.split("|"))
+
+    def test_skip_pattern_escapes_literal_subcase_names(self):
+        pattern = RUN.allocation_skip_pattern(("BenchmarkExample/case.v1+",))
+        self.assertEqual(pattern, r"^BenchmarkExample$/^case\.v1\+$")
+
+    def test_summary_fails_when_nothing_was_compared(self):
+        excluded_only = allocation_rows(allocs=(100, 10, 11, 10))
+        for baseline, current in (("", ""), (excluded_only, excluded_only)):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "baseline.txt").write_text(baseline)
+                (output / "current.txt").write_text(current)
+                with self.assertRaisesRegex(RUN.RunError, "no comparable allocation samples"):
+                    RUN.write_allocation_summary(output)
+                self.assertIn("No comparable allocation samples were captured.",
+                              (output / "allocation-summary.md").read_text())
+
+    def test_summary_passes_when_one_side_has_samples(self):
+        for baseline, current in ((allocation_rows(), ""), ("", allocation_rows())):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                (output / "baseline.txt").write_text(baseline)
+                (output / "current.txt").write_text(current)
+                RUN.write_allocation_summary(output)
+                self.assertIn("| example/pkg / BenchmarkExample |", (output / "allocation-summary.md").read_text())
+
+    def test_summary_passes_when_only_processor_counts_differ(self):
+        head = allocation_rows().replace("BenchmarkExample-4", "BenchmarkExample-8")
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            (output / "baseline.txt").write_text(allocation_rows())
+            (output / "current.txt").write_text(head)
+            RUN.write_allocation_summary(output)
+            self.assertIn("- example/pkg / BenchmarkExample: effective GOMAXPROCS differs between base and head",
+                          (output / "allocation-summary.md").read_text())
+
+    def test_skipped_exclusions_are_listed_not_new_or_removed(self):
+        report = RUN.allocation_report("", "")
+        self.assertIn("internal/scanner / BenchmarkDecodeBudget/hex: allocs/op varies", report)
+        self.assertIn("(skipped, not run)", report)
+        self.assertNotIn("| new |", report)
+        self.assertNotIn("| removed |", report)
+        self.assertIn("BenchmarkScanResponse_Large/JSONLike_64KiB_InjectionEarly: allocs/op varies", report)
+        self.assertNotIn("BenchmarkScanResponse_Large/JSONLike_64KiB_Clean", report)
 
     def test_warmup_discard_and_bytes_not_compared(self):
         report = RUN.allocation_report(allocation_rows(allocs=(999, 10)),
