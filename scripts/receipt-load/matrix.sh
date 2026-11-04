@@ -7,6 +7,7 @@
 # then measures, so no separate warmup process or cell exists.
 #
 # Optional environment:
+#   RECEIPT_LOAD_PROFILE full (default) or release (24 results; fixed counts)
 #   RECEIPT_LOAD_MODES   comma-separated modes (default off,best,required)
 #   RECEIPT_LOAD_RULES   "empty" (default) or a directory of rule bundles
 #   RECEIPT_LOAD_SEED    workload seed (default 1)
@@ -26,6 +27,7 @@ load=$2
 out=$3
 requests=${4:-20000}
 samples=${5:-3}
+profile=${RECEIPT_LOAD_PROFILE:-full}
 modes=${RECEIPT_LOAD_MODES:-off,best,required}
 rules=${RECEIPT_LOAD_RULES:-empty}
 seed=${RECEIPT_LOAD_SEED:-1}
@@ -35,12 +37,25 @@ if [[ ! -x $pipelock || ! -x $load || -e $out || ! $requests =~ ^[1-9][0-9]*$ ||
   echo "binaries must be executable, output must be new, requests/samples must be positive integers, and the seed must be a non-negative integer" >&2
   exit 2
 fi
+case "$profile" in
+  full) chain_list=(1 2 4 8); chain_csv=1,2,4,8 ;;
+  release)
+    if [[ $requests != 20000 || $samples != 3 || $modes != off,best,required ]]; then
+      echo "release profile requires 20000 requests, 3 samples and modes off,best,required" >&2
+      exit 2
+    fi
+    chain_list=(1 8)
+    chain_csv=1,8
+    ;;
+  *) echo "unknown receipt-load profile: $profile" >&2; exit 2 ;;
+esac
 if ! command -v systemd-run >/dev/null; then
   echo "systemd-run is required" >&2
   exit 2
 fi
 
 mkdir -p "$out"
+printf '%s\n' "$profile" >"$out/profile"
 runtime_dir=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 bus=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$runtime_dir/bus}
 warmup_requests=$requests
@@ -73,7 +88,7 @@ run_cell() {
     systemd-run --user --scope -p "CPUQuota=$((cores*100))%" \
     /usr/bin/env GOMAXPROCS="$cores" "$load" \
     --binary "$pipelock" --out "$cell" --requests "$requests" --warmup "$warmup_requests" \
-    --concurrency 128 --modes "$modes" --chains "$chains" \
+    --concurrency 128 --modes "$cell_modes" --chains "$chains" \
     --rules "$rules" --seed "$seed" --window "$window" ${lock_args[@]+"${lock_args[@]}"} ${restart_args[@]+"${restart_args[@]}"} \
     ${verify_args[@]+"${verify_args[@]}"} >"$cell/scope.log" 2>&1; then
     scope_status=0
@@ -87,8 +102,15 @@ run_cell() {
 }
 
 for cores in 2 4 8; do
-  for chains in 1 2 4 8; do
+  for chains in "${chain_list[@]}"; do
     for ((sample=1; sample<=samples; sample++)); do
+      cell_modes=$modes
+      if [[ $profile == release ]]; then
+        cell_modes=required
+        if ((sample == 1)); then
+          if ((chains == 1)); then cell_modes=off,required; else cell_modes=best,required; fi
+        fi
+      fi
       run_cell "$out/cpu-$cores/chains-$chains/sample-$sample"
     done
   done
@@ -96,5 +118,5 @@ done
 
 # summary.csv is written by the harness binary so the aggregation is tested
 # with the rest of it. A cell without a readable result.json counts as failed.
-"$load" summarize --root "$out" --samples "$samples" --modes "$modes" --cpus 2,4,8 --chains 1,2,4,8
+"$load" summarize --profile "$profile" --root "$out" --samples "$samples" --modes "$modes" --cpus 2,4,8 --chains "$chain_csv"
 exit "$failed"
