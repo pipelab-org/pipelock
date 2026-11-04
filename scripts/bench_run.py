@@ -226,22 +226,206 @@ def smoke_benchmarks() -> int:
         return result.returncode
 
 
+# Fixed iterations and two in-process repetitions follow Go's -benchtime=Nx
+# and -count contracts. Repetition one is initialization, not a steady sample.
+ALLOCATION_COMMAND = ["go", "test", "./internal/scanner", "./internal/proxy", "./internal/mcp",
+                      "-run=^$", "-bench=.", "-benchtime=20x", "-count=2", "-benchmem"]
+# Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
+# These are observed post-warm-up allocs/op values, never a numerical tolerance.
+ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkMCPScanResponseLargeWarn"):
+        "allocs/op varies after warm-up: 53170, 53171, 53165 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkMCPScanResponse_Clean"):
+        "allocs/op varies after warm-up: 2433, 2434, 2432 (200 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkMCPScanResponse_Injection"):
+        "allocs/op varies after warm-up: 3025, 3025, 3026 (200 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkParallel_MCPScanClean"):
+        "allocs/op varies after warm-up: 2489, 2478, 2475 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkParallel_MCPScanInjection"):
+        "allocs/op varies after warm-up: 3053, 3058, 3052 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkDecodeBudget/base64"):
+        "allocs/op varies after warm-up: 113, 112, 114 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkDecodeBudget/hex"):
+        "allocs/op varies after warm-up: 3146296, 3146300, 3146296 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkDecodeBudget/json"):
+        "allocs/op varies after warm-up: 431, 432, 435 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkHotPathKnownSecretsTextDLPReceipt"):
+        "allocs/op varies after warm-up: 5862, 5862, 5863 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkHotPathScanResponseReceipt"):
+        "allocs/op varies after warm-up: 130, 132, 130 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkParallel_Blocklist"):
+        "allocs/op varies after warm-up: 20, 21, 21 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkParallel_DLPBlock"):
+        "allocs/op varies after warm-up: 187, 188, 188 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkParallel_Entropy"):
+        "allocs/op varies after warm-up: 295, 296, 296 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkParallel_ResponseScan"):
+        "allocs/op varies after warm-up: 46, 56, 58 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkRequestBodyDLP/2KiB"):
+        "allocs/op varies after warm-up: 1942, 1943, 1942 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkRequestBodyDLP/64KiB"):
+        "allocs/op varies after warm-up: 2316, 2316, 2317 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkRequestBodyDLPWithEnvSecret/2KiB"):
+        "allocs/op varies after warm-up: 6012, 6012, 6013 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkRequestBodyDLPWithEnvSecret/64KiB"):
+        "allocs/op varies after warm-up: 2344, 2345, 2349 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/JSONLike_256KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 270, 253, 258 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/JSONLike_256KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 264, 287, 277 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/JSONLike_64KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 236, 266, 253 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/JSONLike_64KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 239, 253, 265 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/NaturalProse_256KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 284, 268, 268 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/NaturalProse_256KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 237, 273, 253 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/NaturalProse_64KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 267, 239, 253 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/NaturalProse_64KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 266, 249, 253 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/UniformFiller_256KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 240, 251, 240 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/UniformFiller_256KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 267, 286, 240 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/UniformFiller_64KiB_InjectionEarly"):
+        "allocs/op varies after warm-up: 236, 249, 250 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_Large/UniformFiller_64KiB_InjectionLate"):
+        "allocs/op varies after warm-up: 253, 249, 253 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScanResponse_StateControlMatch"):
+        "allocs/op varies after warm-up: 49, 45, 45 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkScan_ManyQueryParamsAllowed"):
+        "allocs/op varies after warm-up: 974487, 974486, 974488 (20 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/scanner", "BenchmarkWIFOverlapScan"):
+        "allocs/op varies after warm-up: 115011, 115014, 115014 (20 iterations)",
+}
+
+
+def allocation_samples(text: str, repetitions: int = 2) -> tuple[dict, dict]:
+    """Read package-qualified Go benchmark rows; never silently overwrite one."""
+    samples: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    notes = {}
+    processors: dict[tuple[str, str], set[int]] = {}
+    package = ""
+    for line in text.splitlines():
+        if line.startswith("pkg: "):
+            package = line[5:].strip()
+        fields = line.split()
+        if not fields or not fields[0].startswith("Benchmark"):
+            continue
+        match = re.fullmatch(r"(.+)-([0-9]+)", fields[0])
+        name, procs = (match[1], int(match[2])) if match else (fields[0], 1)
+        key = (package, name)
+        processors.setdefault(key, set()).add(procs)
+        # testing.BenchmarkResult format, with optional throughput/custom metrics.
+        valid = (package and len(fields) >= 8 and fields[1].isdigit() and int(fields[1]) > 0
+                 and re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", fields[2]) and fields[3] == "ns/op")
+        try:
+            alloc_index, bytes_index = fields.index("allocs/op"), fields.index("B/op")
+            valid = (valid and alloc_index > 0 and bytes_index > 0
+                     and fields[alloc_index - 1].isdigit() and fields[bytes_index - 1].isdigit())
+            if not valid:
+                raise ValueError
+            samples.setdefault(key, []).append((int(fields[alloc_index - 1]), int(fields[bytes_index - 1])))
+        except ValueError:
+            notes[key] = "malformed benchmark row"
+    values = {}
+    for key, rows in samples.items():
+        if len(processors[key]) != 1:
+            notes[key] = "mixed effective GOMAXPROCS values for duplicate benchmark name"
+        elif len(rows) != repetitions:
+            notes[key] = f"expected {repetitions} repetitions, got {len(rows)} (missing or duplicate name)"
+        elif len({row[0] for row in rows[1:]}) != 1:
+            notes[key] = "allocs/op varies after warm-up: " + ", ".join(str(row[0]) for row in rows[1:])
+        elif key not in notes:
+            values[key] = (*rows[-1], next(iter(processors[key])))
+    for key in samples.keys() | notes.keys():
+        if key in ALLOCATION_EXCLUSIONS:
+            notes[key] = ALLOCATION_EXCLUSIONS[key]
+    return {key: value for key, value in values.items() if key not in notes}, notes
+
+
+def allocation_report(baseline: str, current: str) -> str:
+    base, base_notes = allocation_samples(baseline)
+    head, head_notes = allocation_samples(current)
+    for key in base.keys() & head.keys():
+        if base[key][2] != head[key][2]:
+            base_notes[key] = head_notes[key] = "effective GOMAXPROCS differs between base and head"
+    excluded = base_notes.keys() | head_notes.keys()
+    shared = (base.keys() & head.keys()) - excluded
+    changed = sorted(key for key in shared if base[key][0] != head[key][0])
+    lines = ["## Benchmark allocation report", "",
+             "Report only; first repetition discarded. Fixed 20 iterations, two repetitions per process.",
+             "Only allocs/op is compared. B/op and timing are not compared.",
+             "Two repetitions do not prove stability; known varying cases are excluded below.",
+             "Opt-in fixture benchmarks remain skipped unless their fixture environment is configured.", "",
+             f"Changed rows: {len(changed)}", "",
+             "| Package / benchmark | Base allocs/op | Head allocs/op | Delta | Base B/op (not compared) | Head B/op (not compared) |",
+             "| --- | ---: | ---: | ---: | ---: | ---: |"]
+
+    def label(key):
+        return (key[0] + " / " + key[1]).replace("&", "&amp;").replace("<", "&lt;").replace("|", "&#124;")
+
+    for key in changed:
+        lines.append(f"| {label(key)} | {base[key][0]} | {head[key][0]} | {head[key][0] - base[key][0]:+d} | {base[key][1]} | {head[key][1]} |")
+    lines += ["", "### New / removed benchmarks", "", "| Package / benchmark | Status |", "| --- | --- |"]
+    base_names, head_names = base.keys() | base_notes.keys(), head.keys() | head_notes.keys()
+    for key in sorted(base_names ^ head_names):
+        lines.append(f"| {label(key)} | {'new' if key in head_names else 'removed'} |")
+    lines += ["", f"Unchanged benchmarks: {len(shared) - len(changed)}", "", "### Excluded benchmarks", ""]
+    for key in sorted(excluded):
+        reasons = sorted({notes[key] for notes in (base_notes, head_notes) if key in notes})
+        lines.append(f"- {label(key)}: {'; '.join(reasons)}")
+    if not excluded:
+        lines.append("None.")
+    if not base and not head:
+        lines += ["", "No comparable allocation samples were captured."]
+    return "\n".join(lines) + "\n"
+
+
+def capture_allocations(baseline: Path, current: Path, output: Path) -> None:
+    """Reuse paired-run input admission and capture, keeping warm-up in process."""
+    baseline, current, output = baseline.resolve(strict=True), current.resolve(strict=True), output.resolve(strict=True)
+    if any(output.is_relative_to(path) for path in (baseline, current)):
+        raise RunError("measurement output must be outside both checkouts")
+    sources = [checkout_state(path) for path in (baseline, current)]
+    inputs = [run_inputs(path, source, ALLOCATION_COMMAND) for path, source in zip((baseline, current), sources)]
+    validate_inputs(*inputs)
+    for path, source, metadata, name in zip((baseline, current), sources, inputs, ("baseline", "current")):
+        try:
+            measure(path, source, metadata, output / f"{name}.txt", ALLOCATION_COMMAND)
+        except subprocess.CalledProcessError:
+            # Captured benchmark failures must remain visible in the job log.
+            for suffix in (".txt", ".stderr"):
+                print((output / (name + suffix)).read_text(), file=sys.stderr)
+            raise
+    if any(checkout_state(path) != source for path, source in zip((baseline, current), sources)):
+        raise RunError("source changed during allocation measurement")
+    with exclusive_file(output / "allocation-summary.md") as summary:
+        summary.write(allocation_report((output / "baseline.txt").read_text(), (output / "current.txt").read_text()))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--smoke", action="store_true", help="run every benchmark once with generated fixtures")
     if "--smoke" in sys.argv[1:]:
         parser.parse_args()
         return smoke_benchmarks()
+    parser.add_argument("--alloc-report", action="store_true", help="report allocations with in-process warm-up")
     parser.add_argument("--baseline", required=True, type=Path)
     parser.add_argument("--candidate", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if command[:2] != ["go", "test"]:
+    if not args.alloc_report and command[:2] != ["go", "test"]:
         parser.error("expected the assembled go test benchmark command")
     try:
-        capture_pair(args.baseline, args.candidate, args.output, command)
+        if args.alloc_report:
+            capture_allocations(args.baseline, args.candidate, args.output)
+        else:
+            capture_pair(args.baseline, args.candidate, args.output, command)
     except (RunError, OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         print(f"bench-regression: measurement refused: {exc}", file=sys.stderr)
         return 2

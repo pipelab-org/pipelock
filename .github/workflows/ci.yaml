@@ -135,6 +135,7 @@ jobs:
       ci_policy: ${{ steps.check.outputs.ci_policy }}
       docs_only: ${{ steps.docs.outputs.docs_only }}
       benchmark_smoke: ${{ steps.check.outputs.benchmark_smoke }}
+      benchmark_alloc: ${{ steps.check.outputs.benchmark_alloc }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -171,6 +172,17 @@ jobs:
             echo "benchmark_smoke=true" >> "$GITHUB_OUTPUT"
           else
             echo "benchmark_smoke=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Module files affect all three benchmarked dependency graphs; the
+          # workflow and runner paths exercise changes to this report itself.
+          allocation_changes="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
+            internal/scanner/ internal/proxy/ internal/mcp/ go.mod go.sum \
+            .github/workflows/ci.yaml scripts/bench_run.py scripts/test_bench_compare.py scripts/test_bench_regression.py)"
+          if [ -n "$allocation_changes" ]; then
+            echo "benchmark_alloc=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "benchmark_alloc=false" >> "$GITHUB_OUTPUT"
           fi
 
       # A pull request that changes only prose skips the Go build, test, lint
@@ -1601,6 +1613,41 @@ jobs:
             echo "govulncheck failed: default=$default_status enterprise=$enterprise_status" >&2
             exit 1
           fi
+
+  # Informational only: deliberately absent from the required build gate.
+  benchmark-allocations:
+    needs: [security-scan, changed-files]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.security-scan.result == 'success' && needs.changed-files.outputs.benchmark_alloc == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Compare merge-base and head allocations
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          baseline="$RUNNER_TEMP/benchmark-base"
+          output="$RUNNER_TEMP/benchmark-allocations"
+          git worktree add --detach "$baseline" "$merge_base"
+          mkdir -m 750 "$output"
+          python3 scripts/bench_run.py --alloc-report \
+            --baseline "$baseline" --candidate "$PWD" --output "$output"
+          cat "$output/allocation-summary.md" >> "$GITHUB_STEP_SUMMARY"
 
   benchmark-smoke:
     needs: [security-scan, changed-files]

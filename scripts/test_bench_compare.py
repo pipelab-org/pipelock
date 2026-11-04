@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import importlib.util
 import tempfile
@@ -100,6 +101,93 @@ class SmokeRunTest(unittest.TestCase):
                     return subprocess.CompletedProcess(command, status)
                 with patch.object(RUN.subprocess, "run", side_effect=run):
                     self.assertEqual(RUN.smoke_benchmarks(), status)
+
+
+SPEC = importlib.util.spec_from_file_location("bench_run", AWK.with_name("bench_run.py"))
+RUN = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(RUN)
+
+
+def allocation_rows(name="BenchmarkExample", allocs=(999, 10), package="example/pkg", bytes_op=100):
+    return f"pkg: {package}\n" + "".join(
+        f"{name}-4 200 100 ns/op {bytes_op} B/op {value} allocs/op\n" for value in allocs)
+
+
+class AllocationReportTest(unittest.TestCase):
+    def test_warmup_discard_and_bytes_not_compared(self):
+        report = RUN.allocation_report(allocation_rows(allocs=(999, 10)),
+                                       allocation_rows(allocs=(123, 10), bytes_op=101))
+        self.assertIn("Changed rows: 0", report)
+        self.assertIn("Unchanged benchmarks: 1", report)
+        self.assertIn("B/op and timing are not compared", report)
+
+    def test_deterministic_changed_rows_then_new_removed(self):
+        base = allocation_rows("BenchmarkZ") + allocation_rows("BenchmarkA") + allocation_rows("BenchmarkOld")
+        head = allocation_rows("BenchmarkZ", (9, 11)) + allocation_rows("BenchmarkA", (8, 0)) + allocation_rows("BenchmarkNew")
+        report = RUN.allocation_report(base, head)
+        self.assertEqual(report, RUN.allocation_report(
+            allocation_rows("BenchmarkOld") + allocation_rows("BenchmarkA") + allocation_rows("BenchmarkZ"),
+            allocation_rows("BenchmarkNew") + allocation_rows("BenchmarkA", (8, 0)) + allocation_rows("BenchmarkZ", (9, 11))))
+        self.assertLess(report.index("pkg / BenchmarkA"), report.index("pkg / BenchmarkZ"))
+        self.assertLess(report.index("pkg / BenchmarkZ"), report.index("pkg / BenchmarkNew"))
+        self.assertIn("| 10 | 0 | -10 |", report)
+        self.assertIn("BenchmarkNew | new |", report)
+        self.assertIn("BenchmarkOld | removed |", report)
+
+    def test_package_qualifies_duplicate_names(self):
+        rows = allocation_rows(package="one") + allocation_rows(package="two")
+        self.assertIn("Unchanged benchmarks: 2", RUN.allocation_report(rows, rows))
+
+    def test_duplicate_and_malformed_rows_are_excluded(self):
+        cases = [allocation_rows() * 2,
+                 allocation_rows() + "BenchmarkExample-4 nonsense\n",
+                 allocation_rows(allocs=(1,)),
+                 allocation_rows().replace("10 allocs/op", "oops allocs/op"),
+                 allocation_rows().replace("100 ns/op", "oops ns/op")]
+        for rows in cases:
+            with self.subTest(rows=rows):
+                report = RUN.allocation_report(rows, allocation_rows())
+                self.assertIn("Unchanged benchmarks: 0", report)
+                self.assertIn("### Excluded benchmarks\n\n-", report)
+                self.assertNotIn("BenchmarkExample | new", report)
+
+    def test_processor_mismatch_is_not_compared(self):
+        base = allocation_rows()
+        head = allocation_rows().replace("BenchmarkExample-4", "BenchmarkExample-8")
+        report = RUN.allocation_report(base, head)
+        self.assertIn("GOMAXPROCS differs", report)
+        self.assertIn("Unchanged benchmarks: 0", report)
+        mixed = base.replace("BenchmarkExample-4", "BenchmarkExample-8", 1)
+        self.assertIn("mixed effective GOMAXPROCS", RUN.allocation_report(mixed, base))
+
+    def test_zero_allocations(self):
+        report = RUN.allocation_report(allocation_rows(allocs=(2, 0)), allocation_rows(allocs=(1, 3)))
+        self.assertIn("| 0 | 3 | +3 |", report)
+        self.assertIn("Unchanged benchmarks: 1", RUN.allocation_report(allocation_rows(allocs=(1, 0)), allocation_rows(allocs=(2, 0))))
+
+    def test_varying_after_warmup_is_excluded_without_tolerance(self):
+        values, notes = RUN.allocation_samples(allocation_rows(allocs=(100, 10, 11, 10)), repetitions=4)
+        self.assertEqual(values, {})
+        self.assertIn("varies after warm-up: 10, 11, 10", next(iter(notes.values())))
+        from unittest.mock import patch
+        with patch.dict(RUN.ALLOCATION_EXCLUSIONS, {("example/pkg", "BenchmarkExample"): "observed varying: 10, 11, 10"}):
+            report = RUN.allocation_report(allocation_rows(), allocation_rows())
+        self.assertIn("observed varying: 10, 11, 10", report)
+        self.assertIn("Unchanged benchmarks: 0", report)
+
+    def test_new_excluded_benchmark_is_still_listed_as_new(self):
+        from unittest.mock import patch
+        with patch.dict(RUN.ALLOCATION_EXCLUSIONS, {("example/pkg", "BenchmarkExample"): "observed varying"}):
+            report = RUN.allocation_report("", allocation_rows())
+        self.assertIn("BenchmarkExample | new |", report)
+        self.assertIn("observed varying", report)
+
+    def test_optional_throughput_and_custom_metrics(self):
+        rows = allocation_rows().replace("100 ns/op", "100 ns/op 5 MB/s").replace("allocs/op", "allocs/op 7 custom/op")
+        self.assertIn("Unchanged benchmarks: 1", RUN.allocation_report(rows, rows))
+
+    def test_empty_outputs_are_visible(self):
+        self.assertIn("No comparable allocation samples", RUN.allocation_report("", ""))
 
 
 if __name__ == "__main__":
