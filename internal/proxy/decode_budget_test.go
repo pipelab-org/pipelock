@@ -113,6 +113,64 @@ func testDecodeBudgetLargeForwardBody(t *testing.T, name string) {
 	t.Logf("delivered %d bytes", len(body))
 }
 
+// A large body that carries a credential must still be scanned and refused, so
+// the delivery tests above can't pass against a proxy that skips scanning at
+// these sizes. The body matches the largest delivery case (the 9 MiB base64
+// body) under the same 16 MiB scan cap; under the race detector it uses the
+// same modest size as the other cases.
+func TestDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T) {
+	t.Parallel()
+	const scanCap = 16 * 1024 * 1024
+	size := 9 * 1024 * 1024
+	if raceEnabled {
+		size = 128 * 1024
+	}
+	// Built at runtime so no credential literal sits in source.
+	marker := "AKIA" + strings.Repeat("B", 16)
+	// Ordinary space-separated words, like a prose upload.
+	filler := strings.Repeat("upload body text ", (size-len(marker))/17)
+	body := filler + marker
+	upstreamHit := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHit = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	addr, cleanup := setupForwardProxy(t, func(cfg *config.Config) {
+		cfg.DLP.ScanEnv = false
+		cfg.RequestBodyScanning.Enabled = true
+		cfg.RequestBodyScanning.Action = config.ActionBlock
+		cfg.RequestBodyScanning.MaxBodyBytes = scanCap
+	})
+	defer cleanup()
+	proxyURL, err := url.Parse("http://" + addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	defer tr.CloseIdleConnections()
+	client := &http.Client{Transport: tr}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/upload", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("%d-byte body with a credential: status %d, want 403", len(body), resp.StatusCode)
+	}
+	if resp.Header.Get("X-Pipelock-Block-Reason") == "" {
+		t.Fatal("refusal carries no block reason")
+	}
+	if upstreamHit {
+		t.Fatal("refused body reached the upstream")
+	}
+}
+
 func TestDecodeBudgetLargeWebSocketJSONFrame(t *testing.T) {
 	t.Parallel()
 	testDecodeBudgetLargeWebSocketFrame(t, "json")
