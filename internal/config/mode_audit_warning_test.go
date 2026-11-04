@@ -64,6 +64,7 @@ func TestModeAuditEnforcedProfileInheritance(t *testing.T) {
 		{"inherited audit explicit true", ModeAudit, &off, AgentProfile{Enforce: &on}, true},
 		{"inherited audit and false", ModeAudit, &off, AgentProfile{}, false},
 		{"balanced overrides audit", ModeAudit, nil, AgentProfile{Mode: ModeBalanced}, false},
+		{"fully inherited audit is covered by the top-level notice", ModeAudit, nil, AgentProfile{}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := Defaults()

@@ -610,6 +610,10 @@ func (c *Config) ModeAuditEnforcedWarnings() []Warning {
 	sort.Strings(names)
 	for _, name := range names {
 		profile := c.Agents[name]
+		if profile.Mode == "" && profile.Enforce == nil {
+			// Fully inherited: the top-level notice already covers it.
+			continue
+		}
 		mode, enforce := c.Mode, c.Enforce
 		if profile.Mode != "" {
 			mode = profile.Mode
