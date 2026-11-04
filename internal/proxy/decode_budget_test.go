@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,19 +118,53 @@ func testDecodeBudgetLargeForwardBody(t *testing.T, name string) {
 // the delivery tests above can't pass against a proxy that skips scanning at
 // these sizes. The body matches the largest delivery case (the 9 MiB base64
 // body) under the same 16 MiB scan cap; under the race detector it uses the
-// same modest size as the other cases.
+// same modest size as the other cases. The hex and base64 variants encode the
+// whole body, so the credential is only visible after the large first layer is
+// decoded.
 func TestDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T) {
 	t.Parallel()
+	testDecodeBudgetLargeForwardBodyBlocksCredential(t, "plain")
+}
+
+func TestDecodeBudgetLargeForwardHexBodyBlocksCredential(t *testing.T) {
+	t.Parallel()
+	testDecodeBudgetLargeForwardBodyBlocksCredential(t, "hex")
+}
+
+func TestDecodeBudgetLargeForwardBase64BodyBlocksCredential(t *testing.T) {
+	t.Parallel()
+	testDecodeBudgetLargeForwardBodyBlocksCredential(t, "base64")
+}
+
+func testDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T, encoding string) {
+	t.Helper()
 	const scanCap = 16 * 1024 * 1024
 	size := 9 * 1024 * 1024
 	if raceEnabled {
 		size = 128 * 1024
 	}
+	// Plain bytes that encode to about size bytes.
+	plainSize := size
+	switch encoding {
+	case "hex":
+		plainSize = size / 2
+	case "base64":
+		plainSize = size / 4 * 3
+	}
 	// Built at runtime so no credential literal sits in source.
 	marker := "AKIA" + strings.Repeat("B", 16)
 	// Ordinary space-separated words, like a prose upload.
-	filler := strings.Repeat("upload body text ", (size-len(marker))/17)
+	filler := strings.Repeat("upload body text ", (plainSize-len(marker))/17)
 	body := filler + marker
+	switch encoding {
+	case "hex":
+		body = hex.EncodeToString([]byte(body))
+	case "base64":
+		body = base64.StdEncoding.EncodeToString([]byte(body))
+	}
+	if encoding != "plain" && strings.Contains(body, "AKIA") {
+		t.Fatal("encoded body still carries the plain credential")
+	}
 	upstreamHit := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamHit = true
@@ -163,9 +198,11 @@ func TestDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("%d-byte body with a credential: status %d, want 403", len(body), resp.StatusCode)
 	}
-	if resp.Header.Get("X-Pipelock-Block-Reason") == "" {
+	reason := resp.Header.Get("X-Pipelock-Block-Reason")
+	if reason == "" {
 		t.Fatal("refusal carries no block reason")
 	}
+	t.Logf("refused %d-byte %s body: %s", len(body), encoding, reason)
 	if upstreamHit {
 		t.Fatal("refused body reached the upstream")
 	}
@@ -189,7 +226,7 @@ func TestDecodeBudgetLargeWebSocketBase64Frame(t *testing.T) {
 func testDecodeBudgetLargeWebSocketFrame(t *testing.T, name string) {
 	t.Helper()
 	body, _ := decodeBudgetBody(name)
-	backend, closeBackend := wsAckServer(t)
+	backend, closeBackend := wsDigestServer(t)
 	defer closeBackend()
 	wsDefaults := config.Defaults().WebSocketProxy
 	addr, cleanup := setupWSProxy(t, func(cfg *config.Config) {
@@ -219,8 +256,30 @@ func testDecodeBudgetLargeWebSocketFrame(t *testing.T, name string) {
 		t.Fatal(err)
 	}
 	reply, op, err := wsutil.ReadServerData(conn)
-	if err != nil || op != ws.OpText || string(reply) != "ok" {
-		t.Fatalf("%d-byte client frame: opcode=%v acknowledgement=%q error=%v", len(body), op, reply, err)
+	want := sha256.Sum256([]byte(body))
+	if err != nil || op != ws.OpText || string(reply) != hex.EncodeToString(want[:]) {
+		t.Fatalf("%d-byte client frame: opcode=%v digest=%q error=%v", len(body), op, reply, err)
 	}
 	t.Logf("allowed %d-byte client frame", len(body))
+}
+
+// wsDigestServer reads one client message and replies with the hex SHA-256 of
+// the bytes it received, so a proxy that alters a frame can't pass as allowing
+// it. A failed read sends no reply.
+func wsDigestServer(t *testing.T) (string, func()) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, _, _, upgradeErr := ws.UpgradeHTTP(r, w)
+		if upgradeErr != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		msg, _, readErr := wsutil.ReadClientData(conn)
+		if readErr != nil {
+			return
+		}
+		sum := sha256.Sum256(msg)
+		_ = wsutil.WriteServerMessage(conn, ws.OpText, []byte(hex.EncodeToString(sum[:])))
+	}))
+	return srv.Listener.Addr().String(), srv.Close
 }

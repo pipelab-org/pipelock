@@ -8,5 +8,7 @@ package proxy
 // raceEnabled thins the large-payload delivery cases under the race detector,
 // which slows multi-megabyte scans without adding to the transport concurrency
 // coverage. TestDecodeBudgetLargeForward* and TestDecodeBudgetLargeWebSocket*
-// keep their full sizes in normal builds.
+// keep their full sizes in normal builds. It also trims
+// TestUploadInspectionProducerTransports to one fixture per container format
+// and outcome; the full producer list runs in normal builds.
 const raceEnabled = true
