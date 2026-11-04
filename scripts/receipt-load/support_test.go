@@ -240,6 +240,19 @@ func realPipelock(t *testing.T) string {
 	return realPath
 }
 
+// TestRealChildMatchesTestEdition proves the real child is built with this test
+// binary's edition. The conductor subcommand ships only in enterprise builds.
+func TestRealChildMatchesTestEdition(t *testing.T) {
+	out, err := localCommand(context.Background(), realPipelock(t), t.TempDir(), []string{"HOME=" + t.TempDir()}, "--help").CombinedOutput()
+	if err != nil {
+		t.Fatalf("pipelock --help: %v: %s", err, out)
+	}
+	wantEnterprise := realBuildTags == "enterprise"
+	if hasConductor := strings.Contains(string(out), "conductor"); hasConductor != wantEnterprise {
+		t.Fatalf("real child conductor subcommand present=%v, want %v for build tags %q", hasConductor, wantEnterprise, realBuildTags)
+	}
+}
+
 // synthetic recorder -------------------------------------------------------
 
 type synthReceipt struct {
