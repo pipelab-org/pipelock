@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,7 +121,9 @@ func testDecodeBudgetLargeForwardBody(t *testing.T, name string) {
 // body) under the same 16 MiB scan cap; under the race detector it uses the
 // same modest size as the other cases. The hex and base64 variants encode the
 // whole body, so the credential is only visible after the large first layer is
-// decoded.
+// decoded. They use the 3 MiB hex delivery size: rescanning megabytes of
+// decoded prose is far slower than the delivery workloads, and the scanner's
+// decode-budget tests own the size boundaries.
 func TestDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T) {
 	t.Parallel()
 	testDecodeBudgetLargeForwardBodyBlocksCredential(t, "plain")
@@ -140,34 +143,40 @@ func testDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T, encoding str
 	t.Helper()
 	const scanCap = 16 * 1024 * 1024
 	size := 9 * 1024 * 1024
+	if encoding != "plain" {
+		size = 3 * 1024 * 1024
+	}
 	if raceEnabled {
 		size = 128 * 1024
 	}
-	// Plain bytes that encode to about size bytes.
-	plainSize := size
-	switch encoding {
-	case "hex":
-		plainSize = size / 2
-	case "base64":
-		plainSize = size / 4 * 3
-	}
 	// Built at runtime so no credential literal sits in source.
 	marker := "AKIA" + strings.Repeat("B", 16)
-	// Ordinary space-separated words, like a prose upload.
-	filler := strings.Repeat("upload body text ", (plainSize-len(marker))/17)
-	body := filler + marker
-	switch encoding {
-	case "hex":
-		body = hex.EncodeToString([]byte(body))
-	case "base64":
-		body = base64.StdEncoding.EncodeToString([]byte(body))
+	encodedBody := func(size int, marker string) string {
+		// Plain bytes that encode to about size bytes.
+		plainSize := size
+		switch encoding {
+		case "hex":
+			plainSize = size / 2
+		case "base64":
+			plainSize = size / 4 * 3
+		}
+		// Ordinary space-separated words, like a prose upload.
+		body := strings.Repeat("upload body text ", (plainSize-len(marker))/17) + marker
+		switch encoding {
+		case "hex":
+			return hex.EncodeToString([]byte(body))
+		case "base64":
+			return base64.StdEncoding.EncodeToString([]byte(body))
+		}
+		return body
 	}
+	body := encodedBody(size, marker)
 	if encoding != "plain" && strings.Contains(body, "AKIA") {
 		t.Fatal("encoded body still carries the plain credential")
 	}
-	upstreamHit := false
+	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		upstreamHit = true
+		upstreamHits.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer upstream.Close()
@@ -185,25 +194,35 @@ func testDecodeBudgetLargeForwardBodyBlocksCredential(t *testing.T, encoding str
 	tr := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 	defer tr.CloseIdleConnections()
 	client := &http.Client{Transport: tr}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/upload", strings.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
+	post := func(body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/upload", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "text/plain")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode, resp.Header.Get("X-Pipelock-Block-Reason")
 	}
-	req.Header.Set("Content-Type", "text/plain")
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	// Control: the same encoding and filler without the credential is
+	// delivered, so the refusal below comes from the credential. The control
+	// uses the race size in every build; its size doesn't change what it shows.
+	if status, reason := post(encodedBody(128*1024, strings.Repeat("B", len(marker)))); status != http.StatusNoContent || upstreamHits.Load() != 1 {
+		t.Fatalf("%s control without a credential: status %d reason %q upstream hits %d, want 204 and 1", encoding, status, reason, upstreamHits.Load())
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("%d-byte body with a credential: status %d, want 403", len(body), resp.StatusCode)
+	status, reason := post(body)
+	if status != http.StatusForbidden {
+		t.Fatalf("%d-byte body with a credential: status %d, want 403", len(body), status)
 	}
-	reason := resp.Header.Get("X-Pipelock-Block-Reason")
-	if reason == "" {
-		t.Fatal("refusal carries no block reason")
+	if reason != "dlp_match" {
+		t.Fatalf("refusal reason %q, want dlp_match", reason)
 	}
 	t.Logf("refused %d-byte %s body: %s", len(body), encoding, reason)
-	if upstreamHit {
+	if upstreamHits.Load() != 1 {
 		t.Fatal("refused body reached the upstream")
 	}
 }
@@ -274,8 +293,8 @@ func wsDigestServer(t *testing.T) (string, func()) {
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		msg, _, readErr := wsutil.ReadClientData(conn)
-		if readErr != nil {
+		msg, op, readErr := wsutil.ReadClientData(conn)
+		if readErr != nil || op != ws.OpText {
 			return
 		}
 		sum := sha256.Sum256(msg)
