@@ -580,8 +580,7 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 
 	// Whitespace-collapse catches key material split with ordinary spaces,
 	// tabs, or newlines before it reaches the configurable pattern layer.
-	if compacted := compactTextDLPWhitespace(cleaned); compacted != cleaned {
-		_, offsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+	if compacted, offsets := decodes.compactWhitespace(cleaned); compacted != cleaned {
 		matches = append(matches, s.matchCoreDLPWhitespaceView(compacted, cleaned, offsets)...)
 	}
 
@@ -602,8 +601,16 @@ func (s *Scanner) matchCoreDLPPatterns(text, encoding string) []TextDLPMatch {
 }
 
 func (s *Scanner) matchCoreDLPPatternsNormalized(text, encoding string) []TextDLPMatch {
+	var lowered dlpLoweredBytes
+	lowered.add(text)
+	return s.matchCoreDLPPatternsLowered(text, encoding, &lowered)
+}
+
+// matchCoreDLPPatternsLowered is matchCoreDLPPatternsNormalized for a text
+// whose lowered bytes are already recorded.
+func (s *Scanner) matchCoreDLPPatternsLowered(text, encoding string, lowered *dlpLoweredBytes) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, idx := range s.core.dlpPreFilter.patternsToCheck(text) {
+	for _, idx := range s.core.dlpPreFilter.patternsToCheckWith(text, lowered) {
 		p := s.core.dlpPatterns[idx]
 		if start, end, ok := p.matchSpan(text); ok {
 			matches = append(matches, TextDLPMatch{
@@ -651,7 +658,7 @@ func (s *Scanner) matchCoreDLPWhitespaceView(compacted, source string, offsets [
 func (s *Scanner) decodeAndMatchCoreWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, d := range decodes.decode(text, true) {
-		matches = append(matches, s.matchCoreDLPPatternsNormalized(decodes.normalize(d.text), d.encoding)...)
+		matches = append(matches, decodes.matchDecodedCore(s, d.text, d.encoding)...)
 	}
 	return matches
 }
@@ -662,7 +669,7 @@ func (s *Scanner) decodeCoreDLPTextSegmentsWithDecodes(text string, decodes *dec
 			continue
 		}
 		for _, d := range decodes.decode(seg, true) {
-			if m := s.matchCoreDLPPatternsNormalized(decodes.normalize(d.text), d.encoding); len(m) > 0 {
+			if m := decodes.matchDecodedCore(s, d.text, d.encoding); len(m) > 0 {
 				return m
 			}
 		}

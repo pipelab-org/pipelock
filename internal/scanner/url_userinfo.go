@@ -112,6 +112,9 @@ func (s *Scanner) checkUserinfoValuesEntropy(values []dlpTarget) Result {
 // textURLUserinfoMatches joins the component views to text DLP without making
 // a network request or inferring an audience from a URL inside untrusted text.
 func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decodes *decodingMemo, opts textDLPOptions) []TextDLPMatch {
+	if !strings.Contains(text, textURLTokenSeparator) {
+		return nil
+	}
 	var matches []TextDLPMatch
 	opts.skipURLUserinfo = true
 	opts.emitWarns = false
