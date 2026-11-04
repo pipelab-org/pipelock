@@ -307,6 +307,7 @@ func (c *Config) policySemanticView() canonicalPolicyView {
 	view.MCPIdentities = canonicalMCPIdentities(view.MCPIdentities)
 	view.FetchProxy.Monitoring.QueryEntropyParamExclusions = canonicalQueryEntropyParamExclusions(view.FetchProxy.Monitoring.QueryEntropyParamExclusions)
 	view.FetchProxy.Monitoring.OAuthAuthorizationEndpoints = canonicalOAuthAuthorizationEndpoints(view.FetchProxy.Monitoring.OAuthAuthorizationEndpoints)
+	view.FetchProxy.Monitoring.IssuedRedirectDelegations = canonicalIssuedRedirectDelegations(view.FetchProxy.Monitoring.IssuedRedirectDelegations)
 	view.FetchProxy.Monitoring.PathEntropyExclusions = canonicalPathEntropyExclusions(view.FetchProxy.Monitoring.PathEntropyExclusions)
 	view.FetchProxy.Monitoring.Blocklist = canonicalHostSet(view.FetchProxy.Monitoring.Blocklist)
 	view.FetchProxy.Monitoring.SubdomainEntropyExclusions = canonicalHostSet(view.FetchProxy.Monitoring.SubdomainEntropyExclusions)

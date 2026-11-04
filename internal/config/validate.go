@@ -1792,6 +1792,9 @@ func (c *Config) validateFetchProxy() error {
 	if err := validateOAuthAuthorizationEndpoints(c); err != nil {
 		return err
 	}
+	if err := validateIssuedRedirectDelegations(c); err != nil {
+		return err
+	}
 
 	// Validate global rate limits are non-negative
 	if c.FetchProxy.Monitoring.MaxReqPerMinute < 0 {
@@ -5198,6 +5201,7 @@ func normalizeReverseProxySubmitHost(host string) string {
 // | response_scanning.size_exempt_scan_limits[].expires | temporary | 90 days: a larger fully scanned download needs a bounded remediation window, matching unscannable_passthrough without relaxing a detection floor. |
 // | fetch_proxy.monitoring.path_entropy_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the narrow route or move to policy. |
 // | fetch_proxy.monitoring.query_entropy_param_exclusions[].expires | temporary | 180 days: an incident exemption needs time to prove the parameter contract or move to policy. |
+// | fetch_proxy.monitoring.issued_redirect_delegations[].expires | durable | uncapped: a reviewed trust assertion about one named route and its listed origins, renewed on review rather than churned through a cap. |
 // | request_body_scanning.content_entropy_warn_routes[].expires | temporary | 90 days: a block-to-warn route needs a bounded remediation window. |
 // | request_body_scanning.content_entropy_exclusions[].expires, websocket_proxy.content_entropy_exclusions[].expires | temporary | 90 days: a host-wide block-to-allow exception needs a bounded remediation window; the plain host string stays permanent. |
 // | request_body_scanning.sigv4_credential_routes[].expires | temporary | 30 days: this narrowly relaxes a credential floor while the integration changes. |

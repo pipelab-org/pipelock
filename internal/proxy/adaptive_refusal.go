@@ -176,10 +176,15 @@ func (w *adaptiveRefusalWriter) Write(body []byte) (int, error) {
 }
 
 func (w *adaptiveRefusalWriter) Flush() {
+	_ = w.FlushError()
+}
+
+// FlushError preserves transport errors for callers that require delivery proof.
+func (w *adaptiveRefusalWriter) FlushError() error {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
 	}
-	_ = http.NewResponseController(w.ResponseWriter).Flush()
+	return http.NewResponseController(w.ResponseWriter).Flush()
 }
 
 func (w *adaptiveRefusalWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {

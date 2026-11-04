@@ -264,7 +264,31 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	})
 	r = r.WithContext(connectScanCtx)
 	result := sc.Scan(connectScanCtx, syntheticURL)
+	// A tunnel to a host a delegated source issued is relieved of the heuristic
+	// subdomain finding only when it will be intercepted: the inner request must
+	// then match the whole issued URL, or the same finding blocks it there.
+	issuedHostRelief := false
+	if entropyFinding(result) && result.Scanner == scanner.ScannerSubdomainEntropy {
+		if allowCtx, used, ok := p.connectIssuedHostContext(connectScanCtx, cfg, host, targetPort, agent, clientIP, id.Auth); ok {
+			if rescanned := sc.Scan(allowCtx, syntheticURL); used.Load() {
+				result, issuedHostRelief = rescanned, true
+			}
+		}
+	}
 	p.metrics.RecordURLDecisions(TransportConnect, result.Decisions)
+	if issuedHostRelief && result.Allowed {
+		issuedShard := selectedReceiptShard
+		issuedShard.Transport = TransportConnect
+		if err := p.recordIssuerQueryAllow(cfg, targetCtx, syntheticURL, requestID, agent, r.Method, issuerQueryIssuedRedirect, issuedShard); err != nil {
+			blockedErr := newIssuerAllowReceiptBlockedRequest(err)
+			p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
+			p.metrics.RecordBlocked(host, blockedErr.layer, time.Since(start), agentLabel)
+			writeBlockedError(w,
+				blockInfoFor(blockreason.ReceiptEmissionFailed, blockedErr.layer).WithRequestID(requestID),
+				"blocked: "+blockedErr.reason, http.StatusForbidden)
+			return
+		}
+	}
 	if err := p.recordCredentialAudienceAllows(cfg, targetCtx, result.CredentialAudienceAllows, TransportConnect, http.MethodConnect, syntheticURL, requestID, agent, selectedReceiptShard); err != nil {
 		blockedErr := newCredentialAudienceReceiptBlockedRequest(err)
 		p.logger.LogBlocked(targetCtx, blockedErr.layer, blockedErr.detail)
@@ -3564,7 +3588,14 @@ func ambiguousForwardRedirectLocation(resp *http.Response) bool {
 	default:
 		return false
 	}
-	locations := resp.Header.Values("Location")
+	return ambiguousLocationValues(resp.Header.Values("Location"))
+}
+
+// ambiguousLocationValues reports whether a response's Location values could
+// name different targets to different clients: more than one value, or a value
+// with a control, space or backslash character. Absent Location is not
+// ambiguous. Issuance of delegated redirect evidence shares this rule.
+func ambiguousLocationValues(locations []string) bool {
 	if len(locations) > 1 {
 		return true
 	}

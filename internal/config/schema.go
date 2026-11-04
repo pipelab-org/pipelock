@@ -1261,6 +1261,11 @@ type Monitoring struct {
 	// requests state/nonce entropy and HTTP loopback redirect descriptor relief.
 	// Empty by default; discovery alone never installs a grant.
 	OAuthAuthorizationEndpoints []OAuthAuthorizationEndpoint `yaml:"oauth_authorization_endpoints,omitempty" json:"OAuthAuthorizationEndpoints,omitempty"`
+
+	// IssuedRedirectDelegations explicitly lets a named, expiring source route
+	// issue a redirect whose exact Location receives entropy relief. Empty by
+	// default; nothing else in the policy opts a source in.
+	IssuedRedirectDelegations []IssuedRedirectDelegation `yaml:"issued_redirect_delegations,omitempty" json:"IssuedRedirectDelegations,omitempty"`
 }
 
 // OAuthAuthorizationEndpoint is an operator-authorized exact HTTPS endpoint.

@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptrace"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -886,17 +887,30 @@ func newInterceptHandler(
 			}
 		}
 		defer recordURLDecisions()
-		if !urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
+		// A host label is relieved only for a URL a delegated source issued, so
+		// a blocked subdomain finding enters the rescan only with that evidence.
+		issuedHostFinding := entropyFinding(urlResult) && urlResult.Scanner == scanner.ScannerSubdomainEntropy
+		if (!urlResult.Allowed && urlResult.Scanner == scanner.ScannerEntropy &&
 			(strings.HasPrefix(urlResult.Reason, "high entropy query param ") ||
-				strings.HasPrefix(urlResult.Reason, "high entropy path segment ")) {
+				strings.HasPrefix(urlResult.Reason, "high entropy path segment "))) || issuedHostFinding {
 			store, idStore := ic.issuerQueryStore(), ic.issuerServerIDStore()
-			if store != nil || idStore != nil {
-				session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+			// Evidence that the delegated source issued exactly this URL. It is
+			// checked only on a blocked result, so ordinary traffic pays nothing.
+			issuedURL := ic.issuedLocationAllowedContext(r.Context(), store, session, r.URL)
+			if (store != nil || idStore != nil) && (!issuedHostFinding || issuedURL) {
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
-				// a cross-host OAuth callback outranks a same-host issue.
+				// a delegated redirect outranks a cross-host OAuth callback,
+				// which outranks a same-host issue.
 				allowKind := issuerQueryObserved
+				issuedUsed := false
 				allowCtx := scanner.WithIssuerPathAllowance(interceptScanCtx, func(escapedPath string) bool {
+					if issuedURL && escapedPath == r.URL.EscapedPath() {
+						issuedUsed = true
+						allowed = true
+						return true
+					}
 					// Whole path, same origin: a link the origin itself served.
 					if store == nil || escapedPath != r.URL.EscapedPath() || !store.pathIssued(session, r.URL) {
 						return false
@@ -916,9 +930,26 @@ func newInterceptHandler(
 					allowed = true
 					return true
 				})
+				if issuedURL {
+					allowCtx = scanner.WithIssuerHostAllowance(allowCtx, func(hostname string) bool {
+						if canonicalRedirectHost(hostname) != canonicalRedirectHost(r.URL.Hostname()) {
+							return false
+						}
+						issuedUsed = true
+						allowed = true
+						return true
+					})
+				}
 				allowCtx = scanner.WithIssuerQueryAllowance(allowCtx, func(key, value string) bool {
 					if store == nil {
 						return false
+					}
+					// Only this request's own query values: the whole URL matched
+					// evidence above, so nothing carried by another URL qualifies.
+					if issuedURL && slices.Contains(r.URL.Query()[key], value) {
+						issuedUsed = true
+						allowed = true
+						return true
 					}
 					// r.URL is absolute here: the handler rebuilt it from
 					// origin form (scheme and host) before any scan ran.
@@ -950,6 +981,9 @@ func newInterceptHandler(
 					return true
 				})
 				rescanned := ic.Scanner.Scan(allowCtx, targetURL)
+				if issuedUsed {
+					allowKind = issuerQueryIssuedRedirect
+				}
 				if allowed {
 					urlResult = rescanned
 					if rescanned.Allowed {
@@ -2220,6 +2254,18 @@ func newInterceptHandler(
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
+
+		// Redirect evidence depends on delivered headers, not body completion.
+		// Keep a failed flush on the existing incomplete-stream outcome path.
+		flushIssuedRedirect := func() bool {
+			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
+				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
+				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
+				_ = httpstream.Abort(r.Context(), err)
+				return true
+			}
+			return false
+		}
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)
@@ -2363,7 +2409,9 @@ func newInterceptHandler(
 				}
 			}
 			removeHopByHopHeaders(w.Header())
-			w.WriteHeader(resp.StatusCode)
+			if flushIssuedRedirect() {
+				return
+			}
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
@@ -2387,6 +2435,7 @@ func newInterceptHandler(
 			}
 			if streamErr == nil {
 				recordDeliveredIssuerCookies(ic, r, resp, true)
+				recordDeliveredIssuerQuery(ic, resp, nil, true)
 			}
 			if streamErr != nil {
 				// Distinguish scanning findings from internal/IO errors. In
@@ -2481,7 +2530,9 @@ func newInterceptHandler(
 				}
 			}
 			removeHopByHopHeaders(w.Header())
-			w.WriteHeader(resp.StatusCode)
+			if flushIssuedRedirect() {
+				return
+			}
 			written, copyErr := httpstream.Copy(w, resp.Body)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			if copyErr != nil {
@@ -2627,7 +2678,9 @@ func newInterceptHandler(
 						}
 					}
 					removeHopByHopHeaders(w.Header())
-					w.WriteHeader(resp.StatusCode)
+					if flushIssuedRedirect() {
+						return
+					}
 					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					if copyErr != nil {
 						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
@@ -2637,6 +2690,7 @@ func newInterceptHandler(
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
+					recordDeliveredIssuerQuery(ic, resp, nil, true)
 					interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
@@ -3148,7 +3202,9 @@ func newInterceptHandler(
 			}
 		}
 		removeHopByHopHeaders(w.Header())
-		w.WriteHeader(resp.StatusCode)
+		if flushIssuedRedirect() {
+			return
+		}
 		written, writeErr := w.Write(respBody)
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)

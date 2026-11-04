@@ -251,7 +251,7 @@ func TestWebSocketAuthorityDenyMakesNoUpstreamHandshake(t *testing.T) {
 
 	proxyAddr, p, cleanup := setupWSProxyWithHandlerDone(t, nil, nil, func() { close(handlerDone) })
 	defer cleanup()
-	p.dialer.ControlContext = backend.observeDial
+	p.dialer.(*net.Dialer).ControlContext = backend.observeDial
 	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32
@@ -284,7 +284,7 @@ func TestWebSocketAuthorityDenyBeforeUpgradeWithRequiredReceipts(t *testing.T) {
 		cfg.FlightRecorder.RequireReceipts = true
 	}, nil, func() { close(handlerDone) })
 	defer cleanup()
-	p.dialer.ControlContext = backend.observeDial
+	p.dialer.(*net.Dialer).ControlContext = backend.observeDial
 	receiptHelper := newReceiptProxyHelperWithMetrics(t, p.metrics)
 	p.receiptEmitterPtr.Store(receiptHelper.emitter)
 	var verifierCalls atomic.Int32

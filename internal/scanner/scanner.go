@@ -1465,7 +1465,7 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 
 	// Subdomain entropy check - catches base64/hex encoded data in subdomains
 	// (e.g., "aGVsbG8.evil.com" exfiltrating data via DNS queries).
-	result = s.checkSubdomainEntropy(hostname)
+	result = s.checkSubdomainEntropyWithContext(ctx, hostname)
 	decisions.record(urlSubdomainEntropy, result)
 	if !result.Allowed {
 		return result
@@ -5324,6 +5324,28 @@ const (
 // scanned, and vice versa.
 func (s *Scanner) checkEntropy(parsed *url.URL) Result {
 	return s.checkEntropyWithContext(context.Background(), parsed)
+}
+
+type issuerHostAllowanceContextKey struct{}
+
+// WithIssuerHostAllowance scopes issuer evidence for one exact host to this
+// scan only. Only the heuristic subdomain-label entropy finding consults it:
+// the structural encoded-label findings are concrete evidence and stay
+// enforced, as does every other check on the URL. The caller must verify that
+// the evidence names this exact request, not merely this host.
+func WithIssuerHostAllowance(ctx context.Context, allows func(hostname string) bool) context.Context {
+	return context.WithValue(ctx, issuerHostAllowanceContextKey{}, allows)
+}
+
+func (s *Scanner) checkSubdomainEntropyWithContext(ctx context.Context, hostname string) Result {
+	result := s.checkSubdomainEntropy(hostname)
+	if result.Allowed || !result.IsEntropyOnly() {
+		return result
+	}
+	if allows, ok := ctx.Value(issuerHostAllowanceContextKey{}).(func(string) bool); ok && allows(hostname) {
+		return Result{Allowed: true, relief: true}
+	}
+	return result
 }
 
 type issuerQueryAllowanceContextKey struct{}
