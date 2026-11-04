@@ -43,3 +43,19 @@ func TestDoctorModeAuditEnforcedNotice(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorModeAuditEnforcedProfileNotice(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.Agents = map[string]config.AgentProfile{"review-agent": {Mode: config.ModeAudit}}
+	report := buildDoctorReport(cfg, "test.yaml")
+	for _, check := range report.Checks {
+		if check.Name == "agents.review-agent.mode_audit_enforced" {
+			if check.Status != doctorStatusInfo {
+				t.Fatalf("profile notice status=%s, want info", check.Status)
+			}
+			return
+		}
+	}
+	t.Fatal("missing profile audit enforcement notice")
+}
