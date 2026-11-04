@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -294,6 +295,9 @@ func TestMatrixProfilesRecordExactPlan(t *testing.T) {
 					t.Fatalf("workload changed: %v", flags)
 				}
 				cores := strings.TrimSuffix(strings.TrimPrefix(cpu, "CPUQuota="), "00%")
+				if want := string(filepath.Separator) + filepath.Join("cpu-"+cores, "chains-"+chain, sample); !strings.HasSuffix(flagValue(flags, "--out"), want) {
+					t.Fatalf("output directory differs from plan: %v", flags)
+				}
 				if !slices.Contains(args[:at], "GOMAXPROCS="+cores) {
 					t.Fatalf("quota and scheduler differ: %v", args)
 				}
@@ -431,7 +435,10 @@ func TestSummaryRefusesProfileMismatch(t *testing.T) {
 }
 
 func TestReleaseSummaryRefusesInvalidPlanAndWorkload(t *testing.T) {
-	for _, scenario := range []string{"missing-marker", "unreadable-marker", "unknown-profile", "samples", "cpus", "chains", "modes", "requests", "warmup", "concurrency"} {
+	for _, scenario := range []string{
+		"missing-marker", "unreadable-marker", "unknown-profile", "samples", "cpus", "chains", "modes", "requests", "warmup", "concurrency",
+		"all-requests", "all-warmup", "all-concurrency", "singleton-off", "singleton-best",
+	} {
 		t.Run(scenario, func(t *testing.T) {
 			p := releaseSummaryFixture(t)
 			switch scenario {
@@ -456,6 +463,34 @@ func TestReleaseSummaryRefusesInvalidPlanAndWorkload(t *testing.T) {
 				p.chains = []int{1}
 			case "modes":
 				p.modes = []string{modeRequired}
+			case "all-requests", "all-warmup", "all-concurrency", "singleton-off", "singleton-best":
+				// Every sample of a population carries the wrong workload, or the
+				// population has one sample, so sample identity comparison can't
+				// refuse it; only the release workload guard can.
+				for _, cpu := range []int{2, 4, 8} {
+					for _, cell := range []struct {
+						mode           string
+						chain, samples int
+					}{{modeOff, 1, 1}, {modeBest, 8, 1}, {modeRequired, 1, 3}, {modeRequired, 8, 3}} {
+						for sample := 1; sample <= cell.samples; sample++ {
+							r := fakeResult(150, 140, 145, verdictPass, perfMeasured)
+							r.Requests, r.WarmupRequests, r.Concurrency = 20000, 1000, 128
+							switch {
+							case scenario == "all-requests":
+								r.Requests--
+							case scenario == "all-warmup":
+								r.WarmupRequests--
+							case scenario == "all-concurrency":
+								r.Concurrency--
+							case scenario == "singleton-off" && cell.mode == modeOff && cpu == 2:
+								r.Requests--
+							case scenario == "singleton-best" && cell.mode == modeBest && cpu == 4:
+								r.Concurrency--
+							}
+							putResult(t, p.root, cpu, cell.chain, sample, cell.mode, r)
+						}
+					}
+				}
 			default:
 				r := fakeResult(150, 140, 145, verdictPass, perfMeasured)
 				r.Requests, r.WarmupRequests, r.Concurrency = 20000, 1000, 128
@@ -490,14 +525,26 @@ func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
 			case "modes":
 				modes = "required"
 			}
-			out := filepath.Join(t.TempDir(), "matrix")
+			// A present systemd-run keeps the refusal on the settings check
+			// instead of the missing-tool check, which also exits early.
+			root := t.TempDir()
+			scope := filepath.Join(root, "systemd-run")
+			if err := os.WriteFile(scope, []byte("#!/bin/sh\nexit 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Chmod(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(root, "matrix")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
 			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), out, requests, samples)
-			cmd.Env = append(os.Environ(), "RECEIPT_LOAD_PROFILE="+profile, "RECEIPT_LOAD_MODES="+modes)
-			if log, err := cmd.CombinedOutput(); err == nil {
-				t.Fatalf("invalid settings passed: %s", log)
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_PROFILE="+profile, "RECEIPT_LOAD_MODES="+modes)
+			log, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("invalid settings did not exit 2: %v; %s", err, log)
 			}
 			if _, err := os.Stat(out); !os.IsNotExist(err) {
 				t.Fatalf("invalid settings created output: %v", err)
