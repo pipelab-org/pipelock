@@ -1644,9 +1644,15 @@ jobs:
           output="$RUNNER_TEMP/benchmark-allocations"
           git worktree add --detach "$baseline" "$BASE_SHA"
           mkdir -m 750 "$output"
+          # A failed comparison still publishes the report it wrote, then keeps
+          # the script's own exit status.
+          status=0
           python3 scripts/bench_run.py --alloc-report \
-            --baseline "$baseline" --candidate "$PWD" --output "$output"
-          cat "$output/allocation-summary.md" >> "$GITHUB_STEP_SUMMARY"
+            --baseline "$baseline" --candidate "$PWD" --output "$output" || status=$?
+          if [[ -f "$output/allocation-summary.md" ]]; then
+            cat "$output/allocation-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$status"
 
   benchmark-smoke:
     needs: [security-scan, changed-files]
