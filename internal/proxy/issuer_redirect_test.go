@@ -660,21 +660,32 @@ func TestInterceptIssuedRedirectWhileStreaming(t *testing.T) {
 
 type issuedRedirectFlushWriter struct {
 	*httptest.ResponseRecorder
-	err   error
-	calls int
+	err              error
+	calls            int
+	afterFlush       func()
+	afterWriteHeader func()
+}
+
+func (w *issuedRedirectFlushWriter) WriteHeader(status int) {
+	w.ResponseRecorder.WriteHeader(status)
+	if w.afterWriteHeader != nil {
+		w.afterWriteHeader()
+	}
 }
 
 func (w *issuedRedirectFlushWriter) FlushError() error {
 	w.calls++
-	if w.err != nil {
-		return w.err
+	if w.err == nil {
+		w.Flush()
 	}
-	w.Flush()
-	return nil
+	if w.afterFlush != nil {
+		w.afterFlush()
+	}
+	return w.err
 }
 
 func TestIssuedRedirectHeaderFlush(t *testing.T) {
-	for _, mode := range []string{"success", "failed flush", "missing emitted Location", "unlisted emitted Location", "not a redirect", "untrusted session", "no delegation", "revoked"} {
+	for _, mode := range []string{"success", "failed flush", "adaptive failed flush", "missing emitted Location", "unlisted emitted Location", "not a redirect", "untrusted session", "no delegation", "revoked"} {
 		t.Run(mode, func(t *testing.T) {
 			e := newDelegationEnv(t, nil)
 			ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
@@ -684,7 +695,7 @@ func TestIssuedRedirectHeaderFlush(t *testing.T) {
 			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
 			w.Header().Set("Location", target)
 			switch mode {
-			case "failed flush":
+			case "failed flush", "adaptive failed flush":
 				w.err = io.ErrClosedPipe
 			case "missing emitted Location":
 				w.Header().Del("Location")
@@ -702,8 +713,12 @@ func TestIssuedRedirectHeaderFlush(t *testing.T) {
 				live.FetchProxy.Monitoring.IssuedRedirectDelegations = nil
 				e.p.cfgPtr.Store(live)
 			}
-			err := ic.flushIssuedRedirectHeaders(&interceptTimingWriter{ResponseWriter: w}, response)
-			if mode == "failed flush" {
+			var writer http.ResponseWriter = w
+			if mode == "adaptive failed flush" {
+				writer = &adaptiveRefusalWriter{ResponseWriter: w, cfg: &e.cfg.AdaptiveEnforcement, level: func() int { return 0 }}
+			}
+			err := ic.flushIssuedRedirectHeaders(&interceptTimingWriter{ResponseWriter: writer}, response)
+			if mode == "failed flush" || mode == "adaptive failed flush" {
 				if !errors.Is(err, io.ErrClosedPipe) {
 					t.Fatalf("flush error = %v", err)
 				}
@@ -711,7 +726,7 @@ func TestIssuedRedirectHeaderFlush(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantCalls := 0
-			if mode == "success" || mode == "failed flush" {
+			if mode == "success" || mode == "failed flush" || mode == "adaptive failed flush" {
 				wantCalls = 1
 			}
 			if w.calls != wantCalls {
@@ -770,5 +785,278 @@ func TestInterceptIssuedRedirectFlushAndBodyErrors(t *testing.T) {
 				t.Fatalf("follow-up = %d, want %d", got, want)
 			}
 		})
+	}
+}
+
+func TestInterceptIssuedRedirectFlushFailurePaths(t *testing.T) {
+	for _, mode := range []string{"SSE", "opaque passthrough", "buffered"} {
+		t.Run(mode, func(t *testing.T) {
+			contentType, body := "text/plain", "body"
+			if mode == "SSE" {
+				contentType, body = "text/event-stream", "data: ready\n\n"
+			}
+			if mode == "opaque passthrough" {
+				contentType, body = "application/octet-stream", strings.Repeat("x", (1<<20)+1)
+			}
+			e := newDelegationEnv(t, func(c *config.Config) {
+				c.AdaptiveEnforcement.Enabled = true
+				if mode == "opaque passthrough" {
+					c.TLSInterception.MaxResponseBytes = 1 << 20
+					c.ResponseScanning.SizeExemptDomains = []string{delegationSourceHost}
+					c.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+						Host: delegationSourceHost, Paths: []string{delegationSourcePath},
+						ContentTypes: []string{contentType}, Reason: "operator-approved binary route", Expires: delegationFixture().Expires,
+					}}
+				}
+			})
+			target := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{
+					"Location": {target}, "Content-Type": {contentType}, "Content-Disposition": {"attachment"},
+				}, ContentLength: int64(len(body)), Body: io.NopCloser(strings.NewReader(body)), Request: r}, nil
+			})
+			ic := &InterceptContext{
+				Proxy: e.p, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
+				TargetHost: delegationSourceHost, TargetPort: "443", ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound,
+			}
+			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder(), err: io.ErrClosedPipe}
+			newInterceptHandler(ic, rt).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil))
+			if w.calls != 1 {
+				t.Fatalf("flush calls = %d, want1", w.calls)
+			}
+			if w.Body.Len() != 0 {
+				t.Fatal("body delivered after header flush failed")
+			}
+			if got := e.do("agent-one", http.MethodGet, target); got != http.StatusForbidden {
+				t.Fatalf("failed-delivery target = %d, want403", got)
+			}
+		})
+	}
+}
+
+// Done is observed only once the proof lookup is waiting on a pending delivery.
+type issuedRedirectWaitContext struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func (c *issuedRedirectWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestIssuedRedirectPendingDelivery(t *testing.T) {
+	for _, transport := range []string{"URL", "CONNECT"} {
+		for _, outcome := range []string{"success", "header write", "flush fails", "revoked", "runtime replaced", "cancelled"} {
+			t.Run(transport+"/"+outcome, func(t *testing.T) {
+				e := newDelegationEnv(t, nil)
+				ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+				store := ic.issuerQueryStore()
+				target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, delegationTicketQuery()))
+				source := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+				response := &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target.String()}}, Request: source}
+				entered, release := make(chan struct{}), make(chan struct{})
+				w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder(), afterFlush: func() { close(entered); <-release }}
+				if outcome == "header write" {
+					w.afterWriteHeader, w.afterFlush = w.afterFlush, nil
+				}
+				w.Header().Set("Location", target.String())
+				if outcome == "flush fails" {
+					w.err = io.ErrClosedPipe
+				}
+				flushed := make(chan error, 1)
+				go func() { flushed <- ic.flushIssuedRedirectHeaders(w, response) }()
+				<-entered
+				var releaseOnce sync.Once
+				t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+				base, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				defer cancel()
+				ctx := &issuedRedirectWaitContext{Context: base, waiting: make(chan struct{})}
+				result := make(chan bool, 1)
+				go func() {
+					if transport == "CONNECT" {
+						_, _, allowed := e.p.connectIssuedHostContext(ctx, e.cfg, target.Hostname(), "443", "agent-one", "10.0.0.1", envelope.ActorAuthBound)
+						result <- allowed
+					} else {
+						result <- ic.issuedLocationAllowedContext(ctx, store, sessionKeyFor(e.cfg, ic.Agent, ic.ClientIP, ic.ActorAuth), target)
+					}
+				}()
+				select {
+				case <-ctx.waiting:
+				case got := <-result:
+					t.Fatalf("follow-up completed before flush: %t", got)
+				case <-base.Done():
+					t.Fatal("follow-up never waited")
+				}
+				// No global store lock is held across delivery. Other sessions
+				// and altered URLs must promptly remain denied.
+				other := mustIssuerQueryURL(t, target.String()+"&changed=1")
+				if ic.issuedLocationAllowedContext(base, store, "other-session", target) ||
+					ic.issuedLocationAllowedContext(base, store, sessionKeyFor(e.cfg, ic.Agent, ic.ClientIP, ic.ActorAuth), other) {
+					t.Fatal("unrelated request gained pending authority")
+				}
+				switch outcome {
+				case "revoked":
+					live := e.cfg.Clone()
+					live.FetchProxy.Monitoring.IssuedRedirectDelegations = nil
+					e.p.cfgPtr.Store(live)
+				case "runtime replaced":
+					e.p.issuerCookieRuntime.Store(nil)
+				case "cancelled":
+					cancel()
+					if <-result {
+						t.Fatal("cancelled follow-up allowed")
+					}
+				}
+				releaseOnce.Do(func() { close(release) })
+				if err := <-flushed; (err != nil) != (outcome == "flush fails") {
+					t.Fatalf("flush error = %v", err)
+				}
+				if outcome != "cancelled" {
+					if got := <-result; got != (outcome == "success" || outcome == "header write") {
+						t.Fatalf("follow-up = %t", got)
+					}
+				}
+				store.mu.Lock()
+				pending := len(store.deliveries)
+				store.mu.Unlock()
+				if pending != 0 {
+					t.Fatal("completed delivery leaked pending state")
+				}
+			})
+		}
+	}
+}
+
+func TestIssuedRedirectPendingCapacityAndDuplicates(t *testing.T) {
+	s := delegationTestStore(t)
+	target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, delegationTicketQuery()))
+	scope := [32]byte{1}
+	scopes := map[[32]byte]struct{}{scope: {}}
+	s.rememberIssuedLocation("session", target, scope, time.Now())
+	first, err := s.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.beginIssuedRedirectDelivery("session", target, scopes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.finishIssuedRedirectDelivery("session", first)
+	if !s.issuedLocation("session", target, scopes) {
+		t.Fatal("failed duplicate removed prior proof")
+	}
+	s.finishIssuedRedirectDelivery("session", second)
+	if len(s.deliveries) != 0 {
+		t.Fatal("duplicate leaked")
+	}
+	if _, err := s.beginIssuedRedirectDelivery("session", nil, scopes); err == nil {
+		t.Fatal("invalid URL admitted")
+	}
+	if _, err := s.beginIssuedRedirectDelivery("session", target, nil); err == nil {
+		t.Fatal("empty scope admitted")
+	}
+	// Fill pending capacity without touching delivered-evidence capacity.
+	for i := 0; i < issuerCookieMaxSessions; i++ {
+		session := strconv.Itoa(i)
+		d, err := s.beginIssuedRedirectDelivery(session, target, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.finishIssuedRedirectDelivery(session, d) })
+	}
+	if _, err := s.beginIssuedRedirectDelivery("overflow", target, scopes); err == nil {
+		t.Fatal("session cap ignored")
+	}
+	for i := 1; i < issuerCookieMaxEntries; i++ {
+		d, err := s.beginIssuedRedirectDelivery("0", target, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.finishIssuedRedirectDelivery("0", d) })
+	}
+	if _, err := s.beginIssuedRedirectDelivery("0", target, scopes); err == nil {
+		t.Fatal("entry cap ignored")
+	}
+	if !s.issuedLocation("session", target, scopes) {
+		t.Fatal("pending capacity evicted delivered proof")
+	}
+}
+
+func TestIssuedRedirectPendingFailuresAndGuards(t *testing.T) {
+	e := newDelegationEnv(t, nil)
+	ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+	s := ic.issuerQueryStore()
+	target := mustIssuerQueryURL(t, delegationFilesURL(delegationFilesPath, delegationTicketQuery()))
+	session := sessionKeyFor(e.cfg, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	scopes := issuedRedirectScopes(e.p.issuedRedirects(e.cfg, time.Now()))
+	for _, success := range []bool{false, true} {
+		first, err := s.beginIssuedRedirectDelivery(session, target, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := s.beginIssuedRedirectDelivery(session, target, scopes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := &issuedRedirectWaitContext{Context: t.Context(), waiting: make(chan struct{})}
+		result := make(chan bool, 1)
+		go func() { result <- ic.issuedLocationAllowedContext(ctx, s, session, target) }()
+		select {
+		case <-ctx.waiting:
+		case got := <-result:
+			t.Fatalf("premature result %t", got)
+		case <-t.Context().Done():
+			t.Fatal("lookup did not wait")
+		}
+		s.finishIssuedRedirectDelivery(session, first)
+		if success {
+			ic.recordIssuedLocation(s, session, &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target.String()}}, Request: httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)})
+		}
+		s.finishIssuedRedirectDelivery(session, second)
+		if got := <-result; got != success {
+			t.Fatalf("concurrent completion = %t, want %t", got, success)
+		}
+	}
+	var missing *InterceptContext
+	if missing.issuedLocationAllowedContext(t.Context(), s, session, target) ||
+		ic.issuedLocationAllowedContext(t.Context(), nil, session, target) ||
+		ic.issuedLocationAllowedContext(t.Context(), s, "", target) ||
+		ic.issuedLocationAllowedContext(t.Context(), s, session, nil) {
+		t.Fatal("invalid lookup admitted")
+	}
+	cancelled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if ic.issuedLocationAllowedContext(cancelled, s, session, target) {
+		t.Fatal("cancelled existing proof admitted")
+	}
+	empty := e.cfg.Clone()
+	empty.FetchProxy.Monitoring.IssuedRedirectDelegations = nil
+	ic.Config = empty
+	if ic.issuedLocationAllowedContext(t.Context(), s, session, target) {
+		t.Fatal("empty delegation admitted")
+	}
+	ic.Config = nil
+	if ic.issuedLocationAllowedContext(t.Context(), s, session, target) {
+		t.Fatal("nil configuration admitted")
+	}
+	ic.Config = e.cfg
+	disabled := &issuerQueryStore{disabled: true}
+	if ic.issuedLocationAllowedContext(t.Context(), disabled, session, target) {
+		t.Fatal("disabled store admitted")
+	}
+}
+
+func TestIssuedRedirectAdaptiveFlushCompatibility(t *testing.T) {
+	base := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+	w := &adaptiveRefusalWriter{ResponseWriter: base, cfg: &config.AdaptiveEnforcement{}, level: func() int { return 0 }}
+	w.Flush()
+	if !base.Flushed || base.Code != http.StatusOK || base.calls != 1 {
+		t.Fatal("http.Flusher did not initialize and flush headers")
+	}
+	base.err = io.ErrClosedPipe
+	if err := http.NewResponseController(w).Flush(); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("ResponseController flush error = %v", err)
 	}
 }

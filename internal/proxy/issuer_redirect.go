@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"crypto/hmac"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -227,6 +228,100 @@ type issuedLocationEntry struct {
 	scope     [32]byte
 }
 
+// issuedRedirectDelivery is an in-flight header flush. Only keyed URL and
+// authority digests are retained. Closing done is notification, never evidence.
+type issuedRedirectDelivery struct {
+	entries []issuedLocationEntry
+	done    chan struct{}
+}
+
+// beginIssuedRedirectDelivery uses the existing issuer-evidence session and
+// entry limits, but reserves separate capacity: a failed delivery cannot evict
+// previously delivered proof. The store lock is never held across a flush.
+func (s *issuerQueryStore) beginIssuedRedirectDelivery(session string, target *url.URL, scopes map[[32]byte]struct{}) (*issuedRedirectDelivery, error) {
+	canonical, ok := issuedLocationCanonical(target)
+	if !ok || len(scopes) == 0 {
+		return nil, errors.New("invalid issued redirect delivery")
+	}
+	host, port, _ := issuedRedirectAuthority(target)
+	d := &issuedRedirectDelivery{done: make(chan struct{})}
+	for scope := range scopes {
+		d.entries = append(d.entries, issuedLocationEntry{url: s.issuedLocationDigest(canonical), authority: s.issuedAuthorityDigest(host, port), scope: scope})
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.deliveries[session]) >= issuerCookieMaxEntries ||
+		(len(s.deliveries[session]) == 0 && len(s.deliveries) >= issuerCookieMaxSessions) {
+		return nil, errors.New("issued redirect delivery capacity exceeded")
+	}
+	if s.deliveries == nil {
+		s.deliveries = make(map[string]map[*issuedRedirectDelivery]struct{})
+	}
+	if s.deliveries[session] == nil {
+		s.deliveries[session] = make(map[*issuedRedirectDelivery]struct{})
+	}
+	s.deliveries[session][d] = struct{}{}
+	return d, nil
+}
+
+func (s *issuerQueryStore) finishIssuedRedirectDelivery(session string, d *issuedRedirectDelivery) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.deliveries[session], d)
+	if len(s.deliveries[session]) == 0 {
+		delete(s.deliveries, session)
+	}
+	close(d.done)
+}
+
+// waitIssuedRedirectDelivery waits only for this session's matching URL or
+// CONNECT authority. Delivered proof and pending deliveries are checked under
+// the same lock, so publication between checking and waiting cannot be missed.
+// Callers must recheck live scope and runtime identity after waiting.
+func (s *issuerQueryStore) waitIssuedRedirectDelivery(ctx context.Context, session string, digest [32]byte, authority bool, scopes map[[32]byte]struct{}) bool {
+	matches := func(entry issuedLocationEntry) bool {
+		_, live := scopes[entry.scope]
+		value := entry.url
+		if authority {
+			value = entry.authority
+		}
+		return live && hmac.Equal(value[:], digest[:])
+	}
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		s.mu.Lock()
+		for _, entry := range s.locations[session] {
+			if matches(entry) {
+				s.mu.Unlock()
+				return true
+			}
+		}
+		var done <-chan struct{}
+		for delivery := range s.deliveries[session] {
+			for _, entry := range delivery.entries {
+				if matches(entry) {
+					done = delivery.done
+					break
+				}
+			}
+			if done != nil {
+				break
+			}
+		}
+		s.mu.Unlock()
+		if done == nil {
+			return false
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return false
+		}
+	}
+}
+
 func (s *issuerQueryStore) issuedLocationDigest(canonical string) [32]byte {
 	return s.digestFields("issued_redirect_url", canonical)
 }
@@ -335,6 +430,27 @@ func (ic *InterceptContext) issuedLocationAllowed(store *issuerQueryStore, sessi
 	return store.issuedLocation(session, target, scopes)
 }
 
+func (ic *InterceptContext) issuedLocationAllowedContext(ctx context.Context, store *issuerQueryStore, session string, target *url.URL) bool {
+	if ic == nil || ic.Proxy == nil || store == nil || store.disabled || session == "" || ic.Config == nil {
+		return false
+	}
+	canonical, ok := issuedLocationCanonical(target)
+	if !ok {
+		return false
+	}
+	scopes := issuedRedirectScopes(ic.Proxy.issuedRedirects(ic.Config, time.Now()))
+	if len(scopes) == 0 {
+		return false
+	}
+	if !store.waitIssuedRedirectDelivery(ctx, session, store.issuedLocationDigest(canonical), false, scopes) {
+		return false
+	}
+	if ctx.Err() != nil || ic.issuerQueryStore() != store {
+		return false
+	}
+	return store.issuedLocation(session, target, issuedRedirectScopes(ic.Proxy.issuedRedirects(ic.Config, time.Now())))
+}
+
 // withIssuedLocationAllowance relieves only entropy, and only for the values of
 // target itself: its whole escaped path, its own query values, and its host's
 // heuristic subdomain finding. Query-key entropy and every other check run
@@ -424,7 +540,15 @@ func (p *Proxy) connectIssuedHostContext(ctx context.Context, cfg *config.Config
 		return ctx, nil, false
 	}
 	scopes := issuedRedirectScopes(p.issuedRedirects(cfg, time.Now()))
-	if !store.issuedAuthority(sessionKeyFor(cfg, agent, clientIP, auth), host, port, scopes) {
+	session := sessionKeyFor(cfg, agent, clientIP, auth)
+	digest := store.issuedAuthorityDigest(canonicalRedirectHost(host), port)
+	if !store.waitIssuedRedirectDelivery(ctx, session, digest, true, scopes) {
+		return ctx, nil, false
+	}
+	live = p.cfgPtr.Load()
+	if ctx.Err() != nil || ic.issuerQueryStore() != store || live == nil || !live.TLSInterception.Enabled ||
+		isPassthrough(host, live.TLSInterception.PassthroughDomains) || !p.stateIdentityConfigCurrent(cfg, auth) ||
+		!store.issuedAuthority(session, host, port, issuedRedirectScopes(p.issuedRedirects(cfg, time.Now()))) {
 		return ctx, nil, false
 	}
 	want := canonicalRedirectHost(host)
@@ -438,38 +562,51 @@ func (p *Proxy) connectIssuedHostContext(ctx context.Context, cfg *config.Config
 	}), used, true
 }
 
-// flushIssuedRedirectHeaders records only the delegated Location actually sent
+// flushIssuedRedirectHeaders writes headers and records only the delegated Location sent
 // in response headers, after net/http confirms a successful server-side flush.
 // A flush cannot prove that the remote application consumed those headers.
 // Body-derived issuer evidence keeps its separate completion requirements.
 func (ic *InterceptContext) flushIssuedRedirectHeaders(w http.ResponseWriter, response *http.Response) error {
-	if ic == nil || ic.Proxy == nil || ic.Config == nil || response == nil ||
-		len(ic.Config.FetchProxy.Monitoring.IssuedRedirectDelegations) == 0 {
+	if response == nil {
 		return nil
+	}
+	writeHeaders := func() error {
+		w.WriteHeader(response.StatusCode)
+		return nil
+	}
+	if ic == nil || ic.Proxy == nil || ic.Config == nil ||
+		len(ic.Config.FetchProxy.Monitoring.IssuedRedirectDelegations) == 0 {
+		return writeHeaders()
 	}
 	store := ic.issuerQueryStore()
 	if store == nil {
-		return nil
+		return writeHeaders()
 	}
 	emitted := *response
 	emitted.Header = w.Header().Clone()
 	target, ok := issuedRedirectLocation(&emitted, ic.Config.FetchProxy.Monitoring.MaxURLLength)
 	if !ok {
-		return nil
+		return writeHeaders()
 	}
-	eligible := false
+	scopes := make(map[[32]byte]struct{})
 	for _, d := range ic.Proxy.issuedRedirects(ic.Config, time.Now()) {
 		if d.admits(emitted.Request, target) {
-			eligible = true
-			break
+			scopes[d.scope] = struct{}{}
 		}
 	}
-	if !eligible {
-		return nil
+	if len(scopes) == 0 {
+		return writeHeaders()
 	}
+	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
+	delivery, err := store.beginIssuedRedirectDelivery(session, target, scopes)
+	if err != nil {
+		return err
+	}
+	defer store.finishIssuedRedirectDelivery(session, delivery)
+	w.WriteHeader(response.StatusCode)
 	if err := http.NewResponseController(w).Flush(); err != nil {
 		return err
 	}
-	ic.recordIssuedLocation(store, sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth), &emitted)
+	ic.recordIssuedLocation(store, session, &emitted)
 	return nil
 }

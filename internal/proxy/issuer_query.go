@@ -68,6 +68,9 @@ type issuerQueryStore struct {
 	// locations holds keyed digests of redirect targets a delegated source
 	// route issued to the session (issued_redirect_delegation.go).
 	locations map[string][]issuedLocationEntry
+	// deliveries coordinates only matching follow-ups while headers are being
+	// flushed. It never grants authority and does not evict delivered evidence.
+	deliveries map[string]map[*issuedRedirectDelivery]struct{}
 	// ids holds keyed digests of object IDs an origin introduced in a JSON
 	// response; sent holds digests of every token the session sent to an
 	// origin, so a reflected value is never minted as an ID; sentUnreadable

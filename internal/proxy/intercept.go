@@ -897,7 +897,7 @@ func newInterceptHandler(
 			session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
 			// Evidence that the delegated source issued exactly this URL. It is
 			// checked only on a blocked result, so ordinary traffic pays nothing.
-			issuedURL := ic.issuedLocationAllowed(store, session, r.URL)
+			issuedURL := ic.issuedLocationAllowedContext(r.Context(), store, session, r.URL)
 			if (store != nil || idStore != nil) && (!issuedHostFinding || issuedURL) {
 				allowed := false
 				// The receipt names the widest rule that admitted a value:
@@ -2409,7 +2409,6 @@ func newInterceptHandler(
 				}
 			}
 			removeHopByHopHeaders(w.Header())
-			w.WriteHeader(resp.StatusCode)
 			if flushIssuedRedirect() {
 				return
 			}
@@ -2531,7 +2530,6 @@ func newInterceptHandler(
 				}
 			}
 			removeHopByHopHeaders(w.Header())
-			w.WriteHeader(resp.StatusCode)
 			if flushIssuedRedirect() {
 				return
 			}
@@ -2680,7 +2678,6 @@ func newInterceptHandler(
 						}
 					}
 					removeHopByHopHeaders(w.Header())
-					w.WriteHeader(resp.StatusCode)
 					if flushIssuedRedirect() {
 						return
 					}
@@ -3205,7 +3202,6 @@ func newInterceptHandler(
 			}
 		}
 		removeHopByHopHeaders(w.Header())
-		w.WriteHeader(resp.StatusCode)
 		if flushIssuedRedirect() {
 			return
 		}
