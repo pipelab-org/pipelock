@@ -60,7 +60,11 @@ func TestPerRequestRealProducer(t *testing.T) {
 				opt := smallOptions(t, binary)
 				opt.chains, opt.destinations = chains, destinationsPerRequest
 				res, err := runMode(context.Background(), opt, mode)
-				if err != nil || res.Integrity.Verdict != verdictPass || res.Performance.Verdict != perfMeasured || res.Integrity.ReceiptAttribution != attributionPerRequestDestination {
+				wantAttribution := attributionPerRequestDestination
+				if mode == modeOff {
+					wantAttribution = ""
+				}
+				if err != nil || res.Integrity.Verdict != verdictPass || res.Performance.Verdict != perfMeasured || res.Integrity.ReceiptAttribution != wantAttribution {
 					t.Fatalf("producer: %v %+v", err, res)
 				}
 				if res.Inputs.Harness.ContractVersion != "7" || res.Inputs.Workload.Destinations != destinationsPerRequest {

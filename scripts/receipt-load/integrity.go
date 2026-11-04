@@ -171,7 +171,9 @@ func evaluateIntegrity(in integrityInput) integrityReport {
 		return evaluateAggregateIntegrity(in)
 	}
 	rep := integrityReport{Verdict: verdictPass, Kinds: make(map[string]kindReport, kindCount), Reasons: []string{}}
-	if in.plan.destinations != nil {
+	// Off mode leaves no receipts, so there is nothing to attribute, matching
+	// the single-destination workload.
+	if in.plan.destinations != nil && in.mode != modeOff {
 		rep.ReceiptAttribution = attributionPerRequestDestination
 	}
 	obs := in.obs
