@@ -437,3 +437,39 @@ func (p *Proxy) connectIssuedHostContext(ctx context.Context, cfg *config.Config
 		return true
 	}), used, true
 }
+
+// flushIssuedRedirectHeaders records only the delegated Location actually sent
+// in response headers, after net/http confirms a successful server-side flush.
+// A flush cannot prove that the remote application consumed those headers.
+// Body-derived issuer evidence keeps its separate completion requirements.
+func (ic *InterceptContext) flushIssuedRedirectHeaders(w http.ResponseWriter, response *http.Response) error {
+	if ic == nil || ic.Proxy == nil || ic.Config == nil || response == nil ||
+		len(ic.Config.FetchProxy.Monitoring.IssuedRedirectDelegations) == 0 {
+		return nil
+	}
+	store := ic.issuerQueryStore()
+	if store == nil {
+		return nil
+	}
+	emitted := *response
+	emitted.Header = w.Header().Clone()
+	target, ok := issuedRedirectLocation(&emitted, ic.Config.FetchProxy.Monitoring.MaxURLLength)
+	if !ok {
+		return nil
+	}
+	eligible := false
+	for _, d := range ic.Proxy.issuedRedirects(ic.Config, time.Now()) {
+		if d.admits(emitted.Request, target) {
+			eligible = true
+			break
+		}
+	}
+	if !eligible {
+		return nil
+	}
+	if err := http.NewResponseController(w).Flush(); err != nil {
+		return err
+	}
+	ic.recordIssuedLocation(store, sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth), &emitted)
+	return nil
+}

@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -582,6 +584,190 @@ func TestInterceptIssuedRedirectReceipt(t *testing.T) {
 				if strings.Contains(string(r.Ext), "tempauth") || strings.Contains(r.ActionRecord.Target, "tempauth") || strings.Contains(r.ActionRecord.Target, "?") {
 					t.Fatalf("receipt leaked the signed URL: target=%q ext=%s", r.ActionRecord.Target, r.Ext)
 				}
+			}
+		})
+	}
+}
+
+// issuedRedirectTail keeps a response open after its initial body bytes.
+type issuedRedirectTail struct {
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *issuedRedirectTail) Read(_ []byte) (int, error) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+	return 0, io.EOF
+}
+
+func TestInterceptIssuedRedirectWhileStreaming(t *testing.T) {
+	for _, mode := range []string{"SSE", "opaque passthrough", "response exempt"} {
+		t.Run(mode, func(t *testing.T) {
+			contentType, prefix := "application/octet-stream", "prefix"
+			if mode == "SSE" {
+				contentType, prefix = "text/event-stream", "data: ready\n\n"
+			}
+			if mode == "opaque passthrough" {
+				prefix = strings.Repeat("x", (1<<20)+1)
+			}
+			e := newDelegationEnv(t, func(c *config.Config) {
+				if mode == "response exempt" {
+					c.ResponseScanning.Enabled = true
+					c.ResponseScanning.ExemptDomains = []string{delegationSourceHost}
+				}
+				if mode == "opaque passthrough" {
+					c.TLSInterception.MaxResponseBytes = 1 << 20
+					c.ResponseScanning.SizeExemptDomains = []string{delegationSourceHost}
+					c.ResponseScanning.UnscannablePassthrough = []config.UnscannablePassthroughEntry{{
+						Host: delegationSourceHost, Paths: []string{delegationSourcePath},
+						ContentTypes: []string{contentType}, Reason: "operator-approved binary route", Expires: delegationFixture().Expires,
+					}}
+				}
+			})
+			tail := &issuedRedirectTail{entered: make(chan struct{}), release: make(chan struct{})}
+			good := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: http.StatusFound, Header: http.Header{
+					"Location": {good}, "Content-Type": {contentType}, "Content-Disposition": {"attachment"},
+				}, ContentLength: int64(len(prefix) + 1), Body: io.NopCloser(io.MultiReader(strings.NewReader(prefix), tail)), Request: r}, nil
+			})
+			ic := &InterceptContext{
+				Proxy: e.p, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
+				TargetHost: delegationSourceHost, TargetPort: "443", ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound,
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+			done := make(chan struct{})
+			go func() { defer close(done); newInterceptHandler(ic, rt).ServeHTTP(httptest.NewRecorder(), req) }()
+			defer func() { close(tail.release); <-done }()
+			select {
+			case <-tail.entered:
+			case <-done:
+				t.Fatal("source response ended before the controlled body tail")
+			case <-time.After(10 * time.Second):
+				t.Fatal("source never began streaming the body tail")
+			}
+			if got := e.do("agent-one", http.MethodGet, good); got != http.StatusOK {
+				t.Fatalf("follow-up during open source stream = %d, want 200", got)
+			}
+			if got := e.do("agent-two", http.MethodGet, good); got != http.StatusForbidden {
+				t.Fatalf("other session during open source stream = %d, want 403", got)
+			}
+		})
+	}
+}
+
+type issuedRedirectFlushWriter struct {
+	*httptest.ResponseRecorder
+	err   error
+	calls int
+}
+
+func (w *issuedRedirectFlushWriter) FlushError() error {
+	w.calls++
+	if w.err != nil {
+		return w.err
+	}
+	w.Flush()
+	return nil
+}
+
+func TestIssuedRedirectHeaderFlush(t *testing.T) {
+	for _, mode := range []string{"success", "failed flush", "missing emitted Location", "unlisted emitted Location", "not a redirect", "untrusted session", "no delegation", "revoked"} {
+		t.Run(mode, func(t *testing.T) {
+			e := newDelegationEnv(t, nil)
+			ic := &InterceptContext{Proxy: e.p, Config: e.cfg, ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound}
+			target := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			source := httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil)
+			response := &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {target}}, Request: source}
+			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+			w.Header().Set("Location", target)
+			switch mode {
+			case "failed flush":
+				w.err = io.ErrClosedPipe
+			case "missing emitted Location":
+				w.Header().Del("Location")
+			case "unlisted emitted Location":
+				w.Header().Set("Location", "https://other.vendor.example/file")
+			case "not a redirect":
+				response.StatusCode = http.StatusOK
+			case "untrusted session":
+				ic.ActorAuth = envelope.ActorAuthSelfDeclared
+			case "no delegation":
+				ic.Config = e.cfg.Clone()
+				ic.Config.FetchProxy.Monitoring.IssuedRedirectDelegations = nil
+			case "revoked":
+				live := e.cfg.Clone()
+				live.FetchProxy.Monitoring.IssuedRedirectDelegations = nil
+				e.p.cfgPtr.Store(live)
+			}
+			err := ic.flushIssuedRedirectHeaders(&interceptTimingWriter{ResponseWriter: w}, response)
+			if mode == "failed flush" {
+				if !errors.Is(err, io.ErrClosedPipe) {
+					t.Fatalf("flush error = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			wantCalls := 0
+			if mode == "success" || mode == "failed flush" {
+				wantCalls = 1
+			}
+			if w.calls != wantCalls {
+				t.Fatalf("flush calls = %d, want %d", w.calls, wantCalls)
+			}
+			want := http.StatusForbidden
+			if mode == "success" {
+				want = http.StatusOK
+			}
+			if got := e.do("agent-one", http.MethodGet, target); got != want {
+				t.Fatalf("follow-up = %d, want %d", got, want)
+			}
+		})
+	}
+	var missing *InterceptContext
+	if err := missing.flushIssuedRedirectHeaders(httptest.NewRecorder(), nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterceptIssuedRedirectFlushAndBodyErrors(t *testing.T) {
+	for _, failFlush := range []bool{true, false} {
+		name := "body fails after headers"
+		if failFlush {
+			name = "header flush fails"
+		}
+		t.Run(name, func(t *testing.T) {
+			e := newDelegationEnv(t, func(c *config.Config) {
+				c.ResponseScanning.Enabled = true
+				c.ResponseScanning.ExemptDomains = []string{delegationSourceHost}
+			})
+			target := delegationFilesURL(delegationFilesPath, delegationTicketQuery())
+			rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusFound, Header: http.Header{"Location": {target}},
+					Body: io.NopCloser(&errorReader{err: io.ErrUnexpectedEOF}), Request: r,
+				}, nil
+			})
+			ic := &InterceptContext{
+				Proxy: e.p, Config: e.cfg, Scanner: e.sc, Logger: e.logger, Metrics: e.m,
+				TargetHost: delegationSourceHost, TargetPort: "443", ClientIP: "10.0.0.1", Agent: "agent-one", ActorAuth: envelope.ActorAuthBound,
+			}
+			w := &issuedRedirectFlushWriter{ResponseRecorder: httptest.NewRecorder()}
+			if failFlush {
+				w.err = io.ErrClosedPipe
+			}
+			newInterceptHandler(ic, rt).ServeHTTP(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, delegationSourceURL(), nil))
+			if w.calls != 1 {
+				t.Fatalf("flush calls = %d", w.calls)
+			}
+			want := http.StatusOK
+			if failFlush {
+				want = http.StatusForbidden
+			}
+			if got := e.do("agent-one", http.MethodGet, target); got != want {
+				t.Fatalf("follow-up = %d, want %d", got, want)
 			}
 		})
 	}

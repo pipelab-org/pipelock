@@ -561,9 +561,6 @@ func recordDeliveredIssuerQuery(ic *InterceptContext, response *http.Response, b
 		return
 	}
 	session := sessionKeyFor(ic.Config, ic.Agent, ic.ClientIP, ic.ActorAuth)
-	// A delegated source route's delivered redirect carries relief for its
-	// exact target URL only; it adds no link, path or value evidence.
-	ic.recordIssuedLocation(store, session, response)
 	// An OAuth authorization request names where the code must go. Record the
 	// declaration only once the request was allowed and its response
 	// delivered, which is the only way this function is reached.

@@ -2254,6 +2254,18 @@ func newInterceptHandler(
 			return
 		}
 		defer resp.Body.Close() //nolint:errcheck // response body
+
+		// Redirect evidence depends on delivered headers, not body completion.
+		// Keep a failed flush on the existing incomplete-stream outcome path.
+		flushIssuedRedirect := func() bool {
+			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
+				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
+				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
+				_ = httpstream.Abort(r.Context(), err)
+				return true
+			}
+			return false
+		}
 		stripUpstreamPipelockNamespace(resp)
 		if !applyFullResponsePolicy(nil, resp) {
 			reason := fullResponseRefusal(resp)
@@ -2398,6 +2410,9 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
+			if flushIssuedRedirect() {
+				return
+			}
 
 			flusher, _ := serverWriter.(http.Flusher)
 			streamErr := DispatchSSEScan(r.Context(), resp.Body, httpstream.Writer{Writer: w}, flusher, ic.Scanner, sseOpts)
@@ -2517,6 +2532,9 @@ func newInterceptHandler(
 			}
 			removeHopByHopHeaders(w.Header())
 			w.WriteHeader(resp.StatusCode)
+			if flushIssuedRedirect() {
+				return
+			}
 			written, copyErr := httpstream.Copy(w, resp.Body)
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			if copyErr != nil {
@@ -2663,6 +2681,9 @@ func newInterceptHandler(
 					}
 					removeHopByHopHeaders(w.Header())
 					w.WriteHeader(resp.StatusCode)
+					if flushIssuedRedirect() {
+						return
+					}
 					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					if copyErr != nil {
 						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
@@ -3185,6 +3206,9 @@ func newInterceptHandler(
 		}
 		removeHopByHopHeaders(w.Header())
 		w.WriteHeader(resp.StatusCode)
+		if flushIssuedRedirect() {
+			return
+		}
 		written, writeErr := w.Write(respBody)
 		delivered := writeErr == nil && written == len(respBody)
 		recordDeliveredIssuerCookies(ic, r, resp, delivered)
