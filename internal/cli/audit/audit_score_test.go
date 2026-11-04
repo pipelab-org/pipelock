@@ -460,6 +460,33 @@ func TestScoreEnforcement_AuditMode(t *testing.T) {
 	if !hasAuditInfo {
 		t.Error("audit mode should produce info finding")
 	}
+	for _, f := range findings {
+		if strings.Contains(f.Message, "forwarded") {
+			t.Errorf("enforce=true audit finding claims traffic is forwarded: %q", f.Message)
+		}
+	}
+	for _, f := range findings {
+		if f.Severity == scoreSevInfo && strings.Contains(f.Message, "ordinary URL findings still block") {
+			return
+		}
+	}
+	t.Errorf("enforce=true audit finding should say ordinary URL findings still block, got %+v", findings)
+}
+
+func TestScoreEnforcement_AuditModeEnforceFalse(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeAudit
+	off := false
+	cfg.Enforce = &off
+
+	var findings []ScoreFinding
+	scoreEnforcement(cfg, &findings)
+	for _, f := range findings {
+		if f.Severity == scoreSevInfo && strings.Contains(f.Message, "logged and forwarded") {
+			return
+		}
+	}
+	t.Errorf("audit mode with enforce=false should explain forwarding, got %+v", findings)
 }
 
 func TestScoreEnforcement_BalancedMode(t *testing.T) {
@@ -514,5 +541,19 @@ func TestEffectiveAction(t *testing.T) {
 				t.Errorf("effectiveAction(%q, %q) = %q, want %q", tc.ruleAction, tc.defAction, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestScoreEnforcementObservationScope(t *testing.T) {
+	off := false
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeAudit
+	cfg.Enforce = &off
+	var findings []ScoreFinding
+	scoreEnforcement(cfg, &findings)
+	for _, f := range findings {
+		if !strings.Contains(f.Message, "ordinary URL") || !strings.Contains(f.Message, "still block") {
+			t.Errorf("finding overstates observation scope: %q", f.Message)
+		}
 	}
 }

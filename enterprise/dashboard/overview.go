@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 )
 
@@ -553,7 +552,11 @@ func (m *ReadModel) overviewCoverage(sessions []SessionSummary, fleet OverviewFl
 			if _, ok := seenAgents[agent]; !ok {
 				out.NoReceiptAgents = appendUnique(out.NoReceiptAgents, agent)
 			}
-			if profile.Mode == config.ModeAudit || (profile.Enforce != nil && !*profile.Enforce) {
+			enforce := m.cfg.EnforceEnabled()
+			if profile.Enforce != nil {
+				enforce = *profile.Enforce
+			}
+			if !enforce {
 				out.MonitorOnlyAgents = appendUnique(out.MonitorOnlyAgents, agent)
 			}
 		}
