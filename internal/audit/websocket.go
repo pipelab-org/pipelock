@@ -16,7 +16,7 @@ func (l *Logger) LogWSOpen(target, clientIP, requestID, agent string) {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventWSOpen).
-		str("target", target).
+		str("target", dropURLContentSegments(target, false)).
 		str("client_ip", clientIP).
 		str("request_id", requestID).
 		agentField(agent, string(envelope.ActorAuthUnknown))
@@ -50,7 +50,7 @@ func (l *Logger) LogWSClose(ev WSCloseEvent) {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventWSClose).
-		str("target", ev.Target).
+		str("target", dropURLContentSegments(ev.Target, false)).
 		str("client_ip", ev.ClientIP).
 		str("request_id", ev.RequestID).
 		agentField(ev.Agent, ev.AgentAuth).
@@ -93,7 +93,7 @@ func (l *Logger) LogWSBlocked(ev WSBlockedEvent) {
 	technique := TechniqueForScanner(scannerName)
 
 	e := newLogEntry(l.zl.Warn(), EventWSBlocked).
-		str("target", target).
+		str("target", dropURLContentSegments(target, false)).
 		str("direction", direction).
 		str("scanner", scannerName).
 		str("reason", reason).

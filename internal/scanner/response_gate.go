@@ -17,9 +17,18 @@ type responseGate struct {
 	literal string
 	folded  string
 	hasFold bool
-	all     []*responseGate
-	any     []*responseGate
-	near    *responseNearGate
+	// pairs lists the byte pairs of the compared literal (folded when
+	// hasFold). Nil skips the pair filter and always searches.
+	pairs []uint16
+	all   []*responseGate
+	any   []*responseGate
+	near  *responseNearGate
+}
+
+// responseGatePairs holds the pair filters of one prefilter call's raw and
+// folded text. A nil *responseGatePairs searches every literal.
+type responseGatePairs struct {
+	raw, fold bytePairFilter
 }
 
 type responseLiteralKey struct {
@@ -40,6 +49,10 @@ func (g *responseGate) matchesWithDistance(content, folded, distanceText string)
 }
 
 func (g *responseGate) matchesWithMemo(content, folded, distanceText string, memo responseLiteralMemo) bool {
+	return g.matchesWithPairs(content, folded, distanceText, memo, nil)
+}
+
+func (g *responseGate) matchesWithPairs(content, folded, distanceText string, memo responseLiteralMemo, pairs *responseGatePairs) bool {
 	if g.near != nil {
 		return g.near.matches(distanceText)
 	}
@@ -52,7 +65,13 @@ func (g *responseGate) matchesWithMemo(content, folded, distanceText string, mem
 		if found, known := memo[key]; known {
 			return found
 		}
-		found := strings.Contains(text, literal)
+		var found bool
+		switch {
+		case pairs != nil && g.hasFold && !pairs.fold.mayContain(g.pairs):
+		case pairs != nil && !g.hasFold && !pairs.raw.mayContain(g.pairs):
+		default:
+			found = strings.Contains(text, literal)
+		}
 		if memo != nil && len(memo) < responseMemoMaxEntries {
 			memo[key] = found
 		}
@@ -60,14 +79,14 @@ func (g *responseGate) matchesWithMemo(content, folded, distanceText string, mem
 	}
 	if g.all != nil {
 		for _, part := range g.all {
-			if !part.matchesWithMemo(content, folded, distanceText, memo) {
+			if !part.matchesWithPairs(content, folded, distanceText, memo, pairs) {
 				return false
 			}
 		}
 		return true
 	}
 	for _, branch := range g.any {
-		if branch.matchesWithMemo(content, folded, distanceText, memo) {
+		if branch.matchesWithPairs(content, folded, distanceText, memo, pairs) {
 			return true
 		}
 	}
@@ -245,9 +264,11 @@ func newResponseLiteralGate(literal string, fold bool) *responseGate {
 	// regexp decodes each malformed byte as U+FFFD, so a literal U+FFFD matches
 	// input that does not contain its bytes. Only the folded text carries it.
 	fold = fold || strings.ContainsRune(literal, utf8.RuneError)
+	gate.pairs = literalBytePairs(literal)
 	if fold {
 		gate.hasFold = true
 		gate.folded = responseSimpleFold(literal)
+		gate.pairs = literalBytePairs(gate.folded)
 	}
 	return gate
 }

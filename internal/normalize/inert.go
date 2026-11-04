@@ -119,9 +119,15 @@ func normalizeSegmented(s string, t *segmentTable, full func(string) string) str
 	flush := func(end int) {
 		run := s[runStart:end]
 		var normalized string
-		if r, size := utf8.DecodeRuneInString(run); size == len(run) && r < inertRuneLimit {
+		switch r, size := utf8.DecodeRuneInString(run); {
+		case size == len(run) && r < inertRuneLimit:
 			normalized = t.single[r]
-		} else {
+		case isPrintableASCII(run):
+			// Every pipeline using this table returns printable ASCII
+			// unchanged (see ForDLP and matchingNormalize), and a run is
+			// normalized on its own between inert scalars.
+			normalized = run
+		default:
 			normalized = full(run)
 		}
 		if out == nil && normalized != run {

@@ -30,6 +30,10 @@ import (
 // is not treated as a hostname.
 var textURLTokenRe = regexp.MustCompile(`(?i)\b(?:https?|wss?|ftp)://[^\s"'<>\\]+`)
 
+// textURLTokenSeparator is a literal every textURLTokenRe match contains.
+// Text without it holds no URL token, so callers skip the regex.
+const textURLTokenSeparator = "://"
+
 // officialAWSExampleCredentialDocMarkers are documentation-context phrases that,
 // when present OUTSIDE the credential literal's own byte span, mark the AWS
 // example key/secret as documentation rather than a live secret. They are
@@ -76,12 +80,12 @@ func extractHostsFromTextViews(views ...spanTextView) []textHostView {
 
 func extractHostsFromOneText(view spanTextView, seen map[string]struct{}, hosts *[]textHostView) {
 	text := view.text
-	tokens := textURLTokenRe.FindAllString(text, -1)
-	if len(tokens) == 0 {
+	if !strings.Contains(text, textURLTokenSeparator) {
 		return
 	}
 	locs := textURLTokenRe.FindAllStringIndex(text, -1)
-	for i, tok := range tokens {
+	for i, loc := range locs {
+		tok := text[loc[0]:loc[1]]
 		u, err := url.Parse(tok)
 		if err != nil {
 			continue
@@ -735,7 +739,8 @@ func uninspectableEncodedContentMatch() TextDLPMatch {
 }
 
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
-	var originalDecodes decodingMemo
+	shared := sharedDecodesFrom(ctx)
+	originalDecodes := decodingMemo{shared: shared}
 	if !s.hasGenericCardPatterns() {
 		return s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
 	}
@@ -746,7 +751,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
 	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	var typedDecodes decodingMemo
+	typedDecodes := decodingMemo{shared: shared}
 	cardDecodes := &originalDecodes
 	if text != cardView {
 		cardDecodes = &typedDecodes
@@ -806,7 +811,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 			continue
 		}
 		seenRuns[run] = struct{}{}
-		var runDecodes decodingMemo
+		runDecodes := decodingMemo{shared: shared}
 		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
 		for i := range runResult.Matches {
 			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
@@ -1071,7 +1076,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 	if htmlDecoded != cleaned {
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(htmlDecoded, encodingHTML))...)
-		matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(htmlDecoded, decodes))...)
+		matches = append(matches, s.decodeAndMatchWithDecodes(htmlDecoded, decodes, opts.patterns)...)
 	}
 
 	// Junk percent escapes inside a credential ("AKIA%zz%49OSF...") make
@@ -1096,7 +1101,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	}
 
 	if len(segmentViews) > 1 {
-		compacted, offsets := compactTextDLPWhitespaceWithOffsets(cleaned)
+		compacted, offsets := decodes.compactWhitespace(cleaned)
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets))...)
 	}
 
@@ -1126,7 +1131,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Fixpoint encoding decode: try base64, hex, base32, and URL decoding
 	// until no new bounded candidates appear. Catches base64(secret),
 	// hex(secret), and nested chains (e.g., base64(hex(secret))).
-	matches = append(matches, opts.patterns.selectMatches(s.decodeAndMatchWithDecodes(cleaned, decodes))...)
+	matches = append(matches, s.decodeAndMatchWithDecodes(cleaned, decodes, opts.patterns)...)
 
 	// Segment-level encoding detection: split text on URL/path delimiters and
 	// try decoding each segment individually. Catches encoded secrets embedded
@@ -1207,10 +1212,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 
 // decodeAndMatchWithDecodes runs DLP patterns over every bounded fixpoint
 // decode candidate, reusing views within the calling scan.
-func (s *Scanner) decodeAndMatchWithDecodes(text string, decodes *decodingMemo) []TextDLPMatch {
+func (s *Scanner) decodeAndMatchWithDecodes(text string, decodes *decodingMemo, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
 	for _, d := range decodes.decode(text, true) {
-		matches = append(matches, s.matchDLPPatternsNormalized(decodes.normalize(d.text), d.encoding, d.text)...)
+		matches = append(matches, decodes.matchDecodedFor(s, d.text, d.encoding, patterns)...)
 	}
 	return matches
 }
@@ -1230,9 +1235,24 @@ func (s *Scanner) matchDLPPatternsInView(text, encoding, proseSource string) []T
 }
 
 func (s *Scanner) matchDLPPatternsNormalized(text, encoding, proseSource string) []TextDLPMatch {
+	var lowered dlpLoweredBytes
+	lowered.add(text)
+	return s.matchDLPPatternsLowered(text, encoding, proseSource, &lowered, textDLPAllPatterns)
+}
+
+// matchDLPPatternsLowered is matchDLPPatternsNormalized for a text whose
+// lowered bytes are already recorded, limited to the rules in patterns.
+func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet) []TextDLPMatch {
 	var matches []TextDLPMatch
-	for _, idx := range s.dlpPreFilter.patternsToCheck(text) {
+	var shape dlpShapeSummary
+	for _, idx := range s.dlpPreFilter.patternsToCheckWith(text, lowered) {
 		p := s.dlpPatterns[idx]
+		if !patterns.includes(p.genericCard) {
+			continue
+		}
+		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
+			continue
+		}
 		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
 			matches = append(matches, TextDLPMatch{
 				genericCard:                         p.genericCard,
@@ -1615,7 +1635,7 @@ func (s *Scanner) decodeTextSegmentsWithDecodes(text string, decodes *decodingMe
 			continue // too short to be a meaningful encoded secret
 		}
 		for _, d := range decodes.decode(seg, true) {
-			if m := patterns.selectMatches(s.matchDLPPatternsNormalized(decodes.normalize(d.text), d.encoding, d.text)); len(m) > 0 {
+			if m := decodes.matchDecodedFor(s, d.text, d.encoding, patterns); len(m) > 0 {
 				matches = append(matches, m...)
 				if hasEnforcedMatch(m) {
 					return matches
@@ -1650,7 +1670,7 @@ func (s *Scanner) decodeSplitHexRunsWithDecodes(text string, decodes *decodingMe
 				continue
 			}
 			d := string(decoded)
-			if m := patterns.selectMatches(s.matchDLPPatternsNormalized(decodes.normalize(d), encodingHex, d)); len(m) > 0 {
+			if m := decodes.matchDecodedFor(s, d, encodingHex, patterns); len(m) > 0 {
 				matches = append(matches, m...)
 				if hasEnforcedMatch(m) {
 					return matches

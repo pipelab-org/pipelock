@@ -136,6 +136,22 @@ func dropURLContentSegments(raw string, keepPath bool) string {
 	return out
 }
 
+// connectAuthority returns a CONNECT target's host:port. The proxy only
+// tunnels to an authority, so a single-label host such as an internal service
+// name is a destination there, not the ambiguous host:port text the generic
+// URL path refuses. Anything that isn't a bare authority takes the generic
+// destination policy.
+func connectAuthority(raw string) string {
+	if raw == "" || strings.ContainsAny(raw, "/?#@") {
+		return dropURLContentSegments(raw, false)
+	}
+	u, err := url.Parse("//" + raw)
+	if err != nil || u.Port() == "" || !validAuditAuthority(u) {
+		return dropURLContentSegments(raw, false)
+	}
+	return u.Host
+}
+
 // validAuditAuthority accepts DNS names and IP literals with an optional
 // numeric port. URL parsing alone also accepts opaque scheme-shaped inputs
 // and malformed DNS labels, which must not become destination diagnostics.
