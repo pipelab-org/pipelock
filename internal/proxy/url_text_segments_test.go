@@ -108,8 +108,8 @@ func TestForwardURLTextSegments(t *testing.T) {
 						if tc.calls == 0 && strings.Contains(safe, tc.value) {
 							t.Error("receipt target retained the configured value")
 						}
-						if tc.calls == 1 && safe != r.URL.String() {
-							t.Error("receipt target changed an ordinary value")
+						if tc.calls == 1 && safe != r.URL.Scheme+"://"+r.URL.Host {
+							t.Error("receipt target kept more than the destination of an ordinary value")
 						}
 					}
 				})

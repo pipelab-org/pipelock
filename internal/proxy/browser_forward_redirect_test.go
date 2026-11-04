@@ -215,7 +215,7 @@ func TestBrowserForwardRedirectLocationProvenance(t *testing.T) {
 				}
 				found := false
 				for _, rcpt := range recorded {
-					if rcpt.ActionRecord.Verdict == config.ActionBlock && rcpt.ActionRecord.Target == base+"/start" && rcpt.ActionRecord.Pattern == "ambiguous redirect location" {
+					if rcpt.ActionRecord.Verdict == config.ActionBlock && rcpt.ActionRecord.Target == base && rcpt.ActionRecord.Pattern == "ambiguous redirect location" {
 						if err := receipt.VerifyWithKey(rcpt, rph.pubHex); err != nil {
 							t.Fatalf("verify redirect block receipt: %v", err)
 						}
@@ -444,7 +444,7 @@ func TestBrowserForwardRedirectAccountingAndFetchParity(t *testing.T) {
 				t.Fatalf("unique action IDs=%d, want %d", len(ids), len(responseIDs))
 			}
 			recorded := rph.findReceipts(t)
-			for n, id := range responseIDs {
+			for _, id := range responseIDs {
 				if id == "" {
 					t.Fatal("required receipt header missing")
 				}
@@ -452,7 +452,7 @@ func TestBrowserForwardRedirectAccountingAndFetchParity(t *testing.T) {
 				found := false
 				for _, rcpt := range recorded {
 					ar := rcpt.ActionRecord
-					if ar.ActionID == id && ar.Transport == mode && ar.Target == base+fmt.Sprintf("/hop/%d", n) && ar.Verdict == config.ActionAllow {
+					if ar.ActionID == id && ar.Transport == mode && ar.Target == base && ar.Verdict == config.ActionAllow {
 						found = true
 					}
 				}

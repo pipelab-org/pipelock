@@ -27,7 +27,7 @@ pipelock status --config /etc/pipelock/pipelock.yaml
 pipelock status --config /etc/pipelock/pipelock.yaml --json
 ```
 
-The JSON form shows local config and scanner settings. Its ordinary URL and DLP action labels report `warn` for `mode: audit` even when `enforce` is `true`. Check the top-level `enforce` value. `mode: audit` alone still blocks ordinary URL findings. Use the [audit preset](../configuration.md#presets) for an observation trial; independent safety controls can still block.
+The JSON form shows local config and scanner settings. Its ordinary URL and DLP action labels follow the top-level `enforce` value: `block` when true or omitted, and `warn` when false, including with `mode: audit`. `mode: audit` alone still blocks ordinary URL findings. Use the [audit preset](../configuration.md#presets) for an observation trial; independent safety controls can still block.
 
 ## `pipelock presets`
 

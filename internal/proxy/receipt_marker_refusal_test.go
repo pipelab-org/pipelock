@@ -29,6 +29,9 @@ import (
 const (
 	refusalSentinel     = "REFUSALSENTINELTEXT"
 	refusalTargetPrefix = "https://api.vendor.example/"
+	// refusalBulkTargetPrefix starts a bare identifier: unlike a URL target it
+	// keeps its length in the signed receipt, so it can exceed the line limit.
+	refusalBulkTargetPrefix = "opaque-target-"
 )
 
 type markerGroup struct {
@@ -158,7 +161,7 @@ func intentOpts(target string) receipt.EmitOpts {
 // trailing zeros), so neither edge is used.
 func largestFittingTarget(t *testing.T) string {
 	t.Helper()
-	target := func(n int) string { return refusalTargetPrefix + strings.Repeat("a", n) }
+	target := func(n int) string { return refusalBulkTargetPrefix + strings.Repeat("a", n) }
 	marker := func(n int) receipt.EmitOpts {
 		return receiptEmissionFailureMarkerOpts(intentOpts(target(n)), "proxydecision receipt emission failed", config.ActionBlock)
 	}
@@ -343,7 +346,7 @@ func TestReceiptRefusalLogOmitsRequestText(t *testing.T) {
 		Transport: refusalSentinel + "-transport", Method: refusalSentinel + "-method",
 		Layer: refusalSentinel + "-layer", Pattern: refusalSentinel + "-pattern",
 		// Over the recorder's line limit, so the receipt is refused before it is written.
-		Target:     refusalTargetPrefix + refusalSentinel + strings.Repeat("a", recorder.MaxEntryLineBytes),
+		Target:     refusalBulkTargetPrefix + refusalSentinel + strings.Repeat("a", recorder.MaxEntryLineBytes),
 		PolicyHash: strings.Repeat("a", 64),
 	}
 	refused := p.emitRequiredReceiptWithEmitter(opts, e)

@@ -505,8 +505,8 @@ func TestReceiptCoverage_ReverseShieldReceiptScrubsTargetAndLinksParent(t *testi
 	if strings.Contains(r.ActionRecord.Target, "?") {
 		t.Fatalf("reverse shield receipt target retained query string: %q", r.ActionRecord.Target)
 	}
-	if !strings.Contains(r.ActionRecord.Target, "__redacted") {
-		t.Fatalf("reverse shield receipt target did not include path redaction marker: %q", r.ActionRecord.Target)
+	if parsed, err := url.Parse(r.ActionRecord.Target); err != nil || parsed.Host == "" || parsed.Path != "" || strings.Contains(r.ActionRecord.Target, "jsessionid") {
+		t.Fatalf("reverse shield receipt target is not destination-only: %q", r.ActionRecord.Target)
 	}
 }
 

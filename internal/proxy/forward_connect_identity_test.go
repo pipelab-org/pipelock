@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -228,8 +229,8 @@ func TestConnectHandler_TargetIdentityBindsScannerReceiptAndDial(t *testing.T) {
 			}
 
 			r := findConnectIntentReceipt(t, rph.findReceipts(t))
-			if r.ActionRecord.Target != tc.wantScannerURL {
-				t.Fatalf("receipt target = %q, want %q", r.ActionRecord.Target, tc.wantScannerURL)
+			if wantReceiptTarget := strings.TrimSuffix(tc.wantScannerURL, "/"); r.ActionRecord.Target != wantReceiptTarget {
+				t.Fatalf("receipt target = %q, want %q", r.ActionRecord.Target, wantReceiptTarget)
 			}
 		})
 	}

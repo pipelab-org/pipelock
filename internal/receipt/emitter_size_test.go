@@ -36,7 +36,7 @@ func TestEmitterOversizedRecorderLineKeepsReceiptChainPosition(t *testing.T) {
 	tooLarge := EmitOpts{
 		ActionID: NewActionID(), Verdict: config.ActionAllow,
 		Transport: "fetch", Method: http.MethodGet,
-		Target: "https://api.vendor.example/" + strings.Repeat("x", recorder.MaxEntryLineBytes),
+		Target: "opaque-" + strings.Repeat("x", recorder.MaxEntryLineBytes),
 	}
 	if err := emitter.EmitDurable(tooLarge); !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
 		t.Fatalf("oversized receipt = %v", err)

@@ -129,7 +129,9 @@ func TestAutoAnchorStreamingMemoryBound(t *testing.T) {
 	const size = 512
 	const liveHeapLimit = uint64(4 << 20)
 	rig := newAutoAnchorTestRig(t)
-	target := "https://api.vendor.example/" + strings.Repeat("x", 16<<10)
+	// A bare identifier keeps its length in the signed receipt; a URL target would
+	// be reduced to its destination and could not grow the chain.
+	target := "opaque-" + strings.Repeat("x", 16<<10)
 	for range size {
 		emitAutoAnchorReceipt(t, rig.emitter, target)
 	}

@@ -451,6 +451,33 @@ func TestEmit_SanitizesTargetBeforeSigning(t *testing.T) {
 	}
 }
 
+// URL content is dropped from the signed target whether or not a DLP
+// predicate is configured; the predicate only adds redaction on top.
+func TestEmit_ReducesTargetWithoutSanitizer(t *testing.T) {
+	for _, tc := range []struct{ name, target, want string }{
+		{"url", "https://user:pw@api.vendor.example:8443/v1/items?ref=value#frag", "https://api.vendor.example:8443"},
+		{"origin_form", "/fetch?url=https%3A%2F%2Fapi.vendor.example%2F%3Fref%3Dvalue", "[redacted-url]"},
+		{"tool_name", "read_file", "read_file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &captureRecorder{}
+			em, pub, keyID := newTestEmitter(t, rec, nil)
+			d := validDecision()
+			d.Target = tc.target
+			if err := em.Emit(d); err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			rcpt := decodeReceipt(t, rec.entries[0])
+			if err := contractreceipt.VerifyWithKey(rcpt, pub, keyID); err != nil {
+				t.Fatalf("VerifyWithKey: %v", err)
+			}
+			if got := decodePayload(t, rcpt).Target; got != tc.want {
+				t.Fatalf("signed target = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestEmit_ProvenanceShapes(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -862,7 +889,7 @@ func TestEmitRecorderRejectsOversizedLineBeforeV2Advance(t *testing.T) {
 		Principal: "local", Actor: "pipelock",
 	})
 	tooLarge := validDecision()
-	tooLarge.Target = "https://api.vendor.example/" + strings.Repeat("x", recorder.MaxEntryLineBytes)
+	tooLarge.Target = "opaque-" + strings.Repeat("x", recorder.MaxEntryLineBytes)
 	if err := em.Emit(tooLarge); !errors.Is(err, recorder.ErrSerializedEntryTooLarge) {
 		t.Fatalf("oversized live recorder entry = %v", err)
 	}

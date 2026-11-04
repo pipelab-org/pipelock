@@ -34,7 +34,7 @@ func TestEmitterSanitationUnknownRedactorFallback(t *testing.T) {
 		t.Fatal("arbitrary callback acquired immutable guarantee")
 	}
 	em := NewEmitter(EmitterConfig{Recorder: rec, PrivKey: key})
-	target := "https://api.vendor.example/item?q=rotating-secret-value"
+	target := "opaque-rotating-secret-value"
 	// The detector changes after content is frozen and scanned but before
 	// the chain lock. The write boundary binds the frozen scan by projection
 	// digest instead of rescanning, so the first receipt keeps its target and
@@ -123,7 +123,7 @@ func TestEmitterSanitationOutsideChain(t *testing.T) {
 	em.chainMu.Lock()
 	done := make(chan error, 1)
 	go func() {
-		done <- em.Emit(EmitOpts{ActionID: "outside", Target: "https://api.vendor.example/?q=sanitation-signal", Transport: "intercept", Method: "GET", Verdict: config.ActionAllow})
+		done <- em.Emit(EmitOpts{ActionID: "outside", Target: "https://sanitation-signal.vendor.example", Transport: "intercept", Method: "GET", Verdict: config.ActionAllow})
 	}()
 	select {
 	case <-seen:

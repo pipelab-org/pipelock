@@ -167,8 +167,8 @@ func TestEmitter_Emit_HappyPath(t *testing.T) {
 
 	// Read the JSONL file back and find our receipt entry.
 	receipt := readReceiptFromDir(t, dir, pub)
-	if receipt.ActionRecord.Target != testTarget {
-		t.Errorf("target = %q, want %q", receipt.ActionRecord.Target, testTarget)
+	if receipt.ActionRecord.Target != "https://example.com" {
+		t.Errorf("target = %q, want %q", receipt.ActionRecord.Target, "https://example.com")
 	}
 	if receipt.ActionRecord.Verdict != "block" {
 		t.Errorf("verdict = %q, want %q", receipt.ActionRecord.Verdict, "block")
