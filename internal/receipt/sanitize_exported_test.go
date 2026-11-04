@@ -222,3 +222,19 @@ func TestSanitizeSignedTargetReducesRelativeURLs(t *testing.T) {
 		})
 	}
 }
+
+// Signed targets keep scheme, host and port, so a secret in the retained host
+// depends on the DLP predicate the production emitters pass.
+func TestSanitizeSignedTargetAppliesPredicateToRetainedHost(t *testing.T) {
+	t.Parallel()
+	clean := func(s string) bool { return !strings.Contains(s, "secret") }
+	for _, tc := range []struct{ target, want string }{
+		{"https://secret-host.example/path?ref=value", "[redacted-target]"},
+		{"secret-host.example:443", "[redacted-target]"},
+		{"https://api.vendor.example/secret-path", "https://api.vendor.example"},
+	} {
+		if got := SanitizeSignedTarget(tc.target, clean); got != tc.want {
+			t.Fatalf("SanitizeSignedTarget(%q) = %q, want %q", tc.target, got, tc.want)
+		}
+	}
+}
