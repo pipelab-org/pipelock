@@ -263,3 +263,26 @@ func TestMatchDecodedForCardOnlyParity(t *testing.T) {
 		}
 	}
 }
+
+// The decoded-match budget covers the retained match slices, not only their
+// keys, so a store near its limit stops retaining instead of growing past it.
+func TestRetainDecodedMatchesChargesMatchStorage(t *testing.T) {
+	key := decodedMatchKey{text: "abc", encoding: "hex"}
+	matches := make([]TextDLPMatch, 3)
+	var m decodingMemo
+	m.retainDecodedMatches(key, matches)
+	if want := len(key.text) + len(key.encoding) + 3*textDLPMatchSize; m.decodedMatchesBytes != want {
+		t.Fatalf("charged %d bytes, want %d", m.decodedMatchesBytes, want)
+	}
+
+	var full decodingMemo
+	full.decodedMatchesBytes = maxDecodeTotalBytes - len(key.text) - len(key.encoding)
+	full.retainDecodedMatches(key, matches)
+	if len(full.decodedMatches) != 0 {
+		t.Fatal("a result whose matches exceed the remaining budget was retained")
+	}
+	full.retainDecodedMatches(key, nil)
+	if len(full.decodedMatches) != 1 {
+		t.Fatal("a match-free result that fits the remaining budget was not retained")
+	}
+}

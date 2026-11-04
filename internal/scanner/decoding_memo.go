@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -369,8 +370,13 @@ func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
 	return slices.Clone(matches)
 }
 
+// textDLPMatchSize is the storage one retained match takes in its slice.
+// Match strings are pattern labels shared with the scanner, so they are not
+// charged again.
+var textDLPMatchSize = int(reflect.TypeFor[TextDLPMatch]().Size())
+
 func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextDLPMatch) {
-	cost := len(key.text) + len(key.encoding)
+	cost := len(key.text) + len(key.encoding) + len(matches)*textDLPMatchSize
 	if key.text == "" || len(m.decodedMatches) >= maxDecodeCandidates || cost > maxDecodeTotalBytes-m.decodedMatchesBytes {
 		return
 	}
