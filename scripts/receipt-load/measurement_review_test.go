@@ -139,6 +139,39 @@ func TestReviewMatrixScopeFailureOverridesResult(t *testing.T) {
 	}
 }
 
+func TestReviewMatrixForwardsVerifyTimeout(t *testing.T) {
+	for _, value := range []string{"", "180s"} {
+		t.Run("timeout="+value, func(t *testing.T) {
+			root := t.TempDir()
+			argv := filepath.Join(root, "argv")
+			scope := filepath.Join(root, "systemd-run")
+			if err := os.WriteFile(scope, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \""+argv+"\"\nexit 0\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Chmod(scope, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./matrix.sh")
+			cmd.Args = append(cmd.Args, newFakePipelock(t, "clean"), newFakePipelock(t, "harness"), filepath.Join(root, "matrix"), "1", "1")
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_MODES=off", "RECEIPT_LOAD_VERIFY_TIMEOUT="+value)
+			_, _ = cmd.CombinedOutput()
+			data, err := os.ReadFile(filepath.Clean(argv))
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Count(string(data), "\n--verify-timeout\n"+value+"\n")
+			if value == "" {
+				got = strings.Count(string(data), "--verify-timeout")
+			}
+			if want := map[string]int{"": 0, "180s": 12}[value]; got != want {
+				t.Fatalf("got %d forwarded verify timeouts across 12 cells, want %d", got, want)
+			}
+		})
+	}
+}
+
 func TestReviewSummaryEquivalentScopes(t *testing.T) {
 	a, b := fakeResult(100, 80, 90, verdictPass, perfMeasured), fakeResult(200, 180, 190, verdictPass, perfMeasured)
 	a.Inputs.Host.CgroupCPUQuota = "200000/100000 us (/scope-one)"
