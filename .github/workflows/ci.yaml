@@ -1623,9 +1623,10 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The default checkout is the pull request merged into its base, so the
+      # base tip is the comparison point and the delta is exactly this change.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -1634,16 +1635,14 @@ jobs:
         with:
           go-version: '1.26'
 
-      - name: Compare merge-base and head allocations
+      - name: Compare base and merged allocations
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          merge_base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
           baseline="$RUNNER_TEMP/benchmark-base"
           output="$RUNNER_TEMP/benchmark-allocations"
-          git worktree add --detach "$baseline" "$merge_base"
+          git worktree add --detach "$baseline" "$BASE_SHA"
           mkdir -m 750 "$output"
           python3 scripts/bench_run.py --alloc-report \
             --baseline "$baseline" --candidate "$PWD" --output "$output"

@@ -167,7 +167,7 @@ class DocsClassifierTest(unittest.TestCase):
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true\nbenchmark_smoke=true")
+            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true\nbenchmark_smoke=true\nbenchmark_alloc=true")
 
     def test_empty_diff_runs_everything(self) -> None:
         self.commit("empty")
