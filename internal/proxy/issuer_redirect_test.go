@@ -512,6 +512,11 @@ func TestInterceptIssuedRedirectRevocation(t *testing.T) {
 	if got := e.do("agent-one", http.MethodGet, delegationSourceURL()); got != http.StatusFound {
 		t.Fatalf("issue status = %d", got)
 	}
+	// Receiving the 302 can precede the server's post-flush evidence publication.
+	// Establish delivered proof before testing withdrawal of an existing grant.
+	if got := e.do("agent-one", http.MethodGet, good); got != http.StatusOK {
+		t.Fatalf("initial target status = %d, want 200", got)
+	}
 	live := e.cfg
 	withdrawn := func(mutate func(*config.IssuedRedirectDelegation)) *config.Config {
 		c := live.Clone()
