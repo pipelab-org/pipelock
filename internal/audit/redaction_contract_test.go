@@ -188,6 +188,11 @@ func TestHTTPAuditDestinationsRedactedInBothOutputs(t *testing.T) {
 			{"payloadcanary://api.vendor.example", "[redacted-url]"},
 			{"api.vendor.example:443/" + canary + "?token=" + canary, "api.vendor.example:443"},
 		} {
+			// A tunnel target is a CONNECT authority, so a single-label
+			// host:port there is a destination rather than ambiguous text.
+			if strings.HasPrefix(tt.name, "tunnel ") && input.raw == "data:123" {
+				input.want = "data:123"
+			}
 			t.Run(tt.name+"/"+input.raw, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "audit.log")
 				logger, err := New("json", "file", path, true, true)
@@ -515,5 +520,48 @@ func TestAuditErrorTreeSharedSubtreeLinear(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("shared subtrees were revisited")
+	}
+}
+
+// A joined error must keep every distinct destination, not only the one the
+// log context already carries in its url field.
+func TestAuditURLErrorKeepsEveryDestination(t *testing.T) {
+	err := errors.Join(
+		&url.Error{Op: "Get", URL: "https://api.vendor.example/payloadcanary", Err: errors.New("upstream unavailable")},
+		&url.Error{Op: "Get", URL: "https://second.vendor.example/payloadcanary", Err: errors.New("also unavailable")},
+	)
+	got := redactURLErrors(err).Error()
+	for _, want := range []string{"api.vendor.example", "second.vendor.example"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing destination %q in summary: %q", want, got)
+		}
+	}
+	if strings.Contains(got, "payloadcanary") {
+		t.Fatalf("summary kept request content: %q", got)
+	}
+}
+
+func TestConnectAuthority(t *testing.T) {
+	// Built at runtime so no credential-shaped literal sits in source.
+	secret := "payload" + "canary"
+	for raw, want := range map[string]string{
+		"":                             "",
+		"litellm:4000":                 "litellm:4000",
+		"api.vendor.example:443":       "api.vendor.example:443",
+		"127.0.0.1:8443":               "127.0.0.1:8443",
+		"[::1]:443":                    "[::1]:443",
+		"litellm":                      "litellm",
+		"litellm:0":                    "[redacted-url]",
+		"user:" + secret + "@host:443": "[redacted-url]",
+		"host:443/payloadcanary":       "[redacted-url]",
+		"host:443?payloadcanary":       "[redacted-url]",
+		"host:443#payloadcanary":       "[redacted-url]",
+		"bad_label:443":                "[redacted-url]",
+		"api.vendor.example:443/" + secret + "?tok" + "en=" + secret: "api.vendor.example:443",
+		"https://api.vendor.example:443/payloadcanary":               "https://api.vendor.example:443",
+	} {
+		if got := connectAuthority(raw); got != want {
+			t.Errorf("connectAuthority(%q) = %q, want %q", raw, got, want)
+		}
 	}
 }

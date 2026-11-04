@@ -15,7 +15,7 @@ func (l *Logger) LogTunnelOpen(ctx LogContext) {
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelOpen).
-		optStr("target", dropURLContentSegments(ctx.target, false)).
+		optStr("target", connectAuthority(ctx.target)).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
@@ -33,7 +33,7 @@ func (l *Logger) LogTunnelClose(ctx LogContext, totalBytes int64, duration time.
 		return
 	}
 	e := newLogEntry(l.zl.Info(), EventTunnelClose).
-		optStr("target", dropURLContentSegments(ctx.target, false)).
+		optStr("target", connectAuthority(ctx.target)).
 		optStr("client_ip", ctx.clientIP).
 		optStr("request_id", ctx.requestID).
 		correlationField(ctx.correlation).
