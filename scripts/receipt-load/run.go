@@ -34,6 +34,8 @@ const (
 )
 
 type options struct {
+	destinations    string
+	destinationPlan *destinationPlan
 	binary          string
 	out             string
 	rules           string
@@ -74,7 +76,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 	}
 	res.Inputs.Workload = workloadReport{
 		Seed: plan.seed, Tag: plan.tag(), KeyParam: workloadKeyParam,
-		BlockEvery: blockEvery, BlockOffset: plan.blockOffset, WindowSeconds: opt.window.Seconds(),
+		Destinations: destinationMode(opt.destinations), BlockEvery: blockEvery, BlockOffset: plan.blockOffset, WindowSeconds: opt.window.Seconds(),
 	}
 	err := execute(ctx, opt, mode, dirs, plan, res)
 	if err != nil {
@@ -138,16 +140,20 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	if res.Inputs.Rules, err = prepareRules(opt.rules, dirs); err != nil {
 		return err
 	}
-	configPath, err := prepareConfig(ctx, opt, mode, dirs, childEnv, res)
-	if err != nil {
-		return err
-	}
-
-	sink, err := startSink(ctx, plan)
+	sink, err := startSink(ctx, plan, opt.destinations)
 	if err != nil {
 		return err
 	}
 	defer sink.close()
+	plan = sink.plan
+	opt.destinationPlan = plan.destinations
+	if plan.destinations != nil {
+		res.Inputs.Workload.DestinationPool = plan.destinations
+	}
+	configPath, err := prepareConfig(ctx, opt, mode, dirs, childEnv, res)
+	if err != nil {
+		return err
+	}
 	port, err := freePort(ctx)
 	if err != nil {
 		return err
@@ -344,7 +350,7 @@ func prepareConfig(ctx context.Context, opt options, mode string, dirs runDirs, 
 	if err != nil {
 		return "", err
 	}
-	effective, err := applyConfig(base, configParams{mode: mode, chains: opt.chains, dirs: dirs})
+	effective, err := applyConfig(base, configParams{mode: mode, chains: opt.chains, dirs: dirs, destinations: opt.destinationPlan})
 	if err != nil {
 		return "", err
 	}

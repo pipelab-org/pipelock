@@ -16,7 +16,8 @@ const (
 	blockEvery = 20
 
 	// workloadKeyParam binds each origin request to the plan. Destination-only
-	// receipts drop this query key and use aggregate accounting instead;
+	// receipts drop this query key; per-request destinations restore identity.
+	// Single-destination receipts use aggregate accounting instead;
 	// historical receipts that retain the key can still use identity checks.
 	workloadKeyParam   = "wk"
 	workloadPath       = "/ok"
@@ -33,11 +34,12 @@ const fakeToken = "ghp_" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 // has a unique non-secret key; all expectations (sink, receipts, response
 // class) are derived from the plan rather than from observed counts.
 type workload struct {
-	runNonce    string
-	seed        uint64
-	warmup      int
-	measured    int
-	blockOffset int
+	destinations *destinationPlan
+	runNonce     string
+	seed         uint64
+	warmup       int
+	measured     int
+	blockOffset  int
 }
 
 func newWorkload(seed uint64, warmup, measured int) workload {

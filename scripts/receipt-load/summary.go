@@ -257,6 +257,11 @@ func sampleIdentity(r result) [32]byte {
 	inputs.Rules.Source, inputs.Rules.Dir = "", ""
 	inputs.Rules.ProxyLogLines = nil
 	inputs.Workload.Tag = ""
+	if pool := inputs.Workload.DestinationPool; pool != nil {
+		// Ephemeral port numbers do not change the workload population. Preserve
+		// pool dimensions and aliases, but compare ports by their ordered slots.
+		inputs.Workload.DestinationPool = &destinationPlan{Aliases: pool.Aliases, Ports: make([]string, len(pool.Ports))}
+	}
 	// systemd gives each sample a fresh scope name; compare the quota itself.
 	if quota, _, ok := strings.Cut(inputs.Host.CgroupCPUQuota, " us ("); ok {
 		inputs.Host.CgroupCPUQuota = quota
