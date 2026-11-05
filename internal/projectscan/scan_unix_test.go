@@ -34,8 +34,9 @@ func TestScanFiles_SymlinkTargetsAreInspectedByTarget(t *testing.T) {
 			if err := os.Symlink(tc.target, filepath.Join(dir, ".env")); err != nil {
 				t.Fatal(err)
 			}
+			patterns := mustCompileDLPPatterns(t)
 			done := make(chan []Finding, 1)
-			go func() { done <- scanFiles(dir, mustCompileDLPPatterns(t)) }()
+			go func() { done <- scanFiles(dir, patterns) }()
 			select {
 			case findings := <-done:
 				if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect .env for secrets ("+tc.reason+")") {
