@@ -47,6 +47,7 @@ import re
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -649,10 +650,10 @@ def check_budget(tags: str, budget: float, overrides: dict | None = None) -> int
     return 0
 
 
-def changed_tests(base: str, head: str) -> list[dict[str, str]]:
+def changed_tests(base: str, head: str, tags: str = "") -> list[dict[str, str]]:
     """Compare parsed declarations at Git refs, independent of the working tree."""
     result = subprocess.run(
-        ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head],
+        ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head, "--tags", tags],
         check=True, capture_output=True, text=True, cwd=ROOT,
     )
     return json.loads(result.stdout)
@@ -690,61 +691,104 @@ def runnable_changed_tests(
     return selected
 
 
-def measure_changed_tests(tests: list[dict[str, str]], tags: str, json_out: Path) -> int:
+# Measurement deadline inside the job's 48-minute ceiling, leaving room for
+# checkout, module download and compilation before measuring starts.
+MEASURE_DEADLINE_SECONDS = 40 * 60
+# go test's own -timeout, as on the race lane.
+MEASURE_PACKAGE_TIMEOUT_SECONDS = 15 * 60
+# Don't start a package with less time than this left.
+MEASURE_MIN_START_SECONDS = 60
+
+
+def measure_changed_tests(
+    tests: list[dict[str, str]], tags: str, json_out: Path,
+    deadline_seconds: float = MEASURE_DEADLINE_SECONDS, clock=time.monotonic,
+) -> int:
+    if __package__:
+        from .ci_test_durations import partial_overrides, selection_path, tree_for_package
+    else:
+        from ci_test_durations import partial_overrides, selection_path, tree_for_package
     import_paths: dict[str, str] = {}
     selected = runnable_changed_tests(tests, tags, import_paths) if tests else {}
     if not selected:
         print(f"No added or changed runnable tests (tags={tags or 'none'}); race measurement is a no-op")
         return 0
     json_out.parent.mkdir(parents=True, exist_ok=True)
-    # Record which selected tests the base never declared; partial package
-    # weights add only those (see ci_test_durations.partial_overrides).
-    new: dict[str, list[str]] = {}
+    new: dict[str, set[str]] = {}
     for test in tests:
         package = import_paths.get(test.get("package", ""))
         if package and test.get("new") and test["name"] in selected.get(package, []):
-            new.setdefault(package, []).append(test["name"])
-    json_out.with_suffix(".selection.json").write_text(
-        json.dumps({"new": {pkg: sorted(set(names)) for pkg, names in new.items()},
-                    "selected": selected}, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8")
+            new.setdefault(package, set()).add(test["name"])
+    # Rest shards weigh whole packages, so a rest package runs whole: its
+    # measured total then replaces the recorded one exactly, whether its tests
+    # are new, edited or slower. Split trees weigh single tests and run only
+    # the selected names.
+    whole = sorted(pkg for pkg in selected if tree_for_package(pkg) is None)
+    # Packages with new tests go first: no weight exists for them, while an
+    # edited test skipped at the deadline still has its recorded weight.
+    order = sorted(selected, key=lambda pkg: (pkg not in new, pkg))
+    started = clock()
+    measured: list[str] = []
+    skipped: list[str] = []
     status = 0
     with json_out.open("w", encoding="utf-8") as stream:
-        for package, names in selected.items():
-            print(f"Measuring {package}: {' '.join(names)}", flush=True)
-            command = ["go", "test", "-race", "-p=1", "-parallel=2", "-timeout=15m", "-count=1", "-json"]
+        for package in order:
+            names = selected[package]
+            remaining = deadline_seconds - (clock() - started)
+            if remaining < MEASURE_MIN_START_SECONDS:
+                skipped.append(package)
+                continue
+            timeout = int(min(MEASURE_PACKAGE_TIMEOUT_SECONDS, remaining))
+            print(f"Measuring {package}: {'whole package' if package in whole else ' '.join(names)}", flush=True)
+            command = ["go", "test", "-race", "-p=1", "-parallel=2", f"-timeout={timeout}s", "-count=1", "-json"]
             if tags:
                 command.extend(["-tags", tags])
             # Match the race lane's atomic coverage overhead, except scanner,
             # whose coverage is measured separately by the existing planner.
             if not package_in_tree(package, HEAVY_TREES["scanner"]):
                 command.extend(["-covermode=atomic", "-coverprofile=" + str(json_out.with_suffix(".coverage"))])
-            command.extend(["-run=" + exact_names_regex(names), package])
+            if package not in whole:
+                command.append("-run=" + exact_names_regex(names))
+            command.append(package)
             print(shlex.join(command), flush=True)
             result = subprocess.run(command, check=False, stdout=stream, cwd=ROOT)
+            measured.append(package)
             if result.returncode:
                 status = 1
+    selection_path(json_out).write_text(
+        json.dumps({"new": {pkg: sorted(names) for pkg, names in new.items()},
+                    "selected": selected, "whole": [pkg for pkg in whole if pkg in measured],
+                    "skipped": skipped}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
     if status:
         print(f"Changed-test race run failed; inspect {json_out}", file=sys.stderr)
         return status
+    unmeasured_new = sorted(f"{pkg}: {', '.join(sorted(new[pkg]))}" for pkg in skipped if pkg in new)
+    if unmeasured_new:
+        print(f"Changed tests did not all fit the {deadline_seconds:.0f}s measurement deadline; "
+              "new tests have no recorded weight, so they can't be left unmeasured: "
+              + "; ".join(unmeasured_new) + ". Split the pull request or run "
+              "scripts/ci_test_durations.py on a full race run of these packages.", file=sys.stderr)
+        return 1
+    for package in skipped:
+        print(f"::warning title=Changed test not re-measured::{package} kept its recorded weight; "
+              f"the {deadline_seconds:.0f}s measurement deadline was reached")
+    if not measured:
+        return check_budget(tags, SHARD_BUDGET_SECONDS)
     # A successful go test with an empty selector match is not measurement.
     completed: set[tuple[str, str]] = set()
     for line in json_out.read_text(encoding="utf-8").splitlines():
         event = json.loads(line)
         if event.get("Action") in ("pass", "skip") and isinstance(event.get("Test"), str):
             completed.add((event.get("Package"), event["Test"]))
-    missing = {(pkg, name) for pkg, names in selected.items() for name in names} - completed
+    missing = {(pkg, name) for pkg in measured for name in selected[pkg]} - completed
     if missing:
         raise ValueError(f"selected tests produced no terminal result: {sorted(missing)}")
-    if __package__:
-        from .ci_test_durations import partial_overrides
-    else:
-        from ci_test_durations import partial_overrides
     overrides = partial_overrides([json_out])
     result = check_budget(tags, SHARD_BUDGET_SECONDS, overrides)
     if result:
         print("Measured changed tests: " + "; ".join(
-            f"{pkg}: {', '.join(names)}" for pkg, names in selected.items()), file=sys.stderr)
+            f"{pkg}: {', '.join(selected[pkg])}" for pkg in measured), file=sys.stderr)
         print("Refresh weights with: " + shlex.join([
             "python3", "scripts/ci_test_durations.py", "--partial", "--write", str(json_out)
         ]) + "; or adjust TEST_SPLITS in scripts/ci_test_packages.py", file=sys.stderr)
@@ -806,7 +850,7 @@ def main() -> int:
 
     try:
         if args.changed_tests_base:
-            tests = changed_tests(args.changed_tests_base, args.changed_tests_head)
+            tests = changed_tests(args.changed_tests_base, args.changed_tests_head, args.tags)
             if args.measure_changed_tests:
                 return measure_changed_tests(tests, args.tags, args.json_out)
             print(json.dumps(tests, indent=2))

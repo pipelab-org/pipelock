@@ -24,34 +24,33 @@ class DurationTest(unittest.TestCase):
                 paths.append(path)
             return collect(paths)["proxy"]
 
-    def partial_packages(self, events, new, previous=100):
+    def partial_packages(self, streams, whole):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "changed.json"
-            path.write_text("".join(json.dumps({"Package": "example.test/rest", **event}) + "\n"
-                                    for event in events))
-            durations.selection_path(path).write_text(json.dumps({"new": new}))
-            with patch.object(durations, "load_package_durations", return_value={"example.test/rest": previous}), \
+            paths = []
+            for index, events in enumerate(streams):
+                path = Path(directory) / f"changed{index}.json"
+                path.write_text("".join(json.dumps({"Package": "example.test/rest", **event}) + "\n"
+                                        for event in events))
+                durations.selection_path(path).write_text(json.dumps({"whole": whole}))
+                paths.append(path)
+            with patch.object(durations, "load_package_durations", return_value={"example.test/rest": 100}), \
                  patch.object(durations, "load_durations", return_value={}):
-                return durations.partial_overrides([path])["packages"]["example.test/rest"]
+                return durations.partial_overrides(paths)["packages"]
 
-    def test_partial_stream_adds_only_new_tests_to_rest_package(self):
-        events = [
-            {"Action": "run", "Test": "TestNew"},
-            {"Action": "pass", "Test": "TestNew", "Elapsed": 70},
-            {"Action": "run", "Test": "TestEdited"},
-            {"Action": "pass", "Test": "TestEdited", "Elapsed": 50},
-            {"Action": "pass", "Elapsed": 121},
-        ]
-        # The recorded total already holds TestEdited; only TestNew is added.
-        self.assertEqual(self.partial_packages(events, {"example.test/rest": ["TestNew"]}), 170)
-        # An edit-only run that stays under the recorded total changes nothing,
-        # so committing the refresh repeatedly cannot ratchet the total.
-        self.assertEqual(self.partial_packages(events[2:4] + [{"Action": "pass", "Elapsed": 51}], {}), 100)
-        # An edited test that alone outruns the recorded total still counts.
-        slow = [{"Action": "run", "Test": "TestEdited"},
-                {"Action": "pass", "Test": "TestEdited", "Elapsed": 400},
-                {"Action": "pass", "Elapsed": 401}]
-        self.assertEqual(self.partial_packages(slow, {}), 401)
+    def test_partial_stream_replaces_rest_package_total_with_whole_run(self):
+        run = [{"Action": "run", "Test": "TestEdited"},
+               {"Action": "pass", "Test": "TestEdited", "Elapsed": 400},
+               {"Action": "pass", "Elapsed": 450}]
+        # The whole run replaces the recorded 100s, so an edited test that got
+        # slower is counted once, at its new cost.
+        self.assertEqual(self.partial_packages([run], ["example.test/rest"]), {"example.test/rest": 450})
+        faster = [dict(event, Elapsed=event["Elapsed"] - 300) if "Elapsed" in event else event for event in run]
+        # Two streams of the same package keep the slowest run.
+        self.assertEqual(self.partial_packages([run, faster], ["example.test/rest"]), {"example.test/rest": 450})
+        self.assertEqual(self.partial_packages([faster, run], ["example.test/rest"]), {"example.test/rest": 450})
+        # A rest package that ran only some tests can't replace its total.
+        with self.assertRaisesRegex(ValueError, "ran only some tests"):
+            self.partial_packages([run], [])
 
     def test_partial_stream_requires_complete_run_and_selection(self):
         with tempfile.TemporaryDirectory() as directory:

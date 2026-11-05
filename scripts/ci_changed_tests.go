@@ -14,9 +14,11 @@ import (
 	"flag"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/format"
 	"go/parser"
 	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -31,7 +33,8 @@ type test struct {
 	Package string `json:"package"`
 	Name    string `json:"name"`
 	// New is false when the package already declared this test name at the
-	// base, even in another file. Partial package weights add only new tests.
+	// base for the same build variant, even in another file. The runner
+	// measures packages with new tests first, since no weight exists for them.
 	New    bool   `json:"new"`
 	Source string `json:"-"`
 	ident  string
@@ -46,6 +49,19 @@ func git(args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %v: %w: %s", args, err, stderr.String())
 	}
 	return out, nil
+}
+
+// buildCtx is the variant being measured: the runner's GOOS/GOARCH and cgo
+// setting plus the race tag and any --tags, as go test -race -tags would use.
+var buildCtx = build.Default
+
+// builds reports whether buildCtx compiles file at a revision. MatchFile applies
+// both //go:build lines and _GOOS/_GOARCH file-name suffixes; OpenFile serves
+// the blob so no checkout of ref is needed.
+func builds(file string, source []byte) (bool, error) {
+	ctx := buildCtx
+	ctx.OpenFile = func(string) (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(source)), nil }
+	return ctx.MatchFile(path.Dir(file), path.Base(file))
 }
 
 // Match cmd/go/internal/load's isTestFunc shape: *T or *something.T.
@@ -78,6 +94,13 @@ func inventory(ref string, files []string) (map[string]test, error) {
 		source, err := git("show", ref+":"+file)
 		if err != nil {
 			return nil, err
+		}
+		// A file this variant doesn't build declares nothing for it, at the base
+		// as at the head, so a name only another platform declared stays new.
+		if ok, err := builds(file, source); err != nil {
+			return nil, fmt.Errorf("build constraints %s:%s: %w", ref, file, err)
+		} else if !ok {
+			continue
 		}
 		fset := token.NewFileSet()
 		parsed, err := parser.ParseFile(fset, file, source, 0)
@@ -182,7 +205,14 @@ func selectTests(base, head string) ([]test, error) {
 func main() {
 	base := flag.String("base", "", "base Git revision (normally the merge base)")
 	head := flag.String("head", "HEAD", "head Git revision")
+	tags := flag.String("tags", "", "comma-separated build tags of the measured variant")
 	flag.Parse()
+	buildCtx.BuildTags = []string{"race"}
+	for _, tag := range strings.Split(*tags, ",") {
+		if tag != "" {
+			buildCtx.BuildTags = append(buildCtx.BuildTags, tag)
+		}
+	}
 	if *base == "" {
 		fmt.Fprintln(os.Stderr, "--base is required")
 		os.Exit(2)

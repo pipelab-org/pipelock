@@ -31,7 +31,6 @@ from ci_test_packages import (  # noqa: E402
     DURATIONS_FILE,
     HEAVY_TREES,
     ROOT,
-    MIN_UNMEASURED_SECONDS,
     SHARDS,
     TEST_SPLITS,
     load_durations,
@@ -256,37 +255,16 @@ def selection_path(path: Path) -> Path:
     return path.with_suffix(".selection.json")
 
 
-def top_level_seconds(path: Path) -> dict[tuple[str, str], float]:
-    """Elapsed seconds of each passed or skipped top-level test in a stream."""
-    seconds: dict[tuple[str, str], float] = {}
-    with path.open(encoding="utf-8", errors="replace") as stream:
-        for line in stream:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict) or event.get("Action") not in ("pass", "skip"):
-                continue
-            package, name, elapsed = event.get("Package"), event.get("Test"), event.get("Elapsed")
-            if isinstance(package, str) and isinstance(name, str) and "/" not in name \
-                    and isinstance(elapsed, (int, float)):
-                seconds[(package, name)] = float(elapsed)
-    return seconds
-
-
 def partial_overrides(paths: list[Path]) -> dict:
-    """Use partial race runs without replacing whole-package weights with subsets.
+    """Turn changed-test race runs into weight overrides.
 
-    Split trees already store per-test weights, so a measured test replaces its
-    own weight. Rest shards store only package totals, which already include
-    every test the base declared. A new test adds its measured time to that
-    total; an edited test is already in it, so the run counts only when the
-    run alone exceeds the recorded total. Adding edited tests again would
-    double-count them, and a committed refresh would then ratchet the total up
-    on every later edit. An edited test that slows down without overtaking its
-    package's total is left to the weekly drift refresh.
+    Split trees store per-test weights, so a measured test replaces its own
+    weight. Rest shards store whole-package totals, so the changed-test runner
+    measures a touched rest package whole and its run replaces the total. A
+    rest package that ran only some of its tests can't stand in for its total,
+    so it is refused rather than added to or ignored.
     """
-    new_tests: set[tuple[str, str]] = set()
+    whole: set[str] = set()
     for path in paths:
         if not artifact_complete(path):
             raise ValueError(f"incomplete or failed changed-test race stream: {path}")
@@ -295,18 +273,15 @@ def partial_overrides(paths: list[Path]) -> dict:
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"partial stream {path} needs its selection file "
                              f"{selection_path(path).name}: {error}") from error
-        for package, names in selection.get("new", {}).items():
-            new_tests.update((package, name) for name in names)
-    previous = load_package_durations()
-    known = sorted(previous.values())
-    default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
-    tests: dict[tuple[str, str], float] = {}
+        whole.update(selection.get("whole", []))
+    packages: dict[str, float] = {}
     for path in paths:
-        tests.update(top_level_seconds(path))
-    packages = {}
-    for package, run_seconds in collect_packages(paths).items():
-        added = sum(seconds for key, seconds in tests.items() if key[0] == package and key in new_tests)
-        packages[package] = max(previous.get(package, default) + added, run_seconds)
+        for package, seconds in collect_packages([path]).items():
+            if package not in whole:
+                raise ValueError(f"{path}: rest package {package} ran only some tests; "
+                                 "measure the whole package to replace its total")
+            # Several streams of one package keep the slowest run.
+            packages[package] = max(packages.get(package, 0.0), seconds)
     result = {"trees": collect(paths, load_durations()), "packages": packages}
     # Reuse the planner's finite, non-negative weight validation for imported
     # partial JSON too; invalid numbers must never make a budget compare green.
