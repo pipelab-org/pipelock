@@ -48,7 +48,7 @@ cd sdk/verifiers/ts
 npm ci
 npm test                     # build + run the full suite
 npm publish --dry-run        # inspect tarball contents; confirm dist/ + v0.schema.json present
-npm publish                  # the real publish (prepack rebuilds; publishes as public)
+# Real publish: push the verifier-v* tag (see "Product release gate"). Don't run npm publish locally.
 ```
 
 Verify: `npm view @pipelock/verifier-ts version` shows the new version, and
@@ -62,7 +62,7 @@ cd sdk/verifiers/rust
 cargo test --release
 cargo package --list         # confirm audit-packet-v0.json is in the package
 cargo publish --dry-run      # builds the packaged crate in isolation
-cargo publish                # the real publish
+# Real publish: push the verifier-v* tag (see "Product release gate"). Don't run cargo publish locally.
 ```
 
 Verify: the crate appears at <https://crates.io/crates/pipelock-verifier-rs>, and
