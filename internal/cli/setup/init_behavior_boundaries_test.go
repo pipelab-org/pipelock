@@ -245,6 +245,8 @@ func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
 		// The scanner canonicalizes the host to its IPv4 form, which the
 		// literal allowlist entry does not match, so the allowlist blocks first.
 		{"::ffff:10.0.0.5", "::ffff:10.0.0.5", "https://[::ffff:10.0.0.5]/test?key=" + canaryToken(), "allowlist"},
+		// Config validation keeps a trailing dot, which net.ParseIP rejects.
+		{"fd00::5.", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken(), "core_ssrf"},
 	} {
 		t.Run(tc.entry, func(t *testing.T) {
 			cfg := config.Defaults()

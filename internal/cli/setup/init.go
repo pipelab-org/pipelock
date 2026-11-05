@@ -725,9 +725,10 @@ func initCanaryURL(cfg *config.Config) string {
 		host = allowlistCanaryHost(cfg.APIAllowlist)
 	}
 	// RFC 3986 brackets every IPv6 literal, including IPv4-mapped forms such
-	// as ::ffff:192.0.2.1 whose To4 is non-nil.
-	if net.ParseIP(host) != nil && strings.Contains(host, ":") {
-		host = "[" + host + "]"
+	// as ::ffff:192.0.2.1 whose To4 is non-nil. Config validation keeps a
+	// trailing dot that net.ParseIP rejects, so drop it from an IPv6 literal.
+	if bare := strings.TrimSuffix(host, "."); net.ParseIP(bare) != nil && strings.Contains(bare, ":") {
+		host = "[" + bare + "]"
 	}
 	u := url.URL{Scheme: "https", Host: host, Path: "/test", RawQuery: "key=" + canaryToken()}
 	return u.String()
