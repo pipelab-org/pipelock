@@ -5317,40 +5317,55 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	// pre-binds ports for fail-fast error reporting. proxy.Start()
 	// only manages the main server lifecycle.
 
-	// Graceful shutdown on context cancellation.
-	// The done channel ensures this goroutine exits if ListenAndServe
-	// fails immediately (e.g., address already in use).
-	done := make(chan struct{})
-	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
-		select {
-		case <-ctx.Done():
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			for _, srv := range p.agentServers {
-				if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-					p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", srv.Addr), shutErr)
-				}
-			}
-			if err := p.server.Shutdown(shutdownCtx); err != nil {
-				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
-			}
-			p.Close()
-		case <-done:
-		}
-	}()
-
 	p.logger.LogStartup(listenAddr, cfg.Mode, Version, cfg.Hash())
 
-	var err error
-	if ln != nil {
-		err = p.server.Serve(ln)
-	} else {
-		err = p.server.ListenAndServe()
-	}
-	close(done) // unblock shutdown goroutine if server failed immediately
+	err := serveUntilShutdown(ctx, func() error {
+		if ln != nil {
+			return p.server.Serve(ln)
+		}
+		return p.server.ListenAndServe()
+	}, func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		for _, srv := range p.agentServers {
+			if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
+				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", srv.Addr), shutErr)
+			}
+		}
+		if err := p.server.Shutdown(shutdownCtx); err != nil {
+			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
+		}
+		p.Close()
+	})
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
+	return err
+}
+
+// serveUntilShutdown runs serve and calls shutdown once ctx is cancelled. It
+// returns serve's error only after shutdown has finished.
+//
+// Serve returns ErrServerClosed as soon as Shutdown begins, before in-flight
+// handlers finish, so returning on serve alone would report the server stopped
+// while handlers still run. The runtime seals the transcript root and closes the
+// receipt recorder once start returns, and an early return loses the outcome
+// receipt of every request still being served. The done channel lets the
+// shutdown goroutine exit when serve fails without ctx being cancelled.
+func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func()) error {
+	done := make(chan struct{})
+	shutdownDone := make(chan struct{})
+	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
+		defer close(shutdownDone)
+		select {
+		case <-ctx.Done():
+			shutdown()
+		case <-done:
+		}
+	}()
+	err := serve()
+	close(done)
+	<-shutdownDone
 	return err
 }
 
