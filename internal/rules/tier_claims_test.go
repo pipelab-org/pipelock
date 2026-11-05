@@ -163,7 +163,7 @@ func TestLoadBundles_IdenticalRegexInTwoBundlesStaysSeparate(t *testing.T) {
 	}
 }
 
-func TestLoadBundles_V1BundleGetsNoV2ExpiryCheck(t *testing.T) {
+func TestLoadBundles_V1BundleGetsNoV2FreshnessChecks(t *testing.T) {
 	// Non-parallel: mutates keyring globals.
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -176,11 +176,20 @@ func TestLoadBundles_V1BundleGetsNoV2ExpiryCheck(t *testing.T) {
 	dir := t.TempDir()
 	v1 := testBundle("dated-v1", []Rule{testDLPRule(tierClaimsRuleID, confidenceHigh, StatusStable)})
 	v1.ExpiresAt = expired
+	v1.Tier = TierCommunity
+	v1.MonotonicVersion = 1
 	writeTierClaimsBundle(t, dir, v1, pub, priv)
+	// A saved counter above the bundle's would reject a v2 bundle; v1 ignores it.
+	if err := SaveFreshnessState(dir, &FreshnessState{
+		HighestSeen: map[string]uint64{TierCommunity + ":" + v1.Name: 5},
+		FormatFloor: map[string]int{v1.Name: 1},
+	}); err != nil {
+		t.Fatalf("SaveFreshnessState: %v", err)
+	}
 
 	result := LoadBundles(dir, LoadOptions{MinConfidence: confidenceLow, PipelockVersion: testPipelockVersion})
 	if len(result.Errors) != 0 {
-		t.Fatalf("v1 bundle with an expired expires_at was rejected: %+v", result.Errors)
+		t.Fatalf("v1 bundle with an expired expires_at and a lower-than-saved counter was rejected: %+v", result.Errors)
 	}
 	if len(result.DLP) != 1 {
 		t.Fatalf("expected the v1 bundle to load 1 DLP rule, got %d", len(result.DLP))
