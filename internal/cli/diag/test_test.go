@@ -13,6 +13,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/projectscan"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/spf13/cobra"
 )
@@ -862,5 +863,47 @@ func TestTestCmd_ConfigLoadError_InvalidYAML(t *testing.T) {
 	}
 	if ee.Code != 2 {
 		t.Errorf("ExitError.Code = %d, want 2", ee.Code)
+	}
+}
+
+func TestTestCmd_AuditSuggestedEntropy(t *testing.T) {
+	for _, preset := range []string{projectscan.AgentGeneric, projectscan.AgentClaudeCode, projectscan.AgentCursor} {
+		t.Run(preset, func(t *testing.T) {
+			suggestion := &projectscan.SuggestCfg{Preset: preset}
+			policy, err := suggestion.RenderYAML()
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "suggested.yaml")
+			if err := os.WriteFile(path, []byte(policy), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cmd := testRoot()
+			var out strings.Builder
+			cmd.SetOut(&out)
+			cmd.SetArgs([]string{"test", "--config", path, "--category", "entropy", "--fail-on-gap", "--json"})
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("audit-suggested policy: %v; output: %s", err, &out)
+			}
+			var report testReport
+			if err := json.Unmarshal([]byte(out.String()), &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Passed != 3 || report.Failed != 0 || report.Skipped != 0 {
+				t.Fatalf("entropy report: %+v", report)
+			}
+			found := false
+			for _, vector := range report.Vectors {
+				if vector.Name == "High-entropy path segment" {
+					found = true
+					if !vector.Blocked || !strings.HasPrefix(vector.Detail, "high entropy path segment") {
+						t.Fatalf("path vector did not exercise path entropy: %+v", vector)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("path entropy vector missing")
+			}
+		})
 	}
 }
