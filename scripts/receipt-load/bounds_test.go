@@ -194,3 +194,63 @@ func TestBundleLogMemoryBound(t *testing.T) {
 		t.Fatalf("log scan allocated %d bytes; want at most 1 MiB", allocated)
 	}
 }
+
+func TestAuditGapLines(t *testing.T) {
+	gap := `{"level":"error","error":"event=receipt_channel_broken audit_gap=true phase=outcome"}` + "\n"
+	for _, tc := range []struct {
+		name, data string
+		count      int
+		kept       int
+	}{
+		{"empty", "", 0, 0},
+		{"none", "{\"event\":\"forward_http\"}\naudit_gap=false\n", 0, 0},
+		{"one", "noise\n" + gap, 1, 1},
+		{"many", strings.Repeat(gap, maxAuditGapLines+3), maxAuditGapLines + 3, maxAuditGapLines},
+		{"long", strings.Repeat("x", 2*maxAuditGapLineSize) + " audit_gap=true\n", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "proxy.log")
+			if err := os.WriteFile(path, []byte(tc.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			count, lines, err := auditGapLines(path)
+			if err != nil || count != tc.count || len(lines) != tc.kept {
+				t.Fatalf("count=%d lines=%d error=%v", count, len(lines), err)
+			}
+			for _, line := range lines {
+				if len(line) > maxAuditGapLineSize {
+					t.Fatalf("kept line of %d bytes", len(line))
+				}
+			}
+		})
+	}
+	path := filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 70*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := auditGapLines(path); err == nil {
+		t.Fatal("oversized log accepted")
+	}
+	if _, _, err := auditGapLines(filepath.Join(t.TempDir(), "absent.log")); err == nil {
+		t.Fatal("missing log accepted")
+	}
+}
+
+// A proxy that reports a receipt it failed to record fails integrity, with
+// its own line as the reason, even when every other count balances.
+func TestProxyAuditGapFailsIntegrity(t *testing.T) {
+	for _, tc := range []struct {
+		behavior string
+		code     int
+	}{{"ok", exitOK}, {"auditgap", exitIntegrity}} {
+		t.Run(tc.behavior, func(t *testing.T) {
+			opt := smallOptions(t, newFakePipelock(t, tc.behavior))
+			code := runModes(context.Background(), opt, []string{modeOff})
+			got := readResult(t, filepath.Join(opt.out, modeOff))
+			gap := hasReason(got.Integrity.Reasons, "proxy reported 1 audit gap(s); first: ") && hasReason(got.Integrity.Reasons, "event=receipt_channel_broken")
+			if code != tc.code || gap != (tc.code != exitOK) {
+				t.Fatalf("code=%d integrity=%+v", code, got.Integrity)
+			}
+		})
+	}
+}

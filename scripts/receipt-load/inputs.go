@@ -222,7 +222,41 @@ var bundleLogPattern = regexp.MustCompile(`(?i)rule bundle|rule_bundle_|\bbundle
 const (
 	maxBundleLogLines    = 20
 	maxProxyLogLineBytes = 64 * 1024
+	// Every Pipelock warning about evidence it failed to record carries this
+	// token: proxy receipt_channel_broken, MCP receipt failures and deferred
+	// journal failures.
+	auditGapMarker      = "audit_gap=true"
+	maxAuditGapLines    = 5
+	maxAuditGapLineSize = 512
 )
+
+// auditGapLines counts the proxy log lines that report an audit gap and keeps
+// the first few, shortened, so a run with missing receipts says why. The
+// proxy writes those lines with fixed labels rather than request text.
+func auditGapLines(logPath string) (int, []string, error) {
+	file, err := os.Open(filepath.Clean(logPath))
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = file.Close() }()
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
+	count, lines := 0, []string{}
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.Contains(line, []byte(auditGapMarker)) {
+			continue
+		}
+		count++
+		if len(lines) < maxAuditGapLines {
+			lines = append(lines, strings.TrimSpace(string(line[:min(len(line), maxAuditGapLineSize)])))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, nil, fmt.Errorf("scan proxy log: %w", err)
+	}
+	return count, lines, nil
+}
 
 // bundleLogLines returns the lines of a proxy log that talk about rule
 // bundles, bounded so a noisy log cannot bloat the result.

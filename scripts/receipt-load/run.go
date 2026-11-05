@@ -309,6 +309,13 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 			integrity.fail("proxy reported rule bundle activity under --rules empty: " + lines[0])
 		}
 	}
+	// A receipt the proxy failed to record is missing evidence even when the
+	// counts happen to balance, and the proxy's own line names the failure.
+	if count, lines, gapErr := auditGapLines(filepath.Join(dirs.root, "proxy.log")); gapErr != nil {
+		integrity.fail("reading proxy.log failed: " + gapErr.Error())
+	} else if count > 0 {
+		integrity.fail(fmt.Sprintf("proxy reported %d audit gap(s); first: %s", count, lines[0]))
+	}
 	if ctx.Err() != nil {
 		integrity.fail("run interrupted")
 		perf.invalidate("run interrupted")

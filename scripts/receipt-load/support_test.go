@@ -155,6 +155,9 @@ func fakeMain(behavior string, args []string) int {
 // fakeRun is a minimal forward proxy: it blocks the synthetic credential and
 // relays everything else, so the harness sees realistic responses.
 func fakeRun(behavior, listen string) int {
+	if behavior == "auditgap" {
+		fmt.Println(`{"level":"error","component":"pipelock","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"}`)
+	}
 	transport := &http.Transport{Proxy: nil}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.RawQuery, "token=") {
