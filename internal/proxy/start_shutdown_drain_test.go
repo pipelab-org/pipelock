@@ -198,3 +198,94 @@ func TestServeUntilShutdownPreservesDrainFailure(t *testing.T) {
 		})
 	}
 }
+
+// closeErrListener reports a failure when closed, which http.Server.Shutdown
+// returns as its own error. It stands in for a listener that cannot be shut
+// down cleanly without waiting out the grace period.
+type closeErrListener struct {
+	net.Listener
+	err error
+}
+
+func (l closeErrListener) Close() error {
+	_ = l.Listener.Close()
+	return l.err
+}
+
+func listenCloseErr(t *testing.T, err error) closeErrListener {
+	t.Helper()
+	ln, listenErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if listenErr != nil {
+		t.Fatalf("listen: %v", listenErr)
+	}
+	return closeErrListener{Listener: ln, err: err}
+}
+
+func TestShutdownAgentServersReportsIncompleteDrain(t *testing.T) {
+	p := newTestProxy(t)
+	agentErr := errors.New("agent listener close failed")
+	agentLn := listenCloseErr(t, agentErr)
+	srv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.NotFoundHandler()}
+	p.RegisterAgentServer(srv)
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(agentLn) }()
+	testwait.For(t, 10*time.Second, func() bool {
+		conn, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", agentLn.Addr().String())
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, "agent server to accept connections")
+
+	err := p.ShutdownAgentServers()
+	if !errors.Is(err, ErrShutdownIncomplete) || !errors.Is(err, agentErr) {
+		t.Fatalf("ShutdownAgentServers = %v, want ErrShutdownIncomplete and the listener error", err)
+	}
+	select {
+	case serveErr := <-served:
+		if !errors.Is(serveErr, http.ErrServerClosed) {
+			t.Fatalf("agent Serve = %v, want ErrServerClosed", serveErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent server did not stop")
+	}
+}
+
+// A main or agent listener that fails to shut down makes start report an
+// incomplete drain instead of a clean stop, so the runtime leaves the run
+// unsealed.
+func TestStartReportsIncompleteDrainFromEveryListener(t *testing.T) {
+	p := newTestProxy(t)
+	agentErr := errors.New("agent listener close failed")
+	mainErr := errors.New("main listener close failed")
+	agentLn := listenCloseErr(t, agentErr)
+	agentSrv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.NotFoundHandler()}
+	p.RegisterAgentServer(agentSrv)
+	go func() { _ = agentSrv.Serve(agentLn) }()
+	mainLn := listenCloseErr(t, mainErr)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	returned := make(chan error, 1)
+	go func() { returned <- p.StartWithListener(ctx, mainLn) }()
+	testwait.For(t, 10*time.Second, func() bool {
+		conn, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", mainLn.Addr().String())
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}, "proxy to accept connections")
+
+	cancel()
+	select {
+	case err := <-returned:
+		for _, want := range []error{ErrShutdownIncomplete, agentErr, mainErr} {
+			if !errors.Is(err, want) {
+				t.Errorf("StartWithListener = %v, want cause %v", err, want)
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("StartWithListener did not return after cancel")
+	}
+}
