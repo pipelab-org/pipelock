@@ -361,15 +361,16 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	proxyDrainIncomplete := false
 	defer func() {
 		cancel()
-		s.proxy.ShutdownAgentServers()
+		if err := s.proxy.ShutdownAgentServers(); err != nil {
+			proxyDrainIncomplete = true
+			startErr = errors.Join(startErr, err)
+		}
 		lifecycleWG.Wait()
-		// Drain-then-seal: the main proxy server (s.proxy.Start below) has
-		// already returned and every auxiliary receipt-emitting listener has now
-		// joined lifecycleWG, so no Emit can race the seal. Write the transcript
-		// root here, before the deferred s.cleanup() (registered earlier, so it
-		// runs after this) closes the recorder. Sealing the completeness anchor
-		// on clean exit is the whole point of F4; it is a no-op when receipts are
-		// off or none were emitted.
+		// Join auxiliary listener lifecycles before writing completeness anchors.
+		// Main and agent drain failures leave the run unsealed. Auxiliary listener
+		// deadlines and hijacked handlers still need their own drain tracking.
+		// Seal before the deferred cleanup closes the recorder; this is a no-op
+		// when receipts are off or none were emitted.
 		if !proxyDrainIncomplete {
 			s.sealTranscriptRoot()
 		}

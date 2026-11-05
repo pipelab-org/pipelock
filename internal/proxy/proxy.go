@@ -3018,14 +3018,20 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 }
 
 // ShutdownAgentServers gracefully shuts down all registered agent servers.
+// It returns ErrShutdownIncomplete and the cause if any listener fails to drain.
 // Used by the license expiry watchdog to unbind per-agent listeners when
 // the enterprise license expires at runtime.
-func (p *Proxy) ShutdownAgentServers() {
+func (p *Proxy) ShutdownAgentServers() error {
+	var shutdownErr error
 	for _, srv := range p.agentServers {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = srv.Shutdown(ctx)
+		shutdownErr = errors.Join(shutdownErr, srv.Shutdown(ctx))
 		cancel()
 	}
+	if shutdownErr != nil {
+		return errors.Join(ErrShutdownIncomplete, shutdownErr)
+	}
+	return nil
 }
 
 // buildCEE creates entropy tracker and fragment buffer based on the config.

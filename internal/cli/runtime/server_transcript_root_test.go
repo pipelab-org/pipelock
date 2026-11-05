@@ -23,6 +23,12 @@ import (
 )
 
 func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
+	t.Run("running", func(t *testing.T) { testServerShutdownDeadlineDoesNotSeal(t, false) })
+	t.Run("startup_failure", func(t *testing.T) { testServerShutdownDeadlineDoesNotSeal(t, true) })
+}
+
+func testServerShutdownDeadlineDoesNotSeal(t *testing.T, bindFailure bool) {
+	t.Helper()
 	recorderDir := t.TempDir()
 	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
 	_, priv, err := signing.GenerateKeyPair()
@@ -33,9 +39,18 @@ func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := writeServerTestConfig(t, "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: "+strconv.Quote(recorderDir)+"\n  signing_key_path: "+strconv.Quote(keyPath)+"\n")
+	listen := serverTestEphemeralListen
+	if bindFailure {
+		reserved, listenErr := (&net.ListenConfig{}).Listen(t.Context(), "tcp", listen)
+		if listenErr != nil {
+			t.Fatal(listenErr)
+		}
+		t.Cleanup(func() { _ = reserved.Close() })
+		listen = reserved.Addr().String()
+	}
 	s, buf := newTestServer(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
-		o.Listen = serverTestEphemeralListen
+		o.Listen = listen
 		o.ListenChanged = true
 	})
 	e := s.liveReceiptEmitter()
@@ -95,8 +110,10 @@ func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
 	t.Cleanup(cancel)
 	returned := make(chan error, 1)
 	go func() { returned <- s.Start(ctx) }()
-	waitForServerOutput(t, buf, "Pipelock")
-	cancel()
+	if !bindFailure {
+		waitForServerOutput(t, buf, "Pipelock")
+		cancel()
+	}
 	select {
 	case err := <-returned:
 		if !errors.Is(err, context.DeadlineExceeded) {
