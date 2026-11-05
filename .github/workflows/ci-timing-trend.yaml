@@ -1,0 +1,114 @@
+name: CI timing trend
+
+# Read-only reporting after every main-push CI completion, including failures.
+# Join the weekly ci-shard-drift.yaml check without changing its shard budget.
+# This token cannot push or open PRs; regressions produce warnings, never gates.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  timing:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    # Source: the existing read-only ci-shard-drift.yaml job's fetch budget.
+    timeout-minutes: 15
+    env:
+      # No published page-size recommendation. Tunable fallback: smaller pages
+      # limit response size/backend work after a failed or truncated 100-job page.
+      FALLBACK_JOB_PAGE_SIZE: '20'
+    steps:
+      # Always use trusted default-branch code, never the triggering run's tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Fetch CI run history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::error title=CI timing fetch::Cannot fetch CI history; see the API or input error above" >&2' ERR
+          data="$RUNNER_TEMP/ci-timing"
+          mkdir -p "$data/jobs"
+          run_id="$TRIGGER_RUN_ID"
+          if [ -z "$run_id" ]; then
+            run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0].id')"
+          fi
+          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+            echo '::error title=CI timing fetch::No completed main-push CI run found'
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$data/current-run.json"
+          since="$(python3 scripts/ci_timing_trend.py --window-start "$data/current-run.json")"
+          # Source: Actions REST list-runs API supports 100 records per page,
+          # with at most 1,000 results for a filtered search. The script refuses
+          # incomplete pages instead of publishing a silently truncated baseline.
+          # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+          gh api --method GET --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs" \
+            -f branch=main -f event=push -f status=success -f "created=>=$since" \
+            -f per_page=100 > "$data/runs.json"
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          from scripts.ci_timing_trend import historical_runs, items
+
+          data = Path(os.environ['RUNNER_TEMP']) / 'ci-timing'
+          try:
+              current = json.loads((data / 'current-run.json').read_text())
+              history = historical_runs(current, json.loads((data / 'runs.json').read_text()))
+              for run in [current, *history]:
+                  path = data / ('current-jobs.json' if run['id'] == current['id']
+                                 else f"jobs/{run['id']}.json")
+                  # Attempt-specific endpoint prevents reruns mixing job attempts.
+                  endpoint = (f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/"
+                              f"{run['id']}/attempts/{run['run_attempt']}/jobs")
+                  fallback = int(os.environ['FALLBACK_JOB_PAGE_SIZE'])
+                  for page_size in (100, fallback):
+                      try:
+                          with path.open('w') as stream:
+                              subprocess.run(['gh', 'api', '--paginate', '--slurp',
+                                              f'{endpoint}?per_page={page_size}'],
+                                             stdout=stream, check=True)
+                          items(json.loads(path.read_text()), 'jobs')
+                          break
+                      except (ValueError, KeyError, TypeError, subprocess.CalledProcessError):
+                          if page_size == fallback:
+                              raise
+                          print(f"Retrying run {run['id']} with smaller API pages after a failed or incomplete response")
+          except (OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
+              message = str(error).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print(f'::error title=CI timing fetch::Cannot fetch complete CI history: {message}', file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Report CI timing
+        run: |
+          set -euo pipefail
+          python3 scripts/ci_timing_trend.py --data-dir "$RUNNER_TEMP/ci-timing" \
+            --output "$RUNNER_TEMP/ci-timing-report.json" --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload timing report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-timing-report
+          path: ${{ runner.temp }}/ci-timing-report.json
+          if-no-files-found: error
+          # Source: owner-requested CI timing artifact retention (2026-11-05).
+          retention-days: 30
