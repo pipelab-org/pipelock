@@ -626,6 +626,12 @@ func TestFetchEndpoint_GitHubReleaseGrantRedirect_WithSAS(t *testing.T) {
 
 func releaseGrantScanner(t *testing.T, cfg *config.Config, now time.Time) *scanner.Scanner {
 	t.Helper()
+	// Grant tests must not depend on the runner's environment: env leak
+	// detection matches 16-character windows of environment values, and a
+	// CI value such as the pull request branch name can share one with a
+	// fixture URL path, which fails the query-less check for a reason the
+	// test is not about.
+	cfg.DLP.ScanEnv = false
 	sc, err := scanner.NewWithOptions(cfg, scanner.Options{Now: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)

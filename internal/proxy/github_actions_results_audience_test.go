@@ -387,6 +387,7 @@ func TestForwardProxy_StructuralExemptionsEarnNoCleanCredit(t *testing.T) {
 				cfg.SessionProfiling.Enabled = true
 				cfg.AdaptiveEnforcement.Enabled = true
 				cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+				cfg.DLP.ScanEnv = false
 			})
 			defer cleanup()
 			upstream := &http.Transport{

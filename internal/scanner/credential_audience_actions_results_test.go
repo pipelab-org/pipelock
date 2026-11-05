@@ -43,6 +43,33 @@ func actionsResultsQuery(sigSeed string, mutate func(v url.Values)) string {
 	})
 }
 
+// Every account in GitHub's published ranges (meta API domains.actions,
+// 2026-11-05: 0-19, 30-49, 100-199) earns the grant, and the numbers around
+// each range do not. The expected set is built from those ranges, not from
+// githubActionsResultsHosts, so dropping an account from the list fails here.
+func TestScan_GitHubActionsResultsSAS_EveryPublishedAccount(t *testing.T) {
+	t.Parallel()
+	s, now := newActionsResultsScanner(t)
+	query := actionsResultsQuery("actions-every-account", nil)
+	host := func(n int) string { return fmt.Sprintf("productionresultssa%d.blob.core.windows.net", n) }
+	published := map[int]bool{}
+	for _, r := range [][2]int{{0, 19}, {30, 49}, {100, 199}} {
+		for n := r[0]; n <= r[1]; n++ {
+			published[n] = true
+		}
+	}
+	if len(published) != len(githubActionsResultsHosts) {
+		t.Fatalf("published ranges hold %d accounts, list holds %d", len(published), len(githubActionsResultsHosts))
+	}
+	for n := 0; n <= 200; n++ {
+		target := actionsResultsLogURL(host(n), query)
+		got := s.Scan(context.Background(), target)
+		if got.Allowed != published[n] {
+			t.Errorf("account %d: allowed=%v want=%v reason=%s; %s", n, got.Allowed, published[n], got.Reason, actionsResultsGrantDiagnosis(s, target, now))
+		}
+	}
+}
+
 // actionsResultsGrantDiagnosis names which part of the grant decision failed,
 // so a blocked allow case says why instead of only repeating the DLP match.
 func actionsResultsGrantDiagnosis(s *Scanner, target string, now time.Time) string {
@@ -66,6 +93,12 @@ func newActionsResultsScanner(t *testing.T) (*Scanner, time.Time) {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Internal = nil
+	// Grant tests must not depend on the runner's environment: env leak
+	// detection matches 16-character windows of environment values, and a
+	// CI value such as the pull request branch name can share one with a
+	// fixture URL path, which fails the query-less check for a reason the
+	// test is not about.
+	cfg.DLP.ScanEnv = false
 	s := MustNew(cfg)
 	now := time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC)
 	s.now = func() time.Time { return now }
@@ -115,6 +148,13 @@ func TestScan_GitHubActionsResultsSAS(t *testing.T) {
 		})
 	}
 
+	// Refusals of the SAS itself must keep the Azure SAS match, not just be
+	// blocked by some other scanner.
+	sasShape := map[string]bool{
+		"write only": true, "account key SAS": true, "sp other than r": true, "container resource": true,
+		"missing st": true, "missing delegation key id": true, "duplicate sig": true, "lifetime over cap": true,
+		"expired": true, "not yet valid": true,
+	}
 	cases := []struct {
 		name   string
 		target string
@@ -160,6 +200,9 @@ func TestScan_GitHubActionsResultsSAS(t *testing.T) {
 			got := s.Scan(context.Background(), tc.target)
 			if got.Allowed {
 				t.Fatalf("allowed %s", tc.target)
+			}
+			if sasShape[tc.name] && !strings.Contains(got.Reason, "Azure SAS Token") {
+				t.Fatalf("blocked without the Azure SAS match: scanner=%s reason=%s", got.Scanner, got.Reason)
 			}
 		})
 	}
