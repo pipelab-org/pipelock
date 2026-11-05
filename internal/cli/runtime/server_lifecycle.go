@@ -358,18 +358,27 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// own shutdown, then Wait() for every goroutine to finish (HTTP shutdown
 	// goroutines complete only after in-flight handlers drain).
 	var lifecycleWG sync.WaitGroup
+	proxyDrainIncomplete := false
 	defer func() {
 		cancel()
-		s.proxy.ShutdownAgentServers()
+		if err := s.proxy.ShutdownAgentServers(); err != nil {
+			proxyDrainIncomplete = true
+			startErr = errors.Join(startErr, err)
+		}
 		lifecycleWG.Wait()
-		// Drain-then-seal: the main proxy server (s.proxy.Start below) has
-		// already returned and every auxiliary receipt-emitting listener has now
-		// joined lifecycleWG, so no Emit can race the seal. Write the transcript
-		// root here, before the deferred s.cleanup() (registered earlier, so it
-		// runs after this) closes the recorder. Sealing the completeness anchor
-		// on clean exit is the whole point of F4; it is a no-op when receipts are
+		if s.agentDrainIncomplete.Load() {
+			proxyDrainIncomplete = true
+			startErr = errors.Join(startErr, fmt.Errorf("agent listeners unbound before shutdown: %w", proxy.ErrShutdownIncomplete))
+		}
+		// Join auxiliary listener lifecycles before writing completeness anchors.
+		// Main and agent drain failures, including earlier license-driven agent
+		// unbinds, leave the run unsealed. Auxiliary listener deadlines and
+		// hijacked handlers still need their own drain tracking. Seal before the
+		// deferred cleanup closes the recorder; this is a no-op when receipts are
 		// off or none were emitted.
-		s.sealTranscriptRoot()
+		if !proxyDrainIncomplete {
+			s.sealTranscriptRoot()
+		}
 	}()
 
 	// Capture duration timer: cancel context after the specified capture
@@ -1316,6 +1325,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	s.notifyReloadStatusLocked()
 	s.reloadMu.Unlock()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
+		// Shutdown may exhaust its grace period with handlers still active.
+		// Leave that run unsealed, even if a later shutdown retry drains it.
+		proxyDrainIncomplete = errors.Is(err, proxy.ErrShutdownIncomplete)
 		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
 			return groupErr
 		}
@@ -1553,5 +1565,18 @@ func (s *Server) startEvidenceMonitors(ctx context.Context, wg *sync.WaitGroup, 
 	}
 	if anchor != nil {
 		anchor.start(ctx, wg)
+	}
+}
+
+// shutdownAgentServers unbinds agent listeners outside the shutdown path:
+// license expiry, CRL fail-closed and license-revoking reloads. A drain that
+// does not finish is remembered so Start leaves the run unsealed, the same as
+// an agent drain failure during shutdown itself.
+func (s *Server) shutdownAgentServers() {
+	if err := s.proxy.ShutdownAgentServers(); err != nil {
+		s.agentDrainIncomplete.Store(true)
+		if s.opts.Stderr != nil {
+			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: agent listener drain incomplete; receipts for this run will not be sealed as complete: %v\n", err)
+		}
 	}
 }

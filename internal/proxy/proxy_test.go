@@ -5210,7 +5210,9 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 	t.Cleanup(func() { p.Close() })
 
 	// ShutdownAgentServers with no servers should be a no-op.
-	p.ShutdownAgentServers()
+	if err := p.ShutdownAgentServers(); err != nil {
+		t.Fatalf("ShutdownAgentServers with no servers: %v", err)
+	}
 
 	// Register an actual HTTP server, start it, then shut it down.
 	ln, lnErr := (&net.ListenConfig{}).Listen(context.Background(), "tcp4", "127.0.0.1:0")
@@ -5239,7 +5241,9 @@ func TestProxy_RegisterAndShutdownAgentServers(t *testing.T) {
 	}, "agent server listens on %s", addr)
 
 	// ShutdownAgentServers should cleanly stop it.
-	p.ShutdownAgentServers()
+	if err := p.ShutdownAgentServers(); err != nil {
+		t.Fatalf("ShutdownAgentServers: %v", err)
+	}
 
 	select {
 	case err := <-srvErr:

@@ -5,18 +5,131 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
+	t.Run("running", func(t *testing.T) { testServerShutdownDeadlineDoesNotSeal(t, false) })
+	t.Run("startup_failure", func(t *testing.T) { testServerShutdownDeadlineDoesNotSeal(t, true) })
+}
+
+func testServerShutdownDeadlineDoesNotSeal(t *testing.T, bindFailure bool) {
+	t.Helper()
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeServerTestConfig(t, "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: "+strconv.Quote(recorderDir)+"\n  signing_key_path: "+strconv.Quote(keyPath)+"\n")
+	listen := serverTestEphemeralListen
+	if bindFailure {
+		reserved, listenErr := (&net.ListenConfig{}).Listen(t.Context(), "tcp", listen)
+		if listenErr != nil {
+			t.Fatal(listenErr)
+		}
+		t.Cleanup(func() { _ = reserved.Close() })
+		listen = reserved.Addr().String()
+	}
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = listen
+		o.ListenChanged = true
+	})
+	e := s.liveReceiptEmitter()
+	if e == nil {
+		t.Fatal("signed emitter missing")
+	}
+	if err := e.Emit(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+		Transport: "forward", Method: http.MethodGet, Target: "https://api.vendor.example/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseHandler := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	t.Cleanup(releaseHandler)
+	srv := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "response sent")
+		w.(http.Flusher).Flush()
+		close(entered)
+		<-release
+	}))
+	// The runtime calls ShutdownAgentServers again after proxy.Start returns.
+	// Hold the handler through the first shutdown deadline, then release on
+	// that second call so deferred cleanup can finish without a timing guess.
+	var shutdowns atomic.Int32
+	srv.RegisterOnShutdown(func() {
+		if shutdowns.Add(1) == 2 {
+			releaseHandler()
+		}
+	})
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", serverTestEphemeralListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	s.proxy.RegisterAgentServer(srv)
+	go func() { _ = srv.Serve(ln) }()
+	client := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	<-entered
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	returned := make(chan error, 1)
+	go func() { returned <- s.Start(ctx) }()
+	if !bindFailure {
+		waitForServerOutput(t, buf, "Pipelock")
+		cancel()
+	}
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Start = %v, want shutdown deadline error", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Start did not finish after shutdown deadline")
+	}
+	for _, marker := range []string{"transcript_root", "session_close"} {
+		if evidenceDirContains(t, recorderDir, marker) {
+			t.Errorf("incomplete shutdown wrote %s", marker)
+		}
+	}
+}
 
 // evidenceDirContains reports whether any evidence file in dir contains the
 // given substring. Used to assert a transcript_root entry was written without
@@ -185,5 +298,112 @@ func TestServer_GracefulShutdownSealsTranscriptRoot(t *testing.T) {
 
 	if !evidenceDirContains(t, recorderDir, "transcript_root") {
 		t.Fatalf("graceful shutdown did not seal a transcript_root in %s", recorderDir)
+	}
+}
+
+// closeErrListener fails its Close, which http.Server.Shutdown reports as a
+// drain failure without waiting out the grace period. accepting closes on the
+// first Accept, after Serve has registered the listener with the server.
+type closeErrListener struct {
+	net.Listener
+	err       error
+	accepting chan struct{}
+	once      *sync.Once
+}
+
+func (l closeErrListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.accepting) })
+	return l.Listener.Accept()
+}
+
+func (l closeErrListener) Close() error {
+	_ = l.Listener.Close()
+	return l.err
+}
+
+// Agent listeners unbound earlier by a license path that did not drain leave
+// the run unsealed, even though the final shutdown drains cleanly.
+func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate signing key: %v", err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatalf("save signing key: %v", err)
+	}
+	cfgPath := writeServerTestConfig(t, strings.Join([]string{
+		"mode: balanced",
+		"flight_recorder:",
+		"  enabled: true",
+		"  dir: " + strconv.Quote(recorderDir),
+		"  signing_key_path: " + strconv.Quote(keyPath),
+		"",
+	}, "\n"))
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { errCh <- s.Start(ctx) }()
+	waitForServerCancel(t, s)
+	waitForServerOutput(t, buf, "flight recorder enabled")
+
+	e := s.liveReceiptEmitter()
+	if e == nil {
+		t.Fatal("live receipt emitter is nil; recorder did not wire a signed emitter")
+	}
+	if err := e.Emit(receipt.EmitOpts{
+		ActionID:  receipt.NewActionID(),
+		Verdict:   config.ActionAllow,
+		Transport: "forward",
+		Method:    http.MethodGet,
+		Target:    "https://example.com/",
+	}); err != nil {
+		t.Fatalf("seed Emit: %v", err)
+	}
+
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	agentSrv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.NotFoundHandler()}
+	s.proxy.RegisterAgentServer(agentSrv)
+	agentLn := closeErrListener{Listener: ln, err: errors.New("agent listener close failed"), accepting: make(chan struct{}), once: &sync.Once{}}
+	go func() { _ = agentSrv.Serve(agentLn) }()
+	// Shutdown only reports the listener failure once Serve tracks the
+	// listener, which it does before its first Accept.
+	select {
+	case <-agentLn.accepting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent server never called Accept")
+	}
+	// Drive the real license-expiry entrypoint, not the helper, so the test
+	// fails if that path stops recording an incomplete agent drain.
+	s.expireLicensedRuntime()
+	if !s.agentDrainIncomplete.Load() {
+		t.Fatal("license expiry did not record the incomplete agent drain")
+	}
+	waitForServerOutput(t, buf, "agent listener drain incomplete")
+
+	if err := s.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case startErr := <-errCh:
+		if !errors.Is(startErr, proxy.ErrShutdownIncomplete) {
+			t.Fatalf("Start = %v, want ErrShutdownIncomplete", startErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Start did not return within 10s of Shutdown")
+	}
+	for _, marker := range []string{"transcript_root", "session_close"} {
+		if evidenceDirContains(t, recorderDir, marker) {
+			t.Errorf("run with an incomplete agent drain wrote %s", marker)
+		}
 	}
 }
