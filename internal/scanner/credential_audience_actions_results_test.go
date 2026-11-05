@@ -30,8 +30,9 @@ func actionsResultsArtifactURL(host, query string) string {
 // plus the response overrides GitHub adds for a download.
 func actionsResultsQuery(sigSeed string, mutate func(v url.Values)) string {
 	return attestationBundleQuery(sigSeed, func(v url.Values) {
-		v.Set("st", "2026-10-03T21:59:30Z")
-		v.Set("se", "2026-10-03T22:00:30Z")
+		// GitHub's issued window: 5 seconds before issue to 10 minutes after.
+		v.Set("st", "2026-10-03T21:59:55Z")
+		v.Set("se", "2026-10-03T22:10:00Z")
 		v.Set("rsct", "application/zip")
 		v.Set("rscd", `attachment; filename="scorecard-results.zip"`)
 		if mutate != nil {
@@ -122,7 +123,7 @@ func TestScan_GitHubActionsResultsSAS(t *testing.T) {
 		{"missing st", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-st", func(v url.Values) { v.Del("st") }))},
 		{"missing delegation key id", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-skoid", func(v url.Values) { v.Del("skoid") }))},
 		{"duplicate sig", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-dup", func(v url.Values) { v.Add("sig", releaseGrantSASSig("actions-dup-2")) }))},
-		{"lifetime over cap", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-life", func(v url.Values) { v.Set("se", "2026-10-03T22:00:31Z") }))},
+		{"lifetime over cap", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-life", func(v url.Values) { v.Set("se", "2026-10-04T21:59:56Z") }))},
 		{"expired", actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-expired", func(v url.Values) {
 			v.Set("st", "2026-10-03T20:00:00Z")
 			v.Set("se", "2026-10-03T20:01:00Z")
@@ -233,7 +234,7 @@ func TestQueryGrantValidityCandidate_ActionsResultsSASWindow(t *testing.T) {
 
 	// A window longer than the cap cannot be repaired by changing the clock.
 	overlong, err := url.Parse(actionsResultsLogURL(actionsResultsHost, actionsResultsQuery("actions-overlong", func(v url.Values) {
-		v.Set("se", "2026-10-03T22:00:31Z")
+		v.Set("se", "2026-10-04T21:59:56Z")
 	})))
 	if err != nil {
 		t.Fatal(err)

@@ -31,8 +31,8 @@ func TestInterceptTunnel_GitHubActionsResultsSAS(t *testing.T) {
 		t.Fatal(err)
 	}
 	query.Del("jwt")
-	query.Set("st", "2026-10-03T21:59:30Z")
-	query.Set("se", "2026-10-03T22:00:30Z")
+	query.Set("st", "2026-10-03T21:59:55Z")
+	query.Set("se", "2026-10-03T22:10:00Z")
 	query.Set("rscd", `attachment; filename="test-results-linux-amd64-release-archive.zip"`)
 	query.Set("rsct", "application/zip")
 	good := query.Encode()
@@ -46,7 +46,7 @@ func TestInterceptTunnel_GitHubActionsResultsSAS(t *testing.T) {
 		{"body carrier", host, run + "/logs/job/job-logs.txt", good, "body", false},
 		{"header carrier", host, run + "/logs/job/job-logs.txt", good, "header", false},
 		{"second credential", host, run + "/logs/job/job-logs.txt", good + "&x=ghp_" + strings.Repeat("a", 36), "", false},
-		{"lifetime over cap", host, run + "/logs/job/job-logs.txt", strings.Replace(good, "22%3A00%3A30Z", "22%3A00%3A31Z", 1), "", false},
+		{"lifetime over cap", host, run + "/logs/job/job-logs.txt", strings.Replace(good, "2026-10-03T22%3A10%3A00Z", "2026-10-04T21%3A59%3A56Z", 1), "", false},
 		{"lookalike", host + ".vendor.example", run + "/logs/job/job-logs.txt", good, "", false},
 		{"bad path", host, "/other/job-logs.txt", good, "", false},
 		{"duplicate signature", host, run + "/logs/job/job-logs.txt", good + "&sig=" + url.QueryEscape(query.Get("sig")), "", false},
@@ -132,8 +132,8 @@ func TestFetchEndpoint_GitHubActionsResultsSASRedirect(t *testing.T) {
 		t.Fatal(err)
 	}
 	query.Del("jwt")
-	query.Set("st", "2026-10-03T21:59:30Z")
-	query.Set("se", "2026-10-03T22:00:30Z")
+	query.Set("st", "2026-10-03T21:59:55Z")
+	query.Set("se", "2026-10-03T22:10:00Z")
 	for _, tc := range []struct {
 		name, host, path, extra string
 		allow                   bool
@@ -213,12 +213,12 @@ func TestForwardProxy_GitHubActionsResultsSASCleartext(t *testing.T) {
 		t.Fatal(err)
 	}
 	query.Del("jwt")
-	// This proxy uses the real clock. Keep the SAS within the documented
-	// one-minute cap and prove the HTTPS control before testing cleartext.
+	// This proxy uses the real clock. Use GitHub's issued 605-second window
+	// and prove the HTTPS control before testing cleartext.
 	now := time.Now().UTC()
-	start := now.Add(-time.Minute / 2)
+	start := now.Add(-5 * time.Second)
 	query.Set("st", start.Format(time.RFC3339))
-	query.Set("se", start.Add(time.Minute).Format(time.RFC3339))
+	query.Set("se", start.Add(605*time.Second).Format(time.RFC3339))
 	target := "https://productionresultssa32.blob.core.windows.net/actions-results/00000000-0000-4000-8000-000000000011/workflow-job-run-00000000-0000-4000-8000-000000000012/logs/job/job-logs.txt?" + query.Encode()
 	cfg := config.Defaults()
 	cfg.Internal = nil

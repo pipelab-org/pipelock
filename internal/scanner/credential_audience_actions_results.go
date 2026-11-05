@@ -164,16 +164,16 @@ var githubActionsResultsHosts = []string{
 	"productionresultssa199.blob.core.windows.net",
 }
 
-// actionsResultsSASMaxLifetime follows GitHub's documented one-minute download
-// link lifetime, fetched 2026-11-05:
+// actionsResultsSASMaxLifetime keeps the attestation bundle cap these grants
+// already used. GitHub's REST docs describe the job-log, run-log and artifact
+// download links as valid for one minute, but the SAS GitHub actually signs runs
+// from 5 seconds before issue to 10 minutes after: 605 seconds on every job-log
+// and artifact redirect sampled 2026-11-05 from productionresultssa17 and
+// productionresultssa32. A one-minute cap would refuse every live download.
+// Narrowing the cap to the issued window is a separate decision.
 // https://docs.github.com/en/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run
-// https://docs.github.com/en/rest/actions/workflow-runs#download-workflow-run-logs
 // https://docs.github.com/en/rest/actions/artifacts#download-an-artifact
-// A live redirect observed 2026-11-05 had st=12:06:26Z and se=12:16:31Z
-// (10 minutes 5 seconds). The documented bound wins: longer SAS windows keep
-// the DLP match, including that observed redirect. This is a conservative
-// structural allowance, not proof of issuance or a universal download grant.
-const actionsResultsSASMaxLifetime = time.Minute
+const actionsResultsSASMaxLifetime = attestationBundleSASMaxLifetime
 
 const actionsResultsGUID = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
 
@@ -228,7 +228,7 @@ func actionsResultsSASAllowed(host, target string, now time.Time) bool {
 }
 
 // actionsResultsSASQueryValid reuses the signed-field and read-only blob rules
-// of attestation bundles, with the separate documented Actions lifetime cap.
+// of attestation bundles, with the Actions lifetime cap.
 func actionsResultsSASQueryValid(parsed *url.URL, now time.Time) bool {
 	return githubBlobSASQueryValid(parsed, now, actionsResultsSASMaxLifetime)
 }
