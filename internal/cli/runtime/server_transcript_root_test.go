@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,7 +22,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
@@ -302,10 +302,18 @@ func TestServer_GracefulShutdownSealsTranscriptRoot(t *testing.T) {
 }
 
 // closeErrListener fails its Close, which http.Server.Shutdown reports as a
-// drain failure without waiting out the grace period.
+// drain failure without waiting out the grace period. accepting closes on the
+// first Accept, after Serve has registered the listener with the server.
 type closeErrListener struct {
 	net.Listener
-	err error
+	err       error
+	accepting chan struct{}
+	once      *sync.Once
+}
+
+func (l closeErrListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.accepting) })
+	return l.Listener.Accept()
 }
 
 func (l closeErrListener) Close() error {
@@ -365,18 +373,15 @@ func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
 	}
 	agentSrv := &http.Server{ReadHeaderTimeout: 5 * time.Second, Handler: http.NotFoundHandler()}
 	s.proxy.RegisterAgentServer(agentSrv)
-	go func() {
-		_ = agentSrv.Serve(closeErrListener{Listener: ln, err: errors.New("agent listener close failed")})
-	}()
-	// Shutdown only reports the listener failure once Serve tracks the listener.
-	testwait.For(t, 10*time.Second, func() bool {
-		conn, dialErr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", ln.Addr().String())
-		if dialErr != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, "agent server to accept connections")
+	agentLn := closeErrListener{Listener: ln, err: errors.New("agent listener close failed"), accepting: make(chan struct{}), once: &sync.Once{}}
+	go func() { _ = agentSrv.Serve(agentLn) }()
+	// Shutdown only reports the listener failure once Serve tracks the
+	// listener, which it does before its first Accept.
+	select {
+	case <-agentLn.accepting:
+	case <-time.After(10 * time.Second):
+		t.Fatal("agent server never called Accept")
+	}
 	s.shutdownAgentServers()
 	if !s.agentDrainIncomplete.Load() {
 		t.Fatal("license-path agent unbind did not record the incomplete drain")

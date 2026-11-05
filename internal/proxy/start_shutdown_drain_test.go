@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -201,10 +202,20 @@ func TestServeUntilShutdownPreservesDrainFailure(t *testing.T) {
 
 // closeErrListener reports a failure when closed, which http.Server.Shutdown
 // returns as its own error. It stands in for a listener that cannot be shut
-// down cleanly without waiting out the grace period.
+// down cleanly without waiting out the grace period. accepting closes on the
+// first Accept: Serve registers the listener before that call, so Shutdown is
+// sure to close it and report the error. A successful dial proves only that
+// the socket is listening, not that Serve has started.
 type closeErrListener struct {
 	net.Listener
-	err error
+	err       error
+	accepting chan struct{}
+	once      *sync.Once
+}
+
+func (l closeErrListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { close(l.accepting) })
+	return l.Listener.Accept()
 }
 
 func (l closeErrListener) Close() error {
@@ -218,7 +229,16 @@ func listenCloseErr(t *testing.T, err error) closeErrListener {
 	if listenErr != nil {
 		t.Fatalf("listen: %v", listenErr)
 	}
-	return closeErrListener{Listener: ln, err: err}
+	return closeErrListener{Listener: ln, err: err, accepting: make(chan struct{}), once: &sync.Once{}}
+}
+
+func waitAccepting(t *testing.T, ln closeErrListener, what string) {
+	t.Helper()
+	select {
+	case <-ln.accepting:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("%s never called Accept", what)
+	}
 }
 
 func TestShutdownAgentServersReportsIncompleteDrain(t *testing.T) {
@@ -229,14 +249,7 @@ func TestShutdownAgentServersReportsIncompleteDrain(t *testing.T) {
 	p.RegisterAgentServer(srv)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(agentLn) }()
-	testwait.For(t, 10*time.Second, func() bool {
-		conn, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", agentLn.Addr().String())
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, "agent server to accept connections")
+	waitAccepting(t, agentLn, "agent server")
 
 	err := p.ShutdownAgentServers()
 	if !errors.Is(err, ErrShutdownIncomplete) || !errors.Is(err, agentErr) {
@@ -268,14 +281,8 @@ func TestStartReportsIncompleteDrainFromEveryListener(t *testing.T) {
 	t.Cleanup(cancel)
 	returned := make(chan error, 1)
 	go func() { returned <- p.StartWithListener(ctx, mainLn) }()
-	testwait.For(t, 10*time.Second, func() bool {
-		conn, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", mainLn.Addr().String())
-		if err != nil {
-			return false
-		}
-		_ = conn.Close()
-		return true
-	}, "proxy to accept connections")
+	waitAccepting(t, agentLn, "agent server")
+	waitAccepting(t, mainLn, "proxy")
 
 	cancel()
 	select {
