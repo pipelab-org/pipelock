@@ -161,7 +161,8 @@ func genericAgentService() string {
       - NO_PROXY=localhost,127.0.0.1
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # Add your agent's env vars here.
-      # This container has no direct internet route; outbound traffic goes through Pipelock for scanning.
+      # No direct internet route: outbound traffic goes through Pipelock. Without TLS
+      # interception, Pipelock sees the destination host of HTTPS requests, not their contents.
     volumes:
       - ./workspace:/workspace
     depends_on:

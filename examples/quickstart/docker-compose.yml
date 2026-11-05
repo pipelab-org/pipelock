@@ -47,7 +47,8 @@ services:
       - HTTP_PROXY=http://pipelock:8888
       - HTTPS_PROXY=http://pipelock:8888
       - NO_PROXY=localhost,127.0.0.1
-      # No direct internet route: outbound requests go through Pipelock, which scans them for secrets.
+      # No direct internet route: outbound traffic goes through Pipelock. Without TLS
+      # interception, Pipelock sees the destination host of HTTPS requests, not their contents.
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     depends_on:
       pipelock:
