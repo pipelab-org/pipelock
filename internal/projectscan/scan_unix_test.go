@@ -82,8 +82,9 @@ func TestScanFiles_UnreadableRootNamesTheDirectory(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = syscall.Chmod(dir, 0o700) })
 	findings := scanFiles(dir, mustCompileDLPPatterns(t))
-	if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect "+dir+" for secrets (unreadable)") {
-		t.Fatalf("unreadable scan root must report an inspection warning naming it, got %+v", findings)
+	if len(findings) != 1 || findings[0].File != "." ||
+		!strings.Contains(findings[0].Message, "Could not inspect "+dir+" for secrets (unreadable)") {
+		t.Fatalf("unreadable scan root must report an inspection warning naming it with File \".\", got %+v", findings)
 	}
 }
 

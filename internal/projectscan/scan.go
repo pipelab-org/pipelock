@@ -354,8 +354,12 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 			// incomplete walk is reported instead of looking clean.
 			relPath, relErr := filepath.Rel(dir, path)
 			if relErr != nil || relPath == "." {
-				// Name the scan root itself rather than ".".
-				relPath = path
+				// Name the scan root in the message, but keep File relative to
+				// it, since consumers such as SARIF join File to the root.
+				finding := secretInspectionWarning(path, "unreadable")
+				finding.File = "."
+				findings = append(findings, finding)
+				return nil
 			}
 			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
 			return nil
