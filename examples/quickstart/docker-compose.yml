@@ -47,7 +47,7 @@ services:
       - HTTP_PROXY=http://pipelock:8888
       - HTTPS_PROXY=http://pipelock:8888
       - NO_PROXY=localhost,127.0.0.1
-      # Your agent's secrets are safe here: this container has no internet.
+      # No direct internet route: outbound requests go through Pipelock, which scans them for secrets.
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     depends_on:
       pipelock:
