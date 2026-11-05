@@ -87,7 +87,7 @@ Article 13 requires sufficient operational transparency for deployers to underst
 |-------------|-----------------|----------|
 | System characteristics and capabilities documented | README, OWASP mapping docs, Claude Code integration guide, comparison doc | Full |
 | Limitations documented | Each OWASP mapping doc includes explicit coverage gaps and "out of scope" sections | Full |
-| Logging mechanism description | Audit log format, event types, and fields documented in CLAUDE.md and guides | Full |
+| Logging mechanism description | [Logging configuration](../configuration.md#logging) and [event schema, types, and fields](../guides/siem-integration.md#event-schema) are documented | Full |
 | Human oversight measures described (Art. 14 ref) | HITL documentation in guides and config presets | Partial |
 | Computational/hardware requirements | Single-binary deployment and reproducible performance benchmarks are documented; artifact size varies by platform, build tags, and release flags | Partial |
 
