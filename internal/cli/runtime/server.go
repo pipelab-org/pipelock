@@ -121,6 +121,11 @@ type Server struct {
 	// one an in-flight response already holds, so revoking it reaches them all
 	// at once.
 	liveAckSet atomic.Pointer[liveCredentialAckSet]
+	// agentDrainIncomplete records that agent listeners were unbound outside
+	// shutdown (license expiry, CRL fail-closed, license-revoking reload) and
+	// did not drain. Their handlers may have lost receipts, so the run must
+	// not be sealed as complete even if the final shutdown drains cleanly.
+	agentDrainIncomplete atomic.Bool
 
 	runtimeMode        config.RuntimeMode
 	hasMCPListen       bool

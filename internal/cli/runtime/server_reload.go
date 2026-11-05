@@ -507,7 +507,7 @@ func (s *Server) executeReloadLocked(newCfg *config.Config, restoringPriorPolicy
 			// License gate disabled agents on reload and the loss is PROVEN
 			// (revoked / expired / downgraded). Shut down already-bound listener
 			// servers so the agent ports stop accepting traffic.
-			s.proxy.ShutdownAgentServers()
+			s.shutdownAgentServers()
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license revoked agents, shutting down agent listeners\n")
 		case agentsRevokedByLicense || licenseInputsChanged:
 			// Either the new license inputs are UNVERIFIABLE (agents were stripped
