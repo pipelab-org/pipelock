@@ -368,8 +368,18 @@ func TestAuditGapLinesKeepsGapsAroundBadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	count, lines, err = auditGapLines(path)
-	if err == nil || count != 1 || len(lines) != 1 {
+	if err == nil || count != 1 || len(lines) != 1 || !strings.Contains(err.Error(), "scan proxy log") {
 		t.Fatalf("count=%d lines=%d error=%v, want the gap before the oversized line and the scan error", count, len(lines), err)
+	}
+	// A malformed record and then an oversized line return both errors.
+	path = filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(path, []byte(gap+"{not json\n"+strings.Repeat("x", 70*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count, lines, err = auditGapLines(path)
+	if err == nil || count != 1 || len(lines) != 1 ||
+		!strings.Contains(err.Error(), "decode proxy audit log") || !strings.Contains(err.Error(), "scan proxy log") {
+		t.Fatalf("count=%d lines=%d error=%v, want the gap and both the decode and scan errors", count, len(lines), err)
 	}
 }
 
