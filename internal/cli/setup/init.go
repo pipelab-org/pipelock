@@ -743,7 +743,7 @@ func allowlistCanaryHost(allowlist []string) string {
 		if suffix, ok := strings.CutPrefix(pattern, "*."); ok {
 			host = "canary." + suffix
 		}
-		if net.ParseIP(host) == nil && canaryHostAllowed(host, allowlist) {
+		if scanner.ParseIPLiteral(host) == nil && canaryHostAllowed(host, allowlist) {
 			return host
 		}
 	}

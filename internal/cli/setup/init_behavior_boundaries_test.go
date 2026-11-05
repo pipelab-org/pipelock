@@ -210,6 +210,29 @@ func TestInitCanaryNumericWildcard(t *testing.T) {
 	}
 }
 
+func TestInitCanarySkipsIPAliases(t *testing.T) {
+	for _, host := range []string{"127.0.0.1.", "0177.0.0.1", "127.1", "0x7f000001", "2130706433"} {
+		t.Run(host, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			policy := "mode: strict\napi_allowlist: [\"" + host + "\", api.vendor.example]\n"
+			if err := os.WriteFile(path, []byte(policy), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := runInitCanary(cfg); !result.Detected {
+				t.Errorf("init canary for %q: %+v", host, result)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); !result.Detected {
+				t.Errorf("sidecar canary for %q: %+v", host, result)
+			}
+		})
+	}
+}
+
 func TestPrintDiscoverPhaseReportsMalformedAndUnprotectedClients(t *testing.T) {
 	report := &discover.Report{
 		Clients: []discover.ClientConfig{
