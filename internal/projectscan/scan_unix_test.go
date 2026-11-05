@@ -71,3 +71,18 @@ func TestScanFiles_UnreadableDirectoryReportsUninspected(t *testing.T) {
 }
 
 // --- AdjustScoreForFindings tests ---
+
+func TestScanFiles_UnreadableRootNamesTheDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can read mode 000 directories")
+	}
+	dir := t.TempDir()
+	if err := syscall.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Chmod(dir, 0o700) })
+	findings := scanFiles(dir, mustCompileDLPPatterns(t))
+	if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect "+dir+" for secrets (unreadable)") {
+		t.Fatalf("unreadable scan root must report an inspection warning naming it, got %+v", findings)
+	}
+}

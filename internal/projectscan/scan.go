@@ -351,7 +351,8 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 			// An unreadable directory or entry may hold secret files, so an
 			// incomplete walk is reported instead of looking clean.
 			relPath, relErr := filepath.Rel(dir, path)
-			if relErr != nil || relPath == "" {
+			if relErr != nil || relPath == "." {
+				// Name the scan root itself rather than ".".
 				relPath = path
 			}
 			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
