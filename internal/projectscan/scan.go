@@ -371,10 +371,11 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 
 		info, err := d.Info()
 		if err != nil {
+			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
 			return nil
 		}
 		if info.Size() > maxScanFileBytes {
-			findings = append(findings, inspectionWarning(relPath, "secret", "for secrets", inspectionSizeLimitReason, "inspect the file separately"))
+			findings = append(findings, secretInspectionWarning(relPath, inspectionSizeLimitReason))
 			return nil
 		}
 
@@ -393,15 +394,30 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 	return findings
 }
 
+// secretInspectionWarning reports a secret candidate file that could not be
+// fully read, so an incomplete secret scan never looks like a clean one.
+func secretInspectionWarning(relPath, reason string) Finding {
+	return inspectionWarning(relPath, "secret", "for secrets", reason, "inspect the file separately")
+}
+
+// newFileLineScanner reads lines up to the file size limit. Files reaching
+// this point are at most maxScanFileBytes, so no line can exceed the buffer and
+// bufio's default 64 KiB token limit cannot end the scan early.
+func newFileLineScanner(f *os.File) *bufio.Scanner {
+	s := bufio.NewScanner(f)
+	s.Buffer(make([]byte, 0, 64*1024), maxScanFileBytes+1)
+	return s
+}
+
 func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		return nil
+		return []Finding{secretInspectionWarning(relPath, "unreadable")}
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 
 	var findings []Finding
-	s := bufio.NewScanner(f)
+	s := newFileLineScanner(f)
 	lineNum := 0
 	for s.Scan() {
 		lineNum++
@@ -420,6 +436,9 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 			}
 		}
 	}
+	if s.Err() != nil {
+		findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
+	}
 
 	return findings
 }
@@ -435,7 +454,8 @@ func scanFileForEntropy(path, relPath string) []Finding {
 	const minValueLen = 16
 
 	var findings []Finding
-	s := bufio.NewScanner(f)
+	// Read failures are already reported once by scanFileForSecrets for this file.
+	s := newFileLineScanner(f)
 	lineNum := 0
 	for s.Scan() {
 		lineNum++

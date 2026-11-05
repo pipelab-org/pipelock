@@ -344,6 +344,30 @@ func TestScanFiles_OversizeSecretFileReportsUninspected(t *testing.T) {
 	}
 }
 
+// A line longer than bufio's default 64 KiB token limit once ended the scan
+// silently, hiding secrets on later lines of an in-cap file.
+func TestScanFiles_SecretAfterLongLineIsDetected(t *testing.T) {
+	patterns := mustCompileDLPPatterns(t)
+	dir := t.TempDir()
+	fakeKey := "AK" + "IA" + strings.Repeat("B", 16)
+	body := "LONG=" + strings.Repeat("x", 100*1024) + "\nKEY=" + fakeKey + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var secret, warning bool
+	for _, f := range scanFiles(dir, patterns) {
+		switch {
+		case f.Severity == severityCritical && f.Line == 2:
+			secret = true
+		case strings.HasPrefix(f.Message, "Could not inspect"):
+			warning = true
+		}
+	}
+	if !secret || warning {
+		t.Fatalf("secret after a long line: detected=%v inspection warning=%v", secret, warning)
+	}
+}
+
 func TestScanFiles_AtCapSecretFileDetectsKey(t *testing.T) {
 	dir := t.TempDir()
 	fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
@@ -510,15 +534,17 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	findings := scanFiles(dir, mustCompileDLPPatterns(t))
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
+	if len(findings) != 1 || findings[0].Severity != "warning" ||
+		!strings.Contains(findings[0].Message, "Could not inspect .env for secrets (unreadable)") {
+		t.Fatalf("unreadable secret file must report an inspection warning, got %+v", findings)
 	}
 }
 
 func TestScanFileForSecrets_UnreadableFile(t *testing.T) {
 	findings := scanFileForSecrets("/nonexistent/file", "file", nil)
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
+	if len(findings) != 1 || findings[0].Category != "secret" ||
+		!strings.Contains(findings[0].Message, "Could not inspect file for secrets (unreadable)") {
+		t.Fatalf("unreadable file must report an inspection warning, got %+v", findings)
 	}
 }
 
