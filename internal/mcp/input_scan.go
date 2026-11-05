@@ -12,9 +12,11 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -273,14 +275,83 @@ func scanMCPResourceURI(ctx context.Context, method string, params json.RawMessa
 	if uri == "" {
 		return mcpResourceURIParserFinding("missing resources/read uri")
 	}
-	lower := strings.ToLower(uri)
-	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
+	view, ok := httpResourceURLView(uri)
+	if !ok {
 		return nil
 	}
-	if result := sc.Scan(ctx, uri); !result.Allowed {
+	// Preserve checks on a submitted HTTP(S) URL without consuming a second
+	// rate-limit slot. The resolved view below records the actual request.
+	lower := strings.ToLower(uri)
+	if view != uri && (strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")) {
+		if result := sc.ScanPreflight(ctx, uri); !result.Allowed {
+			return []scanner.Result{result}
+		}
+	}
+	if result := sc.Scan(ctx, view); !result.Allowed {
 		return []scanner.Result{result}
 	}
 	return nil
+}
+
+// httpResourceURLView returns the HTTP(S) URL a WHATWG URL reader makes of
+// uri, or false when that reader would not treat it as HTTP(S). It applies
+// the standard's input preprocessing and its separator handling for special
+// schemes before the authority.
+func httpResourceURLView(uri string) (string, bool) {
+	s := strings.TrimFunc(uri, func(r rune) bool { return r <= 0x20 })
+	s = strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return -1
+		}
+		return r
+	}, s)
+	colon := strings.IndexByte(s, ':')
+	if colon <= 0 {
+		return "", false
+	}
+	scheme := strings.ToLower(s[:colon])
+	if scheme != "http" && scheme != "https" {
+		return "", false
+	}
+	rest := strings.TrimLeft(s[colon+1:], `/\`)
+	end := strings.IndexAny(rest, "?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	rest = strings.ReplaceAll(rest[:end], `\`, "/") + rest[end:]
+	return scheme + "://" + asciiAuthorityHost(rest), true
+}
+
+// asciiAuthorityHost rewrites the host of rest (authority, then any path,
+// query or fragment) the way the WHATWG host parser reads a host that is not
+// plain ASCII: percent-decoded, then mapped with UTS 46, so an ideographic full
+// stop or a full-width digit reads as the address it names and meets the
+// literal-address floor. An IPv6 literal, a host with neither a non-ASCII byte
+// nor an escape, and a host the mapping rejects come back unchanged; the
+// submitted text is still scanned as submitted.
+func asciiAuthorityHost(rest string) string {
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		end = len(rest)
+	}
+	authority, tail := rest[:end], rest[end:]
+	at := strings.LastIndexByte(authority, '@')
+	userinfo, hostport := authority[:at+1], authority[at+1:]
+	if strings.HasPrefix(hostport, "[") {
+		return rest
+	}
+	host, port := hostport, ""
+	if colon := strings.LastIndexByte(hostport, ':'); colon >= 0 {
+		host, port = hostport[:colon], hostport[colon:]
+	}
+	if !strings.ContainsFunc(host, func(r rune) bool { return r >= 0x80 || r == '%' }) {
+		return rest
+	}
+	ascii, err := destination.LookupASCII(normalize.PercentUnescapePartial(host))
+	if err != nil || ascii == "" {
+		return rest
+	}
+	return userinfo + ascii + port + tail
 }
 
 func mcpResourceURIParserFinding(reason string) []scanner.Result {
