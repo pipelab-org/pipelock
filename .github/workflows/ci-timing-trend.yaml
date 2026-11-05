@@ -37,20 +37,26 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TRIGGER_RUN_ID: ${{ github.event.workflow_run.id }}
+          TRIGGER_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
         run: |
           set -euo pipefail
           trap 'echo "::error title=CI timing fetch::Cannot fetch CI history; see the API or input error above" >&2' ERR
           data="$RUNNER_TEMP/ci-timing"
           mkdir -p "$data/jobs"
           run_id="$TRIGGER_RUN_ID"
+          attempt="$TRIGGER_RUN_ATTEMPT"
           if [ -z "$run_id" ]; then
-            run_id="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0].id')"
+            latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0] | "\(.id) \(.run_attempt)"')"
+            read -r run_id attempt <<< "$latest"
           fi
-          if [[ ! "$run_id" =~ ^[0-9]+$ ]]; then
+          if [[ ! "$run_id" =~ ^[0-9]+$ || ! "$attempt" =~ ^[0-9]+$ ]]; then
             echo '::error title=CI timing fetch::No completed main-push CI run found'
             exit 1
           fi
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$data/current-run.json"
+          # Pin the attempt that completed: during a rerun the plain run record
+          # describes the newer, unfinished attempt.
+          # https://docs.github.com/en/rest/actions/workflow-runs#get-a-workflow-run-attempt
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/attempts/$attempt" > "$data/current-run.json"
           since="$(python3 scripts/ci_timing_trend.py --window-start "$data/current-run.json")"
           # Source: Actions REST list-runs API supports 100 records per page,
           # with at most 1,000 results for a filtered search. The script refuses

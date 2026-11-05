@@ -130,6 +130,24 @@ class TimingTrendTest(unittest.TestCase):
         self.assertEqual(report["failed_jobs"], [jobs[0]["name"] + " (cancelled)"])
         self.assertIn(jobs[0]["name"] + " (cancelled)", trend.summary(report))
 
+    def test_failed_run_times_its_timed_out_job(self):
+        # A job that hit its timeout-minutes ends cancelled; in a failed run its
+        # duration is measured, so a timeout can show up as a regression.
+        job = self.data["current_jobs"]["jobs"][0]
+        job["conclusion"] = "cancelled"
+        row = next(r for r in self.report()["jobs"] if r["name"] == job["name"])
+        self.assertIsNone(row["seconds"])
+        self.data["current_run"]["conclusion"] = "failure"
+        row = next(r for r in self.report()["jobs"] if r["name"] == job["name"])
+        self.assertIsNotNone(row["seconds"])
+
+    def test_wall_time_unknown_when_a_completed_job_has_no_end(self):
+        jobs = {job["name"]: job for job in self.data["current_jobs"]["jobs"]}
+        self.assertIsNotNone(trend.wall_seconds(self.data["current_run"], jobs))
+        first = next(iter(jobs.values()))
+        first["completed_at"] = None
+        self.assertIsNone(trend.wall_seconds(self.data["current_run"], jobs))
+
     def test_history_window_success_main_push_only_self_future_and_duplicates(self):
         history = self.data["runs"]["workflow_runs"]
         for field, invalid in (("event", "pull_request"), ("head_branch", "feature"),
@@ -298,7 +316,11 @@ endpoint = next(arg for arg in args if arg.startswith('repos/'))
 if os.environ.get('FAIL_FETCH'):
     sys.exit(9)
 if '--jq' in args:
-    print(99)
+    print('99 1')
+elif '/attempts/' in endpoint and '/jobs' not in endpoint:
+    # The pinned attempt record for the measured run.
+    assert endpoint.endswith('/runs/99/attempts/1'), endpoint
+    print(json.dumps(data['current_run']))
 elif '/attempts/' in endpoint:
     if os.environ.get('RETRY_FETCH') and '?per_page=100' in endpoint:
         print('truncated JSON')
@@ -318,15 +340,18 @@ else:
                                 "RUNNER_TEMP": str(root), "GITHUB_REPOSITORY": "example/project",
                                 "TIMING_FIXTURE": str(FIXTURE)}
             for trigger, retry in (("99", ""), ("", ""), ("99", "1")):
+                attempt = "1" if trigger else ""
                 result = subprocess.run(["bash", "-c", fetch["run"]], cwd=ROOT,
-                                        env=env | {"TRIGGER_RUN_ID": trigger, "RETRY_FETCH": retry}, capture_output=True, text=True)
+                                        env=env | {"TRIGGER_RUN_ID": trigger, "TRIGGER_RUN_ATTEMPT": attempt,
+                                                   "RETRY_FETCH": retry}, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 if retry:
                     self.assertIn("Retrying run 99 with smaller API pages", result.stdout)
                 report = trend.compute(root / "ci-timing")
                 self.assertEqual(report["wall"]["samples"], 5)
             result = subprocess.run(["bash", "-c", fetch["run"]], cwd=ROOT,
-                                    env=env | {"TRIGGER_RUN_ID": "99", "FAIL_FETCH": "1"}, capture_output=True)
+                                    env=env | {"TRIGGER_RUN_ID": "99", "TRIGGER_RUN_ATTEMPT": "1",
+                                               "FAIL_FETCH": "1"}, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
 
 

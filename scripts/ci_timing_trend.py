@@ -103,8 +103,11 @@ def job_records(run: dict, payload) -> dict[str, dict]:
     return result
 
 
-def job_seconds(job: dict) -> float | None:
-    if (job["status"] != "completed" or job["conclusion"] in ("skipped", "cancelled")
+def job_seconds(job: dict, measure_cancelled: bool = False) -> float | None:
+    # A cancelled job in a failed main run hit its timeout-minutes; its duration
+    # is real evidence. Elsewhere cancelled and skipped jobs have no timing.
+    skip = ("skipped",) if measure_cancelled else ("skipped", "cancelled")
+    if (job["status"] != "completed" or job["conclusion"] in skip
             or not job.get("started_at") or not job.get("completed_at")):
         return None
     seconds = (timestamp(job["completed_at"]) - timestamp(job["started_at"])).total_seconds()
@@ -114,6 +117,11 @@ def job_seconds(job: dict) -> float | None:
 
 
 def wall_seconds(run: dict, jobs: dict[str, dict]) -> float | None:
+    # A completed job with no end time leaves the run's end unknown; a wall time
+    # from the remaining jobs would end early and skew the median and p90.
+    if any(job["status"] == "completed" and job["conclusion"] != "skipped"
+           and not job.get("completed_at") for job in jobs.values()):
+        return None
     ends = [timestamp(job["completed_at"]) for job in jobs.values()
             if job.get("completed_at")]
     if not ends:
@@ -162,7 +170,7 @@ def compute(directory: Path) -> dict:
     rows = []
     for name, job in jobs.items():
         values = samples.get(name, [])
-        duration = job_seconds(job)
+        duration = job_seconds(job, measure_cancelled=current["conclusion"] == "failure")
         median = statistics.median(values) if values else None
         delta = duration - median if duration is not None and median is not None else None
         # Comparing seconds also handles a legitimate zero-second median without
