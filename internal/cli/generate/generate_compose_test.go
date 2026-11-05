@@ -61,6 +61,9 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			var doc struct {
 				Services map[string]struct {
 					StopGracePeriod string `yaml:"stop_grace_period"`
+					Healthcheck     *struct {
+						Test []string `yaml:"test"`
+					} `yaml:"healthcheck"`
 				} `yaml:"services"`
 			}
 			if err := yaml.Unmarshal([]byte(tmpl), &doc); err != nil {
@@ -68,6 +71,26 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			}
 			if got := doc.Services["pipelock"].StopGracePeriod; got != "10m" {
 				t.Errorf("pipelock stop_grace_period = %q, want 10m", got)
+			}
+			// The Compose specification requires a list-form healthcheck test to
+			// begin with NONE, CMD or CMD-SHELL; docker compose rejects anything else.
+			if doc.Services["pipelock"].Healthcheck == nil {
+				t.Fatal("pipelock service has no healthcheck")
+			}
+			for name, svc := range doc.Services {
+				if svc.Healthcheck == nil {
+					continue
+				}
+				test := svc.Healthcheck.Test
+				if len(test) == 0 {
+					t.Errorf("%s healthcheck test is empty", name)
+					continue
+				}
+				switch test[0] {
+				case "NONE", "CMD", "CMD-SHELL":
+				default:
+					t.Errorf("%s healthcheck test starts with %q, want NONE, CMD or CMD-SHELL", name, test[0])
+				}
 			}
 		})
 	}
