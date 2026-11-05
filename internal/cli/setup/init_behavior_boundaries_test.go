@@ -304,6 +304,30 @@ func TestPrintProofDryRunAndSkippedPhases(t *testing.T) {
 	}
 }
 
+// The printed check command must name the same destination the canary used,
+// so an operator rerunning it under a strict allowlist reaches DLP too.
+func TestPrintProofCheckCommandUsesAllowlistedCanaryHost(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.vendor.example"}
+	result := &initResult{
+		Discover: &initDiscoverResult{},
+		Setup:    &initSetupResult{ConfigPath: "/tmp/strict.yaml", Preset: config.ModeStrict, Written: true},
+		Verify:   &initVerifyResult{Passed: 1},
+		Canary:   &initCanaryResult{Detected: true},
+	}
+	var out bytes.Buffer
+	printProof(&out, result, cfg)
+	got := out.String()
+	wantURL := "https://api.vendor.example/test?key=" + canaryToken()
+	if want := "--url " + initCommandQuote(wantURL, runtime.GOOS); !strings.Contains(got, want) {
+		t.Fatalf("check command missing %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "github.com") {
+		t.Fatalf("check command names a host the strict allowlist blocks:\n%s", got)
+	}
+}
+
 func TestInitCommandRejectsUnexpectedArguments(t *testing.T) {
 	cmd := InitCmd()
 	cmd.SetOut(io.Discard)
