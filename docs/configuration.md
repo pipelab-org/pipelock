@@ -4015,7 +4015,7 @@ The `pipelock healthcheck` command wraps the `/health` probe for container
 healthchecks: it sends a GET to `http://<addr>/health` (default
 `127.0.0.1:8888`, override with `--addr`) and exits 0 when healthy, 1
 otherwise. Designed for Docker `HEALTHCHECK` directives and Compose
-`healthcheck:` blocks: `test: ["/pipelock", "healthcheck"]`.
+`healthcheck:` blocks: `test: ["CMD", "/pipelock", "healthcheck"]`.
 
 ## A2A Scanning (v2.1)
 
