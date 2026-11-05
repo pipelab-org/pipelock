@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/configs"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
@@ -154,6 +156,127 @@ func TestInitVerifyAndCanaryFailClosed(t *testing.T) {
 	}
 }
 
+// Shipped strict presets must let the init canary reach DLP. hostile-model's
+// allowlist omits github.com, which once made init fail before DLP ran.
+func TestInitCanaryReachesDLPOnStrictPresets(t *testing.T) {
+	for _, tc := range []struct{ preset, wantHost string }{
+		{"hostile-model", "https://canary.anthropic.com/"},
+		{"strict", "https://github.com/"},
+	} {
+		t.Run(tc.preset, func(t *testing.T) {
+			raw, ok := configs.Preset(tc.preset)
+			if !ok {
+				t.Fatalf("preset %s missing", tc.preset)
+			}
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := initCanaryURL(cfg); !strings.HasPrefix(got, tc.wantHost) {
+				t.Fatalf("canary URL = %s, want prefix %s", got, tc.wantHost)
+			}
+			result := runInitCanary(cfg)
+			if !result.Detected {
+				t.Fatalf("canary not detected by DLP: %+v", result)
+			}
+		})
+	}
+}
+
+// Stripping a leading wildcard can leave an IP literal the pattern does not
+// authorize, which once blocked the canary before DLP on a valid policy.
+func TestInitCanaryNumericWildcard(t *testing.T) {
+	for _, pattern := range []string{"*.8.8.8.8", "*.127.0.0.1", "*.8.8.8.8.", "*.0177.0.0.1", "*.127.1"} {
+		t.Run(pattern, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, []byte("mode: strict\napi_allowlist: [\""+pattern+"\"]\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := runInitCanary(cfg); !result.Detected {
+				t.Fatalf("canary for %q: %+v", pattern, result)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); !result.Detected {
+				t.Fatalf("sidecar canary for %q: %+v", pattern, result)
+			}
+		})
+	}
+}
+
+func TestInitCanarySkipsIPAliases(t *testing.T) {
+	for _, host := range []string{"127.0.0.1.", "0177.0.0.1", "127.1", "0x7f000001", "2130706433"} {
+		t.Run(host, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			policy := "mode: strict\napi_allowlist: [\"" + host + "\", api.vendor.example]\n"
+			if err := os.WriteFile(path, []byte(policy), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := runInitCanary(cfg); !result.Detected {
+				t.Errorf("init canary for %q: %+v", host, result)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); !result.Detected {
+				t.Errorf("sidecar canary for %q: %+v", host, result)
+			}
+		})
+	}
+}
+
+// An allowlist naming only IP literals offers no hostname to choose. The
+// canary then targets the first entry, and an IPv6 literal must stay a valid
+// bracketed URL host rather than being misread as host:port.
+func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
+	for _, tc := range []struct{ entry, wantHost, wantURL, blockedBy string }{
+		{"10.0.0.5", "10.0.0.5", "https://10.0.0.5/test?key=" + canaryToken(), "core_ssrf"},
+		{"fd00::5", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken(), "core_ssrf"},
+		// An IPv4-mapped literal still has colons, so it needs brackets too.
+		// The scanner canonicalizes the host to its IPv4 form, which the
+		// literal allowlist entry does not match, so the allowlist blocks first.
+		{"::ffff:10.0.0.5", "::ffff:10.0.0.5", "https://[::ffff:10.0.0.5]/test?key=" + canaryToken(), "allowlist"},
+		// Config validation keeps a trailing dot, which net.ParseIP rejects.
+		{"fd00::5.", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken(), "core_ssrf"},
+	} {
+		t.Run(tc.entry, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Mode = config.ModeStrict
+			cfg.APIAllowlist = []string{tc.entry}
+			got := initCanaryURL(cfg)
+			if got != tc.wantURL {
+				t.Fatalf("canary URL = %q, want %q", got, tc.wantURL)
+			}
+			parsed, err := url.Parse(got)
+			if err != nil || parsed.Hostname() != tc.wantHost {
+				t.Fatalf("canary URL %q parses to host %q (err %v), want %q", got, parsed.Hostname(), err, tc.wantHost)
+			}
+
+			// Without configured internal ranges a pre-DLP scanner blocks the
+			// address first; both canaries must say so rather than claim DLP
+			// detection.
+			cfg.Internal = nil
+			want := `blocked before DLP by scanner "` + tc.blockedBy + `"`
+			if result := runInitCanary(cfg); result.Detected || !strings.Contains(result.Detail, want) {
+				t.Errorf("init canary = %+v, want %s", result, want)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); result.Detected || !strings.Contains(result.Detail, want) {
+				t.Errorf("sidecar canary = %+v, want %s", result, want)
+			}
+		})
+	}
+}
+
 func TestPrintDiscoverPhaseReportsMalformedAndUnprotectedClients(t *testing.T) {
 	report := &discover.Report{
 		Clients: []discover.ClientConfig{
@@ -194,7 +317,7 @@ func TestPrintProofRepresentsFailureAndUnknownStates(t *testing.T) {
 		Canary: &initCanaryResult{Detected: false},
 	}
 	var out bytes.Buffer
-	printProof(&out, result)
+	printProof(&out, result, config.Defaults())
 	got := out.String()
 	for _, want := range []string{
 		"Unknown:", "Config exists at:", "2 passed, 1 failed", "not detected", "use --force",
@@ -216,12 +339,36 @@ func TestPrintProofDryRunAndSkippedPhases(t *testing.T) {
 		Canary: &initCanaryResult{Skipped: true},
 	}
 	var out bytes.Buffer
-	printProof(&out, result)
+	printProof(&out, result, config.Defaults())
 	got := out.String()
 	for _, want := range []string{"Config would be at:", "Validate:           skipped", "Canary:             skipped"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("proof output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// The printed check command must name the same destination the canary used,
+// so an operator rerunning it under a strict allowlist reaches DLP too.
+func TestPrintProofCheckCommandUsesAllowlistedCanaryHost(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Mode = config.ModeStrict
+	cfg.APIAllowlist = []string{"api.vendor.example"}
+	result := &initResult{
+		Discover: &initDiscoverResult{},
+		Setup:    &initSetupResult{ConfigPath: "/tmp/strict.yaml", Preset: config.ModeStrict, Written: true},
+		Verify:   &initVerifyResult{Passed: 1},
+		Canary:   &initCanaryResult{Detected: true},
+	}
+	var out bytes.Buffer
+	printProof(&out, result, cfg)
+	got := out.String()
+	wantURL := "https://api.vendor.example/test?key=" + canaryToken()
+	if want := "--url " + initCommandQuote(wantURL, runtime.GOOS); !strings.Contains(got, want) {
+		t.Fatalf("check command missing %q:\n%s", want, got)
+	}
+	if strings.Contains(got, "github.com") {
+		t.Fatalf("check command names a host the strict allowlist blocks:\n%s", got)
 	}
 }
 
@@ -241,7 +388,8 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 		skipValidate, skipCanary, dryRun, wantError bool
 		jsonOutput, wantLoadError, wantCanaryBlock  bool
 	}{
-		{name: "retained strict blocks before DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n", wantError: true, wantCanaryBlock: true},
+		{name: "retained strict detects DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n"},
+		{name: "retained strict blocklist prevents DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\nfetch_proxy:\n  monitoring:\n    blocklist: [api.vendor.example]\n", wantError: true, wantCanaryBlock: true},
 		{name: "malformed", contents: "mode: [", wantError: true, wantLoadError: true},
 		{name: "malformed JSON", contents: "mode: [", wantError: true, wantLoadError: true, jsonOutput: true},
 		{name: "malformed canary only", contents: "mode: [", skipValidate: true, wantError: true, wantLoadError: true},
@@ -276,8 +424,8 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 			}
 			if tc.wantCanaryBlock {
 				var exitErr *cliutil.ExitError
-				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "allowlist"`) {
-					t.Fatalf("expected allowlist-stage canary failure, got %v", err)
+				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "blocklist"`) {
+					t.Fatalf("expected blocklist-stage canary failure, got %v", err)
 				}
 				if !strings.Contains(out.String(), err.Error()) {
 					t.Fatalf("canary failure detail missing from output: %s", &out)
@@ -327,6 +475,7 @@ func TestSidecarCanaryReportsSyntheticScopeAndConfig(t *testing.T) {
 	}
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.vendor.example"}
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"api.vendor.example"}
 	result = runSidecarCanary(&out, cfg, sidecarOptions{}, false)
 	want := "/pipelock check --config " + initCommandQuote(sidecarConfigMount+"/"+sidecarConfigFile, "linux") + " --url "
 	if result.Detected || !strings.Contains(result.Detail, "blocked before DLP") || !strings.Contains(result.Detail, want) || !strings.Contains(result.Detail, "inside its container") {
@@ -401,7 +550,7 @@ func TestInitRetainedConfigWithoutUserBus(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	home := t.TempDir()
 	path := filepath.Join(home, "pipelock.yaml")
-	contents := "mode: strict\napi_allowlist: [api.vendor.example]\n"
+	contents := "mode: strict\napi_allowlist: [api.vendor.example]\nfetch_proxy:\n  monitoring:\n    blocklist: [api.vendor.example]\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}

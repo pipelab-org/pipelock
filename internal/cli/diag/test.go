@@ -529,7 +529,9 @@ func buildTestVectors(extraPoison []*mcptools.ExtraPoisonPattern) []testVector {
 			Category: "entropy",
 			Attack:   "Random-looking base64 string in URL path",
 			Run: func(sc *scanner.Scanner) vectorResult {
-				entropy := "aB3xK9mQ7" + "pR2wE5tY8u" + "I0oL4hG6fD1sZ"
+				// All 62 alphanumeric characters occur once (about 5.95 bits/char),
+				// exceeding even the tolerant generic-agent threshold of 5.5.
+				entropy := "abcdefghijklmnopqrstuvwxyz" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ" + "0123456789"
 				r := sc.Scan(context.Background(), "https://example.com/data/"+entropy)
 				return vectorResult{Blocked: !r.Allowed, Expected: true, Detail: r.Reason}
 			},

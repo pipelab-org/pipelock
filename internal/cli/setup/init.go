@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -387,7 +389,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 	} else if configLoadErr != nil {
 		_, _ = fmt.Fprintf(w, "Fix the configuration file %q and rerun the same pipelock init command.\n", configPath)
 	} else {
-		printProof(w, result)
+		printProof(w, result, cfg)
 	}
 
 	if configLoadErr != nil {
@@ -713,12 +715,55 @@ func runInitVerify(cfg *config.Config) *initVerifyResult {
 	}
 }
 
-func runInitCanary(cfg *config.Config) *initCanaryResult {
-	// Use github.com (in the default allowlist) so strict mode doesn't block
-	// by allowlist before the DLP scanner runs.
-	canaryURL := "https://github.com/test?key=" + canaryToken()
+// initCanaryURL returns the synthetic DLP canary URL for cfg. It keeps the
+// historical github.com destination unless a strict allowlist would block it
+// before DLP runs, and then uses a destination the configured allowlist
+// itself accepts. The policy itself is never changed.
+func initCanaryURL(cfg *config.Config) string {
+	host := "github.com"
+	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 && !canaryHostAllowed(host, cfg.APIAllowlist) {
+		host = allowlistCanaryHost(cfg.APIAllowlist)
+	}
+	// RFC 3986 brackets every IPv6 literal, including IPv4-mapped forms such
+	// as ::ffff:192.0.2.1 whose To4 is non-nil. Config validation keeps a
+	// trailing dot that net.ParseIP rejects, so drop it from an IPv6 literal.
+	if bare := strings.TrimSuffix(host, "."); net.ParseIP(bare) != nil && strings.Contains(bare, ":") {
+		host = "[" + bare + "]"
+	}
+	u := url.URL{Scheme: "https", Host: host, Path: "/test", RawQuery: "key=" + canaryToken()}
+	return u.String()
+}
 
-	return scanCanaryResult(cfg, canaryURL)
+// allowlistCanaryHost picks a hostname that the allowlist matcher accepts and
+// that is not an IP literal, which the core SSRF floor can block before DLP.
+// A leading wildcard pattern yields a name under it, since stripping the
+// wildcard can leave an address the pattern does not authorize. When no entry
+// yields such a name, the first entry is returned and the canary reports the
+// block honestly.
+func allowlistCanaryHost(allowlist []string) string {
+	for _, pattern := range allowlist {
+		host := pattern
+		if suffix, ok := strings.CutPrefix(pattern, "*."); ok {
+			host = "canary." + suffix
+		}
+		if scanner.ParseIPLiteral(host) == nil && canaryHostAllowed(host, allowlist) {
+			return host
+		}
+	}
+	return strings.TrimPrefix(allowlist[0], "*.")
+}
+
+func canaryHostAllowed(host string, allowlist []string) bool {
+	for _, pattern := range allowlist {
+		if scanner.MatchDomain(host, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func runInitCanary(cfg *config.Config) *initCanaryResult {
+	return scanCanaryResult(cfg, initCanaryURL(cfg))
 }
 
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
@@ -743,7 +788,7 @@ func scanCanaryResult(cfg *config.Config, canaryURL string) *initCanaryResult {
 	return &initCanaryResult{Detail: "Canary was not detected by DLP. Use the config-specific check command in Next steps."}
 }
 
-func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
+func printProof(w interface{ Write([]byte) (int, error) }, result *initResult, cfg *config.Config) {
 	_, _ = fmt.Fprintln(w, "[5/5] Summary")
 	_, _ = fmt.Fprintln(w, "=============")
 	_, _ = fmt.Fprintln(w)
@@ -819,7 +864,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 		_, _ = fmt.Fprintln(w, "  Commands below use PowerShell quoting.")
 	}
 	pathArg := initCommandQuote(result.Setup.ConfigPath, runtime.GOOS)
-	_, _ = fmt.Fprintf(w, "  pipelock check --config %s --url %s\n", pathArg, initCommandQuote("https://github.com/test?key="+canaryToken(), runtime.GOOS))
+	_, _ = fmt.Fprintf(w, "  pipelock check --config %s --url %s\n", pathArg, initCommandQuote(initCanaryURL(cfg), runtime.GOOS))
 	_, _ = fmt.Fprintf(w, "  pipelock doctor --config %s\n", pathArg)
 	_, _ = fmt.Fprintf(w, "  pipelock verify-install --config %s     # temporary-proxy synthetic checks\n", pathArg)
 	_, _ = fmt.Fprintf(w, "  pipelock run --config %s\n", pathArg)
