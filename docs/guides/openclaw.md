@@ -56,8 +56,8 @@ pipelock generate mcporter -i servers.json --in-place --backup
 │  │  Agent   │───>│ Pipelock │───>│ OpenClaw Gateway │   │
 │  │          │    │ MCP Proxy│    │   (ws/http)      │   │
 │  │ (secrets,│    │          │    │                  │   │
-│  │  no net) │    │ (no      │    └──────────────────┘   │
-│  │          │    │  secrets, │           │               │
+│  │  no net) │    │ (DLP     │    └──────────────────┘   │
+│  │          │    │  memory, │           │               │
 │  └──────────┘    │  scans   │           │               │
 │                  │  traffic)│           ▼               │
 │                  └──────────┘    ┌──────────────┐       │
@@ -67,7 +67,7 @@ pipelock generate mcporter -i servers.json --in-place --backup
 ```
 
 In an enforced deployment, the agent has secrets but no direct network access.
-Pipelock has no agent secrets and provides policy-controlled network egress.
+Pipelock provides policy-controlled network egress. Leak detection may retain selected environment and configured secret-file values in memory; give the proxy only the access it needs.
 Deployment controls such as Docker networking, host containment, firewall
 rules, or K8s NetworkPolicy enforce this boundary. This capability separation
 prevents a compromised agent from exfiltrating secrets directly.

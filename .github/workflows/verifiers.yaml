@@ -173,10 +173,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # Pin to Rust 1.95.0 so local Fedora-packaged rustc/rustfmt (currently
-      # 1.95.0 / rustfmt 1.9.0) agrees with CI on fmt and clippy output.
-      # Bump in lockstep with `dnf` package updates; do not chase stable
-      # silently because rustfmt rules tighten each release.
+      # Rust 1.95.0 is the verifier's pinned CI toolchain. Use the same version
+      # locally for consistent rustfmt and clippy results. Review toolchain updates
+      # with the verifier tests and cross-language conformance checks.
       - name: Set up Rust 1.95.0 + rustfmt + clippy
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy

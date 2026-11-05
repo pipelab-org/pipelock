@@ -52,7 +52,7 @@ Pipelock protects against agent egress and tool-boundary failures that cross a b
 
 ### Trust Boundaries
 
-**Agent to proxy.** Pipelock is designed for capability separation: the agent has workspace access and secrets, while Pipelock has network access and performs policy decisions. This no-bypass property is deployment-enforced through process, user, container, network, or operating-system controls. The binary enforces decisions for traffic actually routed through Pipelock; it does not magically intercept unrelated direct egress.
+**Agent to proxy.** Pipelock is designed for capability separation: the agent has workspace access and secrets, while Pipelock has network access and performs policy decisions. This no-bypass property is deployment-enforced through process, user, container, network, or operating-system controls. Proxy scanning covers traffic routed through Pipelock. On supported Linux setups, `pipelock contain` can also block direct egress using a private network namespace, nftables, and managed identities when configured and its live restrictions are verified. This does not provide automatic whole-host coverage; filesystem confinement is a separate setting.
 
 **MCP client to MCP server.** When an MCP server is launched through `pipelock mcp proxy` or reached through a Pipelock MCP listener, Pipelock mediates the JSON-RPC boundary. Client requests are checked for DLP leaks, injection, tool policy, and session-binding failures before forwarding. Server responses and tool descriptions are checked before the agent consumes them.
 
@@ -140,7 +140,7 @@ Receipt emission is evidence by default, not enforcement by itself. `flight_reco
 
 ## Honest Limitations
 
-**No-bypass requires deployment enforcement.** Pipelock enforces decisions for traffic routed through it. Capability separation, direct-egress blocking, and no-bypass guarantees require containment recipes, user/process separation, network controls, or equivalent deployment enforcement. The `contain` and `assess` commands help install, test, and report those boundaries, but a binary running beside an unrestricted process cannot stop that process from opening its own direct socket. Known unsupported paths are documented in [docs/security/current-unsupported-paths.md](docs/security/current-unsupported-paths.md).
+**No-bypass requires deployment enforcement.** Pipelock enforces decisions for traffic routed through it. Capability separation, direct-egress blocking, and no-bypass guarantees require containment recipes, user/process separation, network controls, or equivalent deployment enforcement. On supported Linux hosts, `pipelock contain` installs and verifies kernel-enforced restrictions using a private network namespace, nftables, and managed identities; `assess` tests and reports deployment evidence, but a binary running beside an unrestricted process cannot stop that process from opening its own direct socket. Known unsupported paths are documented in [docs/security/current-unsupported-paths.md](docs/security/current-unsupported-paths.md).
 
 **Receipts prove integrity, not completeness.** Signed receipts and hash chains make recorded mediated actions tamper-evident. They do not prove that every action on the host or network was mediated, and they do not prove that an action matched the user's intent.
 

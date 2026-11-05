@@ -1,6 +1,6 @@
 # AGENTS.md - Pipelock Contributor Guide
 
-Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Direct egress controls are deployment guidance; binary-enforced coverage applies to mediated traffic. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
+Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Proxy scanning covers traffic routed through Pipelock. On supported Linux setups, `pipelock contain` can also block direct egress using a private network namespace, nftables, and managed identities when configured and its live restrictions are verified. This does not provide automatic whole-host coverage; filesystem confinement is a separate setting. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
 ## Quick Reference
 
@@ -8,7 +8,7 @@ Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent H
 |------|-------|
 | Module | `github.com/luckyPipewrench/pipelock` |
 | Go | 1.26+; CI tests Go 1.26 and 1.27 |
-| License | Apache 2.0 core, ELv2 under `enterprise/` |
+| License | Apache 2.0 core; ELv2 under `enterprise/` and in `enterprise` build-tagged integration files |
 | Binary | Single Go binary; size varies by OS, build tags, and release flags |
 | Dependencies | See `go.mod`. Run `make stats` before citing the current direct-dependency count. |
 
@@ -56,7 +56,7 @@ The code-checked capability manifest is docs/security/capability-manifest.json. 
 make build          # Compile with version ldflags
 make test           # Run the OSS race suite as sequential CI-shaped shards
 make test-cover     # Write coverage.html
-make lint           # go vet + golangci-lint v2 + gofumpt check
+make lint           # Check linter version, run vet, lint, and test-stability checks
 make bench          # Scanner and MCP benchmarks
 make fmt            # gofumpt via the pinned golangci-lint formatter
 make vet            # Static analysis
@@ -65,29 +65,11 @@ make docker         # Docker image
 make stats          # Canonical local stats for docs
 ```
 
-Before committing, run targeted tests with `-race` for changed packages and affected consumers in both build modes, plus lint for new issues. For example, for a change confined to `internal/gitprotect`:
-
-```bash
-go test -race -count=1 ./internal/gitprotect
-go test -race -count=1 -tags enterprise ./internal/gitprotect
-golangci-lint run --new-from-rev=HEAD ./...
-golangci-lint run --build-tags enterprise --new-from-rev=HEAD ./...
-```
-
-Choose the packages for your change; the example isn't a fixed test list. For workflow, script, or documentation changes, run the relevant policy checks instead of unrelated Go tests. Required CI checks must pass before merge. CI owns the full OSS and enterprise race suites on pushes to `main` and before releases; CI-policy pull requests also run the Go 1.27 race suites before merge.
-
-Optional full-repository validation:
-
-```bash
-make test
-make test-sharded-enterprise
-golangci-lint run ./...
-golangci-lint run --build-tags enterprise ./...
-```
+Before committing, run targeted `go test -race -count=1` for the changed packages and affected consumers in both build modes (add `-tags enterprise` for the second), plus `golangci-lint run --new-from-rev=HEAD ./...` with and without `--build-tags enterprise`. For workflow, script or documentation changes, run the relevant policy checks instead. The [pre-commit checklist](CONTRIBUTING.md#pre-commit-checklist) owns the details and optional full-repository checks; [Pull Requests](CONTRIBUTING.md#pull-requests) describes CI.
 
 ## Architecture
 
-Capability separation is part of the design: agent environments can hold secrets and route traffic through Pipelock; the proxy has network egress and does not store agent credentials. Pipelock reads local environment values for leak detection only.
+Capability separation limits the proxy's access to the agent's environment and files. Pipelock mediates network traffic and should run with only the access its configured functions need. When enabled, leak detection reads selected values from the proxy process environment and any configured `dlp.secrets_file`, retaining them in memory for matching. Treat the proxy process and those inputs as sensitive.
 
 Three proxy modes share the main listener:
 
@@ -141,11 +123,11 @@ Configured MCP upstream dialing uses the cloud metadata floor in `internal/mcp/u
 
 The kill switch controller in `internal/killswitch/killswitch.go` OR-composes seven activation sources: config, API, remote kill, stale bundle, uncertain Conductor apply, SIGUSR1, and sentinel file. Any active source denies traffic. Endpoint and IP exemptions apply only on the HTTP front door (`IsActiveHTTP`, `IsActiveForIP`); MCP, reverse-proxy and relay paths call `IsActive`/`IsActiveMCP` and ignore them, and IP allowlist exemptions do not apply during uncertain Conductor apply.
 
-Emission is non-blocking for webhook output through an async buffer; syslog is synchronous UDP. Event severity is defined by event type, while configuration controls emission thresholds.
+Webhook, syslog, and OTLP sinks queue events for asynchronous delivery without blocking on network output. Syslog supports UDP and TCP. Event severity is defined by event type, while configuration controls emission thresholds.
 
 ## Testing
 
-- Local tests: targeted `go test -race -count=1` in both build modes as above. Optional full race suites: `make test` (OSS) and `make test-sharded-enterprise` (enterprise).
+- Local validation: follow the [pre-commit checklist](CONTRIBUTING.md#pre-commit-checklist).
 - Coverage target for new code: 95%, including error paths.
 - Test-count command: `go test -v ./... 2>&1 | grep -c -- '--- PASS:'`
 - Synchronization uses channels or poll-with-deadline, not `time.Sleep`.
@@ -193,6 +175,7 @@ net.ListenConfig{}.Listen(ctx, ...)   // free port binding
 ## Code Style
 
 - Format with gofumpt.
+- Follow [Code Style](CONTRIBUTING.md#code-style) for source license headers and the `make source-header-check` and `make docs-check` policy checks.
 - Wrap errors as `fmt.Errorf("context: %w", err)`.
 - Prefer table-driven tests with `t.Run`.
 - Avoid stuttered exported names.
@@ -211,4 +194,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor guide. PRs are s
 
 ## Security
 
-Report vulnerabilities through [GitHub Security Advisories](https://github.com/luckyPipewrench/pipelock/security/advisories), not public issues.
+Report vulnerabilities privately through [GitHub Security Advisories](https://github.com/pipelab-org/pipelock/security/advisories). See [SECURITY.md](SECURITY.md) for the reporting policy.

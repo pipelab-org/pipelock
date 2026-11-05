@@ -569,10 +569,8 @@ func TestRun_HistoryReplayedAcrossTurns(t *testing.T) {
 }
 
 func TestRun_ContextCarriesToolDataAcrossTurns(t *testing.T) {
-	// P1: the agent must hold TRUE conversational continuity -- turn 2 carries
-	// forward the full working context from turn 1, including the assistant's tool
-	// call AND the tool result (what the agent explored), so the model does not
-	// re-discover the filesystem from zero every turn (the "reset" Josh feels).
+	// The second request retains the first turn's assistant tool call and tool
+	// result so the model can reuse information already discovered.
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "lab config: ok")
 	}))

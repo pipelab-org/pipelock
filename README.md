@@ -465,7 +465,7 @@ The full `pipelock assess` report is a separate `assess` entitlement, independen
 
 ## How It Works
 
-Pipelock uses **capability separation**: in an enforced deployment, the agent process has secrets but no direct network access. Pipelock has network access but no agent secrets. Even if the agent gets prompt-injected, it can't reach the firewall's controls.
+Pipelock uses **capability separation**: in an enforced deployment, the agent process has no direct network access and sends supported traffic through the proxy. Run the proxy with only the access its configured functions need, and protect its controls from the agent. When enabled, leak detection reads selected values from the proxy process environment and any configured `dlp.secrets_file`, retaining them in memory for matching. Treat the proxy process and those inputs as sensitive.
 
 Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspection on the forward and MCP paths:
 
@@ -499,7 +499,7 @@ Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspectio
 │ - Data: DLP, secret detection, and budgets               │
 │ - Content: prompt injection and tool poisoning           │
 │ - Policy: allow, block, or redact                        │
-│ - No agent secrets                                       │
+│ - Sensitive values in memory for leak detection          │
 └────────────────────────────┬─────────────────────────────┘
                              │ approved request
                              ▼
@@ -770,13 +770,13 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | Unit, integration, and end-to-end paths |
-| Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
+| Coverage gate (codecov) | 91% Apache-2.0 core project, 90% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
 | Scanner hot-path overhead | Historical scanner measurements and current receipt workload results: [docs/performance.md](docs/performance.md) |
 | CI matrix | Go 1.26 + 1.27, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).
+Use the [pre-commit checklist](CONTRIBUTING.md#pre-commit-checklist) to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).
 
 ---
 

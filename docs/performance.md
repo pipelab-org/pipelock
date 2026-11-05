@@ -257,10 +257,10 @@ wc -c < pipelock
 GOMAXPROCS=4 make bench
 
 # Parallel scaling (URL scanner)
-go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/
+go test -run '^$' -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/
 
 # Parallel scaling (MCP scanner)
-go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
+go test -run '^$' -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
 
 # Concurrent throughput scaling test (~28s)
 PIPELOCK_BENCH_SCALING=1 go test -v -run=TestConcurrentThroughputScaling ./internal/scanner/

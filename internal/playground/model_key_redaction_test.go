@@ -41,9 +41,8 @@ func TestReadTrimmedFile(t *testing.T) {
 	}
 }
 
-// TestModelKeyRedactedOnceInPlantedSecrets proves the leak path Josh hit is closed:
-// once the model provider key value is added to the session's planted-secrets set,
-// the reply redactor treats it as a secret and strips it from agent chat output.
+// TestModelKeyRedactedOnceInPlantedSecrets checks that a provider key added to
+// the session's planted secrets is detected in agent chat output.
 func TestModelKeyRedactedOnceInPlantedSecrets(t *testing.T) {
 	modelKey := "sk-" + "live3a5c34b41316modelkeyvalue"
 	planted := []string{"AKIA" + "IOSFODNN7EXAMPLE", modelKey}

@@ -269,7 +269,7 @@ linters:
       # goconst fires on repeated literal test fixture data where extracting
       # constants hurts readability without finding real bugs. noctx stays
       # enforced on tests so context-aware request/listener patterns required
-      # by CLAUDE.md do not regress on tests.
+      # by AGENTS.md do not regress on tests.
       - path: _test\.go$
         linters: [goconst]
       # Playground demo/evidence tooling launches only known local binaries:

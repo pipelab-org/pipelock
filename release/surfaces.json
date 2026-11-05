@@ -130,7 +130,7 @@
       "id": "docs-benchmarks.md-1",
       "path": "docs/benchmarks.md",
       "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
-      "expected": "405672d2b3b620348e4e9af461b755bc3cc799a452099891da44792f0a600960",
+      "expected": "0172ede7dd7b022c93669ebde180949afd096cea826a38b5bf6e7966d3343173",
       "count": 1,
       "reason": "Dated measured workloads and frozen microbenchmark tables; retain the measured binary, figures and limits together. A new measurement requires a reviewed snapshot update, not a product-version substitution.",
       "format": "sha256"
@@ -139,7 +139,7 @@
       "id": "docs-performance.md-1",
       "path": "docs/performance.md",
       "pattern": "\\A(?P<value>[\\s\\S]+)\\Z",
-      "expected": "676e2b825eb808fcd9cc6df5c33d3c2d92682a69e10c65641be44066e09b2e15",
+      "expected": "54eb0fec6dc3708acca73f88283d98fc02ea1c98086f21af80693b78afb5e649",
       "count": 1,
       "reason": "Dated measured workloads and frozen microbenchmark tables; retain the measured binary, figures and limits together. A new measurement requires a reviewed snapshot update, not a product-version substitution.",
       "format": "sha256"
@@ -400,9 +400,9 @@
       "id": "README.md-14",
       "path": "README.md",
       "pattern": "^\\|\\ Coverage\\ gate\\ \\(codecov\\)\\ \\|\\ 91%\\ Apache\\-2\\.0\\ core\\ project,\\ (?P<value>[0-9][0-9,]*(?:\\.[0-9]+)?\\+?)%",
-      "expected": "95",
+      "expected": "90",
       "count": 1,
-      "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
+      "reason": "Patch coverage target from codecov.yml; the contributor target is documented separately in CONTRIBUTING.md."
     },
     {
       "id": "AGENTS.md-1",
@@ -419,24 +419,6 @@
       "expected": "95",
       "count": 1,
       "reason": "Published policy, algorithm/example count or measured historical figure; not a current release-number claim."
-    },
-    {
-      "id": "CONTRIBUTING.md-1",
-      "path": "CONTRIBUTING.md",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?46\\.0\\.7)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "46.0.7",
-      "count": 1,
-      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
-      "format": "version"
-    },
-    {
-      "id": "CONTRIBUTING.md-2",
-      "path": "CONTRIBUTING.md",
-      "pattern": "(?<![A-Za-z0-9.])(?P<value>v?47\\.0\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
-      "expected": "47.0.0",
-      "count": 1,
-      "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
-      "format": "version"
     },
     {
       "id": "CONTRIBUTING.md-3",
@@ -1632,7 +1614,7 @@
       "path": "sdk/verifiers/PUBLISHING.md",
       "pattern": "(?<![A-Za-z0-9.])(?P<value>v?0\\.2\\.0)(?![A-Za-z0-9-]|\\.[0-9])",
       "expected": "0.2.0",
-      "count": 3,
+      "count": 1,
       "reason": "Historical feature/upgrade boundary or illustrative version, not the current installation target.",
       "format": "version"
     },
