@@ -55,7 +55,11 @@ jobs:
           echo "building scanner from origin/main ${main_sha}"
           build_tree="${RUNNER_TEMP}/trusted-main"
           git worktree add --detach "${build_tree}" "${main_sha}"
-          ( cd "${build_tree}" && go build -o "${RUNNER_TEMP}/pipelock" ./cmd/pipelock )
+          (
+            cd "${build_tree}"
+            bash scripts/ci-retry.sh go mod download
+            go build -o "${RUNNER_TEMP}/pipelock" ./cmd/pipelock
+          )
           "${RUNNER_TEMP}/pipelock" --version
 
       - name: Verify diff generation
@@ -115,7 +119,7 @@ jobs:
 
   # Merge groups use the same test selection as pull requests on the combined
   # commit. The classifier compares the queue base/head, including CI policy.
-  # Go 1.26 race tests remain main-push-only; cache writes stay main-push-only.
+  # The full Go 1.26 race lane remains main-push-only; cache writes stay main-push-only.
   #
   # The Go 1.27 race lane is skipped by default (see the producer jobs
   # below), but a PR that changes CI policy, Go pins, or the guard that checks
@@ -151,7 +155,8 @@ jobs:
           set -euo pipefail
           changed="$(git diff --name-only "${BASE_SHA}...${HEAD_SHA}" -- \
             .github/workflows/ go.mod go.sum scripts/check-go-matrix.sh \
-            scripts/ci_test_packages.py scripts/ci_test_durations.json \
+            scripts/ci_test_packages.py scripts/ci_test_durations.py \
+            scripts/ci_changed_tests.go scripts/ci_test_durations.json \
             scripts/ci-test-with-retry.sh scripts/run-race-test.sh Makefile codecov.yml)"
           if [ -n "$changed" ]; then
             echo "PR touches CI-policy files:"
@@ -910,8 +915,85 @@ jobs:
       - name: Replay harness (deterministic regression)
         run: make test-replay-harness
 
+  # Run on every event so documentation-only PRs report success too. Main's
+  # complete race lane already measures all tests; only PR/queue candidates need
+  # this targeted pass. Non-test code and shared-helper slowdowns aren't detected
+  # here; the weekly ci-shard-drift.yaml job still measures that class.
+  test-changed-race-go126:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    name: changed-test race (1.26, ${{ matrix.variant }})
+    # Reuse the complete race lane's job ceiling; package runs keep -timeout=15m.
+    timeout-minutes: 48
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [oss, enterprise]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect test source changes
+        id: sources
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = push ]; then
+            echo "Main's complete race lane supplies measurements"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          elif git diff --quiet "${BASE_SHA}...${HEAD_SHA}" -- '*_test.go'; then
+            echo "No test source changes; race measurement is a no-op"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Go
+        if: steps.sources.outputs.changed == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.26'
+
+      - name: Download dependencies
+        if: steps.sources.outputs.changed == 'true'
+        run: bash scripts/ci-retry.sh go mod download
+
+      - name: Measure changed tests and check shard budget
+        if: steps.sources.outputs.changed == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+          tags=()
+          if [ "$VARIANT" = enterprise ]; then
+            tags=(--tags enterprise)
+          fi
+          python3 scripts/ci_test_packages.py "${tags[@]}" \
+            --changed-tests-base "$base" --changed-tests-head "$HEAD_SHA" \
+            --measure-changed-tests --json-out "changed-tests-${VARIANT}.json"
+
+      - name: Upload changed-test race timing
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.sources.outputs.changed == 'true' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: changed-test-race-json-${{ matrix.variant }}-go126
+          path: |
+            changed-tests-${{ matrix.variant }}.json
+            changed-tests-${{ matrix.variant }}.selection.json
+          retention-days: 14
+          if-no-files-found: ignore
+
   test-go126:
-    needs: [security-scan, changed-files, test-unit-go126, test-subprocess-coverage, guard-conformance, test-replay-go126]
+    needs: [security-scan, changed-files, test-changed-race-go126, test-unit-go126, test-subprocess-coverage, guard-conformance, test-replay-go126]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     name: test (1.26)
@@ -929,6 +1011,7 @@ jobs:
           if [ "$EVENT_NAME" != "push" ]; then
             test "${{ needs.changed-files.result }}" = "success"
           fi
+          test "${{ needs.test-changed-race-go126.result }}" = "success"
           echo "test-unit-go126 result: ${{ needs.test-unit-go126.result }}"
           if ! test "${{ needs.test-unit-go126.result }}" = "success"; then
             if [ "$EVENT_NAME" = "push" ] || [ "${{ needs.test-unit-go126.result }}" != "skipped" ]; then
