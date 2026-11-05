@@ -114,8 +114,8 @@ branch only ever runs the build/verify job).
 
 ### One-time setup
 
-Do this once, after the first manual publish. A trusted publisher can only be
-configured on a package/crate that already exists.
+Configure these once. A trusted publisher can only be configured on a
+package/crate that already exists.
 
 A repository administrator configures the `verifier-release` GitHub environment with the project's authorized release reviewers. Both publishing jobs use this environment. Real publication requires environment approval; an environment without required reviewers doesn't provide that gate.
 
@@ -156,7 +156,7 @@ Published releases retain their original provenance. The installer gate binds th
    git push origin "refs/tags/${verifier_tag}"
    ```
 
-3. The `build` job runs the tests and verification builds, then the two publish jobs wait for your environment approval and publish both packages. No tokens.
+3. The `build` job runs the tests and verification builds, then the two publish jobs wait for approval of the `verifier-release` environment and publish both packages. No tokens.
 
 Try it first with the `workflow_dispatch` dry run (Actions, Publish verifiers, Run
 workflow, leave "Dry run" checked): it runs only the unprivileged `build` job (tests
