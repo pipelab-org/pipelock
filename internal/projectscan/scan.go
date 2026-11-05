@@ -18,7 +18,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"syscall"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -415,7 +414,7 @@ func secretInspectionWarning(relPath, reason string) Finding {
 // at most one byte past the size limit. A non-empty reason means the file was
 // not inspected.
 func readSecretCandidate(path string) ([]byte, string) {
-	f, err := os.OpenFile(filepath.Clean(path), os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := openNoBlock(path)
 	if err != nil {
 		return nil, "unreadable"
 	}
