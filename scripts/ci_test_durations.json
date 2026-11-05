@@ -9730,7 +9730,7 @@
   "github.com/luckyPipewrench/pipelock/internal/tlsfile": 1.1,
   "github.com/luckyPipewrench/pipelock/internal/wsutil": 1.0,
   "github.com/luckyPipewrench/pipelock/scripts": 4.2,
-  "github.com/luckyPipewrench/pipelock/scripts/receipt-load": 134.3,
+  "github.com/luckyPipewrench/pipelock/scripts/receipt-load": 232.7,
   "github.com/luckyPipewrench/pipelock/sdk/audit-packet": 1.1,
   "github.com/luckyPipewrench/pipelock/sdk/conformance": 5.9,
   "github.com/luckyPipewrench/pipelock/tests/ws-helper": 0.1,
