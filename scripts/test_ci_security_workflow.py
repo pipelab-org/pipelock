@@ -214,6 +214,7 @@ exit "$DEFAULT_STATUS"
             "CHANGED_FILES_RESULT": "success",
             "DOCS_ONLY": "false",
             "EVENT_NAME": "pull_request",
+            "QUEUE_TREE_TESTED": "false",
         })
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
@@ -253,6 +254,7 @@ exit "$DEFAULT_STATUS"
                 "EVENT_NAME": event,
                 "CHANGED_FILES_RESULT": classifier,
                 "DOCS_ONLY": "false",
+                "QUEUE_TREE_TESTED": "false",
             })
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
@@ -274,7 +276,7 @@ exit "$DEFAULT_STATUS"
 
         def run(event: str, classifier: str, docs: str, **results: str) -> int:
             env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": docs,
-                              "BENCHMARK_SMOKE_REQUIRED": "false"} | results
+                              "BENCHMARK_SMOKE_REQUIRED": "false", "QUEUE_TREE_TESTED": "false"} | results
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode
@@ -299,13 +301,49 @@ exit "$DEFAULT_STATUS"
                 with self.subTest(always_required=name):
                     self.assertNotEqual(0, run(event, "success", "true", **(skipped | {name: "skipped"})))
 
+    def test_queue_tree_reuse_skips_need_classifier_proof(self) -> None:
+        # A merge group whose exact tree a green pull request run already
+        # tested may skip what a documentation-only change skips, plus the
+        # benchmark smoke, but only on that event with an exact "true".
+        script = step_script(self.build, "Report required build evidence")
+        base_env = os.environ.copy() | {name: "success" for name in BUILD_GATE_RESULTS}
+        skipped = dict.fromkeys(DOCS_SKIPPABLE_RESULTS, "skipped")
+
+        def run(event: str, classifier: str, tree: str, **results: str) -> int:
+            env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": "false",
+                              "BENCHMARK_SMOKE_REQUIRED": "true", "QUEUE_TREE_TESTED": tree} | results
+            return subprocess.run(
+                ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
+            ).returncode
+
+        self.assertEqual(0, run("merge_group", "success", "true", **skipped))
+        for tree in ("false", "", "TRUE", "true "):
+            with self.subTest(tree=tree):
+                self.assertNotEqual(0, run("merge_group", "success", tree, **skipped))
+        for event in ("pull_request", "push"):
+            with self.subTest(event=event):
+                self.assertNotEqual(0, run(event, "success", "true", **skipped))
+        for classifier in ("failure", "cancelled", "skipped", ""):
+            with self.subTest(classifier=classifier):
+                self.assertNotEqual(0, run("merge_group", classifier, "true", **skipped))
+        # The reuse covers only "skipped": it cannot hide a failure.
+        for name in DOCS_SKIPPABLE_RESULTS:
+            for evidence in ("failure", "cancelled", ""):
+                with self.subTest(failed=name, evidence=evidence):
+                    self.assertNotEqual(0, run("merge_group", "success", "true", **(skipped | {name: evidence})))
+        # Producers that still run on a reused queue run can never skip.
+        for name in sorted(set(BUILD_GATE_RESULTS) - set(DOCS_SKIPPABLE_RESULTS)):
+            with self.subTest(always_required=name):
+                self.assertNotEqual(0, run("merge_group", "success", "true", **(skipped | {name: "skipped"})))
+
     def test_benchmark_smoke_skip_needs_classifier_proof(self) -> None:
         script = step_script(self.build, "Report required build evidence")
         base_env = os.environ.copy() | {name: "success" for name in BUILD_GATE_RESULTS}
 
         def run(event: str, classifier: str, required: str, smoke: str) -> int:
             env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": "false",
-                              "BENCHMARK_SMOKE_REQUIRED": required, "BENCHMARK_SMOKE_RESULT": smoke}
+                              "BENCHMARK_SMOKE_REQUIRED": required, "BENCHMARK_SMOKE_RESULT": smoke,
+                              "QUEUE_TREE_TESTED": "false"}
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
             ).returncode

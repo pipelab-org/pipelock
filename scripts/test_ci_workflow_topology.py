@@ -32,6 +32,9 @@ SHARDS = {
 MINORS = ("126", "127")
 POLICY_OUTPUT = "${{ needs.changed-files.outputs.ci_policy }}"
 DOCS_OUTPUT = "${{ needs.changed-files.outputs.docs_only }}"
+# Set only on a merge group whose candidate tree a green pull request run of
+# this workflow already tested (scripts/ci_queue_reuse.py decides).
+TREE_OUTPUT = "${{ needs.changed-files.outputs.queue_tree_tested }}"
 SCAN_SUCCESS_CONDITION = "${{ needs.security-scan.result == 'success' }}"
 ALWAYS_CONDITION = "${{ always() }}"
 NEEDS_RESULT_RE = re.compile(r"\$\{\{\s*needs\.([A-Za-z0-9_-]+)\.result\s*\}\}")
@@ -52,7 +55,8 @@ SKIP_CARVEOUT_PRODUCERS = {"test-oss-go127", "test-enterprise-go127"}
 SKIP_CARVEOUT_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
     "&& (github.event_name == 'pull_request' || github.event_name == 'merge_group') "
-    "&& needs.changed-files.outputs.ci_policy == 'true' }}"
+    "&& needs.changed-files.outputs.ci_policy == 'true' "
+    "&& needs.changed-files.outputs.queue_tree_tested != 'true' }}"
 )
 # Go 1.26 race lane: main pushes only, never merge-group validation.
 RACE_PRODUCERS = {"test-oss-go126", "test-enterprise-go126"}
@@ -83,7 +87,8 @@ DOCS_CARVEOUT_AGGREGATE = "test-go126"
 DOCS_CARVEOUT_PRODUCERS = {UNIT_PRODUCER, "test-subprocess-coverage", "guard-conformance"}
 DOCS_SKIP_CONDITION = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
-    "&& needs.changed-files.outputs.docs_only != 'true' }}"
+    "&& needs.changed-files.outputs.docs_only != 'true' "
+    "&& needs.changed-files.outputs.queue_tree_tested != 'true' }}"
 )
 # The planner owns the shard list; the workflow matrix must match it exactly.
 UNIT_SHARDS = set(json.loads(subprocess.run(
@@ -137,6 +142,7 @@ def gate_script_is_safe(run: str) -> bool:
             if\ !\ test\ "[^"]*"\ =\ "success";\ then|
             if\ \[\ "\$EVENT_NAME"\ (?:=|!=)\ "(?:pull_request|push)"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
             if\ \[\ "[^"]*"\ !=\ "skipped"\ \];\ then|
+            if\ \[\ "\$EVENT_NAME"\ !=\ "merge_group"\ \]\ \|\|\ \[\ "[^"]*"\ !=\ "true"\ \];\ then|
             \[\ "\$EVENT_NAME"\ (?:=|!=)\ "pull_request"\ \]\ \&\&|
             \[\ "[^"]*"\ (?:=|!=)\ "skipped"\ \]|
             exit\ 1|fi|\}
@@ -155,7 +161,8 @@ def gate_script_is_safe(run: str) -> bool:
     # execute_gate is therefore not the backstop it appears to be, and the
     # docstring above was claiming a property the grammar did not hold.
     neutralized = NEEDS_RESULT_RE.sub(
-        "success", run.replace(POLICY_OUTPUT, "false").replace(DOCS_OUTPUT, "false")
+        "success",
+        run.replace(POLICY_OUTPUT, "false").replace(DOCS_OUTPUT, "false").replace(TREE_OUTPUT, "false"),
     )
     # Then refuse the backslash. `echo "x\"` satisfies the `echo\ "[^"]*"`
     # alternative below -- the escaped quote is just another `[^"]` byte -- while
@@ -184,7 +191,8 @@ def gate_script_is_safe(run: str) -> bool:
 
 
 def execute_gate(
-    run: str, results: dict[str, str], event_name: str, ci_policy: str = "false", docs_only: str = "false"
+    run: str, results: dict[str, str], event_name: str, ci_policy: str = "false", docs_only: str = "false",
+    queue_tree: str = "false",
 ) -> int:
     """Run a safe aggregate gate as GitHub's bash shell would run it."""
     if not gate_script_is_safe(run):
@@ -193,7 +201,10 @@ def execute_gate(
         completed = subprocess.run(
             [
                 "/usr/bin/bash", "-eo", "pipefail", "-c",
-                substitute_needs_results(run.replace(POLICY_OUTPUT, ci_policy).replace(DOCS_OUTPUT, docs_only), results),
+                substitute_needs_results(
+                    run.replace(POLICY_OUTPUT, ci_policy).replace(DOCS_OUTPUT, docs_only).replace(TREE_OUTPUT, queue_tree),
+                    results,
+                ),
             ],
             cwd=temp_dir,
             env={
@@ -278,9 +289,39 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
         (d, v, "merge_group", p, x, docs)
         for d, v, e, p, x, docs in all_cases if e == "pull_request"
     ]
-    for description, values, event_name, policy, expected, docs in all_cases:
+    # Queue-tree reuse: a merge group may skip the same producers the docs or
+    # CI-policy carve-out covers, but only on an exact "true" from a successful
+    # classifier, and never on a pull request or push.
+    reuse_producers = (
+        SKIP_CARVEOUT_PRODUCERS if aggregate == SKIP_CARVEOUT_AGGREGATE
+        else DOCS_CARVEOUT_PRODUCERS if aggregate == DOCS_CARVEOUT_AGGREGATE
+        else set()
+    )
+    tree_cases = []
+    if reuse_producers:
+        skipped = successful | dict.fromkeys(reuse_producers, "skipped")
+        # The policy value the producers' own predicate would have run under.
+        policy = "true" if aggregate == SKIP_CARVEOUT_AGGREGATE else "false"
+        tree_cases.append(("tree already tested", skipped, "merge_group", policy, 0, "false", "true"))
+        for tree in ("false", "", "TRUE", "unknown", "true "):
+            tree_cases.append((f"tree reuse skips, queue_tree_tested={tree!r}",
+                               skipped, "merge_group", policy, 1, "false", tree))
+        tree_cases.append(("tree reuse claimed on a pull request", skipped, "pull_request", policy, 1, "false", "true"))
+        # test (1.27) accepts skipped producers on every push by design (that
+        # lane never runs there), so only test (1.26) can prove a push refusal.
+        if aggregate == DOCS_CARVEOUT_AGGREGATE:
+            tree_cases.append(("tree reuse claimed on a push", skipped, "push", policy, 1, "false", "true"))
+        for result in ("failure", "cancelled", "", "unknown", "skipped"):
+            tree_cases.append((f"tree reuse skips, changed-files={result!r}",
+                               skipped | {"changed-files": result}, "merge_group", policy, 1, "false", "true"))
+        for producer in sorted(reuse_producers):
+            for result in ("failure", "cancelled", "", "unknown"):
+                tree_cases.append((f"{producer}={result or 'empty'} with the tree already tested",
+                                   skipped | {producer: result}, "merge_group", policy, 1, "false", "true"))
+    all_cases = [case + ("false",) for case in all_cases] + tree_cases
+    for description, values, event_name, policy, expected, docs, tree in all_cases:
         try:
-            actual = execute_gate(run, values, event_name, policy, docs)
+            actual = execute_gate(run, values, event_name, policy, docs, tree)
         except (subprocess.TimeoutExpired, ValueError) as error:
             errors.append(f"{aggregate} gate cannot safely execute: {error}")
             break
