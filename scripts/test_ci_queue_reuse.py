@@ -12,7 +12,10 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
 import sys
+import tempfile
 import unittest
 import zipfile
 from pathlib import Path
@@ -20,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import ci_queue_reuse as reuse  # noqa: E402
+from test_ci_security_workflow import job_block, step_script  # noqa: E402
 
 REPO = "pipelab-org/pipelock"
 HEAD = "a" * 40
@@ -240,6 +244,56 @@ class QueueReuseTest(unittest.TestCase):
         ):
             with self.subTest(target=target, payload=payload):
                 self.assert_decision("false", api=Garbage(target, payload))
+
+
+class WorkflowReuseStepTest(unittest.TestCase):
+    def test_lookup_deadline_falls_back_before_classifier_timeout(self):
+        workflow = Path(__file__).resolve().parents[1] / ".github/workflows/ci.yaml"
+        script = step_script(
+            job_block(workflow.read_text(), "changed-files"),
+            "Reuse a green pull request result for this exact tree",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            checker = temp / "source.py"
+            output = temp / "output"
+            calls = temp / "timeout-calls"
+            for name, body in {
+                "git": '#!/bin/sh\ncat "$CHECKER_SOURCE"\n',
+                # Exercise real process termination without spending the full
+                # production budget. Record its arguments to pin that budget.
+                "timeout": '#!/bin/sh\nprintf "%s\\n" "$*" >> "$TIMEOUT_CALLS"\n'
+                           'shift 2\nexec /usr/bin/timeout --signal=KILL 1s "$@"\n',
+            }.items():
+                executable = temp / name
+                executable.write_text(body)
+                executable.chmod(0o700)
+            env = os.environ | {
+                "PATH": f"{temp}:{os.environ['PATH']}",
+                "CHECKER_SOURCE": str(checker), "TIMEOUT_CALLS": str(calls),
+                "GITHUB_OUTPUT": str(output), "BASE_SHA": BASE,
+                "QUEUE_REF": QUEUE_REF, "QUEUE_SHA": QUEUE_SHA, "REPO": REPO,
+                "TMPDIR": str(temp),
+            }
+            cases = (
+                ("import threading\nthreading.Event().wait()\n", "false"),
+                ('print("queue_tree_tested=true")\n', "true"),
+                ('print("queue_tree_tested=true")\nraise SystemExit(1)\n', "false"),
+                ('print("queue_tree_tested=true\\nextra output")\n', "false"),
+                ("", "false"),
+            )
+            for source, expected in cases:
+                with self.subTest(expected=expected):
+                    checker.write_text(source)
+                    output.write_text("")
+                    result = subprocess.run(
+                        ["/usr/bin/timeout", "--signal=KILL", "5s", "bash", "-euo", "pipefail", "-c", script],
+                        env=env, capture_output=True, text=True, check=False, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), f"queue_tree_tested={expected}\n")
+            self.assertTrue(calls.exists(), "lookup must invoke its own deadline")
+            self.assertEqual(calls.read_text().count("--signal=KILL 60s python3 "), len(cases))
 
 
 if __name__ == "__main__":

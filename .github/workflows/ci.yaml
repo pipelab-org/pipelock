@@ -311,7 +311,10 @@ jobs:
             echo "queue_tree_tested=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          decision="$(python3 "$checker" --repo "$REPO" --queue-ref "$QUEUE_REF" --queue-sha "$QUEUE_SHA" --base-sha "$BASE_SHA")" || decision="queue_tree_tested=false"
+          # Share the checker's existing 60-second command budget across the
+          # whole lookup, so several slow API calls cannot exhaust this job's
+          # five-minute deadline before it falls back to the full suite.
+          decision="$(timeout --signal=KILL 60s python3 "$checker" --repo "$REPO" --queue-ref "$QUEUE_REF" --queue-sha "$QUEUE_SHA" --base-sha "$BASE_SHA")" || decision="queue_tree_tested=false"
           case "$decision" in
             queue_tree_tested=true|queue_tree_tested=false) ;;
             *) decision="queue_tree_tested=false" ;;
