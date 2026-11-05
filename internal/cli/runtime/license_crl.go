@@ -46,7 +46,7 @@ func (s *Server) refreshLicenseCRLOnce() bool {
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: license CRL refresh failed closed: %v\n", err)
 	}
 	if failClosed {
-		_ = s.proxy.ShutdownAgentServers()
+		s.shutdownAgentServers()
 		// Parity with agent listeners: a revoked or expired license must also
 		// stop the follower-side Conductor runtime (Enterprise fleet feature),
 		// not just agent listeners. No-op when Conductor is not running.
