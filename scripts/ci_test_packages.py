@@ -77,8 +77,11 @@ REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 # internal/proxy 552s alone, so each splits three ways; every rest package
 # together came to about eight minutes of four-way work. Two rest shards left the
 # enterprise pair the slowest jobs in the lane at about six minutes, so three.
+# Proxy splits four ways: by 2026-11-05 the name-split enterprise proxy-1 shard
+# took 494s on main against the 8-minute package timeout plus setup (about
+# 540s), and two pull requests adding a few proxy tests timed it out.
 UNIT_SPLITS = {
-    "proxy": 3,
+    "proxy": 4,
     "scanner": 1,
     "mcp": 3,
     "runtime": 1,
