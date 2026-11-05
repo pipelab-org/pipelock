@@ -31,6 +31,12 @@ HISTORY_DAYS = 14
 REGRESSION_FRACTION = 0.20  # Require >20% to suppress small relative changes.
 REGRESSION_SECONDS = 60  # Also require >60s to suppress noisy short jobs.
 MIN_JOB_SAMPLES = 5  # Ignore sparse job histories rather than imply confidence.
+# Baseline from at most the newest 20 runs in the window. Each run's jobs cost
+# about two API pages, and the window can hold 75 main runs: uncapped, five
+# reports an hour use about 750 of the token's 1,000 hourly requests, which
+# other workflows share. Twenty runs still leave four times MIN_JOB_SAMPLES.
+# https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api
+MAX_HISTORY_RUNS = 20
 RUN_PERCENTILE = 0.90  # The requested whole-run p90.
 # No external source: named, tunable percentile convention. Linear interpolation
 # at (n-1)*p keeps small histories bounded by their measured minimum/maximum.
@@ -82,7 +88,8 @@ def historical_runs(current: dict, payload) -> list[dict]:
                 and start <= timestamp(run["created_at"]) < end
                 and start <= timestamp(run["run_started_at"]) < end):
             selected[run["id"]] = run
-    return list(selected.values())
+    newest = sorted(selected.values(), key=lambda run: timestamp(run["run_started_at"]), reverse=True)
+    return newest[:MAX_HISTORY_RUNS]
 
 
 def job_records(run: dict, payload) -> dict[str, dict]:
@@ -200,7 +207,8 @@ def compute(directory: Path) -> dict:
             "history_run_ids": sorted(accepted_ids),
             "window_start": window_start(current).isoformat(),
             "window_end": current["run_started_at"],
-            "thresholds": {"history_days": HISTORY_DAYS, "regression_fraction": REGRESSION_FRACTION,
+            "thresholds": {"history_days": HISTORY_DAYS, "max_history_runs": MAX_HISTORY_RUNS,
+                           "regression_fraction": REGRESSION_FRACTION,
                            "regression_seconds": REGRESSION_SECONDS, "min_job_samples": MIN_JOB_SAMPLES,
                            "run_percentile": RUN_PERCENTILE, "percentile_method": PERCENTILE_METHOD},
             "wall": {"seconds": wall_seconds(current, jobs), "samples": len(walls),

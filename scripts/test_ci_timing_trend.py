@@ -148,6 +148,22 @@ class TimingTrendTest(unittest.TestCase):
         first["completed_at"] = None
         self.assertIsNone(trend.wall_seconds(self.data["current_run"], jobs))
 
+    def test_history_is_capped_to_the_newest_runs(self):
+        # Keep API use bounded: only the newest MAX_HISTORY_RUNS runs feed the
+        # baseline, whatever the window holds.
+        runs = self.data["runs"]["workflow_runs"]
+        template = runs[0]
+        current = self.data["current_run"]
+        many = []
+        for index in range(trend.MAX_HISTORY_RUNS + 7):
+            run = dict(template, id=1000 + index)
+            start = trend.timestamp(current["run_started_at"]) - trend.timedelta(hours=index + 1)
+            run["created_at"] = run["run_started_at"] = start.strftime("%Y-%m-%dT%H:%M:%SZ")
+            many.append(run)
+        picked = trend.historical_runs(current, {"total_count": len(many), "workflow_runs": many})
+        self.assertEqual(len(picked), trend.MAX_HISTORY_RUNS)
+        self.assertEqual([run["id"] for run in picked], [1000 + i for i in range(trend.MAX_HISTORY_RUNS)])
+
     def test_history_window_success_main_push_only_self_future_and_duplicates(self):
         history = self.data["runs"]["workflow_runs"]
         for field, invalid in (("event", "pull_request"), ("head_branch", "feature"),
