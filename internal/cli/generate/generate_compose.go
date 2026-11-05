@@ -137,7 +137,7 @@ func composePipelockService() string {
     # Compose's 10 s default on a long-lived, CPU-limited proxy.
     stop_grace_period: 10m
     healthcheck:
-      test: ["/pipelock", "healthcheck"]
+      test: ["CMD", "/pipelock", "healthcheck"]
       interval: 10s
       timeout: 3s
       start_period: 5s
