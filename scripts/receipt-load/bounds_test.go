@@ -4,8 +4,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 )
 
 func TestSummaryRejectsFailedVerifier(t *testing.T) {
@@ -196,7 +200,7 @@ func TestBundleLogMemoryBound(t *testing.T) {
 }
 
 func TestAuditGapLines(t *testing.T) {
-	gap := `{"level":"error","error":"event=receipt_channel_broken audit_gap=true phase=outcome"}` + "\n"
+	gap := `{"level":"error","event":"error","error":"event=receipt_channel_broken audit_gap=true phase=outcome"}` + "\n"
 	for _, tc := range []struct {
 		name, data string
 		count      int
@@ -206,7 +210,15 @@ func TestAuditGapLines(t *testing.T) {
 		{"none", "{\"event\":\"forward_http\"}\naudit_gap=false\n", 0, 0},
 		{"one", "noise\n" + gap, 1, 1},
 		{"many", strings.Repeat(gap, maxAuditGapLines+3), maxAuditGapLines + 3, maxAuditGapLines},
-		{"long", strings.Repeat("x", 2*maxAuditGapLineSize) + " audit_gap=true\n", 1, 1},
+		{"long", `{"event":"error","error":"event=receipt_channel_broken audit_gap=true ` + strings.Repeat("x", 2*maxAuditGapLineSize) + `"}` + "\n", 1, 1},
+		{"startup path", "  Recorder: /audit_gap=true/recorder (flight recorder enabled)\n", 0, 0},
+		{"URL field", `{"event":"forward_http","url":"http://api.vendor.example/?audit_gap=true"}` + "\n", 0, 0},
+		{"error URL", `{"event":"error","error":"Get http://api.vendor.example/?audit_gap=true: EOF"}` + "\n", 0, 0},
+		{"false prefix", `{"event":"error","error":"event=receipt_channel_broken audit_gap=trueish"}` + "\n", 0, 0},
+		{"no diagnostic", `{"event":"error"}`, 0, 0},
+		{"no event label", "pipelock: warning notice audit_gap=true\n", 0, 0},
+		{"empty event label", "pipelock: warning event= audit_gap=true\n", 0, 0},
+		{"escaped marker", `{"event":"error","error":"event=receipt_channel_broken audit_gap=\u0074rue"}`, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "proxy.log")
@@ -234,6 +246,12 @@ func TestAuditGapLines(t *testing.T) {
 	if _, _, err := auditGapLines(filepath.Join(t.TempDir(), "absent.log")); err == nil {
 		t.Fatal("missing log accepted")
 	}
+	if err := os.WriteFile(path, []byte(`{"event":"error","error":"event=receipt_channel_broken audit_gap=true`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := auditGapLines(path); err == nil {
+		t.Fatal("incomplete audit record accepted")
+	}
 }
 
 // A proxy that reports a receipt it failed to record fails integrity, with
@@ -250,6 +268,69 @@ func TestProxyAuditGapFailsIntegrity(t *testing.T) {
 			gap := hasReason(got.Integrity.Reasons, "proxy reported 1 audit gap(s); first: ") && hasReason(got.Integrity.Reasons, "event=receipt_channel_broken")
 			if code != tc.code || gap != (tc.code != exitOK) {
 				t.Fatalf("code=%d integrity=%+v", code, got.Integrity)
+			}
+		})
+	}
+}
+
+func TestRealAuditGapPathDoesNotFailIntegrity(t *testing.T) {
+	bin := realPipelock(t)
+	for _, mode := range []string{modeOff, modeBest, modeRequired} {
+		t.Run(mode, func(t *testing.T) {
+			opt := smallOptions(t, bin)
+			opt.out = filepath.Join(opt.out, auditGapMarker)
+			if err := os.Mkdir(opt.out, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			opt.requests, opt.warmup = 10, 2
+			opt.chains, opt.restartAfter = 2, 5
+			if code := runModes(context.Background(), opt, []string{mode}); code != exitOK {
+				t.Fatalf("exit=%d: %+v", code, readResult(t, filepath.Join(opt.out, "chains-2-"+mode)).Integrity)
+			}
+		})
+	}
+}
+
+func TestAuditGapRealLogger(t *testing.T) {
+	var log bytes.Buffer
+	logger, err := audit.NewWithStream("json", "stdout", "", true, true, &log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	ctx, err := audit.NewHTTPLogContext(http.MethodGet, "http://api.vendor.example/?audit_gap=true", "127.0.0.1", "request-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	logger.LogForwardHTTP(ctx, http.StatusOK, 1, time.Millisecond)
+	logger.LogError(audit.NewResourceLogContext("config_reload", "/audit_gap=true/config.yaml"), errors.New("reload rejected"))
+	path := filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(path, log.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if count, lines, err := auditGapLines(path); err != nil || count != 0 {
+		t.Fatalf("ordinary audit events counted as gaps: count=%d lines=%q err=%v", count, lines, err)
+	}
+	log.Reset()
+	const diagnostic = "event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"
+	logger.LogError(audit.NewRequestLogContext("private-context"), errors.New(diagnostic))
+	if err := os.WriteFile(path, log.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if count, lines, err := auditGapLines(path); err != nil || count != 1 || len(lines) != 1 || lines[0] != diagnostic {
+		t.Fatalf("gap diagnostic not isolated from context: count=%d lines=%q err=%v", count, lines, err)
+	}
+}
+
+func TestAuditGapWarningDiagnostics(t *testing.T) {
+	// These prefixes are emitted by internal/mcp/taint.go and
+	// internal/deferred/manager.go. Their suffixes contain raw errors/IDs.
+	for _, event := range []string{"block_receipt_emit_failed", "hold_failure_receipt_emit_failed", "deferred_journal_write_failed", "deferred_resolution_receipt_failed"} {
+		t.Run(event, func(t *testing.T) {
+			prefix := "event=" + event + " " + auditGapMarker
+			message, err := auditGapMessage([]byte("pipelock: warning " + prefix + " source=cancel defer_id=private-id: private-error"))
+			if err != nil || message != prefix {
+				t.Fatalf("diagnostic=%q error=%v", message, err)
 			}
 		})
 	}

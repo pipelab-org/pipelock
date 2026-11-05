@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -230,9 +231,10 @@ const (
 	maxAuditGapLineSize = 512
 )
 
-// auditGapLines counts the proxy log lines that report an audit gap and keeps
-// the first few, shortened, so a run with missing receipts says why. The
-// proxy writes those lines with fixed labels rather than request text.
+// auditGapLines counts diagnostic messages, not marker text in paths or other
+// request fields. The message formats come from receiptChannelBrokenError in
+// internal/proxy/proxy.go and the warning writers in internal/mcp/taint.go and
+// internal/deferred/manager.go.
 func auditGapLines(logPath string) (int, []string, error) {
 	file, err := os.Open(filepath.Clean(logPath))
 	if err != nil {
@@ -243,19 +245,58 @@ func auditGapLines(logPath string) (int, []string, error) {
 	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
 	count, lines := 0, []string{}
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		if !bytes.Contains(line, []byte(auditGapMarker)) {
+		message, err := auditGapMessage(scanner.Bytes())
+		if err != nil {
+			return 0, nil, err
+		}
+		if message == "" {
 			continue
 		}
 		count++
 		if len(lines) < maxAuditGapLines {
-			lines = append(lines, strings.TrimSpace(string(line[:min(len(line), maxAuditGapLineSize)])))
+			lines = append(lines, message[:min(len(message), maxAuditGapLineSize)])
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return 0, nil, fmt.Errorf("scan proxy log: %w", err)
 	}
 	return count, lines, nil
+}
+
+func auditGapMessage(line []byte) (string, error) {
+	line = bytes.TrimSpace(line)
+	var message string
+	if bytes.HasPrefix(line, []byte("{")) {
+		var entry struct {
+			Event string `json:"event"`
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return "", fmt.Errorf("decode proxy audit log: %w", err)
+		}
+		if entry.Event != "error" {
+			return "", nil
+		}
+		message = entry.Error
+	} else {
+		var ok bool
+		message, ok = strings.CutPrefix(string(line), "pipelock: warning ")
+		if !ok {
+			return "", nil
+		}
+	}
+	fields := strings.Fields(message)
+	if len(fields) < 2 || !strings.HasPrefix(fields[0], "event=") || fields[0] == "event=" || fields[1] != auditGapMarker {
+		return "", nil
+	}
+	if fields[0] == "event=receipt_channel_broken" {
+		// This producer uses bounded verdict/phase/layer/failure labels only.
+		// Keep the cause, but never copy the JSON request-context fields.
+		return message, nil
+	}
+	// MCP and deferred warnings append raw errors and identifiers. Their
+	// diagnostic prefix identifies the gap without copying that content.
+	return strings.Join(fields[:2], " "), nil
 }
 
 // bundleLogLines returns the lines of a proxy log that talk about rule

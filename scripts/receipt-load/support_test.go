@@ -156,7 +156,7 @@ func fakeMain(behavior string, args []string) int {
 // relays everything else, so the harness sees realistic responses.
 func fakeRun(behavior, listen string) int {
 	if behavior == "auditgap" {
-		fmt.Println(`{"level":"error","component":"pipelock","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"}`)
+		fmt.Println(`{"level":"error","component":"pipelock","event":"error","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"}`)
 	}
 	transport := &http.Transport{Proxy: nil}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
