@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -347,7 +348,14 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			// An unreadable directory or entry may hold secret files, so an
+			// incomplete walk is reported instead of looking clean.
+			relPath, relErr := filepath.Rel(dir, path)
+			if relErr != nil || relPath == "" {
+				relPath = path
+			}
+			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
+			return nil
 		}
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
@@ -369,9 +377,16 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 			relPath = path
 		}
 
-		info, err := d.Info()
+		// Stat the target the scanners will open: d.Info describes a symlink
+		// itself, which would let a link to a large or special file bypass the
+		// size limit or block the scan on a FIFO.
+		info, err := os.Stat(path)
 		if err != nil {
 			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
+			return nil
+		}
+		if !info.Mode().IsRegular() {
+			findings = append(findings, secretInspectionWarning(relPath, "not a regular file"))
 			return nil
 		}
 		if info.Size() > maxScanFileBytes {
@@ -384,8 +399,14 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 
 		// Also check for high-entropy values in .env files
 		if isEnvFile {
-			entropyFindings := scanFileForEntropy(path, relPath)
-			findings = append(findings, entropyFindings...)
+			for _, f := range scanFileForEntropy(path, relPath) {
+				// One inspection warning per file: skip a read failure the
+				// secret pass already reported.
+				if isInspectionWarning(f) && slices.ContainsFunc(fileFindings, isInspectionWarning) {
+					continue
+				}
+				findings = append(findings, f)
+			}
 		}
 
 		return nil
@@ -398,6 +419,12 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 // fully read, so an incomplete secret scan never looks like a clean one.
 func secretInspectionWarning(relPath, reason string) Finding {
 	return inspectionWarning(relPath, "secret", "for secrets", reason, "inspect the file separately")
+}
+
+// isInspectionWarning reports whether f is an uninspected-file warning from
+// secretInspectionWarning.
+func isInspectionWarning(f Finding) bool {
+	return f.Severity == "warning" && strings.HasPrefix(f.Message, "Could not inspect ")
 }
 
 // newFileLineScanner reads lines up to the file size limit. Files reaching
@@ -446,7 +473,7 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 func scanFileForEntropy(path, relPath string) []Finding {
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
-		return nil
+		return []Finding{secretInspectionWarning(relPath, "unreadable")}
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 
@@ -454,7 +481,6 @@ func scanFileForEntropy(path, relPath string) []Finding {
 	const minValueLen = 16
 
 	var findings []Finding
-	// Read failures are already reported once by scanFileForSecrets for this file.
 	s := newFileLineScanner(f)
 	lineNum := 0
 	for s.Scan() {
@@ -485,6 +511,9 @@ func scanFileForEntropy(path, relPath string) []Finding {
 		}
 	}
 
+	if s.Err() != nil {
+		findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
+	}
 	return findings
 }
 

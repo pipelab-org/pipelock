@@ -527,6 +527,9 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission semantics differ on Windows")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 000 files")
+	}
 	dir := t.TempDir()
 	secret := filepath.Join(dir, ".env")
 	fakeKey := "sk-proj-" + "abcdefghijklmnop" + "qrstuvwxyz1234567890"
@@ -550,12 +553,26 @@ func TestScanFileForSecrets_UnreadableFile(t *testing.T) {
 
 func TestScanFileForEntropy_UnreadableFile(t *testing.T) {
 	findings := scanFileForEntropy("/nonexistent/file", "file")
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
+	if len(findings) != 1 || !isInspectionWarning(findings[0]) {
+		t.Fatalf("unreadable file must report an inspection warning, got %+v", findings)
 	}
 }
 
-// --- AdjustScoreForFindings tests ---
+func TestScanFileForSecrets_ReadErrorReportsUninspected(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("reading a directory handle differs on Windows")
+	}
+	// Opening a directory succeeds on Unix, but reading it fails.
+	dir := t.TempDir()
+	for name, findings := range map[string][]Finding{
+		"secrets": scanFileForSecrets(dir, "x", mustCompileDLPPatterns(t)),
+		"entropy": scanFileForEntropy(dir, "x"),
+	} {
+		if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect x for secrets (unreadable)") {
+			t.Errorf("%s: read error must report an inspection warning, got %+v", name, findings)
+		}
+	}
+}
 
 func TestAdjustScoreForFindings_NoCriticals(t *testing.T) {
 	cfg := &SuggestCfg{Preset: AgentGeneric}
