@@ -75,17 +75,17 @@ pipelock rules status --json | jq '.healthy'
 
 ## Tiers
 
-Every bundle declares a `tier`. Tiers describe source and trust, not rule quality:
+Version 2 bundles declare a `tier`: `standard`, `community`, or `pro`. Version 1 bundles don't require this field. The declared tier doesn't prove who signed a bundle. Pipelock verifies the signer against the enabled embedded keyring and the operator's `trusted_keys`.
 
-| Tier | Who ships it | Trust expectation |
-|------|--------------|-------------------|
-| `standard` | Pipelock maintainers | Signed with the embedded production key; ships as the built-in detection floor |
-| `community` | Community contributors via `pipelock-community` | Signed with the production key; reviewed in the public bundle repo |
-| `pro` | Paid-tier customers (future) | Signed with a delegated per-tier key; gated by license when loaded |
+| Tier | Current behavior |
+|------|------------------|
+| `standard` | Accepted as a v2 tier declaration. An operator-trusted third-party signer can use it. Runtime loading rejects it if a configured tier-to-key binding excludes that signer. Replacing compiled standard patterns requires the reserved bundle name `pipelock-standard` and an enabled official signer. |
+| `community` | Accepted as a v2 tier declaration. The official `pipelock-community` bundle uses the official signing key, but other bundles can use this declaration with an operator-trusted signer. |
+| `pro` | Accepted as a v2 tier declaration. Current install and load paths don't require a paid license or a dedicated pro signing key. Signature, compatibility, and freshness checks still apply. Runtime loading also applies configured tier-to-key bindings. |
 
-The core scanner runs before any bundle and cannot be replaced or disabled. Standard-tier rules load from the binary embed and cannot be replaced from disk either: there is no config field that repoints them, which is what keeps a writable path from swapping out standard detection. `pipelock rules status` reports the tier's origin in its `standard_dlp_source` and `standard_response_source` output fields.
+The immutable core scanner runs before any bundle and can't be replaced or disabled. Standard DLP and response patterns normally come from the binary's compiled defaults. A successfully loaded, officially signed `pipelock-standard` bundle replaces compiled standard patterns for each surface where it supplies active rules. A surface with no active rules from that bundle keeps its compiled fallback. Setting `dlp.include_defaults: false` or `response_scanning.include_defaults: false` disables that surface's standard defaults and standard-bundle patterns. `pipelock rules status` reports the selected sources in `standard_dlp_source` and `standard_response_source`.
 
-Bundles cannot override or disable the core or standard tiers. They only extend detection.
+Other bundle names add patterns without replacing the core or the selected standard source. Declaring `tier: standard` under another name doesn't grant replacement behavior.
 
 ## RequiredFeatures
 
@@ -120,7 +120,7 @@ At startup, pipelock scans the rules directory for installed bundles. Each bundl
 - **Injection rules** are added to the response scanning pattern list
 - **Tool-poison rules** are added to the tool description scanner
 
-Bundle rules cannot override or disable built-in patterns. They are additive only.
+Bundles other than the officially signed `pipelock-standard` bundle add patterns alongside the configured built-in patterns. The standard bundle follows the per-surface replacement rules described under [Tiers](#tiers).
 
 ### Version-gate outcomes
 
@@ -169,7 +169,11 @@ Bundles are Ed25519-signed YAML files. Pipelock verifies signatures against a ke
 
 Official bundles (like `pipelock-community`) are signed with the production key compiled into the source and also embedded in release binaries at build time. No additional configuration is needed.
 
-The first successful install is trust on first use for freshness. The signature proves who published the bundle and that its bytes are intact, but a machine with no saved history can't prove that the first valid bundle it sees is the newest one. Pipelock records that accepted bundle's monotonic version and format. Later installs and updates can't move either value backward. Removing or explicitly resetting the freshness state also removes that local rollback history, so verify the installed bundles before running `pipelock rules reset-freshness`.
+A valid signature establishes that the bundle bytes were signed by a trusted key; it doesn't establish that they're the newest published bytes. The first successful install is trust on first use for freshness. For `format_version: 2`, the first accepted monotonic version establishes a local rollback floor for that tier and bundle name. When staging an installation or changed update, Pipelock rejects a monotonic version below the saved floor and checks expiry. Runtime loading applies those checks too. A same-version, same-digest update reports "already up to date" without rechecking freshness, so update success isn't a runtime health check. Pipelock also records the highest accepted format by bundle name and checks it during staging and loading, preventing a return to v1 after v2 has been accepted.
+
+Version 1 bundles don't receive the v2 monotonic-version or expiry checks. Install and update still reject a CalVer older than the currently installed version. That comparison doesn't preserve the highest version after the installed bundle is removed. Removing a bundle leaves saved v2 freshness history intact.
+
+Deleting one freshness-state copy can cause Pipelock to restore it from the other copy. Missing state with a surviving freshness context is an error. After verifying the installed bundles, use `pipelock rules reset-freshness` for intentional recovery. Reset rebuilds floors from the installed bundles and discards higher historical values that are no longer represented there.
 
 Private-root-only operators can set `rules.trust_embedded_keys: false` to remove the compiled official keyring from bundle verification. In that mode, bundles must be signed by `rules.trusted_keys`; unsigned local bundles are rejected, and strict mode treats non-matching installed bundles as integrity failures unless the operator explicitly enables `rules.allow_degraded`.
 
@@ -187,14 +191,14 @@ As of v2.5.0 the bundle-signing keyring is stored and loaded independently from 
 
 ## Multi-bundle layout
 
-The `pipelock-rules` repo ships a multi-bundle directory layout so each bundle is signed and versioned independently. A bundle is identified by name and tier, not by file location, so operators can install only the bundles they need. Install several bundles side by side; each one runs in addition to the core and standard tiers:
+The `pipelock-rules` repo uses separate directories so bundles can be signed and versioned independently. The installed directory is keyed by bundle name. For v2 bundles, freshness counters are keyed by tier and name, and install rejects a tier change for an already installed v2 name. Install the bundles you need side by side. Bundle names other than `pipelock-standard` add rules to the configured policy:
 
 ```bash
 pipelock rules install pipelock-community
 pipelock rules install --source https://example.com/finance-pii/bundle.yaml finance-pii
 ```
 
-`pipelock rules list` shows every installed bundle with its tier, version, and rule counts. Bundles are additive — they cannot override or disable the core or standard tiers, and they cannot override each other; identical rules across bundles dedupe at load time.
+`pipelock rules list` shows the installed bundles and their versions, counts, and declared tiers. Version 1 bundles may have no declared tier. Rules in different bundles use namespaced identifiers so matching rule IDs don't replace each other. Identical regexes in different bundles remain separate loaded patterns. Reloading the same bundle replaces its previously merged patterns rather than appending a second copy.
 
 The official registry also publishes the independently versioned
 `healthcare-phi-pii` community bundle for regex-detectable healthcare and
