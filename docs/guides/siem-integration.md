@@ -770,8 +770,10 @@ logged to stderr. If you see these regularly, bump `queue_size` in the config.
 **Syslog is asynchronous.** Pipelock queues each syslog event and returns
 without waiting for network delivery. If the queue is full, the event is
 dropped. Creating the sink connects to the syslog server, and shutdown waits up
-to 10 seconds for queued events to drain. TCP gives reliable transport for
-events that leave the queue; UDP doesn't. Syslog is not available on Windows.
+to 10 seconds for queued events to drain. Delivery is best effort: a write
+that fails after an event leaves the queue isn't retried. TCP adds reliable
+stream transport for writes that succeed; UDP doesn't. Syslog is not available
+on Windows.
 
 **Multiple instances.** Set `emit.instance_id` when running more than one
 pipelock instance so you can tell events apart in your SIEM. Defaults to the
