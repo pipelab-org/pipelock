@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -349,6 +350,78 @@ func TestFetchEndpoint_GitHubActionsResultsSASEarnsNoCleanCredit(t *testing.T) {
 			p.handleFetch(w, req)
 			if w.Code != http.StatusOK {
 				t.Fatalf("download refused: status=%d body=%s", w.Code, w.Body.String())
+			}
+			after := rec.ScopedThreatScore(scope)
+			if tc.wantCredit && after >= before {
+				t.Fatalf("clean control earned no credit: before=%v after=%v", before, after)
+			}
+			if !tc.wantCredit && after != before {
+				t.Fatalf("structural exemption changed the score: before=%v after=%v", before, after)
+			}
+		})
+	}
+}
+
+// On the forward proxy, a requested URL that is a structural exemption (here a
+// SigV4 presigned URL) earns no clean credit; a plain clean request does. The
+// forward proxy hands redirects back to the client, and an HTTPS SAS download
+// arrives through CONNECT, which TestInterceptTunnel_GitHubActionsResultsSAS*
+// covers.
+func TestForwardProxy_StructuralExemptionsEarnNoCleanCredit(t *testing.T) {
+	const s3Host = "uploads.s3.amazonaws.com"
+	sigV4 := strings.Replace(sigV4CredentialRouteTestURL(), "https://", "http://", 1)
+	for _, tc := range []struct {
+		name, target, scoreHost string
+		wantCredit              bool
+	}{
+		{"sigv4 direct", sigV4, s3Host, false},
+		{"plain clean control", "http://plain.vendor.example/download.txt", "plain.vendor.example", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plain := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = fmt.Fprint(w, "download bytes")
+			}))
+			defer plain.Close()
+			proxyAddr, p, cleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) {
+				cfg.SessionProfiling.Enabled = true
+				cfg.AdaptiveEnforcement.Enabled = true
+				cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			})
+			defer cleanup()
+			upstream := &http.Transport{
+				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+					return (&net.Dialer{}).DialContext(ctx, network, plain.Listener.Addr().String())
+				},
+			}
+			t.Cleanup(upstream.CloseIdleConnections)
+			p.client.Transport = upstream
+			rec := p.sessionMgrPtr.Load().GetOrCreate("127.0.0.1")
+			scope := adaptiveScopeForHost(tc.scoreHost)
+			rec.RecordScopedSignal(scope, session.SignalBlock, 5)
+			before := rec.ScopedThreatScore(scope)
+			if before <= 0 {
+				t.Fatalf("seeded score = %v, want > 0", before)
+			}
+			// Never follow a redirect: the client would tunnel it to the network.
+			client := &http.Client{
+				Transport: &http.Transport{Proxy: func(*http.Request) (*url.URL, error) {
+					return &url.URL{Scheme: "http", Host: proxyAddr}, nil
+				}},
+				CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+			}
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, tc.target, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("request refused: status=%d reason=%s", resp.StatusCode, resp.Header.Get("X-Pipelock-Block-Reason"))
 			}
 			after := rec.ScopedThreatScore(scope)
 			if tc.wantCredit && after >= before {
