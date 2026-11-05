@@ -6,6 +6,7 @@ package generate
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -76,6 +77,9 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			// begin with NONE, CMD or CMD-SHELL; docker compose rejects anything else.
 			if doc.Services["pipelock"].Healthcheck == nil {
 				t.Fatal("pipelock service has no healthcheck")
+			}
+			if test := doc.Services["pipelock"].Healthcheck.Test; !slices.Equal(test, []string{"CMD", "/pipelock", "healthcheck"}) {
+				t.Errorf(`pipelock healthcheck test = %q, want ["CMD" "/pipelock" "healthcheck"]`, test)
 			}
 			for name, svc := range doc.Services {
 				if svc.Healthcheck == nil {
