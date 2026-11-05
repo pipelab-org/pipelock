@@ -44,7 +44,7 @@ and the [NIST SP 800-53 mapping](compliance/nist-800-53.md).
 +----------------------+      +----------------------+      +------------------+
 | Agent environment    |      | Pipelock boundary    |      | External systems |
 | secrets + workspace  | ---> | network + tool       | ---> | APIs, MCP, A2A   |
-| no direct egress     |      | policy, no secrets   |      | and web content  |
+| no direct egress     |      | sensitive DLP data  |      | and web content  |
 +----------------------+      +----------------------+      +------------------+
         deployment                 binary-enforced                untrusted
         enforcement                mediated paths

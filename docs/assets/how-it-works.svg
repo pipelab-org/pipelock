@@ -43,7 +43,7 @@
 
   <!-- Header -->
   <text x="640" y="38" text-anchor="middle" class="mono" fill="#e2e8f0" font-size="16" font-weight="700">CAPABILITY SEPARATION</text>
-  <text x="640" y="59" text-anchor="middle" fill="#64748b" font-size="12">Agent secrets and network access never share the same trust zone</text>
+  <text x="640" y="59" text-anchor="middle" fill="#64748b" font-size="12">Isolate agent access, proxy policy, and sensitive leak-detection data</text>
   <rect x="350" y="78" width="580" height="1" fill="url(#divider)"/>
 
   <!-- Zone pills, centered over each card -->

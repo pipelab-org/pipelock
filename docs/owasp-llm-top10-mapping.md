@@ -93,7 +93,7 @@ How Pipelock addresses the [OWASP Top 10 for Large Language Model Applications (
 
 **Pipelock coverage:**
 
-- **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The proxy (which has network access) holds no agent secrets. Neither process has both capabilities.
+- **Capability separation:** restrict the agent to mediated network access and give the proxy only the environment and file access its configured functions need. Leak detection can retain selected environment and configured secret-file values in proxy memory.
 - **Domain allowlisting (strict mode):** in strict mode, the agent can only reach explicitly allowed API endpoints. Everything else is blocked. In balanced/audit modes, the allowlist is configured but enforcement depends on the scanner pipeline rather than a hard gate.
 - **MCP tool policy:** pre-execution allow/deny rules with regex argument matching. Shell obfuscation detection catches base64/hex-encoded commands; values that only exist at run time aren't resolved ([limits](bypass-resistance.md#architectural-limits)). Actions: `block` or `ask` (human approval).
 - **Tool chain detection:** subsequence matching on tool call sequences detects multi-step attack patterns (e.g., list files then read then exfiltrate).

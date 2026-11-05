@@ -465,7 +465,7 @@ The full `pipelock assess` report is a separate `assess` entitlement, independen
 
 ## How It Works
 
-Pipelock uses **capability separation**: in an enforced deployment, the agent process has secrets but no direct network access. Pipelock has network access but no agent secrets. Even if the agent gets prompt-injected, it can't reach the firewall's controls.
+Pipelock uses **capability separation**: in an enforced deployment, the agent process has no direct network access and sends supported traffic through the proxy. Run the proxy with only the access its configured functions need, and protect its controls from the agent. When enabled, leak detection reads selected values from the proxy process environment and any configured `dlp.secrets_file`, retaining them in memory for matching. Treat the proxy process and those inputs as sensitive.
 
 Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspection on the forward and MCP paths:
 
@@ -499,7 +499,7 @@ Three HTTP proxy modes (same port), plus a dedicated MCP proxy and A2A inspectio
 │ - Data: DLP, secret detection, and budgets               │
 │ - Content: prompt injection and tool poisoning           │
 │ - Policy: allow, block, or redact                        │
-│ - No agent secrets                                       │
+│ - Sensitive values in memory for leak detection          │
 └────────────────────────────┬─────────────────────────────┘
                              │ approved request
                              ▼

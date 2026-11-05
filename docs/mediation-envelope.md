@@ -226,10 +226,7 @@ reused for the actual new request; confirmation policies can ask again.
 
 ## Capability separation
 
-The envelope signing key must live in pipelock's own privilege
-domain. The agent must not have read access to the key file, or the
-"proxy holds no agent secrets" invariant breaks and an attacker who
-compromises the agent can forge mediation signatures.
+The envelope signing key must live in Pipelock's own privilege domain. If the agent can read that key, it can forge mediation signatures. Keep this key separate from values loaded into proxy memory for leak detection.
 
 Pipelock enforces this by deployment conventions, not by the binary:
 

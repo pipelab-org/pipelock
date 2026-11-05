@@ -72,7 +72,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 
 **Pipelock coverage:**
 
-- **Capability separation:** the agent process (which holds secrets) runs in a network-restricted environment. The fetch proxy (which has network access) holds no agent secrets. Deployment (Docker, Kubernetes NetworkPolicy) enforces the boundary. Neither process has both capabilities.
+- **Capability separation:** restrict the agent to mediated network access using containment or deployment network controls. Give the proxy only the environment and file access its configured functions need. Leak detection can retain selected environment and configured secret-file values in proxy memory.
 - **Domain allowlisting:** the agent can only reach explicitly allowed API endpoints (e.g., `*.anthropic.com`, `github.com`).
 - **SSRF protection:** blocks requests to internal/private IP ranges (RFC 1918, link-local, loopback) with DNS rebinding prevention. Custom DialContext resolves DNS and validates all returned IPs before connecting. Configured MCP upstreams are an exception: they permit local/private servers while still blocking cloud metadata endpoints.
 - **Docker Compose isolation:** `pipelock generate docker-compose` creates a network topology where the agent container has no direct internet access.
@@ -177,7 +177,7 @@ Use `pipelock generate config --preset balanced` for the complete default patter
 **Pipelock coverage:**
 
 - **Principle of least privilege:** the agent only reaches allowed API domains. Everything else is blocked.
-- **Capability separation:** in an enforced deployment, the agent process has no direct network access. Only the proxy (which holds no agent secrets) can reach the internet. Deployment enforces the network boundary.
+- **Capability separation:** in an enforced deployment, agent internet access goes through the proxy. The proxy may retain selected environment and configured secret-file values in memory for leak detection; protect that process and its inputs.
 - **Configurable enforcement modes:** strict (block on detection, tight thresholds), balanced (warn on detection, default thresholds), audit (warn on ordinary findings while explicit tool-policy rules and safety protections can block).
 - **Domain blocklist:** known exfiltration targets (pastebin, transfer.sh) are explicitly blocked.
 - **Rate limiting:** per-domain sliding window prevents bulk data transfer even to allowed domains.
