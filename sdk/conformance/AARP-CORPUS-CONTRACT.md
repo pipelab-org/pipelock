@@ -1,16 +1,8 @@
 # AARP v0.1 Four-Language Verifier Contract
 
-This document is the **normative contract** every AARP reference verifier (Go,
-TypeScript, Rust, Python) MUST satisfy. The Go implementation in
-`internal/aarp/` is the reference; the other three port FROM it. The shared
-hostile corpus lives in `sdk/conformance/testdata/aarp-corpus/`. The
-cross-language gate (`aarp-corpus-gate.sh`) runs all four verifiers over that
-corpus and fails on **any** disagreement. All four reference verifiers implement
-`--svid`, so the gate covers the SVID `svid/` arm by default (set
-`AARP_GATE_INCLUDE_SVID=0` to skip it) alongside the Go reference conformance test.
+This document defines the normative contract for the Go, TypeScript, Rust and Python AARP reference verifiers. The Go implementation in `internal/aarp/` is the reference. The shared adversarial corpus is in `sdk/conformance/testdata/aarp-corpus/`. The `aarp-corpus-gate.sh` check runs all four verifiers and fails if their results differ.
 
-The bug class this corpus exists to kill: **a claim one verifier inflates that
-another rejects.** Cross-language divergence IS the bug.
+All four verifiers implement `--svid`. The gate includes the `svid/` corpus by default alongside the Go reference conformance test; `AARP_GATE_INCLUDE_SVID=0` skips it. The corpus detects differences in the claims each verifier accepts.
 
 ## What a verifier does
 

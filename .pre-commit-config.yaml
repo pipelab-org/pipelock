@@ -1,8 +1,7 @@
-# Stage ownership is explicit. Fast hygiene and file-scoped formatters run at
-# commit (default_stages); the heavy Go checks run only at the pre-push gate
-# (.git/hooks/pre-push runs `pre-commit run --hook-stage pre-push --all-files`).
-# This keeps commits fast and stops a Go-only push from invoking the TS/Rust
-# verifier toolchains it never touched. Secret and large-file gates run at both.
+# Fast hygiene and file-scoped formatters run at commit. Go validation hooks
+# use the pre-push stage. Install the desired pre-commit stages explicitly;
+# project configuration alone doesn't install Git hooks. Secret and large-file
+# checks are configured for both stages.
 default_stages: [pre-commit]
 
 repos:
@@ -52,7 +51,7 @@ repos:
         stages: [pre-commit, pre-push]
 
   # Go: vet, build, test. Heavy checks, scoped to the pre-push gate so commits
-  # stay fast (matches the .git/hooks/pre-push comment's stated intent).
+  # stay fast; install this stage with pre-commit to enable these checks.
   - repo: local
     hooks:
       - id: go-vet
@@ -123,16 +122,3 @@ repos:
         pass_filenames: false
         files: ^sdk/verifiers/ts/(.*\.(ts|js|mjs|json|md)|\.prettierignore)$
         stages: [pre-commit]
-
-  # Write marker for pre-push-gate.sh so it skips re-running lint+test.
-  # Runs as post-commit, so HEAD is the newly created commit SHA.
-  # pre-push-gate.sh checks this marker to avoid double-running checks.
-  - repo: local
-    hooks:
-      - id: push-marker
-        name: push-marker
-        entry: bash -c 'git rev-parse HEAD > /tmp/pipelock-checks-passed'
-        language: system
-        pass_filenames: false
-        stages: [post-commit]
-        always_run: true

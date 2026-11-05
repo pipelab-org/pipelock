@@ -770,13 +770,13 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Metric | Value |
 |--------|-------|
 | Go tests (with `-race`) | Unit, integration, and end-to-end paths |
-| Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
+| Coverage gate (codecov) | 91% Apache-2.0 core project, 90% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
 | Scanner hot-path overhead | Historical scanner measurements and current receipt workload results: [docs/performance.md](docs/performance.md) |
 | CI matrix | Go 1.26 + 1.27, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 
-Run `make test` to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).
+Use the [pre-commit checklist](CONTRIBUTING.md#pre-commit-checklist) to verify locally. First-party benchmark evidence: the public [agent-egress-bench](https://github.com/luckyPipewrench/agent-egress-bench) corpus. See the [live results](https://pipelab.org/gauntlet/results/).
 
 ---
 

@@ -224,14 +224,14 @@ BENCH_BASELINE_DIR=../pipelock-bench-base make bench-regression
 make bench-baseline
 
 # Parallel scaling
-go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/
-go test -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
+go test -run '^$' -bench=BenchmarkParallel -benchtime=3s -cpu=1,2,4,8,16 ./internal/scanner/
+go test -run '^$' -bench=BenchmarkParallel -benchtime=3s -cpu=1,4,8,16 ./internal/mcp/
 
 # Concurrent throughput scaling test (1-64 goroutines, ~28s)
 PIPELOCK_BENCH_SCALING=1 go test -v -run=TestConcurrentThroughputScaling ./internal/scanner/
 
 # Seed phrase detection
-go test -bench=BenchmarkSeed -benchmem ./internal/seedprotect/
+go test -run '^$' -bench=BenchmarkSeed -benchmem ./internal/seedprotect/
 ```
 
 `make bench-regression` requires `BENCH_BASELINE_DIR`, a prepared clean checkout at a different commit. The current checkout must also be clean. Choose the reference revision deliberately; the example above uses the previous commit. The command doesn't fetch, check out a ref, or select a release automatically. Before a release freeze, run it from the freshly verified main commit against the intended reference commit and retain both source IDs with the result.
@@ -248,7 +248,7 @@ Historical files such as `bench/scanner-baseline.txt` aren't comparison inputs. 
 
 ## BIP-39 Seed Phrase Detection (`seedprotect.Detect()`)
 
-Dedicated scanner for BIP-39 mnemonic seed phrases. Uses dictionary lookup + sliding window + SHA-256 checksum validation. Run `go test -bench=BenchmarkSeed -benchmem ./internal/seedprotect/` for current numbers on your hardware.
+Dedicated scanner for BIP-39 mnemonic seed phrases. Uses dictionary lookup + sliding window + SHA-256 checksum validation. Run `go test -run '^$' -bench=BenchmarkSeed -benchmem ./internal/seedprotect/` for current numbers on your hardware.
 
 | Benchmark | ns/op | B/op | allocs/op | Description |
 |-----------|-------|------|-----------|-------------|

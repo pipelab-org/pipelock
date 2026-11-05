@@ -43,9 +43,9 @@ The cold-start measurement uses three configs that ship in this directory:
 
 | File | Mode | What's enabled |
 |---|---|---|
-| `configs/minimal.yaml` | `audit` | No scanners, no patterns. Fastest startup. |
+| `configs/minimal.yaml` | `audit` | Disables configurable DLP patterns, environment-value scanning, response scanning and MCP input/tool scanning. Core safety checks remain active. |
 | `configs/default.yaml` | `balanced` | Default DLP patterns, MCP input/tool scanning. Used as the latency arm too. |
-| `configs/full.yaml` | `strict` | Every scanner: adaptive enforcement, session profiling, address protection, seed-phrase detection, request-body scanning. |
+| `configs/full.yaml` | `strict` | Enables adaptive enforcement, session profiling, address protection, seed-phrase detection and request-body scanning. Response scanning remains disabled for this benchmark. |
 
 All three set `ssrf.ip_allowlist: ["127.0.0.0/8"]` so the harness's localhost mocks are reachable. Real deployments do not exempt 127.0.0.0/8.
 

@@ -5,8 +5,10 @@ Thanks for your interest in making AI agents more secure.
 ## Prerequisites
 
 - Go 1.26+ (`go version`)
-- [golangci-lint](https://golangci-lint.run/welcome/install/) v2
-- [gofumpt](https://github.com/mvdan/gofumpt) (`go install mvdan.cc/gofumpt@latest`)
+- [golangci-lint](https://golangci-lint.run/welcome/install/) at the exact version pinned in [CI](.github/workflows/ci.yaml); run `make check-lint-version` to check your installation
+- Python 3 with the hash-pinned dependencies in [`.github/requirements-scripts-test.txt`](.github/requirements-scripts-test.txt), installed with `python3 -m pip install --require-hashes -r .github/requirements-scripts-test.txt` in a virtual environment
+
+`make fmt` uses golangci-lint's bundled gofumpt formatter. You don't need a separate gofumpt installation. The linter version check uses the Python dependencies above.
 
 ## Quick Start
 
@@ -61,8 +63,8 @@ The advisory pull-request workflow runs each target in a separate job on Go 1.27
 ## Pull Requests
 
 1. Fill in a clear description of what changed and why
-2. CI requires eight GitHub Actions contexts: **security-scan**, **test (1.26)**, **test (1.27)**, **test-macos**, **lint**, **build**, **govulncheck**, and **codeql**. The advisory **Pipelock CI Summary** rolls them up for readability but isn't a required context. On a pull request, **test (1.26)** runs every test package without the race detector under both the OSS and enterprise build tags. A package whose code and test inputs match main's last saved run reports Go's cached result instead of running again. The race detector suite runs after merge, on every push to `main`, as **race (1.26)**, and again in the release workflow before a tag. **test (1.27)** runs the replay harness on every pull request, and its race matrix only when the PR touches `.github/workflows/**`, `go.mod`, `go.sum`, or the guard that checks them; the release workflow proves both Go versions, pinned, before a tag. A pull request that changes only Markdown that no Go code can reach skips the Go build, test, lint, and platform jobs; GitHub counts those skipped required checks as passing, and `main` runs everything after merge.
-3. Address reviewer feedback and bot comments. Automated AI review (e.g. CodeRabbit) is **advisory only** — maintainers make all security decisions, and a bot's passing status or summary does not by itself mean a change was security-reviewed.
+2. CI requires eight GitHub Actions contexts: **security-scan**, **test (1.26)**, **test (1.27)**, **test-macos**, **lint**, **build**, **govulncheck**, and **codeql**. The advisory **Pipelock CI Summary** rolls them up for readability but isn't a required context. On a pull request, **test (1.26)** runs every test package without the race detector under both the OSS and enterprise build tags. A package whose code and test inputs match main's last saved run reports Go's cached result instead of running again. The race detector suite runs after merge, on every push to `main`, as **race (1.26)**. **test (1.27)** runs the replay harness on every pull request; its OSS and enterprise race matrices also run for changes to the CI-policy files listed in [the workflow's changed-files job](.github/workflows/ci.yaml), including workflows, module files, test runners, shard configuration, the Makefile, and coverage configuration. A pull request that changes only Markdown that no Go code can reach skips the Go build, test, lint, and platform jobs. Security scanning, repository policy checks (including documentation checks), config-example validation, and the replay harness still run; aggregate checks verify that the skips are allowed. The [release workflow](.github/workflows/release.yaml) starts after a release tag is pushed and runs the race suites on both pinned Go versions before publishing artifacts.
+3. Address reviewer feedback and automated review comments. Automated review, if used, is advisory. It doesn't replace human review of security-sensitive changes. See [Review Standard](#review-standard).
 4. PRs are squash-merged
 
 ### Review Standard
@@ -135,6 +137,8 @@ See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 - `cmd.OutOrStdout()` for CLI output, `cmd.ErrOrStderr()` for diagnostics
 - File permissions: `0o600` not `0600`
 - HTTP methods: `http.MethodGet` not `"GET"`
+- Source files need copyright and license headers. Use Apache-2.0 for core sources; files under `enterprise/` or with the `enterprise` build tag need the Elastic License 2.0 notice and Elastic-2.0 SPDX identifier, including integration files under `cmd/` and `internal/`. Run `make source-header-check` to verify them.
+- Run `make docs-check` for documentation accuracy and local links.
 - See [.golangci.yml](.golangci.yml) for all 19 enabled linters
 
 ## Python dependencies
@@ -143,20 +147,9 @@ A small amount of Python lives in the repo: the cross-implementation
 verifier fixture at `testdata/python_verifier_fixture/` and the
 script-test dependency at `.github/requirements-scripts-test.txt`.
 
-**Rule: Generated Python lockfiles (`requirements*.txt`) in this repo
-MUST be `==`-pinned with `--hash` lines.** `requirements*.in` is the
-source-manifest exception and may carry loose bounds; the lockfile
-generated from it must be strict. Loose `>=`, `<=`, `~=`, `>`, `<`, and
-`===` operators are forbidden in lockfiles. Reasons:
+Generated Python lockfiles (`requirements*.txt`) use exact `==` versions and `--hash` entries. Source manifests (`requirements*.in`) may use version ranges; generated lockfiles may not use `>=`, `<=`, `~=`, `>`, `<`, or `===`.
 
-1. OSV-Scanner (run by the OpenSSF Scorecard workflow) over-reports on
-   range pins. A `>=46.0.7,<47.0.0` cryptography line has triggered
-   six-CVE Scorecard alerts on main even though the floor was clean.
-2. Pinned hashes give reproducible installs across developer machines,
-   CI runners, and downstream agent containers.
-3. `pip install --require-hashes` rejects unpinned or hash-missing
-   inputs at install time, so a tampered wheel can not silently
-   substitute.
+Exact versions and hashes make installs reproducible and let `pip install --require-hashes` reject missing pins or unexpected distributions. Exact pins also let dependency scanners assess the selected version rather than a range.
 
 The lockfile pattern, modeled on `.github/requirements-scripts-test.txt`:
 
@@ -231,20 +224,15 @@ docs/                  Guides, OWASP mapping, comparison
 
 ## Architecture
 
-See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
-
-- Ordered scanner pipeline and security-control sequence
-- MCP proxy design
-- Config system and hot-reload
-- Package structure and conventions
+See [Architecture in AGENTS.md](AGENTS.md#architecture) for the scanner pipeline, MCP proxy, configuration reload behavior, and coding conventions.
 
 ## Adding Features
 
 ### New CLI command
 
-1. Create `internal/cli/<command>.go` with a `<command>Cmd()` function
-2. Register in `rootCmd()` in `internal/cli/root.go`
-3. Add tests in `internal/cli/<command>_test.go`
+1. Add the command to the appropriate `internal/cli/` subpackage, following nearby Cobra command constructors.
+2. Register the constructor in `rootCmd()` in `internal/cli/root.go`. Enterprise commands use the existing `RegisterCommand` integration.
+3. Add tests beside the implementation and cover command output through Cobra's configured writers.
 
 ### New scanner layer
 
@@ -256,9 +244,9 @@ See [CLAUDE.md](CLAUDE.md) for the full architecture guide, including:
 
 ### New DLP pattern
 
-1. Add regex to `config.Defaults()` in `internal/config/config.go`
-2. Add test cases in `internal/scanner/scanner_test.go`
-3. Update preset configs in `configs/`
+1. Add the pattern to the canonical list in `internal/config/dlp_patterns.go`
+2. Add URL and text test cases in `internal/scanner/scanner_test.go` and `internal/scanner/text_dlp_test.go`
+3. Run `go generate ./internal/config` to regenerate preset patterns in `configs/` and check the generated diff
 
 ## Dependencies
 
@@ -276,7 +264,7 @@ Pipelock keeps its direct dependency set intentionally small. Any new dependency
 - **Security issues**: See [SECURITY.md](SECURITY.md)
 - **Bugs**: Open a GitHub issue with steps to reproduce
 - **Features**: Open a GitHub issue describing the use case
-- **Scanner bypasses**: Use the security bypass issue template
+- **Suspected scanner bypasses**: Report privately using [SECURITY.md](SECURITY.md#vulnerability-reporting); don't open a public issue.
 - **Questions and community discussion**: Join the Discord community at https://discord.gg/badNfhGKTc
 
 ## Contributor License Agreement
