@@ -1692,7 +1692,10 @@ jobs:
   govulncheck:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
-    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' && needs.changed-files.outputs.queue_tree_tested != 'true' }}
+    # It still runs on a merge group whose tree a green pull request run
+    # already tested: its verdict depends on the live vulnerability database,
+    # not only the tree, so an advisory published since then must be seen.
+    if: ${{ !cancelled() && needs.security-scan.result == 'success' && needs.changed-files.outputs.docs_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -2098,8 +2101,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ci-tested-tree"
           printf '%s\n' "$TESTED_TREE" > "$RUNNER_TEMP/ci-tested-tree/tested-tree"
 
+      # Reuse is only an optimization: a failed upload leaves no artifact, the
+      # checker answers false, and the queue runs the full suite. It must not
+      # red this required check.
       - name: Upload the tested tree
         if: ${{ github.event_name == 'pull_request' }}
+        continue-on-error: true
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-tested-tree
@@ -2138,19 +2145,23 @@ jobs:
           printf '%s\n' '| --- | --- |' >> "$summary"
 
           skip_reason=""
+          tree_reused=false
           if [ "$EVENT_NAME" != push ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$DOCS_ONLY" = true ]; then
             skip_reason="documentation only"
           elif [ "$EVENT_NAME" = merge_group ] && [ "$CHANGED_FILES_RESULT" = success ] && [ "$QUEUE_TREE_TESTED" = true ]; then
             skip_reason="tree already tested by a green pull request run"
+            tree_reused=true
           fi
 
-          # A third argument marks a producer a documentation-only pull request,
-          # or a merge group whose tree was already tested, skips on purpose.
+          # A third argument marks a producer that may skip on purpose: "docs"
+          # only for a documentation-only pull request, "any" also for a merge
+          # group whose tree was already tested.
           record_result() {
             local name="$1"
             local result="$2"
             local docs_skippable="${3:-}"
-            if [ "$result" = skipped ] && [ -n "$docs_skippable" ] && [ -n "$skip_reason" ]; then
+            if [ "$result" = skipped ] && [ -n "$docs_skippable" ] && [ -n "$skip_reason" ] && \
+               { [ "$docs_skippable" = any ] || [ "$tree_reused" = false ]; }; then
               printf '| %s | skipped (%s) |\n' "$name" "$skip_reason" >> "$summary"
               return
             fi
@@ -2164,8 +2175,8 @@ jobs:
           record_result 'security-scan' "$SECURITY_SCAN_RESULT"
           record_result 'test (1.26)' "$TEST_GO126_RESULT"
           record_result 'test (1.27)' "$TEST_GO127_RESULT"
-          record_result 'test-macos' "$MACOS_RESULT" docs
-          record_result 'lint' "$LINT_RESULT" docs
+          record_result 'test-macos' "$MACOS_RESULT" any
+          record_result 'lint' "$LINT_RESULT" any
           record_result 'build' "$BUILD_RESULT"
           record_result 'govulncheck' "$GOVULNCHECK_RESULT" docs
 
