@@ -48,16 +48,11 @@ const (
 	// as a signed download link can reach that vendor's storage host and
 	// nothing else.
 	CredentialAudienceCarrierURLQuery
-	// CredentialAudienceCarrierReleaseGrantSAS is the separate GitHub
-	// release-asset SAS rule: an Azure user-delegation SAS is trusted only
-	// inside the URL query of a request to a release-grant audience host,
-	// only when that same query also carries a GitHub release download grant
-	// (a JWT accepted through CredentialAudienceCarrierURLQuery for that
-	// host), and only when the query carries GitHub's whole user-delegation
-	// SAS parameter set. It never widens the JWT's host list, and the JWT
-	// rule never accepts a SAS on its own: the SAS signature is unverifiable
-	// by this proxy, so it is trusted purely because the co-located grant
-	// already proved GitHub issued this exact redirect.
+	// CredentialAudienceCarrierReleaseGrantSAS accepts complete, bounded Azure
+	// user-delegation SAS grants only in HTTPS URL queries. Release assets
+	// also require a qualifying co-located JWT. Attestation bundles and
+	// Actions results instead require their exact compiled accounts and paths.
+	// The scanner validates the shape and audience, not the SAS signature.
 	CredentialAudienceCarrierReleaseGrantSAS
 	// CredentialAudienceCarrierRegistryBasic is the package-registry rule:
 	// Authorization Basic, https only, at a CredentialAudienceRegistryHosts
@@ -265,7 +260,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// attestations API bundle_url is a different SAS with no JWT, on the
 	// exact storage accounts named in credential_audience.go
 	// (attestationBundleSASAllowed). GitHub Actions job logs and artifacts
-	// redirect to the productionresultssa0-19 accounts GitHub lists in its meta
+	// redirect to the exact results accounts GitHub lists in its meta
 	// API (actionsResultsSASAllowed). The pattern host list stays the release
 	// host; the bundle and results accounts are not a second config audience.
 	// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-account-sas

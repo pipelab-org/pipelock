@@ -1436,13 +1436,20 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 		return dlpResult
 	}
 	credentialAudienceAllows := dlpResult.CredentialAudienceAllows
+	actionsResultsGrant := false
+	for _, allow := range credentialAudienceAllows {
+		if allow.PatternName == "Azure SAS Token" && destination.MatchesDomainList(allow.Destination, githubActionsResultsHosts) {
+			actionsResultsGrant = true
+			break
+		}
+	}
 	// Attach DLP warn matches to whatever result is returned from here on.
 	// The defer fires on every return path, including blocks by later scanners.
-	// When SigV4 detection validated the URL, also mark the allow result as
-	// adaptive-neutral and attach a long-expiry warn for audit visibility.
+	// Valid SigV4 and Actions results grants are adaptive-neutral. SigV4
+	// also attaches a long-expiry warning for audit visibility.
 	defer func() {
 		result.CredentialAudienceAllows = append([]CredentialAudienceAllow(nil), credentialAudienceAllows...)
-		if sigV4.Valid && result.Allowed && result.Class == ClassThreat {
+		if (sigV4.Valid || actionsResultsGrant) && result.Allowed && result.Class == ClassThreat {
 			result.Class = ClassStructuralExemption
 		}
 		if sigV4.Valid && result.Allowed && sigV4.Expires > sigV4LongExpiryThreshold {
