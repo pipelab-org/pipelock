@@ -254,6 +254,19 @@ func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
 			if err != nil || parsed.Hostname() != tc.wantHost {
 				t.Fatalf("canary URL %q parses to host %q (err %v), want %q", got, parsed.Hostname(), err, tc.wantHost)
 			}
+
+			// Without configured internal ranges the core literal-IP floor
+			// blocks the address first; both canaries must say so rather
+			// than claim DLP detection.
+			cfg.Internal = nil
+			const want = `blocked before DLP by scanner "core_ssrf"`
+			if result := runInitCanary(cfg); result.Detected || !strings.Contains(result.Detail, want) {
+				t.Errorf("init canary = %+v, want %s", result, want)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); result.Detected || !strings.Contains(result.Detail, want) {
+				t.Errorf("sidecar canary = %+v, want %s", result, want)
+			}
 		})
 	}
 }
