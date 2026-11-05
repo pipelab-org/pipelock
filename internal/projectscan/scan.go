@@ -24,9 +24,10 @@ import (
 const severityCritical = "critical"
 
 // maxScanFileBytes is the largest config or manifest file the project scan
-// reads. Files over it are skipped for secrets and reported as uninspected
-// for dependencies.
+// reads. Files over it are reported as uninspected for secrets and dependencies.
 const maxScanFileBytes = 1 << 20
+
+const inspectionSizeLimitReason = "larger than the scan size limit"
 
 // Finding represents a single security finding from the project scan.
 type Finding struct {
@@ -363,15 +364,18 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 			return nil
 		}
 
-		// Skip large files (>1MB)
-		info, err := d.Info()
-		if err != nil || info.Size() > maxScanFileBytes {
-			return nil
-		}
-
 		relPath, _ := filepath.Rel(dir, path)
 		if relPath == "" {
 			relPath = path
+		}
+
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		if info.Size() > maxScanFileBytes {
+			findings = append(findings, inspectionWarning(relPath, "secret", "for secrets", inspectionSizeLimitReason, "inspect the file separately"))
+			return nil
 		}
 
 		fileFindings := scanFileForSecrets(path, relPath, patterns)

@@ -79,6 +79,82 @@ func TestAuditCmd_WithClaudeCode(t *testing.T) {
 	}
 }
 
+func TestAuditCmd_OversizeSecretFileReportsUninspected(t *testing.T) {
+	dir := t.TempDir()
+	const scanLimit = 1 << 20 // projectscan's config/manifest inspection limit.
+	fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
+	line := "KEY=" + fakeKey + "\n"
+	body := strings.Repeat("\n", scanLimit+1-len(line)) + line
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, format := range []string{formatText, formatJSON, formatSARIF} {
+		t.Run(format, func(t *testing.T) {
+			cmd := testRoot()
+			var stdout, stderr strings.Builder
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+			cmd.SetArgs([]string{"audit", dir, "--format", format})
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			output := stdout.String()
+			if strings.Contains(output, fakeKey) || strings.Contains(stderr.String(), fakeKey) {
+				t.Fatal("audit output contains the credential")
+			}
+			const message = "Could not inspect .env for secrets (larger than the scan size limit)"
+			if !strings.Contains(output, message) {
+				t.Error("audit output is missing the inspection warning")
+			}
+			switch format {
+			case formatText:
+				if !strings.Contains(output, "[WARNING]  "+message) || strings.Contains(output, "No findings.") {
+					t.Error("text audit must report an inspection warning instead of a clean scan")
+				}
+				if strings.Contains(output, "Warnings: 0") {
+					t.Error("inspection warning is missing from the warning count")
+				}
+			case formatJSON:
+				var report projectscan.Report
+				if err := json.Unmarshal([]byte(output), &report); err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, f := range report.Findings {
+					if f.File == ".env" && f.Severity == "warning" && f.Category == "secret" && strings.HasPrefix(f.Message, message) {
+						found = true
+					}
+				}
+				if !found {
+					t.Error("JSON audit is missing the uninspected secret file finding")
+				}
+			case formatSARIF:
+				var log sarif.Log
+				if err := json.Unmarshal([]byte(output), &log); err != nil {
+					t.Fatal(err)
+				}
+				found := false
+				for _, run := range log.Runs {
+					for _, result := range run.Results {
+						if result.RuleID != "SEC-SECRET" || result.Level != sarif.LevelWarning || !strings.HasPrefix(result.Message.Text, message) {
+							continue
+						}
+						for _, loc := range result.Locations {
+							if strings.HasSuffix(loc.PhysicalLocation.ArtifactLocation.URI, "/.env") {
+								found = true
+							}
+						}
+					}
+				}
+				if !found {
+					t.Error("SARIF audit is missing the warning and secret file location")
+				}
+			}
+		})
+	}
+}
+
 func TestAuditCmd_JSONOutput(t *testing.T) {
 	dir := t.TempDir()
 

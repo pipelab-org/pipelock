@@ -309,17 +309,62 @@ func TestScanFiles_SkipsNodeModules(t *testing.T) {
 	}
 }
 
-func TestScanFiles_LargeFileSkipped(t *testing.T) {
+func TestScanFiles_OversizeSecretFileReportsUninspected(t *testing.T) {
+	patterns := mustCompileDLPPatterns(t)
+	for _, name := range []string{".env", ".env.local", filepath.Join("config", "settings.yaml")} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
+			line := "KEY=" + fakeKey + "\n"
+			body := strings.Repeat("\n", maxScanFileBytes+1-len(line)) + line
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			findings := scanFiles(dir, patterns)
+			if len(findings) != 1 {
+				t.Fatalf("got %d findings, want one inspection warning", len(findings))
+			}
+			f := findings[0]
+			if f.Severity != "warning" || f.Category != "secret" || f.File != name || f.Line != 0 || f.Pattern != "" {
+				t.Error("unexpected inspection warning metadata")
+			}
+			if !strings.Contains(f.Message, "Could not inspect "+name+" for secrets") ||
+				!strings.Contains(f.Message, "larger than the scan size limit") {
+				t.Error("unexpected inspection warning wording")
+			}
+			if strings.Contains(f.Message, fakeKey) {
+				t.Error("inspection warning contains the credential")
+			}
+		})
+	}
+}
+
+func TestScanFiles_AtCapSecretFileDetectsKey(t *testing.T) {
 	dir := t.TempDir()
-	// Create a file just over 1MB
-	large := make([]byte, 1<<20+1)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), large, 0o600); err != nil {
+	fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
+	line := "KEY=" + fakeKey + "\n"
+	// Put the credential at the end to prove the scan reaches the size limit.
+	padding := strings.Repeat(strings.Repeat(" ", 1023)+"\n", maxScanFileBytes/1024)
+	body := padding[:maxScanFileBytes-len(line)] + line
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	findings := scanFiles(dir, mustCompileDLPPatterns(t))
-	if len(findings) != 0 {
-		t.Error("expected no findings from oversized file")
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want one credential finding", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != severityCritical || f.Category != "secret" || f.File != ".env" || f.Pattern != "AWS Access ID" {
+		t.Error("unexpected credential finding metadata")
+	}
+	if strings.Contains(f.Message, fakeKey) {
+		t.Error("credential finding contains the credential")
 	}
 }
 

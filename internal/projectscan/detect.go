@@ -305,9 +305,9 @@ func detectHostileTooling(dir string) []Finding {
 			// A manifest we cannot read cannot establish that the project is clean.
 			reason := "unreadable"
 			if errors.Is(err, errManifestTooLarge) {
-				reason = "larger than the scan size limit"
+				reason = inspectionSizeLimitReason
 			}
-			findings = append(findings, inspectionWarning(m.file, reason))
+			findings = append(findings, inspectionWarning(m.file, "tooling", "dependencies", reason, "fix the manifest and scan again"))
 			continue
 		}
 		deps, namesErr := m.names(data)
@@ -324,7 +324,7 @@ func detectHostileTooling(dir string) []Finding {
 		if namesErr != nil {
 			// Names found before the problem are reported above; the rest of
 			// the manifest could not be read, so say so instead of staying quiet.
-			findings = append(findings, inspectionWarning(m.file, "malformed"))
+			findings = append(findings, inspectionWarning(m.file, "tooling", "dependencies", "malformed", "fix the manifest and scan again"))
 		}
 	}
 
@@ -372,14 +372,14 @@ func readManifest(path string) ([]byte, error) {
 	return data, nil
 }
 
-// inspectionWarning reports a manifest whose dependencies could not be fully
-// read, so an incomplete scan never looks the same as a clean one.
-func inspectionWarning(file, reason string) Finding {
+// inspectionWarning reports a file that could not be fully inspected, so an
+// incomplete scan never looks the same as a clean one.
+func inspectionWarning(file, category, subject, reason, remediation string) Finding {
 	return Finding{
 		Severity: "warning",
-		Category: "tooling",
+		Category: category,
 		File:     file,
-		Message:  fmt.Sprintf("Could not inspect %s dependencies (%s); fix the manifest and scan again.", file, reason),
+		Message:  fmt.Sprintf("Could not inspect %s %s (%s); %s.", file, subject, reason, remediation),
 	}
 }
 
