@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"math"
 	"net/http"
@@ -82,6 +83,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 	if err != nil {
 		res.Integrity.fail("run failed: " + err.Error())
 		res.Performance.invalidate("run failed: " + err.Error())
+		failOnAuditGaps(&res.Integrity, dirs, true)
 	}
 	if writeErr := writeResult(dirs.root, res); writeErr != nil {
 		return res, errors.Join(err, writeErr)
@@ -309,6 +311,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 			integrity.fail("proxy reported rule bundle activity under --rules empty: " + lines[0])
 		}
 	}
+	failOnAuditGaps(&integrity, dirs, false)
 	if ctx.Err() != nil {
 		integrity.fail("run interrupted")
 		perf.invalidate("run interrupted")
@@ -672,4 +675,19 @@ func pinBinary(source string, dirs runDirs) (string, string, error) {
 		return "", "", err
 	}
 	return target, digest.SHA256, nil
+}
+
+// failOnAuditGaps adds the proxy's own audit-gap diagnostics to integrity. A
+// receipt the proxy failed to record is missing evidence even when the counts
+// happen to balance, and the proxy's line names the failure. Gaps found before
+// a read error are still reported. A run that failed before the proxy wrote a
+// log has nothing to read, so a missing log is not an extra failure there.
+func failOnAuditGaps(integrity *integrityReport, dirs runDirs, failedRun bool) {
+	count, lines, err := auditGapLines(filepath.Join(dirs.root, "proxy.log"))
+	if count > 0 {
+		integrity.fail(fmt.Sprintf("proxy reported %d audit gap(s); first: %s", count, lines[0]))
+	}
+	if err != nil && (!failedRun || !errors.Is(err, fs.ErrNotExist)) {
+		integrity.fail("reading proxy.log failed: " + err.Error())
+	}
 }
