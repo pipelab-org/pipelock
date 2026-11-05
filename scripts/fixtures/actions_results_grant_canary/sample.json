@@ -1,0 +1,7 @@
+{
+  "meta": {"domains": {"actions": ["productionresultssa17.blob.core.windows.net", "api.vendor.example"]}},
+  "runs": {"workflow_runs": [{"id": 100}]},
+  "jobs": {"jobs": [{"id": 200, "status": "completed", "conclusion": "success", "steps": [{"name": "checkout"}]}]},
+  "job_location": "https://productionresultssa17.blob.core.windows.net/actions-results/container/workflow-job-run-id/logs/job/job-logs.txt?rsct=text%2Fplain&se=2026-11-05T10%3A10%3A00Z&sig=fixture-signature-never-output&ske=2026-11-06T10%3A00%3A00Z&skoid=00000000-0000-0000-0000-000000000000&sks=b&skt=2026-11-05T09%3A00%3A00Z&sktid=00000000-0000-0000-0000-000000000000&skv=2025-11-05&sp=r&spr=https&sr=b&st=2026-11-05T09%3A59%3A55Z&sv=2025-11-05",
+  "run_location": "https://results-receiver.actions.githubusercontent.com/archive?sig=fixture-signature-never-output"
+}
