@@ -467,7 +467,7 @@ func TestScanFileForEntropy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) == 0 {
 		t.Error("expected entropy finding for high-entropy value")
 	}
@@ -486,7 +486,7 @@ func TestScanFileForEntropy_ShortValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) != 0 {
 		t.Error("expected no findings for short values")
 	}
@@ -543,34 +543,17 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 	}
 }
 
-func TestScanFileForSecrets_UnreadableFile(t *testing.T) {
-	findings := scanFileForSecrets("/nonexistent/file", "file", nil)
-	if len(findings) != 1 || findings[0].Category != "secret" ||
-		!strings.Contains(findings[0].Message, "Could not inspect file for secrets (unreadable)") {
-		t.Fatalf("unreadable file must report an inspection warning, got %+v", findings)
-	}
-}
-
-func TestScanFileForEntropy_UnreadableFile(t *testing.T) {
-	findings := scanFileForEntropy("/nonexistent/file", "file")
-	if len(findings) != 1 || !isInspectionWarning(findings[0]) {
-		t.Fatalf("unreadable file must report an inspection warning, got %+v", findings)
-	}
-}
-
-func TestScanFileForSecrets_ReadErrorReportsUninspected(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("reading a directory handle differs on Windows")
-	}
-	// Opening a directory succeeds on Unix, but reading it fails.
-	dir := t.TempDir()
-	for name, findings := range map[string][]Finding{
-		"secrets": scanFileForSecrets(dir, "x", mustCompileDLPPatterns(t)),
-		"entropy": scanFileForEntropy(dir, "x"),
+func TestReadSecretCandidate_RefusesWhatItCannotInspect(t *testing.T) {
+	for _, tc := range []struct{ name, path, reason string }{
+		{"missing", "/nonexistent/file", "unreadable"},
+		{"directory", t.TempDir(), "not a regular file"},
 	} {
-		if len(findings) != 1 || !strings.Contains(findings[0].Message, "Could not inspect x for secrets (unreadable)") {
-			t.Errorf("%s: read error must report an inspection warning, got %+v", name, findings)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			data, reason := readSecretCandidate(tc.path)
+			if reason != tc.reason || data != nil {
+				t.Fatalf("readSecretCandidate = %d bytes, %q; want %q", len(data), reason, tc.reason)
+			}
+		})
 	}
 }
 
@@ -661,7 +644,7 @@ func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) == 0 {
 		t.Error("expected entropy finding for quoted high-entropy value")
 	}

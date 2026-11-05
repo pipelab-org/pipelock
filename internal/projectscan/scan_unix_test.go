@@ -86,3 +86,27 @@ func TestScanFiles_UnreadableRootNamesTheDirectory(t *testing.T) {
 		t.Fatalf("unreadable scan root must report an inspection warning naming it, got %+v", findings)
 	}
 }
+
+func TestReadSecretCandidate_FIFODoesNotBlock(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), ".env")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		data   []byte
+		reason string
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, reason := readSecretCandidate(fifo)
+		done <- result{data, reason}
+	}()
+	select {
+	case r := <-done:
+		if r.reason != "not a regular file" || r.data != nil {
+			t.Fatalf("FIFO read = %q, %q; want refusal", r.data, r.reason)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reading a FIFO candidate blocked")
+	}
+}
