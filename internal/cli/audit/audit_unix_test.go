@@ -30,9 +30,7 @@ func TestAuditCmd_SARIFUnreadableRelativeRoot(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = syscall.Chmod(sub, 0o700) })
 
-	oldDir, _ := os.Getwd()
-	_ = os.Chdir(root)
-	defer func() { _ = os.Chdir(oldDir) }()
+	t.Chdir(root)
 
 	cmd := testRoot()
 	buf := &strings.Builder{}
