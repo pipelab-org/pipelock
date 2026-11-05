@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -228,6 +229,30 @@ func TestInitCanarySkipsIPAliases(t *testing.T) {
 			var out bytes.Buffer
 			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); !result.Detected {
 				t.Errorf("sidecar canary for %q: %+v", host, result)
+			}
+		})
+	}
+}
+
+// An allowlist naming only IP literals offers no hostname to choose. The
+// canary then targets the first entry, and an IPv6 literal must stay a valid
+// bracketed URL host rather than being misread as host:port.
+func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
+	for _, tc := range []struct{ entry, wantHost, wantURL string }{
+		{"10.0.0.5", "10.0.0.5", "https://10.0.0.5/test?key=" + canaryToken()},
+		{"fd00::5", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken()},
+	} {
+		t.Run(tc.entry, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.Mode = config.ModeStrict
+			cfg.APIAllowlist = []string{tc.entry}
+			got := initCanaryURL(cfg)
+			if got != tc.wantURL {
+				t.Fatalf("canary URL = %q, want %q", got, tc.wantURL)
+			}
+			parsed, err := url.Parse(got)
+			if err != nil || parsed.Hostname() != tc.wantHost {
+				t.Fatalf("canary URL %q parses to host %q (err %v), want %q", got, parsed.Hostname(), err, tc.wantHost)
 			}
 		})
 	}
