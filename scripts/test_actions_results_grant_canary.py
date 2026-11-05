@@ -5,6 +5,7 @@
 
 import contextlib
 import copy
+import dataclasses
 from datetime import datetime, timedelta
 from email.message import Message
 import io
@@ -28,6 +29,10 @@ from scripts import actions_results_grant_canary as canary
 from scripts.yaml_contracts import WorkflowLoader
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures/actions_results_grant_canary/sample.json").read_text())
+# A signature in the scanner's format, built at runtime so the fixture file does
+# not hold a credential-shaped SAS URL.
+SIG = "Q" * 43 + "="
+FIXTURE["job_location"] = FIXTURE["job_location"].replace("sig=SIGNATURE", "sig=" + urllib.parse.quote(SIG, safe=""))
 HOST = "productionresultssa17.blob.core.windows.net"
 SECRET = "fixture-signature-never-output"
 SOURCE = '''var githubActionsResultsHosts = []string{
@@ -37,6 +42,26 @@ SOURCE = '''var githubActionsResultsHosts = []string{
 const actionsResultsSASMaxLifetime = attestationBundleSASMaxLifetime
 '''
 SHARED = "const attestationBundleSASMaxLifetime = 24 * time.Hour\n"
+# The signed-field and path definitions, as the scanner writes them.
+PATH_SOURCE = """const actionsResultsGUID = `[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`
+
+var actionsResultsPathPattern = regexp.MustCompile(
+\t`^/actions-results/` + actionsResultsGUID + `/workflow-job-run-` + actionsResultsGUID +
+\t\t`/(?:logs|artifacts)/[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$`)
+"""
+FORMATS_SOURCE = """var attestationBundleSASSignedParams = []string{"sp", "sv", "se"}
+
+var releaseGrantSASFieldFormats = map[string]*regexp.Regexp{
+\t"sp":    regexp.MustCompile(`^[a-z]{1,16}$`),
+\t"sv":    regexp.MustCompile(`^\\d{4}-\\d{2}-\\d{2}$`),
+\t"se":    regexp.MustCompile(`^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,7})?Z$`),
+}
+"""
+# The real scanner contract: the canary must agree with it, not with a copy.
+CONTRACT = canary.read_contract(canary.ROOT / "internal/scanner")
+assert "sig=SIGNATURE" not in FIXTURE["job_location"]
+# The fixture's meta API publishes one account; compare it with one compiled host.
+ONE_HOST = dataclasses.replace(CONTRACT, hosts={HOST})
 
 
 def altered_url(**changes):
@@ -65,19 +90,40 @@ def sample_api():
 
 
 class ContractTest(unittest.TestCase):
-    def read(self, source=SOURCE, shared=SHARED):
+    def read(self, source=SOURCE, shared=SHARED, path=PATH_SOURCE, formats=FORMATS_SOURCE):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            (directory / "credential_audience_actions_results.go").write_text(source)
-            (directory / "credential_audience.go").write_text(shared)
+            (directory / "credential_audience_actions_results.go").write_text(source + path)
+            (directory / "credential_audience.go").write_text(shared + formats)
             return canary.read_contract(directory)
 
     def test_reads_literal_hosts_alias_cap_and_comment(self):
-        self.assertEqual(self.read(), ({HOST}, 86400, 605))
+        contract = self.read()
+        self.assertEqual((contract.hosts, contract.cap, contract.observed), ({HOST}, 86400, 605))
+        self.assertEqual(contract.signed, ("sp", "sv", "se"))
+        # st is checked with the expiry format, as the scanner does.
+        self.assertIs(contract.formats["st"], contract.formats["se"])
         for unit, seconds in (("Second", 1), ("Minute", 60), ("Hour", 3600)):
             with self.subTest(unit=unit):
                 source = SOURCE.replace("= attestationBundleSASMaxLifetime", f"= 2 * time.{unit}")
-                self.assertEqual(self.read(source)[1], 2 * seconds)
+                self.assertEqual(self.read(source).cap, 2 * seconds)
+
+    def test_reads_the_real_scanner_contract(self):
+        self.assertIn(HOST, CONTRACT.hosts)
+        self.assertEqual((CONTRACT.cap, CONTRACT.observed), (86400, 605))
+        self.assertIn("sig", CONTRACT.signed)
+        path = urllib.parse.urlsplit(FIXTURE["job_location"]).path
+        self.assertTrue(CONTRACT.path.fullmatch(path))
+        self.assertTrue(CONTRACT.formats["sig"].fullmatch(SIG))
+
+    def test_unreadable_path_and_format_definitions_fail_closed(self):
+        for path, formats in ((PATH_SOURCE.replace("actionsResultsGUID +", "computedGUID() +", 1), FORMATS_SOURCE),
+                              ("", FORMATS_SOURCE), (PATH_SOURCE.replace("(?:logs|artifacts)", "(?:logs|artifacts", 1), FORMATS_SOURCE),
+                              (PATH_SOURCE, ""), (PATH_SOURCE, FORMATS_SOURCE.replace('"se"}', '"se", "sig"}')),
+                              (PATH_SOURCE, FORMATS_SOURCE.replace("regexp.MustCompile(`^[a-z]{1,16}$`)", "spFormat()")),
+                              (PATH_SOURCE, FORMATS_SOURCE.replace("`^[a-z]{1,16}$`", "`^[a-z{1,16}$`"))):
+            with self.subTest(path=path[:40], formats=formats[:60]), self.assertRaises(canary.SourceError):
+                self.read(path=path, formats=formats)
 
     def test_unparseable_contracts_fail_with_fixed_source_error(self):
         for source in ("", SOURCE.replace("[]string{", "func() []string {"),
@@ -127,9 +173,9 @@ class DriftTest(unittest.TestCase):
                                         (86400, False, True), (86401, True, False),
                                         (0, True, False), (-1, True, False)):
             with self.subTest(seconds=seconds):
-                expiry = (start + timedelta(seconds=seconds)).isoformat()
+                expiry = (start + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 report = canary.Report()
-                canary.check_sample(altered_url(se=expiry), {HOST}, 86400, 605, report)
+                canary.check_sample(altered_url(se=expiry), CONTRACT, report)
                 self.assertEqual(bool(report.drift), drift)
                 self.assertEqual(bool(report.warnings), warning)
 
@@ -141,10 +187,26 @@ class DriftTest(unittest.TestCase):
             with self.subTest(changes=changes):
                 report = canary.Report()
                 location = altered_url(**changes)
-                canary.check_sample(location, {HOST}, 86400, 605, report)
+                canary.check_sample(location, CONTRACT, report)
                 self.assertTrue(report.drift)
                 self.assertNotIn(SECRET, report.render())
                 self.assertNotIn(urllib.parse.urlsplit(location).query, report.render())
+
+    def test_scanner_path_and_signed_field_format_drift(self):
+        original = FIXTURE["job_location"]
+        path = urllib.parse.urlsplit(original).path
+        for location in (original.replace(path, "/actions-results/container/workflow-job-run-id/logs/job/job-logs.txt"),
+                         original.replace("/logs/", "/blobs/"), original.replace("/logs/job/", "/logs/../job/"),
+                         original.replace("/logs/job/", "/logs/./job/"), original.replace("/logs/job/", "/logs/%6Aob/"),
+                         original.replace("job-logs.txt", "job-logs.txt/"),
+                         altered_url(sig="Q" * 42 + "="), altered_url(skoid="not-a-guid"), altered_url(sv="2025-11-5"),
+                         altered_url(sks="bb"), altered_url(ske="2026-11-06T10:00:00"), altered_url(sig=SECRET)):
+            with self.subTest(location=location[-60:]):
+                report = canary.Report()
+                canary.check_sample(location, CONTRACT, report)
+                self.assertTrue(report.drift)
+                self.assertNotIn(SECRET, report.render())
+                self.assertNotIn(SIG, report.render())
 
     def test_destination_and_malformed_url_drift(self):
         original = FIXTURE["job_location"]
@@ -155,7 +217,7 @@ class DriftTest(unittest.TestCase):
                          "https://[invalid?sig=" + SECRET, original + "&bare"):
             with self.subTest(location=location):
                 report = canary.Report()
-                canary.check_sample(location, {HOST}, 86400, 605, report)
+                canary.check_sample(location, CONTRACT, report)
                 self.assertTrue(report.drift)
                 self.assertNotIn(SECRET, report.render())
 
@@ -215,7 +277,7 @@ class APITest(unittest.TestCase):
     def test_fixture_sampling_and_run_log_scope(self):
         api = sample_api()
         report = canary.Report()
-        canary.sample_live(api, "pipelab-org/pipelock", {HOST}, 86400, 605, report)
+        canary.sample_live(api, "pipelab-org/pipelock", CONTRACT, report)
         self.assertFalse(report.drift or report.errors or report.warnings)
         self.assertIn("605 s", report.render())
         for call in api.request.call_args_list:
@@ -226,7 +288,7 @@ class APITest(unittest.TestCase):
             original = api.request.side_effect
             api.request.side_effect = lambda endpoint, **kw: location if "/runs/100/logs" in endpoint else original(endpoint, **kw)
             report = canary.Report()
-            canary.sample_live(api, "pipelab-org/pipelock", {HOST}, 86400, 605, report)
+            canary.sample_live(api, "pipelab-org/pipelock", CONTRACT, report)
             self.assertTrue(report.warnings)
             self.assertNotIn(SECRET, report.render())
 
@@ -235,7 +297,7 @@ class APITest(unittest.TestCase):
             api = mock.Mock()
             api.request.return_value = runs
             with self.subTest(runs=runs), self.assertRaises(canary.APIError):
-                canary.sample_live(api, "pipelab-org/pipelock", {HOST}, 86400, 605, canary.Report())
+                canary.sample_live(api, "pipelab-org/pipelock", CONTRACT, canary.Report())
         for jobs in ({"jobs": []}, {"jobs": [{"status": "queued"}]},
                      {"jobs": [{"status": "completed", "conclusion": "skipped"}]},
                      {"jobs": [{"status": "completed", "conclusion": "success", "steps": [1], "id": SECRET}]}):
@@ -243,7 +305,7 @@ class APITest(unittest.TestCase):
             original = api.request.side_effect
             api.request.side_effect = lambda endpoint, **kw: jobs if "/jobs?" in endpoint else original(endpoint, **kw)
             with self.subTest(jobs=jobs), self.assertRaises(canary.APIError):
-                canary.sample_live(api, "pipelab-org/pipelock", {HOST}, 86400, 605, canary.Report())
+                canary.sample_live(api, "pipelab-org/pipelock", CONTRACT, canary.Report())
 
 
 class MainTest(unittest.TestCase):
@@ -253,7 +315,7 @@ class MainTest(unittest.TestCase):
             stdout = io.StringIO()
             with mock.patch.dict(os.environ, {"GH_TOKEN": token, "GITHUB_TOKEN": "", "GITHUB_STEP_SUMMARY": str(summary)}), \
                     mock.patch.object(canary, "read_contract", side_effect=canary.SourceError("Source unavailable") if source_error else None,
-                                      return_value=({HOST}, 86400, 605)), \
+                                      return_value=ONE_HOST), \
                     mock.patch.object(canary, "GitHubAPI", return_value=api or sample_api()), \
                     contextlib.redirect_stdout(stdout):
                 status = canary.main(["--repository", repository])
@@ -275,6 +337,7 @@ class MainTest(unittest.TestCase):
                 self.assertIn(summary, stdout)
                 for output in (stdout, summary):
                     self.assertNotIn(SECRET, output)
+                    self.assertNotIn(SIG, output)
                     self.assertNotIn("sig=", output)
                     self.assertNotIn(FIXTURE["job_location"], output)
                 if expected:
@@ -302,6 +365,18 @@ class MainTest(unittest.TestCase):
         self.assertIn("606 s", summary)
         self.assertNotIn(SECRET, stdout + summary)
 
+    def test_handoff_file_takes_the_report_instead_of_the_step_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            handoff, step = Path(temporary) / "actions-results-summary.md", Path(temporary) / "step.md"
+            with mock.patch.dict(os.environ, {"GH_TOKEN": "fixture-token", "GITHUB_TOKEN": "",
+                                              "CANARY_SUMMARY_FILE": str(handoff), "GITHUB_STEP_SUMMARY": str(step)}), \
+                    mock.patch.object(canary, "read_contract", return_value=ONE_HOST), \
+                    mock.patch.object(canary, "GitHubAPI", return_value=sample_api()), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(canary.main(["--repository", "pipelab-org/pipelock"]), 0)
+            self.assertIn("## Actions results grant canary", handoff.read_text())
+            self.assertFalse(step.exists())
+
     def test_stdout_without_summary_and_summary_write_failure(self):
         for path, expected in ((None, 0), (Path("/absent-canary-parent/summary.md"), 2)):
             with self.subTest(path=path), contextlib.redirect_stdout(io.StringIO()):
@@ -325,6 +400,10 @@ class MainTest(unittest.TestCase):
         sample = job["steps"][1]
         self.assertEqual(sample["env"]["GH_TOKEN"], "${{ github.token }}")
         self.assertEqual(sample["run"], "python3 scripts/actions_results_grant_canary.py")
+        # The runner owns GITHUB_STEP_SUMMARY and replaces a step's value, so the
+        # handoff to the publish step uses its own variable and file.
+        self.assertNotIn("GITHUB_STEP_SUMMARY", sample["env"])
+        self.assertEqual(sample["env"]["CANARY_SUMMARY_FILE"], "${{ runner.temp }}/actions-results-summary.md")
         final = job["steps"][-1]
         self.assertEqual(final["if"], "always()")
         # Execute both final-step branches; GitHub gives each step a new summary file.

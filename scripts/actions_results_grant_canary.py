@@ -18,6 +18,7 @@ import http.client
 import json
 import os
 from pathlib import Path
+import posixpath
 import re
 import urllib.error
 import urllib.parse
@@ -36,6 +37,18 @@ class SourceError(Exception):
 
 class APIError(Exception):
     """A fixed, credential-free diagnostic about failed API evidence."""
+
+
+@dataclass(frozen=True)
+class Contract:
+    """The scanner's grant rules, read from its Go source rather than copied."""
+
+    hosts: set[str]
+    cap: int
+    observed: int
+    path: re.Pattern[str]
+    signed: tuple[str, ...]
+    formats: dict[str, re.Pattern[str]]
 
 
 @dataclass
@@ -71,7 +84,57 @@ class Report:
         return 2 if self.errors else int(bool(self.drift))
 
 
-def read_contract(directory: Path) -> tuple[set[str], float, int]:
+def _raw_strings(source: str) -> dict[str, str]:
+    return dict(re.findall(r"^const (\w+) = `([^`]*)`$", source, re.M))
+
+
+def _path_pattern(source: str) -> re.Pattern[str]:
+    """Rebuild actionsResultsPathPattern from its raw-string pieces and constants."""
+    found = re.search(r"var actionsResultsPathPattern = regexp\.MustCompile\((.*?)\)\n", source, re.S)
+    if found is None:
+        raise SourceError("Cannot read the scanner Actions results path pattern")
+    constants = _raw_strings(source)
+    expression, pieces, position = found[1].strip(), [], 0
+    # Raw strings and named constants joined by +; a + inside a raw string is
+    # regex. Every character must be consumed, so nothing is silently skipped.
+    term = re.compile(r"\s*(`[^`]*`|[A-Za-z_]\w*)\s*(\+|$)")
+    while position < len(expression):
+        match = term.match(expression, position)
+        if match is None or (match[1][0] != "`" and match[1] not in constants):
+            raise SourceError("Scanner path pattern uses an expression the canary cannot read")
+        pieces.append(match[1][1:-1] if match[1][0] == "`" else constants[match[1]])
+        position = match.end()
+    if not pieces:
+        raise SourceError("Scanner path pattern uses an expression the canary cannot read")
+    try:
+        return re.compile("".join(pieces))
+    except re.error:
+        raise SourceError("Scanner path pattern is not a readable regular expression") from None
+
+
+def _signed_formats(shared: str) -> tuple[tuple[str, ...], dict[str, re.Pattern[str]]]:
+    """Read the signed SAS field list and each field's format regex."""
+    names = re.search(r"var attestationBundleSASSignedParams = \[\]string\{([^}]*)\}", shared)
+    table = re.search(r"var releaseGrantSASFieldFormats = map\[string\]\*regexp\.Regexp\{(.*?)\n\}", shared, re.S)
+    if names is None or table is None:
+        raise SourceError("Cannot read the scanner signed SAS fields or formats")
+    signed = tuple(re.findall(r'"([a-z]+)"', names[1]))
+    entries = re.findall(r'^\s*"([a-z]+)":\s*regexp\.MustCompile\(`([^`]*)`\),\s*$', table[1], re.M)
+    if not signed or len(entries) != len(re.findall(r"\S[^\n]*", table[1])):
+        raise SourceError("Scanner SAS field formats are not a literal table")
+    try:
+        formats = {name: re.compile(pattern) for name, pattern in entries}
+    except re.error:
+        raise SourceError("Scanner SAS field format is not a readable regular expression") from None
+    # The scanner checks the start time with the expiry format.
+    if "se" in formats:
+        formats.setdefault("st", formats["se"])
+    if any(name not in formats for name in signed):
+        raise SourceError("A scanner signed SAS field has no format")
+    return signed, formats
+
+
+def read_contract(directory: Path) -> Contract:
     """Read literals and the simple duration/alias expressions used by Go."""
     try:
         source = (directory / "credential_audience_actions_results.go").read_text(encoding="utf-8")
@@ -97,7 +160,8 @@ def read_contract(directory: Path) -> tuple[set[str], float, int]:
         cap = int(duration[1]) * {"Hour": 3600, "Minute": 60, "Second": 1}[duration[2]]
         if cap <= 0:
             raise SourceError("Scanner SAS cap must be positive")
-        return set(literals), cap, int(observed[1])
+        signed, formats = _signed_formats(shared)
+        return Contract(set(literals), cap, int(observed[1]), _path_pattern(source), signed, formats)
     except OSError:
         raise SourceError("Cannot read scanner contract files") from None
 
@@ -117,8 +181,7 @@ def compare_accounts(meta: object, compiled: set[str], report: Report) -> None:
             report.drift.append(f"{label} results storage accounts: {len(changed)}")
 
 
-def check_sample(location: str, compiled: set[str], cap: float, observed: int,
-                 report: Report) -> None:
+def check_sample(location: str, contract: Contract, report: Report) -> None:
     try:
         url = urllib.parse.urlsplit(location)
         port = url.port
@@ -126,13 +189,15 @@ def check_sample(location: str, compiled: set[str], cap: float, observed: int,
     except ValueError:
         report.drift.append("Job-log redirect is not a valid URL or query")
         return
-    if (url.scheme != "https" or url.hostname not in compiled or port not in (None, 443)
+    if (url.scheme != "https" or url.hostname not in contract.hosts or port not in (None, 443)
             or url.username is not None or url.password is not None or url.fragment):
         report.drift.append("Job-log destination differs from the compiled HTTPS audience")
     else:
         report.lines.append(f"- Job-log account: {url.hostname}")
-    if not url.path.startswith("/actions-results/"):
-        report.drift.append("Job-log path no longer starts with /actions-results/")
+    # The same path rule as the scanner's actionsResultsPath: no escapes, already
+    # clean, and the run GUID / logs-or-artifacts shape.
+    if "%" in url.path or posixpath.normpath(url.path) != url.path or not contract.path.fullmatch(url.path):
+        report.drift.append("Job-log path no longer matches the scanner's results path contract")
     if set(query) != JOB_KEYS:
         # Unknown names can themselves contain credentials or workflow commands.
         report.drift.append(f"Signed key set changed: {len(set(query) - JOB_KEYS)} added, "
@@ -141,6 +206,11 @@ def check_sample(location: str, compiled: set[str], cap: float, observed: int,
         report.lines.append("- Signed key set: matches job-log baseline (signature withheld)")
     if any(len(values) != 1 or not values[0] for values in query.values()):
         report.drift.append("SAS fields must each occur once with a nonempty value")
+    for name in contract.signed:
+        values = query.get(name, [])
+        if len(values) != 1 or not contract.formats[name].fullmatch(values[0]):
+            # Names come from the scanner's fixed list; the value is never printed.
+            report.drift.append(f"SAS {name} differs from the scanner's signed field format")
     for key, value in (("sp", "r"), ("sr", "b"), ("spr", "https")):
         if query.get(key) != [value]:
             report.drift.append(f"SAS {key} differs from the read-only HTTPS blob contract")
@@ -154,12 +224,12 @@ def check_sample(location: str, compiled: set[str], cap: float, observed: int,
     except (KeyError, IndexError, ValueError, OverflowError):
         report.drift.append("SAS st/se are missing or do not define a positive timezone-aware window")
         return
-    report.lines.append(f"- SAS lifetime: {lifetime:g} s; scanner cap: {cap:g} s; "
-                        f"Go comment baseline: {observed} s")
-    if lifetime > cap:
+    report.lines.append(f"- SAS lifetime: {lifetime:g} s; scanner cap: {contract.cap:g} s; "
+                        f"Go comment baseline: {contract.observed} s")
+    if lifetime > contract.cap:
         report.drift.append("SAS lifetime exceeds the scanner cap")
-    elif lifetime != observed:
-        report.warnings.append(f"Observed SAS lifetime changed from {observed} s to {lifetime:g} s; within cap")
+    elif lifetime != contract.observed:
+        report.warnings.append(f"Observed SAS lifetime changed from {contract.observed} s to {lifetime:g} s; within cap")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -196,8 +266,7 @@ class GitHubAPI:
             raise APIError("GitHub API: network or JSON failure; evidence unavailable") from None
 
 
-def sample_live(api: GitHubAPI, repository: str, compiled: set[str], cap: float,
-                observed: int, report: Report) -> None:
+def sample_live(api: GitHubAPI, repository: str, contract: Contract, report: Report) -> None:
     base = f"/repos/{repository}/actions"
     try:
         runs = api.request(base + "/runs?status=completed&per_page=10")["workflow_runs"]
@@ -214,7 +283,7 @@ def sample_live(api: GitHubAPI, repository: str, compiled: set[str], cap: float,
                     raise ValueError
                 location = api.request(f"{base}/jobs/{job_id}/logs", redirect=True)
                 report.lines.append(f"- Sample: completed run {run_id}, job {job_id}; redirect not followed")
-                check_sample(location, compiled, cap, observed, report)
+                check_sample(location, contract, report)
                 run_location = api.request(f"{base}/runs/{run_id}/logs", redirect=True)
                 try:
                     run_url = urllib.parse.urlsplit(run_location)
@@ -239,7 +308,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     report = Report()
     try:
-        compiled, cap, observed = read_contract(args.scanner_dir)
+        contract = read_contract(args.scanner_dir)
         if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repository) is None:
             raise SourceError("Repository must be an owner/name pair")
         token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
@@ -247,16 +316,19 @@ def main(argv: list[str] | None = None) -> int:
             raise APIError("GitHub API: GH_TOKEN or GITHUB_TOKEN is required for job logs")
         api = GitHubAPI(token)
         try:
-            compare_accounts(api.request("/meta"), compiled, report)
+            compare_accounts(api.request("/meta"), contract.hosts, report)
         except APIError as error:
             report.errors.append(str(error))
         try:
-            sample_live(api, args.repository, compiled, cap, observed, report)
+            sample_live(api, args.repository, contract, report)
         except APIError as error:
             report.errors.append(str(error))
     except (SourceError, APIError) as error:
         report.errors.append(str(error))
-    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    # The workflow hands the report to its always-run publish step through
+    # CANARY_SUMMARY_FILE: the runner owns GITHUB_STEP_SUMMARY and replaces any
+    # value a step sets, so that name cannot carry the handoff.
+    summary = os.environ.get("CANARY_SUMMARY_FILE") or os.environ.get("GITHUB_STEP_SUMMARY")
     return report.emit(Path(summary) if summary else None)
 
 

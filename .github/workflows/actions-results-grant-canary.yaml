@@ -21,7 +21,7 @@ jobs:
       - name: Check published accounts and signed job-log grants
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_STEP_SUMMARY: ${{ runner.temp }}/actions-results-summary.md
+          CANARY_SUMMARY_FILE: ${{ runner.temp }}/actions-results-summary.md
         run: python3 scripts/actions_results_grant_canary.py
 
       - name: Publish summary
