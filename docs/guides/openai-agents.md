@@ -283,7 +283,7 @@ services:
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
     healthcheck:
-      test: ["/pipelock", "healthcheck"]
+      test: ["CMD", "/pipelock", "healthcheck"]
       interval: 10s
       timeout: 3s
       start_period: 5s
