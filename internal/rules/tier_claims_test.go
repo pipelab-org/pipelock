@@ -125,6 +125,10 @@ func TestMergeIntoConfig_ThirdPartyStandardTierDoesNotReplaceCompiledStandard(t 
 	cfg.Rules.RulesDir = dir
 	cfg.Rules.TrustedKeys = []config.TrustedKey{{Name: "vendor", PublicKey: hex.EncodeToString(vendorPub)}}
 	compiledDLP := len(cfg.DLP.Patterns)
+	compiledNames := make(map[string]bool, compiledDLP)
+	for _, p := range cfg.DLP.Patterns {
+		compiledNames[p.Name] = true
+	}
 
 	result := MergeIntoConfig(cfg, testPipelockVersion)
 	if len(result.Errors) != 0 {
@@ -135,6 +139,18 @@ func TestMergeIntoConfig_ThirdPartyStandardTierDoesNotReplaceCompiledStandard(t 
 	}
 	if got := len(cfg.DLP.Patterns); got != compiledDLP+1 {
 		t.Fatalf("DLP patterns = %d, want compiled %d plus 1 additive vendor rule", got, compiledDLP)
+	}
+	seen := make(map[string]int, len(cfg.DLP.Patterns))
+	for _, p := range cfg.DLP.Patterns {
+		seen[p.Name]++
+	}
+	for name := range compiledNames {
+		if seen[name] != 1 {
+			t.Fatalf("compiled DLP pattern %q appears %d times after merge, want 1", name, seen[name])
+		}
+	}
+	if got := seen["vendor-rules:"+tierClaimsRuleID]; got != 1 {
+		t.Fatalf("vendor DLP pattern appears %d times, want 1", got)
 	}
 }
 
