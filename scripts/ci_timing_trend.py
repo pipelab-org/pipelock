@@ -180,6 +180,13 @@ def compute(directory: Path) -> dict:
     # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
     failed = [job["name"] for job in items(current_payload, "jobs")
               if job["conclusion"] not in (None, "success", "skipped", "cancelled", "neutral")]
+    # A job that hits its timeout-minutes ends "cancelled", not "failure". Main
+    # never cancels a run in progress (ci.yaml's concurrency), so in a failed
+    # main run a cancelled job is a timeout, and hiding it would hide why main
+    # went red.
+    if current["conclusion"] == "failure":
+        failed += [job["name"] + " (cancelled)" for job in items(current_payload, "jobs")
+                   if job["conclusion"] == "cancelled"]
     return {"run_id": current["id"], "run_attempt": current["run_attempt"],
             "conclusion": current["conclusion"], "failed_jobs": sorted(set(failed)),
             "history_run_ids": sorted(accepted_ids),

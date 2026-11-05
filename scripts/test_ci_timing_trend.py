@@ -119,6 +119,17 @@ class TimingTrendTest(unittest.TestCase):
         self.assertEqual(json.loads((self.directory / "report.json").read_text()), report)
         self.assertEqual((self.directory / "summary.md").read_text(), rendered)
 
+    def test_cancelled_jobs_count_as_failures_only_in_a_failed_run(self):
+        # A job that hits its timeout-minutes ends "cancelled"; in a failed main
+        # run it is why main went red. A successful run keeps them out.
+        jobs = self.data["current_jobs"]["jobs"]
+        jobs[0]["conclusion"] = "cancelled"
+        self.assertEqual(self.report()["failed_jobs"], [])
+        self.data["current_run"]["conclusion"] = "failure"
+        report = self.report()
+        self.assertEqual(report["failed_jobs"], [jobs[0]["name"] + " (cancelled)"])
+        self.assertIn(jobs[0]["name"] + " (cancelled)", trend.summary(report))
+
     def test_history_window_success_main_push_only_self_future_and_duplicates(self):
         history = self.data["runs"]["workflow_runs"]
         for field, invalid in (("event", "pull_request"), ("head_branch", "feature"),
