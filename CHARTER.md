@@ -5,7 +5,7 @@ Maintainer of record: Joshua Waldrep / The Waldrep Family LLC
 
 Pipelock is an open-source agent firewall for Verifiable Egress Control: control agent egress, produce mediator-signed action receipts, and let relying parties verify evidence from outside the agent trust boundary.
 
-This charter is a public operating promise. It is not a transfer of ownership, copyright, trademark, or governance to a foundation. Pipelock remains founder-led. The goal is predictable stewardship, not committee theater.
+This charter describes the project's governance. It doesn't transfer ownership, copyright, trademark, or governance to a foundation. Pipelock remains led by its project lead.
 
 ## License Promise
 

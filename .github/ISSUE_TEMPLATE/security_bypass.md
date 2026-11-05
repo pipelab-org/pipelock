@@ -1,22 +1,15 @@
 ---
-name: Scanner Bypass
-about: Found a way to bypass URL scanning? Report it here (non-sensitive only)
-title: '[BYPASS] '
-labels: security, bug
+name: Scanning behavior question
+about: Ask about non-sensitive scanning behavior or configuration
+title: ''
+labels: bug
 assignees: ''
 ---
 
-**STOP: Is this exploitable in production?**
-If this bypass could lead to real credential exfiltration, please report it privately via [SECURITY.md](../../SECURITY.md) instead of opening a public issue.
+Report suspected vulnerabilities or scanner bypasses privately using [SECURITY.md](https://github.com/pipelab-org/pipelock/blob/main/SECURITY.md#vulnerability-reporting). Don't include bypass payloads or real credentials in this issue.
 
-**Scanner bypassed**
-Which scanner was bypassed? (blocklist, DLP, entropy, SSRF, scheme)
+**Expected behavior**
+Describe the documented behavior or configuration you expected.
 
-**Bypass method**
-How does the bypass work? Include a sample URL (use fake/dummy values).
-
-**Pipelock config**
-What mode and settings were you using?
-
-**Suggested fix**
-If you have ideas on how to fix this.
+**Observed behavior**
+Describe the non-sensitive result. Include the Pipelock version and relevant configuration with credentials removed.

@@ -36,12 +36,7 @@ python3 -m venv /tmp/pip-compile-venv
     requirements.in
 ```
 
-Loose `>=` ranges in `requirements.txt` are forbidden. OSV-Scanner has
-historically over-reported on range pins, leaking false-positive
-Scorecard alerts onto main. The lockfile pattern eliminates that class
-of noise and gives reproducible installs across developer machines and
-CI. See `CONTRIBUTING.md` Python dependencies section for the full
-rule.
+Use exact versions and hashes in `requirements.txt` for reproducible installs and version-specific dependency scanning. See [Python dependencies](../../CONTRIBUTING.md#python-dependencies) for the repository policy.
 
 Renovate watches the `pip` ecosystem at this directory and at
 `.github/`; it auto-opens PRs to bump pinned versions when a new

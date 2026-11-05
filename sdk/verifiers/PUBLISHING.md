@@ -14,31 +14,9 @@ The TypeScript and Rust packages publish from their own `verifier-v*` tag. A
 Pipelock product tag does not publish them. GitHub OIDC trusted publishing sends
 both packages to their registries without stored npm or crates.io tokens.
 
-> Why automate: the Python verifier (`pipelock-verify`) was published once by
-> hand and then fell behind the receipt format because nobody re-ran the manual
-> step each release. Auto-publish-on-tag removes that drift risk.
+## Publishing access
 
-## One-time account setup
-
-You only do this once per registry.
-
-### npm (`@pipelock/verifier-ts`)
-
-1. Create / sign in to an npm account at <https://www.npmjs.com>.
-2. Create the **`pipelock` organization** (the `@pipelock` scope) at
-   <https://www.npmjs.com/org/create>. The first publish under the scope needs
-   the org to exist and you to be a member. (Scoped packages publish as
-   **public** because `publishConfig.access` is set to `public` in
-   `package.json` — without that, scoped publishes default to private/paid.)
-3. On the machine you publish from: `npm login`.
-
-### crates.io (`pipelock-verifier-rs`)
-
-1. Sign in to <https://crates.io> with GitHub.
-2. Go to <https://crates.io/me>, create an API token, then run
-   `cargo login <token>` once on your machine.
-3. The **first** `cargo publish` claims the crate name `pipelock-verifier-rs` for
-   your account. There is nothing to pre-reserve.
+Publishing is restricted to authorized project release maintainers. The npm scope and crates.io package already exist. Releases use the trusted-publisher configuration described below; ordinary contributions don't require registry login or publishing credentials.
 
 ## Before every publish
 
@@ -70,7 +48,7 @@ cd sdk/verifiers/ts
 npm ci
 npm test                     # build + run the full suite
 npm publish --dry-run        # inspect tarball contents; confirm dist/ + v0.schema.json present
-npm publish                  # the real publish (prepack rebuilds; publishes as public)
+# Real publish: push the verifier-v* tag (see "Product release gate"). Don't run npm publish locally.
 ```
 
 Verify: `npm view @pipelock/verifier-ts version` shows the new version, and
@@ -84,7 +62,7 @@ cd sdk/verifiers/rust
 cargo test --release
 cargo package --list         # confirm audit-packet-v0.json is in the package
 cargo publish --dry-run      # builds the packaged crate in isolation
-cargo publish                # the real publish
+# Real publish: push the verifier-v* tag (see "Product release gate"). Don't run cargo publish locally.
 ```
 
 Verify: the crate appears at <https://crates.io/crates/pipelock-verifier-rs>, and
@@ -136,14 +114,10 @@ branch only ever runs the build/verify job).
 
 ### One-time setup
 
-Do this once, after the first manual publish. A trusted publisher can only be
-configured on a package/crate that already exists.
+Configure these once. A trusted publisher can only be configured on a
+package/crate that already exists.
 
-GitHub environment (gates real publishes behind a human approval): repo Settings,
-Environments, create `verifier-release`, add yourself as a Required reviewer. The
-two publish jobs already declare `environment: verifier-release`, so each real
-publish waits for your approval. Without a reviewer the environment exists but does
-not gate.
+A repository administrator configures the `verifier-release` GitHub environment with the project's authorized release reviewers. Both publishing jobs use this environment. Real publication requires environment approval; an environment without required reviewers doesn't provide that gate.
 
 npm (`@pipelock/verifier-ts`): package page, Settings, Trusted Publisher, add a
 GitHub Actions publisher with:
@@ -171,8 +145,18 @@ Published releases retain their original provenance. The installer gate binds th
 ### Cutting a release
 
 1. Bump the version in `sdk/verifiers/ts/package.json` and `sdk/verifiers/rust/Cargo.toml` (keep them in lockstep; re-vendor the schema if the canonical one changed) and merge it.
-2. Tag and push: `git tag verifier-v0.2.0 && git push origin verifier-v0.2.0`.
-3. The `build` job runs the tests and verification builds, then the two publish jobs wait for your environment approval and publish both packages. No tokens.
+2. From the clean, reviewed release commit, derive the verifier tag from the manifests and check it before creating an annotated tag:
+
+   ```bash
+   set -euo pipefail
+   verifier_version="$(python3 -c 'import json; print(json.load(open("sdk/verifiers/ts/package.json"))["version"])')"
+   verifier_tag="verifier-v${verifier_version}"
+   scripts/check-verifier-publish-tag.sh "$verifier_tag"
+   git tag -a "$verifier_tag" -m "Release ${verifier_tag}"
+   git push origin "refs/tags/${verifier_tag}"
+   ```
+
+3. The `build` job runs the tests and verification builds, then the two publish jobs wait for approval of the `verifier-release` environment and publish both packages. No long-lived registry tokens are stored; the publish jobs use short-lived OIDC credentials.
 
 Try it first with the `workflow_dispatch` dry run (Actions, Publish verifiers, Run
 workflow, leave "Dry run" checked): it runs only the unprivileged `build` job (tests

@@ -8,10 +8,7 @@ Brief description of what this PR does and why.
 
 ## Testing
 
-- [ ] `make test` passes
-- [ ] `make vet` passes
-- [ ] New tests added for new functionality
-- [ ] Tested manually (describe below)
+- [ ] Completed the [pre-commit checklist](https://github.com/pipelab-org/pipelock/blob/main/CONTRIBUTING.md#pre-commit-checklist) and described the validation results below
 
 ## Security Considerations
 
@@ -20,6 +17,6 @@ If yes, describe the security implications.
 
 ## Review
 
-- [ ] AI review output (e.g. CodeRabbit) was treated as **advisory only** — not as evidence the change was security-reviewed.
+- [ ] Automated review, if used, was treated as advisory; see the [review standard](https://github.com/pipelab-org/pipelock/blob/main/CONTRIBUTING.md#review-standard).
 - [ ] Security-sensitive changes were **manually reviewed by a human**.
-- [ ] Each AI security finding was explicitly **accepted or rejected** (note disposition above).
+- [ ] Each security finding was explicitly **accepted or rejected** (note disposition above).

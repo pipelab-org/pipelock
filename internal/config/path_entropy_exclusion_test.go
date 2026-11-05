@@ -220,20 +220,10 @@ func TestValidatePathEntropyExclusions(t *testing.T) {
 	})
 }
 
-// The field shipped EMPTY when the mechanism landed, and this test pinned that.
-// Josh overruled it on 2026-09-11: the five document-sharing routes below now
-// ship as defaults, because an operator sent an ordinary Google Doc, Sheet,
-// Slide, Form or Drive link was blocked on a fresh install and the remedy they
-// reach for first is disabling path entropy outright.
-//
-// The distinction that changed the answer: a shipped default here encodes the
-// vendor's ROUTE PREFIX, which is directly observable and stable, NOT the
-// identifier format, which Google documents as opaque. The earlier "needs a
-// published route contract" bar was applied to the ID format and then used to
-// refuse the route prefix, which was never the thing in question.
-//
-// This test is rewritten rather than deleted so the shipped set stays pinned:
-// an entry added without a deliberate edit here fails.
+// Defaults include document-sharing route prefixes so ordinary document links
+// don't require disabling path entropy checks. These entries match route
+// prefixes, not the vendors' opaque document identifier formats.
+// The test pins the shipped set so changes require an explicit update.
 func TestPathEntropyExclusionDefaults(t *testing.T) {
 	t.Parallel()
 	got := Defaults().FetchProxy.Monitoring.PathEntropyExclusions

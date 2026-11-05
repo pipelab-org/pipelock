@@ -433,11 +433,7 @@ harness does not reproduce externally observed daemon DISPLAY/Xauthority
 inheritance, undrained Chromium stderr, noVNC startup/CSS, controller conflicts,
 viewer reconnect or connected/disconnected rendering differences.
 
-The following is the acceptance specification, not a claim that the current
-standalone harness can satisfy it. Use the managed-contain adapter on its
-separately authorized capable VM for a contained-browser rerun; the standalone
-strict Chromium path remains unsupported. Before merging a browser/response candidate, the
-user's local agent should:
+The following acceptance specification describes checks beyond the standalone harness. For contained-browser validation, use the managed-contain adapter on a disposable VM prepared for these tests; the standalone strict Chromium path remains unsupported. Contributors validating browser or response changes should perform the applicable checks below and record any unsupported checks.
 
 1. Check out the reviewed exact commit; build it and run the repository-required
    applicable lint/tests, plus this harness's unit tests and supported contained

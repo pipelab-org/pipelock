@@ -15,9 +15,9 @@ SOCx Platform (SecureIQLab)
 │  :9100 metrics    │     └──────────────┘
 │                   │
 │  scanning:        │     ┌──────────────┐
-│  • 11-layer URL   │◀──▶│  mock-mcp    │
-│  • DLP (46 pat.)  │     │  :8081       │
-│  • injection (19) │     │  MCP server  │
+│  • URL checks     │◀──▶│  mock-mcp    │
+│  • DLP patterns   │     │  :8081       │
+│  • injection scan │     │  MCP server  │
 │  • MCP tool scan  │     └──────────────┘
 │  • canary tokens  │
 └────────┬──────────┘
@@ -57,7 +57,7 @@ export HTTPS_PROXY=http://<harness-host>:8888
 export HTTP_PROXY=http://<harness-host>:8888
 ```
 
-All HTTP and HTTPS traffic flows through Pipelock's 11-layer scanner pipeline. TLS interception is enabled — Pipelock generates leaf certificates signed by the test CA.
+Traffic routed through this harness is inspected by the applicable Pipelock proxy scanners. TLS interception uses leaf certificates signed by the generated test CA; clients must trust that CA for HTTPS inspection.
 
 ### MCP Proxy
 
@@ -111,13 +111,13 @@ curl http://localhost:9100/metrics | grep pipelock_
 
 ## Scanning Layers
 
-Pipelock applies these scanning layers to all traffic:
+The selected configuration enables the following controls on applicable mediated traffic:
 
 | Layer | What it does | Applies to |
 |-------|-------------|------------|
-| **URL Scanner** | 11-layer pipeline: scheme, blocklist, DLP, path entropy, subdomain entropy, SSRF, rate limit, URL length, data budget | Forward proxy, fetch |
-| **DLP** | 46 credential patterns with checksum validators (Luhn, Mod97, ABA, WIF). Env variable leak detection. Case-insensitive with `(?i)` prefix. | All transports |
-| **Response Scanning** | 23 prompt injection / jailbreak patterns with 6-pass normalization (NFKC, invisible chars, leetspeak, optional whitespace, vowel folding, base64/hex decode) | Fetch responses, MCP tool results |
+| **URL Scanner** | Ordered URL checks described in [AGENTS.md](../../AGENTS.md#scanner-pipeline), including destination policy, DLP, entropy, SSRF and request budgets | Forward proxy, fetch |
+| **DLP** | Built-in credential patterns and checksum validators. This harness enables the default patterns and disables environment-value scanning. | Mediated transports with DLP scanning enabled |
+| **Response Scanning** | Default prompt-injection patterns and normalization from the selected binary | Fetch responses, MCP tool results |
 | **Request Body** | DLP + injection scanning on outbound request bodies and headers | Forward proxy, fetch |
 | **Canary Tokens** | Synthetic secret detection — exact match, zero false positives by definition | All transports |
 | **MCP Tool Scanning** | Poisoned tool description detection with recursive schema walking. Rug-pull drift detection between sessions. | MCP proxy |

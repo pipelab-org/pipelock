@@ -51,7 +51,7 @@ Article 9 requires a continuous, iterative risk management process throughout th
 | Identify and analyze known risks (Art. 9(2)(a)) | Ordered scanner pipeline classifies mediated network risks through URL validation, destination policy, DLP, entropy analysis, SSRF/rebinding protection, rate limiting, and data budgets | Partial |
 | Evaluate risks under foreseeable misuse (Art. 9(2)(b)) | Adversarial testing of bypass attempts (encoded secrets, DNS exfiltration, zero-width injection, split-key attacks) | Partial |
 | Post-market monitoring data (Art. 9(2)(c)) | Prometheus metrics (`/metrics`), JSON stats (`/stats`), structured audit logs | Partial |
-| Eliminate risks through design (Art. 9(5)(a)) | Capability separation reduces network-based credential exfiltration risk: agent holds secrets with no network; proxy has network with no agent secrets. Deployment enforces the boundary | Partial |
+| Eliminate risks through design (Art. 9(5)(a)) | Capability separation restricts agent egress to the proxy in enforced deployments. Leak detection may retain selected environment and configured secret-file values in proxy memory; protect that process and its inputs | Partial |
 | Mitigation and control measures (Art. 9(5)(b)) | Multi-layer scanning, domain blocklist, rate limiting, DLP patterns, HITL approval | Full |
 | Residual risk information to deployers (Art. 9(5)(c)) | Audit events document mediated scanner and policy decisions; `/stats` surfaces observed threats. Completeness still depends on deployment routing and sink delivery | Partial |
 | Prior defined metrics and thresholds (Art. 9(8)) | Configurable thresholds per scanner layer; Prometheus counters for block rates by category | Full |
@@ -87,7 +87,7 @@ Article 13 requires sufficient operational transparency for deployers to underst
 |-------------|-----------------|----------|
 | System characteristics and capabilities documented | README, OWASP mapping docs, Claude Code integration guide, comparison doc | Full |
 | Limitations documented | Each OWASP mapping doc includes explicit coverage gaps and "out of scope" sections | Full |
-| Logging mechanism description | Audit log format, event types, and fields documented in CLAUDE.md and guides | Full |
+| Logging mechanism description | [Logging configuration](../configuration.md#logging) and [event schema, types, and fields](../guides/siem-integration.md#event-schema) are documented | Full |
 | Human oversight measures described (Art. 14 ref) | HITL documentation in guides and config presets | Partial |
 | Computational/hardware requirements | Single-binary deployment and reproducible performance benchmarks are documented; artifact size varies by platform, build tags, and release flags | Partial |
 
@@ -219,7 +219,7 @@ Mapping from individual Pipelock controls to both frameworks.
 
 | Control | Description | EU AI Act | NIST AI RMF |
 |---------|-------------|-----------|-------------|
-| Capability separation | Agent has secrets, no network; proxy has network, no agent secrets. Deployment enforces boundary | Art. 15(5) | GOVERN 1.2, MAP 1.1 |
+| Capability separation | Enforced deployments restrict agent egress to the proxy. The proxy may retain selected environment and configured secret-file values in memory for leak detection | Art. 15(5) | GOVERN 1.2, MAP 1.1 |
 | SSRF protection | Private IP blocking and DNS rebinding prevention, except configured MCP upstreams, which allow local/private servers but retain metadata endpoint blocking | Art. 15(4-5) | MAP 2.1, MEASURE 2.7 |
 | Domain blocklist | Configurable deny/allow lists with wildcard support | Art. 9(5) | GOVERN 1.2, MANAGE 1.1 |
 | Rate limiting | Per-domain sliding window, base domain normalization | Art. 15(4) | MANAGE 1.1 |

@@ -7,7 +7,7 @@
 #   docker compose --profile verify up --abort-on-container-exit --exit-code-from verify
 #
 # Architecture:
-#   agent (has secrets, no internet) --> pipelock (no agent secrets, has internet) --> web
+#   agent (network-isolated) --> pipelock (policy-controlled egress; sensitive DLP data) --> web
 #
 # The agent network uses Docker's "internal: true" flag, which removes the
 # default gateway and blocks all outbound traffic at the iptables level.
@@ -47,7 +47,8 @@ services:
       - HTTP_PROXY=http://pipelock:8888
       - HTTPS_PROXY=http://pipelock:8888
       - NO_PROXY=localhost,127.0.0.1
-      # Your agent's secrets are safe here: this container has no internet.
+      # No direct internet route: outbound traffic goes through Pipelock. Without TLS
+      # interception, Pipelock sees the destination host of HTTPS requests, not their contents.
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
     depends_on:
       pipelock:
