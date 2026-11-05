@@ -159,7 +159,7 @@ func TestInitVerifyAndCanaryFailClosed(t *testing.T) {
 // allowlist omits github.com, which once made init fail before DLP ran.
 func TestInitCanaryReachesDLPOnStrictPresets(t *testing.T) {
 	for _, tc := range []struct{ preset, wantHost string }{
-		{"hostile-model", "https://anthropic.com/"},
+		{"hostile-model", "https://canary.anthropic.com/"},
 		{"strict", "https://github.com/"},
 	} {
 		t.Run(tc.preset, func(t *testing.T) {
@@ -181,6 +181,30 @@ func TestInitCanaryReachesDLPOnStrictPresets(t *testing.T) {
 			result := runInitCanary(cfg)
 			if !result.Detected {
 				t.Fatalf("canary not detected by DLP: %+v", result)
+			}
+		})
+	}
+}
+
+// Stripping a leading wildcard can leave an IP literal the pattern does not
+// authorize, which once blocked the canary before DLP on a valid policy.
+func TestInitCanaryNumericWildcard(t *testing.T) {
+	for _, pattern := range []string{"*.8.8.8.8", "*.127.0.0.1", "*.8.8.8.8.", "*.0177.0.0.1", "*.127.1"} {
+		t.Run(pattern, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, []byte("mode: strict\napi_allowlist: [\""+pattern+"\"]\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := runInitCanary(cfg); !result.Detected {
+				t.Fatalf("canary for %q: %+v", pattern, result)
+			}
+			var out bytes.Buffer
+			if result := runSidecarCanary(&out, cfg, sidecarOptions{}, false); !result.Detected {
+				t.Fatalf("sidecar canary for %q: %+v", pattern, result)
 			}
 		})
 	}

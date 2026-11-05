@@ -717,19 +717,37 @@ func runInitVerify(cfg *config.Config) *initVerifyResult {
 
 // initCanaryURL returns the synthetic DLP canary URL for cfg. It keeps the
 // historical github.com destination unless a strict allowlist would block it
-// before DLP runs, and then uses the first configured destination instead.
-// The policy itself is never changed.
+// before DLP runs, and then uses a destination the configured allowlist
+// itself accepts. The policy itself is never changed.
 func initCanaryURL(cfg *config.Config) string {
 	host := "github.com"
 	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 && !canaryHostAllowed(host, cfg.APIAllowlist) {
-		// MatchDomain permits the base domain of a leading wildcard pattern.
-		host = strings.TrimPrefix(cfg.APIAllowlist[0], "*.")
+		host = allowlistCanaryHost(cfg.APIAllowlist)
 	}
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
 		host = "[" + host + "]"
 	}
 	u := url.URL{Scheme: "https", Host: host, Path: "/test", RawQuery: "key=" + canaryToken()}
 	return u.String()
+}
+
+// allowlistCanaryHost picks a hostname that the allowlist matcher accepts and
+// that is not an IP literal, which the core SSRF floor can block before DLP.
+// A leading wildcard pattern yields a name under it, since stripping the
+// wildcard can leave an address the pattern does not authorize. When no entry
+// yields such a name, the first entry is returned and the canary reports the
+// block honestly.
+func allowlistCanaryHost(allowlist []string) string {
+	for _, pattern := range allowlist {
+		host := pattern
+		if suffix, ok := strings.CutPrefix(pattern, "*."); ok {
+			host = "canary." + suffix
+		}
+		if net.ParseIP(host) == nil && canaryHostAllowed(host, allowlist) {
+			return host
+		}
+	}
+	return strings.TrimPrefix(allowlist[0], "*.")
 }
 
 func canaryHostAllowed(host string, allowlist []string) bool {
