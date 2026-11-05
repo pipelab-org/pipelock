@@ -5,12 +5,14 @@ package scanner
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
 
 const (
@@ -39,6 +41,20 @@ func actionsResultsQuery(sigSeed string, mutate func(v url.Values)) string {
 			mutate(v)
 		}
 	})
+}
+
+// actionsResultsGrantDiagnosis names which part of the grant decision failed,
+// so a blocked allow case says why instead of only repeating the DLP match.
+func actionsResultsGrantDiagnosis(s *Scanner, target string, now time.Time) string {
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return "parse: " + err.Error()
+	}
+	host := parsed.Hostname()
+	return fmt.Sprintf("host_listed=%v path=%v query_valid=%v grant=%v scanner_now=%s test_now=%s",
+		destination.MatchesDomainList(host, githubActionsResultsHosts), actionsResultsPath(parsed),
+		actionsResultsSASQueryValid(parsed, now), actionsResultsSASAllowed(host, target, now),
+		s.currentTime().UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
 }
 
 func newActionsResultsScanner(t *testing.T) (*Scanner, time.Time) {
@@ -77,7 +93,7 @@ func TestScan_GitHubActionsResultsSAS(t *testing.T) {
 			t.Parallel()
 			result := s.Scan(context.Background(), target)
 			if !result.Allowed {
-				t.Fatalf("blocked: scanner=%s reason=%s", result.Scanner, result.Reason)
+				t.Fatalf("blocked: scanner=%s reason=%s; %s", result.Scanner, result.Reason, actionsResultsGrantDiagnosis(s, target, now))
 			}
 			if !result.IsStructuralExemption() || !result.IsAdaptiveNeutral() {
 				t.Fatalf("class=%v, want an adaptive-neutral structural exemption", result.Class)
