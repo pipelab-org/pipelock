@@ -49,7 +49,7 @@ services:
       mock-mcp:
         condition: service_healthy
     healthcheck:
-      test: ["/pipelock", "healthcheck"]
+      test: ["CMD", "/pipelock", "healthcheck"]
       interval: 5s
       timeout: 3s
       start_period: 10s
