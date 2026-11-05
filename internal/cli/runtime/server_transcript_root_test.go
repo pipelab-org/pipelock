@@ -382,10 +382,13 @@ func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("agent server never called Accept")
 	}
-	s.shutdownAgentServers()
+	// Drive the real license-expiry entrypoint, not the helper, so the test
+	// fails if that path stops recording an incomplete agent drain.
+	s.expireLicensedRuntime()
 	if !s.agentDrainIncomplete.Load() {
-		t.Fatal("license-path agent unbind did not record the incomplete drain")
+		t.Fatal("license expiry did not record the incomplete agent drain")
 	}
+	waitForServerOutput(t, buf, "agent listener drain incomplete")
 
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
