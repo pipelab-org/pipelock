@@ -114,7 +114,7 @@ func CheckSignerPinning(pinnedFP, currentFP string, allowRotation bool) error {
 // embedded keyring and trusted keys, then verifying it matches signerFP.
 //
 // For unsigned bundles: computes SHA-256 of bundle.yaml and compares it
-// to expectedSHA256.
+// to expectedSHA256. A signer fingerprint is inconsistent with unsigned status.
 //
 // Returns an error on verification failure. The caller decides whether to
 // skip the bundle or abort.
@@ -128,7 +128,7 @@ func VerifyIntegrityWithPolicy(bundleDir string, unsigned bool, signerFP, expect
 	bundlePath := filepath.Join(bundleDir, bundleFilename)
 
 	if unsigned {
-		return verifyUnsignedIntegrity(bundlePath, expectedSHA256, policy.TrustEmbeddedKeys)
+		return verifyUnsignedIntegrity(bundlePath, signerFP, expectedSHA256, policy.TrustEmbeddedKeys)
 	}
 
 	return verifySignedIntegrity(bundleDir, signerFP, expectedSHA256, policy)
@@ -145,7 +145,7 @@ func VerifyIntegrityBytes(data []byte, bundleDir string, unsigned bool, signerFP
 // and an explicit embedded-keyring trust policy.
 func VerifyIntegrityBytesWithPolicy(data []byte, bundleDir string, unsigned bool, signerFP, expectedSHA256 string, policy TrustPolicy) error {
 	if unsigned {
-		return verifyUnsignedIntegrityBytes(data, expectedSHA256, policy.TrustEmbeddedKeys)
+		return verifyUnsignedIntegrityBytes(data, signerFP, expectedSHA256, policy.TrustEmbeddedKeys)
 	}
 
 	// SHA-256 check applies to signed bundles when the lock pins a digest.
@@ -257,16 +257,19 @@ func verifySignedIntegrity(bundleDir, signerFP, expectedSHA256 string, policy Tr
 
 // verifyUnsignedIntegrity computes SHA-256 of the bundle file and compares
 // it to the expected hash.
-func verifyUnsignedIntegrity(bundlePath, expectedSHA256 string, allowUnsigned bool) error {
+func verifyUnsignedIntegrity(bundlePath, signerFP, expectedSHA256 string, allowUnsigned bool) error {
 	data, err := os.ReadFile(filepath.Clean(bundlePath))
 	if err != nil {
 		return fmt.Errorf("integrity check: reading bundle: %w", err)
 	}
 
-	return verifyUnsignedIntegrityBytes(data, expectedSHA256, allowUnsigned)
+	return verifyUnsignedIntegrityBytes(data, signerFP, expectedSHA256, allowUnsigned)
 }
 
-func verifyUnsignedIntegrityBytes(data []byte, expectedSHA256 string, allowUnsigned bool) error {
+func verifyUnsignedIntegrityBytes(data []byte, signerFP, expectedSHA256 string, allowUnsigned bool) error {
+	if signerFP != "" {
+		return fmt.Errorf("integrity check: unsigned bundle must not have a signer fingerprint")
+	}
 	if !allowUnsigned {
 		return fmt.Errorf("integrity check: unsigned bundles are disabled when rules.trust_embedded_keys is false")
 	}
