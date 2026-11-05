@@ -73,7 +73,10 @@ def items(payload, key: str) -> list[dict]:
 
 
 def is_main_ci(run: dict) -> bool:
-    return (run["path"] == CI_PATH and run["head_branch"] == "main"
+    # A run's path can carry an @<ref> suffix; branch and event still decide
+    # that it is a main push.
+    workflow_path = run["path"].split("@", 1)[0]
+    return (workflow_path == CI_PATH and run["head_branch"] == "main"
             and run["event"] == "push" and run["status"] == "completed")
 
 

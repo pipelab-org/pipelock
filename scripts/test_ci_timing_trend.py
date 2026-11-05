@@ -164,6 +164,13 @@ class TimingTrendTest(unittest.TestCase):
         self.assertEqual(len(picked), trend.MAX_HISTORY_RUNS)
         self.assertEqual([run["id"] for run in picked], [1000 + i for i in range(trend.MAX_HISTORY_RUNS)])
 
+    def test_workflow_path_ref_suffix_is_still_main_ci(self):
+        run = dict(self.data["current_run"])
+        run["path"] = ".github/workflows/ci.yaml@refs/heads/main"
+        self.assertTrue(trend.is_main_ci(run))
+        run["path"] = ".github/workflows/other.yaml@refs/heads/main"
+        self.assertFalse(trend.is_main_ci(run))
+
     def test_history_window_success_main_push_only_self_future_and_duplicates(self):
         history = self.data["runs"]["workflow_runs"]
         for field, invalid in (("event", "pull_request"), ("head_branch", "feature"),
