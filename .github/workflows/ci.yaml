@@ -986,7 +986,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: changed-test-race-json-${{ matrix.variant }}-go126
-          path: changed-tests-${{ matrix.variant }}.json
+          path: |
+            changed-tests-${{ matrix.variant }}.json
+            changed-tests-${{ matrix.variant }}.selection.json
           retention-days: 14
           if-no-files-found: ignore
 

@@ -658,8 +658,13 @@ def changed_tests(base: str, head: str) -> list[dict[str, str]]:
     return json.loads(result.stdout)
 
 
-def runnable_changed_tests(tests: list[dict[str, str]], tags: str) -> dict[str, list[str]]:
-    """Use Go's real build constraints, including race, OS and architecture."""
+def runnable_changed_tests(
+    tests: list[dict[str, str]], tags: str, import_paths: dict[str, str] | None = None,
+) -> dict[str, list[str]]:
+    """Use Go's real build constraints, including race, OS and architecture.
+
+    import_paths, when given, receives each selected source directory's import path.
+    """
     selected: dict[str, list[str]] = {}
     for package in sorted({test["package"] for test in tests}):
         command = ["go", "list", "-e", "-json", "-tags", ",".join(filter(None, ["race", tags])), package]
@@ -680,15 +685,29 @@ def runnable_changed_tests(tests: list[dict[str, str]], tags: str) -> dict[str, 
                         if test["package"] == package and Path(test["file"]).name in files})
         if names:
             selected[info["ImportPath"]] = names
+            if import_paths is not None:
+                import_paths[package] = info["ImportPath"]
     return selected
 
 
 def measure_changed_tests(tests: list[dict[str, str]], tags: str, json_out: Path) -> int:
-    selected = runnable_changed_tests(tests, tags) if tests else {}
+    import_paths: dict[str, str] = {}
+    selected = runnable_changed_tests(tests, tags, import_paths) if tests else {}
     if not selected:
         print(f"No added or changed runnable tests (tags={tags or 'none'}); race measurement is a no-op")
         return 0
     json_out.parent.mkdir(parents=True, exist_ok=True)
+    # Record which selected tests the base never declared; partial package
+    # weights add only those (see ci_test_durations.partial_overrides).
+    new: dict[str, list[str]] = {}
+    for test in tests:
+        package = import_paths.get(test.get("package", ""))
+        if package and test.get("new") and test["name"] in selected.get(package, []):
+            new.setdefault(package, []).append(test["name"])
+    json_out.with_suffix(".selection.json").write_text(
+        json.dumps({"new": {pkg: sorted(set(names)) for pkg, names in new.items()},
+                    "selected": selected}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8")
     status = 0
     with json_out.open("w", encoding="utf-8") as stream:
         for package, names in selected.items():

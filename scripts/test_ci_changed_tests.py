@@ -84,6 +84,8 @@ func Testhelper() {}
             tests = json.loads(result.stdout)
             self.assertEqual({test["name"] for test in tests},
                              {"TestAlias", "TestBody", "TestRenamed", "TestNew", "TestEnterprise", "TestWindows", "TestRace", "TestMoved"})
+            # A body edit or a move to another file of the same package is not new.
+            self.assertEqual({test["name"] for test in tests if not test["new"]}, {"TestBody", "TestMoved"})
             with patch.object(planner, "ROOT", root):
                 oss = planner.runnable_changed_tests(tests, "")
                 enterprise = planner.runnable_changed_tests(tests, "enterprise")
@@ -129,6 +131,8 @@ func Testhelper() {}
                     events = [json.loads(line) for line in stream.read_text().splitlines()]
                     passed = {event["Test"] for event in events if event.get("Test") and event["Action"] == "pass"}
                     self.assertEqual(passed, {"TestNew", "TestEnterprise"} if tags else {"TestNew"})
+                    selection = json.loads(stream.with_suffix(".selection.json").read_text())
+                    self.assertEqual(selection["new"], {"example.test/fixture": sorted(passed)})
 
 
 

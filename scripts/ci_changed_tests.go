@@ -30,7 +30,11 @@ type test struct {
 	File    string `json:"file"`
 	Package string `json:"package"`
 	Name    string `json:"name"`
-	Source  string `json:"-"`
+	// New is false when the package already declared this test name at the
+	// base, even in another file. Partial package weights add only new tests.
+	New    bool   `json:"new"`
+	Source string `json:"-"`
+	ident  string
 }
 
 func git(args ...string) ([]byte, error) {
@@ -95,7 +99,10 @@ func inventory(ref string, files []string) (map[string]test, error) {
 			if err := format.Node(&formatted, fset, fn); err != nil {
 				return nil, err
 			}
-			item := test{File: file, Package: "./" + path.Dir(file), Name: fn.Name.Name, Source: formatted.String()}
+			item := test{
+				File: file, Package: "./" + path.Dir(file), Name: fn.Name.Name, Source: formatted.String(),
+				ident: path.Dir(file) + "/" + parsed.Name.Name + "/" + fn.Name.Name,
+			}
 			// Include the file: mutually exclusive build-tagged files may declare
 			// the same test name with different bodies.
 			key := file + "/" + parsed.Name.Name + "/" + fn.Name.Name
@@ -151,10 +158,15 @@ func selectTests(base, head string) ([]test, error) {
 		}
 		inventories = append(inventories, tests)
 	}
+	declared := make(map[string]bool, len(inventories[0]))
+	for _, item := range inventories[0] {
+		declared[item.ident] = true
+	}
 	changed := []test{}
 	for key, item := range inventories[1] {
 		old, exists := inventories[0][key]
 		if !exists || old.Source != item.Source {
+			item.New = !declared[item.ident]
 			changed = append(changed, item)
 		}
 	}

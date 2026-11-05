@@ -251,30 +251,68 @@ def artifact_complete(path: Path) -> bool:
     return bool(packages) and not pending and all(action in ("pass", "skip") for action in packages.values())
 
 
+def selection_path(path: Path) -> Path:
+    """The changed-test selection written beside a partial race stream."""
+    return path.with_suffix(".selection.json")
+
+
+def top_level_seconds(path: Path) -> dict[tuple[str, str], float]:
+    """Elapsed seconds of each passed or skipped top-level test in a stream."""
+    seconds: dict[tuple[str, str], float] = {}
+    with path.open(encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("Action") not in ("pass", "skip"):
+                continue
+            package, name, elapsed = event.get("Package"), event.get("Test"), event.get("Elapsed")
+            if isinstance(package, str) and isinstance(name, str) and "/" not in name \
+                    and isinstance(elapsed, (int, float)):
+                seconds[(package, name)] = float(elapsed)
+    return seconds
+
+
 def partial_overrides(paths: list[Path]) -> dict:
     """Use partial race runs without replacing whole-package weights with subsets.
 
-    Split trees already store per-test weights. Rest shards only store package
-    totals, so retain their baseline and add the measured changed-test run.
-    This conservative bound can overestimate a changed rest test; a full-package
-    measurement through the normal refresh command removes that overestimate.
+    Split trees already store per-test weights, so a measured test replaces its
+    own weight. Rest shards store only package totals, which already include
+    every test the base declared. A new test adds its measured time to that
+    total; an edited test is already in it, so the run counts only when the
+    run alone exceeds the recorded total. Adding edited tests again would
+    double-count them, and a committed refresh would then ratchet the total up
+    on every later edit. An edited test that slows down without overtaking its
+    package's total is left to the weekly drift refresh.
     """
+    new_tests: set[tuple[str, str]] = set()
     for path in paths:
         if not artifact_complete(path):
             raise ValueError(f"incomplete or failed changed-test race stream: {path}")
+        try:
+            selection = json.loads(selection_path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError(f"partial stream {path} needs its selection file "
+                             f"{selection_path(path).name}: {error}") from error
+        for package, names in selection.get("new", {}).items():
+            new_tests.update((package, name) for name in names)
     previous = load_package_durations()
     known = sorted(previous.values())
     default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
-    result = {
-        "trees": collect(paths, load_durations()),
-        "packages": {pkg: previous.get(pkg, default) + seconds
-                     for pkg, seconds in collect_packages(paths).items()},
-    }
+    tests: dict[tuple[str, str], float] = {}
+    for path in paths:
+        tests.update(top_level_seconds(path))
+    packages = {}
+    for package, run_seconds in collect_packages(paths).items():
+        added = sum(seconds for key, seconds in tests.items() if key[0] == package and key in new_tests)
+        packages[package] = max(previous.get(package, default) + added, run_seconds)
+    result = {"trees": collect(paths, load_durations()), "packages": packages}
     # Reuse the planner's finite, non-negative weight validation for imported
     # partial JSON too; invalid numbers must never make a budget compare green.
     from ci_test_packages import _seconds_map
-    for tree, tests in result["trees"].items():
-        _seconds_map(paths[0], tree, tests)
+    for tree, tree_tests in result["trees"].items():
+        _seconds_map(paths[0], tree, tree_tests)
     _seconds_map(paths[0], "packages", result["packages"])
     return result
 
