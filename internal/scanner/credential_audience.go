@@ -610,6 +610,10 @@ func attestationBundlePath(u *url.URL) bool {
 }
 
 func attestationBundleSASQueryValid(parsed *url.URL, now time.Time) bool {
+	return githubBlobSASQueryValid(parsed, now, attestationBundleSASMaxLifetime)
+}
+
+func githubBlobSASQueryValid(parsed *url.URL, now time.Time, maxLifetime time.Duration) bool {
 	query := parsed.Query()
 	for _, name := range attestationBundleSASSignedParams {
 		values := query[name]
@@ -632,7 +636,7 @@ func attestationBundleSASQueryValid(parsed *url.URL, now time.Time) bool {
 	if err != nil || !expiry.After(start) {
 		return false
 	}
-	return expiry.Sub(start) <= attestationBundleSASMaxLifetime && grantValidityWindowValid(start, expiry, now)
+	return expiry.Sub(start) <= maxLifetime && grantValidityWindowValid(start, expiry, now)
 }
 
 func githubBlobSASCandidateAllowed(candidate credentialAudienceCandidate, host, target, surface string, now time.Time) bool {
@@ -1660,9 +1664,9 @@ func queryGrantValidityCandidate(parsed *url.URL, now time.Time) (string, time.T
 		}
 	}
 	if destination.MatchesDomainList(host, githubActionsResultsHosts) && actionsResultsPath(parsed) &&
-		!attestationBundleSASQueryValid(parsed, now) {
+		!actionsResultsSASQueryValid(parsed, now) {
 		start, err := time.Parse(time.RFC3339, query.Get("st"))
-		if err == nil && attestationBundleSASQueryValid(parsed, start) {
+		if err == nil && actionsResultsSASQueryValid(parsed, start) {
 			return githubActionsValidityNote, start, true
 		}
 	}

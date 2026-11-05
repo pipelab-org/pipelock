@@ -57,7 +57,9 @@ const (
 	// SAS parameter set. It never widens the JWT's host list, and the JWT
 	// rule never accepts a SAS on its own: the SAS signature is unverifiable
 	// by this proxy, so it is trusted purely because the co-located grant
-	// already proved GitHub issued this exact redirect.
+	// already proved GitHub issued this exact redirect. Attestation bundles
+	// and Actions results carry no JWT; they instead require their exact
+	// compiled storage accounts and paths.
 	CredentialAudienceCarrierReleaseGrantSAS
 	// CredentialAudienceCarrierRegistryBasic is the package-registry rule:
 	// Authorization Basic, https only, at a CredentialAudienceRegistryHosts
@@ -265,7 +267,7 @@ var defaultDLPPatternSet = []DLPPattern{
 	// attestations API bundle_url is a different SAS with no JWT, on the
 	// exact storage accounts named in credential_audience.go
 	// (attestationBundleSASAllowed). GitHub Actions job logs and artifacts
-	// redirect to the productionresultssa0-19 accounts GitHub lists in its meta
+	// redirect to the exact results accounts GitHub lists in its meta
 	// API (actionsResultsSASAllowed). The pattern host list stays the release
 	// host; the bundle and results accounts are not a second config audience.
 	// Source: https://learn.microsoft.com/en-us/rest/api/storageservices/create-account-sas

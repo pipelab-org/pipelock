@@ -140,6 +140,11 @@ const (
 	// recorder into CheckRedirect so policy is re-evaluated against the same
 	// identity and state on every hop.
 	ctxKeyRedirectSessionRecorder
+	// ctxKeyRedirectStructuralExemption carries a *atomic.Bool that
+	// CheckRedirect sets when an allowed hop was a structural exemption (a
+	// valid presigned or GitHub-issued SAS URL). The request's deferred clean
+	// credit then skips it, as it does for a direct exemption.
+	ctxKeyRedirectStructuralExemption
 	// ctxKeyRedirectAirlockSession carries the adaptive session key into
 	// CheckRedirect so every hop admits airlock against the same state the
 	// writer raised. Request-controlled identities use the folded CEE-safe key;
@@ -1142,6 +1147,11 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 					return newRedirectBlockedRequest(result.Scanner, result.Reason)
 				}
 				logger.LogAnomaly(actx, result.Scanner, fmt.Sprintf("redirect from %s: %s", originalURL, result.Reason), result.Score)
+			}
+			if result.Allowed && result.IsStructuralExemption() {
+				if hop, ok := req.Context().Value(ctxKeyRedirectStructuralExemption).(*atomic.Bool); ok {
+					hop.Store(true)
+				}
 			}
 			scannerMatched := !result.Allowed
 			// net/http copies custom headers to redirected requests. Recheck
@@ -6339,6 +6349,8 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportFetch)
+	redirectExempt := new(atomic.Bool)
+	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, fetchRec)
 	if fetchAirlockSess != nil {
@@ -6993,7 +7005,9 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Deferred RecordClean: apply score decay only when no finding was detected
 	// during the entire fetch lifecycle (URL, header DLP, CEE, response scan).
 	// This ensures warn/near-miss findings do not inadvertently decay score.
-	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding {
+	// A structural exemption (a valid presigned or GitHub-issued SAS URL) is
+	// adaptive-neutral: it neither raises the score nor earns clean credit.
+	if fetchRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !result.IsStructuralExemption() && !redirectExempt.Load() {
 		fetchScope := adaptiveScopeForHost(finalHost)
 		recordCleanForAdaptiveScope(fetchRec, fetchScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseScanExempt, adaptiveRecoveryContext{
 			assessment: scanned.result.RecoveryAssessment(),
