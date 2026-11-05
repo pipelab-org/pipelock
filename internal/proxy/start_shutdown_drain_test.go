@@ -20,6 +20,16 @@ import (
 // soon as start returns, so an earlier return loses the outcome receipt that a
 // handler writes after its response has already reached the client.
 func TestServeUntilShutdownWaitsForInFlightHandlers(t *testing.T) {
+	t.Run("context_cancelled", func(t *testing.T) {
+		testServeUntilShutdownWaitsForInFlightHandlers(t, true)
+	})
+	t.Run("listener_failed", func(t *testing.T) {
+		testServeUntilShutdownWaitsForInFlightHandlers(t, false)
+	})
+}
+
+func testServeUntilShutdownWaitsForInFlightHandlers(t *testing.T, cancelContext bool) {
+	t.Helper()
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	finished := make(chan struct{})
@@ -73,9 +83,14 @@ func TestServeUntilShutdownWaitsForInFlightHandlers(t *testing.T) {
 		t.Fatal("request never reached the handler")
 	}
 
-	cancel()
-	// Once the listener refuses connections, Shutdown has begun and Serve has
-	// returned ErrServerClosed.
+	wantServeErr := http.ErrServerClosed
+	if cancelContext {
+		cancel()
+	} else {
+		wantServeErr = net.ErrClosed
+		_ = ln.Close()
+	}
+	// The listener must stop accepting before checking that the drain waits.
 	testwait.For(t, 10*time.Second, func() bool {
 		conn, dialErr := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(context.Background(), "tcp", addr)
 		if dialErr != nil {
@@ -94,8 +109,8 @@ func TestServeUntilShutdownWaitsForInFlightHandlers(t *testing.T) {
 	close(release)
 	select {
 	case err := <-returned:
-		if !errors.Is(err, http.ErrServerClosed) {
-			t.Fatalf("serveUntilShutdown = %v, want ErrServerClosed", err)
+		if !errors.Is(err, wantServeErr) {
+			t.Fatalf("serveUntilShutdown = %v, want %v", err, wantServeErr)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveUntilShutdown did not return after the handler drained")
@@ -107,7 +122,7 @@ func TestServeUntilShutdownWaitsForInFlightHandlers(t *testing.T) {
 	}
 }
 
-func TestServeUntilShutdownServeFailureReturnsWithoutCancel(t *testing.T) {
+func TestServeUntilShutdownServeFailureDrainsWithoutCancel(t *testing.T) {
 	want := errors.New("bind failed")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -127,8 +142,8 @@ func TestServeUntilShutdownServeFailureReturnsWithoutCancel(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serveUntilShutdown blocked after serve failed")
 	}
-	if shutdownCalled {
-		t.Fatal("shutdown ran although ctx was never cancelled")
+	if !shutdownCalled {
+		t.Fatal("serve failure did not drain handlers")
 	}
 }
 
