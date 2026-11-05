@@ -1,6 +1,6 @@
 # AGENTS.md - Pipelock Contributor Guide
 
-Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Direct egress controls are deployment guidance; binary-enforced coverage applies to mediated traffic. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
+Pipelock is an agent firewall: a network and tool proxy that mediates AI-agent HTTP, WebSocket, and MCP traffic and scans it for secret exfiltration, prompt injection, SSRF, and tool poisoning. Proxy scanning covers traffic routed through Pipelock. On supported Linux setups, `pipelock contain` can also block direct egress using a private network namespace, nftables, and managed identities when configured and its live restrictions are verified. This does not provide automatic whole-host coverage; filesystem confinement is a separate setting. Configured MCP upstreams are an exception to private-address SSRF blocking: local/private servers are allowed, but cloud metadata endpoints remain blocked.
 
 ## Quick Reference
 
@@ -69,7 +69,7 @@ Before committing, run targeted `go test -race -count=1` for the changed package
 
 ## Architecture
 
-Capability separation is part of the design: agent environments can hold secrets and route traffic through Pipelock; the proxy has network egress and does not store agent credentials. Pipelock reads local environment values for leak detection only.
+Capability separation limits the proxy's access to the agent's environment and files. Pipelock mediates network traffic and should run with only the access its configured functions need. When enabled, leak detection reads selected values from the proxy process environment and any configured `dlp.secrets_file`, retaining them in memory for matching. Treat the proxy process and those inputs as sensitive.
 
 Three proxy modes share the main listener:
 
