@@ -31,7 +31,9 @@ class ChangedTestsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def git(*args):
-                return subprocess.run(["git", *args], cwd=root, check=True,
+                # CI runners have no Git identity; fixture commits supply one.
+                return subprocess.run(["git", "-c", "user.email=ci@example.invalid", "-c", "user.name=ci", *args],
+                                      cwd=root, check=True,
                                       text=True, capture_output=True).stdout.strip()
             def commit():
                 git("add", ".")
@@ -108,7 +110,9 @@ func Testhelper() {}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             def git(*args):
-                return subprocess.run(["git", *args], cwd=root, check=True,
+                # CI runners have no Git identity; fixture commits supply one.
+                return subprocess.run(["git", "-c", "user.email=ci@example.invalid", "-c", "user.name=ci", *args],
+                                      cwd=root, check=True,
                                       text=True, capture_output=True).stdout.strip()
             git("init", "-q")
             (root / "go.mod").write_text("module example.test/fixture\n\ngo 1.26\n")
