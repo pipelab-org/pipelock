@@ -724,7 +724,9 @@ func initCanaryURL(cfg *config.Config) string {
 	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 && !canaryHostAllowed(host, cfg.APIAllowlist) {
 		host = allowlistCanaryHost(cfg.APIAllowlist)
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+	// RFC 3986 brackets every IPv6 literal, including IPv4-mapped forms such
+	// as ::ffff:192.0.2.1 whose To4 is non-nil.
+	if net.ParseIP(host) != nil && strings.Contains(host, ":") {
 		host = "[" + host + "]"
 	}
 	u := url.URL{Scheme: "https", Host: host, Path: "/test", RawQuery: "key=" + canaryToken()}

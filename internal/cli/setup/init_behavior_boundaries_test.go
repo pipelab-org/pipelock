@@ -238,9 +238,13 @@ func TestInitCanarySkipsIPAliases(t *testing.T) {
 // canary then targets the first entry, and an IPv6 literal must stay a valid
 // bracketed URL host rather than being misread as host:port.
 func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
-	for _, tc := range []struct{ entry, wantHost, wantURL string }{
-		{"10.0.0.5", "10.0.0.5", "https://10.0.0.5/test?key=" + canaryToken()},
-		{"fd00::5", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken()},
+	for _, tc := range []struct{ entry, wantHost, wantURL, blockedBy string }{
+		{"10.0.0.5", "10.0.0.5", "https://10.0.0.5/test?key=" + canaryToken(), "core_ssrf"},
+		{"fd00::5", "fd00::5", "https://[fd00::5]/test?key=" + canaryToken(), "core_ssrf"},
+		// An IPv4-mapped literal still has colons, so it needs brackets too.
+		// The scanner canonicalizes the host to its IPv4 form, which the
+		// literal allowlist entry does not match, so the allowlist blocks first.
+		{"::ffff:10.0.0.5", "::ffff:10.0.0.5", "https://[::ffff:10.0.0.5]/test?key=" + canaryToken(), "allowlist"},
 	} {
 		t.Run(tc.entry, func(t *testing.T) {
 			cfg := config.Defaults()
@@ -255,11 +259,11 @@ func TestInitCanaryIPOnlyAllowlistKeepsValidURL(t *testing.T) {
 				t.Fatalf("canary URL %q parses to host %q (err %v), want %q", got, parsed.Hostname(), err, tc.wantHost)
 			}
 
-			// Without configured internal ranges the core literal-IP floor
-			// blocks the address first; both canaries must say so rather
-			// than claim DLP detection.
+			// Without configured internal ranges a pre-DLP scanner blocks the
+			// address first; both canaries must say so rather than claim DLP
+			// detection.
 			cfg.Internal = nil
-			const want = `blocked before DLP by scanner "core_ssrf"`
+			want := `blocked before DLP by scanner "` + tc.blockedBy + `"`
 			if result := runInitCanary(cfg); result.Detected || !strings.Contains(result.Detail, want) {
 				t.Errorf("init canary = %+v, want %s", result, want)
 			}
