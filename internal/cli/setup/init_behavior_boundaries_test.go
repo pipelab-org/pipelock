@@ -17,6 +17,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/luckyPipewrench/pipelock/configs"
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/discover"
@@ -154,6 +155,37 @@ func TestInitVerifyAndCanaryFailClosed(t *testing.T) {
 	}
 }
 
+// Shipped strict presets must let the init canary reach DLP. hostile-model's
+// allowlist omits github.com, which once made init fail before DLP ran.
+func TestInitCanaryReachesDLPOnStrictPresets(t *testing.T) {
+	for _, tc := range []struct{ preset, wantHost string }{
+		{"hostile-model", "https://anthropic.com/"},
+		{"strict", "https://github.com/"},
+	} {
+		t.Run(tc.preset, func(t *testing.T) {
+			raw, ok := configs.Preset(tc.preset)
+			if !ok {
+				t.Fatalf("preset %s missing", tc.preset)
+			}
+			path := filepath.Join(t.TempDir(), "pipelock.yaml")
+			if err := os.WriteFile(path, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := initCanaryURL(cfg); !strings.HasPrefix(got, tc.wantHost) {
+				t.Fatalf("canary URL = %s, want prefix %s", got, tc.wantHost)
+			}
+			result := runInitCanary(cfg)
+			if !result.Detected {
+				t.Fatalf("canary not detected by DLP: %+v", result)
+			}
+		})
+	}
+}
+
 func TestPrintDiscoverPhaseReportsMalformedAndUnprotectedClients(t *testing.T) {
 	report := &discover.Report{
 		Clients: []discover.ClientConfig{
@@ -194,7 +226,7 @@ func TestPrintProofRepresentsFailureAndUnknownStates(t *testing.T) {
 		Canary: &initCanaryResult{Detected: false},
 	}
 	var out bytes.Buffer
-	printProof(&out, result)
+	printProof(&out, result, config.Defaults())
 	got := out.String()
 	for _, want := range []string{
 		"Unknown:", "Config exists at:", "2 passed, 1 failed", "not detected", "use --force",
@@ -216,7 +248,7 @@ func TestPrintProofDryRunAndSkippedPhases(t *testing.T) {
 		Canary: &initCanaryResult{Skipped: true},
 	}
 	var out bytes.Buffer
-	printProof(&out, result)
+	printProof(&out, result, config.Defaults())
 	got := out.String()
 	for _, want := range []string{"Config would be at:", "Validate:           skipped", "Canary:             skipped"} {
 		if !strings.Contains(got, want) {
@@ -241,7 +273,8 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 		skipValidate, skipCanary, dryRun, wantError bool
 		jsonOutput, wantLoadError, wantCanaryBlock  bool
 	}{
-		{name: "retained strict blocks before DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n", wantError: true, wantCanaryBlock: true},
+		{name: "retained strict detects DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\n"},
+		{name: "retained strict blocklist prevents DLP", contents: "mode: strict\napi_allowlist: [api.vendor.example]\nfetch_proxy:\n  monitoring:\n    blocklist: [api.vendor.example]\n", wantError: true, wantCanaryBlock: true},
 		{name: "malformed", contents: "mode: [", wantError: true, wantLoadError: true},
 		{name: "malformed JSON", contents: "mode: [", wantError: true, wantLoadError: true, jsonOutput: true},
 		{name: "malformed canary only", contents: "mode: [", skipValidate: true, wantError: true, wantLoadError: true},
@@ -276,8 +309,8 @@ func TestInitChecksRetainedConfig(t *testing.T) {
 			}
 			if tc.wantCanaryBlock {
 				var exitErr *cliutil.ExitError
-				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "allowlist"`) {
-					t.Fatalf("expected allowlist-stage canary failure, got %v", err)
+				if !errors.As(err, &exitErr) || exitErr.Code != initExitFailure || !strings.Contains(err.Error(), "blocked before DLP") || !strings.Contains(err.Error(), `scanner "blocklist"`) {
+					t.Fatalf("expected blocklist-stage canary failure, got %v", err)
 				}
 				if !strings.Contains(out.String(), err.Error()) {
 					t.Fatalf("canary failure detail missing from output: %s", &out)
@@ -327,6 +360,7 @@ func TestSidecarCanaryReportsSyntheticScopeAndConfig(t *testing.T) {
 	}
 	cfg.Mode = config.ModeStrict
 	cfg.APIAllowlist = []string{"api.vendor.example"}
+	cfg.FetchProxy.Monitoring.Blocklist = []string{"api.vendor.example"}
 	result = runSidecarCanary(&out, cfg, sidecarOptions{}, false)
 	want := "/pipelock check --config " + initCommandQuote(sidecarConfigMount+"/"+sidecarConfigFile, "linux") + " --url "
 	if result.Detected || !strings.Contains(result.Detail, "blocked before DLP") || !strings.Contains(result.Detail, want) || !strings.Contains(result.Detail, "inside its container") {
@@ -401,7 +435,7 @@ func TestInitRetainedConfigWithoutUserBus(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	home := t.TempDir()
 	path := filepath.Join(home, "pipelock.yaml")
-	contents := "mode: strict\napi_allowlist: [api.vendor.example]\n"
+	contents := "mode: strict\napi_allowlist: [api.vendor.example]\nfetch_proxy:\n  monitoring:\n    blocklist: [api.vendor.example]\n"
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}

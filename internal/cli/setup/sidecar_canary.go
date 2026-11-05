@@ -25,7 +25,7 @@ func runSidecarCanary(w io.Writer, cfg *config.Config, opts sidecarOptions, json
 	}
 
 	// Use the same canary URL and scanner as the IDE init flow.
-	canaryURL := "https://github.com/test?key=" + canaryToken()
+	canaryURL := initCanaryURL(cfg)
 	canary := scanCanaryResult(cfg, canaryURL)
 
 	if canary.Detected {

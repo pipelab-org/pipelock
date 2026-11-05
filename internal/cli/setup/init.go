@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -387,7 +389,7 @@ func runInit(cmd *cobra.Command, opts initOptions) error {
 	} else if configLoadErr != nil {
 		_, _ = fmt.Fprintf(w, "Fix the configuration file %q and rerun the same pipelock init command.\n", configPath)
 	} else {
-		printProof(w, result)
+		printProof(w, result, cfg)
 	}
 
 	if configLoadErr != nil {
@@ -713,12 +715,34 @@ func runInitVerify(cfg *config.Config) *initVerifyResult {
 	}
 }
 
-func runInitCanary(cfg *config.Config) *initCanaryResult {
-	// Use github.com (in the default allowlist) so strict mode doesn't block
-	// by allowlist before the DLP scanner runs.
-	canaryURL := "https://github.com/test?key=" + canaryToken()
+// initCanaryURL returns the synthetic DLP canary URL for cfg. It keeps the
+// historical github.com destination unless a strict allowlist would block it
+// before DLP runs, and then uses the first configured destination instead.
+// The policy itself is never changed.
+func initCanaryURL(cfg *config.Config) string {
+	host := "github.com"
+	if cfg.Mode == config.ModeStrict && len(cfg.APIAllowlist) > 0 && !canaryHostAllowed(host, cfg.APIAllowlist) {
+		// MatchDomain permits the base domain of a leading wildcard pattern.
+		host = strings.TrimPrefix(cfg.APIAllowlist[0], "*.")
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	}
+	u := url.URL{Scheme: "https", Host: host, Path: "/test", RawQuery: "key=" + canaryToken()}
+	return u.String()
+}
 
-	return scanCanaryResult(cfg, canaryURL)
+func canaryHostAllowed(host string, allowlist []string) bool {
+	for _, pattern := range allowlist {
+		if scanner.MatchDomain(host, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func runInitCanary(cfg *config.Config) *initCanaryResult {
+	return scanCanaryResult(cfg, initCanaryURL(cfg))
 }
 
 func scanCanaryURL(cfg *config.Config, canaryURL string) bool {
@@ -743,7 +767,7 @@ func scanCanaryResult(cfg *config.Config, canaryURL string) *initCanaryResult {
 	return &initCanaryResult{Detail: "Canary was not detected by DLP. Use the config-specific check command in Next steps."}
 }
 
-func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
+func printProof(w interface{ Write([]byte) (int, error) }, result *initResult, cfg *config.Config) {
 	_, _ = fmt.Fprintln(w, "[5/5] Summary")
 	_, _ = fmt.Fprintln(w, "=============")
 	_, _ = fmt.Fprintln(w)
@@ -819,7 +843,7 @@ func printProof(w interface{ Write([]byte) (int, error) }, result *initResult) {
 		_, _ = fmt.Fprintln(w, "  Commands below use PowerShell quoting.")
 	}
 	pathArg := initCommandQuote(result.Setup.ConfigPath, runtime.GOOS)
-	_, _ = fmt.Fprintf(w, "  pipelock check --config %s --url %s\n", pathArg, initCommandQuote("https://github.com/test?key="+canaryToken(), runtime.GOOS))
+	_, _ = fmt.Fprintf(w, "  pipelock check --config %s --url %s\n", pathArg, initCommandQuote(initCanaryURL(cfg), runtime.GOOS))
 	_, _ = fmt.Fprintf(w, "  pipelock doctor --config %s\n", pathArg)
 	_, _ = fmt.Fprintf(w, "  pipelock verify-install --config %s     # temporary-proxy synthetic checks\n", pathArg)
 	_, _ = fmt.Fprintf(w, "  pipelock run --config %s\n", pathArg)
