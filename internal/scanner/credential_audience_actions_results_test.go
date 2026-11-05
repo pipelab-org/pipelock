@@ -51,10 +51,15 @@ func actionsResultsGrantDiagnosis(s *Scanner, target string, now time.Time) stri
 		return "parse: " + err.Error()
 	}
 	host := parsed.Hostname()
-	return fmt.Sprintf("host_listed=%v path=%v query_valid=%v grant=%v scanner_now=%s test_now=%s",
+	withoutQuery := *parsed
+	withoutQuery.RawQuery = ""
+	queryLess := s.Scan(context.Background(), withoutQuery.String())
+	return fmt.Sprintf("host_listed=%v path=%v query_valid=%v grant=%v scanner_now=%s test_now=%s "+
+		"query_less_clean=%v query_less_reason=%q env_secrets=%d file_secrets=%d",
 		destination.MatchesDomainList(host, githubActionsResultsHosts), actionsResultsPath(parsed),
 		actionsResultsSASQueryValid(parsed, now), actionsResultsSASAllowed(host, target, now),
-		s.currentTime().UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339))
+		s.currentTime().UTC().Format(time.RFC3339), now.UTC().Format(time.RFC3339),
+		s.queryLessURLScansClean(parsed, nil), queryLess.Reason, len(s.envSecrets), len(s.fileSecrets))
 }
 
 func newActionsResultsScanner(t *testing.T) (*Scanner, time.Time) {
