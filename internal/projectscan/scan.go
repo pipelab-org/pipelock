@@ -9,7 +9,9 @@ package projectscan
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -24,9 +26,10 @@ import (
 const severityCritical = "critical"
 
 // maxScanFileBytes is the largest config or manifest file the project scan
-// reads. Files over it are skipped for secrets and reported as uninspected
-// for dependencies.
+// reads. Files over it are reported as uninspected for secrets and dependencies.
 const maxScanFileBytes = 1 << 20
+
+const inspectionSizeLimitReason = "larger than the scan size limit"
 
 // Finding represents a single security finding from the project scan.
 type Finding struct {
@@ -346,7 +349,19 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil // skip unreadable entries
+			// An unreadable directory or entry may hold secret files, so an
+			// incomplete walk is reported instead of looking clean.
+			relPath, relErr := filepath.Rel(dir, path)
+			if relErr != nil || relPath == "." {
+				// Name the scan root in the message, but keep File relative to
+				// it, since consumers such as SARIF join File to the root.
+				finding := secretInspectionWarning(path, "unreadable")
+				finding.File = "."
+				findings = append(findings, finding)
+				return nil
+			}
+			findings = append(findings, secretInspectionWarning(relPath, "unreadable"))
+			return nil
 		}
 		if d.IsDir() {
 			if skipDirs[d.Name()] {
@@ -363,24 +378,21 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 			return nil
 		}
 
-		// Skip large files (>1MB)
-		info, err := d.Info()
-		if err != nil || info.Size() > maxScanFileBytes {
-			return nil
-		}
-
 		relPath, _ := filepath.Rel(dir, path)
 		if relPath == "" {
 			relPath = path
 		}
 
-		fileFindings := scanFileForSecrets(path, relPath, patterns)
-		findings = append(findings, fileFindings...)
+		data, reason := readSecretCandidate(path)
+		if reason != "" {
+			findings = append(findings, secretInspectionWarning(relPath, reason))
+			return nil
+		}
+		findings = append(findings, scanContentForSecrets(data, relPath, patterns)...)
 
 		// Also check for high-entropy values in .env files
 		if isEnvFile {
-			entropyFindings := scanFileForEntropy(path, relPath)
-			findings = append(findings, entropyFindings...)
+			findings = append(findings, scanContentForEntropy(data, relPath)...)
 		}
 
 		return nil
@@ -389,15 +401,54 @@ func scanFiles(dir string, patterns []compiledDLP) []Finding {
 	return findings
 }
 
-func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding {
-	f, err := os.Open(filepath.Clean(path))
+// secretInspectionWarning reports a secret candidate file that could not be
+// fully read, so an incomplete secret scan never looks like a clean one.
+func secretInspectionWarning(relPath, reason string) Finding {
+	return inspectionWarning(relPath, "secret", "for secrets", reason, "inspect the file separately")
+}
+
+// readSecretCandidate reads a secret candidate file once, through a single
+// open file, so the checks and both scan passes see the same bytes and a path
+// swapped after the walk cannot bypass them. It opens without blocking so a
+// FIFO cannot stall the scan, refuses anything but a regular file, and reads
+// at most one byte past the size limit. A non-empty reason means the file was
+// not inspected.
+func readSecretCandidate(path string) ([]byte, string) {
+	f, err := openNoBlock(path)
 	if err != nil {
-		return nil
+		return nil, "unreadable"
 	}
 	defer f.Close() //nolint:errcheck // read-only file
 
+	info, err := f.Stat()
+	if err != nil {
+		return nil, "unreadable"
+	}
+	if !info.Mode().IsRegular() {
+		return nil, "not a regular file"
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxScanFileBytes+1))
+	if err != nil {
+		return nil, "unreadable"
+	}
+	if len(data) > maxScanFileBytes {
+		return nil, inspectionSizeLimitReason
+	}
+	return data, ""
+}
+
+// newContentLineScanner splits content into lines. The buffer holds the whole
+// content, so bufio's default 64 KiB token limit cannot end the scan early, and
+// an in-memory reader cannot fail.
+func newContentLineScanner(data []byte) *bufio.Scanner {
+	s := bufio.NewScanner(bytes.NewReader(data))
+	s.Buffer(make([]byte, 0, 64*1024), len(data)+1)
+	return s
+}
+
+func scanContentForSecrets(data []byte, relPath string, patterns []compiledDLP) []Finding {
 	var findings []Finding
-	s := bufio.NewScanner(f)
+	s := newContentLineScanner(data)
 	lineNum := 0
 	for s.Scan() {
 		lineNum++
@@ -416,22 +467,15 @@ func scanFileForSecrets(path, relPath string, patterns []compiledDLP) []Finding 
 			}
 		}
 	}
-
 	return findings
 }
 
-func scanFileForEntropy(path, relPath string) []Finding {
-	f, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return nil
-	}
-	defer f.Close() //nolint:errcheck // read-only file
-
+func scanContentForEntropy(data []byte, relPath string) []Finding {
 	const entropyThreshold = 4.5
 	const minValueLen = 16
 
 	var findings []Finding
-	s := bufio.NewScanner(f)
+	s := newContentLineScanner(data)
 	lineNum := 0
 	for s.Scan() {
 		lineNum++

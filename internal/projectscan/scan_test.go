@@ -309,17 +309,86 @@ func TestScanFiles_SkipsNodeModules(t *testing.T) {
 	}
 }
 
-func TestScanFiles_LargeFileSkipped(t *testing.T) {
+func TestScanFiles_OversizeSecretFileReportsUninspected(t *testing.T) {
+	patterns := mustCompileDLPPatterns(t)
+	for _, name := range []string{".env", ".env.local", filepath.Join("config", "settings.yaml")} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, name)
+			if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
+			line := "KEY=" + fakeKey + "\n"
+			body := strings.Repeat("\n", maxScanFileBytes+1-len(line)) + line
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			findings := scanFiles(dir, patterns)
+			if len(findings) != 1 {
+				t.Fatalf("got %d findings, want one inspection warning", len(findings))
+			}
+			f := findings[0]
+			if f.Severity != "warning" || f.Category != "secret" || f.File != name || f.Line != 0 || f.Pattern != "" {
+				t.Error("unexpected inspection warning metadata")
+			}
+			if !strings.Contains(f.Message, "Could not inspect "+name+" for secrets") ||
+				!strings.Contains(f.Message, "larger than the scan size limit") {
+				t.Error("unexpected inspection warning wording")
+			}
+			if strings.Contains(f.Message, fakeKey) {
+				t.Error("inspection warning contains the credential")
+			}
+		})
+	}
+}
+
+// A line longer than bufio's default 64 KiB token limit once ended the scan
+// silently, hiding secrets on later lines of an in-cap file.
+func TestScanFiles_SecretAfterLongLineIsDetected(t *testing.T) {
+	patterns := mustCompileDLPPatterns(t)
 	dir := t.TempDir()
-	// Create a file just over 1MB
-	large := make([]byte, 1<<20+1)
-	if err := os.WriteFile(filepath.Join(dir, ".env"), large, 0o600); err != nil {
+	fakeKey := "AK" + "IA" + strings.Repeat("B", 16)
+	body := "LONG=" + strings.Repeat("x", 100*1024) + "\nKEY=" + fakeKey + "\n"
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var secret, warning bool
+	for _, f := range scanFiles(dir, patterns) {
+		switch {
+		case f.Severity == severityCritical && f.Line == 2:
+			secret = true
+		case strings.HasPrefix(f.Message, "Could not inspect"):
+			warning = true
+		}
+	}
+	if !secret || warning {
+		t.Fatalf("secret after a long line: detected=%v inspection warning=%v", secret, warning)
+	}
+}
+
+func TestScanFiles_AtCapSecretFileDetectsKey(t *testing.T) {
+	dir := t.TempDir()
+	fakeKey := "AK" + "IA" + strings.Repeat("A", 16)
+	line := "KEY=" + fakeKey + "\n"
+	// Put the credential at the end to prove the scan reaches the size limit.
+	padding := strings.Repeat(strings.Repeat(" ", 1023)+"\n", maxScanFileBytes/1024)
+	body := padding[:maxScanFileBytes-len(line)] + line
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	findings := scanFiles(dir, mustCompileDLPPatterns(t))
-	if len(findings) != 0 {
-		t.Error("expected no findings from oversized file")
+	if len(findings) != 1 {
+		t.Fatalf("got %d findings, want one credential finding", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != severityCritical || f.Category != "secret" || f.File != ".env" || f.Pattern != "AWS Access ID" {
+		t.Error("unexpected credential finding metadata")
+	}
+	if strings.Contains(f.Message, fakeKey) {
+		t.Error("credential finding contains the credential")
 	}
 }
 
@@ -398,7 +467,7 @@ func TestScanFileForEntropy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) == 0 {
 		t.Error("expected entropy finding for high-entropy value")
 	}
@@ -417,7 +486,7 @@ func TestScanFileForEntropy_ShortValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) != 0 {
 		t.Error("expected no findings for short values")
 	}
@@ -458,6 +527,9 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("permission semantics differ on Windows")
 	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can open mode 000 files")
+	}
 	dir := t.TempDir()
 	secret := filepath.Join(dir, ".env")
 	fakeKey := "sk-proj-" + "abcdefghijklmnop" + "qrstuvwxyz1234567890"
@@ -465,26 +537,25 @@ func TestScanFiles_UnreadableEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	findings := scanFiles(dir, mustCompileDLPPatterns(t))
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
+	if len(findings) != 1 || findings[0].Severity != "warning" ||
+		!strings.Contains(findings[0].Message, "Could not inspect .env for secrets (unreadable)") {
+		t.Fatalf("unreadable secret file must report an inspection warning, got %+v", findings)
 	}
 }
 
-func TestScanFileForSecrets_UnreadableFile(t *testing.T) {
-	findings := scanFileForSecrets("/nonexistent/file", "file", nil)
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
+func TestReadSecretCandidate_RefusesWhatItCannotInspect(t *testing.T) {
+	for _, tc := range []struct{ name, path, reason string }{
+		{"missing", "/nonexistent/file", "unreadable"},
+		{"directory", t.TempDir(), "not a regular file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, reason := readSecretCandidate(tc.path)
+			if reason != tc.reason || data != nil {
+				t.Fatalf("readSecretCandidate = %d bytes, %q; want %q", len(data), reason, tc.reason)
+			}
+		})
 	}
 }
-
-func TestScanFileForEntropy_UnreadableFile(t *testing.T) {
-	findings := scanFileForEntropy("/nonexistent/file", "file")
-	if len(findings) != 0 {
-		t.Error("expected no findings for unreadable file")
-	}
-}
-
-// --- AdjustScoreForFindings tests ---
 
 func TestAdjustScoreForFindings_NoCriticals(t *testing.T) {
 	cfg := &SuggestCfg{Preset: AgentGeneric}
@@ -573,7 +644,7 @@ func TestScanFileForEntropy_QuotedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	findings := scanFileForEntropy(path, ".env")
+	findings := scanContentForEntropy([]byte(envContent), ".env")
 	if len(findings) == 0 {
 		t.Error("expected entropy finding for quoted high-entropy value")
 	}
