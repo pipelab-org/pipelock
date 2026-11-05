@@ -318,6 +318,12 @@ def gate_execution_errors(aggregate: str, run: str, dependencies: set[str]) -> l
             for result in ("failure", "cancelled", "", "unknown"):
                 tree_cases.append((f"{producer}={result or 'empty'} with the tree already tested",
                                    skipped | {producer: result}, "merge_group", policy, 1, "false", "true"))
+        # Producers a reused queue run still needs (replay, changed-test race)
+        # get no reuse exemption, including a skip.
+        for producer in sorted(dependencies - reuse_producers - {"changed-files"}):
+            for result in ("failure", "cancelled", "", "unknown", "skipped"):
+                tree_cases.append((f"{producer}={result or 'empty'} with the tree already tested",
+                                   skipped | {producer: result}, "merge_group", policy, 1, "false", "true"))
     all_cases = [case + ("false",) for case in all_cases] + tree_cases
     for description, values, event_name, policy, expected, docs, tree in all_cases:
         try:
