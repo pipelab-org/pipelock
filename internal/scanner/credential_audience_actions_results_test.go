@@ -47,6 +47,9 @@ func actionsResultsQuery(sigSeed string, mutate func(v url.Values)) string {
 // 2026-11-05: 0-19, 30-49, 100-199) earns the grant, and the numbers around
 // each range do not. The expected set is built from those ranges, not from
 // githubActionsResultsHosts, so dropping an account from the list fails here.
+// It asks the grant predicate rather than running a full scan per account:
+// 201 full scans cost about a minute under the race detector, and the full
+// scan path is covered at each range edge by TestScan_GitHubActionsResultsSAS.
 func TestScan_GitHubActionsResultsSAS_EveryPublishedAccount(t *testing.T) {
 	t.Parallel()
 	s, now := newActionsResultsScanner(t)
@@ -63,9 +66,8 @@ func TestScan_GitHubActionsResultsSAS_EveryPublishedAccount(t *testing.T) {
 	}
 	for n := 0; n <= 200; n++ {
 		target := actionsResultsLogURL(host(n), query)
-		got := s.Scan(context.Background(), target)
-		if got.Allowed != published[n] {
-			t.Errorf("account %d: allowed=%v want=%v reason=%s; %s", n, got.Allowed, published[n], got.Reason, actionsResultsGrantDiagnosis(s, target, now))
+		if got := actionsResultsSASAllowed(host(n), target, now); got != published[n] {
+			t.Errorf("account %d: granted=%v want=%v; %s", n, got, published[n], actionsResultsGrantDiagnosis(s, target, now))
 		}
 	}
 }
