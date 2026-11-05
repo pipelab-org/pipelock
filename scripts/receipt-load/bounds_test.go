@@ -350,3 +350,37 @@ func TestAuditGapWarningDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+// A malformed record neither hides gaps found before it nor stops the scan
+// from finding gaps after it; the decode error comes back with them.
+func TestAuditGapLinesKeepsGapsAroundBadRecords(t *testing.T) {
+	gap := `{"event":"error","error":"event=receipt_channel_broken audit_gap=true phase=outcome"}` + "\n"
+	path := filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(path, []byte(gap+"{not json\n"+gap), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count, lines, err := auditGapLines(path)
+	if err == nil || count != 2 || len(lines) != 2 {
+		t.Fatalf("count=%d lines=%d error=%v, want both gaps and the decode error", count, len(lines), err)
+	}
+	path = filepath.Join(t.TempDir(), "proxy.log")
+	if err := os.WriteFile(path, []byte(gap+strings.Repeat("x", 70*1024)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	count, lines, err = auditGapLines(path)
+	if err == nil || count != 1 || len(lines) != 1 {
+		t.Fatalf("count=%d lines=%d error=%v, want the gap before the oversized line and the scan error", count, len(lines), err)
+	}
+}
+
+// A run that fails partway still reports the gaps the proxy logged before it
+// failed, next to the run failure.
+func TestFailedRunStillReportsAuditGaps(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "auditgap-restartfail"))
+	opt.restartAfter = 17
+	code := runModes(context.Background(), opt, []string{modeOff})
+	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if code != exitIntegrity || !hasReason(got.Integrity.Reasons, "restart readiness") || !hasReason(got.Integrity.Reasons, "audit gap(s); first: event=receipt_channel_broken") {
+		t.Fatalf("code=%d integrity=%+v", code, got.Integrity)
+	}
+}

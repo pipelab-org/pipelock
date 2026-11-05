@@ -136,7 +136,7 @@ func fakeMain(behavior string, args []string) int {
 		fmt.Println("GROUP_VALID")
 		return 0
 	case "run":
-		if behavior == "restartfail" {
+		if behavior == "restartfail" || behavior == "auditgap-restartfail" {
 			marker := flagValue(args, "--config") + ".started"
 			file, err := os.OpenFile(filepath.Clean(marker), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
@@ -155,7 +155,7 @@ func fakeMain(behavior string, args []string) int {
 // fakeRun is a minimal forward proxy: it blocks the synthetic credential and
 // relays everything else, so the harness sees realistic responses.
 func fakeRun(behavior, listen string) int {
-	if behavior == "auditgap" {
+	if behavior == "auditgap" || behavior == "auditgap-restartfail" {
 		fmt.Println(`{"level":"error","component":"pipelock","event":"error","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"}`)
 	}
 	transport := &http.Transport{Proxy: nil}

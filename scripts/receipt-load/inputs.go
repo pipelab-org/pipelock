@@ -232,7 +232,9 @@ const (
 )
 
 // auditGapLines counts diagnostic messages, not marker text in paths or other
-// request fields. The message formats come from receiptChannelBrokenError in
+// request fields. A record that fails to decode doesn't stop the scan, and
+// every error comes back with the gaps found so far, so a malformed line can't
+// hide a gap the proxy did report. The message formats come from receiptChannelBrokenError in
 // internal/proxy/proxy.go and the warning writers in internal/mcp/taint.go and
 // internal/deferred/manager.go.
 func auditGapLines(logPath string) (int, []string, error) {
@@ -244,10 +246,14 @@ func auditGapLines(logPath string) (int, []string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
 	count, lines := 0, []string{}
+	var decodeErr error
 	for scanner.Scan() {
 		message, err := auditGapMessage(scanner.Bytes())
 		if err != nil {
-			return 0, nil, err
+			if decodeErr == nil {
+				decodeErr = err
+			}
+			continue
 		}
 		if message == "" {
 			continue
@@ -258,9 +264,9 @@ func auditGapLines(logPath string) (int, []string, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, nil, fmt.Errorf("scan proxy log: %w", err)
+		return count, lines, errors.Join(decodeErr, fmt.Errorf("scan proxy log: %w", err))
 	}
-	return count, lines, nil
+	return count, lines, decodeErr
 }
 
 func auditGapMessage(line []byte) (string, error) {
