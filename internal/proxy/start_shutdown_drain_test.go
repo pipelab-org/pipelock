@@ -289,3 +289,22 @@ func TestStartReportsIncompleteDrainFromEveryListener(t *testing.T) {
 		t.Fatal("StartWithListener did not return after cancel")
 	}
 }
+
+// A listener error while ctx is still live drains through the done path; a
+// drain failure there must still report ErrShutdownIncomplete with both causes.
+func TestServeUntilShutdownListenerErrorWithDrainFailure(t *testing.T) {
+	serveErr := errors.New("listener failed")
+	shutdowns := 0
+	err := serveUntilShutdown(t.Context(), func() error { return serveErr }, func() error {
+		shutdowns++
+		return context.DeadlineExceeded
+	})
+	for _, cause := range []error{serveErr, ErrShutdownIncomplete, context.DeadlineExceeded} {
+		if !errors.Is(err, cause) {
+			t.Errorf("serveUntilShutdown = %v, want cause %v", err, cause)
+		}
+	}
+	if shutdowns != 1 {
+		t.Fatalf("shutdown ran %d times, want 1", shutdowns)
+	}
+}
