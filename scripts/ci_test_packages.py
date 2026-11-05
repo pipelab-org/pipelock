@@ -44,6 +44,7 @@ import json
 import math
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -565,7 +566,9 @@ def coverage_mode(shard: str) -> str:
     return "separate" if located[0] in SEPARATE_COVERAGE_TREES else "race"
 
 
-def predicted_loads(tags: str) -> dict[str, float]:
+def predicted_loads(
+    tags: str, overrides: dict | None = None,
+) -> dict[str, float]:
     """Predict each shard's test seconds from the checked-in measurements.
 
     A sub-shard's load is the summed time of its top-level tests; a name with
@@ -573,7 +576,10 @@ def predicted_loads(tags: str) -> dict[str, float]:
     summed package time divided by the packages it runs at once, bounded
     below by the longest indivisible package.
     """
-    durations = load_durations()
+    baseline = load_durations()
+    durations = {tree: dict(tests) for tree, tests in baseline.items()}
+    for tree, tests in (overrides or {}).get("trees", {}).items():
+        durations.setdefault(tree, {}).update(tests)
     loads: dict[str, float] = {}
     for tree, count in TEST_SPLITS.items():
         names = tree_test_names(ROOT / HEAVY_TREES[tree])
@@ -585,14 +591,22 @@ def predicted_loads(tags: str) -> dict[str, float]:
         # A separate-coverage tree reruns its tests without -race after the
         # race pass, in the same job.
         extra = 1.0 + (COVERAGE_PASS_FRACTION if tree in SEPARATE_COVERAGE_TREES else 0.0)
-        for index, bucket in enumerate(partition_names(names, count, weights or None)):
+        # Cost the buckets CI really selects from the checked-in weights. An
+        # in-memory repack would claim a balance no runner actually uses yet.
+        buckets = partition_names(names, count, baseline.get(tree) or None)
+        # Names missed by the cheap source inventory run in the final -skip
+        # bucket. AST-selected multiline declarations must still be charged.
+        buckets[-1].extend(sorted(set((overrides or {}).get("trees", {}).get(tree, {})) - set(names)))
+        for index, bucket in enumerate(buckets):
             loads[f"{tree}-{index}"] = extra * sum(weights.get(name, default) for name in bucket)
-    package_weights = load_package_durations()
+    package_baseline = load_package_durations()
+    package_weights = dict(package_baseline)
+    package_weights.update((overrides or {}).get("packages", {}))
     packages = list_packages(tags)
     known = sorted(package_weights.values())
     default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
     for shard in REST_SHARDS:
-        selected = select_packages(packages, shard, package_weights)
+        selected = select_packages(packages, shard, package_baseline)
         seconds = [package_weights.get(pkg, default) for pkg in selected]
         loads[shard] = package_makespan(seconds, REST_PACKAGE_PARALLELISM)
     return loads
@@ -614,12 +628,12 @@ def package_makespan(seconds: list[float], slots: int) -> float:
     return sum(seconds) / slots + (1 - 1 / slots) * max(seconds)
 
 
-def check_budget(tags: str, budget: float) -> int:
+def check_budget(tags: str, budget: float, overrides: dict | None = None) -> int:
     # NaN compares false with everything, so it would pass every shard.
     if not math.isfinite(budget) or budget <= 0:
         print(f"ci_test_packages.py: budget must be a positive finite number of seconds, got {budget}", file=sys.stderr)
         return 2
-    loads = predicted_loads(tags)
+    loads = predicted_loads(tags, overrides)
     over = {shard: load for shard, load in loads.items() if load > budget}
     for shard in SHARDS:
         mark = "  OVER" if shard in over else ""
@@ -633,6 +647,89 @@ def check_budget(tags: str, budget: float) -> int:
         )
         return 1
     return 0
+
+
+def changed_tests(base: str, head: str) -> list[dict[str, str]]:
+    """Compare parsed declarations at Git refs, independent of the working tree."""
+    result = subprocess.run(
+        ["go", "run", str(ROOT / "scripts/ci_changed_tests.go"), "--base", base, "--head", head],
+        check=True, capture_output=True, text=True, cwd=ROOT,
+    )
+    return json.loads(result.stdout)
+
+
+def runnable_changed_tests(tests: list[dict[str, str]], tags: str) -> dict[str, list[str]]:
+    """Use Go's real build constraints, including race, OS and architecture."""
+    selected: dict[str, list[str]] = {}
+    for package in sorted({test["package"] for test in tests}):
+        command = ["go", "list", "-e", "-json", "-tags", ",".join(filter(None, ["race", tags])), package]
+        result = subprocess.run(command, check=True, capture_output=True, text=True, cwd=ROOT)
+        info = json.loads(result.stdout)
+        # Build-constrained packages have no applicable files. Other errors
+        # (such as an invalid package) must not silently become a no-op.
+        if info.get("Error"):
+            error = info["Error"].get("Err", "")
+            # Nested modules are outside the main module's ./... race lane.
+            if "main module" in error and "does not contain package" in error:
+                continue
+            if "build constraints exclude all Go files" in error:
+                continue
+            raise ValueError(info["Error"])
+        files = set(info.get("TestGoFiles", []) + info.get("XTestGoFiles", []))
+        names = sorted({test["name"] for test in tests
+                        if test["package"] == package and Path(test["file"]).name in files})
+        if names:
+            selected[info["ImportPath"]] = names
+    return selected
+
+
+def measure_changed_tests(tests: list[dict[str, str]], tags: str, json_out: Path) -> int:
+    selected = runnable_changed_tests(tests, tags) if tests else {}
+    if not selected:
+        print(f"No added or changed runnable tests (tags={tags or 'none'}); race measurement is a no-op")
+        return 0
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    status = 0
+    with json_out.open("w", encoding="utf-8") as stream:
+        for package, names in selected.items():
+            print(f"Measuring {package}: {' '.join(names)}", flush=True)
+            command = ["go", "test", "-race", "-p=1", "-parallel=2", "-timeout=15m", "-count=1", "-json"]
+            if tags:
+                command.extend(["-tags", tags])
+            # Match the race lane's atomic coverage overhead, except scanner,
+            # whose coverage is measured separately by the existing planner.
+            if not package_in_tree(package, HEAVY_TREES["scanner"]):
+                command.extend(["-covermode=atomic", "-coverprofile=" + str(json_out.with_suffix(".coverage"))])
+            command.extend(["-run=" + exact_names_regex(names), package])
+            print(shlex.join(command), flush=True)
+            result = subprocess.run(command, check=False, stdout=stream, cwd=ROOT)
+            if result.returncode:
+                status = 1
+    if status:
+        print(f"Changed-test race run failed; inspect {json_out}", file=sys.stderr)
+        return status
+    # A successful go test with an empty selector match is not measurement.
+    completed: set[tuple[str, str]] = set()
+    for line in json_out.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        if event.get("Action") in ("pass", "skip") and isinstance(event.get("Test"), str):
+            completed.add((event.get("Package"), event["Test"]))
+    missing = {(pkg, name) for pkg, names in selected.items() for name in names} - completed
+    if missing:
+        raise ValueError(f"selected tests produced no terminal result: {sorted(missing)}")
+    if __package__:
+        from .ci_test_durations import partial_overrides
+    else:
+        from ci_test_durations import partial_overrides
+    overrides = partial_overrides([json_out])
+    result = check_budget(tags, SHARD_BUDGET_SECONDS, overrides)
+    if result:
+        print("Measured changed tests: " + "; ".join(
+            f"{pkg}: {', '.join(names)}" for pkg, names in selected.items()), file=sys.stderr)
+        print("Refresh weights with: " + shlex.join([
+            "python3", "scripts/ci_test_durations.py", "--partial", "--write", str(json_out)
+        ]) + "; or adjust TEST_SPLITS in scripts/ci_test_packages.py", file=sys.stderr)
+    return result
 
 
 def main() -> int:
@@ -680,9 +777,23 @@ def main() -> int:
         default=SHARD_BUDGET_SECONDS,
         help=f"predicted-load budget per shard (default {SHARD_BUDGET_SECONDS})",
     )
+    parser.add_argument("--measurement-json", nargs="+", type=Path,
+                        help="override weights with partial changed-test race JSON streams")
+    parser.add_argument("--changed-tests-base", help="base revision for AST test selection")
+    parser.add_argument("--changed-tests-head", default="HEAD", help="head revision for AST test selection")
+    parser.add_argument("--measure-changed-tests", action="store_true", help="race-test the changed selection and check budget")
+    parser.add_argument("--json-out", type=Path, default=Path("changed-tests.json"), help="changed-test race JSON output")
     args = parser.parse_args()
 
     try:
+        if args.changed_tests_base:
+            tests = changed_tests(args.changed_tests_base, args.changed_tests_head)
+            if args.measure_changed_tests:
+                return measure_changed_tests(tests, args.tags, args.json_out)
+            print(json.dumps(tests, indent=2))
+            return 0
+        if args.measure_changed_tests:
+            parser.error("--measure-changed-tests needs --changed-tests-base")
         if args.list_unit_shards:
             print(json.dumps(list(unit_shard_names())))
             return 0
@@ -697,7 +808,14 @@ def main() -> int:
             print(" ".join(packages))
             return 0
         if args.check_budget:
-            return check_budget(args.tags, args.budget_seconds)
+            overrides = None
+            if args.measurement_json:
+                if __package__:
+                    from .ci_test_durations import partial_overrides
+                else:
+                    from ci_test_durations import partial_overrides
+                overrides = partial_overrides(args.measurement_json)
+            return check_budget(args.tags, args.budget_seconds, overrides)
         if args.coverage_mode:
             if not args.shard:
                 parser.error("--coverage-mode needs --shard")
@@ -718,7 +836,7 @@ def main() -> int:
             print(shard_selector(args.shard))
             return 0
         packages = select_packages(list_packages(args.tags), args.shard, load_package_durations())
-    except (subprocess.CalledProcessError, ValueError) as err:
+    except (subprocess.CalledProcessError, ValueError, OSError) as err:
         print(f"ci_test_packages.py: {err}", file=sys.stderr)
         return 1
 

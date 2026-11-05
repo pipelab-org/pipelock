@@ -31,6 +31,7 @@ from ci_test_packages import (  # noqa: E402
     DURATIONS_FILE,
     HEAVY_TREES,
     ROOT,
+    MIN_UNMEASURED_SECONDS,
     SHARDS,
     TEST_SPLITS,
     load_durations,
@@ -250,6 +251,34 @@ def artifact_complete(path: Path) -> bool:
     return bool(packages) and not pending and all(action in ("pass", "skip") for action in packages.values())
 
 
+def partial_overrides(paths: list[Path]) -> dict:
+    """Use partial race runs without replacing whole-package weights with subsets.
+
+    Split trees already store per-test weights. Rest shards only store package
+    totals, so retain their baseline and add the measured changed-test run.
+    This conservative bound can overestimate a changed rest test; a full-package
+    measurement through the normal refresh command removes that overestimate.
+    """
+    for path in paths:
+        if not artifact_complete(path):
+            raise ValueError(f"incomplete or failed changed-test race stream: {path}")
+    previous = load_package_durations()
+    known = sorted(previous.values())
+    default = max(known[len(known) // 2] if known else 1.0, MIN_UNMEASURED_SECONDS)
+    result = {
+        "trees": collect(paths, load_durations()),
+        "packages": {pkg: previous.get(pkg, default) + seconds
+                     for pkg, seconds in collect_packages(paths).items()},
+    }
+    # Reuse the planner's finite, non-negative weight validation for imported
+    # partial JSON too; invalid numbers must never make a budget compare green.
+    from ci_test_packages import _seconds_map
+    for tree, tests in result["trees"].items():
+        _seconds_map(paths[0], tree, tests)
+    _seconds_map(paths[0], "packages", result["packages"])
+    return result
+
+
 def ci_artifact_inputs(directory: Path) -> list[Path]:
     """Require every Go 1.26 producer before treating a refresh as CI evidence."""
     inputs: list[Path] = []
@@ -271,6 +300,8 @@ def main() -> int:
     parser.add_argument("inputs", nargs="*", type=Path, help="go test -json output files")
     parser.add_argument("--write", action="store_true", help=f"update {DURATIONS_FILE.name}")
     parser.add_argument("--ci-artifacts", type=Path, help="require the complete Go 1.26 CI artifact directory")
+    parser.add_argument("--partial", action="store_true",
+                        help="inputs contain only changed tests, not complete packages")
     args = parser.parse_args()
     if args.ci_artifacts and args.inputs:
         parser.error("use either --ci-artifacts or input files")
@@ -283,8 +314,13 @@ def main() -> int:
         parser.error("provide input files or --ci-artifacts")
 
     previous = load_durations()
-    measured = collect(inputs, previous)
-    packages = collect_packages(inputs)
+    try:
+        overrides = partial_overrides(inputs) if args.partial else None
+    except ValueError as error:
+        print(f"ci_test_durations.py: {error}", file=sys.stderr)
+        return 1
+    measured = overrides["trees"] if overrides else collect(inputs, previous)
+    packages = overrides["packages"] if overrides else collect_packages(inputs)
     if not measured and not packages:
         print("ci_test_durations.py: no test results in the inputs", file=sys.stderr)
         return 1

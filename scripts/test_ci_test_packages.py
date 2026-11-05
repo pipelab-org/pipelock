@@ -315,6 +315,39 @@ class TestPackageSharding(unittest.TestCase):
             self.assertIn("over the 40s budget", err.getvalue())
             self.assertIn("positive finite", err.getvalue())
 
+    def test_measured_overrides_enforce_existing_budget(self) -> None:
+        trees = {"proxy": {"TestChanged": 1.0, "TestKeep": 20.0}}
+        with patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             patch.object(ci_test_packages, "load_durations", return_value=trees), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestChanged", "TestKeep"]), \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
+            under = {"trees": {"proxy": {"TestChanged": 500.0}}}
+            self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, under), 0)
+            self.assertEqual(sum(predicted_loads("", under)[f"proxy-{i}"] for i in range(TEST_SPLITS["proxy"])), 520.0)
+            over = {"trees": {"proxy": {"TestChanged": 700.0}}}
+            self.assertEqual(ci_test_packages.check_budget("enterprise", SHARD_BUDGET_SECONDS, over), 1)
+            self.assertIn("over the 600s budget", error.getvalue())
+            # Parsed multiline declarations can be absent from the cheap shard
+            # inventory; a real measurement still has to count toward budget.
+            extra = {"trees": {"proxy": {"TestMultiline": 700.0}}}
+            self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, extra), 1)
+        self.assertEqual(trees["proxy"]["TestChanged"], 1.0)
+
+    def test_overrides_cost_real_buckets_without_silent_repacking(self) -> None:
+        names = [f"Test{i}" for i in range(16)]
+        baseline = dict.fromkeys(names, 1.0)
+        bucket = ci_test_packages.partition_names(names, TEST_SPLITS["proxy"], baseline)[0]
+        self.assertEqual(len(bucket), 2)
+        overrides = {"trees": {"proxy": dict.fromkeys(bucket, 400.0)}}
+        with patch.object(ci_test_packages, "load_durations", return_value={"proxy": baseline}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=names), \
+             patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(predicted_loads("", overrides)["proxy-0"], 800)
+            self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, overrides), 1)
+
     def test_unmeasured_tests_are_never_free_even_when_the_median_is_zero(self) -> None:
         trees = {tree: {f"Test{tree}{index}": 0.0 for index in range(20)} for tree in TEST_SPLITS}
         unmeasured = {tree: list(tests) + [f"TestNew{tree}{index}" for index in range(8)] for tree, tests in trees.items()}

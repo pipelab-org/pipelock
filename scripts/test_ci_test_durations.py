@@ -5,6 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+from scripts import ci_test_durations as durations
 
 from scripts.ci_test_durations import RACE_PARALLELISM, collect, collect_packages
 from scripts.ci_test_packages import ROOT
@@ -20,6 +23,22 @@ class DurationTest(unittest.TestCase):
                                         for event in attempt), encoding="utf-8")
                 paths.append(path)
             return collect(paths)["proxy"]
+
+    def test_partial_stream_preserves_rest_package_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "changed.json"
+            events = [
+                {"Action": "run", "Test": "TestNew"},
+                {"Action": "pass", "Test": "TestNew", "Elapsed": 700},
+                {"Action": "pass", "Elapsed": 701},
+            ]
+            path.write_text("".join(json.dumps({"Package": "example.test/rest", **event}) + "\n" for event in events))
+            with patch.object(durations, "load_package_durations", return_value={"example.test/rest": 100}), \
+                 patch.object(durations, "load_durations", return_value={}):
+                self.assertEqual(durations.partial_overrides([path])["packages"], {"example.test/rest": 801})
+                path.write_text(json.dumps({"Package": "example.test/rest", "Action": "run", "Test": "TestNew"}))
+                with self.assertRaisesRegex(ValueError, "incomplete or failed"):
+                    durations.partial_overrides([path])
 
     def test_parallelism_matches_ci_race_shape(self):
         ci = (ROOT / ".github/workflows/ci.yaml").read_text(encoding="utf-8")

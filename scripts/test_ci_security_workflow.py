@@ -117,6 +117,13 @@ exit "$DEFAULT_STATUS"
             )
             return result.returncode, calls.read_text(encoding="utf-8").splitlines()
 
+    def test_scanner_build_retries_modules_in_trusted_tree(self) -> None:
+        security = self.workflow.split("  security-scan:", 1)[1].split("  changed-files:", 1)[0]
+        script = step_script(security, "Build scanner from origin/main")
+        self.assertIn('git worktree add --detach "${build_tree}" "${main_sha}"', script)
+        self.assertLess(script.index('cd "${build_tree}"'), script.index("bash scripts/ci-retry.sh go mod download"))
+        self.assertLess(script.index("bash scripts/ci-retry.sh go mod download"), script.index("go build -o"))
+
     def test_required_govulncheck_covers_default_and_enterprise_reachability(self) -> None:
         # The required job must scan both graphs with the executable installed
         # from the pinned module version. Checking the job block rather than the

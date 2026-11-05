@@ -488,7 +488,7 @@ def topology_errors(jobs: dict) -> list[str]:
             # Pull requests wait on the no-race lane; the race producers prove
             # the same tests on main and roll up into race (1.26) instead.
             expected = {
-                "security-scan", "changed-files", UNIT_PRODUCER,
+                "security-scan", "changed-files", "test-changed-race-go126", UNIT_PRODUCER,
                 "test-subprocess-coverage", "guard-conformance", replay,
             }
         else:
@@ -743,6 +743,20 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         errors = skip_carveout_errors(broken)
         self.assertEqual(len(errors), 1)
         self.assertIn("test-oss-go127", errors[0])
+
+    def test_changed_race_measurements_feed_required_check_on_every_event(self):
+        job = self.jobs["test-changed-race-go126"]
+        self.assertNotIn("if", job, "non-Go PRs still need a successful check")
+        self.assertEqual(job["needs"], ["security-scan"])
+        self.assertEqual(job["strategy"]["matrix"], {"variant": ["oss", "enterprise"]})
+        self.assertIn("test-changed-race-go126", self.jobs["test-go126"]["needs"])
+        run = "\n".join(step.get("run", "") for step in job["steps"])
+        self.assertIn("--measure-changed-tests", run)
+        self.assertIn("--changed-tests-base", run)
+        self.assertIn("git merge-base", run)
+        self.assertIn("--tags enterprise", run)
+        self.assertIn("No test source changes", run)
+        self.assertIn("weekly ci-shard-drift.yaml", WORKFLOW.read_text())
 
     def test_race_lane_on_pull_requests_fails_the_contract(self):
         self.assertEqual(race_lane_errors(self.jobs), [])
