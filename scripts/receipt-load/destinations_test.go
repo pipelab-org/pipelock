@@ -67,7 +67,7 @@ func TestPerRequestRealProducer(t *testing.T) {
 				if err != nil || res.Integrity.Verdict != verdictPass || res.Performance.Verdict != perfMeasured || res.Integrity.ReceiptAttribution != wantAttribution {
 					t.Fatalf("producer: %v %+v", err, res)
 				}
-				if res.Inputs.Harness.ContractVersion != "7" || res.Inputs.Workload.Destinations != destinationsPerRequest {
+				if res.Inputs.Harness.ContractVersion != harnessContractVersion || res.Inputs.Workload.Destinations != destinationsPerRequest {
 					t.Fatalf("contract: %+v", res.Inputs)
 				}
 				var cfg struct {

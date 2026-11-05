@@ -38,6 +38,21 @@ func TestSummaryRejectsFailedVerifier(t *testing.T) {
 	}
 }
 
+func TestSummaryRejectsPreAuditGapContract(t *testing.T) {
+	root := t.TempDir()
+	r := fakeResult(100, 90, 95, verdictPass, perfMeasured)
+	r.Inputs.Harness.ContractVersion = "7" // predates proxy audit-gap validation
+	putResult(t, root, 2, 1, 1, modeRequired, r)
+	args := []string{"summarize", "--root", root, "--modes", modeRequired, "--cpus", "2", "--chains", "1"}
+	if code := realMain(args); code == exitOK {
+		t.Fatal("result without audit-gap validation returned success")
+	}
+	row := readSummary(t, root)["2/1/required"]
+	if row["integrity"] != verdictFail || row["median_req_s"] != "" {
+		t.Fatalf("old contract presented as valid measurement: %v", row)
+	}
+}
+
 func TestSummaryBoundsSamples(t *testing.T) {
 	root := t.TempDir()
 	for _, count := range []int{0, -1, maxSummarySamples + 1, int(^uint(0) >> 1)} {
