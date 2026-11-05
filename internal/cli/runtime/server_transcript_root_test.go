@@ -5,11 +5,15 @@ package runtime
 
 import (
 	"context"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +21,96 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
+
+func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
+	recorderDir := t.TempDir()
+	keyPath := filepath.Join(t.TempDir(), "flight-recorder.key")
+	_, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := writeServerTestConfig(t, "mode: balanced\nflight_recorder:\n  enabled: true\n  dir: "+strconv.Quote(recorderDir)+"\n  signing_key_path: "+strconv.Quote(keyPath)+"\n")
+	s, buf := newTestServer(t, func(o *ServerOpts) {
+		o.ConfigFile = cfgPath
+		o.Listen = serverTestEphemeralListen
+		o.ListenChanged = true
+	})
+	e := s.liveReceiptEmitter()
+	if e == nil {
+		t.Fatal("signed emitter missing")
+	}
+	if err := e.Emit(receipt.EmitOpts{
+		ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+		Transport: "forward", Method: http.MethodGet, Target: "https://api.vendor.example/",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var released atomic.Bool
+	releaseHandler := func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}
+	t.Cleanup(releaseHandler)
+	srv := newHTTPServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "response sent")
+		w.(http.Flusher).Flush()
+		close(entered)
+		<-release
+	}))
+	// The runtime calls ShutdownAgentServers again after proxy.Start returns.
+	// Hold the handler through the first shutdown deadline, then release on
+	// that second call so deferred cleanup can finish without a timing guess.
+	var shutdowns atomic.Int32
+	srv.RegisterOnShutdown(func() {
+		if shutdowns.Add(1) == 2 {
+			releaseHandler()
+		}
+	})
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", serverTestEphemeralListen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	s.proxy.RegisterAgentServer(srv)
+	go func() { _ = srv.Serve(ln) }()
+	client := &http.Client{Timeout: 20 * time.Second}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "http://"+ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resp.Body.Close() })
+	<-entered
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	returned := make(chan error, 1)
+	go func() { returned <- s.Start(ctx) }()
+	waitForServerOutput(t, buf, "Pipelock")
+	cancel()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("Start = %v, want shutdown deadline error", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Start did not finish after shutdown deadline")
+	}
+	for _, marker := range []string{"transcript_root", "session_close"} {
+		if evidenceDirContains(t, recorderDir, marker) {
+			t.Errorf("incomplete shutdown wrote %s", marker)
+		}
+	}
+}
 
 // evidenceDirContains reports whether any evidence file in dir contains the
 // given substring. Used to assert a transcript_root entry was written without

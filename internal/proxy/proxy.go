@@ -5254,6 +5254,10 @@ func (p *Proxy) Handler() http.Handler {
 	return p.buildHandler(p.buildMux())
 }
 
+// ErrShutdownIncomplete means a listener failed to drain before shutdown ended.
+// Callers must not seal receipt chains as complete after this error.
+var ErrShutdownIncomplete = errors.New("proxy shutdown incomplete")
+
 // Start starts the fetch proxy HTTP server. It blocks until the context
 // is cancelled or the server encounters a fatal error.
 func (p *Proxy) Start(ctx context.Context) error {
@@ -5324,27 +5328,33 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 			return p.server.Serve(ln)
 		}
 		return p.server.ListenAndServe()
-	}, func() {
+	}, func() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		var shutdownErr error
 		for _, srv := range p.agentServers {
 			if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
 				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", srv.Addr), shutErr)
+				shutdownErr = errors.Join(shutdownErr, shutErr)
 			}
 		}
 		if err := p.server.Shutdown(shutdownCtx); err != nil {
 			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
+			shutdownErr = errors.Join(shutdownErr, err)
 		}
 		p.Close()
+		return shutdownErr
 	})
-	if errors.Is(err, http.ErrServerClosed) {
+	if errors.Is(err, http.ErrServerClosed) && !errors.Is(err, ErrShutdownIncomplete) {
 		return nil
 	}
 	return err
 }
 
 // serveUntilShutdown runs serve and calls shutdown once ctx is cancelled. It
-// returns serve's error only after shutdown has finished.
+// returns serve's error only after shutdown has finished. A shutdown failure
+// also returns ErrShutdownIncomplete and its cause, so an expired grace period
+// cannot be mistaken for a completed drain.
 //
 // Serve returns ErrServerClosed as soon as Shutdown begins, before in-flight
 // handlers finish, so returning on serve alone would report the server stopped
@@ -5352,20 +5362,24 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 // receipt recorder once start returns, and an early return loses the outcome
 // receipt of every request still being served. The done channel lets the
 // shutdown goroutine exit when serve fails without ctx being cancelled.
-func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func()) error {
+func serveUntilShutdown(ctx context.Context, serve func() error, shutdown func() error) error {
 	done := make(chan struct{})
 	shutdownDone := make(chan struct{})
+	var shutdownErr error
 	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
 		defer close(shutdownDone)
 		select {
 		case <-ctx.Done():
-			shutdown()
+			shutdownErr = shutdown()
 		case <-done:
 		}
 	}()
 	err := serve()
 	close(done)
 	<-shutdownDone
+	if shutdownErr != nil {
+		return errors.Join(err, ErrShutdownIncomplete, shutdownErr)
+	}
 	return err
 }
 

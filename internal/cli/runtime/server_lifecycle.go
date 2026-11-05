@@ -358,6 +358,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// own shutdown, then Wait() for every goroutine to finish (HTTP shutdown
 	// goroutines complete only after in-flight handlers drain).
 	var lifecycleWG sync.WaitGroup
+	proxyDrainIncomplete := false
 	defer func() {
 		cancel()
 		s.proxy.ShutdownAgentServers()
@@ -369,7 +370,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// runs after this) closes the recorder. Sealing the completeness anchor
 		// on clean exit is the whole point of F4; it is a no-op when receipts are
 		// off or none were emitted.
-		s.sealTranscriptRoot()
+		if !proxyDrainIncomplete {
+			s.sealTranscriptRoot()
+		}
 	}()
 
 	// Capture duration timer: cancel context after the specified capture
@@ -1316,6 +1319,9 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	s.notifyReloadStatusLocked()
 	s.reloadMu.Unlock()
 	if err := s.proxy.StartWithListener(ctx, fetchLn); err != nil {
+		// Shutdown may exhaust its grace period with handlers still active.
+		// Leave that run unsealed, even if a later shutdown retry drains it.
+		proxyDrainIncomplete = errors.Is(err, proxy.ErrShutdownIncomplete)
 		if groupErr := s.requiredReceiptGroupError(); groupErr != nil {
 			return groupErr
 		}

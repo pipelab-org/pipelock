@@ -44,10 +44,10 @@ func TestServeUntilShutdownWaitsForInFlightHandlers(t *testing.T) {
 	t.Cleanup(cancel)
 	returned := make(chan error, 1)
 	go func() {
-		returned <- serveUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() {
+		returned <- serveUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() error {
 			shutdownCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 			defer stop()
-			_ = srv.Shutdown(shutdownCtx)
+			return srv.Shutdown(shutdownCtx)
 		})
 	}()
 	released := false
@@ -114,7 +114,10 @@ func TestServeUntilShutdownServeFailureReturnsWithoutCancel(t *testing.T) {
 	shutdownCalled := false
 	returned := make(chan error, 1)
 	go func() {
-		returned <- serveUntilShutdown(ctx, func() error { return want }, func() { shutdownCalled = true })
+		returned <- serveUntilShutdown(ctx, func() error { return want }, func() error {
+			shutdownCalled = true
+			return nil
+		})
 	}()
 	select {
 	case err := <-returned:
@@ -139,9 +142,9 @@ func TestServeUntilShutdownCancelWithNothingInFlight(t *testing.T) {
 	shutdowns := 0
 	returned := make(chan error, 1)
 	go func() {
-		returned <- serveUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() {
+		returned <- serveUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() error {
 			shutdowns++
-			_ = srv.Shutdown(context.Background())
+			return srv.Shutdown(context.Background())
 		})
 	}()
 	cancel()
@@ -155,5 +158,28 @@ func TestServeUntilShutdownCancelWithNothingInFlight(t *testing.T) {
 	}
 	if shutdowns != 1 {
 		t.Fatalf("shutdown ran %d times, want 1", shutdowns)
+	}
+}
+
+func TestServeUntilShutdownPreservesDrainFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	serveErr := errors.New("listener failed")
+	for _, want := range []error{http.ErrServerClosed, serveErr} {
+		t.Run(want.Error(), func(t *testing.T) {
+			shutdownStarted := make(chan struct{})
+			err := serveUntilShutdown(ctx, func() error {
+				<-shutdownStarted
+				return want
+			}, func() error {
+				close(shutdownStarted)
+				return context.DeadlineExceeded
+			})
+			for _, cause := range []error{want, ErrShutdownIncomplete, context.DeadlineExceeded} {
+				if !errors.Is(err, cause) {
+					t.Errorf("serveUntilShutdown = %v, want cause %v", err, cause)
+				}
+			}
+		})
 	}
 }
