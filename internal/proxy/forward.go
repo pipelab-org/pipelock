@@ -2209,6 +2209,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx = context.WithValue(ctx, ctxKeyAgentScanner, sc)
 	ctx = context.WithValue(ctx, ctxKeyAgentContractLoader, snapshotContractLoader)
 	ctx = context.WithValue(ctx, ctxKeyRedirectTransport, TransportForward)
+	redirectExempt := new(atomic.Bool)
+	ctx = context.WithValue(ctx, ctxKeyRedirectStructuralExemption, redirectExempt)
 	ctx = context.WithValue(ctx, ctxKeyReceiptShard, selectedReceiptShard)
 	ctx = context.WithValue(ctx, ctxKeyRedirectSessionRecorder, forwardRec)
 	if forwardAirlockSess != nil {
@@ -2714,7 +2716,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			outcomeStatus = strconv.Itoa(resp.StatusCode)
 			outcomeBytes = 0
 			outcomeReason = "complete"
-			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
+			if forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() {
 				forwardScope := adaptiveScopeForHost(fwdRespHost)
 				recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 					sessionKey: sessionKeyFor(cfg, agent, clientIP, id.Auth),
@@ -3435,7 +3437,8 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		if responseBudgetTruncated {
 			outcomeReason = "budget_truncated"
 		}
-		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact {
+		// A structural exemption is adaptive-neutral and earns no clean credit.
+		if structured == nil && forwardRec != nil && cfg.AdaptiveEnforcement.Enabled && !hasFinding && !fwdAuthenticatedArtifact && !result.IsStructuralExemption() && !redirectExempt.Load() {
 			forwardScope := adaptiveScopeForHost(fwdRespHost)
 			recordCleanForAdaptiveScope(forwardRec, forwardScope, &cfg.AdaptiveEnforcement, sc.ResponseScanningEnabled() && !responseBudgetTruncated && !fwdRespExempt && !fwdAuthenticatedArtifact, adaptiveRecoveryContext{
 				assessment: recoveryAssessment,

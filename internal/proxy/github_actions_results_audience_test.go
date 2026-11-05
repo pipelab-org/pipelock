@@ -21,6 +21,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/capture"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
 func TestInterceptTunnel_GitHubActionsResultsSAS(t *testing.T) {
@@ -121,6 +122,76 @@ func TestInterceptTunnel_GitHubActionsResultsSAS(t *testing.T) {
 	}
 }
 
+// Inside a TLS-intercepted tunnel, an allowed results download is a
+// structural exemption and earns no clean credit; a plain clean download from
+// the same host does, which shows the recorder would see the credit.
+func TestInterceptTunnel_GitHubActionsResultsSASEarnsNoCleanCredit(t *testing.T) {
+	const host = "productionresultssa32.blob.core.windows.net"
+	const path = "/actions-results/00000000-0000-4000-8000-000000000011/workflow-job-run-00000000-0000-4000-8000-000000000012/logs/job/job-logs.txt"
+	query, err := url.ParseQuery(releaseGrantSASQuery("unused", "actions-intercept-decay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query.Del("jwt")
+	query.Set("st", "2026-10-03T21:59:55Z")
+	query.Set("se", "2026-10-03T22:10:00Z")
+	for _, tc := range []struct {
+		name, query string
+		wantCredit  bool
+	}{
+		{"sas grant", "?" + query.Encode(), false},
+		{"plain clean control", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = fmt.Fprint(w, "download bytes")
+			}))
+			defer upstream.Close()
+			cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.EscalationThreshold = 100
+			addr := upstream.Listener.Addr().String()
+			_, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				t.Fatalf("SplitHostPort: %v", err)
+			}
+			sc := releaseGrantScanner(t, cfg, time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC))
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://"+host+":"+port+path+tc.query, nil)
+			dialer := &net.Dialer{}
+			upstreamRT := upstream.Client().Transport.(*http.Transport).Clone()
+			upstreamRT.TLSClientConfig = upstreamRT.TLSClientConfig.Clone()
+			upstreamRT.TLSClientConfig.ServerName = upstream.Listener.Addr().(*net.TCPAddr).IP.String()
+			upstreamRT.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, addr)
+			}
+			t.Cleanup(upstreamRT.CloseIdleConnections)
+			rec := &interceptMockRecorder{}
+			resp := interceptAndRequestWithRecorder(t, interceptRequestOptions{
+				Upstream:   upstream,
+				TargetHost: host,
+				UpstreamRT: upstreamRT,
+				Cache:      cache,
+				Pool:       pool,
+				Config:     cfg,
+				Scanner:    sc,
+				Logger:     logger,
+				Metrics:    m,
+				Request:    req,
+				Recorder:   rec,
+				Proxy:      &Proxy{captureObs: capture.NopObserver{}, metrics: m},
+			})
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("download refused: status=%d", resp.StatusCode)
+			}
+			if rec.cleanCalled != tc.wantCredit {
+				t.Fatalf("clean credit = %v, want %v", rec.cleanCalled, tc.wantCredit)
+			}
+		})
+	}
+}
+
 // Fetch scans the redirect before dialing storage. HTTPS through the forward
 // proxy is covered by TestInterceptTunnel_GitHubActionsResultsSAS; cleartext
 // absolute-URI requests never earn this HTTPS-only grant.
@@ -192,6 +263,99 @@ func TestFetchEndpoint_GitHubActionsResultsSASRedirect(t *testing.T) {
 				}
 			} else if w.Code != http.StatusForbidden || storageHits.Load() != 0 {
 				t.Fatalf("invalid grant reached storage: status=%d hits=%d", w.Code, storageHits.Load())
+			}
+		})
+	}
+}
+
+// A results download is a structural exemption, which is adaptive-neutral: it
+// must neither raise a session's score nor earn clean-traffic credit, so a run
+// of log fetches can't wash out earlier findings. The control is a plain clean
+// download from the same host, which does earn credit.
+func TestFetchEndpoint_GitHubActionsResultsSASEarnsNoCleanCredit(t *testing.T) {
+	const host = "productionresultssa32.blob.core.windows.net"
+	const blob = "/actions-results/00000000-0000-4000-8000-000000000011/workflow-job-run-00000000-0000-4000-8000-000000000012/logs/job/job-logs.txt"
+	const client = "127.0.0.1"
+	query, err := url.ParseQuery(releaseGrantSASQuery("unused", "actions-decay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	query.Del("jwt")
+	query.Set("st", "2026-10-03T21:59:55Z")
+	query.Set("se", "2026-10-03T22:10:00Z")
+	for _, tc := range []struct {
+		name, location string
+		wantCredit     bool
+	}{
+		{"sas grant", "https://" + host + blob + "?" + query.Encode(), false},
+		{"plain clean control", "https://" + host + blob, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storage := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/plain")
+				_, _ = fmt.Fprint(w, "download bytes")
+			}))
+			defer storage.Close()
+			origin := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, tc.location, http.StatusFound)
+			}))
+			defer origin.Close()
+			cfg := config.Defaults()
+			cfg.FetchProxy.TimeoutSeconds = 5
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			cfg.APIAllowlist = nil
+			cfg.SessionProfiling.Enabled = true
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.DecayPerCleanRequest = 0.5
+			cfg.ApplyDefaults()
+			cfg.Internal = nil
+			cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+			sc := releaseGrantScanner(t, cfg, time.Date(2026, 10, 3, 22, 0, 0, 0, time.UTC))
+			p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			pool := x509.NewCertPool()
+			pool.AddCert(storage.Certificate())
+			transport := &http.Transport{
+				DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					switch addr {
+					case "github.example:80":
+						addr = origin.Listener.Addr().String()
+					case host + ":443":
+						addr = storage.Listener.Addr().String()
+					default:
+						return nil, fmt.Errorf("unexpected destination %s", addr)
+					}
+					return (&net.Dialer{}).DialContext(ctx, network, addr)
+				},
+				TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12},
+			}
+			t.Cleanup(transport.CloseIdleConnections)
+			p.client.Transport = transport
+			rec := p.sessionMgrPtr.Load().GetOrCreate(client)
+			scope := adaptiveScopeForHost(host)
+			rec.RecordScopedSignal(scope, session.SignalBlock, cfg.AdaptiveEnforcement.EscalationThreshold)
+			before := rec.ScopedThreatScore(scope)
+			if before <= 0 {
+				t.Fatalf("seeded score = %v, want > 0", before)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodGet,
+				"/fetch?url="+url.QueryEscape("http://github.example/repos/OWNER/REPO/actions/jobs/123/logs"), nil)
+			req.RemoteAddr = client + ":12345"
+			w := httptest.NewRecorder()
+			p.handleFetch(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("download refused: status=%d body=%s", w.Code, w.Body.String())
+			}
+			after := rec.ScopedThreatScore(scope)
+			if tc.wantCredit && after >= before {
+				t.Fatalf("clean control earned no credit: before=%v after=%v", before, after)
+			}
+			if !tc.wantCredit && after != before {
+				t.Fatalf("structural exemption changed the score: before=%v after=%v", before, after)
 			}
 		})
 	}
