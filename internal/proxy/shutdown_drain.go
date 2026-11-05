@@ -32,7 +32,11 @@ func (g *handlerGate) wrap(next http.Handler) http.Handler {
 			return
 		}
 		defer g.leave()
-		next.ServeHTTP(w, r)
+		handler := next
+		if handler == nil {
+			handler = http.DefaultServeMux
+		}
+		handler.ServeHTTP(w, r)
 	})
 }
 

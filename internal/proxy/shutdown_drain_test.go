@@ -170,6 +170,27 @@ func TestHandlerGateRefusesAfterClose(t *testing.T) {
 	}
 }
 
+func TestRegisterAgentServerPreservesDefaultHandler(t *testing.T) {
+	p := newTestProxy(t)
+	srv := httptest.NewUnstartedServer(nil)
+	p.RegisterAgentServer(srv.Config)
+	srv.Start()
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL+"/shutdown-drain-default-handler", nil)
+	if err != nil {
+		t.Fatalf("default handler request: %v", err)
+	}
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("default handler request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("default handler status = %d, want 404", resp.StatusCode)
+	}
+}
+
 // start and ShutdownAgentServers drain through the gate: an idle connection on
 // the main or an agent listener leaves a clean stop, so the runtime seals.
 func TestStartIgnoresConnectionsWithoutRequest(t *testing.T) {
