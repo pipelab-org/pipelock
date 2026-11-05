@@ -232,7 +232,8 @@ func TestCheckFreshness_V1IgnoresV2FreshnessFields(t *testing.T) {
 		Name:             "test-bundle",
 		Tier:             TierCommunity,
 		MonotonicVersion: 1,
-		ExpiresAt:        "2020-01-01T00:00:00Z",
+		// clock-literal-ok: deliberately expired negative case, paired with the injected 2026-11-05 clock below
+		ExpiresAt: "2020-01-01T00:00:00Z",
 	}
 	state := &FreshnessState{HighestSeen: map[string]uint64{TierCommunity + ":test-bundle": 5}}
 	result := CheckFreshness(b, state, time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC), false)
