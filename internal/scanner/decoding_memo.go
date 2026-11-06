@@ -30,9 +30,11 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
-	keywordMode    bool
-	keywordBudget  *keywordWorkBudget
-	keywordUnit    string
+	keywordMode   bool
+	keywordBudget *keywordWorkBudget
+	keywordUnit   string
+	// keywordInput is the text DLP input whose keyword unit is keywordUnit.
+	keywordInput   string
 	keywordRawURL  string
 	keywordURL     *urlKeywordContext
 	keywordSources map[string][]*keywordDecodeSource

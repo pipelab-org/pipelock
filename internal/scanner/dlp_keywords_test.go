@@ -135,6 +135,13 @@ func TestDLPKeywordsEncodedContext(t *testing.T) {
 			}
 			return b.String()
 		}},
+		{encodingUnicodeTags, func(s string) string {
+			var b strings.Builder
+			for _, c := range s {
+				b.WriteRune(0xe0000 + c)
+			}
+			return b.String()
+		}},
 		{"nested hex", func(s string) string { return hex.EncodeToString([]byte(hex.EncodeToString([]byte(s)))) }},
 		{"separated hex", func(s string) string { return hexByteSep(hex.EncodeToString([]byte(s)), " ") }},
 	}
@@ -524,5 +531,67 @@ func TestDLPKeywordsMetadataBudgetWithoutCandidate(t *testing.T) {
 	}
 	if keywordFound(result) {
 		t.Fatal("harmless corpus produced a custom finding")
+	}
+}
+
+// Tag characters also spell emoji flag subdivisions. Their decoded views must
+// keep source coordinates, so ordinary text neither refuses nor over-matches.
+func TestDLPKeywordsUnicodeTagContext(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	tags := func(s string) string {
+		var b strings.Builder
+		for _, c := range s {
+			b.WriteRune(0xe0000 + c)
+		}
+		return b.String()
+	}
+	flag := "\U0001F3F4" + tags("gbeng") + "\U000E007F"
+	for _, tc := range []struct {
+		name, text string
+		want       bool
+	}{
+		{"flag without keyword", "Go " + flag + " fans! reference " + keywordNumber, false},
+		{"flag with keyword", "Go " + flag + " fans! account " + keywordNumber, true},
+		{"flag between distant keyword", "account, see notes for the " + flag + " supporters club annual meeting agenda; ref " + keywordNumber, false},
+		{"hidden number without keyword", "x " + strings.Repeat("y ", 50) + tags(keywordNumber), false},
+		{"hidden number beyond window", "account" + strings.Repeat(" ", 100) + tags(keywordNumber), false},
+		{"hidden number near keyword", "account " + tags(keywordNumber), true},
+		{"hidden keyword and number", tags("account " + keywordNumber), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := sc.ScanTextForDLP(t.Context(), tc.text)
+			if got := keywordFound(result); got != tc.want {
+				t.Fatalf("got=%v want=%v: %+v", got, tc.want, result)
+			}
+			if HasInspectionLimit(result.Matches) {
+				t.Fatalf("context incomplete: %+v", result)
+			}
+		})
+	}
+}
+
+func TestKeywordTagAndSegmentOffsets(t *testing.T) {
+	source := "a\U000E0001\U000E0062\xff\U000E007Fc"
+	decoded := "ab\xffc"
+	offsets := keywordTagOffsets(source, decoded)
+	want := []keywordByteSpan{{0, 1}, {5, 9}, {9, 10}, {14, 15}}
+	if len(offsets) != len(want) {
+		t.Fatalf("offsets=%v want %v", offsets, want)
+	}
+	for i := range want {
+		if offsets[i] != want[i] {
+			t.Fatalf("offsets=%v want %v", offsets, want)
+		}
+	}
+	if keywordTagOffsets(source, "abc") != nil {
+		t.Fatal("mismatched tag decode was mapped")
+	}
+	if got := keywordSegmentOffsets("ab cd ef", "cd"); len(got) != 2 || got[0] != (keywordByteSpan{3, 4}) {
+		t.Fatalf("unique segment offsets=%v", got)
+	}
+	for _, tc := range []struct{ source, segment string }{{"cd cd", "cd"}, {"aaa", "aa"}, {"ab", "x"}, {"ab", ""}} {
+		if keywordSegmentOffsets(tc.source, tc.segment) != nil {
+			t.Fatalf("ambiguous or absent segment %q in %q was mapped", tc.segment, tc.source)
+		}
 	}
 }

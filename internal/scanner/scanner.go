@@ -3246,7 +3246,7 @@ func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, 
 	// Existing decode results retain their admission order and budget. Tag
 	// segments expand afterward under the same ceilings, so extra views cannot
 	// displace a finding from the original graph.
-	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound)
+	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound, sources)
 	collected = append(collected, tagViews...)
 	complete = complete && tagComplete
 	if len(collected) == 0 {
@@ -3259,7 +3259,8 @@ func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, 
 // inside encoded segments and additional tag layers revealed during the walk.
 // Its queue is iterative; each distinct root and decoded result spends the
 // existing candidate and byte budgets before it contributes another expansion.
-func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
+// With keyword sources, each segment keeps its edge back to the tag view.
+func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	var queue []string
 	for _, d := range prior {
 		if d.encoding == encodingUnicodeTags {
@@ -3280,9 +3281,14 @@ func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL b
 				}
 				seen.add(segment)
 				before := len(out)
-				out = append(out, decodedResult{text: segment, encoding: encodingUnicodeTags})
+				root := decodedResult{text: segment, encoding: encodingUnicodeTags}
+				if sources != nil {
+					sources.add(queue[head], view.text, "projection")
+					root.source = sources.add(view.text, segment, keywordSegment)
+				}
+				out = append(out, root)
 				var walked bool
-				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out, nil)
+				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out, sources)
 				complete = complete && walked
 				for i := before; i < len(out); i++ {
 					if len(out[i].text) > maxDecodeTotalBytes-consumed {
@@ -3491,14 +3497,15 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		decodes = &decodingMemo{}
 	}
 	if decodes != nil {
-		priorKeywordUnit, priorKeywordURL := decodes.keywordUnit, decodes.keywordURL
+		priorKeywordUnit, priorKeywordInput, priorKeywordURL := decodes.keywordUnit, decodes.keywordInput, decodes.keywordURL
 		defer func() {
-			decodes.keywordUnit, decodes.keywordURL = priorKeywordUnit, priorKeywordURL
+			decodes.keywordUnit, decodes.keywordInput, decodes.keywordURL = priorKeywordUnit, priorKeywordInput, priorKeywordURL
 		}()
 	}
 	if s.hasDLPKeywords() {
 		decodes.keywordMode = true
 		decodes.keywordUnit = config.DLPKeywordContext(parsed.String())
+		decodes.keywordInput = ""
 	}
 	queryLessMemo := queryLessDLPMemo{now: now, nowSet: true, inbound: decodes != nil && decodes.inbound}
 	// Canary check is deferred to after DLP pattern evaluation (below).

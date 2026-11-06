@@ -889,12 +889,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 	cleaned := decodes.normalize(text)
 	if decodes != nil {
-		priorKeywordUnit := decodes.keywordUnit
-		defer func() { decodes.keywordUnit = priorKeywordUnit }()
+		priorKeywordUnit, priorKeywordInput := decodes.keywordUnit, decodes.keywordInput
+		defer func() { decodes.keywordUnit, decodes.keywordInput = priorKeywordUnit, priorKeywordInput }()
 	}
 	if s.hasDLPKeywords() {
 		decodes.keywordMode = true
 		decodes.keywordUnit = config.DLPKeywordContext(text)
+		decodes.keywordInput = text
 		decodes.registerKeywordTransform(decodes.keywordUnit, cleaned, "projection")
 	}
 	segmentViews := textDLPEncodingSegmentViews(cleaned)

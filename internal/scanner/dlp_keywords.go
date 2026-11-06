@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 
@@ -26,6 +27,8 @@ const (
 	keywordURLPercent        = "url_percent"
 	keywordPercentDrop       = "invalid_percent_drop"
 	keywordPercentEscapeDrop = "invalid_percent_escape_drop"
+	// A delimiter segment is a literal substring of its parent view.
+	keywordSegment = "segment"
 )
 
 // keywordDecodeSources records edges of the existing decoder walk, only for
@@ -288,6 +291,10 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		} else if !strings.Contains(source, root) && strings.Contains(c.logical, root) {
 			// Synthetic separator-preserving units aren't literal URL slices.
 			source = c.logical
+		} else if !strings.Contains(source, root) && c.memo != nil && root == c.memo.keywordInput {
+			// The unit's normalization removes invisible tags. The whole input
+			// keeps exact coordinates for a view decoded from those tags.
+			source = root
 		}
 		for from := 0; from <= len(source)-len(root); {
 			// Overlapping occurrences can revisit the same root bytes. Charge
@@ -581,8 +588,55 @@ func keywordDecodeOffsets(source, decoded, encoding string) []keywordByteSpan {
 		return keywordEscapeOffsets(source, decoded, encoding)
 	case encodingDecimal, encodingOctal, encodingBinary, encodingQuotedPrintable:
 		return keywordTextEncodingOffsets(source, decoded, encoding)
+	case encodingUnicodeTags:
+		return keywordTagOffsets(source, decoded)
+	case keywordSegment:
+		return keywordSegmentOffsets(source, decoded)
 	}
 	return nil
+}
+
+// keywordSegmentOffsets maps a segment only when it occurs once in its parent.
+// A repeated segment has no single source position, so it fails closed.
+func keywordSegmentOffsets(source, segment string) []keywordByteSpan {
+	at := strings.Index(source, segment)
+	if segment == "" || at < 0 || strings.Contains(source[at+1:], segment) {
+		return nil
+	}
+	offsets := make([]keywordByteSpan, len(segment))
+	for i := range offsets {
+		offsets[i] = keywordByteSpan{at + i, at + i + 1}
+	}
+	return offsets
+}
+
+// keywordTagOffsets mirrors normalize.DecodeTags: untouched bytes map to
+// themselves, a printable tag maps to its whole rune, and begin/cancel tags
+// produce nothing. A mismatch returns nil so the caller fails closed.
+func keywordTagOffsets(source, decoded string) []keywordByteSpan {
+	offsets := make([]keywordByteSpan, 0, len(decoded))
+	copied := 0
+	for i, r := range source {
+		printable := r >= 0xe0020 && r <= 0xe007e
+		if !printable && r != 0xe0001 && r != 0xe007f {
+			continue
+		}
+		for j := copied; j < i; j++ {
+			offsets = append(offsets, keywordByteSpan{j, j + 1})
+		}
+		width := utf8.RuneLen(r)
+		if printable {
+			offsets = append(offsets, keywordByteSpan{i, i + width})
+		}
+		copied = i + width
+	}
+	for j := copied; j < len(source); j++ {
+		offsets = append(offsets, keywordByteSpan{j, j + 1})
+	}
+	if len(offsets) != len(decoded) || normalize.DecodeTags(source) != decoded {
+		return nil
+	}
+	return offsets
 }
 
 // keywordTextEncodingOffsets reuses the byte ranges the text-encoding decoders
