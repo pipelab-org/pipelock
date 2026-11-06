@@ -893,13 +893,7 @@ func (s *Scanner) checkCoreDLPWithUserinfoValues(parsed *url.URL, values []dlpTa
 		}
 	}
 
-	// Dot-collapse hostname.
-	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
-		for _, d := range decodes.decode(hostname, true) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-		}
-	}
+	targets = appendHostnameDLPTargets(targets, parsed.Hostname(), decodes)
 
 	// Noise-stripped path.
 	if stripped := stripURLNoise(parsed.Path); stripped != parsed.Path {
