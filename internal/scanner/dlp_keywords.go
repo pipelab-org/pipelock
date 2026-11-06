@@ -640,6 +640,12 @@ func keywordEscapeOffsets(source, decoded, encoding string) []keywordByteSpan {
 
 func (s *Scanner) hasDLPKeywords() bool { return s.keywordPatterns }
 
+// keywordsActive reports whether this scan tracks keyword context, so callers
+// can skip building context strings when no pattern uses keywords.
+func (m *decodingMemo) keywordsActive() bool {
+	return m != nil && m.keywordMode
+}
+
 func (m *decodingMemo) registerKeywordTransform(source, view, encoding string) {
 	if m == nil || !m.keywordMode || source == view {
 		return

@@ -2336,8 +2336,10 @@ func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decode
 	}
 	concat := orderedQueryConcat(rawQuery)
 	proseSource := orderedQueryProseSource(rawQuery)
-	decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
-	decodes.registerKeywordTransform(config.DLPKeywordContext(rawQuery), concat, keywordQueryValues)
+	if decodes.keywordsActive() {
+		decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+		decodes.registerKeywordTransform(config.DLPKeywordContext(rawQuery), concat, keywordQueryValues)
+	}
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat"), proseSource})
 	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), proseSource})
@@ -2411,7 +2413,9 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string, de
 // Outbound concatenations use the same recursive budget as other decode
 // roots. Inbound callers retain their previous size shortcut.
 func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string, decodes *decodingMemo) []dlpTarget {
-	decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+	if decodes.keywordsActive() {
+		decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+	}
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat"), proseSource})
 	if len(concat) > maxDecodeTotalBytes && decodes != nil && decodes.inbound {
 		return targets
