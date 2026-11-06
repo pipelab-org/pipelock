@@ -775,9 +775,13 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// contiguous run of base64/hex alphabet characters long enough to be
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
-	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content)) {
+	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent)) {
 		decodedSet := s.matchDecodedResponse(content)
 		matches = filterSuppressed(decodedSet.matches)
+		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {
+			decodedSet = s.matchDecodedResponse(preStripContent)
+			matches = filterSuppressed(decodedSet.matches)
+		}
 	}
 
 	// Post-scan context check: if context expired during scanning, fail closed.
@@ -1234,8 +1238,18 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 		return responseMatchSet{}
 	}
 
+	for _, view := range appendTextEncodingViews(nil, content) {
+		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded")); len(set.matches) > 0 {
+			return mapTextEncodingSources(set, content, view)
+		}
+		if set := s.matchDecodedResponseRecursive(view.text, depth+1); len(set.matches) > 0 {
+			return mapTextEncodingSources(set, content, view)
+		}
+	}
+
 	// Strategy 1: whole-content decode.
 	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
+	stripped = canonicalMixedBase64(stripped)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -1286,7 +1300,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)

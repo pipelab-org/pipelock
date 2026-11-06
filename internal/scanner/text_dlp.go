@@ -1132,6 +1132,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// until no new bounded candidates appear. Catches base64(secret),
 	// hex(secret), and nested chains (e.g., base64(hex(secret))).
 	matches = append(matches, s.decodeAndMatchWithDecodes(cleaned, decodes, opts.patterns)...)
+	if hasQuotedPrintable(text) && text != cleaned {
+		matches = append(matches, s.decodeAndMatchWithDecodes(text, decodes, opts.patterns)...)
+	}
 
 	// Segment-level encoding detection: split text on URL/path delimiters and
 	// try decoding each segment individually. Catches encoded secrets embedded
@@ -1161,8 +1164,8 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// cannot create a masking bypass: a disabled check never runs rather than
 	// running and being filtered away.
 	if opts.scanSecretLeak {
-		matches = append(matches, s.checkSecretsInTextWithDecodes(s.envSecrets, cleaned, "Environment Variable Leak", "env", decodes)...)
-		matches = append(matches, s.checkSecretsInTextWithDecodes(s.fileSecrets, cleaned, "Known Secret Leak", "", decodes)...)
+		matches = append(matches, s.checkSecretsInTextWithDecodes(s.envSecrets, text, "Environment Variable Leak", "env", decodes)...)
+		matches = append(matches, s.checkSecretsInTextWithDecodes(s.fileSecrets, text, "Known Secret Leak", "", decodes)...)
 	}
 
 	// Deduplicate matches by pattern name + encoding.
@@ -1489,6 +1492,8 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 		return nil
 	}
 
+	original := text
+	text = decodes.normalize(text)
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
@@ -1504,6 +1509,9 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
+			if original != text && hasQuotedPrintable(original) {
+				texts = append(texts, s.decodedKnownSecretViews(original, decodes)...)
+			}
 			// URL serialization can escape a separator into path data. Split
 			// the decoded view too, as known-value URL scanning already does.
 			if decoded != text {

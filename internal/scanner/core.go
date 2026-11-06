@@ -423,9 +423,15 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
-	if forceEncodedDecode || hasEncodedRun(content) {
+	if forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) {
 		if decodedSet := s.matchDecodedCoreResponse(content, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
+		}
+		// Preserve soft line breaks beside the normalized decode view.
+		if original != content && hasQuotedPrintable(original) {
+			if decodedSet := s.matchDecodedCoreResponse(original, suppress); len(decodedSet.matches) > 0 {
+				return decodedSet
+			}
 		}
 	}
 
@@ -446,8 +452,18 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 		return responseMatchSet{}
 	}
 
+	for _, view := range appendTextEncodingViews(nil, content) {
+		if set := s.matchDecodedCoreNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
+			return mapTextEncodingSources(set, content, view)
+		}
+		if set := s.matchDecodedCoreResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
+			return mapTextEncodingSources(set, content, view)
+		}
+	}
+
 	// Strategy 1: whole-content decode (strip whitespace first).
 	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
+	stripped = canonicalMixedBase64(stripped)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -481,7 +497,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
@@ -588,6 +604,9 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
+	if hasQuotedPrintable(text) && text != cleaned {
+		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
+	}
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
 	}

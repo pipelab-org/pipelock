@@ -68,8 +68,20 @@ func TestDecodingPreprocessingParity(t *testing.T) {
 			if len(want) > 0 {
 				decodedCases++
 			}
-			if got := decodeEncodings(input); !reflect.DeepEqual(got, want) {
-				t.Fatalf("ordered decoding differs for %q:\ngot %#v\nwant %#v", input, got, want)
+			// Numeric and quoted-printable views have separate behavioral
+			// tests. This reference freezes the other decoders' ordering and
+			// duplicates, including inputs that also form a textual carrier.
+			var legacy []decodedResult
+			for _, view := range decodeEncodings(input) {
+				switch view.encoding {
+				case encodingDecimal, encodingOctal, encodingBinary, encodingQuotedPrintable:
+					continue
+				default:
+					legacy = append(legacy, view)
+				}
+			}
+			if !reflect.DeepEqual(legacy, want) {
+				t.Fatalf("ordered decoding differs for %q:\ngot %#v\nwant %#v", input, legacy, want)
 			}
 		})
 	}

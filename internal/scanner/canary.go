@@ -126,7 +126,11 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 	// exfiltration path. The fixpoint's candidate and byte bounds terminate it,
 	// and the candidates are already generated for DLP, so this adds substring
 	// checks rather than decode work.
-	for _, d := range decodes.decode(cleaned, true) {
+	decodedViews := decodes.decode(cleaned, true)
+	if text != cleaned && hasQuotedPrintable(text) {
+		decodedViews = append(append([]decodedResult(nil), decodedViews...), decodes.decode(text, true)...)
+	}
+	for _, d := range decodedViews {
 		label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
 		// A decimal-code spelling can itself arrive wrapped in another
