@@ -532,9 +532,48 @@ class ChangedTestRunnerTest(unittest.TestCase):
             self.assertEqual(target.with_suffix(".base.json").read_text(), "")
             selection = json.loads(target.with_suffix(".selection.json").read_text())
             self.assertEqual(selection["skipped"], [first, second])
+            # Both empty aggregates replay through the real reader as empty maps.
+            self.assertEqual(partial_overrides([target]), {"trees": {}, "packages": {}})
+            self.assertEqual(partial_overrides([target.with_suffix(".base.json")]), {"trees": {}, "packages": {}})
+            # An empty stream whose selection names a package it did not skip is incomplete.
+            selection["skipped"] = [first]
+            target.with_suffix(".selection.json").write_text(json.dumps(selection))
+            with self.assertRaisesRegex(ValueError, "incomplete or failed"):
+                partial_overrides([target])
         self.assertEqual(commands, [])
         self.assertEqual(budget.call_args.args[2], {"trees": {}, "packages": {}})
         self.assertEqual(budget.call_args.args[3], {"trees": {}, "packages": {}})
+
+    def test_skipped_package_keeps_recorded_weight_for_a_shared_test_name(self):
+        # Tree weights are keyed by name. A measured package must not lower a
+        # skipped package's recorded weight for the same name on either side.
+        first, second = "example.test/internal/proxy", "example.test/internal/proxy/inner"
+        tests = [
+            {"package": "./internal/proxy", "file": "internal/proxy/a_test.go", "name": "TestShared", "new": False},
+            {"package": "./internal/proxy/inner", "file": "internal/proxy/inner/b_test.go", "name": "TestShared", "new": False},
+        ]
+        def resolve(tests, tags, import_paths):
+            import_paths.update({"./internal/proxy": first, "./internal/proxy/inner": second})
+            return {first: ["TestShared"], second: ["TestShared"]}
+        now = [0.0]
+        def run(command, stream, root, remaining):
+            for event in ({"Action": "run", "Test": "TestShared"},
+                          {"Action": "pass", "Test": "TestShared", "Elapsed": 1},
+                          {"Action": "pass", "Elapsed": 2}):
+                stream.write(json.dumps({"Package": command[-1], **event}) + "\n")
+            now[0] += 50.0
+            return 0
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+             patch.object(planner, "prediction_plan", return_value={"trees": {"proxy": {"TestShared": 90.0}}}), \
+             patch.object(planner, "list_packages", return_value=[first, second]), \
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+            planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
+                                          deadline_seconds=150, clock=lambda: now[0])
+        self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestShared"], 90.0)
+        self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestShared"], 90.0)
 
     def test_deadline_refuses_edited_and_new_tests(self):
         for new in (False, True):
