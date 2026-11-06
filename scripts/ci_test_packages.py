@@ -887,6 +887,15 @@ def measured_selection(
     return partial_overrides([path])
 
 
+def merge_overrides(into: dict, more: dict) -> None:
+    """Fold one package's measured weights into the run's overrides."""
+    for tree, tests in more.get("trees", {}).items():
+        weights = into["trees"].setdefault(tree, {})
+        for name, seconds in tests.items():
+            weights[name] = max(weights.get(name, 0.0), seconds)
+    into["packages"].update(more.get("packages", {}))
+
+
 def measure_changed_tests(
     tests: list[dict[str, str]], tags: str, json_out: Path, base: str,
     deadline_seconds: float = MEASURE_DEADLINE_SECONDS, clock=time.monotonic,
@@ -931,20 +940,68 @@ def measure_changed_tests(
             elif package in whole or existing:
                 base_selected[package] = existing
         base_path = json_out.with_suffix(".base.json")
-        base_started = clock()
-        base_overrides = measured_selection(
-            base_selected, [pkg for pkg in whole if pkg in base_selected], tags, base_path,
-            base_root, remaining_seconds,
-        )
-        base_seconds = clock() - base_started
-        head_started = clock()
-        overrides = measured_selection(
-            selected, whole, tags, json_out, ROOT, remaining_seconds,
-        )
-        head_seconds = clock() - head_started
-        selection = json.loads(selection_path(json_out).read_text(encoding="utf-8"))
-        selection["new"] = {pkg: sorted(names) for pkg, names in new.items()}
-        selection_path(json_out).write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # Measure each package's base and head back to back, packages with new
+        # tests first: a new test has no recorded weight, while an edited test
+        # skipped at the deadline keeps its recorded weight on both sides, so
+        # the pair stays comparable. Measuring every base package before any
+        # head package spent the whole deadline on large pull requests.
+        order = sorted(selected, key=lambda pkg: (pkg not in new, pkg))
+        overrides: dict = {"trees": {}, "packages": {}}
+        base_overrides: dict = {"trees": {}, "packages": {}}
+        head_streams: list[Path] = []
+        base_streams: list[Path] = []
+        measured: list[str] = []
+        skipped: list[str] = []
+        base_seconds = head_seconds = 0.0
+        for index, package in enumerate(order):
+            pair_head = json_out.with_suffix(f".head.{index}.json")
+            pair_base = json_out.with_suffix(f".base.{index}.json")
+            pair_base_overrides = None
+            if remaining_seconds() >= MEASURE_MIN_START_SECONDS and package in base_selected:
+                pair_started = clock()
+                pair_base_overrides = measured_selection(
+                    {package: base_selected[package]}, [package] if package in whole else [],
+                    tags, pair_base, base_root, remaining_seconds,
+                )
+                base_seconds += clock() - pair_started
+            if remaining_seconds() < MEASURE_MIN_START_SECONDS:
+                if package in new:
+                    raise ValueError(
+                        f"measurement deadline reached before {package}; new tests have no recorded "
+                        f"weight, so they can't be left unmeasured: {sorted(new[package])}. Split the "
+                        "pull request or record their weights from a full race run.")
+                skipped.append(package)
+                continue
+            pair_started = clock()
+            pair_overrides = measured_selection(
+                {package: selected[package]}, [package] if package in whole else [],
+                tags, pair_head, ROOT, remaining_seconds,
+            )
+            head_seconds += clock() - pair_started
+            merge_overrides(overrides, pair_overrides)
+            head_streams.append(pair_head)
+            if pair_base_overrides is not None:
+                merge_overrides(base_overrides, pair_base_overrides)
+                base_streams.append(pair_base)
+            measured.append(package)
+        for target, streams in ((json_out, head_streams), (base_path, base_streams)):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("w", encoding="utf-8") as stream:
+                for part in streams:
+                    stream.write(part.read_text(encoding="utf-8"))
+        for package in skipped:
+            print(f"::warning title=Changed test not re-measured::{package} kept its recorded weight on "
+                  f"both sides; the {deadline_seconds:.0f}s measurement deadline was reached")
+        selection_path(json_out).write_text(json.dumps({
+            "new": {pkg: sorted(names) for pkg, names in new.items()},
+            "selected": selected, "whole": [pkg for pkg in whole if pkg in measured],
+            "skipped": skipped,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        selection_path(base_path).write_text(json.dumps({
+            "selected": {pkg: base_selected[pkg] for pkg in measured if pkg in base_selected},
+            "whole": [pkg for pkg in whole if pkg in measured and pkg in base_selected],
+            "skipped": [pkg for pkg in skipped if pkg in base_selected],
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         introduced: dict[str, dict | list] = {"trees": {}, "packages": []}
         for package, names in new.items():
             tree = tree_for_package(package)
@@ -961,6 +1018,24 @@ def measure_changed_tests(
         for tree in introduced["trees"]:
             introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
         introduced["packages"] = sorted(set(introduced["packages"]))
+        # Tree weights are keyed by test name. If a measured package, or a new
+        # test's zero base, shares a name with a skipped package, it must not
+        # lower that skipped test's recorded weight on either side. Applied
+        # after the zero-base charge so a shared name keeps its recorded base.
+        for package in skipped:
+            tree = tree_for_package(package)
+            recorded = plan.get("trees", {}).get(tree, {}) if tree is not None else {}
+            if tree is None:
+                continue
+            for name in selected[package]:
+                for side in (overrides, base_overrides):
+                    weights = side["trees"].get(tree, {})
+                    if name in weights:
+                        weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
+                    elif name in recorded:
+                        # The cheap declaration inventory can miss a name; an
+                        # explicit override keeps its recorded load counted.
+                        side["trees"].setdefault(tree, {})[name] = float(recorded[name])
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")

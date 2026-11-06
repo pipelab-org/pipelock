@@ -265,15 +265,29 @@ def partial_overrides(paths: list[Path]) -> dict:
     so it is refused rather than added to or ignored.
     """
     whole: set[str] = set()
+    measured: list[Path] = []
     for path in paths:
-        if not artifact_complete(path):
+        empty = not path.read_bytes().strip()
+        if not empty and not artifact_complete(path):
             raise ValueError(f"incomplete or failed changed-test race stream: {path}")
         try:
             selection = json.loads(selection_path(path).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
             raise ValueError(f"partial stream {path} needs its selection file "
                              f"{selection_path(path).name}: {error}") from error
+        if empty:
+            # The deadline can leave every selected package unmeasured; its
+            # stream is then empty by design. An empty stream with any package
+            # its selection does not name as skipped is an incomplete run.
+            selected = selection.get("selected", {})
+            if not isinstance(selected, dict) or not set(selected) <= set(selection.get("skipped", [])):
+                raise ValueError(f"incomplete or failed changed-test race stream: {path}")
+            continue
         whole.update(selection.get("whole", []))
+        measured.append(path)
+    paths = measured
+    if not paths:
+        return {"trees": {}, "packages": {}}
     packages: dict[str, float] = {}
     for path in paths:
         for package, seconds in collect_packages([path]).items():
