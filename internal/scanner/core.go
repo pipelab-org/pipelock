@@ -444,8 +444,8 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
-func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return s.matchDecodedCoreResponseMode(content, suppress, true)
+func (s *Scanner) matchDecodedCoreResponse(content string) responseMatchSet {
+	return s.matchDecodedCoreResponseMode(content, nil, true)
 }
 
 func (s *Scanner) matchDecodedCoreResponseMode(content string, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {

@@ -106,7 +106,7 @@ func TestResponsePassCosts(t *testing.T) {
 		}
 		start = time.Now()
 		if group.name == "core" {
-			s.matchDecodedCoreResponse(content, nil)
+			s.matchDecodedCoreResponse(content)
 		} else {
 			s.matchDecodedResponse(content)
 		}
