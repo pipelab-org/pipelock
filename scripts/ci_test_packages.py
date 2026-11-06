@@ -1046,6 +1046,18 @@ def measure_changed_tests(
                 # it stays on the re-measured path.
                 base_overrides["packages"][package] = 0.0
                 introduced["packages"].append(package)
+        for package in base_skipped:
+            if package not in whole:
+                continue
+            # Without a paired base, a whole-package increase cannot be
+            # dismissed as timing noise: it includes newly added tests. Charge
+            # any increase over the recorded total through the new-work check.
+            recorded = plan.get("packages", {}).get(package)
+            if recorded is None:
+                raise ValueError(f"unmeasured base has no recorded package weight: {package}; "
+                                 "split the pull request or record its weight from a full race run")
+            base_overrides["packages"][package] = recorded
+            introduced["packages"].append(package)
         for tree in introduced["trees"]:
             introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
         introduced["packages"] = sorted(set(introduced["packages"]))
