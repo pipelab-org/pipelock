@@ -58,45 +58,63 @@ func TestScanRequest_ResourcesReadHTTPSpellingsConsumeOneRateSlot(t *testing.T) 
 // resources/read URIs reach the URL policy when they are HTTP(S). A URL
 // reader that follows the WHATWG URL standard reads other spellings as the
 // same HTTP(S) address. Each spelling below must reach the URL policy the
-// same way the canonical one does.
+// same way the canonical one does, unless the submitted spelling is already
+// refused by the raw URL parser. Keep that earlier refusal explicit.
 func TestScanRequest_ResourcesReadHTTPSpellingsUseURLPolicy(t *testing.T) {
 	sc := testInputScanner(t)
 	rest := metadataHost().String() + resourceTestPath
 	ctl := func(b byte) string { return string([]byte{b}) }
 	tests := []struct {
-		name   string
-		scheme string
-		spell  resourceSpelling
+		name        string
+		scheme      string
+		spell       resourceSpelling
+		wantScanner string
 	}{
-		{"canonical", "http", canonicalResource},
-		{"scheme_case_variant", "HTTP", canonicalResource},
-		{"scheme_case_variant_tls", "hTtPs", canonicalResource},
-		{"surrounding_space", "http", func(s, r string) string { return "  " + canonicalResource(s, r) + "  " }},
-		{"leading_c0_control", "http", func(s, r string) string { return ctl(0x01) + canonicalResource(s, r) }},
-		{"leading_nul_control", "http", func(s, r string) string { return ctl(0x00) + canonicalResource(s, r) }},
-		{"trailing_c0_control", "http", func(s, r string) string { return canonicalResource(s, r) + ctl(0x1f) }},
-		{"scheme_tab_inserted", "http", func(s, r string) string { return s[:2] + ctl('\t') + s[2:] + "://" + r }},
-		{"scheme_newline_inserted", "http", func(s, r string) string { return s[:1] + ctl('\n') + s[1:] + "://" + r }},
+		{"canonical", "http", canonicalResource, scanner.ScannerCoreSSRF},
+		{"scheme_case_variant", "HTTP", canonicalResource, scanner.ScannerCoreSSRF},
+		{"scheme_case_variant_tls", "hTtPs", canonicalResource, scanner.ScannerCoreSSRF},
+		{"surrounding_space", "http", func(s, r string) string { return "  " + canonicalResource(s, r) + "  " }, scanner.ScannerCoreSSRF},
+		{"leading_c0_control", "http", func(s, r string) string { return ctl(0x01) + canonicalResource(s, r) }, scanner.ScannerCoreSSRF},
+		{"leading_nul_control", "http", func(s, r string) string { return ctl(0x00) + canonicalResource(s, r) }, scanner.ScannerCoreSSRF},
+		{"trailing_c0_control", "http", func(s, r string) string { return canonicalResource(s, r) + ctl(0x1f) }, scanner.ScannerParser},
+		{"scheme_tab_inserted", "http", func(s, r string) string { return s[:2] + ctl('\t') + s[2:] + "://" + r }, scanner.ScannerCoreSSRF},
+		{"scheme_newline_inserted", "http", func(s, r string) string { return s[:1] + ctl('\n') + s[1:] + "://" + r }, scanner.ScannerCoreSSRF},
 		{"authority_cr_inserted", "http", func(s, r string) string {
 			i := strings.IndexByte(r, '.')
 			return s + "://" + r[:i+1] + ctl('\r') + r[i+1:]
-		}},
-		{"scheme_slash_variant_one", "http", func(s, r string) string { return s + ":/" + r }},
-		{"scheme_slash_variant_none", "http", func(s, r string) string { return s + ":" + r }},
-		{"scheme_slash_variant_three", "http", func(s, r string) string { return s + ":///" + r }},
-		{"scheme_backslash_variant", "http", func(s, r string) string { return s + ":" + strings.Repeat(`\`, 2) + r }},
-		{"scheme_mixed_separator_variant", "https", func(s, r string) string { return s + ":/" + `\` + r }},
+		}, scanner.ScannerParser},
+		{"scheme_slash_variant_one", "http", func(s, r string) string { return s + ":/" + r }, scanner.ScannerCoreSSRF},
+		{"scheme_slash_variant_none", "http", func(s, r string) string { return s + ":" + r }, scanner.ScannerCoreSSRF},
+		{"scheme_slash_variant_three", "http", func(s, r string) string { return s + ":///" + r }, scanner.ScannerParser},
+		{"scheme_backslash_variant", "http", func(s, r string) string { return s + ":" + strings.Repeat(`\`, 2) + r }, scanner.ScannerCoreSSRF},
+		{"scheme_mixed_separator_variant", "https", func(s, r string) string { return s + ":/" + `\` + r }, scanner.ScannerCoreSSRF},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			uri := tt.spell(tt.scheme, rest)
+			wantView := strings.ToLower(tt.scheme) + "://" + rest
+			if view, ok := httpResourceURLView(uri); !ok || view != wantView {
+				t.Fatalf("%s: URL view = %q, %v; want %q", tt.name, view, ok, wantView)
+			}
 			line := makeRequest(1, "resources/read", map[string]string{"uri": uri})
 			verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
 			if verdict.Clean {
 				t.Fatalf("%s: resources/read reached no URL policy", tt.name)
 			}
+			if len(verdict.URLFindings) != 1 || verdict.URLFindings[0].Scanner != tt.wantScanner {
+				t.Fatalf("%s: expected %s finding, got %+v", tt.name, tt.wantScanner, verdict.URLFindings)
+			}
 			if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
 				t.Fatalf("%s: effective action = %q, want %q", tt.name, got, config.ActionBlock)
+			}
+			publicURI := tt.spell(tt.scheme, "example.com"+resourceTestPath)
+			public := ScanRequest(t.Context(), []byte(makeRequest(1, "resources/read", map[string]string{"uri": publicURI})), sc, config.ActionBlock, config.ActionBlock)
+			if tt.wantScanner == scanner.ScannerParser {
+				if public.Clean || len(public.URLFindings) != 1 || public.URLFindings[0].Scanner != scanner.ScannerParser {
+					t.Fatalf("%s: raw syntax refusal must also apply to public hosts: %+v", tt.name, public)
+				}
+			} else if !public.Clean {
+				t.Fatalf("%s: public destination should stay clean: %+v", tt.name, public)
 			}
 		})
 	}
@@ -242,6 +260,11 @@ func TestScanRequest_ResourcesReadNonASCIIPublicHostStaysClean(t *testing.T) {
 				if v := ScanRequest(t.Context(), line, sc, config.ActionBlock, config.ActionBlock); !v.Clean {
 					t.Fatalf("read %d should stay clean: %+v", i+1, v.URLFindings)
 				}
+			}
+			v := ScanRequest(t.Context(), line, sc, config.ActionBlock, config.ActionBlock)
+			if len(v.URLFindings) != 1 || v.URLFindings[0].Scanner != scanner.ScannerRateLimit ||
+				inputVerdictEffectiveAction(v, config.ActionBlock) != config.ActionBlock {
+				t.Fatalf("third read must be blocked by the rate limit: %+v", v)
 			}
 		})
 	}
