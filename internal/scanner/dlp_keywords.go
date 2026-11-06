@@ -183,14 +183,11 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 // keywordCandidateContext distinguishes logical decoded text from projections
 // that delete distance-bearing characters. A complete keyword in either the
 // decoded context or the original source outside its exact hull corroborates.
-type keywordProjectionCache struct {
-	source, view string
-	offsets      []keywordByteSpan
-}
+type keywordProjectionKey struct{ source, view string }
 
 type keywordCandidateContext struct {
 	sourceUnavailable  bool
-	projections        []keywordProjectionCache
+	projections        map[keywordProjectionKey][]keywordByteSpan
 	logical            string
 	logicalUnavailable bool
 	source             string
@@ -215,6 +212,9 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		}()
 	}
 	if len(c.alternatives) > 0 {
+		if c.projections == nil {
+			c.projections = make(map[keywordProjectionKey][]keywordByteSpan)
+		}
 		for _, node := range c.alternatives {
 			contexts := node.logicalContexts()
 			unavailable := len(contexts) == 0
@@ -351,16 +351,15 @@ func (c *keywordCandidateContext) projectionSpan(source, view string, start, end
 	if start < 0 || end <= start || end > len(view) {
 		return 0, 0, false
 	}
-	var offsets []keywordByteSpan
-	found := false
-	for _, cache := range c.projections {
-		if cache.source == source && cache.view == view {
-			offsets = cache.offsets
-			found = true
-			break
-		}
-	}
+	key := keywordProjectionKey{source: source, view: view}
+	offsets, found := c.projections[key]
 	if !found {
+		if c.projections == nil {
+			c.projections = make(map[keywordProjectionKey][]keywordByteSpan)
+		}
+		// Retain failed projections too. Copies used for alternate source
+		// paths share this cache across candidates.
+		c.projections[key] = nil
 		if c.memo != nil {
 			budget := keywordDecodeSources{budget: c.memo.keywordBudgetForScan()}
 			if len(view) > maxDecodeTotalBytes/keywordSpanBytes || len(source) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !budget.charge(len(view)*keywordSpanBytes+len(source)*(2*keywordSpanBytes)) {
@@ -369,7 +368,7 @@ func (c *keywordCandidateContext) projectionSpan(source, view string, start, end
 			}
 		}
 		offsets = keywordProjectionOffsets(source, view)
-		c.projections = append(c.projections, keywordProjectionCache{source: source, view: view, offsets: offsets})
+		c.projections[key] = offsets
 	}
 	if len(offsets) != len(view) {
 		return 0, 0, false
