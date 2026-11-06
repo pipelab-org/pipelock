@@ -40,6 +40,15 @@ func TestQuotedPrintableSoftBreakBeforeLiteralRun(t *testing.T) {
 		t.Fatalf("literal run yielded as decoded view: %q %+v", text, bounds)
 		return false
 	})
-	_ = textEncodingViewsMode(input, true)
-	_ = appendTextEncodingViews(nil, input)
+	literal := strings.Repeat("a", 16)
+	for _, view := range textEncodingViewsMode(input, true) {
+		if view.encoding == encodingQuotedPrintable && view.text == literal {
+			t.Fatalf("textEncodingViewsMode yielded the literal run: %+v", view)
+		}
+	}
+	for _, view := range appendTextEncodingViews(nil, input) {
+		if view.encoding == encodingQuotedPrintable && view.text == literal {
+			t.Fatalf("appendTextEncodingViews yielded the literal run: %+v", view)
+		}
+	}
 }
