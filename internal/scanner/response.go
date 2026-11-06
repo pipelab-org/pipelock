@@ -84,6 +84,8 @@ type ResponseMatch struct {
 	decodedSourceStart      int
 	decodedSourceEnd        int
 	hasDecodedSource        bool
+	// Literal bytes in a quoted-printable view are not evidence of decoding.
+	decodedSourceTransformed bool
 }
 
 type responseMatchSet struct {
@@ -1244,10 +1246,16 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppr
 
 	for _, view := range appendTextEncodingViews(nil, content) {
 		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
-			return mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
 		}
 		if set := s.matchDecodedResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
-			return mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
 		}
 	}
 
@@ -1330,7 +1338,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int, suppr
 func markFragmentBoundaries(set responseMatchSet, source string) responseMatchSet {
 	for i := range set.matches {
 		match := &set.matches[i]
-		if match.hasDecodedSource && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
+		if match.hasDecodedSource && match.decodedSourceTransformed && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
 			match.crossesFragmentBoundary = strings.ContainsRune(source[match.decodedSourceStart:match.decodedSourceEnd], '\n')
 		}
 	}
@@ -1373,6 +1381,7 @@ func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []in
 		match.decodedSourceStart = encodedOffsets[encodedStart]
 		match.decodedSourceEnd = encodedOffsets[encodedEnd-1] + 1
 		match.hasDecodedSource = true
+		match.decodedSourceTransformed = true
 	}
 	return set
 }

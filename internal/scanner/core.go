@@ -454,10 +454,16 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 
 	for _, view := range appendTextEncodingViews(nil, content) {
 		if set := s.matchDecodedCoreNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
-			return mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
 		}
 		if set := s.matchDecodedCoreResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
-			return mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
 		}
 	}
 

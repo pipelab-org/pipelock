@@ -1122,7 +1122,7 @@ func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			fillSeededBinary(body, seed)
 			if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); !result.Clean {
-				t.Fatalf("random binary blocked: patterns=%d scan_error=%q", len(result.Matches), result.ScanError)
+				t.Fatalf("random binary blocked: matches=%+v scan_error=%q", result.Matches, result.ScanError)
 			}
 		})
 	}

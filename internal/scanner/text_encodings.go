@@ -189,8 +189,36 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 		if start < 0 || end <= start || end > len(ranges) || ranges[start].end == 0 || ranges[end-1].end == 0 {
 			continue
 		}
+		transformed := view.encoding != encodingQuotedPrintable
+		if !transformed {
+			// A leading or trailing soft break can change an anchor boundary.
+			transformed = start == 0 && ranges[start].start > 0 || end == len(ranges) && ranges[end-1].end < len(source)
+			// Adjacent decoded bytes can supply a regex word or line boundary.
+			// Include those bytes when deciding whether this match depended on
+			// a byte escape or soft break, rather than unrelated literal text.
+			for j := max(0, start-1); j < min(len(ranges), end+1); j++ {
+				if ranges[j].end-ranges[j].start != 1 || j > 0 && ranges[j].start != ranges[j-1].end {
+					transformed = true
+					break
+				}
+			}
+		}
+		m.decodedSourceTransformed = m.decodedSourceTransformed || transformed
 		m.decodedSourceStart, m.decodedSourceEnd = ranges[start].start, ranges[end-1].end
 		m.hasDecodedSource = true
+	}
+	if view.encoding == encodingQuotedPrintable {
+		// Literal text was already checked before decoding. An escape elsewhere
+		// must not promote unchanged opaque fragments into decoded prose, or
+		// stop the decoder before another carrier exposes an actual match.
+		kept := set.matches[:0]
+		for _, match := range set.matches {
+			if match.hasDecodedSource && !match.decodedSourceTransformed {
+				continue
+			}
+			kept = append(kept, match)
+		}
+		set.matches = kept
 	}
 	return set
 }
