@@ -241,11 +241,13 @@ func visitQuotedPrintableTextRuns(source, decoded string, yield func(string, enc
 		if source[i] == '=' {
 			switch {
 			case i+1 < len(source) && source[i+1] == '\n':
-				transformed = true
+				// A soft break before the run's first rune belongs to the
+				// previous run, like any other skipped byte.
+				transformed = transformed || offset >= start
 				i += 2
 				continue
 			case i+2 < len(source) && source[i+1:i+3] == "\r\n":
-				transformed = true
+				transformed = transformed || offset >= start
 				i += 3
 				continue
 			case i+2 < len(source):
