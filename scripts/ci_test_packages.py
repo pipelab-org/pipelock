@@ -992,16 +992,6 @@ def measure_changed_tests(
         for package in skipped:
             print(f"::warning title=Changed test not re-measured::{package} kept its recorded weight on "
                   f"both sides; the {deadline_seconds:.0f}s measurement deadline was reached")
-            # Tree weights are keyed by test name. If a measured package shares
-            # a name with this skipped one, the measurement must not lower the
-            # skipped test's recorded weight on either side.
-            tree = tree_for_package(package)
-            recorded = plan.get("trees", {}).get(tree, {}) if tree is not None else {}
-            for name in selected[package]:
-                for side in (overrides, base_overrides):
-                    weights = side["trees"].get(tree, {})
-                    if name in weights:
-                        weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
         selection_path(json_out).write_text(json.dumps({
             "new": {pkg: sorted(names) for pkg, names in new.items()},
             "selected": selected, "whole": [pkg for pkg in whole if pkg in measured],
@@ -1028,6 +1018,18 @@ def measure_changed_tests(
         for tree in introduced["trees"]:
             introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
         introduced["packages"] = sorted(set(introduced["packages"]))
+        # Tree weights are keyed by test name. If a measured package, or a new
+        # test's zero base, shares a name with a skipped package, it must not
+        # lower that skipped test's recorded weight on either side. Applied
+        # after the zero-base charge so a shared name keeps its recorded base.
+        for package in skipped:
+            tree = tree_for_package(package)
+            recorded = plan.get("trees", {}).get(tree, {}) if tree is not None else {}
+            for name in selected[package]:
+                for side in (overrides, base_overrides):
+                    weights = side["trees"].get(tree, {})
+                    if name in weights:
+                        weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")
