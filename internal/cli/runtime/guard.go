@@ -350,11 +350,13 @@ func (e *guardEvidence) activateReceipts(proof guardfs.ExecutionProof) error {
 		}
 		_, _ = fmt.Fprintf(e.stderr, "  Receipts: ERROR - Guard pre-exec enforcement could not be emitted: %v\n", err)
 	}
+	var stop func(error)
 	if e.shards != nil {
-		e.stop = startStandaloneReceiptGroupLifecycle(e.ctx, e.heartbeat, e.shards, e.stderr, e.require, e.onRequiredFailure)
+		stop = startStandaloneReceiptGroupLifecycle(e.ctx, e.heartbeat, e.shards, e.stderr, e.require, e.onRequiredFailure)
 	} else {
-		e.stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, e.onRequiredFailure)
+		stop = startStandaloneReceiptLifecycle(e.ctx, e.heartbeat, e.emitter, e.stderr, e.require, e.onRequiredFailure)
 	}
+	e.stop = func() { stop(nil) }
 	return nil
 }
 

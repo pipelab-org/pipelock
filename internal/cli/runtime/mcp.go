@@ -746,6 +746,10 @@ func mcpProxyCmd() *cobra.Command {
 }
 
 func mcpProxyCmdWithAuditLoggerFactory(newAuditLogger mcpAuditLoggerFactory) *cobra.Command {
+	return mcpProxyCmdWithListenerTimeout(newAuditLogger, 0)
+}
+
+func mcpProxyCmdWithListenerTimeout(newAuditLogger mcpAuditLoggerFactory, listenerShutdownTimeout time.Duration) *cobra.Command {
 	var configFile string
 	var upstreamURL string
 	var listenAddr string
@@ -1434,7 +1438,7 @@ Key-free evidence capture:
 			// deferred stop cancels and joins heartbeats before writing
 			// session_close + transcript_root, so no heartbeat appends after
 			// the close even though each transport has its own run loop.
-			var stopReceiptLifecycle func()
+			var stopReceiptLifecycle func(error)
 			if receiptGroup != nil {
 				stopReceiptLifecycle = startStandaloneReceiptGroupLifecycle(
 					heartbeatCtx, cfg.FlightRecorder.HeartbeatIntervalDuration(),
@@ -1449,7 +1453,7 @@ Key-free evidence capture:
 				)
 			}
 			defer func() {
-				stopReceiptLifecycle()
+				stopReceiptLifecycle(runErr)
 				if failure := requiredHeartbeatErr(); failure != nil {
 					runErr = errors.Join(runErr, failure)
 				}
@@ -1609,9 +1613,10 @@ Key-free evidence capture:
 					respAction, respTrust, respServer := mcpResponseLogFields(listenerOpts)
 					_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "pipelock: MCP reverse proxy %s -> %s (response=%s, trust=%s, server=%s, input=%s, tools=%s, policy=%s)\n",
 						listenAddr, RedactEndpoint(upstreamURL), respAction, respTrust, respServer, inputAction, toolAction, policyAction)
+					listenerOpts.ListenerShutdownTimeout = listenerShutdownTimeout
 					if err := mcp.RunHTTPListenerProxy(ctx, mcpLn, upstreamURL, cmd.ErrOrStderr(), listenerOpts); err != nil {
 						if heartbeatErr := requiredHeartbeatErr(); heartbeatErr != nil {
-							return heartbeatErr
+							return errors.Join(err, heartbeatErr)
 						}
 						if sentryClient != nil {
 							sentryClient.CaptureError(err)

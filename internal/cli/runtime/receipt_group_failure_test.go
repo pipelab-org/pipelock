@@ -45,7 +45,7 @@ func TestRequiredGroupHeartbeatFailureCancelsAndQuarantinesEveryShard(t *testing
 		failures++
 		cancel()
 	})
-	defer stop()
+	defer stop(nil)
 	if !errors.Is(ctx.Err(), context.Canceled) || failures == 0 {
 		t.Fatalf("group heartbeat did not request process cancellation: ctx=%v failures=%d", ctx.Err(), failures)
 	}
@@ -81,7 +81,7 @@ func TestRequiredGroupShutdownSealFailureIsReported(t *testing.T) {
 	if err := rec.Close(); err != nil {
 		t.Fatal(err)
 	}
-	stop()
+	stop(nil)
 	if len(failures) < 3 {
 		t.Fatalf("required shard seals and group close failures were not all reported: %v", failures)
 	}
