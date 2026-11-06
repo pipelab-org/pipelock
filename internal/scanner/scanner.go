@@ -3163,16 +3163,12 @@ func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *de
 	return decodeEncodingsWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, sources)
 }
 
-// decodeEncodingsWalk expands queue breadth first. Each non-root expansion
+// decodeEncodingsWalkTracked expands queue breadth first. Each non-root expansion
 // that produces a new view charges its input bytes. Terminal/duplicate-only
 // expansions cost no additional recursive budget. The initial input has
 // already been bounded by the caller's transport limit. HTML roots use the
 // same admission rule and their own recursive budget. Admitted views are
 // appended to out, which must be empty.
-func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
-	return decodeEncodingsWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, nil)
-}
-
 func decodeEncodingsWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	consumed := 0
 	freeRoots := len(queue)
@@ -6496,12 +6492,8 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 	return targets
 }
 
-// decodeEncodingsInboundWalk preserves response inspection accounting.
+// decodeEncodingsInboundWalkTracked preserves response inspection accounting.
 // Admitted views are appended to out, which must be empty.
-func decodeEncodingsInboundWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
-	return decodeEncodingsInboundWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, nil)
-}
-
 func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	consumed := 0
 	complete := true
