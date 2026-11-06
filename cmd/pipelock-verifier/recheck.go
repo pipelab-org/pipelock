@@ -244,7 +244,13 @@ func reproduceSpanView(source, view string) (string, error) {
 				}
 				source = decoded
 			case "unicode_tags", "unicode_tags_decoded":
-				source = normalize.DecodeTags(scanner.IterativeDecode(source))
+				// decodeEncodingsOnceInto can expose an escaped tag carrier in
+				// the candidate graph. Do not decode percent data again once
+				// userinfo or an explicit URL stage already exposed the tags.
+				if !normalize.ContainsTags(source) {
+					source = scanner.IterativeDecode(source)
+				}
+				source = normalize.DecodeTags(source)
 			case "url_userinfo_username_escaped", "url_userinfo_username", "url_userinfo_password_escaped", "url_userinfo_password", "url_userinfo":
 				if strings.Contains(view, ":unicode_tags") {
 					source = reproduceTagUserinfoSource(source, stages[i])
@@ -296,7 +302,7 @@ func reproduceTagUserinfoSource(source, stage string) string {
 		user, second, hasSecond = strings.Cut(authority[:at], ":")
 	}
 	if strings.Contains(stage, "password") {
-		return second
+		return decodeTagUserinfoComponent(second, stage)
 	}
 	if stage == "url_userinfo" && hasSecond {
 		username, err := url.PathUnescape(user)
@@ -309,7 +315,18 @@ func reproduceTagUserinfoSource(source, stage string) string {
 		}
 		return username + ":" + secondField
 	}
-	return user
+	return decodeTagUserinfoComponent(user, stage)
+}
+
+// Match urlUserinfoValues: escaped fields remain verbatim, decoded fields get
+// one RFC 3986 path-unescape pass. Only an explicit url_decoded stage repeats it.
+func decodeTagUserinfoComponent(source, stage string) string {
+	if !strings.HasSuffix(stage, "_escaped") {
+		if decoded, err := url.PathUnescape(source); err == nil {
+			return decoded
+		}
+	}
+	return source
 }
 
 func decodeWholeBase64(source string) (string, error) {

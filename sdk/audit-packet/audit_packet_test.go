@@ -822,3 +822,28 @@ func TestUnicodeTagsReceiptViews(t *testing.T) {
 		})
 	}
 }
+
+func TestUnicodeTagsReceiptViewsRejectInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name, view string
+		offset     bool
+	}{
+		{"unknown view", "unknown_unicode_tags_decoded", false},
+		{"decoded coordinates", "for_matching:unicode_tags_decoded", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, packet := loadExample(t)
+			setAuditPacketSourceSpan(&packet, func(span *auditpacket.SourceSpan) {
+				span.NormalizedView = tc.view
+				span.CharOffset, span.CharLength = nil, nil
+				if tc.offset {
+					offset, length := 0, 1
+					span.CharOffset, span.CharLength = &offset, &length
+				}
+			})
+			if err := packet.Validate(); err == nil {
+				t.Fatal("invalid decoded view accepted")
+			}
+		})
+	}
+}

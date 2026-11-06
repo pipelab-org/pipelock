@@ -428,6 +428,17 @@ func TestUnicodeTagsReviewSharedReceipt(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
+	var report struct {
+		Valid              bool `json:"valid"`
+		SignaturesVerified bool `json:"signatures_verified"`
+		SourceSpanCount    int  `json:"source_span_count"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid || !report.SignaturesVerified || report.SourceSpanCount != 28 {
+		t.Fatalf("unexpected receipt report: %s", stdout)
+	}
 }
 
 func TestUnicodeTagsReviewUserinfoReplay(t *testing.T) {
@@ -524,6 +535,48 @@ func TestDecodedSpacingRecheck(t *testing.T) {
 		got, err := reproduceSpanView(tc.source, tc.view)
 		if err != nil || got != "hello world" {
 			t.Fatalf("%s: got %q, %v", tc.view, got, err)
+		}
+	}
+}
+
+func TestUnicodeTagsNestedPercentUserinfo(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "A%20B" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	for _, field := range []string{"username", "password"} {
+		view, err := reproduceSpanView(tags.String()+"%2520", "dlp_normalized:unicode_tags_decoded:url_userinfo_"+field)
+		if err != nil || view != "A%20B%2520" {
+			t.Errorf("selected %s view=%q err=%v", field, view, err)
+		}
+		for _, escaped := range []bool{false, true} {
+			stage := "url_userinfo_" + field
+			component := tags.String() + "%2520"
+			if escaped {
+				stage += "_escaped"
+			} else {
+				component = url.PathEscape(component)
+			}
+			source := "https://" + component + "@api.vendor.example/"
+			if field == "password" {
+				source = "https://user:" + component + "@api.vendor.example/"
+			}
+			got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags_decoded:"+stage)
+			if err != nil || got != "A%20B%2520" {
+				t.Errorf("stage=%s got=%q err=%v", stage, got, err)
+			}
+			span := recheckSourceSpanFixture()
+			span.NormalizedView = "dlp_normalized:unicode_tags_decoded:" + stage
+			span.RedactedSample = "A%20B%2520"
+			span.CharOffset, span.CharLength = nil, nil
+			path := filepath.Join(t.TempDir(), "source.txt")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := recheckEvidenceReceiptSpan(recheckReceiptFixture(t, span), path, 0)
+			if err != nil || result.Location != recheckLocationOccurrence {
+				t.Fatalf("stage=%s result=%+v err=%v", stage, result, err)
+			}
 		}
 	}
 }

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 )
@@ -60,6 +62,7 @@ required unless --allow-unpinned is used for structural checks only.`,
 }
 
 type receiptReport struct {
+	SourceSpanCount    int            `json:"source_span_count,omitempty"`
 	Path               string         `json:"path"`
 	RecordType         string         `json:"record_type,omitempty"`
 	Valid              bool           `json:"valid"`
@@ -180,6 +183,12 @@ func runEvidenceReceipt(stdout, stderr io.Writer, clean string, data []byte, key
 		ActiveManifestHash: r.ActiveManifestHash,
 		PolicyHash:         r.PolicyHash,
 		ChainSeq:           r.ChainSeq,
+	}
+	if r.PayloadKind == contractreceipt.PayloadProxyDecisionWithSpans {
+		var payload contractreceipt.PayloadProxyDecisionWithSpansStruct
+		if err := json.Unmarshal(r.Payload, &payload); err == nil {
+			report.SourceSpanCount = len(payload.SourceSpans)
+		}
 	}
 	if keyHex == "" {
 		if err := r.Validate(); err != nil {

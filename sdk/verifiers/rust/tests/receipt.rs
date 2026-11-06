@@ -446,4 +446,5 @@ fn unicode_tags_receipt_verifies() {
     let path = common::repo_root().join("sdk/verifiers/fixtures/unicode-tags-receipt.json");
     let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
     assert!(report.valid, "{:?}", report.error);
+    assert_eq!(report.source_span_count, Some(28));
 }

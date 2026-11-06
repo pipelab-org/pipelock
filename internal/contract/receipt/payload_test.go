@@ -1744,3 +1744,27 @@ func TestUnicodeTagsSourceSpan(t *testing.T) {
 		}
 	}
 }
+
+func TestUnicodeTagsSourceSpanRejectsInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name, view string
+		offset     bool
+	}{
+		{"near miss", "leetspeak:for_matching:unicode_tags_decoded:x", false},
+		{"decoded coordinates", receipt.NormalizedViewUnicodeTagsDecoded, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			span := validSourceSpan(t)
+			span.SourceKind = receipt.SourceKindHTTPResponse
+			span.NormalizedView = tc.view
+			span.CharOffset, span.CharLength = nil, nil
+			if tc.offset {
+				offset, length := 0, 1
+				span.CharOffset, span.CharLength = &offset, &length
+			}
+			if err := receipt.ValidateSourceSpan(span); err == nil {
+				t.Fatal("invalid decoded view accepted")
+			}
+		})
+	}
+}

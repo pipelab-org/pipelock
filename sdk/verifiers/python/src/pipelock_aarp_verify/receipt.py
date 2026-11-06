@@ -474,6 +474,12 @@ def verify_receipt_file(
             report["signer_key"] = key_hex
             report["policy_hash"] = receipt.get("policy_hash")
             report["chain_seq"] = receipt.get("chain_seq")
+            if receipt.get("payload_kind") == "proxy_decision_with_spans" and isinstance(
+                payload, dict
+            ):
+                spans = payload.get("source_spans")
+                if isinstance(spans, list):
+                    report["source_span_count"] = len(spans)
             if key_hex:
                 verify_evidence_receipt(receipt, key_hex)
             else:

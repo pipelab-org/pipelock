@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -81,9 +82,12 @@ type ResponseMatch struct {
 	// source text across a reconstructed opaque-response boundary. Decoded
 	// match spans index decoded bytes, so they cannot prove this from offsets.
 	crossesFragmentBoundary bool
-	decodedSourceStart      int
-	decodedSourceEnd        int
-	hasDecodedSource        bool
+	// Newline positions in the current source, retained when exact span mapping
+	// fails. Nil means unexamined; an empty slice proves no boundary survived.
+	fragmentBoundaries []int
+	decodedSourceStart int
+	decodedSourceEnd   int
+	hasDecodedSource   bool
 	// Literal bytes in a quoted-printable view are not evidence of decoding.
 	decodedSourceTransformed bool
 }
@@ -1371,7 +1375,7 @@ func markFragmentBoundaries(set responseMatchSet, source string) responseMatchSe
 	for i := range set.matches {
 		match := &set.matches[i]
 		if match.hasDecodedSource && match.decodedSourceTransformed && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
-			match.crossesFragmentBoundary = strings.ContainsRune(source[match.decodedSourceStart:match.decodedSourceEnd], '\n')
+			setFragmentBoundaries(match, source, match.decodedSourceStart, match.decodedSourceEnd)
 		}
 	}
 	return set
@@ -1427,35 +1431,47 @@ func mapResponseTransformSources(set responseMatchSet, source, viewLabel string)
 		if match.hasDecodedSource {
 			mapped.span.ByteStart, mapped.span.ByteEnd = match.decodedSourceStart, match.decodedSourceEnd
 			mapped.span.ViewLabel = viewLabel
+			// This exact range supersedes evidence from the inner source.
+			mapped.fragmentBoundaries = nil
 		}
-		if start, end, ok := normalizedMatchSourceRange(source, mapped); ok {
+		start, end, ok := 0, 0, false
+		if match.hasDecodedSource || match.fragmentBoundaries == nil {
+			start, end, ok = normalizedMatchSourceRange(source, mapped)
+		} else {
+			// Inner coordinates no longer index this view; project only its
+			// proven boundary positions, including a proven empty set.
+			mapped.span.ViewLabel = viewLabel
+		}
+		if ok {
 			match.decodedSourceStart, match.decodedSourceEnd = start, end
 			match.hasDecodedSource = true
+			setFragmentBoundaries(match, source, start, end)
 		} else {
 			match.hasDecodedSource = false
 			match.decodedSourceStart, match.decodedSourceEnd = 0, 0
-			match.crossesFragmentBoundary = normalizedFragmentBoundaryMatch(source, mapped)
+			match.fragmentBoundaries = normalizedFragmentBoundaries(source, mapped)
+			match.crossesFragmentBoundary = len(match.fragmentBoundaries) > 0
 		}
 	}
 	return set
 }
 
-// normalizedFragmentBoundaryMatch maps source newline boundaries into the
+// normalizedFragmentBoundaries maps source newline boundaries into the
 // normalized view when composition prevents an exact rune source map. It
 // verifies the whole view and supplies only boundary membership, never guessed
 // source coordinates to the stripping path.
-func normalizedFragmentBoundaryMatch(source string, match ResponseMatch) bool {
+func normalizedFragmentBoundaries(source string, match ResponseMatch) []int {
 	if !strings.ContainsRune(source, '\n') {
-		return false
+		return []int{}
 	}
 	label := match.span.ViewLabel
 	view := normalizedResponseMatchView(source, label)
-	if match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
-		return false
+	if match.fragmentBoundaries == nil && (match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd) {
+		return []int{}
 	}
 	newline := normalizedResponseMatchView("\n", label)
 	var rebuilt strings.Builder
-	crosses := false
+	boundaries := []int{}
 	for start := 0; start < len(source); {
 		end := len(source)
 		if at := strings.IndexByte(source[start:], '\n'); at >= 0 {
@@ -1463,14 +1479,31 @@ func normalizedFragmentBoundaryMatch(source string, match ResponseMatch) bool {
 		}
 		rebuilt.WriteString(normalizedResponseMatchView(source[start:end], label))
 		if end < len(source) {
-			if newline == "\n" && match.span.ByteStart <= rebuilt.Len() && match.span.ByteEnd > rebuilt.Len() {
-				crosses = true
+			crosses := match.span.ByteStart <= rebuilt.Len() && match.span.ByteEnd > rebuilt.Len()
+			if match.fragmentBoundaries != nil {
+				_, crosses = slices.BinarySearch(match.fragmentBoundaries, rebuilt.Len())
+			}
+			if newline == "\n" && crosses {
+				boundaries = append(boundaries, end)
 			}
 			rebuilt.WriteString(newline)
 		}
 		start = end + 1
 	}
-	return rebuilt.String() == view && crosses
+	if rebuilt.String() != view {
+		return []int{}
+	}
+	return boundaries
+}
+
+func setFragmentBoundaries(match *ResponseMatch, source string, start, end int) {
+	match.fragmentBoundaries = []int{}
+	for i := start; i < end; i++ {
+		if source[i] == '\n' {
+			match.fragmentBoundaries = append(match.fragmentBoundaries, i)
+		}
+	}
+	match.crossesFragmentBoundary = len(match.fragmentBoundaries) > 0
 }
 
 func normalizedResponseMatchView(value, label string) string {

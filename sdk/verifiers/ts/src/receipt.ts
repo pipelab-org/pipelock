@@ -24,6 +24,7 @@ export interface ReceiptReport {
   signer_key?: string;
   policy_hash?: string;
   chain_seq?: number;
+  source_span_count?: number;
   error?: string;
 }
 
@@ -78,6 +79,7 @@ export async function runReceipt(
   if (receipt.record_type === "evidence_receipt_v2") {
     const payload = receipt.payload as
       | {
+          source_spans?: unknown[];
           verdict?: string;
           transport?: string;
           decision?: { action_id?: string; transport?: string };
@@ -95,6 +97,12 @@ export async function runReceipt(
     report.signer_key = keyHex;
     report.policy_hash = receipt.policy_hash;
     report.chain_seq = receipt.chain_seq;
+    if (
+      receipt.payload_kind === "proxy_decision_with_spans" &&
+      Array.isArray(payload?.source_spans)
+    ) {
+      report.source_span_count = payload.source_spans.length;
+    }
   } else {
     report.action_id = receipt.action_record?.action_id;
     report.verdict = receipt.action_record?.verdict;
