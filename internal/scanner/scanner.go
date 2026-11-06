@@ -320,6 +320,7 @@ type Scanner struct {
 	allowlist                 []string
 	blocklist                 []string
 	dlpPatterns               []*compiledPattern
+	reassemblyPlan            *reassemblyPlan
 	canaryTokens              []compiledCanaryToken
 	dlpPreFilter              *dlpPreFilter
 	entropyThreshold          float64
@@ -726,6 +727,11 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		}
 		s.dlpPatterns = append(s.dlpPatterns, cp)
 		s.keywordPatterns = s.keywordPatterns || keywords != nil
+	}
+
+	s.reassemblyPlan, err = newReassemblyPlan(s.dlpPatterns)
+	if err != nil {
+		return nil, fmt.Errorf("compile encoded-content terminal: %w", err)
 	}
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.

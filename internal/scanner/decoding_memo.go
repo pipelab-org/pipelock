@@ -30,6 +30,29 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
+	reassemblyPatternSelected  bool
+	reassemblyPatterns         textDLPPatternSet
+	assembledBytes             int
+	reassemblyBudget           assembledBudget
+	assembledProjectionTable   []assembledProjectionEntry
+	assembledProjectionStorage *assembledProjectionStorage
+	assembledProjectionFirst   [5]assembledProjectionEntry
+	assembledProjectionEntries int
+	reassemblyDeferred         bool
+	reassemblyNestedDeferred   bool
+	reassemblyNestedPending    []int
+	reassemblyInbound          bool
+	reassemblyPending          []string
+	reassemblyViewKinds        map[string]assembledViewKind
+	reassemblyTextRoots        map[string]bool
+	reassemblyIncomplete       bool
+	assembledCharged           map[string]*assembledCharges
+	reassemblyInspected        int
+	reassemblyProduced         map[assembledIdentity]struct{}
+	reassemblyPlan             *reassemblyPlan
+	reassemblySeen             map[string]int
+	reassemblyFindings         []TextDLPMatch
+
 	keywordMode   bool
 	keywordBudget *keywordWorkBudget
 	keywordUnit   string
@@ -63,6 +86,7 @@ type decodingMemo struct {
 // result. Callers only read the offsets.
 func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	if m != nil && m.compactReady && m.compactSource == text {
+		m.reassemblyDerive(text, m.compactText)
 		return m.compactText, m.compactOffsets
 	}
 	compacted, offsets := text, []int(nil)
@@ -71,6 +95,7 @@ func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	}
 	if m != nil {
 		m.compactSource, m.compactText, m.compactOffsets, m.compactReady = text, compacted, offsets, true
+		m.reassemblyDerive(text, compacted)
 	}
 	return compacted, offsets
 }
@@ -218,6 +243,7 @@ func (m *decodingMemo) inspectionIncomplete() bool {
 // pass limit.
 func (m *decodingMemo) decodeHTML(text string) string {
 	decoded, converged := decodeHTMLEntitiesChecked(text)
+	m.reassemblyDerive(text, decoded)
 	if !converged {
 		m.markIncomplete()
 	}
@@ -241,6 +267,9 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			}
 			if !cached.complete {
 				m.incomplete = true
+			}
+			if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
+				m.reassemblyObserveDecoded(text, cached.views)
 			}
 			return cached.views
 		}
@@ -267,6 +296,9 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			}
 		}
 		m.incomplete = m.incomplete || !complete
+		if complete || m.inbound {
+			m.reassemblyObserveDecoded(text, views)
+		}
 		return views
 	}
 	if m == nil {
@@ -279,17 +311,28 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		if !complete {
 			m.incomplete = true
 		}
+		if complete || m.inbound {
+			m.reassemblyObserveDecoded(text, decoded)
+		}
 		return decoded
 	}
 	if cached, ok := m.views[key]; ok {
 		if !cached.complete {
 			m.incomplete = true
 		}
+		if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
+			m.reassemblyObserveDecoded(text, cached.views)
+		}
 		return cached.views
 	}
 	decoded, complete := decodeEncodingsBudgetMode(text, includeURL, minPrefix, m.inbound)
 	if !complete {
 		m.incomplete = true
+	}
+	// An existing outbound refusal already decides this scan. Inbound keeps
+	// its partial-view contract and never turns this skip into a refusal.
+	if complete || m.inbound {
+		m.reassemblyObserveDecoded(text, decoded)
 	}
 	m.retainDecode(key, decoded, complete)
 	return decoded
@@ -329,13 +372,17 @@ func (m *decodingMemo) normalize(text string) string {
 		return normalize.ForDLP(text)
 	}
 	if m.shared != nil {
-		return m.shared.normalize(text)
+		normalized := m.shared.normalize(text)
+		m.reassemblyDerive(text, normalized)
+		return normalized
 	}
 	if normalized, ok := m.normalized[text]; ok {
+		m.reassemblyDerive(text, normalized)
 		return normalized
 	}
 	normalized := normalize.ForDLP(text)
 	m.retainNormalized(text, normalized)
+	m.reassemblyDerive(text, normalized)
 	return normalized
 }
 

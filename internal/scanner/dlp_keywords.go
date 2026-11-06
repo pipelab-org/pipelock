@@ -50,6 +50,7 @@ type keywordWorkBudget struct {
 }
 
 type keywordDecodeSource struct {
+	reassembly         *assembledKeywordBits
 	logicalVersion     uint64
 	logicals           []string
 	variants           []*keywordDecodeSource
@@ -181,12 +182,22 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 	}
 	if !n.mapped {
 		n.mapped = true
-		if len(n.text) > maxDecodeTotalBytes/keywordSpanBytes || len(n.parent.text) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !n.owner.charge(len(n.text)*keywordSpanBytes+len(n.parent.text)*(2*keywordSpanBytes)) {
+		parentCost := 2 * keywordSpanBytes
+		if n.reassembly != nil {
+			// RFC replay scans the raw source directly. It retains only the
+			// decoded offsets, without the generic decoder's raw span arrays.
+			parentCost = 1
+		}
+		if len(n.text) > maxDecodeTotalBytes/keywordSpanBytes || len(n.parent.text) > maxDecodeTotalBytes/parentCost || !n.owner.charge(len(n.text)*keywordSpanBytes+len(n.parent.text)*parentCost) {
 			n.owner.incomplete = true
 			n.owner.budget.incomplete = true
 			return false
 		}
-		n.offsets = keywordDecodeOffsets(n.parent.text, n.text, n.encoding)
+		if n.reassembly != nil {
+			n.offsets = n.reassembly.offsets(n.parent.text, n.text)
+		} else {
+			n.offsets = keywordDecodeOffsets(n.parent.text, n.text, n.encoding)
+		}
 	}
 	if len(n.offsets) != len(n.text) {
 		n.owner.incomplete = true
@@ -201,6 +212,9 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 type keywordProjectionKey struct{ source, view string }
 
 type keywordCandidateContext struct {
+	// exactDecoded uses candidate offsets from an unnormalized decoded view.
+	exactDecoded       bool
+	exactSources       map[string]*string
 	sourceUnavailable  bool
 	projections        map[keywordProjectionKey][]keywordByteSpan
 	logical            string
@@ -214,6 +228,9 @@ type keywordCandidateContext struct {
 }
 
 func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view string, start, end int) (matched bool) {
+	if c.exactDecoded && c.exactSources == nil {
+		c.exactSources = make(map[string]*string)
+	}
 	if c.memo != nil {
 		incomplete := c.memo.incomplete
 		budgetIncomplete := c.memo.keywordBudget != nil && c.memo.keywordBudget.incomplete
@@ -254,7 +271,9 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		logical = view
 	}
 	ls, le, ok := start, end, true
-	if view != logical {
+	if c.exactDecoded {
+		ls, le, ok = c.assembledNormalizedSpan(view, logical, start, end)
+	} else if view != logical {
 		ls, le, ok = c.projectionSpan(logical, view, start, end)
 	}
 	if c.offsets != nil {
@@ -274,11 +293,13 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 	}
 	original := config.DLPKeywordContext(c.decoded.text)
 	ds, de, mapped := start, end, true
-	if original != view {
-		ds, de, mapped = c.projectionSpan(original, view, start, end)
-	}
-	if mapped {
-		ds, de, mapped = keywordNormalizedSpan(c.decoded.text, original, ds, de)
+	if !c.exactDecoded {
+		if original != view {
+			ds, de, mapped = c.projectionSpan(original, view, start, end)
+		}
+		if mapped {
+			ds, de, mapped = keywordNormalizedSpan(c.decoded.text, original, ds, de)
+		}
 	}
 	if !mapped {
 		return c.unavailableURLContext(gate)
@@ -308,7 +329,11 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			}
 			at += from
 			found = true
-			if gate.Matches(source, at+rs, at+re) {
+			if c.exactDecoded {
+				if c.assembledSourceKeyword(gate, source, at+rs, at+re) {
+					return true
+				}
+			} else if gate.Matches(source, at+rs, at+re) {
 				return true
 			}
 			from = at + 1
