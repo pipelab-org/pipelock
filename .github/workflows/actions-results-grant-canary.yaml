@@ -1,0 +1,34 @@
+name: Actions results grant canary
+
+on:
+  schedule:
+    - cron: '23 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Check published accounts and signed job-log grants
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANARY_SUMMARY_FILE: ${{ runner.temp }}/actions-results-summary.md
+        run: python3 scripts/actions_results_grant_canary.py
+
+      - name: Publish summary
+        if: always()
+        run: |
+          if [ -s "$RUNNER_TEMP/actions-results-summary.md" ]; then
+            cat "$RUNNER_TEMP/actions-results-summary.md" >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '## Actions results grant canary\n\nCheck did not finish; inspect the failed setup or script step.\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
