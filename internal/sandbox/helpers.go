@@ -76,6 +76,13 @@ func waitForParentHardening() error {
 	if ready == nil {
 		return fmt.Errorf("opening readiness descriptor %d", fd)
 	}
+	return waitForHardeningRelease(ready)
+}
+
+// waitForHardeningRelease owns the readiness reader and bounds the parent's
+// release. Keeping descriptor setup separate permits an in-memory reader in
+// deadline tests without changing the production timer.
+func waitForHardeningRelease(ready io.ReadCloser) error {
 	defer func() { _ = ready.Close() }()
 	var token [1]byte
 	readResult := make(chan error, 1)
