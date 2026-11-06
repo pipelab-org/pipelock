@@ -104,6 +104,12 @@ var argViewNorms = []argViewNorm{
 // normalizeLineOptions). proof decides which builtin subcommands keep their own
 // reading (see gitProof); nil reads args themselves without a recorded shape.
 func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
+	return buildArgViewsWithPaths(args, gitTool, proof, true)
+}
+
+// buildArgViewsWithPaths keeps file content out of shell pathname readings.
+// File tools supply their separately scoped path spellings instead.
+func buildArgViewsWithPaths(args []string, gitTool bool, proof *gitProof, pathReadings bool) []argView {
 	segs, plain := splitCommands(args)
 	if proof == nil {
 		p := proveGitBuiltins(args, nil, gitTool)
@@ -190,19 +196,24 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	}
 	tokens, joined := literalArgTokens(args)
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
-	// A pathname with parent segments can contain quoted or escaped blanks in
-	// command text. Keep its cleaned spelling as a separate interpretation;
-	// joining it into args would change command boundaries and xargs proofs.
-	// As with other word readings, it cannot clear an original incomplete check.
-	for _, value := range args {
-		if !hasParentSegment(value) {
-			continue
-		}
-		spellings := withPathSpellings([]string{value}, true)
-		for _, spelling := range spellings[1:] {
+	// Transpose the bounded spelling alternatives into whole-command readings.
+	// The number of views depends on the spelling algorithm, not operand count;
+	// each view retains the existing bounded pair matcher and incomplete state.
+	if pathReadings {
+		for _, reading := range pathOperandReadings(args) {
 			for _, n := range norms {
-				tokens, joined := n.tokens([]string{spelling})
-				add(argView{tokens: tokens, joined: joined, wordReading: true, interpreted: true})
+				tokens, joined := n.tokens(reading)
+				v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, wordReading: true, interpreted: true}
+				for _, seg := range segs {
+					for _, part := range pathOperandReadings([]string{seg}) {
+						t, _ := n.tokens(part)
+						v.segments = append(v.segments, t)
+					}
+					// An unchanged segment remains part of the command set.
+					t, _ := n.tokens([]string{seg})
+					v.segments = append(v.segments, t)
+				}
+				add(v)
 			}
 		}
 	}
@@ -220,6 +231,35 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 		views[i].folded = folded
 	}
 	return views
+}
+
+// pathOperandReadings substitutes cleaned operand spellings without dropping
+// their command. withPathSpellings supplies a fixed number of alternatives per
+// value; transposition avoids one additional view for every submitted operand.
+func pathOperandReadings(args []string) [][]string {
+	spellings := make([][]string, len(args))
+	base := slices.Clone(args)
+	count := 0
+	for i, value := range args {
+		if !hasParentSegment(value) {
+			continue
+		}
+		spellings[i] = withPathSpellings([]string{value}, true)[1:]
+		if len(spellings[i]) > 0 {
+			base[i] = spellings[i][0]
+			count = max(count, len(spellings[i]))
+		}
+	}
+	readings := make([][]string, count)
+	for j := range readings {
+		readings[j] = slices.Clone(base)
+		for i, alternatives := range spellings {
+			if j < len(alternatives) {
+				readings[j][i] = alternatives[j]
+			}
+		}
+	}
+	return readings
 }
 
 // commandSegments splits a single shell command string into the parts that

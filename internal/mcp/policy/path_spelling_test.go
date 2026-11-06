@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 	"testing"
 
@@ -275,7 +276,101 @@ func TestDefaultPolicy_PathReadingPreservesIncompleteAction(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, OnIncompleteCheck: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "path", ToolPattern: "bash", ArgPattern: `/etc/shadow`, Action: config.ActionWarn}}})
 	command := strings.Repeat("{a,b}", maxPairwiseTokens) + " '/etc/cache space/../shadow'"
 	v := pc.CheckToolCall("bash", []string{command})
-	if v.Action != config.ActionBlock || len(v.IncompleteRules) == 0 {
+	if v.Action != config.ActionBlock || len(v.IncompleteRules) == 0 || !slices.Contains(v.Rules, "path") {
 		t.Fatalf("path interpretation cleared incomplete block: %+v", v)
+	}
+}
+
+func TestPolicy_FileURIExactPath(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "exact path", ToolPattern: "read_file", ArgPattern: `^/etc/shadow$`}}})
+	for _, target := range []string{"file:etc/shadow?cache=1", "file:etc/shadow#section", "file:etc/sha%64ow?cache=1#section", "file:///etc/shadow?cache=1", "file:etc/shadow%3Fnotes", "file:etc/shadow%23notes"} {
+		t.Run(target, func(t *testing.T) {
+			raw, err := json.Marshal(map[string]string{"path": target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := pc.CheckToolCallWithArgs("read_file", []string{target}, raw)
+			want := !strings.Contains(target, "%3F") && !strings.Contains(target, "%23")
+			if v.Matched != want {
+				t.Fatalf("verdict=%+v, want match %v", v, want)
+			}
+		})
+	}
+}
+
+func TestPolicy_PathOperandCommandContext(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, args := range [][]string{{"tee", "/etc/cache space/../cron.d/job"}, {"tee '/etc/cache space/../cron.d/job'"}, {`tee /etc/cache\ space/../cron.d/job`}} {
+		v := pc.CheckToolCall("bash", args)
+		if !slices.Contains(v.Rules, "Persistence Path Write via Command") {
+			t.Errorf("args=%q: verdict=%+v", args, v)
+		}
+	}
+	v := pc.CheckToolCall("bash", []string{"echo tee; printf '/etc/cache space/../cron.d/job'"})
+	if slices.Contains(v.Rules, "Persistence Path Write via Command") {
+		t.Fatalf("path interpretation joined separate commands: %+v", v)
+	}
+}
+
+func TestPolicy_FileContentPathSpellings(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, content := range []string{"/etc/cache space/../cron.d/job", "/etc/cache/../cron.d/job", "file:etc/cron.d/job?notes=1"} {
+		raw, err := json.Marshal(map[string]string{"path": "/project/notes.txt", "content": content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, _ := ArgValues(raw)
+		v := pc.CheckToolCallWithArgs("write_file", values, raw)
+		if v.Matched {
+			t.Errorf("content=%q: verdict=%+v", content, v)
+		}
+	}
+	pc = New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "submitted content", ToolPattern: "write_file", ArgPattern: `cache space/\.\./cron`}}})
+	raw := json.RawMessage(`{"path":"/project/notes.txt","content":"/etc/cache space/../cron.d/job"}`)
+	values, _ := ArgValues(raw)
+	if v := pc.CheckToolCallWithArgs("write_file", values, raw); !v.Matched {
+		t.Fatalf("submitted content stopped matching: %+v", v)
+	}
+}
+
+func TestPolicy_PathViewCount(t *testing.T) {
+	views := func(count int) []argView {
+		args := []string{"cat"}
+		for i := range count {
+			args = append(args, fmt.Sprintf("/project/cache %d/../notes%d", i, i))
+		}
+		return buildArgViews(args, false, nil)
+	}
+	short, long := views(2), views(maxPairwiseTokens)
+	if len(long) != len(short) {
+		t.Fatalf("view count grows with operands: short=%d long=%d", len(short), len(long))
+	}
+}
+
+func TestPolicy_FileArgumentPathScope(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tt := range []struct {
+		tool string
+		args map[string]any
+	}{
+		{"read_multiple_files", map[string]any{"paths": []string{"/project/notes.txt", "/etc/cache space/../shadow"}}},
+		{"copy_file", map[string]any{"source": "/etc/cache space/../shadow", "destination": "/project/notes.txt"}},
+		{"move_file", map[string]any{"source": "/project/notes.txt", "destination": "/etc/cache space/../shadow"}},
+		{"filesystem.write_file", map[string]any{"path": "/etc/cache space/../shadow", "content": "notes"}},
+	} {
+		raw, err := json.Marshal(tt.args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, _ := ArgValues(raw)
+		if v := pc.CheckToolCallWithArgs(tt.tool, values, raw); !v.Matched || v.Action != config.ActionBlock {
+			t.Errorf("%s: pathname missed: %+v", tt.tool, v)
+		}
+	}
+	pc = New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "content only", ToolPattern: "write_file", ArgPattern: `^/etc/cron.d/job$`, ArgKey: "^content$"}}})
+	raw := json.RawMessage(`{"path":"/etc/cache space/../cron.d/job","content":"notes"}`)
+	values, _ := ArgValues(raw)
+	if v := pc.CheckToolCallWithArgs("write_file", values, raw); v.Matched {
+		t.Fatalf("scoped content rule acquired another field's path: %+v", v)
 	}
 }

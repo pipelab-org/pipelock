@@ -795,6 +795,11 @@ func withPathSpellings(values []string, pathValues bool) []string {
 				if p, ok := fileURIPath(spelling); ok {
 					addPath(p)
 				} else if raw, ok := fileURIRemainder(spelling); ok {
+					// URL file readers exclude literal query/fragment delimiters;
+					// escaped delimiters remain filename bytes after decoding.
+					if i := strings.IndexAny(raw, "?#"); i >= 0 {
+						raw = raw[:i]
+					}
 					// Lenient readers keep malformed escapes and decode valid
 					// escapes around them before resolving parent segments.
 					addCleaned(raw, add)

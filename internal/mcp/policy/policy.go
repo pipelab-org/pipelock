@@ -265,6 +265,51 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true, argStrings, rawArgs)
 }
 
+// File target/destination names follow the shipped rule contracts; source and
+// paths are the move/copy and multi-file reader carriers exercised by policy.
+var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths)$`)
+
+// expandToolPaths preserves every submitted value but derives file spellings
+// only from pathname fields. A scoped rule cannot acquire paths from other keys.
+func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool bool, scope *regexp.Regexp) ([]string, []string, bool) {
+	if !fileTool || len(raw) == 0 {
+		expanded, notes := pc.localPaths.expandNoted(values, fileTool)
+		return expanded, notes, false
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil {
+		return values, nil, false
+	}
+	var keys []string
+	for key := range object {
+		if filePathArgumentKey.MatchString(key) && (scope == nil || scope.MatchString(key)) {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	var paths []string
+	for _, key := range keys {
+		field, truncated := ArgValues(object[key])
+		if truncated {
+			return nil, nil, true
+		}
+		paths = append(paths, field...)
+	}
+	expanded, notes := pc.localPaths.expandNoted(paths, true)
+	seen := make(map[string]bool, len(values)+len(expanded))
+	out := slices.Clone(values)
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, value := range expanded {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out, notes, false
+}
+
 // checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
 // submitted values and the JSON that carried them, read for the Git builtin
 // exception (see proveGitBuiltins); a shape is used only where it reproduces
@@ -321,8 +366,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// added to the values matched.
 	proof := proveGitBuiltins(proofArgs, jsonArgCarriers(proofShape, proofArgs), gitTool)
 	pathValues := pathValueToolName.MatchString(policyToolName) || pathValueToolName.MatchString(baselineToolName)
-	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings, pathValues)
-	views := buildArgViews(matchArgs, gitTool, &proof)
+	matchArgs, linkNotes, truncatedPaths := pc.expandToolPaths(argStrings, proofShape, pathValues, nil)
+	if truncatedPaths {
+		return uninspectableJSONDepthVerdict()
+	}
+	views := buildArgViewsWithPaths(matchArgs, gitTool, &proof, !pathValues)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -367,11 +415,14 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings, pathValues)
+			scopedStrings, scopedNotes, truncated := pc.expandToolPaths(scoped.Strings, proofShape, pathValues, rule.ArgKey)
+			if truncated {
+				return uninspectableJSONDepthVerdict()
+			}
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViews(scopedStrings, gitTool, nil)
+			ruleViews = buildArgViewsWithPaths(scopedStrings, gitTool, nil, !pathValues)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
