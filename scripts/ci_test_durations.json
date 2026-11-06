@@ -4731,7 +4731,7 @@
    "TestTextEncodingPreservesNormalizedBase64": 0.3,
    "TestTextEncodingQuotedPrintableAnchors": 0.2,
    "TestTextEncodingQuotedPrintableDecodedTextAdmission": 0.3,
-   "TestTextEncodingQuotedPrintableMixedRuns": 0.9,
+   "TestTextEncodingQuotedPrintableMixedRuns": 1.0,
    "TestTextEncodingQuotedPrintableMultipleRuns": 0.3,
    "TestTextEncodingQuotedPrintableProducer": 0.3,
    "TestTextEncodingQuotedPrintableRetainedAndDecodedSources": 0.3,

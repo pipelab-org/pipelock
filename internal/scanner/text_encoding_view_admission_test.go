@@ -98,6 +98,10 @@ func TestTextEncodingQuotedPrintableMixedRuns(t *testing.T) {
 	t.Cleanup(sc.Close)
 	cfg := testConfig()
 	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{
+		Name: "Fixture Credential", Regex: "fixture-credential-[A-Z]+", Severity: config.SeverityHigh,
+	})
 	dlp := MustNew(cfg)
 	t.Cleanup(dlp.Close)
 	escape := func(text string) string {
@@ -112,7 +116,7 @@ func TestTextEncodingQuotedPrintableMixedRuns(t *testing.T) {
 		{"invalid suffix", "", "\xff"},
 		{"invalid prefix", "\xff", ""},
 		{"malformed binary suffix", "", "=FF="},
-		{"malformed binary prefix", "=FF=GG", ""},
+		{"malformed binary prefix", "=FF=GG ", ""},
 		{"control padding", strings.Repeat("=00", minSegmentDecodeLen), "=FF="},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -120,12 +124,14 @@ func TestTextEncodingQuotedPrintableMixedRuns(t *testing.T) {
 			if result := sc.ScanResponse(t.Context(), input); result.Clean || result.Failed() {
 				t.Errorf("response injection not detected: %+v", result)
 			}
-			input = tc.prefix + escape(key) + tc.suffix
-			if result := dlp.ScanTextForDLP(t.Context(), input); result.Clean {
-				t.Errorf("text credential not detected: %+v", result)
-			}
-			if result := dlp.Scan(t.Context(), "https://api.vendor.example/collect?data="+url.QueryEscape(input)); result.Allowed || (result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP) {
-				t.Errorf("outbound credential not detected by DLP: %+v", result)
+			for _, credential := range []string{key, "fixture-credential-EXAMPLE", testSeedPhrase12} {
+				input = tc.prefix + escape(credential) + tc.suffix
+				if result := dlp.ScanTextForDLP(t.Context(), input); result.Clean {
+					t.Errorf("text credential not detected: %+v", result)
+				}
+				if result := dlp.Scan(t.Context(), "https://api.vendor.example/collect?data="+url.QueryEscape(input)); result.Allowed || (result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP) {
+					t.Errorf("outbound credential not detected by DLP: %+v", result)
+				}
 			}
 		})
 	}
