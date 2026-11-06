@@ -888,6 +888,11 @@ func TestContractDiscoveryTimeoutAfterPartialBody(t *testing.T) {
 		if body.reads.Load() < 2 || req.Context().Err() != nil || state.baseline.HeaderContract("echo").State != tools.HeaderContractUnknown {
 			t.Fatalf("stalled body: reads=%d caller=%v contract=%v err=%v", body.reads.Load(), req.Context().Err(), state.baseline.HeaderContract("echo").State, err)
 		}
+		select {
+		case <-body.closed:
+		default:
+			t.Fatal("discovery did not close the stalled response body")
+		}
 	})
 }
 
