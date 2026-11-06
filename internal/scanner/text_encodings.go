@@ -27,36 +27,131 @@ func canonicalMixedBase64(s string) string {
 var mixedBase64Symbols = strings.NewReplacer("-", "+", "_", "/")
 
 func hasTextEncoding(s string) bool {
-	return hasQuotedPrintable(s) || hasMinimumASCIIDigits(s, minDecimalCodeRun)
+	return hasQuotedPrintable(s) || hasCharacterCodeRun(s)
+}
+
+// hasCharacterCodeRun requires the existing minDecimalCodeRun consecutive
+// NumericLiteral fields, rather than counting unrelated digits in prose.
+// The existing decimal parser accepts JSON number spellings (RFC 8259
+// section 6); prefixed integers use ECMA-262 section 12.9.3. Reuse those
+// parsers so malformed fields break the same runs here and in the decoder.
+func hasCharacterCodeRun(s string) bool {
+	if !hasMinimumASCIIDigits(s, minDecimalCodeRun) {
+		return false
+	}
+	// A run needs at least this many fields, regardless of their values.
+	// Count before parsing: one large hex/base64 field cannot be a code list,
+	// and strconv error reporting would otherwise copy that entire field.
+	if !hasMinimumCharacterCodeFields(s) {
+		return false
+	}
+	var counts [3]int
+	for i := 0; i < len(s); {
+		r, size := rune(s[i]), 1
+		if r >= utf8.RuneSelf {
+			r, size = utf8.DecodeRuneInString(s[i:])
+		}
+		if characterCodeSeparatorFast(r) {
+			i += size
+			continue
+		}
+		start := i
+		i += size
+		for i < len(s) {
+			r, size = rune(s[i]), 1
+			if r >= utf8.RuneSelf {
+				r, size = utf8.DecodeRuneInString(s[i:])
+			}
+			if characterCodeSeparatorFast(r) {
+				break
+			}
+			i += size
+		}
+		field := s[start:i]
+		first := field[0]
+		if (first < '0' || first > '9') && first != '+' && first != '-' && first != '.' {
+			counts = [3]int{}
+			continue
+		}
+		for kind := range counts {
+			var ok bool
+			switch kind {
+			case 0:
+				_, ok = parseDecimalCharacterCode(field)
+			case 1:
+				_, ok = parsePrefixedCharacterCode(field, 'o', 8)
+			case 2:
+				_, ok = parsePrefixedCharacterCode(field, 'b', 2)
+			}
+			if ok {
+				counts[kind]++
+				if counts[kind] >= minDecimalCodeRun {
+					return true
+				}
+			} else {
+				counts[kind] = 0
+			}
+		}
+	}
+	return false
+}
+
+func hasMinimumCharacterCodeFields(s string) bool {
+	fields := 0
+	for range strings.FieldsFuncSeq(s, characterCodeSeparatorFast) {
+		fields++
+		if fields >= minDecimalCodeRun {
+			return true
+		}
+	}
+	return false
 }
 
 // appendTextEncodingViews joins textual carriers to the existing decode graph.
 // Each result is at most the input size; the caller owns recursive budgets.
 func appendTextEncodingViews(out []decodedResult, s string) []decodedResult {
-	if decoded, _ := decodeCharacterCodes(s, characterCodeSeparator, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
-		out = append(out, decodedResult{decoded, encodingDecimal})
+	if hasCharacterCodeRun(s) {
+		if decoded, _ := decodeCharacterCodes(s, characterCodeSeparatorFast, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
+			out = append(out, decodedResult{decoded, encodingDecimal})
+		}
+		for _, encoding := range []string{encodingOctal, encodingBinary} {
+			prefix, upperPrefix := "0o", "0O"
+			if encoding == encodingBinary {
+				prefix, upperPrefix = "0b", "0B"
+			}
+			if !strings.Contains(s, prefix) && !strings.Contains(s, upperPrefix) {
+				continue
+			}
+			if decoded, _ := decodePrefixedCharacterCodes(s, encoding, false); decoded != "" && decoded != s {
+				out = append(out, decodedResult{decoded, encoding})
+			}
+		}
 	}
-	for _, encoding := range []string{encodingOctal, encodingBinary} {
-		prefix, upperPrefix := "0o", "0O"
-		if encoding == encodingBinary {
-			prefix, upperPrefix = "0b", "0B"
-		}
-		if !strings.Contains(s, prefix) && !strings.Contains(s, upperPrefix) {
-			continue
-		}
-		if decoded, _ := decodePrefixedCharacterCodes(s, encoding, false); decoded != "" && decoded != s {
-			out = append(out, decodedResult{decoded, encoding})
-		}
-	}
-	// RFC 2045 quoted-printable is a text carrier. Binary decoder output
-	// containing an incidental escape must not create near-identity views
-	// that consume the recursive budget. Keep literal UTF-8 prose supported.
+	// RFC 2045 section 6.7 permits binary octets inside a valid carrier.
+	// Otherwise, use the existing isPrintableText decoded-response contract
+	// (including its printable-rune floor) for tolerant malformed carriers.
+	// Incidental escapes in binary noise must not manufacture recursive views.
 	if utf8.ValidString(s) {
-		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" {
+		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" && (isPrintableText([]byte(decoded)) || hasQuotedPrintableCarrier(s)) {
 			out = append(out, decodedResult{decoded, encodingQuotedPrintable})
 		}
 	}
 	return out
+}
+
+var asciiCharacterCodeSeparators = func() [utf8.RuneSelf]bool {
+	var separators [utf8.RuneSelf]bool
+	for i := range separators {
+		separators[i] = characterCodeSeparator(rune(i))
+	}
+	return separators
+}()
+
+func characterCodeSeparatorFast(r rune) bool {
+	if r < utf8.RuneSelf {
+		return asciiCharacterCodeSeparators[r]
+	}
+	return characterCodeSeparator(r)
 }
 
 // A number literal cannot contain arbitrary letters. Keeping them attached
@@ -82,16 +177,20 @@ func decodePrefixedCharacterCodes(s, encoding string, withRanges bool) (string, 
 	if encoding == encodingBinary {
 		prefix, base = 'b', 2
 	}
-	return decodeCharacterCodes(s, characterCodeSeparator, func(field string) (rune, bool) {
-		if len(field) < 3 || field[0] != '0' || field[1]|0x20 != prefix {
-			return 0, false
-		}
-		value, err := strconv.ParseUint(field[2:], base, 32)
-		if err != nil {
-			return 0, false
-		}
-		return validDecimalCharacterCode(int64(value))
+	return decodeCharacterCodes(s, characterCodeSeparatorFast, func(field string) (rune, bool) {
+		return parsePrefixedCharacterCode(field, prefix, base)
 	}, withRanges)
+}
+
+func parsePrefixedCharacterCode(field string, prefix byte, base int) (rune, bool) {
+	if len(field) < 3 || field[0] != '0' || field[1]|0x20 != prefix {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(field[2:], base, 32)
+	if err != nil {
+		return 0, false
+	}
+	return validDecimalCharacterCode(int64(value))
 }
 
 func quotedPrintableByte(a, b byte) (byte, bool) {
@@ -134,6 +233,34 @@ func hasQuotedPrintable(s string) bool {
 		offset = i + 1
 	}
 	return false
+}
+
+// hasQuotedPrintableCarrier checks the '=' productions of RFC 2045 section
+// 6.7: each equals sign introduces two hexadecimal digits or a soft line break.
+// Lowercase hexadecimal and local LF line endings retain the decoder's existing
+// tolerant handling. This is not a line-length or content-size heuristic.
+func hasQuotedPrintableCarrier(s string) bool {
+	for offset := 0; offset < len(s); {
+		next := strings.IndexByte(s[offset:], '=')
+		if next < 0 {
+			return true
+		}
+		i := offset + next
+		switch {
+		case i+1 < len(s) && s[i+1] == '\n':
+			offset = i + 2
+		case i+2 < len(s) && s[i+1:i+3] == "\r\n":
+			offset = i + 3
+		case i+2 < len(s):
+			if _, ok := quotedPrintableByte(s[i+1], s[i+2]); !ok {
+				return false
+			}
+			offset = i + 3
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // decodeQuotedPrintable implements the RFC 2045 section 6.7 byte escapes and
