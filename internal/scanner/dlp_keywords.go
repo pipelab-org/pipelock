@@ -630,18 +630,6 @@ func (m *decodingMemo) registerKeywordTransform(source, view, encoding string) {
 }
 
 func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodingMemo) (start, end int, matched bool) {
-	if memo != nil && p.keywords != nil {
-		incomplete := memo.incomplete
-		budgetIncomplete := memo.keywordBudget != nil && memo.keywordBudget.incomplete
-		defer func() {
-			if matched {
-				memo.incomplete = incomplete
-				if memo.keywordBudget != nil {
-					memo.keywordBudget.incomplete = budgetIncomplete
-				}
-			}
-		}()
-	}
 	if p.keywords == nil {
 		return p.matchSpanInView(view, source)
 	}
