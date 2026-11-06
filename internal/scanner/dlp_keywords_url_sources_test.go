@@ -371,3 +371,35 @@ func TestDLPKeywordsURLFallbackSubsequence(t *testing.T) {
 		})
 	}
 }
+
+// Query combinations append URL targets. A fallback after an append checks only
+// the new targets, so repeated combinations can't exhaust the keyword budget.
+func TestDLPKeywordsURLFallbackIncremental(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	gate := sc.dlpPatterns[0].keywords
+	first := strings.Repeat("a", 64)
+	memo := &decodingMemo{keywordURL: &urlKeywordContext{targets: []dlpTarget{{text: first}}}}
+	ctx := keywordCandidateContext{memo: memo}
+	if ctx.unavailableURLContext(gate) {
+		t.Fatal("keyword found in a target without it")
+	}
+	used := memo.keywordBudget.used
+	if used != len(first) {
+		t.Fatalf("first fallback charged %d bytes, want %d", used, len(first))
+	}
+	second := strings.Repeat("b", 32)
+	memo.keywordURL.targets = append(memo.keywordURL.targets, dlpTarget{text: second})
+	if ctx.unavailableURLContext(gate) || memo.keywordBudget.used != used+len(second) {
+		t.Fatalf("second fallback charged %d bytes, want only the new target", memo.keywordBudget.used-used)
+	}
+	memo.keywordURL.targets = append(memo.keywordURL.targets, dlpTarget{text: "account"})
+	if !ctx.unavailableURLContext(gate) {
+		t.Fatal("keyword in an appended target was missed")
+	}
+	used = memo.keywordBudget.used
+	memo.keywordURL.targets = append(memo.keywordURL.targets, dlpTarget{text: strings.Repeat("c", 32)})
+	if !ctx.unavailableURLContext(gate) || memo.keywordBudget.used != used {
+		t.Fatal("a found keyword must stay found without rescanning")
+	}
+}

@@ -4037,7 +4037,6 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 
 		if decodes != nil && decodes.keywordURL != nil {
 			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
-			clear(decodes.keywordURL.matches)
 		}
 
 		for _, candidate := range candidates {

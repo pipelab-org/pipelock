@@ -325,7 +325,10 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 // It is active only inside checkDLPWithDecodesAt, never for text or responses.
 type urlKeywordContext struct {
 	targets []dlpTarget
+	// Targets only grow during one URL scan, so a found keyword stays found
+	// and a negative result needs checking only against later targets.
 	matches map[*config.DLPKeywordMatcher]bool
+	scanned map[*config.DLPKeywordMatcher]int
 }
 
 // unavailableURLContext uses the URL-wide superset only when exact mapping
@@ -341,14 +344,15 @@ func (c *keywordCandidateContext) unavailableURLContext(gate *config.DLPKeywordM
 		return false
 	}
 	u := m.keywordURL
-	if matched, ok := u.matches[gate]; ok {
-		return matched
+	if u.matches[gate] {
+		return true
 	}
 	if u.matches == nil {
 		u.matches = make(map[*config.DLPKeywordMatcher]bool)
+		u.scanned = make(map[*config.DLPKeywordMatcher]int)
 	}
 	budget := keywordDecodeSources{budget: m.keywordBudgetForScan()}
-	for _, target := range u.targets {
+	for _, target := range u.targets[u.scanned[gate]:] {
 		if !budget.charge(len(target.text)) {
 			m.markIncomplete()
 			return false
@@ -370,7 +374,7 @@ func (c *keywordCandidateContext) unavailableURLContext(gate *config.DLPKeywordM
 			}
 		}
 	}
-	u.matches[gate] = false
+	u.scanned[gate] = len(u.targets)
 	return false
 }
 
