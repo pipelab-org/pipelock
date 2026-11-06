@@ -85,23 +85,6 @@ func TestUnicodeTagsReviewURLPathSegments(t *testing.T) {
 	}
 }
 
-func TestUnicodeTagsReviewMixedFragments(t *testing.T) {
-	s := tagsScanner(t)
-	key := inspectionLimitAWSKey()
-	pieces := []string{key[:2] + unicodeTags("noise") + key[2:10], unicodeTags(key[10:])}
-	fragments := make([]fragment, len(pieces))
-	for i, piece := range pieces {
-		fragments[i] = fragment{data: []byte(piece), sourceRequestID: []byte{byte(i + 1)}}
-	}
-	matches := scanOneFragmentContinuity(t.Context(), s, fragments)
-	if len(matches) == 0 {
-		t.Fatal("missing mixed fragment match")
-	}
-	if len(matches) != 1 || len(matches[0].Contributors) != 2 || !bytes.Equal(matches[0].Contributors[0], []byte{1}) || !bytes.Equal(matches[0].Contributors[1], []byte{2}) {
-		t.Fatalf("incorrect attribution: %+v", matches)
-	}
-}
-
 func TestUnicodeTagsReviewOpaqueOffsets(t *testing.T) {
 	s := tagsScanner(t)
 	encoded := hex.EncodeToString([]byte(testInjectionPhrase))
@@ -165,18 +148,6 @@ func TestUnicodeTagsReviewOpaqueBody(t *testing.T) {
 				t.Fatalf("clean=%v error=%s", result.Clean, result.ScanError)
 			}
 		})
-	}
-}
-
-func TestUnicodeTagsReviewFragmentBudget(t *testing.T) {
-	s := tagsScanner(t)
-	fragments := make([]fragment, 14)
-	for i := range fragments {
-		fragments[i] = fragment{data: []byte("prose " + unicodeTags("ordinary "))}
-	}
-	matches := scanOneFragmentContinuity(t.Context(), s, fragments)
-	if len(matches) != 1 || !matches[0].IsInspectionLimit() {
-		t.Fatalf("missing combination limit: %+v", matches)
 	}
 }
 
