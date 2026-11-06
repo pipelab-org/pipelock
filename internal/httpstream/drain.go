@@ -107,9 +107,14 @@ func (w *hijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		w.stopCancel = context.AfterFunc(w.lifetime, w.cancel)
 	}
 	conn, buffered, err := w.hijacker.Hijack()
-	if err == nil {
-		w.stopClose = context.AfterFunc(w.lifetime, func() { _ = conn.Close() })
+	if err != nil {
+		// No protocol switch happened, so a handler that falls back to an
+		// ordinary response keeps the normal drain grace.
+		w.finish()
+		w.lifetime, w.stopCancel, w.stopLifetime = nil, nil, nil
+		return conn, buffered, err
 	}
+	w.stopClose = context.AfterFunc(w.lifetime, func() { _ = conn.Close() })
 	return conn, buffered, err
 }
 

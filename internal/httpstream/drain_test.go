@@ -570,3 +570,34 @@ func TestDrainServersStopsEveryListenerBeforeWaiting(t *testing.T) {
 		t.Fatalf("drain errors = %v", errs)
 	}
 }
+
+func TestGateFailedHijackKeepsDrainGrace(t *testing.T) {
+	gate := &Gate{}
+	entered, release, canceled := make(chan struct{}), make(chan struct{}), make(chan bool, 1)
+	h := gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, _, err := http.NewResponseController(w).Hijack(); !errors.Is(err, http.ErrNotSupported) {
+			t.Errorf("hijack error = %v", err)
+		}
+		close(entered)
+		<-release
+		select {
+		case <-r.Context().Done():
+			canceled <- true
+		case <-time.After(drainTestGrace):
+			canceled <- false
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(failedHijackWriter{httptest.NewRecorder()}, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	}()
+	<-entered
+	gate.StopHijacks()
+	close(release)
+	<-done
+	if <-canceled {
+		t.Fatal("a failed hijack let shutdown cancel the fallback handler")
+	}
+}
