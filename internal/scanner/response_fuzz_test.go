@@ -38,6 +38,9 @@ func FuzzScanResponseContent(f *testing.F) {
 	// Invalid UTF-8 inside a match: each byte becomes a three-byte U+FFFD.
 	f.Add("1gn0rA 0" + strings.Repeat("\xfd", 23) + " prev10u$ 00 1n$7ruC710n")
 
+	// A match longer than the retained-text cap.
+	f.Add("ignore " + strings.Repeat("x", 120) + " previous instructions")
+
 	// Large content
 	f.Add(strings.Repeat("ignore ", 10000))
 	f.Add(strings.Repeat("a", 100000))
