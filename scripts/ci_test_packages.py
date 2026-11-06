@@ -62,12 +62,12 @@ HEAVY_TREES = {
 # Number of test-name sub-shards per heavy tree. A tree absent here runs as a
 # single shard named after the tree.
 TEST_SPLITS = {
-    "proxy": 8,
-    "scanner": 4,
+    "proxy": 9,
+    "scanner": 5,
     "mcp": 8,
     "runtime": 2,
 }
-REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
+REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3", "rest-4", "rest-5", "rest-6", "rest-7")
 # Sub-shards per heavy tree in the no-race lane pull requests wait on. Without
 # -race most trees run several times faster, so they need fewer splits than the
 # race lane above; the race-measured weights still balance the buckets, since
