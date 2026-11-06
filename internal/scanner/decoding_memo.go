@@ -19,6 +19,7 @@ type decodingMemoKey struct {
 	includeURL bool
 	minPrefix  int
 	inbound    bool
+	keyword    bool
 }
 
 // decodingMemo shares immutable decoded and normalized views within one scan. It never
@@ -29,11 +30,19 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
-	views         map[decodingMemoKey]memoDecode
-	normalized    map[string]string
-	retainedBytes int
-	incomplete    bool
-	inbound       bool
+	keywordMode   bool
+	keywordBudget *keywordWorkBudget
+	keywordUnit   string
+	// keywordInput is the text DLP input whose keyword unit is keywordUnit.
+	keywordInput   string
+	keywordRawURL  string
+	keywordURL     *urlKeywordContext
+	keywordSources map[string][]*keywordDecodeSource
+	views          map[decodingMemoKey]memoDecode
+	normalized     map[string]string
+	retainedBytes  int
+	incomplete     bool
+	inbound        bool
 	// shared, when set, replaces views and normalized as the cache. It is
 	// owned by a caller that scans several views of one message.
 	shared *sharedDecodes
@@ -188,6 +197,7 @@ func (s *sharedDecodes) normalize(text string) string {
 type memoDecode struct {
 	views    []decodedResult
 	complete bool
+	sources  *keywordDecodeSources
 }
 
 // markIncomplete records a bound reached outside the fixpoint decoder. A nil
@@ -223,6 +233,42 @@ func (m *decodingMemo) decodeKnownSecret(text string, minimum int) []decodedResu
 }
 
 func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) []decodedResult {
+	if m != nil && m.keywordMode && minPrefix == 0 {
+		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true}
+		if cached, ok := m.views[key]; ok {
+			if cached.sources != nil {
+				cached.sources.bindParents(text, m.keywordSources[text])
+			}
+			if !cached.complete {
+				m.incomplete = true
+			}
+			return cached.views
+		}
+		sources := newKeywordDecodeSources(text)
+		sources.budget = m.keywordBudgetForScan()
+		if parents := m.keywordSources[text]; len(parents) > 0 {
+			sources.bindParents(text, parents)
+		}
+		views, complete := decodeEncodingsBudgetModeTracked(text, includeURL, minPrefix, m.inbound, sources)
+		m.retainDecode(key, views, complete)
+		if cached, ok := m.views[key]; ok {
+			cached.sources = sources
+			m.views[key] = cached
+		}
+		if m.keywordSources == nil {
+			m.keywordSources = make(map[string][]*keywordDecodeSource)
+		}
+		for _, d := range views {
+			if d.source != nil {
+				m.keywordSources[d.text] = append(m.keywordSources[d.text], d.source)
+				if normalized := m.normalize(d.text); normalized != d.text {
+					m.keywordSources[normalized] = append(m.keywordSources[normalized], d.source)
+				}
+			}
+		}
+		m.incomplete = m.incomplete || !complete
+		return views
+	}
 	if m == nil {
 		decoded, _ := decodeEncodingsFixpointMode(text, includeURL, minPrefix)
 		return decoded
@@ -330,7 +376,7 @@ func (m *decodingMemo) matchDecodedFor(sc *Scanner, text, encoding string, patte
 	if patterns != textDLPCardPatterns {
 		return patterns.selectMatches(m.matchDecodedKey(full))
 	}
-	if cached, ok := m.cachedDecodedMatches(full); ok {
+	if cached, ok := m.cachedDecodedMatches(full); ok && !m.keywordMode {
 		return patterns.selectMatches(cached)
 	}
 	card := full
@@ -358,6 +404,16 @@ func (m *decodingMemo) matchDecodedCore(sc *Scanner, text, encoding string) []Te
 }
 
 func (m *decodingMemo) matchDecodedKey(key decodedMatchKey) []TextDLPMatch {
+	if m != nil && m.keywordMode && !key.core {
+		normalized := m.normalize(key.text)
+		var lowered dlpLoweredBytes
+		lowered.add(normalized)
+		patterns := textDLPAllPatterns
+		if key.cardOnly {
+			patterns = textDLPCardPatterns
+		}
+		return key.scanner.matchDLPPatternsLoweredWithDecodes(normalized, key.encoding, key.text, &lowered, patterns, m)
+	}
 	if m == nil {
 		normalized := normalize.ForDLP(key.text)
 		var lowered dlpLoweredBytes
@@ -397,4 +453,11 @@ func (m *decodingMemo) retainDecodedMatches(key decodedMatchKey, matches []TextD
 	}
 	m.decodedMatches[key] = matches
 	m.decodedMatchesBytes += cost
+}
+
+func (m *decodingMemo) keywordBudgetForScan() *keywordWorkBudget {
+	if m.keywordBudget == nil {
+		m.keywordBudget = &keywordWorkBudget{}
+	}
+	return m.keywordBudget
 }

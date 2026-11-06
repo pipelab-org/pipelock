@@ -285,6 +285,7 @@ type CompiledDLPPattern struct {
 	Name     string
 	Re       *regexp.Regexp
 	Severity string
+	keywords *config.DLPKeywordMatcher
 	validate func(string) bool // post-match checksum (Luhn, mod-97, etc.), nil = regex-only
 	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
 	// policy, so scan-diff and runtime scanning agree on card endpoints.
@@ -312,7 +313,7 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 			Name:     p.Name,
 			Severity: p.Severity,
 		}
-		if class, ok := gitProtectClassByPatternName[p.Name]; ok && p.Validator == "" {
+		if class, ok := gitProtectClassByPatternName[p.Name]; ok && p.Validator == "" && len(p.Keywords) == 0 {
 			cp.Class = class
 		}
 
@@ -328,6 +329,11 @@ func CompileDLPPatterns(patterns []config.DLPPattern) []CompiledDLPPattern {
 			continue
 		}
 		cp.Re = re
+		keywords, err := p.CompileKeywords()
+		if err != nil {
+			continue
+		}
+		cp.keywords = keywords
 		if p.Validator != "" {
 			cp.validate = scanner.DLPValidators[p.Validator]
 			cp.cardPrefixRetry = scanner.RetriesCardPrefixes(p)
@@ -356,7 +362,7 @@ func (cp *CompiledDLPPattern) classMatches(matches []redact.Match) []redact.Matc
 }
 
 func (cp *CompiledDLPPattern) regexMatches(text string) bool {
-	return scanner.ValidatedPatternMatches(text, cp.Re, cp.validate, cp.cardPrefixRetry, cp.wifOverlapRetry)
+	return scanner.ContextualPatternMatches(text, cp.Re, cp.validate, cp.cardPrefixRetry, cp.wifOverlapRetry, cp.keywords)
 }
 
 var (

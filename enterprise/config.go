@@ -155,6 +155,9 @@ func ValidateAgents(cfg *config.Config) error {
 		// Validate DLP patterns in agent profile.
 		if profile.DLP != nil {
 			for _, p := range profile.DLP.Patterns {
+				if err := p.ValidateKeywords(); err != nil {
+					return fmt.Errorf("agent %q: %w", name, err)
+				}
 				if p.Name == "" {
 					return fmt.Errorf("agent %q: DLP pattern missing name", name)
 				}
@@ -518,6 +521,7 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 	// yaml-excluded audience metadata even when this profile does not override
 	// DLP at all. Restore exact shipped pattern identities after every profile
 	// merge; custom same-name patterns remain ineligible.
+	merged.DLP.Patterns = config.CloneDLPPatterns(merged.DLP.Patterns)
 	config.RestoreBuiltInCredentialAudienceHosts(merged.DLP.Patterns)
 
 	return merged, nil
@@ -525,6 +529,11 @@ func MergeAgentProfile(base *config.Config, profile *config.AgentProfile) (*conf
 
 // ValidateMergedAgent validates a merged agent config.
 func ValidateMergedAgent(name string, cfg *config.Config) error {
+	for _, p := range cfg.DLP.Patterns {
+		if err := p.ValidateKeywords(); err != nil {
+			return fmt.Errorf("agent %q: %w", name, err)
+		}
+	}
 	// Validate trusted_domains inherited or overridden by the agent profile.
 	if err := config.ValidateTrustedDomains(cfg.TrustedDomains, fmt.Sprintf("agent %q trusted_domains", name)); err != nil {
 		return err

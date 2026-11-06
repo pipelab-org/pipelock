@@ -811,6 +811,7 @@ func (c *Config) ValidateWithWarnings() ([]Warning, error) {
 	if err := c.validateAgents(); err != nil {
 		return warnings, err
 	}
+	warnings = append(warnings, c.agentDLPKeywordWarnings()...)
 	if err := c.validateScanAPI(); err != nil {
 		return warnings, err
 	}
@@ -1621,6 +1622,12 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 
 	// Validate DLP patterns compile as valid regexes
 	for i, p := range c.DLP.Patterns {
+		if err := p.ValidateKeywords(); err != nil {
+			return err
+		}
+		if len(p.Keywords) > 0 && warnings != nil {
+			*warnings = append(*warnings, Warning{Field: fmt.Sprintf("dlp.patterns[%d].keywords", i), Message: dlpKeywordAdvisory})
+		}
 		if p.Name == "" {
 			return fmt.Errorf("DLP pattern missing name")
 		}

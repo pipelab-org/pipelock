@@ -92,6 +92,7 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 			Message: "DLP patterns removed or regex/validator changed on reload: " + strings.Join(removed, ", "),
 		})
 	}
+	warnings = append(warnings, agentDLPReloadWarnings(old, updated)...)
 	if removed := removedOrWeakenedResponsePatterns(old.ResponseScanning.Patterns, updated.ResponseScanning.Patterns); len(removed) > 0 {
 		warnings = append(warnings, ReloadWarning{
 			Field:   "response_scanning.patterns",
@@ -1839,6 +1840,9 @@ func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
 	}
 	for _, p := range old {
 		next, ok := updatedByName[p.Name]
+		if ok && next.Regex == p.Regex && KeywordCoverageReduced(p, next) {
+			changed = append(changed, p.Name+" (keywords narrowed)")
+		}
 		// Adding or swapping a validator can filter previously detected
 		// candidates without changing the regex. Removing one restores
 		// shape-only detection, so it cannot reduce that pattern's coverage.
@@ -1974,4 +1978,48 @@ func scannerExceptionExpiryIdentity(expires string) string {
 		return ""
 	}
 	return " expires=" + expires
+}
+
+// agentDLPReloadWarnings compares the same resolved policies that the agent
+// registry installs. Removed profiles resolve through the configured fallback.
+func agentDLPReloadWarnings(old, updated *Config) []ReloadWarning {
+	if MergeAgentProfileFunc == nil {
+		return nil
+	}
+	names := make(map[string]bool, len(old.Agents)+len(updated.Agents))
+	for name := range old.Agents {
+		names[name] = true
+	}
+	for name := range updated.Agents {
+		names[name] = true
+	}
+	ordered := make([]string, 0, len(names))
+	for name := range names {
+		ordered = append(ordered, name)
+	}
+	sort.Strings(ordered)
+	resolve := func(cfg *Config, name string) (*Config, error) {
+		profile, ok := cfg.Agents[name]
+		if !ok {
+			profile, ok = cfg.Agents["_default"]
+		}
+		if !ok {
+			return cfg, nil
+		}
+		return MergeAgentProfileFunc(cfg, &profile)
+	}
+	var warnings []ReloadWarning
+	for _, name := range ordered {
+		field := fmt.Sprintf("agents.%s.dlp.patterns", name)
+		before, oldErr := resolve(old, name)
+		after, newErr := resolve(updated, name)
+		if oldErr != nil || newErr != nil {
+			warnings = append(warnings, ReloadWarning{Field: field, Message: fmt.Sprintf("agent %q DLP coverage could not be resolved for reload comparison", name)})
+			continue
+		}
+		if changed := removedOrWeakenedDLPPatterns(before.DLP.Patterns, after.DLP.Patterns); len(changed) > 0 {
+			warnings = append(warnings, ReloadWarning{Field: field, Message: fmt.Sprintf("agent %q DLP patterns removed or coverage reduced on reload: %s", name, strings.Join(changed, ", "))})
+		}
+	}
+	return warnings
 }
