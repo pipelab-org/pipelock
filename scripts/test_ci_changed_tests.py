@@ -333,12 +333,28 @@ class ChangedTestRunnerTest(unittest.TestCase):
             # paired whole-package total rather than a zero-base charge.
             self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
 
+    def test_skipped_selected_test_completes_and_keeps_recorded_weight(self):
+        # An environment-gated test that always calls t.Skip in CI costs only
+        # its skip there; editing it must not fail measurement, and a skip is
+        # not a full measurement, so the recorded weight stays in place.
+        events = [
+            {"Action": "run", "Test": "TestChanged"},
+            {"Action": "skip", "Test": "TestChanged", "Elapsed": 0},
+            {"Action": "pass", "Elapsed": 1},
+        ]
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "run_measurement", side_effect=self.scripted_run([], events)), \
+             patch("scripts.ci_test_durations.load_durations", return_value={"proxy": {"TestChanged": 42.0}}), \
+             redirect_stdout(io.StringIO()):
+            overrides = planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                                   planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+        self.assertEqual(overrides["trees"]["proxy"]["TestChanged"], 42.0)
+
     def test_missing_skipped_failed_or_invalid_terminal_events_fail_closed(self):
         cases = [
             [{"Action": "pass", "Elapsed": 1}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": 1}],
             [{"Action": "run", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
-            [{"Action": "skip", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
             [{"Action": "fail", "Test": "TestChanged", "Elapsed": 1}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": float("nan")}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": -1}],

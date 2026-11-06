@@ -864,9 +864,12 @@ def measured_selection(
         if action == "skip" and isinstance(name, str):
             # Whole rest packages can contain unrelated platform skips, and a
             # selected test can skip some of its subtests. Neither invalidates
-            # the measured total. A selected top-level test must actually run.
+            # the measured total. A selected top-level test that skips, such
+            # as an environment-gated profiling test, costs only its skip in
+            # CI; it completes here and the duration reader keeps its
+            # recorded weight, since a skip is not a full measurement.
             if name in selected[package]:
-                raise ValueError(f"selected test skipped: {package}: {name}")
+                completed.add((package, name))
             pending.discard((package, name))
             continue
         if action in ("pass", "fail", "skip"):
