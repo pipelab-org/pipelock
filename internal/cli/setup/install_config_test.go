@@ -22,6 +22,11 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("PIPELOCK_CONFIG", cfgPath); err != nil {
 		panic(err)
 	}
+	// Hook tests must not load installed bundles or share their freshness state.
+	// Set this before m.Run so parallel rows need no process environment changes.
+	if err := os.Setenv("XDG_DATA_HOME", dir); err != nil {
+		panic(err)
+	}
 	// Each init command needs its own auditor directory. Sharing one directory
 	// makes independent test configs look like attempts to replace a durable
 	// auditor target, which is precisely what production must reject.
