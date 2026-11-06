@@ -82,20 +82,6 @@ func runRequiredResponsePolicyReceipts(t *testing.T, surface string) {
 					for _, failure := range []string{"healthy", "missing", "v1", "v2", "v1 sync", "v2 sync", "optional"} {
 						t.Run(map[bool]string{false: "single", true: "group"}[grouped]+"/"+failure, func(t *testing.T) {
 							t.Parallel()
-							// A grouped run replaces the recorder and source with the
-							// failure group, so the dual-emit fixture (a whole proxy and
-							// scanner) is built only for the single-recorder runs that
-							// use it.
-							var f *dualEmitFixture
-							var source *Proxy
-							var rec *recorder.Recorder
-							if grouped {
-								rec, _, source, _ = newReceiptFailureGroup(t)
-								_ = source.admitReceiptShard()
-							} else {
-								f = newDualEmitFixture(t, false)
-								source, rec = f.p, f.rec
-							}
 							cfg := config.Defaults()
 							cfg.Internal = nil
 							cfg.Taint.Enabled = false
@@ -146,16 +132,32 @@ func runRequiredResponsePolicyReceipts(t *testing.T, surface string) {
 								cfg.A2AScanning.TrustedAgentCardKeys = []config.A2ATrustedCardKey{{KeyID: "k1", PublicKey: signing.EncodePublicKey(pub), AllowedOrigins: []string{"https://api.vendor.example"}}}
 								signedCard = e2eSignedCard(t, priv, false)
 							}
-							sc := scanner.MustNew(cfg)
-							p, err := New(cfg, source.logger, sc, source.metrics, WithRecorder(rec), WithReceiptEmitter(source.receiptEmitterPtr.Load()), WithV2ReceiptEmitter(source.v2EmitterPtr.Load()))
-							if err != nil {
-								t.Fatal(err)
+							// Every case owns its recorder, scanner and proxy. Single
+							// recorders use the fixture's proxy directly; only grouped
+							// recorders need the lightweight shard source.
+							var f *dualEmitFixture
+							var p *Proxy
+							var rec *recorder.Recorder
+							if grouped {
+								var source *Proxy
+								rec, _, source, _ = newReceiptFailureGroup(t)
+								_ = source.admitReceiptShard()
+								sc := scanner.MustNew(cfg)
+								var err error
+								p, err = New(cfg, source.logger, sc, source.metrics, WithRecorder(rec), WithReceiptEmitter(source.receiptEmitterPtr.Load()), WithV2ReceiptEmitter(source.v2EmitterPtr.Load()))
+								if err != nil {
+									t.Fatal(err)
+								}
+								p.receiptGroupPtr.Store(source.receiptGroupPtr.Load())
+							} else {
+								f = newDualEmitFixtureWithConfig(t, false, cfg)
+								p, rec = f.p, f.rec
 							}
 							defer p.Close()
+							sc := p.scannerPtr.Load()
 							if shape == "passthrough" {
 								p.responseBodyLimit = 128
 							}
-							p.receiptGroupPtr.Store(source.receiptGroupPtr.Load())
 							if strings.HasPrefix(shape, "approve") {
 								answer := "y\n"
 								if shape == "approve strip" {
@@ -243,6 +245,7 @@ func runRequiredResponsePolicyReceipts(t *testing.T, surface string) {
 									// Every transport selected the second admission shard. The process
 									// fallback is deliberately healthy to expose a lost selection.
 									selected := receipt.EmitOpts{ShardSelected: true, ShardIndex: 1}
+									var err error
 									e1, err = group.shards.SelectedEmitter(selected)
 									if err != nil {
 										t.Fatal(err)
