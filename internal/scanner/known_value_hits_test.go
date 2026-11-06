@@ -4,8 +4,11 @@
 package scanner
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 const knownValueHitsAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
@@ -112,6 +115,9 @@ func TestKnownValueWindowHitsMatchDirectScan(t *testing.T) {
 
 // referenceCheckSecretsInText is checkSecretsInText without the shared memo.
 func referenceCheckSecretsInText(s *Scanner, secrets []string, text string) (knownSecretMatch, int, int, string, bool) {
+	// Spans name the normalized view in both memoized and direct scans.
+	original := text
+	text = normalize.ForDLP(text)
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lower := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 	for _, secret := range secrets {
@@ -122,6 +128,9 @@ func referenceCheckSecretsInText(s *Scanner, secrets []string, text string) (kno
 	// The production fallback scans carrier decodings. This reference uses
 	// unshared decoding and window lookups so memo behavior remains checked.
 	decoded := s.decodedKnownSecretViews(text, nil)
+	if original != text && hasTextEncoding(original) {
+		decoded = append(decoded, s.decodedKnownSecretViews(original, nil)...)
+	}
 	for _, secret := range secrets {
 		if start, end, label, ok := indexAnyView(secret, decoded); ok {
 			return knownSecretMatch{encoding: strings.TrimPrefix(label, ViewDLPNormalized+":")}, start, end, label, true
@@ -211,5 +220,16 @@ func TestKnownValueWindowHitsBoundedFallsBackToDirectScan(t *testing.T) {
 	gs, ge, gl, gv, gok := indexKnownValueSubstringWithHits(secret, s.knownSecretWindows[secret], views, memo)
 	if !wok || gs != ws || ge != we || gl != wl || gv != wv || gok != wok {
 		t.Fatalf("overflow fallback differs: got (%d %d %d %q %v), want (%d %d %d %q %v)", gs, ge, gl, gv, gok, ws, we, wl, wv, wok)
+	}
+}
+
+func TestTextEncodingNormalizedKnownSecretSpan(t *testing.T) {
+	secret := strings.Join([]string{"fixture", "Q7m2X9z4R8v3N6p1"}, "-")
+	sc := knownSecretEncodingScanner(t, []string{secret})
+	encoded := base64.StdEncoding.EncodeToString([]byte(secret))
+	carrier := encoded[:2] + "\n" + encoded[2:]
+	matches := sc.checkSecretsInText(sc.fileSecrets, carrier, "Known Secret Leak", "")
+	if len(matches) != 1 || matches[0].Span().ByteEnd != len(encoded) {
+		t.Fatalf("span does not index the normalized carrier: %+v", matches)
 	}
 }
