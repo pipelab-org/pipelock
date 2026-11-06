@@ -303,13 +303,17 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 
 	integrity := finishIntegrity(context.WithoutCancel(ctx), opt, mode, dirs, childEnv, plan, sink, warm, measured, end, shutdown, &perf)
 
-	if lines, logErr := bundleLogLines(filepath.Join(dirs.root, "proxy.log")); logErr != nil {
+	// A decode error still returns the bundle lines found around it; keep them
+	// so a malformed record cannot hide the activity it sits next to.
+	lines, logErr := bundleLogLines(filepath.Join(dirs.root, "proxy.log"))
+	if logErr != nil {
 		integrity.fail("reading proxy.log failed: " + logErr.Error())
-	} else {
+	}
+	if lines != nil {
 		res.Inputs.Rules.ProxyLogLines = lines
-		if res.Inputs.Rules.Mode == rulesEmpty && len(lines) > 0 {
-			integrity.fail("proxy reported rule bundle activity under --rules empty: " + lines[0])
-		}
+	}
+	if res.Inputs.Rules.Mode == rulesEmpty && len(lines) > 0 {
+		integrity.fail("proxy reported rule bundle activity under --rules empty: " + lines[0])
 	}
 	failOnAuditGaps(&integrity, dirs, false)
 	if ctx.Err() != nil {

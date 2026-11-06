@@ -91,9 +91,9 @@ func TestBundleLogBoundaries(t *testing.T) {
 		want       int
 	}{
 		{"empty", "", 0},
-		{"matches", strings.Repeat("rule bundle loaded\n", maxBundleLogLines+1), maxBundleLogLines},
+		{"matches", strings.Repeat("pipelock: DEGRADED — 1 rule bundle(s) unavailable: community\n", maxBundleLogLines+1), maxBundleLogLines},
 		{"large-file", strings.Repeat("x\n", 8*1024*1024/2), 0},
-		{"line-limit", strings.Repeat("x", maxProxyLogLineBytes-2) + "\nrule bundle loaded\n", 1},
+		{"line-limit", strings.Repeat("x", maxProxyLogLineBytes-2) + "\npipelock: DEGRADED — 1 rule bundle(s) unavailable: community\n", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "proxy.log")
@@ -197,6 +197,70 @@ func TestRelativeOutputIsNormalized(t *testing.T) {
 	}
 }
 
+func TestBundleLogMatchesProducerMessages(t *testing.T) {
+	for _, tc := range []struct {
+		name, data string
+		want       int
+	}{
+		{"security warning", "pipelock: SECURITY WARNING: rule bundle community degraded (integrity): bad signature\n", 1},
+		{"degraded summary", "pipelock: DEGRADED — 1 rule bundle(s) unavailable: community\n", 1},
+		{"standard pack", `pipelock: DEGRADED: standard pack "core" failed to load: missing — running core-only` + "\n", 1},
+		{"loader warning", `pipelock: bundle "community" loaded although min_pipelock "3.8.0" could not be verified` + "\n", 1},
+		{"freshness warning", `pipelock: WARNING: bundle "community" expired at 2026-01-01 (running in stale mode)` + "\n", 1},
+		{"allow degraded", "pipelock: SECURITY WARNING: rules.allow_degraded=true; strict mode is booting with degraded rule-bundle integrity\n", 1},
+		{"reload loader warning", `WARNING: config reload: bundle "community" loaded although min_pipelock "3.8.0" could not be verified` + "\n", 1},
+		{"reload freshness warning", `WARNING: config reload: WARNING: bundle "community" expired at 2026-01-01 (running in stale mode)` + "\n", 1},
+		{"reload degraded summary", "WARNING: config reload: DEGRADED — 1 rule bundle(s) unavailable: community\n", 1},
+		{"reload bundle error", "WARNING: config reload: rule bundle community degraded (integrity): bad signature\n", 1},
+		{"reload coverage drop", "WARNING: config reload: rule bundle community cleanly removed 1 live pattern(s)\n", 1},
+		{"reload opt in", "WARNING: config reload: rules.allow_degraded=true; accepting degraded rule-bundle coverage after explicit operator opt-in\n", 1},
+		{"unrelated reload", "WARNING: config reload: fetch_proxy.listen changed from localhost:8888 to localhost:8889 - requires restart, ignoring\n", 0},
+		{"audit event", `{"level":"warn","event":"rule_bundle_degraded","bundle":"community"}` + "\n", 1},
+		{"escaped audit event", `{"event":"rule_bundle_\u0064egraded"}` + "\n", 1},
+		{"startup path", "  Recorder: /out/rule_bundle_review/recorder (flight recorder enabled)\n", 0},
+		{"config path", "pipelock: config /out/rule bundle review/pipelock.yaml\n", 0},
+		{"URL field", `{"event":"forward_http","url":"http://api.vendor.example/rule_bundle_x?q=rule+bundle"}` + "\n", 0},
+		{"other event", `{"event":"error","error":"rule bundle mentioned in a request error"}` + "\n", 0},
+		{"unprefixed", "SECURITY WARNING: rule bundle community degraded\n", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "proxy.log")
+			if err := os.WriteFile(path, []byte(tc.data), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			lines, err := bundleLogLines(path)
+			if err != nil || len(lines) != tc.want {
+				t.Fatalf("lines=%v error=%v", lines, err)
+			}
+		})
+	}
+}
+
+func TestBundleLogReportsUndecodableRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy.log")
+	data := `{"event":"rule_bundle_degraded"` + "\npipelock: DEGRADED — 1 rule bundle(s) unavailable: community\n"
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := bundleLogLines(path)
+	if err == nil || len(lines) != 1 {
+		t.Fatalf("lines=%v error=%v; want the later message and a decode error", lines, err)
+	}
+}
+
+func TestRealBundlePathDoesNotFailIntegrity(t *testing.T) {
+	bin := realPipelock(t)
+	opt := smallOptions(t, bin)
+	opt.out = filepath.Join(opt.out, "rule_bundle_review")
+	if err := os.Mkdir(opt.out, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	opt.requests, opt.warmup = 10, 2
+	if code := runModes(context.Background(), opt, []string{modeOff}); code != exitOK {
+		t.Fatalf("exit=%d: %+v", code, readResult(t, filepath.Join(opt.out, modeOff)).Integrity)
+	}
+}
+
 func TestBundleLogMemoryBound(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy.log")
 	if err := os.WriteFile(path, []byte(strings.Repeat("ordinary log line\n", 500000)), 0o600); err != nil {
@@ -285,6 +349,30 @@ func TestProxyAuditGapFailsIntegrity(t *testing.T) {
 				t.Fatalf("code=%d integrity=%+v", code, got.Integrity)
 			}
 		})
+	}
+}
+
+func TestBundleActivitySurvivesMalformedRecord(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "bundle-malformed"))
+	if code := runModes(context.Background(), opt, []string{modeOff}); code != exitIntegrity {
+		t.Fatalf("exit=%d, want integrity failure", code)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if len(got.Inputs.Rules.ProxyLogLines) == 0 {
+		t.Fatalf("bundle lines dropped next to a malformed record: %+v", got.Inputs.Rules)
+	}
+	if !hasReason(got.Integrity.Reasons, "proxy reported rule bundle activity under --rules empty: ") {
+		t.Fatalf("bundle reason missing: %+v", got.Integrity)
+	}
+	// The bundle scan and the audit-gap scan each report the bad record.
+	decodeErrors := 0
+	for _, reason := range got.Integrity.Reasons {
+		if strings.HasPrefix(reason, "reading proxy.log failed: ") {
+			decodeErrors++
+		}
+	}
+	if decodeErrors != 2 {
+		t.Fatalf("decode errors reported = %d, want one per scan: %+v", decodeErrors, got.Integrity)
 	}
 }
 
