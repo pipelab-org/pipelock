@@ -4137,7 +4137,7 @@
    "TestScanResponseBody_OpaqueBinaryPatternBytesAreClean": 0.3,
    "TestScanResponseBody_PNGTextMetadataStillScans": 1.7,
    "TestScanResponseBody_RandomTarGzipIsClean": 7.7,
-   "TestScanResponseBody_SeededRandomBinaryIsClean": 36.4,
+   "TestScanResponseBody_SeededRandomBinaryIsClean": 138.5,
    "TestScanResponseBody_TextSemanticsMatchGenericScanner": 0.3,
    "TestScanResponseBody_TextualInvalidSeparatorsStillScan": 0.3,
    "TestScanResponseBody_UTF16DecodeCancellationFailsClosed": 0.3,
