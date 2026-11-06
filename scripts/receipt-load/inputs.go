@@ -17,7 +17,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -218,7 +217,22 @@ type rulesReport struct {
 	ProxyLogLines []string `json:"proxy_log_bundle_lines"`
 }
 
-var bundleLogPattern = regexp.MustCompile(`(?i)rule bundle|rule_bundle_|\bbundle "[^"]+"|bundle\(s\)`)
+// The runtime reports bundle trouble on stderr behind this prefix, and a
+// successful load prints nothing. The message forms come from
+// reportStartupRuleBundleResult in internal/cli/runtime/server_rule_bundles.go
+// and the loader warnings in internal/rules (each names its bundle with %q).
+const proxyStderrPrefix = "pipelock: "
+
+var bundleMessagePrefixes = []string{
+	"SECURITY WARNING: rule bundle ",
+	"SECURITY WARNING: rules.allow_degraded=true",
+	"DEGRADED",
+	"warning: bundle ",
+}
+
+// bundleAuditEvent is the structured audit event for a degraded bundle
+// (eventcatalog.EventRuleBundleDegraded).
+const bundleAuditEvent = "rule_bundle_degraded"
 
 const (
 	maxBundleLogLines    = 20
@@ -305,8 +319,10 @@ func auditGapMessage(line []byte) (string, error) {
 	return strings.Join(fields[:2], " "), nil
 }
 
-// bundleLogLines returns the lines of a proxy log that talk about rule
-// bundles, bounded so a noisy log cannot bloat the result.
+// bundleLogLines returns the proxy's own messages about rule bundles, bounded
+// so a noisy log cannot bloat the result. Like auditGapLines it matches
+// producer messages, not bundle wording in paths or request fields, and a
+// record that fails to decode is reported rather than skipped.
 func bundleLogLines(logPath string) ([]string, error) {
 	file, err := os.Open(filepath.Clean(logPath))
 	if err != nil {
@@ -316,17 +332,49 @@ func bundleLogLines(logPath string) ([]string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
 	lines := []string{}
+	var decodeErr error
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		// Every pattern alternative contains b or B. Skip regexp work for unrelated lines.
-		if len(lines) < maxBundleLogLines && bytes.ContainsAny(line, "bB") && bundleLogPattern.Match(line) {
-			lines = append(lines, strings.TrimSpace(string(line)))
+		if len(lines) >= maxBundleLogLines {
+			continue
+		}
+		match, err := isBundleMessage(scanner.Bytes())
+		if err != nil {
+			if decodeErr == nil {
+				decodeErr = err
+			}
+			continue
+		}
+		if match {
+			lines = append(lines, strings.TrimSpace(scanner.Text()))
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan proxy log: %w", err)
+		return lines, errors.Join(decodeErr, fmt.Errorf("scan proxy log: %w", err))
 	}
-	return lines, nil
+	return lines, decodeErr
+}
+
+func isBundleMessage(line []byte) (bool, error) {
+	line = bytes.TrimSpace(line)
+	if bytes.HasPrefix(line, []byte("{")) {
+		var entry struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return false, fmt.Errorf("decode proxy audit log: %w", err)
+		}
+		return entry.Event == bundleAuditEvent, nil
+	}
+	message, ok := bytes.CutPrefix(line, []byte(proxyStderrPrefix))
+	if !ok {
+		return false, nil
+	}
+	for _, prefix := range bundleMessagePrefixes {
+		if bytes.HasPrefix(message, []byte(prefix)) {
+			return true, nil
+		}
+	}
+	return bytes.Contains(message, []byte(`bundle "`)), nil
 }
 
 const rulesEmpty = "empty"

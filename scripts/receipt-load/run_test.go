@@ -388,6 +388,9 @@ func TestHostileHomeBundlesDoNotLoad(t *testing.T) {
 	if !strings.Contains(string(control), "hostile-home-bundle") && !strings.Contains(string(control), "hostile-xdg-bundle") {
 		t.Fatalf("the control run did not see the hostile bundle, so the fixture proves nothing:\n%s", control)
 	}
+	if lines, err := bundleLogLines(filepath.Join(root, "proxy.log")); err != nil || len(lines) == 0 {
+		t.Fatalf("the bundle check missed the proxy's own report of the hostile bundle: lines=%v error=%v\n%s", lines, err, control)
+	}
 }
 
 // A --rules directory is loaded, is recorded file by file, and is not touched.
