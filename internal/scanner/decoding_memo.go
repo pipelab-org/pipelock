@@ -193,6 +193,7 @@ func (s *sharedDecodes) normalize(text string) string {
 type memoDecode struct {
 	views    []decodedResult
 	complete bool
+	sources  *keywordDecodeSources
 }
 
 // markIncomplete records a bound reached outside the fixpoint decoder. A nil
@@ -231,6 +232,9 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 	if m != nil && m.keywordMode && minPrefix == 0 {
 		key := decodingMemoKey{text: text, includeURL: includeURL, minPrefix: minPrefix, inbound: m.inbound, keyword: true}
 		if cached, ok := m.views[key]; ok {
+			if cached.sources != nil {
+				cached.sources.bindParents(text, m.keywordSources[text])
+			}
 			if !cached.complete {
 				m.incomplete = true
 			}
@@ -243,6 +247,10 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		}
 		views, complete := decodeEncodingsBudgetModeTracked(text, includeURL, minPrefix, m.inbound, sources)
 		m.retainDecode(key, views, complete)
+		if cached, ok := m.views[key]; ok {
+			cached.sources = sources
+			m.views[key] = cached
+		}
 		if m.keywordSources == nil {
 			m.keywordSources = make(map[string][]*keywordDecodeSource)
 		}

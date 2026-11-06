@@ -32,12 +32,14 @@ type keywordDecodeSources struct {
 }
 
 type keywordWorkBudget struct {
-	used       int
-	nodes      int
-	incomplete bool
+	sourceVersion uint64
+	used          int
+	nodes         int
+	incomplete    bool
 }
 
 type keywordDecodeSource struct {
+	logicalVersion     uint64
 	logicals           []string
 	variants           []*keywordDecodeSource
 	logicalReady       bool
@@ -110,6 +112,7 @@ func (s *keywordDecodeSources) add(parent, text, encoding string) *keywordDecode
 		if !s.chargeNode() {
 			return node
 		}
+		s.budget.sourceVersion++
 		node.variants = append(node.variants, &keywordDecodeSource{text: text, encoding: encoding, parent: p, owner: s})
 		return node
 	}
@@ -301,10 +304,13 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 // view, recover its pre-compaction logical context before measuring distance.
 // Bit encodings instead produce their own decoded characters and distances.
 func (n *keywordDecodeSource) logicalContexts() []string {
-	if n.logicalReady {
+	if n.logicalReady && n.logicalVersion == n.owner.budget.sourceVersion {
 		return n.logicals
 	}
 	n.logicalReady = true
+	n.logicalVersion = n.owner.budget.sourceVersion
+	n.logicals = nil
+	n.logicalUnavailable = false
 	appendContext := func(text string) {
 		for _, prior := range n.logicals {
 			if text == prior {
@@ -653,11 +659,25 @@ func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodi
 func (s *keywordDecodeSources) bindParents(text string, parents []*keywordDecodeSource) {
 	root := s.nodes[text]
 	for _, parent := range parents {
+		if parent == root || parent.hasSourceAncestor(root) {
+			continue
+		}
 		encoding := "identity"
 		if parent.text != text {
 			encoding = "projection"
 		}
+		if root.parent == parent && root.encoding == encoding {
+			continue
+		}
+		duplicate := false
+		for _, variant := range root.variants {
+			duplicate = duplicate || variant.parent == parent && variant.encoding == encoding
+		}
+		if duplicate {
+			continue
+		}
 		if root.parent == nil {
+			s.budget.sourceVersion++
 			root.parent = parent
 			root.encoding = encoding
 			continue
@@ -665,6 +685,7 @@ func (s *keywordDecodeSources) bindParents(text string, parents []*keywordDecode
 		if !s.chargeNode() {
 			return
 		}
+		s.budget.sourceVersion++
 		root.variants = append(root.variants, &keywordDecodeSource{text: text, encoding: encoding, parent: parent, owner: s})
 	}
 }
