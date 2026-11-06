@@ -967,6 +967,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 			}
 		}
 		appendInvisibleSpacedSeedCandidate(text, "", ViewForMatching)
+		// Character-code lists and fully escaped quoted-printable text can
+		// lose their word boundaries when split into individual segments.
+		for _, view := range appendTextEncodingViews(nil, text) {
+			label := spanViewLabel(view.encoding+"_decoded", ViewForMatching)
+			addSeedCandidate(seedCandidate{view.text, view.encoding, label})
+			appendInvisibleSpacedSeedCandidate(view.text, view.encoding, label)
+		}
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
 			addSeedCandidate(seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
