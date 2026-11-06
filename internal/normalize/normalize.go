@@ -18,10 +18,18 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// The UTF-8 encodings of U+E0000..U+E003F and U+E0040..U+E007F begin with
+// these three bytes. They are written as byte slices because each is an
+// incomplete UTF-8 sequence on its own.
+var (
+	tagPrefixLow  = string([]byte{0xf3, 0xa0, 0x80})
+	tagPrefixHigh = string([]byte{0xf3, 0xa0, 0x81})
+)
+
 // ContainsTags reports whether s may contain Unicode Tags. These UTF-8 prefixes
 // cover U+E0000 through U+E007F; DecodeTags verifies complete rune boundaries.
 func ContainsTags(s string) bool {
-	return strings.Contains(s, "\xf3\xa0\x80") || strings.Contains(s, "\xf3\xa0\x81")
+	return strings.Contains(s, tagPrefixLow) || strings.Contains(s, tagPrefixHigh)
 }
 
 // DecodeTags preserves surrounding text while decoding printable ASCII tags.
