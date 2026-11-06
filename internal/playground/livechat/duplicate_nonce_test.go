@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // The session id is the caller-supplied run nonce, so a second request can name
@@ -120,7 +122,7 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 	}()
 	select {
 	case <-reserved:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("first request did not reserve its nonce before redeeming the invite")
 	}
 
@@ -135,7 +137,7 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 		if status != http.StatusConflict {
 			t.Fatalf("duplicate status = %d, want 409 before the first request redeems", status)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("duplicate request reached redemption instead of being refused by the nonce reservation")
 	}
 
@@ -145,7 +147,7 @@ func TestServer_ConcurrentDuplicateNonceConsumesOneAllocation(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("first request status = %d, want 200", status)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("first request did not finish after redemption was released")
 	}
 

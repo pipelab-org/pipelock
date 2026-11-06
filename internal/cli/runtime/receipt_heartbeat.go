@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 )
 
@@ -100,16 +101,21 @@ func startStandaloneReceiptLifecycle(
 	logW io.Writer,
 	requireReceipts bool,
 	onRequiredFailure func(error),
-) func() {
+) func(error) {
 	if !receiptEmitterReady(e) {
-		return func() {}
+		return func(error) {}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
 	startReceiptHeartbeat(ctx, &wg, interval, func() *receipt.Emitter { return e }, logW, requireReceipts, onRequiredFailure)
-	return func() {
+	return func(drainErr error) {
 		cancel()
 		wg.Wait()
+		// A missed drain can leave outcome receipts outstanding. Stop heartbeats
+		// without claiming a complete session or group.
+		if errors.Is(drainErr, httpstream.ErrShutdownIncomplete) {
+			return
+		}
 		if err := emitSessionCloseAndTranscriptRoot(e, e.Session()); err != nil {
 			reportReceiptShutdownFailure(logW, "receipt shutdown seal failed", err, requireReceipts, onRequiredFailure)
 			if requireReceipts {
@@ -126,9 +132,9 @@ func startStandaloneReceiptGroupLifecycle(
 	logW io.Writer,
 	requireReceipts bool,
 	onRequiredFailure func(error),
-) func() {
+) func(error) {
 	if shards == nil {
-		return func() {}
+		return func(error) {}
 	}
 	ctx, cancel := context.WithCancel(parent)
 	var wg sync.WaitGroup
@@ -141,9 +147,14 @@ func startStandaloneReceiptGroupLifecycle(
 			}
 		})
 	}
-	return func() {
+	return func(drainErr error) {
 		cancel()
 		wg.Wait()
+		// A missed drain can leave outcome receipts outstanding. Stop heartbeats
+		// without claiming a complete session or group.
+		if errors.Is(drainErr, httpstream.ErrShutdownIncomplete) {
+			return
+		}
 		for _, shard := range shards.Emitters() {
 			if err := emitSessionCloseAndTranscriptRoot(shard, shard.Session()); err != nil {
 				reportReceiptShutdownFailure(logW, "receipt shutdown seal failed", err, requireReceipts, onRequiredFailure)

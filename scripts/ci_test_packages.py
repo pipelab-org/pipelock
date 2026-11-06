@@ -91,10 +91,13 @@ UNIT_SPLITS = {
 }
 UNIT_REST_SHARDS = ("rest-0", "rest-1", "rest-2")
 
-# Predicted-load budget per shard, in seconds. A shard's test step should finish
-# in about ten minutes so the whole run, security scan and aggregates included,
-# stays under fifteen.
-SHARD_BUDGET_SECONDS = 600
+# Temporary predicted-load ceiling pending proxy and rest-shard test-time cuts.
+# Weights from main CI run 42120390716 (2026-11-05) predict at most 794.9s;
+# ceil(794.9 * 1.10) = 875s leaves a 10% operating margin. That run's slowest
+# package took 776.138s. Keep the 600s runtime warnings in ci.yaml as the
+# recovery target, then lower this ceiling after re-measuring the test cuts.
+# This doesn't extend the 900s package or 1260s whole-attempt timeouts.
+SHARD_BUDGET_SECONDS = 875
 # Rest shards run their packages two at a time (-p=2), so summed package time
 # overstates wall time by about that factor.
 REST_PACKAGE_PARALLELISM = 2
