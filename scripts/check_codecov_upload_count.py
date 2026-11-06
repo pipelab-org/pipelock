@@ -81,12 +81,14 @@ def mapping(value: object, label: str) -> dict:
 
 
 # The one dynamic condition the count understands. A documentation-only pull
-# request skips every coverage producer, so it uploads nothing and Codecov posts
+# request, or a merge group whose exact tree a green pull request run already
+# tested, skips every coverage producer, so it uploads nothing and Codecov posts
 # nothing; every other run uploads the full count. The exact text is pinned so a
 # broader condition cannot silently shrink the count on ordinary runs.
 DOCS_ONLY_SKIP = (
     "${{ !cancelled() && needs.security-scan.result == 'success' "
-    "&& needs.changed-files.outputs.docs_only != 'true' }}"
+    "&& needs.changed-files.outputs.docs_only != 'true' "
+    "&& needs.changed-files.outputs.queue_tree_tested != 'true' }}"
 )
 
 
