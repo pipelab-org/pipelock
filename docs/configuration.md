@@ -1307,7 +1307,7 @@ Warn-only observations carry the available destination, agent label, transport, 
 
 ## Response Scanning
 
-Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection.
+Scans fetched content for prompt injection before returning to the agent. Uses a 6-pass normalization pipeline: zero-width stripping, word boundary reconstruction, leetspeak folding, optional-whitespace matching, vowel folding, and encoding detection. Unicode Tags are also decoded to printable ASCII and checked beside the stripped view, including in mixed visible text. Tag presence alone does not trigger a finding.
 
 Response scanning evaluates each HTTP response on its own. Forward, TLS-intercepted, and reverse proxy traffic refuses every partial (`206`) and not-modified (`304`) response with `response_incomplete` before response-scan exemptions, Shield exemptions, media policy, or budget truncation. Fetch can return partial responses when its response policies permit them. A fetch client that joins partial responses should treat the completed document as untrusted and scan it before use, because content whose meaning appears only in the combined text may not be detected.
 

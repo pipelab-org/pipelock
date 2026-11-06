@@ -42,6 +42,9 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		// own budget. Recovered prefixes walk a separate graph, so a large
 		// recoverable carrier cannot spend the budget those views rely on.
 		for _, decoded := range decodes.decode(value, true) {
+			if decoded.encoding == encodingUnicodeTags {
+				decoded.text = decodes.normalize(decoded.text)
+			}
 			seen[decoded.text] = struct{}{}
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}
@@ -54,6 +57,13 @@ func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []
 		}
 	}
 	add(text)
+	for _, decoded := range decodes.decode(text, true) {
+		if decoded.encoding == encodingUnicodeTags {
+			for _, segment := range textDLPSegments(decodes.normalize(decoded.text)) {
+				add(segment)
+			}
+		}
+	}
 	for _, segment := range textDLPSegments(text) {
 		if segment != text {
 			add(segment)

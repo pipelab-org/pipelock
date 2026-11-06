@@ -440,3 +440,11 @@ fn spanned_v2_receipt_does_not_expose_low_entropy_oracle_key() {
         .unwrap()
         .contains("golden-span-mac-key"));
 }
+
+#[test]
+fn unicode_tags_receipt_verifies() {
+    let path = common::repo_root().join("sdk/verifiers/fixtures/unicode-tags-receipt.json");
+    let report = run_receipt(path.to_str().unwrap(), V2_GOLDEN_PUBLIC_KEY, false).unwrap();
+    assert!(report.valid, "{:?}", report.error);
+    assert_eq!(report.source_span_count, Some(29));
+}

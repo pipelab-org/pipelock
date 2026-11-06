@@ -25,7 +25,7 @@ func IsBlankInjectionView(content string) bool {
 			return false
 		}
 	}
-	return strings.TrimSpace(normalize.ForMatching(content)) == ""
+	return strings.TrimSpace(normalize.ForMatching(normalize.DecodeTags(content))) == ""
 }
 
 // BlankViewAddsNoCoverage reports whether a view can be skipped when merging

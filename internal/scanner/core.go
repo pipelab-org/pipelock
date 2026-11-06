@@ -423,8 +423,12 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
-	if forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) {
-		if decodedSet := s.matchDecodedCoreResponseMode(content, suppress, !forceEncodedDecode); len(decodedSet.matches) > 0 {
+	decodeContent := content
+	if normalize.ContainsTags(original) {
+		decodeContent = original
+	}
+	if forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) || normalize.ContainsTags(original) {
+		if decodedSet := s.matchDecodedCoreResponseMode(decodeContent, suppress, !forceEncodedDecode); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 		// Preserve soft line breaks beside the normalized decode view.
@@ -455,9 +459,27 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 	return s.matchDecodedCoreResponseRecursiveMode(content, depth, suppress, true)
 }
 
-func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
+func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) (out responseMatchSet) {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
+	}
+	if decoded := normalize.DecodeTags(content); decoded != content {
+		if found := s.matchDecodedCoreNormalized(decoded, ViewUnicodeTagsDecoded, suppress); len(found.matches) > 0 {
+			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
+		}
+		if found := s.matchDecodedCoreResponseRecursive(normalize.ForMatching(decoded), depth+1, suppress); len(found.matches) > 0 {
+			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
+		}
+	}
+	if normalize.ContainsTags(content) {
+		if stripped := normalize.StripZeroWidth(content); hasQuotedPrintable(stripped) {
+			if found := s.matchDecodedCoreResponseRecursiveMode(stripped, depth+1, suppress, recoverQP); len(found.matches) > 0 {
+				return mapResponseStrippedSources(found, content)
+			}
+		}
+		source := content
+		content = normalize.ForMatching(content)
+		defer func() { out = mapResponseTransformSources(out, source, ViewForMatching) }()
 	}
 
 	views := textEncodingViewsMode(content, recoverQP)
@@ -547,6 +569,11 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
+	if leeted := normalize.Leetspeak(normalized); leeted != normalized {
+		if matches := filterCoreResponsePass(leeted, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: leeted}
+		}
+	}
 	if len(s.core.responseOptSpacePatterns) > 0 {
 		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.core.responseOptSpacePreFilter, s.core.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: normalized}
@@ -619,8 +646,13 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
-	if hasTextEncoding(text) && text != cleaned {
+	if normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned) {
 		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
+		for _, d := range decodes.decode(text, true) {
+			if d.encoding == encodingUnicodeTags {
+				matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(decodes.normalize(d.text), decodes)...)
+			}
+		}
 	}
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
@@ -916,7 +948,7 @@ func (s *Scanner) checkCoreDLPWithUserinfoValues(parsed *url.URL, values []dlpTa
 	}
 
 	// Path segment decoding (hex/base64/base32).
-	for _, segment := range urlPathDecodeSegments(parsed.Path) {
+	for _, segment := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 		if len(segment) >= 10 {
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})

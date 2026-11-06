@@ -30,6 +30,7 @@ pub fn run_receipt(
         signer_key: None,
         policy_hash: None,
         chain_seq: None,
+        source_span_count: None,
         error: None,
     };
     // Reject duplicate object keys before parsing or populating report
@@ -73,6 +74,13 @@ pub fn run_receipt(
         report.signer_key = Some(key_hex.clone());
         report.policy_hash = string_at(&receipt, &["policy_hash"]).map(str::to_string);
         report.chain_seq = u64_at(&receipt, &["chain_seq"]);
+        if string_at(&receipt, &["payload_kind"]) == Some("proxy_decision_with_spans") {
+            report.source_span_count = receipt
+                .get("payload")
+                .and_then(|p| p.get("source_spans"))
+                .and_then(Value::as_array)
+                .map(Vec::len);
+        }
     } else {
         report.action_id = string_at(&receipt, &["action_record", "action_id"]).map(str::to_string);
         report.verdict = string_at(&receipt, &["action_record", "verdict"]).map(str::to_string);
