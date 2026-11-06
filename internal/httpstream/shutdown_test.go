@@ -26,6 +26,7 @@ func TestServeUntilShutdown(t *testing.T) {
 		{name: "cancel_clean", cancel: true, serveErr: http.ErrServerClosed},
 		{name: "cancel_drain_failed", cancel: true, serveErr: http.ErrServerClosed, shutErr: shutdownErr, wantIncpl: true},
 		{name: "serve_error_drains_without_cancel", serveErr: errors.New("listener failed")},
+		{name: "clean_serve_drain_failed", shutErr: shutdownErr, wantIncpl: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
@@ -65,7 +66,7 @@ func TestServeUntilShutdown(t *testing.T) {
 			if got := errors.Is(err, ErrShutdownIncomplete); got != tc.wantIncpl {
 				t.Fatalf("err = %v, incomplete=%v want %v", err, got, tc.wantIncpl)
 			}
-			if !errors.Is(err, tc.serveErr) {
+			if tc.serveErr != nil && !errors.Is(err, tc.serveErr) {
 				t.Fatalf("err = %v, want serve error %v kept", err, tc.serveErr)
 			}
 			if tc.shutErr != nil && !errors.Is(err, tc.shutErr) {
