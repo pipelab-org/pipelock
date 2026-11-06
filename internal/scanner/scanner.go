@@ -2337,6 +2337,7 @@ func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decode
 	concat := orderedQueryConcat(rawQuery)
 	proseSource := orderedQueryProseSource(rawQuery)
 	decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+	decodes.registerKeywordTransform(config.DLPKeywordContext(rawQuery), concat, keywordQueryValues)
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat"), proseSource})
 	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), proseSource})

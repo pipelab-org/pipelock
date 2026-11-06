@@ -21,6 +21,7 @@ import (
 type keywordByteSpan struct{ start, end int }
 
 const (
+	keywordQueryValues       = "query_values"
 	keywordPercentDrop       = "invalid_percent_drop"
 	keywordPercentEscapeDrop = "invalid_percent_escape_drop"
 )
@@ -284,6 +285,9 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		source := c.source
 		if source == "" {
 			source = root
+		} else if !strings.Contains(source, root) && strings.Contains(c.logical, root) {
+			// Synthetic separator-preserving units aren't literal URL slices.
+			source = c.logical
 		}
 		for from := 0; from <= len(source)-len(root); {
 			// Overlapping occurrences can revisit the same root bytes. Charge
@@ -340,9 +344,11 @@ func (n *keywordDecodeSource) logicalContexts() []string {
 	variants := append([]*keywordDecodeSource{n}, n.variants...)
 	for _, edge := range variants {
 		switch edge.encoding {
-		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordPercentDrop, keywordPercentEscapeDrop:
+		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordPercentDrop, keywordPercentEscapeDrop, keywordQueryValues:
 			for _, text := range edge.parent.logicalContexts() {
 				switch edge.encoding {
+				case keywordQueryValues:
+					text = IterativeDecode(text)
 				case keywordPercentDrop:
 					text = dropInvalidPercent(text, 0)
 				case keywordPercentEscapeDrop:
@@ -484,6 +490,8 @@ func keywordDecodeOffsets(source, decoded, encoding string) []keywordByteSpan {
 		return offsets
 	case "projection":
 		return keywordProjectionOffsets(source, decoded)
+	case keywordQueryValues:
+		return keywordQueryValueOffsets(source, decoded)
 	case keywordPercentDrop:
 		return keywordPercentOffsets(source, decoded, 0)
 	case keywordPercentEscapeDrop:
@@ -666,9 +674,6 @@ func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodi
 			context.alternatives = memo.keywordSources[source]
 		}
 		context.sourceUnavailable = len(context.alternatives) == 0 && memo.keywordBudget != nil && memo.keywordBudget.incomplete && !strings.Contains(memo.keywordUnit, logical) && !strings.ContainsRune(source, 0)
-		if strings.ContainsRune(source, 0) {
-			context.source = logical
-		}
 	}
 	pattern.keywordContext = &context
 	return pattern.matchSpanInView(view, source)
@@ -732,6 +737,34 @@ func keywordPercentOffsets(source, view string, extra int) []keywordByteSpan {
 			skip++
 		}
 		i += skip
+	}
+	return offsets
+}
+
+// keywordQueryValueOffsets follows orderedQueryConcat, retaining the key and
+// separator distances in the source hull around the reconstructed values.
+func keywordQueryValueOffsets(source, view string) []keywordByteSpan {
+	if orderedQueryConcat(source) != view {
+		return nil
+	}
+	var offsets []keywordByteSpan
+	from := 0
+	for _, pair := range strings.Split(source, "&") {
+		key, raw, found := strings.Cut(pair, "=")
+		if found && raw != "" {
+			value := IterativeDecode(raw)
+			positions := keywordDecodeOffsets(raw, value, encodingURL)
+			if raw == value {
+				positions = keywordDecodeOffsets(raw, value, "identity")
+			}
+			if len(positions) != len(value) {
+				return nil
+			}
+			for _, span := range positions {
+				offsets = append(offsets, keywordByteSpan{from + len(key) + 1 + span.start, from + len(key) + 1 + span.end})
+			}
+		}
+		from += len(pair) + 1
 	}
 	return offsets
 }
