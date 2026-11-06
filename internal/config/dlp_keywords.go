@@ -20,6 +20,8 @@ import (
 // DefaultDLPKeywordWindow follows the AWS Macie custom identifier distance.
 const DefaultDLPKeywordWindow = 50
 
+const dlpKeywordAdvisory = "keyword-gated custom patterns miss values without nearby labels; keywords reduce accidental-leak noise and do not prevent deliberate exfiltration"
+
 // EffectiveKeywordWindow resolves the optional per-side character distance.
 func (p DLPPattern) EffectiveKeywordWindow() int {
 	if p.KeywordWindow != nil {
@@ -242,4 +244,20 @@ func DLPKeywordContext(text string) string {
 	}
 	b.WriteString(normalize.ForDLP(text[from:]))
 	return b.String()
+}
+
+func (c *Config) agentDLPKeywordWarnings() []Warning {
+	var warnings []Warning
+	for _, name := range slices.Sorted(maps.Keys(c.Agents)) {
+		profile := c.Agents[name]
+		if profile.DLP == nil {
+			continue
+		}
+		for i, pattern := range profile.DLP.Patterns {
+			if len(pattern.Keywords) > 0 {
+				warnings = append(warnings, Warning{Field: fmt.Sprintf("agents.%s.dlp.patterns[%d].keywords", name, i), Message: dlpKeywordAdvisory})
+			}
+		}
+	}
+	return warnings
 }

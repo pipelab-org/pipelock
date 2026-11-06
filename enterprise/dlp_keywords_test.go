@@ -7,6 +7,7 @@
 package enterprise
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -49,4 +50,19 @@ func TestDLPKeywordsAgentProfile(t *testing.T) {
 	if err := ValidateAgents(cfg); err == nil {
 		t.Fatal("agent profile accepted invalid keywords")
 	}
+}
+
+func TestDLPKeywordsAgentStartupAdvisory(t *testing.T) {
+	cfg := testConfig()
+	cfg.Agents = map[string]config.AgentProfile{"operator": {DLP: &config.AgentDLP{Patterns: []config.DLPPattern{{Name: "account", Regex: `[0-9]{16}`, Severity: config.SeverityHigh, Keywords: []string{"account"}}}}}}
+	warnings, err := cfg.ValidateWithWarnings()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range warnings {
+		if w.Field == "agents.operator.dlp.patterns[0].keywords" && strings.Contains(w.Message, "without nearby labels") {
+			return
+		}
+	}
+	t.Fatalf("agent keyword advisory missing: %+v", warnings)
 }
