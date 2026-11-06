@@ -361,12 +361,10 @@ func (e *Emitter) ValidateConfigHash(hash string) error {
 // contentRecord builds every field of an action record that does not depend
 // on chain state. The emitter adds only generated stamps under its chain lock.
 func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect SideEffectClass, reversibility Reversibility, policyHash string) ActionRecord {
-	// Source URLs are signed alongside the target. Copy before reducing them
+	// Retain source context in the unsigned template until content scanning
+	// establishes its redaction obligations. Copy before reducing the URLs
 	// so receipt retention cannot mutate the session's live taint state.
 	sources := append([]session.TaintSourceRef(nil), opts.RecentTaintSources...)
-	for i := range sources {
-		sources[i].URL = sanitizeSignedTarget(sources[i].URL, nil)
-	}
 	return ActionRecord{
 		Version:               ActionRecordVersion,
 		ActionID:              opts.ActionID,
@@ -375,7 +373,7 @@ func (e *Emitter) contentRecord(opts EmitOpts, actionType ActionType, sideEffect
 		Principal:             e.principal,
 		Actor:                 e.actorLabel(opts),
 		DelegationChain:       nil, // Populated when delegation tracking ships
-		Target:                sanitizeSignedTarget(opts.Target, nil),
+		Target:                opts.Target,
 		SideEffectClass:       sideEffect,
 		Reversibility:         reversibility,
 		PolicyHash:            policyHash,
@@ -430,16 +428,23 @@ func (e *Emitter) contentProducer() *receiptcontent.Producer {
 // flagged is a typed content rejection that leaves the chain untouched.
 func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentScan, error) {
 	ctx := context.Background()
-	for attempt := 0; ; attempt++ {
+	redactedOnce := false
+	for {
 		raw, err := json.Marshal(tmpl)
 		if err != nil {
 			return tmpl, nil, fmt.Errorf("marshal receipt content template: %w", err)
 		}
 		rep, cs, err := e.recorder.ScanReceiptContent(ctx, e.contentProducer(), raw)
-		if err != nil || cs != nil {
+		if err != nil {
 			return tmpl, cs, err
 		}
-		if attempt > 0 || !rep.Redactable() {
+		if cs != nil {
+			if reduceActionTargets(&tmpl.ActionRecord) {
+				continue // Bind the scan to the exact reduced template.
+			}
+			return tmpl, cs, nil
+		}
+		if redactedOnce || !rep.Redactable() {
 			return tmpl, nil, rep.Err()
 		}
 		det := e.recorder.ReceiptDetector()
@@ -471,5 +476,22 @@ func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentSca
 			return tmpl, nil, fmt.Errorf("decode redacted receipt content template: %w", err)
 		}
 		tmpl = next
+		redactedOnce = true
 	}
+}
+
+// reduceActionTargets removes URL content only after keyword-dependent
+// findings have established which values must remain redacted.
+func reduceActionTargets(record *ActionRecord) bool {
+	changed := false
+	reduce := func(value *string) {
+		next := sanitizeSignedTarget(*value, nil)
+		changed = changed || next != *value
+		*value = next
+	}
+	reduce(&record.Target)
+	for i := range record.RecentTaintSources {
+		reduce(&record.RecentTaintSources[i].URL)
+	}
+	return changed
 }

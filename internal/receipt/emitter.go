@@ -860,7 +860,10 @@ func (e *Emitter) emitWithControl(opts EmitOpts, durable bool, buildControl lock
 	}
 	lifecycle := opts.SessionControl != nil || buildControl != nil
 	var content *recorder.ContentScan
-	if !lifecycle {
+	if lifecycle {
+		// Control records have fixed targets and use validate-or-fail scanning.
+		reduceActionTargets(&tmpl.ActionRecord)
+	} else {
 		var scanErr error
 		tmpl, content, scanErr = e.scanActionContent(tmpl)
 		if scanErr != nil {
