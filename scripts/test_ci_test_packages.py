@@ -325,12 +325,12 @@ class TestPackageSharding(unittest.TestCase):
             under = {"trees": {"proxy": {"TestChanged": 500.0}}}
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, under), 0)
             self.assertEqual(sum(predicted_loads("", under)[f"proxy-{i}"] for i in range(TEST_SPLITS["proxy"])), 520.0)
-            over = {"trees": {"proxy": {"TestChanged": 700.0}}}
+            over = {"trees": {"proxy": {"TestChanged": SHARD_BUDGET_SECONDS + 100.0}}}
             self.assertEqual(ci_test_packages.check_budget("enterprise", SHARD_BUDGET_SECONDS, over), 1)
-            self.assertIn("over the 600s budget", error.getvalue())
+            self.assertIn(f"over the {SHARD_BUDGET_SECONDS}s budget", error.getvalue())
             # Parsed multiline declarations can be absent from the cheap shard
             # inventory; a real measurement still has to count toward budget.
-            extra = {"trees": {"proxy": {"TestMultiline": 700.0}}}
+            extra = {"trees": {"proxy": {"TestMultiline": SHARD_BUDGET_SECONDS + 100.0}}}
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, extra), 1)
         self.assertEqual(trees["proxy"]["TestChanged"], 1.0)
 
@@ -339,13 +339,14 @@ class TestPackageSharding(unittest.TestCase):
         baseline = dict.fromkeys(names, 1.0)
         bucket = ci_test_packages.partition_names(names, TEST_SPLITS["proxy"], baseline)[0]
         self.assertEqual(len(bucket), 2)
-        overrides = {"trees": {"proxy": dict.fromkeys(bucket, 400.0)}}
+        weight = SHARD_BUDGET_SECONDS * 2 / 3
+        overrides = {"trees": {"proxy": dict.fromkeys(bucket, weight)}}
         with patch.object(ci_test_packages, "load_durations", return_value={"proxy": baseline}), \
              patch.object(ci_test_packages, "load_package_durations", return_value={}), \
              patch.object(ci_test_packages, "tree_test_names", return_value=names), \
              patch.object(ci_test_packages, "list_packages", return_value=[]), \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(predicted_loads("", overrides)["proxy-0"], 800)
+            self.assertEqual(predicted_loads("", overrides)["proxy-0"], 2 * weight)
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, overrides), 1)
 
     def test_unmeasured_tests_are_never_free_even_when_the_median_is_zero(self) -> None:
@@ -362,11 +363,12 @@ class TestPackageSharding(unittest.TestCase):
                 self.assertGreater(total, 0.0, f"{tree}: eight unmeasured tests predicted free")
 
     def test_rest_budget_cannot_divide_a_single_slow_package(self) -> None:
+        seconds = SHARD_BUDGET_SECONDS + 100.0
         with patch.object(ci_test_packages, "list_packages", return_value=["example.test/slow"]), \
              patch.object(ci_test_packages, "load_durations", return_value={}), \
-             patch.object(ci_test_packages, "load_package_durations", return_value={"example.test/slow": 700.0}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={"example.test/slow": seconds}), \
              patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
-            self.assertEqual(predicted_loads("")["rest-0"], 700.0)
+            self.assertEqual(predicted_loads("")["rest-0"], seconds)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
 
@@ -385,10 +387,10 @@ class TestPackageSharding(unittest.TestCase):
              patch.object(ci_test_packages, "load_package_durations", return_value=dict.fromkeys(packages, 350.0)), \
              patch.object(ci_test_packages, "select_packages", return_value=packages), \
              patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
-            # Three 350s packages fit the budget by total/2 (525s) but not in two waves.
+            # Three 350s packages fit a 600s budget by total/2 (525s) but not in two waves.
             self.assertEqual(predicted_loads("")["rest-0"], 700.0)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-                self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
+                self.assertEqual(ci_test_packages.check_budget("", 600), 1)
 
     def test_unmeasured_rest_packages_are_never_free(self) -> None:
         measured = {"example.test/a": 0.0, "example.test/b": 0.0}
