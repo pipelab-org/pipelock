@@ -29,14 +29,43 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 	t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
 	fetchListen := testport.ListenAddrs(t, 1)[0]
 	// The empty address is the deleted key: config.Load leaves it "".
-	s, _ := newContainmentMetricsTestServerWithFetch(t, "", "", fetchListen)
+	// Start owns resource cleanup. A helper that also registers s.cleanup
+	// would race Start if the shutdown wait below exhausted its deadline.
+	output := &syncBuffer{}
+	s, err := NewServer(ServerOpts{
+		ConfigFile:                        writeServerTestConfig(t, "mode: balanced\nmetrics_listen: ''\n"),
+		Listen:                            fetchListen,
+		ListenChanged:                     true,
+		Stdout:                            output,
+		Stderr:                            output,
+		allowEphemeralListenersForTesting: true,
+	})
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		done <- s.Start(ctx)
+	}()
+	// Also stop Start after a failed assertion. If this wait times out, leave
+	// resources to Start's deferred cleanup rather than closing them under it.
+	t.Cleanup(func() {
+		cancel()
+		_ = s.Shutdown(context.Background())
+		select {
+		case <-returned:
+		case <-time.After(testwait.Deadline(10 * time.Second)):
+			t.Error("contained proxy Start did not return before cleanup")
+		}
+	})
 
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 500 * time.Millisecond}
+	t.Cleanup(client.CloseIdleConnections)
 	get := func(path string) (int, bool) {
 		request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+fetchListen+path, nil)
 		if err != nil {
@@ -71,6 +100,7 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 		}
 	}
 
+	client.CloseIdleConnections()
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -79,7 +109,9 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 		if startErr != nil {
 			t.Fatalf("Start: %v", startErr)
 		}
-	case <-time.After(3 * time.Second):
+	// Match the containment metrics policy test: a new HTTP connection can
+	// consume the proxy's five-second graceful shutdown window before returning.
+	case <-time.After(testwait.Deadline(6 * time.Second)):
 		t.Fatal("timed out waiting for contained proxy shutdown")
 	}
 }
