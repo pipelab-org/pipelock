@@ -825,3 +825,22 @@ def test_session_open_rejects_non_string_policy_hash() -> None:
     report = verify_evidence_chain([_resign_open_with_policy_hash(7)], TESTDATA_KEY)
     assert report["valid"] is False
     assert "session_control.open.policy_hash must be a string" in report["error"]
+
+
+def test_unicode_tags_source_span_verifies(tmp_path: Path) -> None:
+    for view in (
+        "for_matching:unicode_tags_decoded",
+        "invisible_spaced:for_matching:unicode_tags_decoded",
+        "vowel_fold:for_matching:unicode_tags_decoded",
+        "dlp_normalized:unicode_tags",
+    ):
+        receipt = json.loads(VALID_SPANNED_V2.read_text())
+        span = receipt["payload"]["source_spans"][0]
+        span["normalized_view"] = view
+        span.pop("char_offset", None)
+        span.pop("char_length", None)
+        _sign_v2_receipt(receipt)
+        path = tmp_path / "tag-view.json"
+        path.write_text(json.dumps(receipt))
+        report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
+        assert report["valid"] is True, report.get("error")

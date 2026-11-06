@@ -12,13 +12,14 @@ import (
 // a transform-stack scheme: "<stage>" or "<stage>:<provenance>". Consumers must
 // slice the named view, not the raw input that produced it.
 const (
-	ViewForMatching     = "for_matching"
-	ViewInvisibleSpaced = "for_matching:invisible_spaced"
-	ViewLeetspeak       = "leetspeak:for_matching"
-	ViewVowelFold       = "vowel_fold:for_matching"
-	ViewBase64Decoded   = "for_matching:base64_decoded"
-	ViewHexDecoded      = "for_matching:hex_decoded"
-	ViewDLPNormalized   = "dlp_normalized"
+	ViewForMatching        = "for_matching"
+	ViewInvisibleSpaced    = "for_matching:invisible_spaced"
+	ViewLeetspeak          = "leetspeak:for_matching"
+	ViewVowelFold          = "vowel_fold:for_matching"
+	ViewBase64Decoded      = "for_matching:base64_decoded"
+	ViewHexDecoded         = "for_matching:hex_decoded"
+	ViewUnicodeTagsDecoded = "for_matching:unicode_tags_decoded"
+	ViewDLPNormalized      = "dlp_normalized"
 )
 
 // MatchSpan is retained scanner evidence metadata for a pattern match.

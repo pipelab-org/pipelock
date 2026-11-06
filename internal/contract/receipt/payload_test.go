@@ -187,10 +187,12 @@ func TestValidateProxyDecisionWithSpans_RejectsOffsetsOnTransformedResponseView(
 	t.Parallel()
 	p := validProxyDecisionWithSpansPayload(t)
 	p.SourceSpans[0].SourceKind = receipt.SourceKindHTTPResponse
-	p.SourceSpans[0].NormalizedView = receipt.NormalizedViewBase64Decoded
-	err := callValidator(t, receipt.PayloadProxyDecisionWithSpans, marshalPayload(t, p))
-	if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
-		t.Fatalf("expected ErrPayloadInvalidEnum, got: %v", err)
+	for _, view := range []string{receipt.NormalizedViewBase64Decoded, receipt.NormalizedViewUnicodeTagsDecoded} {
+		p.SourceSpans[0].NormalizedView = view
+		err := callValidator(t, receipt.PayloadProxyDecisionWithSpans, marshalPayload(t, p))
+		if !errors.Is(err, receipt.ErrPayloadInvalidEnum) {
+			t.Fatalf("view %s: expected ErrPayloadInvalidEnum, got: %v", view, err)
+		}
 	}
 }
 
@@ -1726,5 +1728,19 @@ func TestTestReceiptSignatureShape(t *testing.T) {
 	t.Parallel()
 	if got := strings.TrimPrefix(testReceiptSignature, "ed25519:"); len(got) != 128 {
 		t.Fatalf("test signature hex length=%d, want 128", len(got))
+	}
+}
+
+func TestUnicodeTagsSourceSpan(t *testing.T) {
+	t.Parallel()
+	for _, view := range []string{receipt.NormalizedViewUnicodeTagsDecoded, "invisible_spaced:" + receipt.NormalizedViewUnicodeTagsDecoded, "vowel_fold:" + receipt.NormalizedViewUnicodeTagsDecoded} {
+		span := validSourceSpan(t)
+		span.SourceKind = receipt.SourceKindHTTPResponse
+		span.NormalizedView = view
+		span.CharOffset = nil
+		span.CharLength = nil
+		if err := receipt.ValidateSourceSpan(span); err != nil {
+			t.Fatalf("decoded tag view %s rejected: %v", view, err)
+		}
 	}
 }

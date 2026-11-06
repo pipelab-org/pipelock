@@ -568,6 +568,16 @@ func TestValidate(t *testing.T) {
 			wantSub: "char_offset",
 		},
 		{
+			name: "inline receipt accepts Unicode tag decoded response view",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.NormalizedView = "for_matching:unicode_tags_decoded"
+					span.CharOffset = nil
+					span.CharLength = nil
+				})
+			},
+		},
+		{
 			name: "valid scanner config snapshot",
 			mutate: func(p *auditpacket.Packet) {
 				truthy := true
@@ -795,4 +805,20 @@ func clonePacket(t *testing.T, p auditpacket.Packet) auditpacket.Packet {
 		t.Fatalf("clone unmarshal: %v", err)
 	}
 	return out
+}
+
+func TestUnicodeTagsReceiptViews(t *testing.T) {
+	for _, view := range []string{"for_matching:unicode_tags_decoded", "invisible_spaced:for_matching:unicode_tags_decoded", "vowel_fold:for_matching:unicode_tags_decoded"} {
+		t.Run(view, func(t *testing.T) {
+			_, packet := loadExample(t)
+			setAuditPacketSourceSpan(&packet, func(span *auditpacket.SourceSpan) {
+				span.NormalizedView = view
+				span.CharOffset = nil
+				span.CharLength = nil
+			})
+			if err := packet.Validate(); err != nil {
+				t.Fatalf("decoded receipt view rejected: %v", err)
+			}
+		})
+	}
 }

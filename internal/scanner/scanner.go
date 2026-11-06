@@ -2439,6 +2439,7 @@ const (
 	encodingBase32      = "base32"
 	encodingURL         = "url"
 	encodingHTML        = "html_entity"
+	encodingUnicodeTags = "unicode_tags"
 	encodingDecimal     = "decimal_character_codes"
 	encodingJSONUnicode = "json_unicode"
 )
@@ -2736,6 +2737,9 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
+	if decoded := normalize.DecodeTags(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{decoded, encodingUnicodeTags})
+	}
 	var decodedHex []byte
 	var hexErr error
 	if minPrefix == 0 && !hexDecodes(s) {
@@ -3227,8 +3231,19 @@ func decodeEncodingsOnceInto(out []decodedResult, s string, includeURL bool, min
 // forwarded. The pieces around it are added beside the whole segment: no
 // decoder alphabet contains '#', and keeping the whole segment preserves
 // every view the slash split already produced.
-func urlPathDecodeSegments(path string) []string {
+func urlPathDecodeSegments(path, escapedPath string) []string {
 	segments := strings.Split(path, "/")
+	// Keep mixed prose's encoding segments without duplicating the ordinary
+	// slash-only path views. The delimiter contract is shared with text DLP.
+	if strings.ContainsFunc(path, func(r rune) bool { return r != '/' && isTextDLPEncodingDelimiter(r) }) {
+		segments = append(segments, textDLPSegments(path)...)
+	}
+	// RFC 3986 section 2.2: an escaped slash can be segment data. Retain
+	// escaped segments before decoding, so an encoding's '/' is not treated
+	// only as a path separator after URL parsing.
+	if escapedPath != path {
+		segments = append(segments, strings.Split(escapedPath, "/")...)
+	}
 	form, percent := urlComponentDecodes(path)
 	for _, decoded := range []string{form, percent} {
 		if decoded != "" {
@@ -3373,7 +3388,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range urlPathDecodeSegments(parsed.Path) {
+	for _, segment := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -3526,7 +3541,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded", ""})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
-		for _, seg := range urlPathDecodeSegments(parsed.Path) {
+		for _, seg := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 			if len(seg) < 20 {
 				continue
 			}
@@ -6421,12 +6436,24 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 	addDecoded := func(text string) {
 		for _, d := range decodes.decode(text, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			if d.encoding == encodingUnicodeTags {
+				for _, segment := range textDLPSegments(decodes.normalize(d.text)) {
+					for _, nested := range decodes.decode(segment, true) {
+						targets = append(targets, dlpTarget{nested.text, dlpViewLabel(nested.encoding), ""})
+					}
+				}
+			}
 			if h := decodes.decodeHTML(d.text); h != d.text {
 				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})
 			}
 		}
 	}
 	addDecoded(decoded)
+	for _, segment := range textDLPSegments(decoded) {
+		if segment != decoded {
+			addDecoded(segment)
+		}
+	}
 	// A malformed escape delimits independently encoded query runs. Keep
 	// the intact view too; this does not filter arbitrary encoding junk.
 	start := 0

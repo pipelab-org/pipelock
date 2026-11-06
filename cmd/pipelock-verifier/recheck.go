@@ -180,6 +180,14 @@ func reproduceSpanView(source, view string) (string, error) {
 		return normalize.Leetspeak(normalize.ForMatching(source)), nil
 	case view == contractreceipt.NormalizedViewVowelFold:
 		return normalize.FoldVowels(normalize.ForMatching(source)), nil
+	case view == contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.ForMatching(normalize.DecodeTags(source)), nil
+	case view == "invisible_spaced:"+contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.ForMatchingSpaced(normalize.DecodeTags(source)), nil
+	case view == "vowel_fold:"+contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.FoldVowels(normalize.ForMatching(normalize.DecodeTags(source))), nil
+	case view == contractreceipt.NormalizedViewDLPNormalized+":unicode_tags":
+		return normalize.ForDLP(normalize.DecodeTags(source)), nil
 	case view == contractreceipt.NormalizedViewDLPNormalized || strings.HasPrefix(view, "dlp_normalized:"):
 		return normalize.ForDLP(source), nil
 	case view == contractreceipt.NormalizedViewBase64Decoded:

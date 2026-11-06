@@ -423,8 +423,12 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
-	if forceEncodedDecode || hasEncodedRun(content) {
-		if decodedSet := s.matchDecodedCoreResponse(content, suppress); len(decodedSet.matches) > 0 {
+	decodeContent := content
+	if normalize.ContainsTags(original) {
+		decodeContent = original
+	}
+	if forceEncodedDecode || hasEncodedRun(content) || normalize.ContainsTags(original) {
+		if decodedSet := s.matchDecodedCoreResponse(decodeContent, suppress); len(decodedSet.matches) > 0 {
 			return decodedSet
 		}
 	}
@@ -444,6 +448,17 @@ func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponse
 func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
+	}
+	if decoded := normalize.DecodeTags(content); decoded != content {
+		if found := s.matchDecodedCoreNormalized(decoded, ViewUnicodeTagsDecoded, suppress); len(found.matches) > 0 {
+			return found
+		}
+		if found := s.matchDecodedCoreResponseRecursive(normalize.ForMatching(decoded), depth+1, suppress); len(found.matches) > 0 {
+			return found
+		}
+	}
+	if normalize.ContainsTags(content) {
+		content = normalize.ForMatching(content)
 	}
 
 	// Strategy 1: whole-content decode (strip whitespace first).
@@ -588,6 +603,14 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
+	if normalize.ContainsTags(text) {
+		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
+		for _, d := range decodes.decode(text, true) {
+			if d.encoding == encodingUnicodeTags {
+				matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(decodes.normalize(d.text), decodes)...)
+			}
+		}
+	}
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
 	}
@@ -888,7 +911,7 @@ func (s *Scanner) checkCoreDLPWithUserinfoValues(parsed *url.URL, values []dlpTa
 	}
 
 	// Path segment decoding (hex/base64/base32).
-	for _, segment := range urlPathDecodeSegments(parsed.Path) {
+	for _, segment := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 		if len(segment) >= 10 {
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})

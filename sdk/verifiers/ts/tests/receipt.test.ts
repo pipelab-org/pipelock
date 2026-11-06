@@ -342,3 +342,8 @@ test("receipt command reports an input it cannot open instead of rejecting", asy
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("receipt command accepts Unicode tag decoded view", async () => {
+  const report = await runReceipt("../fixtures/unicode-tags-receipt.json", v2GoldenPublicKey);
+  assert.equal(report.valid, true, report.error ?? "receipt rejected");
+});

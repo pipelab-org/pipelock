@@ -91,14 +91,17 @@ var validSourceKinds = map[string]struct{}{
 }
 
 var validNormalizedViews = map[string]struct{}{
-	"sanitized_target":              {},
-	"for_matching":                  {},
-	"for_matching:invisible_spaced": {},
-	"leetspeak:for_matching":        {},
-	"vowel_fold:for_matching":       {},
-	"for_matching:base64_decoded":   {},
-	"for_matching:hex_decoded":      {},
-	"dlp_normalized":                {},
+	"sanitized_target":                                   {},
+	"for_matching":                                       {},
+	"for_matching:invisible_spaced":                      {},
+	"leetspeak:for_matching":                             {},
+	"vowel_fold:for_matching":                            {},
+	"for_matching:base64_decoded":                        {},
+	"for_matching:hex_decoded":                           {},
+	"for_matching:unicode_tags_decoded":                  {},
+	"invisible_spaced:for_matching:unicode_tags_decoded": {},
+	"vowel_fold:for_matching:unicode_tags_decoded":       {},
+	"dlp_normalized":                                     {},
 }
 
 var validProviders = map[string]struct{}{

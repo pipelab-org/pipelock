@@ -206,6 +206,26 @@ func TestReproduceSpanViewDecodedInputs(t *testing.T) {
 			view:   contractreceipt.NormalizedViewHexDecoded,
 			want:   "hello",
 		},
+		"unicode tags decoded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prefix AB suffix",
+		},
+		"unicode tags DLP decoded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   contractreceipt.NormalizedViewDLPNormalized + ":unicode_tags",
+			want:   "prefix AB suffix",
+		},
+		"unicode tags spaced": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   "invisible_spaced:" + contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prefix A B suffix",
+		},
+		"unicode tags vowel folded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   "vowel_fold:" + contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prafax AB saffax",
+		},
 		"hex decoded invalid": {
 			source: "not-hex",
 			view:   contractreceipt.NormalizedViewHexDecoded,

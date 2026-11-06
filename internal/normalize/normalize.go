@@ -18,6 +18,48 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
+// ContainsTags reports whether s may contain Unicode Tags. These UTF-8 prefixes
+// cover U+E0000 through U+E007F; DecodeTags verifies complete rune boundaries.
+func ContainsTags(s string) bool {
+	return strings.Contains(s, "\xf3\xa0\x80") || strings.Contains(s, "\xf3\xa0\x81")
+}
+
+// DecodeTags preserves surrounding text while decoding printable ASCII tags.
+// Unicode Standard, Chapter 23, "Special Areas and Format Characters", Tags:
+// https://www.unicode.org/versions/latest/core-spec/chapter-23/
+// U+E0020..U+E007E correspond to ASCII 0x20..0x7E; LANGUAGE TAG (U+E0001)
+// and CANCEL TAG (U+E007F) frame sequences and carry no text. Other runes
+// remain intact. Callers retain stripped normalization as a separate view.
+// Output never exceeds the input byte length; untagged input allocates nothing.
+func DecodeTags(s string) string {
+	if !ContainsTags(s) {
+		return s
+	}
+	var b strings.Builder
+	copied := 0
+	for i, r := range s {
+		printable := r >= 0xe0020 && r <= 0xe007e
+		if !printable && r != 0xe0001 && r != 0xe007f {
+			continue
+		}
+		if copied == 0 {
+			b.Grow(len(s))
+		}
+		// Copy untouched bytes verbatim, including malformed UTF-8. Repairing
+		// invalid bytes into replacement runes could grow the decoded view.
+		b.WriteString(s[copied:i])
+		if printable {
+			b.WriteRune(r - 0xe0000)
+		}
+		copied = i + utf8.RuneLen(r)
+	}
+	if copied == 0 {
+		return s
+	}
+	b.WriteString(s[copied:])
+	return b.String()
+}
+
 // MCPToolNameAlias returns the declared tool component of one bounded MCP
 // presentation alias. The protocol preserves tool names verbatim, so this is
 // deliberately a classifier aid rather than a tool identity rewrite: callers

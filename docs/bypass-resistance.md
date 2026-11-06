@@ -34,6 +34,7 @@ These techniques use Unicode characters to break pattern matching.
 | Technique | Example | Status | How |
 |-----------|---------|----------|-----|
 | Zero-width characters | `sk\u200b-ant` (ZW space in key) | Tested | 16 Unicode ranges stripped before matching |
+| Unicode Tags | U+E0020–U+E007E | Tested | Printable ASCII tags decoded beside the stripped view; framing tags dropped |
 | NFKC normalization bypass | `ﬁle` (fi ligature) | Tested | NFKC decomposition applied to all scanned text |
 | Homoglyphs (Cyrillic) | `аpi_kеy` (Cyrillic a and e) | Tested | 80+ confusable character mappings |
 | Homoglyphs (Greek/Armenian/Cherokee) | `αpi`, `օverride` | Tested | Extended confusable map covers major scripts |
@@ -44,6 +45,8 @@ These techniques use Unicode characters to break pattern matching.
 | Regional indicators / emoji | Boxed letters, flag sequences | Tested | Stripped by zero-width/variation selector removal |
 | Exotic whitespace | `\u00A0`, `\u2000`-`\u200A`, `\u3000`, etc. | Tested | `StripExoticWhitespace` removes 18 Unicode space codepoints before DLP matching |
 | Zalgo text | `t̷̺̀e̸̜̅s̵̲̈́t̵̙̅` (stacked combining marks) | Tested | `StripCombiningMarks` removes all marks; `ZalgoDensity` detects 3+ consecutive marks as suspicious for taint signaling |
+
+Unicode tag decoding follows the [Unicode Standard, Chapter 23, Tags](https://www.unicode.org/versions/latest/core-spec/chapter-23/). DLP scans both stripped and tag-decoded views for URL paths and queries, outbound text, configured environment/file secrets, and canary values. Response injection scanning checks tag-decoded text with the same patterns as other decoded views. Mixed visible text and other invisible characters retain their usual normalization. Decoding shares the existing candidate/work budgets and response recursion limit; outbound inspection that exhausts its decode budget is refused. A tag sequence alone does not trigger a finding.
 
 ## DNS-Based Exfiltration
 

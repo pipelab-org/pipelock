@@ -582,7 +582,8 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
-	defer func() { s.setInjectionAssessment(&out, !IsBlankInjectionView(content)) }()
+	assessed := !IsBlankInjectionView(content)
+	defer func() { s.setInjectionAssessment(&out, assessed) }()
 	var suppressedMatches []ResponseMatch
 	var observedCoreMatches []ObservedCoreMatch
 	suppressedSeen := make(map[string]struct{})
@@ -775,8 +776,12 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// contiguous run of base64/hex alphabet characters long enough to be
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
-	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content)) {
-		decodedSet := s.matchDecodedResponse(content)
+	decodeContent := content
+	if normalize.ContainsTags(preStripContent) {
+		decodeContent = preStripContent
+	}
+	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || normalize.ContainsTags(preStripContent)) {
+		decodedSet := s.matchDecodedResponse(decodeContent)
 		matches = filterSuppressed(decodedSet.matches)
 	}
 
@@ -1233,6 +1238,17 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
+	if decoded := normalize.DecodeTags(content); decoded != content {
+		if found := s.matchDecodedNormalized(decoded, ViewUnicodeTagsDecoded); len(found.matches) > 0 {
+			return found
+		}
+		if found := s.matchDecodedResponseRecursive(normalize.ForMatching(decoded), depth+1); len(found.matches) > 0 {
+			return found
+		}
+	}
+	if normalize.ContainsTags(content) {
+		content = normalize.ForMatching(content)
+	}
 
 	// Strategy 1: whole-content decode.
 	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
@@ -1519,7 +1535,7 @@ func isPrintableText(data []byte) bool {
 	for i := 0; i < len(data); {
 		r, size := utf8.DecodeRune(data[i:])
 		total++
-		if unicode.IsPrint(r) || r == '\t' || r == '\n' || r == '\r' {
+		if isPrintableResponseRune(r, size) {
 			printable++
 		}
 		i += size
@@ -1731,7 +1747,9 @@ func decodeOpaqueResponseFragment(fragment string) ([]byte, bool) {
 }
 
 func isPrintableResponseRune(r rune, size int) bool {
-	return (r != utf8.RuneError || size != 1) && (unicode.IsPrint(r) || r == '\t' || r == '\n' || r == '\r')
+	// Unicode format characters include Tags and zero-width separators. Keep
+	// them together so mixed encoded text reaches the normalization views.
+	return (r != utf8.RuneError || size != 1) && (unicode.IsPrint(r) || unicode.Is(unicode.Cf, r) || r == '\t' || r == '\n' || r == '\r')
 }
 
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,

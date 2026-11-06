@@ -118,6 +118,9 @@ const normalizedViews = new Set([
   "vowel_fold:for_matching",
   "for_matching:base64_decoded",
   "for_matching:hex_decoded",
+  "for_matching:unicode_tags_decoded",
+  "invisible_spaced:for_matching:unicode_tags_decoded",
+  "vowel_fold:for_matching:unicode_tags_decoded",
   "dlp_normalized",
 ]);
 
