@@ -3374,6 +3374,14 @@ func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
 	if percent != "" {
 		texts = append(texts, dlpTarget{percent, spanViewLabel("percent_decoded", "url_fragment"), ""})
 	}
+	if decodes.keywordsActive() {
+		var segments []string
+		for _, source := range texts {
+			segments = append(segments, source.text)
+			segments = append(segments, textDLPSegments(source.text)...)
+		}
+		decodes.registerKeywordURLSegments(parsed.EscapedFragment(), segments)
+	}
 	var targets []dlpTarget
 	for _, source := range texts {
 		targets = append(targets, source)
@@ -3498,8 +3506,12 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
-	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range urlPathDecodeSegments(parsed.Path) {
+	// Recover the escaped spelling of each decoded segment before its walk.
+	pathSegments := urlPathDecodeSegments(parsed.Path)
+	if decodes.keywordsActive() {
+		decodes.registerKeywordURLSegments(rawPath, append(pathSegments, parsed.Path))
+	}
+	for _, segment := range pathSegments {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})

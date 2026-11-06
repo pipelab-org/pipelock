@@ -21,7 +21,9 @@ import (
 type keywordByteSpan struct{ start, end int }
 
 const (
-	keywordQueryValues       = "query_values"
+	keywordQueryValues = "query_values"
+	// RFC 3986 percent decoding keeps plus signs as data (iterativePercentDecode).
+	keywordURLPercent        = "url_percent"
 	keywordPercentDrop       = "invalid_percent_drop"
 	keywordPercentEscapeDrop = "invalid_percent_escape_drop"
 )
@@ -344,7 +346,7 @@ func (n *keywordDecodeSource) logicalContexts() []string {
 	variants := append([]*keywordDecodeSource{n}, n.variants...)
 	for _, edge := range variants {
 		switch edge.encoding {
-		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordPercentDrop, keywordPercentEscapeDrop, keywordQueryValues:
+		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordURLPercent, keywordPercentDrop, keywordPercentEscapeDrop, keywordQueryValues:
 			for _, text := range edge.parent.logicalContexts() {
 				switch edge.encoding {
 				case keywordQueryValues:
@@ -355,6 +357,8 @@ func (n *keywordDecodeSource) logicalContexts() []string {
 					text = dropInvalidPercentEscapes(text)
 				case encodingURL:
 					text = IterativeDecode(text)
+				case keywordURLPercent:
+					text = iterativePercentDecode(text)
 				case encodingHTML:
 					text, _ = decodeHTMLEntitiesChecked(text)
 				case encodingJSONUnicode:
@@ -521,7 +525,7 @@ func keywordDecodeOffsets(source, decoded, encoding string) []keywordByteSpan {
 				}
 			}
 		}
-	case encodingURL, encodingHTML, encodingJSONUnicode:
+	case encodingURL, keywordURLPercent, encodingHTML, encodingJSONUnicode:
 		return keywordEscapeOffsets(source, decoded, encoding)
 	case encodingDecimal, encodingOctal, encodingBinary, encodingQuotedPrintable:
 		return keywordTextEncodingOffsets(source, decoded, encoding)
@@ -603,7 +607,7 @@ func keywordEscapeOffsets(source, decoded, encoding string) []keywordByteSpan {
 	var previous []keywordByteSpan
 	// Use the same per-transform pass bounds as the producing decoder.
 	rounds := 1
-	if encoding == encodingURL {
+	if encoding == encodingURL || encoding == keywordURLPercent {
 		rounds = maxDecodeRounds
 	}
 	if encoding == encodingHTML {
@@ -615,11 +619,11 @@ func keywordEscapeOffsets(source, decoded, encoding string) []keywordByteSpan {
 		for i := 0; i < len(text); {
 			end, value := i+1, text[i:i+1]
 			switch encoding {
-			case encodingURL:
+			case encodingURL, keywordURLPercent:
 				if text[i] == '%' && i+2 < len(text) && isHexDigitByte(text[i+1]) && isHexDigitByte(text[i+2]) {
 					end = i + 3
 					value = normalize.QueryUnescapePartial(text[i:end])
-				} else if text[i] == '+' {
+				} else if text[i] == '+' && encoding == encodingURL {
 					value = " "
 				}
 			case encodingHTML:
@@ -673,6 +677,65 @@ func (s *Scanner) hasDLPKeywords() bool { return s.keywordPatterns }
 // can skip building context strings when no pattern uses keywords.
 func (m *decodingMemo) keywordsActive() bool {
 	return m != nil && m.keywordMode
+}
+
+// registerKeywordURLSegments recovers literal escaped source slices for the
+// existing URL component and segment views. Decoding may introduce delimiters,
+// so splitting the escaped spelling first cannot recover all segment roots.
+// The shared escape mapper proves each byte hull, including repeated segments;
+// the normal tracked decoder then binds its children to these source edges.
+func (m *decodingMemo) registerKeywordURLSegments(escaped string, segments []string) {
+	if !m.keywordsActive() {
+		return
+	}
+	seen := make(map[keywordProjectionKey]bool)
+	seenViews := make(map[string]bool)
+	for _, decoded := range []struct{ encoding, text string }{
+		{keywordURLPercent, normalize.PercentUnescapePartial(escaped)},
+		{encodingURL, IterativeDecode(escaped)},
+		{keywordURLPercent, iterativePercentDecode(escaped)},
+	} {
+		encoding, view := decoded.encoding, decoded.text
+		if view == escaped || seenViews[view] {
+			continue
+		}
+		seenViews[view] = true
+		budget := keywordDecodeSources{budget: m.keywordBudgetForScan()}
+		if len(view) > maxDecodeTotalBytes/keywordSpanBytes || len(escaped) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !budget.charge(len(view)*keywordSpanBytes+len(escaped)*(2*keywordSpanBytes)) {
+			m.markIncomplete()
+			return
+		}
+		offsets := keywordEscapeOffsets(escaped, view, encoding)
+		if len(offsets) != len(view) {
+			m.markIncomplete()
+			return
+		}
+		seenSegments := make(map[string]bool)
+		for _, segment := range segments {
+			if segment == "" || seenSegments[segment] {
+				continue
+			}
+			seenSegments[segment] = true
+			for from := 0; from <= len(view)-len(segment); {
+				if !budget.charge(len(view) - from + keywordSpanBytes) {
+					m.markIncomplete()
+					return
+				}
+				at := strings.Index(view[from:], segment)
+				if at < 0 {
+					break
+				}
+				at += from
+				source := escaped[offsets[at].start:offsets[at+len(segment)-1].end]
+				key := keywordProjectionKey{source: source, view: segment}
+				if !seen[key] {
+					seen[key] = true
+					m.registerKeywordTransform(source, segment, encoding)
+				}
+				from = at + 1
+			}
+		}
+	}
 }
 
 func (m *decodingMemo) registerKeywordTransform(source, view, encoding string) {
