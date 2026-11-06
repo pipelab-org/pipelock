@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts import ci_test_packages as planner
+from scripts.ci_test_durations import partial_overrides
 
 
 class ChangedTestsTest(unittest.TestCase):
@@ -157,11 +158,23 @@ func Testhelper() {}
                                       if event.get("Test") and event["Action"] == "pass"}, {"TestEdited"})
                     # A rest package (outside the split trees) runs whole.
                     self.assertEqual(selection["whole"], ["example.test/fixture"])
+                    self.assertIn("example.test/fixture", partial_overrides([stream])["packages"])
+                    self.assertIn("example.test/fixture", partial_overrides([stream.with_suffix(".base.json")])["packages"])
 
 
 
 class ChangedTestRunnerTest(unittest.TestCase):
     package = "example.test/internal/proxy"
+
+    def test_merge_overrides_keeps_slowest_shared_tree_name(self):
+        # Split-tree keys omit the package. Match collect() when sibling
+        # packages declare the same test name, regardless of package order.
+        for weights in ((90, 1), (1, 90)):
+            with self.subTest(weights=weights):
+                combined = {"trees": {}, "packages": {}}
+                for weight in weights:
+                    planner.merge_overrides(combined, {"trees": {"runtime": {"TestShared": weight}}, "packages": {}})
+                self.assertEqual(combined["trees"]["runtime"]["TestShared"], 90)
 
     def fixture_tests(self, new=False):
         return [{"package": "./internal/proxy", "file": "internal/proxy/lib_test.go",
@@ -308,6 +321,10 @@ class ChangedTestRunnerTest(unittest.TestCase):
                  patch.object(planner, "run_measurement", side_effect=self.scripted_run(commands)), \
                  patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
                 self.assertEqual(planner.measure_changed_tests(tests, "", target, "base-sha"), 0)
+            # Replay exactly the aggregate files uploaded by CI, including the
+            # whole-package selection required by the partial timing reader.
+            self.assertEqual(partial_overrides([target])["packages"], {package: 2})
+            self.assertEqual(partial_overrides([target.with_suffix(".base.json")])["packages"], {package: 2})
             self.assertEqual(len(commands), 2)
             self.assertFalse(any(arg.startswith("-run=") for command, _, _ in commands for arg in command))
             self.assertEqual(budget.call_args.args[2]["packages"], {package: 2})
@@ -463,7 +480,8 @@ class ChangedTestRunnerTest(unittest.TestCase):
              patch.object(planner, "prediction_plan", return_value={}), \
              patch.object(planner, "list_packages", return_value=[first, second]), \
              patch.object(planner, "exact_names_regex", side_effect=lambda names: "^(?:" + "|".join(names) + ")$"), \
-             patch.object(planner, "run_measurement", side_effect=run), redirect_stdout(io.StringIO()):
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "check_budget", return_value=0), redirect_stdout(io.StringIO()):
             # With no time left for the new-test package, the gate fails rather than skipping it.
             # The run starts at 0; every later reading has 30s left, under the start floor.
             readings = iter([0.0])
@@ -486,10 +504,37 @@ class ChangedTestRunnerTest(unittest.TestCase):
              patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
             planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
                                           deadline_seconds=deadline, clock=lambda: now[0])
+            target = Path(directory) / "changed.json"
+            base = target.with_suffix(".base.json")
+            self.assertEqual(partial_overrides([target]), budget.call_args.args[2])
+            self.assertEqual(partial_overrides([base]), budget.call_args.args[3])
+            selection = json.loads(base.with_suffix(".selection.json").read_text())
+            self.assertEqual(selection["selected"], {first: ["TestFirst"]})
+            self.assertEqual(selection["skipped"], [second])
         # Second package's base ran (70s left) but its head could not start (20s left).
         self.assertEqual(commands, [(first, Path("base")), (first, planner.ROOT), (second, Path("base"))])
         self.assertNotIn("scanner", budget.call_args.args[3]["trees"])
         self.assertNotIn("scanner", budget.call_args.args[2]["trees"])
+
+    def test_deadline_all_edited_packages_skipped_with_nested_output(self):
+        first, second, tests, resolve, now, commands, run, _ = self.paired_deadline_run(new_second=False)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+             patch.object(planner, "prediction_plan", return_value={}), \
+             patch.object(planner, "list_packages", return_value=[first, second]), \
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+            target = Path(directory) / "nested" / "changed.json"
+            self.assertEqual(planner.measure_changed_tests(tests, "", target, "base-sha",
+                                                           deadline_seconds=50, clock=lambda: now[0]), 0)
+            self.assertEqual(target.read_text(), "")
+            self.assertEqual(target.with_suffix(".base.json").read_text(), "")
+            selection = json.loads(target.with_suffix(".selection.json").read_text())
+            self.assertEqual(selection["skipped"], [first, second])
+        self.assertEqual(commands, [])
+        self.assertEqual(budget.call_args.args[2], {"trees": {}, "packages": {}})
+        self.assertEqual(budget.call_args.args[3], {"trees": {}, "packages": {}})
 
     def test_deadline_refuses_edited_and_new_tests(self):
         for new in (False, True):

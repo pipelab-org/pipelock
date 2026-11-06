@@ -890,7 +890,9 @@ def measured_selection(
 def merge_overrides(into: dict, more: dict) -> None:
     """Fold one package's measured weights into the run's overrides."""
     for tree, tests in more.get("trees", {}).items():
-        into["trees"].setdefault(tree, {}).update(tests)
+        weights = into["trees"].setdefault(tree, {})
+        for name, seconds in tests.items():
+            weights[name] = max(weights.get(name, 0.0), seconds)
     into["packages"].update(more.get("packages", {}))
 
 
@@ -983,6 +985,7 @@ def measure_changed_tests(
                 base_streams.append(pair_base)
             measured.append(package)
         for target, streams in ((json_out, head_streams), (base_path, base_streams)):
+            target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("w", encoding="utf-8") as stream:
                 for part in streams:
                     stream.write(part.read_text(encoding="utf-8"))
@@ -993,6 +996,11 @@ def measure_changed_tests(
             "new": {pkg: sorted(names) for pkg, names in new.items()},
             "selected": selected, "whole": [pkg for pkg in whole if pkg in measured],
             "skipped": skipped,
+        }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        selection_path(base_path).write_text(json.dumps({
+            "selected": {pkg: base_selected[pkg] for pkg in measured if pkg in base_selected},
+            "whole": [pkg for pkg in whole if pkg in measured and pkg in base_selected],
+            "skipped": [pkg for pkg in skipped if pkg in base_selected],
         }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         introduced: dict[str, dict | list] = {"trees": {}, "packages": []}
         for package, names in new.items():
