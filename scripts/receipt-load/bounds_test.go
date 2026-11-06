@@ -364,6 +364,16 @@ func TestBundleActivitySurvivesMalformedRecord(t *testing.T) {
 	if !hasReason(got.Integrity.Reasons, "proxy reported rule bundle activity under --rules empty: ") {
 		t.Fatalf("bundle reason missing: %+v", got.Integrity)
 	}
+	// The bundle scan and the audit-gap scan each report the bad record.
+	decodeErrors := 0
+	for _, reason := range got.Integrity.Reasons {
+		if strings.HasPrefix(reason, "reading proxy.log failed: ") {
+			decodeErrors++
+		}
+	}
+	if decodeErrors != 2 {
+		t.Fatalf("decode errors reported = %d, want one per scan: %+v", decodeErrors, got.Integrity)
+	}
 }
 
 func TestRealAuditGapPathDoesNotFailIntegrity(t *testing.T) {
