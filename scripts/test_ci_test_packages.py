@@ -24,11 +24,9 @@ from scripts import ci_test_packages
 from scripts.ci_test_packages import (
     HEAVY_TREES,
     PACKAGE_SHARDS,
-    SEPARATE_COVERAGE_TREES,
     SHARD_BUDGET_SECONDS,
     SHARDS,
     TEST_SPLITS,
-    coverage_mode,
     exact_names_regex,
     predicted_loads,
     load_durations,
@@ -273,15 +271,6 @@ class TestPackageSharding(unittest.TestCase):
         self.assertLessEqual(max(loads) - min(loads), 300.0)
         self.assertTrue(all(shards), shards)
 
-    def test_coverage_mode_is_separate_only_for_listed_trees(self) -> None:
-        self.assertEqual(SEPARATE_COVERAGE_TREES, frozenset({"scanner"}))
-        for shard in SHARDS:
-            with self.subTest(shard=shard):
-                expected = "separate" if shard.startswith("scanner-") else "race"
-                self.assertEqual(coverage_mode(shard), expected)
-        with self.assertRaisesRegex(ValueError, "unknown shard"):
-            coverage_mode("scanner")
-
     def test_predicted_loads_cover_every_shard_and_fail_over_budget(self) -> None:
         packages = [
             "example.test/pipelock/internal/proxy",
@@ -301,13 +290,11 @@ class TestPackageSharding(unittest.TestCase):
             loads = predicted_loads("")
             self.assertEqual(set(loads), set(SHARDS))
             # 20 tests of 10s: every second is charged once and buckets differ by
-            # at most one test; a separate-coverage tree also pays its coverage
-            # pass. Rest packages run two at a time.
+            # at most one test. Rest packages run two at a time.
             for tree, count in TEST_SPLITS.items():
-                factor = 1.0 + (ci_test_packages.COVERAGE_PASS_FRACTION if tree in SEPARATE_COVERAGE_TREES else 0.0)
                 tree_loads = [loads[f"{tree}-{index}"] for index in range(count)]
-                self.assertAlmostEqual(sum(tree_loads), 200.0 * factor)
-                self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0 * factor)
+                self.assertAlmostEqual(sum(tree_loads), 200.0)
+                self.assertLessEqual(max(tree_loads) - min(tree_loads), 10.0)
             self.assertEqual(sorted(loads[shard] for shard in ci_test_packages.REST_SHARDS), [0.0] * (len(ci_test_packages.REST_SHARDS) - 3) + [100.0, 100.0, 100.0])
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 0)
@@ -318,6 +305,114 @@ class TestPackageSharding(unittest.TestCase):
             self.assertIn("over the 40s budget", err.getvalue())
             self.assertIn("positive finite", err.getvalue())
 
+    def test_paired_budget_distinguishes_growth_from_inherited_debt(self) -> None:
+        budget = SHARD_BUDGET_SECONDS
+        # Only a change that takes a shard over budget fails. Growth of the same
+        # measured tests on a base that is already over is variance-sized
+        # evidence, so it warns. New names are covered separately.
+        for base_seconds, head_seconds, want in (
+            (budget + 100, budget + 100, 0),
+            (budget + 100, budget + 50, 0),
+            (budget + 100, budget + 101, 0),
+            (budget - 10, budget + 1, 1),
+            (budget, budget + 1, 1),
+            (budget - 10, budget, 0),
+        ):
+            with self.subTest(base=base_seconds, head=head_seconds), \
+                 patch.object(ci_test_packages, "prediction_plan", return_value={}), \
+                 patch.object(ci_test_packages, "predicted_loads", side_effect=[
+                     dict.fromkeys(SHARDS, head_seconds), dict.fromkeys(SHARDS, base_seconds)]), \
+                 redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()):
+                self.assertEqual(ci_test_packages.check_budget("", budget, {}, {}), want)
+                self.assertIn(f"delta={head_seconds - base_seconds:+.3f}s", out.getvalue())
+                if base_seconds > budget:
+                    self.assertIn("inherited-debt=", out.getvalue())
+                warned = "Shard already over budget" in out.getvalue()
+                self.assertEqual(warned, base_seconds > budget and head_seconds > base_seconds)
+
+    def test_inherited_debt_fails_on_new_work_not_on_remeasured_growth(self) -> None:
+        budget = SHARD_BUDGET_SECONDS
+        tree = "proxy"
+        names = [f"TestDebt{index}" for index in range(TEST_SPLITS[tree])] + ["TestNew", "TestEdited"]
+        baseline = {name: budget + 100 for name in names if name not in ("TestNew", "TestEdited")}
+        baseline["TestEdited"] = 10.0
+        packages = [f"example.test/debt{index}" for index in range(len(ci_test_packages.REST_SHARDS))]
+        packages.append("example.test/new")
+        package_weights = {package: budget + 100 for package in packages if package != "example.test/new"}
+        package_weights["example.test/new"] = 0.0
+
+        def names_for(path: object) -> list[str]:
+            return names if str(path).endswith(HEAVY_TREES[tree]) else ["TestA"]
+
+        def budget_for(head: dict, base: dict, introduced: dict) -> tuple[int, str, str]:
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(ci_test_packages, "list_packages", return_value=packages), \
+                 patch.object(ci_test_packages, "load_durations", return_value={tree: baseline}), \
+                 patch.object(ci_test_packages, "load_package_durations", return_value=package_weights), \
+                 patch.object(ci_test_packages, "tree_test_names", side_effect=names_for), \
+                 redirect_stdout(out), redirect_stderr(err):
+                status = ci_test_packages.check_budget("", budget, head, base, introduced=introduced)
+            return status, out.getvalue(), err.getvalue()
+
+        new_base = {"trees": {tree: {"TestNew": 0.0, "TestEdited": 10.0}}}
+        status, out, err = budget_for(
+            {"trees": {tree: {"TestNew": 25.0, "TestEdited": 10.0}}}, new_base,
+            {"trees": {tree: ["TestNew"]}, "packages": []},
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("added measured tests", err)
+        self.assertIn("  OVER", out)
+        self.assertNotIn("::warning title=Shard already over budget::", out)
+        status, out, err = budget_for(
+            {"trees": {tree: {"TestNew": 0.0, "TestEdited": 40.0}}}, new_base,
+            {"trees": {}, "packages": []},
+        )
+        self.assertEqual(status, 0, err)
+        self.assertIn("::warning title=Shard already over budget::", out)
+        self.assertNotIn("added measured tests", err)
+        # A new test whose full cost still fits does not fail the shard.
+        fitting_out, fitting_err = io.StringIO(), io.StringIO()
+        with patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             patch.object(ci_test_packages, "load_durations", return_value={tree: {}}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestKept"]), \
+             redirect_stdout(fitting_out), redirect_stderr(fitting_err):
+            status = ci_test_packages.check_budget(
+                "", budget,
+                {"trees": {tree: {"TestKept": 25.0}}}, {"trees": {tree: {"TestKept": 0.0}}},
+                introduced={"trees": {tree: ["TestKept"]}, "packages": []},
+            )
+        self.assertEqual(status, 0, fitting_err.getvalue())
+        status, out, err = budget_for(
+            {"packages": {"example.test/new": 30.0}}, {"packages": {"example.test/new": 0.0}},
+            {"trees": {}, "packages": ["example.test/new"]},
+        )
+        self.assertEqual(status, 1, out)
+        self.assertIn("added measured tests", err)
+        status, out, err = budget_for(
+            {"packages": {"example.test/debt0": budget + 130}}, {}, {"trees": {}, "packages": []},
+        )
+        self.assertEqual(status, 0, err)
+        self.assertIn("::warning title=Shard already over budget::", out)
+
+    def test_new_test_cost_is_not_discounted_by_the_unknown_weight_floor(self) -> None:
+        # Both predictions use one fixed inventory, packing and unknown-name
+        # default. A new name costs zero on base and its full head measurement.
+        tree = "proxy"
+        names = ["TestExisting", "TestNew", "TestUnmeasured"]
+        with patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             patch.object(ci_test_packages, "load_durations", return_value={tree: {"TestExisting": 10}}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", side_effect=lambda path:
+                          names if str(path).endswith(HEAVY_TREES[tree]) else []):
+            base = predicted_loads("", {"trees": {tree: {"TestNew": 0}}})
+            head = predicted_loads("", {"trees": {tree: {"TestNew": SHARD_BUDGET_SECONDS + 1}}})
+            self.assertEqual(sum(head.values()) - sum(base.values()), SHARD_BUDGET_SECONDS + 1)
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS,
+                    {"trees": {tree: {"TestNew": SHARD_BUDGET_SECONDS + 1}}},
+                    {"trees": {tree: {"TestNew": 0}}}), 1)
+
     def test_measured_overrides_enforce_existing_budget(self) -> None:
         trees = {"proxy": {"TestChanged": 1.0, "TestKeep": 20.0}}
         with patch.object(ci_test_packages, "list_packages", return_value=[]), \
@@ -325,15 +420,15 @@ class TestPackageSharding(unittest.TestCase):
              patch.object(ci_test_packages, "load_package_durations", return_value={}), \
              patch.object(ci_test_packages, "tree_test_names", return_value=["TestChanged", "TestKeep"]), \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
-            under = {"trees": {"proxy": {"TestChanged": 500.0}}}
+            under = {"trees": {"proxy": {"TestChanged": SHARD_BUDGET_SECONDS - 100.0}}}
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, under), 0)
-            self.assertEqual(sum(predicted_loads("", under)[f"proxy-{i}"] for i in range(TEST_SPLITS["proxy"])), 520.0)
-            over = {"trees": {"proxy": {"TestChanged": 700.0}}}
+            self.assertEqual(sum(predicted_loads("", under)[f"proxy-{i}"] for i in range(TEST_SPLITS["proxy"])), SHARD_BUDGET_SECONDS - 80.0)
+            over = {"trees": {"proxy": {"TestChanged": SHARD_BUDGET_SECONDS + 100.0}}}
             self.assertEqual(ci_test_packages.check_budget("enterprise", SHARD_BUDGET_SECONDS, over), 1)
-            self.assertIn("over the 600s budget", error.getvalue())
+            self.assertIn(f"over the {SHARD_BUDGET_SECONDS:.0f}s budget", error.getvalue())
             # Parsed multiline declarations can be absent from the cheap shard
             # inventory; a real measurement still has to count toward budget.
-            extra = {"trees": {"proxy": {"TestMultiline": 700.0}}}
+            extra = {"trees": {"proxy": {"TestMultiline": SHARD_BUDGET_SECONDS + 100.0}}}
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, extra), 1)
         self.assertEqual(trees["proxy"]["TestChanged"], 1.0)
 
@@ -342,13 +437,13 @@ class TestPackageSharding(unittest.TestCase):
         baseline = dict.fromkeys(names, 1.0)
         bucket = ci_test_packages.partition_names(names, TEST_SPLITS["proxy"], baseline)[0]
         self.assertEqual(len(bucket), 2)
-        overrides = {"trees": {"proxy": dict.fromkeys(bucket, 400.0)}}
+        overrides = {"trees": {"proxy": dict.fromkeys(bucket, SHARD_BUDGET_SECONDS)}}
         with patch.object(ci_test_packages, "load_durations", return_value={"proxy": baseline}), \
              patch.object(ci_test_packages, "load_package_durations", return_value={}), \
              patch.object(ci_test_packages, "tree_test_names", return_value=names), \
              patch.object(ci_test_packages, "list_packages", return_value=[]), \
              redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
-            self.assertEqual(predicted_loads("", overrides)["proxy-0"], 800)
+            self.assertEqual(predicted_loads("", overrides)["proxy-0"], 2 * SHARD_BUDGET_SECONDS)
             self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS, overrides), 1)
 
     def test_unmeasured_tests_are_never_free_even_when_the_median_is_zero(self) -> None:
@@ -367,9 +462,9 @@ class TestPackageSharding(unittest.TestCase):
     def test_rest_budget_cannot_divide_a_single_slow_package(self) -> None:
         with patch.object(ci_test_packages, "list_packages", return_value=["example.test/slow"]), \
              patch.object(ci_test_packages, "load_durations", return_value={}), \
-             patch.object(ci_test_packages, "load_package_durations", return_value={"example.test/slow": 700.0}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={"example.test/slow": SHARD_BUDGET_SECONDS + 1}), \
              patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
-            self.assertEqual(predicted_loads("")["rest-0"], 700.0)
+            self.assertEqual(predicted_loads("")["rest-0"], SHARD_BUDGET_SECONDS + 1)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
 
@@ -385,11 +480,11 @@ class TestPackageSharding(unittest.TestCase):
         packages = [f"example.test/p{index}" for index in range(3)]
         with patch.object(ci_test_packages, "list_packages", return_value=packages), \
              patch.object(ci_test_packages, "load_durations", return_value={}), \
-             patch.object(ci_test_packages, "load_package_durations", return_value=dict.fromkeys(packages, 350.0)), \
+             patch.object(ci_test_packages, "load_package_durations", return_value=dict.fromkeys(packages, SHARD_BUDGET_SECONDS * 0.6)), \
              patch.object(ci_test_packages, "select_packages", return_value=packages), \
              patch.object(ci_test_packages, "tree_test_names", return_value=["TestA"]):
-            # Three 350s packages fit the budget by total/2 (525s) but not in two waves.
-            self.assertEqual(predicted_loads("")["rest-0"], 700.0)
+            # total/2 fits the budget but two waves of these packages do not.
+            self.assertEqual(predicted_loads("")["rest-0"], SHARD_BUDGET_SECONDS * 1.2)
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 self.assertEqual(ci_test_packages.check_budget("", SHARD_BUDGET_SECONDS), 1)
 

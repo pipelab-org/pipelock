@@ -523,8 +523,37 @@ func keywordDecodeOffsets(source, decoded, encoding string) []keywordByteSpan {
 		}
 	case encodingURL, encodingHTML, encodingJSONUnicode:
 		return keywordEscapeOffsets(source, decoded, encoding)
+	case encodingDecimal, encodingOctal, encodingBinary, encodingQuotedPrintable:
+		return keywordTextEncodingOffsets(source, decoded, encoding)
 	}
 	return nil
+}
+
+// keywordTextEncodingOffsets reuses the byte ranges the text-encoding decoders
+// already report for opaque-fragment mapping (mapTextEncodingSources). Any
+// mismatch returns nil so the caller keeps its fail-closed behavior.
+func keywordTextEncodingOffsets(source, decoded, encoding string) []keywordByteSpan {
+	var text string
+	var ranges []encodingSourceRange
+	switch encoding {
+	case encodingDecimal:
+		text, ranges = decodeCharacterCodes(source, characterCodeSeparator, parseDecimalCharacterCode, true)
+	case encodingOctal, encodingBinary:
+		text, ranges = decodePrefixedCharacterCodes(source, encoding, true)
+	case encodingQuotedPrintable:
+		text, ranges = decodeQuotedPrintable(source, true)
+	}
+	if text != decoded || len(ranges) != len(decoded) {
+		return nil
+	}
+	offsets := make([]keywordByteSpan, len(ranges))
+	for i, r := range ranges {
+		if r.start < 0 || r.end <= r.start || r.end > len(source) {
+			return nil
+		}
+		offsets[i] = keywordByteSpan{r.start, r.end}
+	}
+	return offsets
 }
 
 func keywordEncodingSymbols(source, encoding string, kind encodedTokenKind, project bool) (string, []keywordByteSpan) {

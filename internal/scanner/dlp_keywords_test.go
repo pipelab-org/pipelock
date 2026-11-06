@@ -89,6 +89,27 @@ func TestDLPKeywordsEncodedContext(t *testing.T) {
 		encode func(string) string
 	}{
 		{encodingHex, func(s string) string { return hex.EncodeToString([]byte(s)) }},
+		{encodingDecimal, func(s string) string {
+			codes := make([]string, 0, len(s))
+			for _, c := range []byte(s) {
+				codes = append(codes, fmt.Sprintf("%d", c))
+			}
+			return strings.Join(codes, " ")
+		}},
+		{encodingOctal, func(s string) string {
+			codes := make([]string, 0, len(s))
+			for _, c := range []byte(s) {
+				codes = append(codes, fmt.Sprintf("0o%o", c))
+			}
+			return strings.Join(codes, " ")
+		}},
+		{encodingQuotedPrintable, func(s string) string {
+			var b strings.Builder
+			for _, c := range []byte(s) {
+				_, _ = fmt.Fprintf(&b, "=%02X", c)
+			}
+			return b.String()
+		}},
 		{encodingBase64, func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }},
 		{"base64url", func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }},
 		{encodingBase32, func(s string) string { return base32.StdEncoding.EncodeToString([]byte(s)) }},

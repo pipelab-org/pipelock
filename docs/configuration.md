@@ -1192,7 +1192,16 @@ Values shaped like a filesystem path are not collected, whatever the variable is
 
 A copied fragment of a collected environment secret is caught too, starting at 16 bytes. A value longer than 4,096 bytes, such as an inline certificate or JSON key, is indexed at up to 4,081 evenly spaced 16-byte positions instead of every position, so a fragment is caught once it is long enough to cover one of them: about 18 bytes for an 8 KiB value and about 48 bytes for the largest single environment string Linux allows (128 KiB). Canary tokens use the same index. A single long value no longer stops Pipelock from starting.
 
-DLP decoding accepts hex, percent-encoding, standard and URL-safe base64, RFC 4648 base32 in any ASCII case, RFC 4648 base32hex, JSON `\uXXXX` escapes, and HTML character references in URL query values. It does not decode Crockford base32, z-base-32, base58, ascii85, rot13, or reversed text.
+DLP decoding accepts hex, percent-encoding, standard and URL-safe base64, RFC 4648 base32 in any ASCII case, RFC 4648 base32hex, JSON `\uXXXX` escapes, and HTML character references in URL query values. The shared URL and text DLP decode graph also supports:
+
+- Decimal character-code runs, using the same parser as known-secret and canary matching. A run needs at least eight valid Unicode code points. Integral decimal and exponent forms are accepted; invalid, fractional, negative, and surrogate values end a run. Digits embedded in words or other encoding syntax aren't a numeric-literal list.
+- Octal and binary character-code runs with an explicit `0o`/`0O` or `0b`/`0B` prefix on every number, following the [ECMAScript numeric literal grammar](https://tc39.es/ecma262/multipage/ecmascript-language-lexical-grammar.html#sec-literals-numeric-literals). They use the same eight-code-point floor. Commas and spaces can separate codes. Bare binary digits, legacy leading-zero octal, and separators inside a numeric literal aren't inferred.
+- [Quoted-printable byte escapes and soft line breaks](https://www.rfc-editor.org/rfc/rfc2045#section-6.7), including CRLF and local LF line endings. Malformed escapes stay verbatim while valid escapes remain inspectable.
+- Base64 runs mixing the [standard and URL-safe alphabets](https://www.rfc-editor.org/rfc/rfc4648#section-5). The symbols `+` and `-` both represent 62, and `/` and `_` both represent 63, so the mapping is unambiguous. Padding and invalid bytes retain the existing decoder checks.
+
+These views also feed inbound prompt-injection scanning, with its existing recursion ceiling. Text DLP is shared by request bodies, scanned headers, WebSocket text, and MCP arguments; response injection scanning is shared by fetch, scanned forward/TLS-intercepted responses, WebSocket text, and MCP responses. CONNECT traffic without TLS interception has no body view. Structured numeric response leaves remain limited to known-value matching; they aren't fed to pattern DLP or injection scanning.
+
+The decode graph keeps its existing candidate and byte budgets. Unfinished outbound decoding produces an inspection refusal rather than a clean result. DLP doesn't decode IIS `%uXXXX` escapes, Crockford base32, z-base-32, base58, ascii85, rot13, or reversed text.
 
 ## Seed Phrase Detection
 

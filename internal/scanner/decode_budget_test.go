@@ -205,7 +205,7 @@ func TestDecodeBudgetInboundAccounting(t *testing.T) {
 		var memo decodingMemo
 		memo.inbound = true
 		if got := memo.decode(text, true); !reflect.DeepEqual(got, want) {
-			t.Fatal("inbound memo changed views")
+			t.Fatalf("inbound memo changed views: input bytes=%d got=%d want=%d", len(text), len(got), len(want))
 		}
 		// Modes must not share a memo entry even when a caller reuses its memo.
 		memo.inbound = false
