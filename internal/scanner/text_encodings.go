@@ -221,9 +221,13 @@ func visitQuotedPrintableTextRuns(source, decoded string, yield func(string, enc
 		}
 		bounds := encodingSourceRange{sourceStart, sourceEnd}
 		if trimStart != 0 || len(trimmed) != len(text) {
+			// A run without an escape decodes to itself with no byte map. Keep
+			// the whole run span then: it still contains the trimmed text.
 			_, ranges := decodeQuotedPrintable(source[sourceStart:sourceEnd], true)
-			bounds.start += ranges[trimStart].start
-			bounds.end = sourceStart + ranges[trimStart+len(trimmed)-1].end
+			if last := trimStart + len(trimmed) - 1; last < len(ranges) {
+				bounds.start += ranges[trimStart].start
+				bounds.end = sourceStart + ranges[last].end
+			}
 		}
 		if trimmed == source[bounds.start:bounds.end] {
 			return true
