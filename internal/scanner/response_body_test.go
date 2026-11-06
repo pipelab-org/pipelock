@@ -1115,10 +1115,21 @@ func fillSeededBinary(buf []byte, seed uint64) {
 	}
 }
 
+// The 24 seeds are split across two tests so CI can place each half on a
+// different race shard; together they cover the same seed range.
 func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
+	assertSeededRandomBinaryClean(t, 0, 12)
+}
+
+func TestScanResponseBody_SeededRandomBinaryIsCleanUpperSeeds(t *testing.T) {
+	assertSeededRandomBinaryClean(t, 12, 24)
+}
+
+func assertSeededRandomBinaryClean(t *testing.T, first, last uint64) {
+	t.Helper()
 	s := MustNew(config.Defaults())
 	body := make([]byte, 8<<20)
-	for seed := uint64(0); seed < 24; seed++ {
+	for seed := first; seed < last; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			fillSeededBinary(body, seed)
 			if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); !result.Clean {
