@@ -363,6 +363,9 @@ func validNormalizedView(view string) bool {
 		NormalizedViewUnicodeTagsDecoded,
 		"invisible_spaced:" + NormalizedViewUnicodeTagsDecoded,
 		"vowel_fold:" + NormalizedViewUnicodeTagsDecoded,
+		"leetspeak:for_matching:unicode_tags_decoded",
+		"leetspeak:for_matching:base64_decoded",
+		"leetspeak:for_matching:hex_decoded",
 		NormalizedViewDLPNormalized:
 		return true
 	default:

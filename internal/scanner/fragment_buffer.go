@@ -889,20 +889,42 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 		return nil
 	}
 	matches := scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, false)
-	// Join the same bounded normalization/matching path with a tag-decoded
-	// view. Keep the original fragments for request attribution. Framing-only
-	// tags produce the existing stripped view and need no additional scan.
+	// Each fragment retains its stripped interpretation and, when different,
+	// its tag-decoded interpretation. Reuse the decode graph's candidate and
+	// byte ceilings for the Cartesian product; exhaustion is an inspection
+	// limit, never a clean verdict from a partial combination walk.
+	views := [][]fragment{fragments}
+	cost := 0
 	for _, f := range fragments {
+		cost += len(f.data)
+	}
+	totalBytes := cost
+	for i, f := range fragments {
 		text := string(f.data)
-		if !normalize.ContainsTags(text) || normalize.ForDLP(normalize.DecodeTags(text)) == normalize.ForDLP(text) {
+		if !normalize.ContainsTags(text) {
 			continue
 		}
-		decoded := scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, true)
-		byPattern := make(map[string][]DLPMatch, len(matches))
-		for _, match := range matches {
-			byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+		decoded := normalize.DecodeTags(text)
+		if normalize.ForDLP(decoded) == normalize.ForDLP(text) {
+			continue
 		}
-		for _, match := range decoded {
+		count := len(views)
+		if count > maxDecodeCandidates-count || cost > 0 && count > (maxDecodeTotalBytes-totalBytes)/cost {
+			return append(matches, DLPMatch{PatternName: uninspectableEncodedContentMatch().PatternName})
+		}
+		for _, prior := range views[:count] {
+			next := append([]fragment(nil), prior...)
+			next[i].data = []byte(decoded)
+			views = append(views, next)
+			totalBytes += cost
+		}
+	}
+	byPattern := make(map[string][]DLPMatch, len(matches))
+	for _, match := range matches {
+		byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+	}
+	for _, view := range views[1:] {
+		for _, match := range scanOneFragmentContinuityView(ctx, sc, view, memo, stream, true) {
 			if slices.ContainsFunc(byPattern[match.PatternName], func(prior DLPMatch) bool {
 				return prior.Matched == match.Matched && prior.Warn == match.Warn && slices.EqualFunc(prior.Contributors, match.Contributors, bytes.Equal)
 			}) {
@@ -911,12 +933,12 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 			matches = append(matches, match)
 			byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
 		}
-		break
 	}
+
 	return matches
 }
 
-func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string, unicodeTags bool) []DLPMatch {
+func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string, tagView bool) []DLPMatch {
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}
@@ -925,9 +947,6 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	ranges := make([]fragmentRange, 0, len(fragments))
 	for _, f := range fragments {
 		payload := f.data
-		if unicodeTags {
-			payload = []byte(normalize.DecodeTags(string(payload)))
-		}
 		normalized, stable := normalizeFragmentForDLP(payload)
 		if !stable {
 			// Scanner spans index another normalization pass. If the bounded
@@ -941,7 +960,7 @@ func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments [
 	}
 
 	text := string(buf)
-	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: unicodeTags}
+	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: tagView}
 	if memo != nil && memo.lookup(key, text) {
 		return nil
 	}

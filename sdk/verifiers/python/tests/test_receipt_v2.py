@@ -833,6 +833,10 @@ def test_unicode_tags_source_span_verifies(tmp_path: Path) -> None:
         "invisible_spaced:for_matching:unicode_tags_decoded",
         "vowel_fold:for_matching:unicode_tags_decoded",
         "dlp_normalized:unicode_tags",
+        "leetspeak:for_matching:unicode_tags_decoded",
+        "leetspeak:for_matching:base64_decoded",
+        "leetspeak:for_matching:hex_decoded",
+        "dlp_normalized:unicode_tags:url_userinfo_username_escaped",
     ):
         receipt = json.loads(VALID_SPANNED_V2.read_text())
         span = receipt["payload"]["source_spans"][0]

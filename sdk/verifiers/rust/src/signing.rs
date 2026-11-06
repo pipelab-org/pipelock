@@ -674,6 +674,9 @@ fn valid_normalized_view(view: &str) -> bool {
             | "for_matching:unicode_tags_decoded"
             | "invisible_spaced:for_matching:unicode_tags_decoded"
             | "vowel_fold:for_matching:unicode_tags_decoded"
+            | "leetspeak:for_matching:unicode_tags_decoded"
+            | "leetspeak:for_matching:base64_decoded"
+            | "leetspeak:for_matching:hex_decoded"
             | "dlp_normalized"
     ) || view
         .strip_prefix("dlp_normalized:")

@@ -1733,7 +1733,7 @@ func TestTestReceiptSignatureShape(t *testing.T) {
 
 func TestUnicodeTagsSourceSpan(t *testing.T) {
 	t.Parallel()
-	for _, view := range []string{receipt.NormalizedViewUnicodeTagsDecoded, "invisible_spaced:" + receipt.NormalizedViewUnicodeTagsDecoded, "vowel_fold:" + receipt.NormalizedViewUnicodeTagsDecoded} {
+	for _, view := range []string{"leetspeak:for_matching:unicode_tags_decoded", "leetspeak:for_matching:base64_decoded", "leetspeak:for_matching:hex_decoded", receipt.NormalizedViewUnicodeTagsDecoded, "invisible_spaced:" + receipt.NormalizedViewUnicodeTagsDecoded, "vowel_fold:" + receipt.NormalizedViewUnicodeTagsDecoded} {
 		span := validSourceSpan(t)
 		span.SourceKind = receipt.SourceKindHTTPResponse
 		span.NormalizedView = view

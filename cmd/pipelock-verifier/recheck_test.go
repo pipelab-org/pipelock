@@ -5,12 +5,15 @@ package main
 
 import (
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestTransformProfileV1Fixtures(t *testing.T) {
@@ -397,5 +400,92 @@ func TestRecheckReport_StrengthIsDistinguishable(t *testing.T) {
 	}
 	if exact.Overall == occurrence.Overall {
 		t.Fatalf("exact and occurrence-only collapsed to the same verdict %q", exact.Overall)
+	}
+}
+
+func TestUnicodeTagsReviewCompositeView(t *testing.T) {
+	source := "prefix \U000e0041\U000e0025\U000e0032\U000e0030\U000e0042 suffix"
+	got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags:url_userinfo_username_escaped")
+	if err != nil || got != "prefix A%20B suffix" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestUnicodeTagsReviewCompositeOrder(t *testing.T) {
+	source := "%F3%A0%81%81%F3%A0%80%A5%F3%A0%80%B2%F3%A0%80%B0%F3%A0%81%82"
+	got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags_decoded:url_decoded:url_userinfo_username_escaped")
+	if err != nil || got != "A%20B" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestUnicodeTagsReviewSharedReceipt(t *testing.T) {
+	path := filepath.Join("..", "..", "sdk", "verifiers", "fixtures", "unicode-tags-receipt.json")
+	key := "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+	stdout, stderr, code := runRoot(t, "receipt", "--key", key, "--json", path)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+}
+
+func TestUnicodeTagsReviewUserinfoReplay(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "AKIA" + "QWERTYUIOPASDFGH" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	source := "https://" + url.User(tags.String()).String() + "@api.vendor.example/"
+	result := sc.ScanTextForDLP(t.Context(), source)
+	label := "dlp_normalized:unicode_tags_decoded:url_userinfo_username_escaped"
+	for _, m := range result.Matches {
+		span := m.Span()
+		if span.ViewLabel != label {
+			continue
+		}
+		view, err := reproduceSpanView(source, label)
+		if err != nil || span.ByteEnd > len(view) || span.ByteStart < 0 || view[span.ByteStart:span.ByteEnd] != "AKIA"+"QWERTYUIOPASDFGH" {
+			t.Fatalf("label=%s span=%+v view=%q err=%v", label, span, view, err)
+		}
+		return
+	}
+	t.Fatalf("missing producer label %s: %+v", label, result.Matches)
+}
+
+func TestUnicodeTagsReviewUserinfoSources(t *testing.T) {
+	for _, tc := range []struct{ name, source, stage, want string }{
+		{"escaped username", "https://alpha%20beta@api.vendor.example/path", "url_userinfo_username_escaped", "alpha%20beta"},
+		{"password", "https://alpha:beta%20gamma@api.vendor.example/", "url_userinfo_password_escaped", "beta%20gamma"},
+		{"joined pair", "https://alpha%20beta:gamma%20delta@api.vendor.example/", "url_userinfo", "alpha beta:gamma delta"},
+		{"component", "alpha%20beta", "url_userinfo_username_escaped", "alpha%20beta"},
+		{"no userinfo", "https://api.vendor.example/path", "url_userinfo_username_escaped", "https://api.vendor.example/path"},
+		{"raw unicode", "https://\U000e0041@api.vendor.example/path?x=y", "url_userinfo_username_escaped", "\U000e0041"},
+		{"malformed joined pair", "https://alpha%zz:beta%zz@api.vendor.example/", "url_userinfo", "alpha%zz:beta%zz"},
+		{"malformed no userinfo", "https://api.vendor.example/%zz", "url_userinfo_username_escaped", "https://api.vendor.example/%zz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reproduceTagUserinfoSource(tc.source, tc.stage); got != tc.want {
+				t.Fatalf("got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnicodeTagsReviewLeetspeakRecheck(t *testing.T) {
+	for _, tc := range []struct{ source, view string }{
+		{"\U000e0031\U000e0067\U000e006e\U000e0030\U000e0072\U000e0065", "leetspeak:for_matching:unicode_tags_decoded"},
+		{"MWduMHJl", "leetspeak:for_matching:base64_decoded"},
+		{"31676e307265", "leetspeak:for_matching:hex_decoded"},
+	} {
+		got, err := reproduceSpanView(tc.source, tc.view)
+		if err != nil || got != "ignore" {
+			t.Fatalf("view=%s got=%q err=%v", tc.view, got, err)
+		}
+	}
+	if _, err := reproduceSpanView("source", "leetspeak:unsupported"); err == nil {
+		t.Fatal("unsupported nested view accepted")
 	}
 }

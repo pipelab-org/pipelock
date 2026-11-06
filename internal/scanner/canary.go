@@ -152,6 +152,11 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 		}
 		label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+		if d.encoding == encodingUnicodeTags {
+			if collapsed := canonicalizeCanaryText(d.text); collapsed != "" && collapsed != d.text {
+				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, true, label)...)
+			}
+		}
 		// A decimal-code spelling can itself arrive wrapped in another
 		// encoding; the known-value search runs on every decoded view, not
 		// only the first, for the same reason ordinary token matching does.
@@ -173,6 +178,11 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 				}
 				label := spanViewLabel(d.encoding+"_decoded", view.viewLabel)
 				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+				if d.encoding == encodingUnicodeTags {
+					if collapsed := canonicalizeCanaryText(d.text); collapsed != "" && collapsed != d.text {
+						matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, true, label)...)
+					}
+				}
 				matches = append(matches, s.matchCanaryDecimalView(d.text, label)...)
 			}
 			if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {

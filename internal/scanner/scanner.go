@@ -3123,10 +3123,63 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 		collected = append(collected, htmlViews...)
 		complete = complete && htmlComplete
 	}
+	// Existing decode results retain their admission order and budget. Tag
+	// segments expand afterward under the same ceilings, so extra views cannot
+	// displace a finding from the original graph.
+	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound)
+	collected = append(collected, tagViews...)
+	complete = complete && tagComplete
 	if len(collected) == 0 {
 		return nil, complete
 	}
 	return slices.Clone(collected), complete
+}
+
+// decodeTagSegmentViews discovers segments in every tag view, including tags
+// inside encoded segments and additional tag layers revealed during the walk.
+// Its queue is iterative; each distinct root and decoded result spends the
+// existing candidate and byte budgets before it contributes another expansion.
+func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
+	var queue []string
+	for _, d := range prior {
+		if d.encoding == encodingUnicodeTags {
+			queue = append(queue, d.text)
+		}
+	}
+	var out []decodedResult
+	consumed := 0
+	complete := true
+	for head := 0; head < len(queue); head++ {
+		for _, view := range textDLPEncodingSegmentViews(normalize.ForDLP(queue[head])) {
+			for _, segment := range textDLPSegments(view.text) {
+				if len(segment) < max(minPrefix, 10) || seen.has(segment) {
+					continue
+				}
+				if len(out) >= maxDecodeCandidates || len(segment) > maxDecodeTotalBytes-consumed {
+					return out, false
+				}
+				seen.add(segment)
+				before := len(out)
+				out = append(out, decodedResult{segment, encodingUnicodeTags})
+				var walked bool
+				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out)
+				complete = complete && walked
+				for i := before; i < len(out); i++ {
+					if len(out[i].text) > maxDecodeTotalBytes-consumed {
+						return out[:i], false
+					}
+					consumed += len(out[i].text)
+					if out[i].encoding == encodingUnicodeTags {
+						queue = append(queue, out[i].text)
+					}
+				}
+				if !walked {
+					return out, false
+				}
+			}
+		}
+	}
+	return out, complete
 }
 
 // runDecodeWalk calls the walk for the scan direction directly, so a caller's
@@ -3143,7 +3196,7 @@ func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *de
 // expansions cost no additional recursive budget. The initial input has
 // already been bounded by the caller's transport limit. HTML roots use the
 // same admission rule and their own recursive budget. Admitted views are
-// appended to out, which must be empty.
+// appended to out; existing entries retain their candidate admission slots.
 func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
 	consumed := 0
 	freeRoots := len(queue)

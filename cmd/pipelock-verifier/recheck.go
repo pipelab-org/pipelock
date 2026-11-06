@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const transformProfileV1 = "pipelock-transform-v1"
@@ -169,6 +171,13 @@ func newRecheckReport(result recheckResult, signatureVerified bool) recheckRepor
 }
 
 func reproduceSpanView(source, view string) (string, error) {
+	if strings.HasPrefix(view, "leetspeak:") {
+		base, err := reproduceSpanView(source, strings.TrimPrefix(view, "leetspeak:"))
+		if err != nil {
+			return "", err
+		}
+		return normalize.Leetspeak(base), nil
+	}
 	switch {
 	case view == contractreceipt.NormalizedViewSanitizedTarget:
 		return source, nil
@@ -189,6 +198,21 @@ func reproduceSpanView(source, view string) (string, error) {
 	case view == contractreceipt.NormalizedViewDLPNormalized+":unicode_tags":
 		return normalize.ForDLP(normalize.DecodeTags(source)), nil
 	case view == contractreceipt.NormalizedViewDLPNormalized || strings.HasPrefix(view, "dlp_normalized:"):
+		stages := strings.Split(view, ":")
+		for i := len(stages) - 1; i > 0; i-- {
+			switch stages[i] {
+			case "unicode_tags", "unicode_tags_decoded":
+				source = normalize.DecodeTags(scanner.IterativeDecode(source))
+			case "url_userinfo_username_escaped", "url_userinfo_username", "url_userinfo_password_escaped", "url_userinfo_password", "url_userinfo":
+				if strings.Contains(view, ":unicode_tags") {
+					source = reproduceTagUserinfoSource(source, stages[i])
+				}
+			case "url_decoded":
+				if strings.Contains(view, ":unicode_tags") {
+					source = scanner.IterativeDecode(source)
+				}
+			}
+		}
 		return normalize.ForDLP(source), nil
 	case view == contractreceipt.NormalizedViewBase64Decoded:
 		decoded, err := decodeWholeBase64(source)
@@ -205,6 +229,45 @@ func reproduceSpanView(source, view string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported normalized_view %q", view)
 	}
+}
+
+// reproduceTagUserinfoSource selects the component before decoding its tag
+// carrier. The source may be a URL or an already selected component. A raw
+// Unicode userinfo spelling follows the scanner's lenient authority boundary.
+func reproduceTagUserinfoSource(source, stage string) string {
+	var user, second string
+	var hasSecond bool
+	if parsed, err := url.Parse(source); err == nil && parsed.User != nil {
+		user, second, hasSecond = strings.Cut(parsed.User.String(), ":")
+	} else {
+		_, authority, present := strings.Cut(source, "://")
+		if !present {
+			return source
+		}
+		if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		at := strings.LastIndexByte(authority, '@')
+		if at < 0 {
+			return source
+		}
+		user, second, hasSecond = strings.Cut(authority[:at], ":")
+	}
+	if strings.Contains(stage, "password") {
+		return second
+	}
+	if stage == "url_userinfo" && hasSecond {
+		username, err := url.PathUnescape(user)
+		if err != nil {
+			username = user
+		}
+		password, err := url.PathUnescape(second)
+		if err != nil {
+			password = second
+		}
+		return username + ":" + password
+	}
+	return user
 }
 
 func decodeWholeBase64(source string) (string, error) {

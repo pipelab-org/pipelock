@@ -445,20 +445,22 @@ func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponse
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
-func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
+func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) (out responseMatchSet) {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
 	if decoded := normalize.DecodeTags(content); decoded != content {
 		if found := s.matchDecodedCoreNormalized(decoded, ViewUnicodeTagsDecoded, suppress); len(found.matches) > 0 {
-			return found
+			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
 		}
 		if found := s.matchDecodedCoreResponseRecursive(normalize.ForMatching(decoded), depth+1, suppress); len(found.matches) > 0 {
-			return found
+			return mapResponseTransformSources(found, content, ViewUnicodeTagsDecoded)
 		}
 	}
 	if normalize.ContainsTags(content) {
+		source := content
 		content = normalize.ForMatching(content)
+		defer func() { out = mapResponseTransformSources(out, source, ViewForMatching) }()
 	}
 
 	// Strategy 1: whole-content decode (strip whitespace first).
@@ -529,6 +531,11 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 	if spaced != normalized {
 		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
 			return responseMatchSet{matches: matches, content: spaced}
+		}
+	}
+	if leeted := normalize.Leetspeak(normalized); leeted != normalized {
+		if matches := filterCoreResponsePass(leeted, "", matchPatternsPreFiltered(s.core.responsePreFilter, s.core.responsePatterns, leeted), spanViewLabel("leetspeak", decodedViewLabel), suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: leeted}
 		}
 	}
 	if len(s.core.responseOptSpacePatterns) > 0 {

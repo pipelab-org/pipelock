@@ -808,7 +808,7 @@ func clonePacket(t *testing.T, p auditpacket.Packet) auditpacket.Packet {
 }
 
 func TestUnicodeTagsReceiptViews(t *testing.T) {
-	for _, view := range []string{"for_matching:unicode_tags_decoded", "invisible_spaced:for_matching:unicode_tags_decoded", "vowel_fold:for_matching:unicode_tags_decoded"} {
+	for _, view := range []string{"leetspeak:for_matching:unicode_tags_decoded", "leetspeak:for_matching:base64_decoded", "leetspeak:for_matching:hex_decoded", "for_matching:unicode_tags_decoded", "invisible_spaced:for_matching:unicode_tags_decoded", "vowel_fold:for_matching:unicode_tags_decoded"} {
 		t.Run(view, func(t *testing.T) {
 			_, packet := loadExample(t)
 			setAuditPacketSourceSpan(&packet, func(span *auditpacket.SourceSpan) {
