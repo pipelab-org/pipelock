@@ -304,11 +304,14 @@ class TestPackageSharding(unittest.TestCase):
 
     def test_paired_budget_distinguishes_growth_from_inherited_debt(self) -> None:
         budget = SHARD_BUDGET_SECONDS
+        # Only a change that takes a shard over budget fails. Growth on a base
+        # that is already over is variance-sized evidence, so it warns.
         for base_seconds, head_seconds, want in (
             (budget + 100, budget + 100, 0),
             (budget + 100, budget + 50, 0),
-            (budget + 100, budget + 101, 1),
+            (budget + 100, budget + 101, 0),
             (budget - 10, budget + 1, 1),
+            (budget, budget + 1, 1),
             (budget - 10, budget, 0),
         ):
             with self.subTest(base=base_seconds, head=head_seconds), \
@@ -320,6 +323,8 @@ class TestPackageSharding(unittest.TestCase):
                 self.assertIn(f"delta={head_seconds - base_seconds:+.3f}s", out.getvalue())
                 if base_seconds > budget:
                     self.assertIn("inherited-debt=", out.getvalue())
+                warned = "Shard already over budget" in out.getvalue()
+                self.assertEqual(warned, base_seconds > budget and head_seconds > base_seconds)
 
     def test_new_test_cost_is_not_discounted_by_the_unknown_weight_floor(self) -> None:
         # Both predictions use one fixed inventory, packing and unknown-name

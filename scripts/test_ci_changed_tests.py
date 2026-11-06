@@ -211,6 +211,22 @@ class ChangedTestRunnerTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     planner.runnable_changed_tests(self.fixture_tests(), "")
 
+    def test_file_excluded_by_this_build_is_left_to_the_other_edition(self):
+        # An enterprise-only test file in a package that also builds without
+        # tags is go list's IgnoredGoFiles in the OSS run, not unclassified.
+        excluded = {**self.fixture_tests()[0], "file": "internal/proxy/lib_enterprise_test.go", "name": "TestEnterprise"}
+        cases = (
+            ([excluded], {}),
+            ([self.fixture_tests()[0], excluded], {self.package: ["TestChanged"]}),
+        )
+        for tests, want in cases:
+            info = {"ImportPath": self.package, "TestGoFiles": ["lib_test.go"],
+                    "IgnoredGoFiles": ["lib_enterprise_test.go"]}
+            with self.subTest(tests=[test["name"] for test in tests]), \
+                 patch.object(planner.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, stdout=json.dumps(info))):
+                self.assertEqual(planner.runnable_changed_tests(tests, ""), want)
+
     def test_existing_changed_test_requires_base_package(self):
         with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
              patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \

@@ -634,8 +634,17 @@ def check_budget(
     plan = prediction_plan(tags) if plan is None else plan
     loads = predicted_loads(tags, overrides, plan)
     base = predicted_loads(tags, base_overrides, plan) if base_overrides is not None else None
+    # Paired runs fail only a shard this change takes over budget. A base that
+    # is already over carries debt the change didn't create; with no sourced
+    # noise band, failing any measured increase there would fail unchanged
+    # tests on run-to-run variance, so a further increase is reported instead.
     over = {shard: load for shard, load in loads.items()
-            if load > budget and (base is None or load > base[shard])}
+            if load > budget and (base is None or base[shard] <= budget)}
+    if base is not None:
+        for shard, load in loads.items():
+            if base[shard] > budget and load > base[shard]:
+                print(f"::warning title=Shard already over budget::{shard} base={base[shard]:.0f}s "
+                      f"head={load:.0f}s against the {budget:.0f}s budget; the debt predates this change")
     for shard in SHARDS:
         mark = "  OVER" if shard in over else ""
         comparison = ""
@@ -651,7 +660,7 @@ def check_budget(
     if over:
         print(
             f"ci_test_packages.py: {len(over)} shard(s) predicted over the {budget:.0f}s budget "
-            f"(tags={tags or 'none'})" + (" and increased from measured base" if base is not None else "")
+            f"(tags={tags or 'none'})" + (" and pushed over by this change" if base is not None else "")
             + "; reduce test cost or review the shard allocation",
             file=sys.stderr,
         )
@@ -695,11 +704,22 @@ def runnable_changed_tests(
         if not isinstance(info.get("ImportPath"), str) or not info["ImportPath"]:
             raise ValueError(f"go list returned no import path for {package}")
         files = set(info.get("TestGoFiles", []) + info.get("XTestGoFiles", []))
-        names = sorted({test["name"] for test in tests
-                        if test["package"] == package and Path(test["file"]).name in files})
+        # A file this build's constraints exclude (an enterprise-only test in
+        # an OSS run) is go list's IgnoredGoFiles; the other edition measures
+        # it. A file in neither list is unclassified and fails closed.
+        ignored = set(info.get("IgnoredGoFiles", []))
+        names: set[str] = set()
+        for test in tests:
+            if test["package"] != package:
+                continue
+            name = Path(test["file"]).name
+            if name in files:
+                names.add(test["name"])
+            elif name not in ignored:
+                raise ValueError(f"go list did not classify {test['file']} for {package}")
         if not names:
-            raise ValueError(f"go list did not classify the selected test files for {package}")
-        selected[info["ImportPath"]] = names
+            continue
+        selected[info["ImportPath"]] = sorted(names)
         if import_paths is not None:
             import_paths[package] = info["ImportPath"]
     return selected
