@@ -52,11 +52,18 @@ func (c *upstreamCrossMessage) enforce(ctx context.Context, r *wsRelay, log *aud
 	frame := c.fields.ParseFrame(msg)
 	reported := false
 	if len(c.tail) > 0 {
-		blocked, hit := r.enforceUpstreamCrossMessage(ctx, log, string(c.tail)+" ", string(msg))
-		if blocked {
-			return true
+		// Applications may concatenate messages directly or separate words.
+		// Inspect both interpretations without changing delivered bytes.
+		for _, separator := range []string{"", " "} {
+			blocked, hit := r.enforceUpstreamCrossMessage(ctx, log, string(c.tail)+separator, string(msg))
+			if blocked {
+				return true
+			}
+			if hit {
+				reported = true
+				break
+			}
 		}
-		reported = hit
 	}
 	if !reported {
 		for _, view := range c.fields.Views(frame) {
@@ -95,8 +102,7 @@ func (r *wsRelay) upstreamCrossMessageAction() string {
 	return decide.UpgradeAction(r.scanner.ResponseAction(), r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 }
 
-// enforceUpstreamCrossMessage scans tail followed directly by msg (separate
-// raw messages pass a tail ending in a space) and acts only on
+// enforceUpstreamCrossMessage scans tail followed directly by msg and acts only on
 // patterns neither part matches alone; those were already handled by the
 // per-message scan. A cross-message finding cannot be stripped because the
 // first half was already delivered, so every action except warn closes.

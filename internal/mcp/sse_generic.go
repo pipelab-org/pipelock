@@ -158,12 +158,12 @@ func ScanGenericSSEStreamWithOptions(
 	reader := transport.NewSSEReader(body)
 	var tail string
 	var cardTail string
-	var injectionTail string
+	var injectionTail sseInjectionTail
 	var payloadTail string
 	var cardPayloadTail string
 	var numberTail string
 	var numberCardTail string
-	var payloadInjectionTail string
+	var payloadInjectionTail sseInjectionTail
 	// JSON providers stream deltas whose text the client reassembles per
 	// field; the raw tails above cannot see across the JSON envelope that
 	// sits between two halves. These keep each field's own recent content.
@@ -311,45 +311,29 @@ func ScanGenericSSEStreamWithOptions(
 		}
 
 		resetInjectionTail := false
-		if !skipTailInjection && injectionTail != "" {
-			combined := injectionTail + " " + rollingInjectionText
-			tailInjectResult := sc.ScanResponseWithSuppress(ctx, combined, opts.Target, opts.Suppress)
-			observedCore.record(tailInjectResult)
-			if tailInjectResult.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
+		if !skipTailInjection {
+			views := injectionTail.views(rollingInjectionText)
+			if idDataInjectionText != "" {
+				views = append(views, injectionTail.views(idDataInjectionText)...)
 			}
-			if tailInjectResult.Clean && idDataInjectionText != "" {
-				tailInjectResult = sc.ScanResponseWithSuppress(ctx, injectionTail+" "+idDataInjectionText, opts.Target, opts.Suppress)
-				observedCore.record(tailInjectResult)
-				if tailInjectResult.Failed() {
-					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailInjectResult.ScanError)
+			views = append(views, payloadInjectionTail.views(payloadText)...)
+			for _, view := range views {
+				result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
+				observedCore.record(result)
+				if result.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 				}
-			}
-			if !tailInjectResult.Clean {
+				if result.Clean {
+					continue
+				}
 				findingErr := fmt.Errorf("%w: cross-event injection: %s",
-					sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(tailInjectResult.Matches))
+					sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
 				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
 					onFinding(findingErr)
 					resetInjectionTail = true
-				} else {
-					return findingErr
+					break
 				}
-			}
-		}
-		if !skipTailInjection && !resetInjectionTail && payloadInjectionTail != "" {
-			result := sc.ScanResponseWithSuppress(ctx, payloadInjectionTail+" "+payloadText, opts.Target, opts.Suppress)
-			observedCore.record(result)
-			if result.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
-			}
-			if !result.Clean {
-				findingErr := fmt.Errorf("%w: cross-event injection: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
-				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-					onFinding(findingErr)
-					resetInjectionTail = true
-				} else {
-					return findingErr
-				}
+				return findingErr
 			}
 		}
 
@@ -549,14 +533,14 @@ func ScanGenericSSEStreamWithOptions(
 					return err
 				}
 				if i == 0 {
-					injectionTail = next
+					injectionTail = sseInjectionTail{spaced: next, adjacent: next}
 				} else {
-					payloadInjectionTail = next
+					payloadInjectionTail = sseInjectionTail{spaced: next, adjacent: next}
 				}
 			}
 		} else {
-			injectionTail = advanceSSERollingTail(injectionTail, []byte(rollingInjectionText), resetInjectionTail, " ")
-			payloadInjectionTail = advanceSSERollingTail(payloadInjectionTail, event, resetInjectionTail, " ")
+			injectionTail.advance([]byte(rollingInjectionText), resetInjectionTail)
+			payloadInjectionTail.advance(event, resetInjectionTail)
 		}
 		if warnedFinding != nil && opts.ConfirmFinding != nil {
 			if err := opts.ConfirmFinding(warnedFinding); err != nil {
@@ -794,6 +778,30 @@ func sseIDDataEventText(canonical, separator string) string {
 		return ""
 	}
 	return strings.Join(values, separator)
+}
+
+// sseInjectionTail retains both application interpretations of event boundaries.
+// Each view uses the same bounded rolling tail as the other SSE scanners.
+type sseInjectionTail struct {
+	spaced   string
+	adjacent string
+}
+
+func (t sseInjectionTail) views(current string) []string {
+	if t.spaced == "" && t.adjacent == "" {
+		return nil
+	}
+	spaced := t.spaced + " " + current
+	adjacent := t.adjacent + current
+	if spaced == adjacent {
+		return []string{spaced}
+	}
+	return []string{spaced, adjacent}
+}
+
+func (t *sseInjectionTail) advance(current []byte, reset bool) {
+	t.spaced = advanceSSERollingTail(t.spaced, current, reset, " ")
+	t.adjacent = advanceSSERollingTail(t.adjacent, current, reset, "")
 }
 
 func advanceSSERollingTail(tail string, event []byte, reset bool, separator string) string {

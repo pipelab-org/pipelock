@@ -1369,7 +1369,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 	}
 
 	reader := transport.NewSSEReader(body)
-	var injectionTail string
+	var injectionTail sseInjectionTail
 	var dlpTail string
 	var cardTail string
 	var numberTail string
@@ -1460,21 +1460,22 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 				sseFindingCause(ErrA2AStreamFinding, session.FindingDLP), sseDLPMatchNames(dlpResult.Matches))
 		}
 
-		// Rolling tails: injection keeps word boundaries; DLP text joins without
-		// a separator so credentials split across events remain visible. The card
+		// Rolling injection tails inspect both word-separated and adjacent
+		// event text. DLP text joins without a separator. The card
 		// view separates a seam only when it touches a JSON number.
 		currentText, currentCardText, currentFirstNumber, currentLastNumber, currentTruncated := extractTextViewsFromEvent(event)
 		if currentTruncated {
 			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
-		if injectionTail != "" && currentText != "" {
-			combined := injectionTail + " " + currentText
-			tailResult := sc.ScanResponse(ctx, combined)
-			if !tailResult.Clean {
-				if tailResult.Failed() {
-					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
+		if currentText != "" {
+			for _, view := range injectionTail.views(currentText) {
+				tailResult := sc.ScanResponse(ctx, view)
+				if !tailResult.Clean {
+					if tailResult.Failed() {
+						return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
+					}
+					return fmt.Errorf("%w: cross-event injection detected", sseFindingCause(ErrA2AStreamFinding, session.FindingWording))
 				}
-				return fmt.Errorf("%w: cross-event injection detected", sseFindingCause(ErrA2AStreamFinding, session.FindingWording))
 			}
 		}
 		if dlpTail != "" && currentText != "" {
@@ -1550,7 +1551,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		// Update rolling tails.
 		if currentText != "" {
 			current := []byte(currentText)
-			injectionTail = advanceSSERollingTail(injectionTail, current, false, " ")
+			injectionTail.advance(current, false)
 			dlpTail = advanceSSERollingTail(dlpTail, current, false, "")
 			cardTail = advanceSSERollingTail(cardTail, []byte(currentCardText), false, "")
 			previousLastNumber = currentLastNumber
