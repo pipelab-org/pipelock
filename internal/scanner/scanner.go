@@ -3320,8 +3320,13 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (R
 }
 
 func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, now time.Time) (result Result, warnMatches []WarnMatch) {
-	priorKeywordUnit := decodes.keywordUnit
-	defer func() { decodes.keywordUnit = priorKeywordUnit }()
+	if decodes == nil && s.hasDLPKeywords() {
+		decodes = &decodingMemo{}
+	}
+	if decodes != nil {
+		priorKeywordUnit := decodes.keywordUnit
+		defer func() { decodes.keywordUnit = priorKeywordUnit }()
+	}
 	if s.hasDLPKeywords() {
 		decodes.keywordMode = true
 		decodes.keywordUnit = config.DLPKeywordContext(parsed.String())

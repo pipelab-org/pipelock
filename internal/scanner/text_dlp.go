@@ -860,6 +860,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 // not refused at a decode bound: exfiltration is an outbound threat, and
 // large legitimate downloads must keep their delivery contract.
 func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	if decodes == nil && s.hasDLPKeywords() {
+		decodes = &decodingMemo{}
+	}
 	if decodes != nil {
 		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
 	}
@@ -885,8 +888,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 	cleaned := decodes.normalize(text)
-	priorKeywordUnit := decodes.keywordUnit
-	defer func() { decodes.keywordUnit = priorKeywordUnit }()
+	if decodes != nil {
+		priorKeywordUnit := decodes.keywordUnit
+		defer func() { decodes.keywordUnit = priorKeywordUnit }()
+	}
 	if s.hasDLPKeywords() {
 		decodes.keywordMode = true
 		decodes.keywordUnit = config.DLPKeywordContext(text)
