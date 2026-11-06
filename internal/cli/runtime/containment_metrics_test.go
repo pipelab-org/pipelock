@@ -19,7 +19,9 @@ import (
 )
 
 func newContainmentMetricsTestServer(t *testing.T, metricsListen, webhookURL string) (*Server, *syncBuffer) {
-	return newContainmentMetricsTestServerWithFetch(t, metricsListen, webhookURL, "")
+	s, output := newContainmentMetricsTestServerWithFetch(t, metricsListen, webhookURL, "")
+	t.Cleanup(s.cleanup)
+	return s, output
 }
 
 func newContainmentMetricsTestServerWithFetch(t *testing.T, metricsListen, webhookURL, fetchListen string) (*Server, *syncBuffer) {
@@ -50,8 +52,60 @@ func newContainmentMetricsTestServerWithFetch(t *testing.T, metricsListen, webho
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	t.Cleanup(func() { s.cleanup() })
 	return s, buf
+}
+
+// startContainmentMetricsTestServer joins Start before earlier test cleanups
+// restore the environment or remove its config. Start owns server resource cleanup.
+func startContainmentMetricsTestServer(t *testing.T, s *Server) <-chan error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	returned := make(chan struct{})
+	t.Cleanup(func() {
+		// Cancel the parent too: Shutdown is a no-op if Start hasn't run yet.
+		cancel()
+		select {
+		case <-returned:
+		case <-time.After(testwait.Deadline(10 * time.Second)):
+			t.Error("contained proxy Start did not return before cleanup")
+		}
+	})
+	go func() {
+		defer close(returned)
+		done <- s.Start(ctx)
+	}()
+	return done
+}
+
+func TestServer_ContainmentMetricsCleanupWaitsForStart(t *testing.T) {
+	for _, waitForStartup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("wait_for_startup_%t", waitForStartup), func(t *testing.T) {
+			t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
+			fetchListen := testport.ListenAddrs(t, 1)[0]
+			s, _ := newContainmentMetricsTestServerWithFetch(t, "", "", fetchListen)
+			var done <-chan error
+			// Registered first, this must run after the cancel-and-join cleanup.
+			t.Cleanup(func() {
+				select {
+				case <-done:
+				default:
+					t.Error("test cleanup ran before Start returned")
+				}
+			})
+			done = startContainmentMetricsTestServer(t, s)
+			if waitForStartup {
+				select {
+				case <-s.startupNotified():
+				case err := <-done:
+					t.Fatalf("Start returned before startup: %v", err)
+				case <-time.After(testwait.Deadline(3 * time.Second)):
+					t.Fatal("timed out waiting for contained proxy startup")
+				}
+			}
+			// Return without Shutdown, as an assertion failure would.
+		})
+	}
 }
 
 func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) {
@@ -66,12 +120,10 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 	fetchListen := testport.ListenAddrs(t, 1)[0]
 	s, _ := newContainmentMetricsTestServerWithFetch(t, metricsListen, "", fetchListen)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
+	done := startContainmentMetricsTestServer(t, s)
 
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 200 * time.Millisecond}
+	t.Cleanup(client.CloseIdleConnections)
 	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+fetchListen+"/health", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -90,6 +142,7 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 		return resp.StatusCode == http.StatusOK
 	}, "contained proxy to start while unsafe metrics port is blocked")
 
+	client.CloseIdleConnections()
 	if err := s.Shutdown(context.Background()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
@@ -98,7 +151,7 @@ func TestServer_StartContainmentUnsafeMetricsSkipsBlockedListener(t *testing.T) 
 		if startErr != nil {
 			t.Fatalf("Start: %v", startErr)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(6 * time.Second)):
 		t.Fatal("timed out waiting for contained proxy shutdown")
 	}
 }

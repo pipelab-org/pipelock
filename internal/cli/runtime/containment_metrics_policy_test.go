@@ -157,11 +157,7 @@ containment:
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	t.Cleanup(s.cleanup)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
+	done := startContainmentMetricsTestServer(t, s)
 	dialer := &net.Dialer{LocalAddr: &net.TCPAddr{IP: net.ParseIP(host)}}
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -170,6 +166,7 @@ containment:
 		},
 		Timeout: time.Second,
 	}
+	t.Cleanup(client.CloseIdleConnections)
 	get := func(path string) int {
 		t.Helper()
 		status := 0
