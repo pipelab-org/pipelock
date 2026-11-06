@@ -53,7 +53,6 @@ func TestFullResponsePolicyTransports(t *testing.T) {
 			{name: "unexpected not modified head", unexpected304: true, method: http.MethodHead, status: http.StatusForbidden},
 		} {
 			t.Run(transport+"/"+tc.name, func(t *testing.T) {
-				t.Parallel()
 				seen := make(chan http.Header, 1)
 				handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					seen <- r.Header.Clone()

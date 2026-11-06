@@ -256,32 +256,16 @@ func inventoryAdmitHost(cfg *config.Config) {
 }
 
 func TestDecisionInventory(t *testing.T) {
-	// Keep the parent serial while its clock and environment overrides are live.
-	// Each preset owns its scanners and proxies; collect results in preset order.
+	// Deliberately serial: golden generation and per-preset state are isolated.
 	t.Setenv(config.EnvKillSwitchAPIToken, "")
 	priorClock := responseScanNow
 	responseScanNow = func() time.Time { return time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC) }
 	t.Cleanup(func() { responseScanNow = priorClock })
+	var rows []decisionInventoryRow
+	var policies []inventoryPolicyRow
 	names := append([]string{"defaults"}, presets.All...)
-	presetRows := make([][]decisionInventoryRow, len(names))
-	policies := make([]inventoryPolicyRow, len(names))
-	// Cleanup runs after parallel children, before restoring the clock above.
-	t.Cleanup(func() {
-		if t.Failed() {
-			return
-		}
-		var rows []decisionInventoryRow
-		for _, result := range presetRows {
-			rows = append(rows, result...)
-		}
-		inventoryCheckGolden(t, "decision-inventory.golden.jsonl", rows)
-		inventoryCheckGolden(t, "decision-inventory-policy.golden.jsonl", policies)
-		t.Logf("verified %d production decision rows across %d presets/defaults", len(rows), len(names))
-	})
-	for i, name := range names {
+	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			var rows []decisionInventoryRow
 			h := &inventoryHarness{scanners: make(map[string]*scanner.Scanner)}
 			cfg := config.Defaults()
 			if name != "defaults" {
@@ -322,9 +306,15 @@ func TestDecisionInventory(t *testing.T) {
 					rows = append(rows, h.mcpRows(t, resolved, base, mode.mode != config.RuntimeMCPScan)...)
 				}
 			}
-			presetRows[i], policies[i] = rows, policy
+			policies = append(policies, policy)
 		})
 	}
+	if t.Failed() {
+		return
+	}
+	inventoryCheckGolden(t, "decision-inventory.golden.jsonl", rows)
+	inventoryCheckGolden(t, "decision-inventory-policy.golden.jsonl", policies)
+	t.Logf("verified %d production decision rows across %d presets/defaults", len(rows), len(names))
 }
 
 // ScanRequest returns a string after redaction flattens the JSON error, so

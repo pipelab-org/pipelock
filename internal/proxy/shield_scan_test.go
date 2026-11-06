@@ -153,7 +153,6 @@ func TestShieldImageMediaSurface(t *testing.T) {
 		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect, TransportReverse} {
 			for _, mediaEnabled := range []bool{false, true} {
 				t.Run(name+"/"+transport+map[bool]string{false: "/media off", true: "/media on"}[mediaEnabled], func(t *testing.T) {
-					t.Parallel()
 					statuses := map[bool]int{}
 					responses := map[bool]string{}
 					for _, shieldEnabled := range []bool{false, true} {
