@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
@@ -678,17 +679,19 @@ func TestScanResponse_MatchTextTruncated(t *testing.T) {
 	}
 	s := MustNew(cfg)
 
-	// Build content with a very long match
-	padding := strings.Repeat("x ", 60)
+	// Build content with a very long match. Multibyte padding checks that the
+	// cap counts runes and keeps the leading ones, not a byte or short prefix.
+	padding := strings.Repeat("€ ", 60)
 	content := "ignore " + padding + "instructions"
 	result := s.ScanResponse(context.Background(), content)
 
 	if result.Clean {
 		t.Fatal("expected match")
 	}
+	want := string([]rune(content)[:100])
 	for _, m := range result.Matches {
-		if len(m.MatchText) > 100 {
-			t.Errorf("expected match text truncated to 100 chars, got %d", len(m.MatchText))
+		if m.MatchText != want {
+			t.Errorf("match text = %q (%d runes), want the first 100 runes %q", m.MatchText, utf8.RuneCountInString(m.MatchText), want)
 		}
 	}
 }

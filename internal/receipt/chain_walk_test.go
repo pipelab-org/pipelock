@@ -218,7 +218,10 @@ func TestEndorsedChainWalkerMatchesVerifyChainWithEndorsementsAtEveryPrefix(t *t
 			}
 			roots := [][]string{nil, {" "}}
 			if len(c.keys) > 0 {
-				roots = append(roots, c.keys[:1], c.keys)
+				roots = append(roots, c.keys[:1])
+			}
+			if len(c.keys) > 1 {
+				roots = append(roots, c.keys)
 			}
 			for _, session := range []string{c.session, "", "proxy.run.other"} {
 				for _, roots := range roots {

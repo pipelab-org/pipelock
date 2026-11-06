@@ -52,6 +52,8 @@ func TestHooks_DenyWhatThePairCheckMatched(t *testing.T) {
 	for _, h := range hooks {
 		for _, tt := range tests {
 			t.Run(h.name+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+
 				cmd := h.cmd()
 				cmd.SetArgs([]string{"hook"})
 				cmd.SetIn(bytes.NewReader([]byte(h.input(tt.command))))
