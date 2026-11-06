@@ -2490,6 +2490,7 @@ type decodedResult struct {
 
 // Encoding labels for decoded results.
 const (
+	encodingUnicodeTags     = "unicode_tags"
 	encodingHex             = "hex"
 	encodingBase64          = "base64"
 	encodingBase32          = "base32"
@@ -2795,7 +2796,14 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
+	if decoded := normalize.DecodeTags(s); decoded != s && decoded != "" {
+		out = append(out, decodedResult{decoded, encodingUnicodeTags})
+	}
 	out = appendTextEncodingViews(out, s)
+	if normalize.ContainsTags(s) {
+		// Retain soft line breaks when tags separate a textual carrier.
+		out = appendTextEncodingViews(out, normalize.StripZeroWidth(s))
+	}
 	var decodedHex []byte
 	var hexErr error
 	if minPrefix == 0 && !hexDecodes(s) {
@@ -3193,10 +3201,63 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 		collected = append(collected, htmlViews...)
 		complete = complete && htmlComplete
 	}
+	// Existing decode results retain their admission order and budget. Tag
+	// segments expand afterward under the same ceilings, so extra views cannot
+	// displace a finding from the original graph.
+	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound)
+	collected = append(collected, tagViews...)
+	complete = complete && tagComplete
 	if len(collected) == 0 {
 		return nil, complete
 	}
 	return slices.Clone(collected), complete
+}
+
+// decodeTagSegmentViews discovers segments in every tag view, including tags
+// inside encoded segments and additional tag layers revealed during the walk.
+// Its queue is iterative; each distinct root and decoded result spends the
+// existing candidate and byte budgets before it contributes another expansion.
+func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
+	var queue []string
+	for _, d := range prior {
+		if d.encoding == encodingUnicodeTags {
+			queue = append(queue, d.text)
+		}
+	}
+	var out []decodedResult
+	consumed := 0
+	complete := true
+	for head := 0; head < len(queue); head++ {
+		for _, view := range textDLPEncodingSegmentViews(normalize.ForDLP(queue[head])) {
+			for _, segment := range textDLPSegments(view.text) {
+				if len(segment) < max(minPrefix, 10) || seen.has(segment) {
+					continue
+				}
+				if len(out) >= maxDecodeCandidates || len(segment) > maxDecodeTotalBytes-consumed {
+					return out, false
+				}
+				seen.add(segment)
+				before := len(out)
+				out = append(out, decodedResult{segment, encodingUnicodeTags})
+				var walked bool
+				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out)
+				complete = complete && walked
+				for i := before; i < len(out); i++ {
+					if len(out[i].text) > maxDecodeTotalBytes-consumed {
+						return out[:i], false
+					}
+					consumed += len(out[i].text)
+					if out[i].encoding == encodingUnicodeTags {
+						queue = append(queue, out[i].text)
+					}
+				}
+				if !walked {
+					return out, false
+				}
+			}
+		}
+	}
+	return out, complete
 }
 
 // runDecodeWalk calls the walk for the scan direction directly, so a caller's
@@ -3213,7 +3274,7 @@ func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *de
 // expansions cost no additional recursive budget. The initial input has
 // already been bounded by the caller's transport limit. HTML roots use the
 // same admission rule and their own recursive budget. Admitted views are
-// appended to out, which must be empty.
+// appended to out; existing entries retain their candidate admission slots.
 func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
 	consumed := 0
 	freeRoots := len(queue)
@@ -3301,8 +3362,19 @@ func decodeEncodingsOnceInto(out []decodedResult, s string, includeURL bool, min
 // forwarded. The pieces around it are added beside the whole segment: no
 // decoder alphabet contains '#', and keeping the whole segment preserves
 // every view the slash split already produced.
-func urlPathDecodeSegments(path string) []string {
+func urlPathDecodeSegments(path, escapedPath string) []string {
 	segments := strings.Split(path, "/")
+	// Keep mixed prose's encoding segments without duplicating the ordinary
+	// slash-only path views. The delimiter contract is shared with text DLP.
+	if strings.ContainsFunc(path, func(r rune) bool { return r != '/' && isTextDLPEncodingDelimiter(r) }) {
+		segments = append(segments, textDLPSegments(path)...)
+	}
+	// RFC 3986 section 2.2: an escaped slash can be segment data. Retain
+	// escaped segments before decoding, so an encoding's '/' is not treated
+	// only as a path separator after URL parsing.
+	if escapedPath != path {
+		segments = append(segments, strings.Split(escapedPath, "/")...)
+	}
 	form, percent := urlComponentDecodes(path)
 	for _, decoded := range []string{form, percent} {
 		if decoded != "" {
@@ -3447,7 +3519,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
 	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range urlPathDecodeSegments(parsed.Path) {
+	for _, segment := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -3592,7 +3664,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 			seedTargets = append(seedTargets, dlpTarget{seedConcat.String(), "query_concat:url_decoded", ""})
 		}
 		// Decoded path segments: base64/hex/base32 encoded seed phrases in path.
-		for _, seg := range urlPathDecodeSegments(parsed.Path) {
+		for _, seg := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
 			if len(seg) < 20 {
 				continue
 			}
@@ -6491,12 +6563,24 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 	addDecoded := func(text string) {
 		for _, d := range decodes.decode(text, true) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+			if d.encoding == encodingUnicodeTags {
+				for _, segment := range textDLPSegments(decodes.normalize(d.text)) {
+					for _, nested := range decodes.decode(segment, true) {
+						targets = append(targets, dlpTarget{nested.text, dlpViewLabel(nested.encoding), ""})
+					}
+				}
+			}
 			if h := decodes.decodeHTML(d.text); h != d.text {
 				targets = append(targets, dlpTarget{h, dlpViewLabel(encodingHTML), d.text})
 			}
 		}
 	}
 	addDecoded(decoded)
+	for _, segment := range textDLPSegments(decoded) {
+		if segment != decoded {
+			addDecoded(segment)
+		}
+	}
 	// A malformed escape delimits independently encoded query runs. Keep
 	// the intact view too; this does not filter arbitrary encoding junk.
 	start := 0

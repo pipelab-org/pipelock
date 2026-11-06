@@ -91,11 +91,26 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 	}
 
 	cleaned := decodes.normalize(text)
-	if cleaned == "" {
+	if cleaned == "" && !normalize.ContainsTags(text) {
 		return nil
 	}
 
 	var matches []TextDLPMatch
+	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	if normalize.ContainsTags(text) {
+		for _, d := range decodes.decode(text, true) {
+			label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
+			normalized := decodes.normalize(d.text)
+			matches = append(matches, s.matchCanaryTokens(normalized, d.encoding, false, label)...)
+			matches = append(matches, s.matchCanaryDecimalView(normalized, label)...)
+			if collapsed := canonicalizeCanaryText(normalized); collapsed != "" && collapsed != normalized {
+				matches = append(matches, s.matchCanaryTokens(normalized, d.encoding, true, label)...)
+			}
+			if d.encoding == encodingUnicodeTags {
+				segmentViews = appendUniqueTextDLPViews(segmentViews, textDLPEncodingSegmentViews(decodes.normalize(d.text))...)
+			}
+		}
+	}
 	matches = append(matches, s.matchCanaryTokens(cleaned, "", false, ViewDLPNormalized)...)
 	matches = append(matches, s.matchCanaryDecimalView(cleaned, ViewDLPNormalized)...)
 
@@ -103,6 +118,10 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 		label := spanViewLabel("url_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(decoded, "url", false, label)...)
 		matches = append(matches, s.matchCanaryDecimalView(decoded, label)...)
+		segmentViews = appendUniqueTextDLPViews(segmentViews, textDLPEncodingSegmentViews(decoded)...)
+	}
+	if decoded := iterativePercentDecode(cleaned); decoded != cleaned {
+		segmentViews = appendUniqueTextDLPViews(segmentViews, textDLPEncodingSegmentViews(decoded)...)
 	}
 	if decoded := decodes.decodeHTML(cleaned); decoded != cleaned {
 		label := spanViewLabel("html_decoded", ViewDLPNormalized)
@@ -131,15 +150,24 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 		decodedViews = append(append([]decodedResult(nil), decodedViews...), decodes.decode(text, true)...)
 	}
 	for _, d := range decodedViews {
+		if d.encoding == encodingUnicodeTags {
+			d.text = decodes.normalize(d.text)
+			segmentViews = appendUniqueTextDLPViews(segmentViews, textDLPEncodingSegmentViews(d.text)...)
+		}
 		label := spanViewLabel(d.encoding+"_decoded", ViewDLPNormalized)
 		matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+		if d.encoding == encodingUnicodeTags {
+			if collapsed := canonicalizeCanaryText(d.text); collapsed != "" && collapsed != d.text {
+				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, true, label)...)
+			}
+		}
 		// A decimal-code spelling can itself arrive wrapped in another
 		// encoding; the known-value search runs on every decoded view, not
 		// only the first, for the same reason ordinary token matching does.
 		matches = append(matches, s.matchCanaryDecimalView(d.text, label)...)
 	}
 
-	for _, view := range textDLPEncodingSegmentViews(cleaned) {
+	for _, view := range segmentViews {
 		segments := textDLPSegments(view.text)
 		for _, seg := range segments {
 			if len(seg) < 8 {
@@ -149,8 +177,16 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 			// segment loops are separate call sites, so leaving this one
 			// single-pass would keep a query-value bypass open.
 			for _, d := range decodes.decode(seg, true) {
+				if d.encoding == encodingUnicodeTags {
+					d.text = decodes.normalize(d.text)
+				}
 				label := spanViewLabel(d.encoding+"_decoded", view.viewLabel)
 				matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, false, label)...)
+				if d.encoding == encodingUnicodeTags {
+					if collapsed := canonicalizeCanaryText(d.text); collapsed != "" && collapsed != d.text {
+						matches = append(matches, s.matchCanaryTokens(d.text, d.encoding, true, label)...)
+					}
+				}
 				matches = append(matches, s.matchCanaryDecimalView(d.text, label)...)
 			}
 			if collapsed := canonicalizeCanaryText(seg); collapsed != "" && collapsed != seg {

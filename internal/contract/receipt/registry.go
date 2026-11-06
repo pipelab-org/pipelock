@@ -177,6 +177,7 @@ const (
 	NormalizedViewVowelFold           = "vowel_fold:for_matching"
 	NormalizedViewBase64Decoded       = "for_matching:base64_decoded"
 	NormalizedViewHexDecoded          = "for_matching:hex_decoded"
+	NormalizedViewUnicodeTagsDecoded  = "for_matching:unicode_tags_decoded"
 	NormalizedViewDLPNormalized       = "dlp_normalized"
 	normalizedViewDLPNormalizedPrefix = "dlp_normalized:"
 )
@@ -359,6 +360,32 @@ func validNormalizedView(view string) bool {
 		NormalizedViewVowelFold,
 		NormalizedViewBase64Decoded,
 		NormalizedViewHexDecoded,
+		NormalizedViewUnicodeTagsDecoded,
+		"invisible_spaced:" + NormalizedViewUnicodeTagsDecoded,
+		"vowel_fold:" + NormalizedViewUnicodeTagsDecoded,
+		"leetspeak:for_matching:unicode_tags_decoded",
+		"leetspeak:for_matching:base64_decoded",
+		"leetspeak:for_matching:hex_decoded",
+		"for_matching:decimal_character_codes_decoded",
+		"invisible_spaced:for_matching:decimal_character_codes_decoded",
+		"vowel_fold:for_matching:decimal_character_codes_decoded",
+		"leetspeak:for_matching:decimal_character_codes_decoded",
+		"for_matching:octal_character_codes_decoded",
+		"invisible_spaced:for_matching:octal_character_codes_decoded",
+		"vowel_fold:for_matching:octal_character_codes_decoded",
+		"leetspeak:for_matching:octal_character_codes_decoded",
+		"for_matching:binary_character_codes_decoded",
+		"invisible_spaced:for_matching:binary_character_codes_decoded",
+		"vowel_fold:for_matching:binary_character_codes_decoded",
+		"leetspeak:for_matching:binary_character_codes_decoded",
+		"for_matching:quoted_printable_decoded",
+		"invisible_spaced:for_matching:quoted_printable_decoded",
+		"vowel_fold:for_matching:quoted_printable_decoded",
+		"leetspeak:for_matching:quoted_printable_decoded",
+		"invisible_spaced:for_matching:base64_decoded",
+		"vowel_fold:for_matching:base64_decoded",
+		"invisible_spaced:for_matching:hex_decoded",
+		"vowel_fold:for_matching:hex_decoded",
 		NormalizedViewDLPNormalized:
 		return true
 	default:

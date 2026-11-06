@@ -163,6 +163,8 @@ pub struct ReceiptReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chain_seq: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_span_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 

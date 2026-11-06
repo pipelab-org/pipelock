@@ -8,10 +8,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const transformProfileV1 = "pipelock-transform-v1"
@@ -169,6 +171,49 @@ func newRecheckReport(result recheckResult, signatureVerified bool) recheckRepor
 }
 
 func reproduceSpanView(source, view string) (string, error) {
+	if strings.HasPrefix(view, "leetspeak:") {
+		base, err := reproduceSpanView(source, strings.TrimPrefix(view, "leetspeak:"))
+		if err != nil {
+			return "", err
+		}
+		return normalize.Leetspeak(base), nil
+	}
+	for _, prefix := range []string{"invisible_spaced:", "vowel_fold:"} {
+		if strings.HasPrefix(view, prefix) && !strings.Contains(view, "unicode_tags_decoded") {
+			base, err := reproduceSpanView(source, strings.TrimPrefix(view, prefix))
+			if err != nil {
+				return "", err
+			}
+			if prefix == "invisible_spaced:" {
+				var decoded string
+				switch strings.TrimPrefix(view, prefix) {
+				case contractreceipt.NormalizedViewBase64Decoded:
+					decoded, err = decodeWholeBase64(source)
+				case contractreceipt.NormalizedViewHexDecoded:
+					decoded, err = decodeWholeHex(source)
+				}
+				if err != nil {
+					return "", err
+				}
+				if decoded != "" {
+					return normalize.ForMatchingSpaced(decoded), nil
+				}
+				// Spacing must precede invisible-character stripping.
+				if encoding, ok := strings.CutPrefix(strings.TrimPrefix(view, prefix), "for_matching:"); ok {
+					if decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(encoding, "_decoded")); ok {
+						return normalize.ForMatchingSpaced(decoded), nil
+					}
+				}
+				return normalize.ForMatchingSpaced(base), nil
+			}
+			return normalize.FoldVowels(base), nil
+		}
+	}
+	if encoding, ok := strings.CutPrefix(view, "for_matching:"); ok {
+		if decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(encoding, "_decoded")); ok {
+			return normalize.ForMatching(decoded), nil
+		}
+	}
 	switch {
 	case view == contractreceipt.NormalizedViewSanitizedTarget:
 		return source, nil
@@ -180,7 +225,40 @@ func reproduceSpanView(source, view string) (string, error) {
 		return normalize.Leetspeak(normalize.ForMatching(source)), nil
 	case view == contractreceipt.NormalizedViewVowelFold:
 		return normalize.FoldVowels(normalize.ForMatching(source)), nil
+	case view == contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.ForMatching(normalize.DecodeTags(source)), nil
+	case view == "invisible_spaced:"+contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.ForMatchingSpaced(normalize.DecodeTags(source)), nil
+	case view == "vowel_fold:"+contractreceipt.NormalizedViewUnicodeTagsDecoded:
+		return normalize.FoldVowels(normalize.ForMatching(normalize.DecodeTags(source))), nil
 	case view == contractreceipt.NormalizedViewDLPNormalized || strings.HasPrefix(view, "dlp_normalized:"):
+		stages := strings.Split(view, ":")
+		for i := len(stages) - 1; i > 0; i-- {
+			switch stages[i] {
+			case "decimal_character_codes", "decimal_character_codes_decoded", "octal_character_codes", "octal_character_codes_decoded", "binary_character_codes", "binary_character_codes_decoded", "quoted_printable", "quoted_printable_decoded":
+				decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(stages[i], "_decoded"))
+				if !ok {
+					return "", fmt.Errorf("cannot reproduce textual encoding %q", stages[i])
+				}
+				source = decoded
+			case "unicode_tags", "unicode_tags_decoded":
+				// decodeEncodingsOnceInto can expose an escaped tag carrier in
+				// the candidate graph. Do not decode percent data again once
+				// userinfo or an explicit URL stage already exposed the tags.
+				if !normalize.ContainsTags(source) {
+					source = scanner.IterativeDecode(source)
+				}
+				source = normalize.DecodeTags(source)
+			case "url_userinfo_username_escaped", "url_userinfo_username", "url_userinfo_password_escaped", "url_userinfo_password", "url_userinfo":
+				if strings.Contains(view, ":unicode_tags") {
+					source = reproduceTagUserinfoSource(source, stages[i])
+				}
+			case "url_decoded":
+				if strings.Contains(view, ":unicode_tags") {
+					source = scanner.IterativeDecode(source)
+				}
+			}
+		}
 		return normalize.ForDLP(source), nil
 	case view == contractreceipt.NormalizedViewBase64Decoded:
 		decoded, err := decodeWholeBase64(source)
@@ -197,6 +275,56 @@ func reproduceSpanView(source, view string) (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported normalized_view %q", view)
 	}
+}
+
+// reproduceTagUserinfoSource selects the component before decoding its tag
+// carrier. The source may be a URL or an already selected component. A raw
+// Unicode userinfo spelling follows the scanner's lenient authority boundary.
+func reproduceTagUserinfoSource(source, stage string) string {
+	var user, second string
+	var hasSecond bool
+	if parsed, err := url.Parse(source); err == nil && parsed.User != nil {
+		user, second, hasSecond = strings.Cut(parsed.User.String(), ":")
+	} else {
+		_, authority, present := strings.Cut(source, "://")
+		if !present {
+			return source
+		}
+		if end := strings.IndexAny(authority, "/?#"); end >= 0 {
+			authority = authority[:end]
+		}
+		at := strings.LastIndexByte(authority, '@')
+		if at < 0 {
+			return source
+		}
+		user, second, hasSecond = strings.Cut(authority[:at], ":")
+	}
+	if strings.Contains(stage, "password") {
+		return decodeTagUserinfoComponent(second, stage)
+	}
+	if stage == "url_userinfo" && hasSecond {
+		username, err := url.PathUnescape(user)
+		if err != nil {
+			username = user
+		}
+		secondField, err := url.PathUnescape(second)
+		if err != nil {
+			secondField = second
+		}
+		return username + ":" + secondField
+	}
+	return decodeTagUserinfoComponent(user, stage)
+}
+
+// Match urlUserinfoValues: escaped fields remain verbatim, decoded fields get
+// one RFC 3986 path-unescape pass. Only an explicit url_decoded stage repeats it.
+func decodeTagUserinfoComponent(source, stage string) string {
+	if !strings.HasSuffix(stage, "_escaped") {
+		if decoded, err := url.PathUnescape(source); err == nil {
+			return decoded
+		}
+	}
+	return source
 }
 
 func decodeWholeBase64(source string) (string, error) {

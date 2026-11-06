@@ -29,7 +29,7 @@ from .group import (
     verify_receipt_group,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "Appraisal",

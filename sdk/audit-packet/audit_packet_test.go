@@ -568,6 +568,16 @@ func TestValidate(t *testing.T) {
 			wantSub: "char_offset",
 		},
 		{
+			name: "inline receipt accepts Unicode tag decoded response view",
+			mutate: func(p *auditpacket.Packet) {
+				setAuditPacketSourceSpan(p, func(span *auditpacket.SourceSpan) {
+					span.NormalizedView = "for_matching:unicode_tags_decoded"
+					span.CharOffset = nil
+					span.CharLength = nil
+				})
+			},
+		},
+		{
 			name: "valid scanner config snapshot",
 			mutate: func(p *auditpacket.Packet) {
 				truthy := true
@@ -795,4 +805,45 @@ func clonePacket(t *testing.T, p auditpacket.Packet) auditpacket.Packet {
 		t.Fatalf("clone unmarshal: %v", err)
 	}
 	return out
+}
+
+func TestUnicodeTagsReceiptViews(t *testing.T) {
+	for _, view := range []string{"invisible_spaced:for_matching:base64_decoded", "vowel_fold:for_matching:base64_decoded", "invisible_spaced:for_matching:hex_decoded", "vowel_fold:for_matching:hex_decoded", "for_matching:decimal_character_codes_decoded", "invisible_spaced:for_matching:decimal_character_codes_decoded", "vowel_fold:for_matching:decimal_character_codes_decoded", "leetspeak:for_matching:decimal_character_codes_decoded", "for_matching:octal_character_codes_decoded", "invisible_spaced:for_matching:octal_character_codes_decoded", "vowel_fold:for_matching:octal_character_codes_decoded", "leetspeak:for_matching:octal_character_codes_decoded", "for_matching:binary_character_codes_decoded", "invisible_spaced:for_matching:binary_character_codes_decoded", "vowel_fold:for_matching:binary_character_codes_decoded", "leetspeak:for_matching:binary_character_codes_decoded", "for_matching:quoted_printable_decoded", "invisible_spaced:for_matching:quoted_printable_decoded", "vowel_fold:for_matching:quoted_printable_decoded", "leetspeak:for_matching:quoted_printable_decoded", "leetspeak:for_matching:unicode_tags_decoded", "leetspeak:for_matching:base64_decoded", "leetspeak:for_matching:hex_decoded", "for_matching:unicode_tags_decoded", "invisible_spaced:for_matching:unicode_tags_decoded", "vowel_fold:for_matching:unicode_tags_decoded"} {
+		t.Run(view, func(t *testing.T) {
+			_, packet := loadExample(t)
+			setAuditPacketSourceSpan(&packet, func(span *auditpacket.SourceSpan) {
+				span.NormalizedView = view
+				span.CharOffset = nil
+				span.CharLength = nil
+			})
+			if err := packet.Validate(); err != nil {
+				t.Fatalf("decoded receipt view rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestUnicodeTagsReceiptViewsRejectInvalid(t *testing.T) {
+	for _, tc := range []struct {
+		name, view string
+		offset     bool
+	}{
+		{"unknown view", "unknown_unicode_tags_decoded", false},
+		{"decoded coordinates", "for_matching:unicode_tags_decoded", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, packet := loadExample(t)
+			setAuditPacketSourceSpan(&packet, func(span *auditpacket.SourceSpan) {
+				span.NormalizedView = tc.view
+				span.CharOffset, span.CharLength = nil, nil
+				if tc.offset {
+					offset, length := 0, 1
+					span.CharOffset, span.CharLength = &offset, &length
+				}
+			})
+			if err := packet.Validate(); err == nil {
+				t.Fatal("invalid decoded view accepted")
+			}
+		})
+	}
 }
