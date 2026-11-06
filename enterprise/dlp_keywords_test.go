@@ -52,6 +52,52 @@ func TestDLPKeywordsAgentProfile(t *testing.T) {
 	}
 }
 
+func TestDLPKeywordsAgentReloadCoverage(t *testing.T) {
+	previous := config.MergeAgentProfileFunc
+	config.MergeAgentProfileFunc = MergeAgentProfile
+	t.Cleanup(func() { config.MergeAgentProfileFunc = previous })
+	for _, tc := range []struct {
+		name                    string
+		inherited, remove, want bool
+	}{
+		{name: "profile only", want: true},
+		{name: "override inherited", inherited: true, want: true},
+		{name: "remove override restores global", inherited: true, remove: true},
+		{name: "remove profile loses pattern", remove: true, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			old := testConfig()
+			rule := config.DLPPattern{Name: "account", Regex: `[0-9]{16}`, Severity: config.SeverityHigh}
+			old.DLP.Patterns = nil
+			if tc.inherited {
+				old.DLP.Patterns = []config.DLPPattern{rule}
+			}
+			old.Agents = map[string]config.AgentProfile{"operator": {DLP: &config.AgentDLP{Patterns: []config.DLPPattern{rule}}}}
+			next := old.Clone()
+			if tc.remove {
+				delete(next.Agents, "operator")
+			} else {
+				next.Agents["operator"].DLP.Patterns[0].Keywords = []string{"account"}
+			}
+			found := false
+			for _, w := range config.ValidateReload(old, next) {
+				if w.Field == "agents.operator.dlp.patterns" {
+					found = true
+					if w.Disposition == config.ReloadWarningDispositionAdvisory {
+						t.Fatal("coverage reduction was advisory")
+					}
+				}
+			}
+			if found != tc.want {
+				t.Fatalf("agent coverage warning=%v want=%v", found, tc.want)
+			}
+			if warnings := config.ValidateReload(next, next.Clone()); len(warnings) != 0 {
+				t.Fatalf("unchanged policy warned: %+v", warnings)
+			}
+		})
+	}
+}
+
 func TestDLPKeywordsAgentStartupAdvisory(t *testing.T) {
 	cfg := testConfig()
 	cfg.Agents = map[string]config.AgentProfile{"operator": {DLP: &config.AgentDLP{Patterns: []config.DLPPattern{{Name: "account", Regex: `[0-9]{16}`, Severity: config.SeverityHigh, Keywords: []string{"account"}}}}}}
