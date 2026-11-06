@@ -203,14 +203,19 @@ TEST_FUNC_RE = re.compile(r"^func[ \t]+((?:Test|Fuzz|Example)\w*)[ \t]*[\[(]", r
 TEST_KIND_PREFIXES = ("Test", "Fuzz", "Example")
 
 
-def list_packages(tags: str, root: Path | None = None, tests_only: bool = False) -> list[str]:
+def list_packages(
+    tags: str, root: Path | None = None, tests_only: bool = False, timeout: float | None = None,
+) -> list[str]:
     cmd = ["go", "list"]
     if tags:
         cmd.extend(["-tags", tags])
     if tests_only:
         cmd.extend(["-f", "{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}"])
     cmd.append("./...")
-    result = subprocess.run(cmd, check=True, text=True, capture_output=True, cwd=root or ROOT)
+    try:
+        result = subprocess.run(cmd, check=True, text=True, capture_output=True, cwd=root or ROOT, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise ValueError("changed-test measurement timeout: package discovery") from None
     return [line for line in result.stdout.splitlines() if line]
 
 
@@ -845,14 +850,19 @@ def measured_selection(
     packages: set[str] = set()
     for line in path.read_text(encoding="utf-8").splitlines():
         event = json.loads(line)
+        # Build events carry ImportPath, not Package (go help buildjson). Output
+        # from a successful build, such as a compiler warning, is not a result;
+        # a failed build also fails the go test process, which raises above.
+        if isinstance(event, dict) and event.get("Action") == "build-output" and "Package" not in event:
+            continue
         if not isinstance(event, dict) or event.get("Package") not in selected:
             raise ValueError(f"unexpected measurement event: {event}")
         package, name, action = event["Package"], event.get("Test"), event.get("Action")
         if action == "skip" and isinstance(name, str):
-            # Whole rest packages can contain unrelated platform skips. They
-            # do not supply a changed test's measurement or invalidate the
-            # package's elapsed total. Selected tests must actually run.
-            if name.split("/", 1)[0] in selected[package]:
+            # Whole rest packages can contain unrelated platform skips, and a
+            # selected test can skip some of its subtests. Neither invalidates
+            # the measured total. A selected top-level test must actually run.
+            if name in selected[package]:
                 raise ValueError(f"selected test skipped: {package}: {name}")
             pending.discard((package, name))
             continue
@@ -902,7 +912,13 @@ def measure_changed_tests(
             if package and test["new"] and test["name"] in selected.get(package, []):
                 new.setdefault(package, set()).add(test["name"])
         whole = sorted(pkg for pkg in selected if tree_for_package(pkg) is None)
-        base_packages = set(list_packages(",".join(filter(None, ["race", tags])), root=base_root, tests_only=True))
+        remaining_seconds = lambda: deadline_seconds - (clock() - started)  # noqa: E731
+        # Base discovery can fetch modules the head doesn't share; keep it
+        # inside the pair's deadline instead of the job's.
+        if remaining_seconds() <= 0:
+            raise ValueError("measurement deadline reached before base package discovery")
+        base_packages = set(list_packages(",".join(filter(None, ["race", tags])), root=base_root,
+                                          tests_only=True, timeout=remaining_seconds()))
         base_selected: dict[str, list[str]] = {}
         for package, names in selected.items():
             existing = sorted(set(names) - new.get(package, set()))
@@ -912,7 +928,6 @@ def measure_changed_tests(
             elif package in whole or existing:
                 base_selected[package] = existing
         base_path = json_out.with_suffix(".base.json")
-        remaining_seconds = lambda: deadline_seconds - (clock() - started)  # noqa: E731
         base_started = clock()
         base_overrides = measured_selection(
             base_selected, [pkg for pkg in whole if pkg in base_selected], tags, base_path,

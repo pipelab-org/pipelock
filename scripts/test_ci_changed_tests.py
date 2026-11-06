@@ -334,6 +334,43 @@ class ChangedTestRunnerTest(unittest.TestCase):
                     planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
                                                planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
 
+    def test_build_output_and_subtest_skips_are_not_failures(self):
+        # A successful build's toolchain output is a build event keyed by
+        # ImportPath (go help buildjson), and a selected test may skip some
+        # subtests; neither is a missing or skipped measurement.
+        events = [
+            {"Action": "run", "Test": "TestChanged"},
+            {"Action": "run", "Test": "TestChanged/linux"},
+            {"Action": "skip", "Test": "TestChanged/windows", "Elapsed": 0},
+            {"Action": "pass", "Test": "TestChanged/linux", "Elapsed": 1},
+            {"Action": "pass", "Test": "TestChanged", "Elapsed": 1},
+            {"Action": "pass", "Elapsed": 2},
+        ]
+        def run(command, stream, root, remaining):
+            stream.write(json.dumps({"ImportPath": command[-1], "Action": "build-output", "Output": "warning\n"}) + "\n")
+            for event in events:
+                stream.write(json.dumps({"Package": command[-1], **event}) + "\n")
+            return 0
+        with tempfile.TemporaryDirectory() as directory, patch.object(planner, "run_measurement", side_effect=run), \
+             redirect_stdout(io.StringIO()):
+            overrides = planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                                   planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+        self.assertEqual(overrides["trees"]["proxy"]["TestChanged"], 1)
+        # A build failure still has no Package and is not a successful result.
+        def failed(command, stream, root, remaining):
+            stream.write(json.dumps({"ImportPath": command[-1], "Action": "build-fail"}) + "\n")
+            return 0
+        with tempfile.TemporaryDirectory() as directory, patch.object(planner, "run_measurement", side_effect=failed), \
+             redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "unexpected measurement event"):
+                planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                           planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+
+    def test_base_package_discovery_is_inside_the_deadline(self):
+        with patch.object(planner.subprocess, "run", side_effect=subprocess.TimeoutExpired("go list", 1)):
+            with self.assertRaisesRegex(ValueError, "measurement timeout: package discovery"):
+                planner.list_packages("race", root=Path("base"), tests_only=True, timeout=1)
+
     def test_deadline_refuses_edited_and_new_tests(self):
         for new in (False, True):
             with self.subTest(new=new), tempfile.TemporaryDirectory() as directory, \
