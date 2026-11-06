@@ -184,6 +184,28 @@ class ChangedTestRunnerTest(unittest.TestCase):
             return status
         return run
 
+    def test_base_worktree_cleanup_removes_untracked_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args, check=True):
+                return subprocess.run(["git", "-c", "user.email=ci@example.invalid", "-c", "user.name=ci", *args],
+                                      cwd=root, check=check, text=True, capture_output=True)
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            revision = git("rev-parse", "HEAD").stdout.strip()
+            with patch.object(planner, "ROOT", root):
+                with planner.measurement_base(revision) as base:
+                    (base / "untracked.txt").write_text("dirt", encoding="utf-8")
+                listed = git("worktree", "list", "--porcelain").stdout
+                self.assertNotIn(str(base), listed)
+                with self.assertRaisesRegex(ValueError, "boom"):
+                    with planner.measurement_base(revision) as base:
+                        (base / "untracked.txt").write_text("dirt", encoding="utf-8")
+                        raise ValueError("boom")
+                listed = git("worktree", "list", "--porcelain").stdout
+                self.assertNotIn("untracked.txt", listed)
+                self.assertEqual(listed.count("worktree "), 1)
+
     def test_empty_selection_still_resolves_base(self):
         with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))) as base, \
              patch.object(planner, "runnable_changed_tests") as resolve, redirect_stdout(io.StringIO()):

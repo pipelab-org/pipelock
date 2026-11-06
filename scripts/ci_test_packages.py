@@ -781,7 +781,14 @@ def measurement_base(base: str):
         try:
             yield root
         finally:
-            subprocess.run(["git", "worktree", "remove", str(root)], check=True, cwd=ROOT)
+            # Tests can write files into the base checkout. A plain remove
+            # refuses that dirt and would replace a successful measurement,
+            # or a measurement error, with a cleanup failure.
+            removed = subprocess.run(
+                ["git", "worktree", "remove", "--force", str(root)], cwd=ROOT,
+            )
+            if removed.returncode != 0 and sys.exc_info()[0] is None:
+                raise subprocess.CalledProcessError(removed.returncode, removed.args)
 
 
 def run_measurement(command: list[str], stream, root: Path, remaining: float) -> int:
