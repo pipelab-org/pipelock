@@ -1025,11 +1025,17 @@ def measure_changed_tests(
         for package in skipped:
             tree = tree_for_package(package)
             recorded = plan.get("trees", {}).get(tree, {}) if tree is not None else {}
+            if tree is None:
+                continue
             for name in selected[package]:
                 for side in (overrides, base_overrides):
                     weights = side["trees"].get(tree, {})
                     if name in weights:
                         weights[name] = max(weights[name], float(recorded.get(name, 0.0)))
+                    elif name in recorded:
+                        # The cheap declaration inventory can miss a name; an
+                        # explicit override keeps its recorded load counted.
+                        side["trees"].setdefault(tree, {})[name] = float(recorded[name])
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")

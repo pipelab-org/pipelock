@@ -575,6 +575,23 @@ class ChangedTestRunnerTest(unittest.TestCase):
         self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestShared"], 90.0)
         self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestShared"], 90.0)
 
+    def test_skipped_name_keeps_recorded_weight_even_if_inventory_misses_it(self):
+        # The declaration inventory can miss a name; a skipped package's
+        # recorded weight is then carried as an explicit override on both sides.
+        first, second, tests, resolve, now, commands, run, deadline = self.paired_deadline_run(new_second=False)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+             patch.object(planner, "prediction_plan", return_value={"trees": {"scanner": {"TestSecond": 70.0}}}), \
+             patch.object(planner, "list_packages", return_value=[first, second]), \
+             patch.object(planner, "exact_names_regex", side_effect=lambda names: "^(?:" + "|".join(names) + ")$"), \
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+            planner.measure_changed_tests(tests, "", Path(directory) / "changed.json", "base-sha",
+                                          deadline_seconds=deadline, clock=lambda: now[0])
+        self.assertEqual(budget.call_args.args[2]["trees"]["scanner"], {"TestSecond": 70.0})
+        self.assertEqual(budget.call_args.args[3]["trees"]["scanner"], {"TestSecond": 70.0})
+
     def test_new_test_zero_base_does_not_erase_a_skipped_shared_name(self):
         # A new test is charged against a zero base, but a skipped package's
         # existing test with the same name keeps its recorded base weight.
