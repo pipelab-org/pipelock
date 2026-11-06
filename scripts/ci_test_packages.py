@@ -819,9 +819,9 @@ def measured_selection(
     root: Path, remaining_seconds,
 ) -> dict:
     if __package__:
-        from .ci_test_durations import partial_overrides, selection_path
+        from .ci_test_durations import load_durations, partial_overrides, selection_path, tree_for_package
     else:
-        from ci_test_durations import partial_overrides, selection_path
+        from ci_test_durations import load_durations, partial_overrides, selection_path, tree_for_package
     if not selected:
         return {"trees": {}, "packages": {}}
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -864,9 +864,19 @@ def measured_selection(
         if action == "skip" and isinstance(name, str):
             # Whole rest packages can contain unrelated platform skips, and a
             # selected test can skip some of its subtests. Neither invalidates
-            # the measured total. A selected top-level test must actually run.
+            # the measured total. A selected top-level test may skip, such as
+            # an environment-gated profiling test. It completes here when the
+            # duration reader can keep its recorded weight; a skip is not a
+            # full measurement.
             if name in selected[package]:
-                raise ValueError(f"selected test skipped: {package}: {name}")
+                tree = tree_for_package(package)
+                # Rest packages have a measured whole-package total. Split
+                # trees need a recorded test weight: collect() otherwise emits
+                # a zero that bypasses the unmeasured-test budget floor.
+                if tree is not None and name not in load_durations().get(tree, {}):
+                    raise ValueError(f"selected test skipped without a recorded weight: {package}: {name}; "
+                                     "record its weight from a full race run")
+                completed.add((package, name))
             pending.discard((package, name))
             continue
         if action in ("pass", "fail", "skip"):

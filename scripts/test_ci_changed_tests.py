@@ -333,12 +333,60 @@ class ChangedTestRunnerTest(unittest.TestCase):
             # paired whole-package total rather than a zero-base charge.
             self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
 
+    def test_skipped_selected_test_completes_and_keeps_recorded_weight(self):
+        # An environment-gated test that always calls t.Skip in CI costs only
+        # its skip there; editing it must not fail measurement, and a skip is
+        # not a full measurement, so the recorded weight stays in place.
+        events = [
+            {"Action": "run", "Test": "TestChanged"},
+            {"Action": "skip", "Test": "TestChanged", "Elapsed": 0},
+            {"Action": "pass", "Elapsed": 1},
+        ]
+        for recorded in (0.0, 42.0):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(planner, "run_measurement", side_effect=self.scripted_run([], events)), \
+                 patch("scripts.ci_test_durations.load_durations", return_value={"proxy": {"TestChanged": recorded}}), \
+                 redirect_stdout(io.StringIO()):
+                overrides = planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                                       planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+            self.assertEqual(overrides["trees"]["proxy"]["TestChanged"], recorded)
+
+    def test_unrecorded_skip_cannot_stand_in_for_a_race_shard_measurement(self):
+        # The CI race jobs set TEST_SHARD; changed-test measurement does not.
+        # Use real Go output to show why an unrecorded skip is not a zero-cost
+        # measurement of what the shard will run.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text(f"module {self.package}\n\ngo 1.26\n")
+            (root / "lib_test.go").write_text('''package proxy
+import ("os"; "testing")
+func TestChanged(t *testing.T) {
+    if os.Getenv("TEST_SHARD") == "" { t.Skip("outside the race shard") }
+    t.Log("race shard work")
+}
+''')
+            target = root / "run.json"
+            with patch.dict("os.environ", {"TEST_SHARD": ""}), \
+                 patch("scripts.ci_test_durations.load_durations", return_value={}), \
+                 redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(ValueError, "skipped without a recorded weight"):
+                    planner.measured_selection({self.package: ["TestChanged"]}, [], "", target,
+                                               root, lambda: planner.MEASURE_DEADLINE_SECONDS)
+            events = [json.loads(line) for line in target.read_text().splitlines()]
+            self.assertTrue(any(e.get("Test") == "TestChanged" and e["Action"] == "skip" for e in events))
+            with patch.dict("os.environ", {"TEST_SHARD": "proxy-0"}):
+                result = subprocess.run(
+                    ["go", "test", "-race", "-p=1", "-parallel=2", "-timeout=15m", "-count=1", "-json", self.package],
+                    cwd=root, check=True, capture_output=True, text=True,
+                )
+            events = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertTrue(any(e.get("Test") == "TestChanged" and e["Action"] == "pass" for e in events))
+
     def test_missing_skipped_failed_or_invalid_terminal_events_fail_closed(self):
         cases = [
             [{"Action": "pass", "Elapsed": 1}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": 1}],
             [{"Action": "run", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
-            [{"Action": "skip", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
             [{"Action": "fail", "Test": "TestChanged", "Elapsed": 1}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": float("nan")}],
             [{"Action": "pass", "Test": "TestChanged", "Elapsed": -1}],
