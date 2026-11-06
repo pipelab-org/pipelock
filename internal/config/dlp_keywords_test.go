@@ -17,9 +17,26 @@ func keywordConfigYAML(fields string) string {
 }
 
 func TestDLPKeywordsLoad(t *testing.T) {
-	for _, fields := range []string{"", "      keywords: null\n", "      keywords:\n", "      keywords: []\n", "      keywords: [account]\n", "      keywords: [account]\n      keyword_window: null\n", "      keywords: [account]\n      keyword_window:\n", "      keywords: [abc]\n      keyword_window: 3\n", "      keywords: [account]\n      keyword_window: 300\n"} {
-		t.Run(fields, func(t *testing.T) {
-			cfg, err := LoadBytes([]byte(keywordConfigYAML(fields)))
+	const accountSample = "ACCOUNT 3333333333333333"
+	const abcSample = "abc3333333333333333" // the whole keyword must fit the three-rune window
+	for _, tc := range []struct {
+		fields      string
+		wantMatcher bool
+		sample      string
+		start, end  int
+	}{
+		{fields: ""},
+		{fields: "      keywords: null\n"},
+		{fields: "      keywords:\n"},
+		{fields: "      keywords: []\n"},
+		{fields: "      keywords: [account]\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
+		{fields: "      keywords: [account]\n      keyword_window: null\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
+		{fields: "      keywords: [account]\n      keyword_window:\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
+		{fields: "      keywords: [abc]\n      keyword_window: 3\n", wantMatcher: true, sample: abcSample, start: 3, end: 19},
+		{fields: "      keywords: [account]\n      keyword_window: 300\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
+	} {
+		t.Run(tc.fields, func(t *testing.T) {
+			cfg, err := LoadBytes([]byte(keywordConfigYAML(tc.fields)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -28,8 +45,11 @@ func TestDLPKeywordsLoad(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if matcher != nil && !matcher.Matches("ACCOUNT 3333333333333333", 8, 24) && p.EffectiveKeywordWindow() != 3 {
-				t.Fatal("label did not qualify")
+			if (matcher != nil) != tc.wantMatcher {
+				t.Fatalf("matcher loaded=%v, want %v", matcher != nil, tc.wantMatcher)
+			}
+			if tc.wantMatcher && !matcher.Matches(tc.sample, tc.start, tc.end) {
+				t.Fatalf("keyword near candidate in %q did not qualify", tc.sample)
 			}
 		})
 	}
