@@ -648,7 +648,8 @@ type Proxy struct {
 	client               *http.Client
 	tlsTransport         *http.Transport // shared Transport for TLS interception upstream connections
 	server               *http.Server
-	agentServers         []*http.Server // per-agent listeners (managed by CLI)
+	agentServers         []gatedServer // per-agent listeners (managed by CLI)
+	shutdownGrace        time.Duration // test hook: graceful shutdown bound; zero means defaultShutdownGrace
 	startTime            time.Time
 	reloadSerialMu       sync.Mutex   // serializes staging by concurrent Reload calls
 	reloadMu             sync.RWMutex // serializes publication and coherent request-time runtime snapshots
@@ -3006,8 +3007,12 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 // RegisterAgentServer adds an externally-managed agent server to the
 // proxy's shutdown list. Called by the CLI layer after binding agent
 // listeners, so Start()'s shutdown goroutine can gracefully stop them.
+// It wraps the server's handler so shutdown can tell running handlers from
+// connections that never delivered a request; call it before Serve.
 func (p *Proxy) RegisterAgentServer(srv *http.Server) {
-	p.agentServers = append(p.agentServers, srv)
+	gate := &handlerGate{}
+	srv.Handler = gate.wrap(srv.Handler)
+	p.agentServers = append(p.agentServers, gatedServer{srv: srv, gate: gate})
 }
 
 // SetLicenseRevoked publishes a runtime license check serialized with reload.
@@ -3033,9 +3038,9 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 // the enterprise license expires at runtime.
 func (p *Proxy) ShutdownAgentServers() error {
 	var shutdownErr error
-	for _, srv := range p.agentServers {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		shutdownErr = errors.Join(shutdownErr, srv.Shutdown(ctx))
+	for _, gs := range p.agentServers {
+		ctx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
+		shutdownErr = errors.Join(shutdownErr, drainServer(ctx, gs))
 		cancel()
 	}
 	if shutdownErr != nil {
@@ -5321,9 +5326,10 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		listenAddr = ln.Addr().String()
 	}
 
+	mainGate := &handlerGate{}
 	p.server = &http.Server{
 		Addr:    listenAddr,
-		Handler: handler,
+		Handler: mainGate.wrap(handler),
 		BaseContext: func(_ net.Listener) context.Context {
 			return ctx
 		},
@@ -5345,16 +5351,16 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		}
 		return p.server.ListenAndServe()
 	}, func() error {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
 		defer cancel()
 		var shutdownErr error
-		for _, srv := range p.agentServers {
-			if shutErr := srv.Shutdown(shutdownCtx); shutErr != nil {
-				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", srv.Addr), shutErr)
+		for _, gs := range p.agentServers {
+			if shutErr := drainServer(shutdownCtx, gs); shutErr != nil {
+				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", gs.srv.Addr), shutErr)
 				shutdownErr = errors.Join(shutdownErr, shutErr)
 			}
 		}
-		if err := p.server.Shutdown(shutdownCtx); err != nil {
+		if err := drainServer(shutdownCtx, gatedServer{srv: p.server, gate: mainGate}); err != nil {
 			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
 			shutdownErr = errors.Join(shutdownErr, err)
 		}
