@@ -367,9 +367,32 @@ class ChangedTestRunnerTest(unittest.TestCase):
                                            planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
 
     def test_base_package_discovery_is_inside_the_deadline(self):
-        with patch.object(planner.subprocess, "run", side_effect=subprocess.TimeoutExpired("go list", 1)):
+        with patch.object(planner.subprocess, "run", side_effect=subprocess.TimeoutExpired("go list", 1)) as run:
             with self.assertRaisesRegex(ValueError, "measurement timeout: package discovery"):
                 planner.list_packages("race", root=Path("base"), tests_only=True, timeout=1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 1)
+
+    def test_base_package_discovery_receives_remaining_pair_deadline(self):
+        for elapsed in (2, 30):
+            with self.subTest(elapsed=elapsed), \
+                 patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "prediction_plan", return_value={}), \
+                 patch.object(planner, "list_packages", side_effect=ValueError("discovery timeout")) as discovery, \
+                 patch.object(planner, "run_measurement") as run:
+                # The first read checks expiry; the next read supplies the
+                # subprocess timeout. Both share the pair's start time.
+                ticks = iter([10, 10 + elapsed, 10 + elapsed + 1])
+                message = "discovery timeout" if elapsed < 30 else "deadline reached before base package discovery"
+                with self.assertRaisesRegex(ValueError, message):
+                    planner.measure_changed_tests(self.fixture_tests(), "enterprise", Path("unused.json"), "base-sha",
+                                                  deadline_seconds=30, clock=lambda: next(ticks))
+                if elapsed < 30:
+                    discovery.assert_called_once_with("race,enterprise", root=Path("base"),
+                                                      tests_only=True, timeout=27)
+                else:
+                    discovery.assert_not_called()
+                run.assert_not_called()
 
     def test_deadline_refuses_edited_and_new_tests(self):
         for new in (False, True):
