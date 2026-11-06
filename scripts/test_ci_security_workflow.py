@@ -75,6 +75,31 @@ class CISecurityWorkflowTest(unittest.TestCase):
         self.build_binaries = job_block(self.workflow, "build-binaries")
         self.build = job_block(self.workflow, "build")
 
+    def test_changed_test_classifier_fails_closed(self) -> None:
+        script = step_script(job_block(self.workflow, "test-changed-race-go126"), "Detect test source changes")
+        for event, merge_status, diff_status, want, output in (
+            ("pull_request", 0, 0, 0, "changed=false"),
+            ("merge_group", 0, 1, 0, "changed=true"),
+            ("pull_request", 1, 0, 1, ""),
+            ("pull_request", 0, 128, 128, ""),
+            ("unknown", 0, 0, 1, ""),
+        ):
+            with self.subTest(event=event, merge=merge_status, diff=diff_status), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                git = root / "git"
+                git.write_text("#!/bin/bash\ncase \"$1\" in\n"
+                               "merge-base) echo base; exit \"$MERGE_STATUS\" ;;\n"
+                               "diff) exit \"$DIFF_STATUS\" ;;\nesac\n")
+                git.chmod(0o700)
+                target = root / "output"
+                target.touch()
+                env = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                       "EVENT_NAME": event, "BASE_SHA": "base", "HEAD_SHA": "head",
+                       "MERGE_STATUS": str(merge_status), "DIFF_STATUS": str(diff_status), "GITHUB_OUTPUT": str(target)}
+                result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, want, result.stderr)
+                self.assertEqual(target.read_text().strip(), output)
+
     def assert_govulncheck_contract(self, job: str) -> None:
         self.assertIn(
             "go install golang.org/x/vuln/cmd/govulncheck@v1.1.4",

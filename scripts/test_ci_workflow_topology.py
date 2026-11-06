@@ -757,6 +757,15 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         self.assertIn("--tags enterprise", run)
         self.assertIn("No test source changes", run)
         self.assertIn("weekly ci-shard-drift.yaml", WORKFLOW.read_text())
+        self.assertEqual(job["timeout-minutes"], 48)
+        setup = next(step for step in job["steps"] if step.get("name") == "Set up Go")
+        self.assertEqual(setup["with"]["go-version"], "1.26")
+        measure = next(step for step in job["steps"] if step.get("name") == "Measure changed tests and check shard budget")
+        self.assertEqual(measure["env"]["GOTOOLCHAIN"], "local")
+        self.assertFalse(any("codecov-action" in step.get("uses", "") for step in job["steps"]))
+        upload = next(step for step in job["steps"] if step.get("name") == "Upload changed-test race timing")
+        self.assertIn(".base.json", upload["with"]["path"])
+        self.assertIn(".base.selection.json", upload["with"]["path"])
 
     def test_race_lane_on_pull_requests_fails_the_contract(self):
         self.assertEqual(race_lane_errors(self.jobs), [])
