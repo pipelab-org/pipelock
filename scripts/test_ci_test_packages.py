@@ -706,9 +706,11 @@ class TestTestNameSplit(unittest.TestCase):
         self.assertEqual(fresh, set(packages[:2]))
 
     def test_unknown_no_race_shard_is_refused(self) -> None:
-        for shard in ("proxy-9", "scanner-0", "mcp", "rest-9", "nope"):
+        for shard in ("proxy-9", "scanner", "scanner-2", "runtime-0", "mcp", "rest-9", "nope"):
             with self.subTest(shard=shard), self.assertRaises(ValueError):
                 ci_test_packages.unit_shard_tree(shard)
+        self.assertEqual(ci_test_packages.unit_shard_tree("scanner-1"), ("scanner", 1, 2))
+        self.assertEqual(ci_test_packages.unit_shard_tree("runtime"), ("runtime", 0, 1))
 
     def test_new_name_lands_in_exactly_one_sub_shard(self) -> None:
         # A test added after the inventory was taken, or one the inventory

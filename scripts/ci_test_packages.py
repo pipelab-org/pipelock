@@ -83,9 +83,12 @@ REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 # Proxy splits four ways: by 2026-11-05 the name-split enterprise proxy-1 shard
 # took 494s on main against the 8-minute package timeout plus setup (about
 # 540s), and two pull requests adding a few proxy tests timed it out.
+# Scanner splits two ways: by 2026-11-06 internal/scanner took 385s to 405s of
+# package time on main against the same 8-minute timeout, and a slow runner
+# stretched it past 480s and turned main red (run 42252669510).
 UNIT_SPLITS = {
     "proxy": 4,
-    "scanner": 1,
+    "scanner": 2,
     "mcp": 3,
     "runtime": 1,
 }
