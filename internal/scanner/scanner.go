@@ -2807,6 +2807,13 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		for _, decoded := range decodeBase64PaddingVariants(mixed, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
 			out = appendBase64View(out, decoded)
 		}
+		// Canonicalize alphabet symbols before stripping separators so neither
+		// family's data bytes are discarded. Reuse the reassembly bound.
+		if normalized := normalizeEncodedToken(mixed, encodedTokenBase64Std); normalized != "" {
+			for _, decoded := range decodeBase64PaddingVariants(normalized, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
+				out = appendBase64View(out, decoded)
+			}
+		}
 	}
 	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
 	// uppercase before decode accepts lower and mixed case without treating

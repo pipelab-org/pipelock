@@ -307,6 +307,18 @@ func referenceDecodeEncodings(s string) []decodedResult {
 			}
 		}
 	}
+	// RFC 4648 sections 4 and 5 share symbol values. Keep mixed-family
+	// raw and separator-normalized views in addition to the original views.
+	if strings.ContainsAny(s, "+/") && strings.ContainsAny(s, "-_") {
+		mixed := strings.NewReplacer("-", "+", "_", "/").Replace(s)
+		for _, value := range []string{mixed, referenceNormalizeEncodedToken(mixed, encodedTokenBase64Std)} {
+			for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+				if decoded, err := enc.DecodeString(value); err == nil && len(decoded) > 0 {
+					out = append(out, decodedResult{string(decoded), encodingBase64})
+				}
+			}
+		}
+	}
 	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
 	// uppercase before decode accepts lower and mixed case without treating
 	// that fold as a separate base32 alphabet. Canonical recipe replay keeps
