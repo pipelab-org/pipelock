@@ -33,6 +33,8 @@ type decodingMemo struct {
 	keywordMode    bool
 	keywordBudget  *keywordWorkBudget
 	keywordUnit    string
+	keywordRawURL  string
+	keywordURL     *urlKeywordContext
 	keywordSources map[string][]*keywordDecodeSource
 	views          map[decodingMemoKey]memoDecode
 	normalized     map[string]string

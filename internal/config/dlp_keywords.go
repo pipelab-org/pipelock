@@ -164,6 +164,13 @@ func (m *DLPKeywordMatcher) Matches(source string, start, end int) bool {
 	return m.re.MatchString(source[left:start]) || m.re.MatchString(source[end:right])
 }
 
+// MatchesAnywhere tests the same literal keywords without a proximity window.
+// URL DLP uses it only when an exact candidate source span is unavailable.
+// source must already have DLP normalization applied.
+func (m *DLPKeywordMatcher) MatchesAnywhere(source string) bool {
+	return m == nil || m.re.MatchString(source)
+}
+
 // UnmarshalYAML keeps strict nested fields and rejects YAML scalar coercions.
 func (p *DLPPattern) UnmarshalYAML(node *yaml.Node) error {
 	type plain DLPPattern

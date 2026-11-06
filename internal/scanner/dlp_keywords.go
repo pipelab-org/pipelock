@@ -180,6 +180,7 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 		n.mapped = true
 		if len(n.text) > maxDecodeTotalBytes/keywordSpanBytes || len(n.parent.text) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !n.owner.charge(len(n.text)*keywordSpanBytes+len(n.parent.text)*(2*keywordSpanBytes)) {
 			n.owner.incomplete = true
+			n.owner.budget.incomplete = true
 			return false
 		}
 		n.offsets = keywordDecodeOffsets(n.parent.text, n.text, n.encoding)
@@ -263,8 +264,8 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		return true
 	}
 	if c.decoded == nil {
-		if (!ok || c.sourceUnavailable) && c.memo != nil {
-			c.memo.incomplete = true
+		if !ok || c.sourceUnavailable {
+			return c.unavailableURLContext(gate)
 		}
 		return false
 	}
@@ -277,10 +278,7 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		ds, de, mapped = keywordNormalizedSpan(c.decoded.text, original, ds, de)
 	}
 	if !mapped {
-		if c.memo != nil {
-			c.memo.incomplete = true
-		}
-		return false
+		return c.unavailableURLContext(gate)
 	}
 	found := false
 	matched = c.decoded.visitSources(ds, de, func(root string, rs, re int) bool {
@@ -310,10 +308,63 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 		}
 		return false
 	})
-	if !matched && c.memo != nil && (!found || c.decoded.owner.incomplete || c.decoded.owner.budget.incomplete) {
-		c.memo.incomplete = true
+	if !matched && (!found || c.decoded.owner.incomplete || c.decoded.owner.budget.incomplete) {
+		return c.unavailableURLContext(gate)
 	}
 	return matched
+}
+
+// urlKeywordContext holds only views already produced by this URL's DLP scan.
+// It is active only inside checkDLPWithDecodesAt, never for text or responses.
+type urlKeywordContext struct {
+	targets []dlpTarget
+	matches map[*config.DLPKeywordMatcher]bool
+}
+
+// unavailableURLContext uses the URL-wide superset only when exact mapping
+// fails. A negative fallback completes keyword inspection; exhausted work still
+// refuses. Scan checks maxURLLength before parsing or producing these views.
+func (c *keywordCandidateContext) unavailableURLContext(gate *config.DLPKeywordMatcher) bool {
+	if c.memo == nil {
+		return false
+	}
+	m := c.memo
+	if m.keywordURL == nil || m.keywordBudget != nil && m.keywordBudget.incomplete {
+		m.markIncomplete()
+		return false
+	}
+	u := m.keywordURL
+	if matched, ok := u.matches[gate]; ok {
+		return matched
+	}
+	if u.matches == nil {
+		u.matches = make(map[*config.DLPKeywordMatcher]bool)
+	}
+	budget := keywordDecodeSources{budget: m.keywordBudgetForScan()}
+	for _, target := range u.targets {
+		if !budget.charge(len(target.text)) {
+			m.markIncomplete()
+			return false
+		}
+		context := config.DLPKeywordContext(target.text)
+		if gate.MatchesAnywhere(context) {
+			u.matches[gate] = true
+			return true
+		}
+		normalized := m.normalize(target.text)
+		if normalized != context {
+			if !budget.charge(len(normalized)) {
+				m.markIncomplete()
+				return false
+			}
+			if gate.MatchesAnywhere(normalized) {
+				u.matches[gate] = true
+				return true
+			}
+		}
+	}
+	u.matches[gate] = false
+	return false
 }
 
 // Escape decoders copy surrounding text. If that text came through a compacted
@@ -394,6 +445,7 @@ func (c *keywordCandidateContext) projectionSpan(source, view string, start, end
 			budget := keywordDecodeSources{budget: c.memo.keywordBudgetForScan()}
 			if len(view) > maxDecodeTotalBytes/keywordSpanBytes || len(source) > maxDecodeTotalBytes/(2*keywordSpanBytes) || !budget.charge(len(view)*keywordSpanBytes+len(source)*(2*keywordSpanBytes)) {
 				c.memo.incomplete = true
+				budget.budget.incomplete = true
 				return 0, 0, false
 			}
 		}

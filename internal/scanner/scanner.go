@@ -1437,6 +1437,10 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 		return result
 	}
 
+	if s.hasDLPKeywords() {
+		decodes.keywordRawURL = rawURL
+	}
+
 	// DLP + entropy on hostname BEFORE DNS resolution.
 	// Prevents secret exfiltration via DNS queries for domains like
 	// "sk-ant-xxxx.evil.com" where the subdomain encodes a secret.
@@ -3415,8 +3419,10 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		decodes = &decodingMemo{}
 	}
 	if decodes != nil {
-		priorKeywordUnit := decodes.keywordUnit
-		defer func() { decodes.keywordUnit = priorKeywordUnit }()
+		priorKeywordUnit, priorKeywordURL := decodes.keywordUnit, decodes.keywordURL
+		defer func() {
+			decodes.keywordUnit, decodes.keywordURL = priorKeywordUnit, priorKeywordURL
+		}()
 	}
 	if s.hasDLPKeywords() {
 		decodes.keywordMode = true
@@ -3544,6 +3550,16 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Coarse full-URL fallback runs after component targets so path/query spans
 	// keep their more precise view labels when both views match.
 	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
+
+	if decodes.keywordsActive() {
+		// Keep exact windowing where source mapping succeeds. Only an
+		// unavailable mapping consults this URL-wide set of existing views.
+		contexts := targets
+		if decodes.keywordRawURL != "" {
+			contexts = append(contexts, dlpTarget{text: decodes.keywordRawURL})
+		}
+		decodes.keywordURL = &urlKeywordContext{targets: contexts}
+	}
 
 	// A configured content finding must not hide an exhausted outbound walk
 	// from callers that release ordinary findings under warn or audit policy.
@@ -3938,6 +3954,11 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 		}
 		for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
+		}
+
+		if decodes != nil && decodes.keywordURL != nil {
+			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
+			clear(decodes.keywordURL.matches)
 		}
 
 		for _, candidate := range candidates {

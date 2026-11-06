@@ -261,3 +261,29 @@ func TestDLPKeywordsYAMLMerge(t *testing.T) {
 		})
 	}
 }
+
+func TestDLPKeywordsMatchesAnywhere(t *testing.T) {
+	pattern := DLPPattern{Name: "custom", Keywords: []string{"account", "api.key"}}
+	matcher, err := pattern.CompileKeywords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{"", false},
+		{"ordinary text", false},
+		{"ACCOUNT" + strings.Repeat("x", 70), true},
+		{"prefix api.key suffix", true},
+		{"prefix apiXkey suffix", false},
+	} {
+		if got := matcher.MatchesAnywhere(tc.text); got != tc.want {
+			t.Fatalf("MatchesAnywhere(%q)=%v, want %v", tc.text, got, tc.want)
+		}
+	}
+	var disabled *DLPKeywordMatcher
+	if !disabled.MatchesAnywhere("") {
+		t.Fatal("disabled keywords must accept")
+	}
+}

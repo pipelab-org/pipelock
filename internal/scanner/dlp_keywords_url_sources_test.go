@@ -186,3 +186,188 @@ func TestDLPKeywordsURLSegmentRegistration(t *testing.T) {
 		}
 	}
 }
+
+func TestDLPKeywordsURLContextFallback(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	escaped := escapeKeywordURLBytes(hex.EncodeToString([]byte(keywordNumber)))
+	for _, shape := range []struct {
+		name string
+		wrap func(string) string
+	}{
+		{"nested destination", func(v string) string {
+			return "https://www.vendor.example/?next=" + url.QueryEscape("https://other.vendor.example/"+v)
+		}},
+		{"path query seam", func(v string) string {
+			return "https://www.vendor.example/" + v[:len(v)/2] + "?v=" + v[len(v)/2:]
+		}},
+		{"double percent query", func(v string) string {
+			return "https://www.vendor.example/?value=%252F" + v
+		}},
+		{"double percent userinfo", func(v string) string {
+			return "https://%252F" + v + "@www.vendor.example/"
+		}},
+	} {
+		for _, tc := range []struct {
+			name, label string
+			want        bool
+		}{
+			{"absent", "", false},
+			{"URL keyword", "account", true},
+			{"decoded keyword elsewhere", hex.EncodeToString([]byte("account")), true},
+		} {
+			t.Run(shape.name+"/"+tc.name, func(t *testing.T) {
+				input := shape.wrap(escaped)
+				if tc.label != "" {
+					input += "#" + strings.Repeat("x", 70) + "/" + tc.label
+				}
+				parsed, err := url.Parse(input)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, check := range []struct {
+					name string
+					run  func() Result
+				}{
+					{"configured", func() Result { result, _ := sc.checkDLP(parsed); return result }},
+					{"scan", func() Result { return sc.Scan(t.Context(), input) }},
+				} {
+					t.Run(check.name, func(t *testing.T) {
+						result := check.run()
+						if result.Allowed == tc.want || !result.Allowed && !strings.Contains(result.Reason, keywordPattern) {
+							t.Fatalf("want keyword match=%v, got %+v", tc.want, result)
+						}
+					})
+				}
+			})
+		}
+	}
+}
+
+// A distant label qualifies only when the URL candidate has no exact source
+// mapping. Mappable URL candidates and text keep their original windows.
+func TestDLPKeywordsURLFallbackWindow(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	label := "account/" + strings.Repeat("x", 70) + "/"
+	escaped := escapeKeywordURLBytes(hex.EncodeToString([]byte(keywordNumber)))
+	for _, tc := range []struct {
+		name, input string
+		want        bool
+	}{
+		{"exact path", "https://www.vendor.example/" + label + escaped, false},
+		{"fallback query", "https://www.vendor.example/" + label + "?v=%252F" + escaped, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := url.Parse(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, _ := sc.checkDLP(parsed)
+			if result.Allowed == tc.want || !result.Allowed && !strings.Contains(result.Reason, keywordPattern) {
+				t.Fatalf("want keyword match=%v, got %+v", tc.want, result)
+			}
+		})
+	}
+	if result := sc.ScanTextForDLP(t.Context(), label+keywordNumber); keywordFound(result) || result.Incomplete {
+		t.Fatalf("text must retain exact window: %+v", result)
+	}
+}
+
+func TestDLPKeywordsURLFallbackContext(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	gate := sc.dlpPatterns[0].keywords
+	for _, tc := range []struct {
+		name  string
+		text  string
+		used  int
+		want  bool
+		limit bool
+	}{
+		{"absent", "ordinary", 0, false, false},
+		{"literal", "ACCOUNT", 0, true, false},
+		{"normalized", "аccount", 0, true, false},
+		{"whitespace normalized", "acc\tount", 0, true, false},
+		{"budget spent", "account", maxDecodeTotalBytes, false, true},
+		{"search exhausts budget", "ordinary", maxDecodeTotalBytes - 1, false, true},
+		{"normalization exhausts budget", "acc\tount", maxDecodeTotalBytes - len("acc\tount"), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			memo := &decodingMemo{
+				keywordBudget: &keywordWorkBudget{used: tc.used},
+				keywordURL:    &urlKeywordContext{targets: []dlpTarget{{text: tc.text}}},
+			}
+			ctx := keywordCandidateContext{memo: memo}
+			for range 2 { // Cached keyword decisions must preserve the verdict.
+				if got := ctx.unavailableURLContext(gate); got != tc.want || memo.inspectionIncomplete() != tc.limit {
+					t.Fatalf("match=%v incomplete=%v, want %v/%v", got, memo.inspectionIncomplete(), tc.want, tc.limit)
+				}
+			}
+			if tc.want {
+				memo.keywordBudget.incomplete = true
+				if ctx.unavailableURLContext(gate) || !memo.inspectionIncomplete() {
+					t.Fatal("cached positive must not hide exhausted budget")
+				}
+			}
+		})
+	}
+	ctx := keywordCandidateContext{}
+	if ctx.unavailableURLContext(gate) {
+		t.Fatal("missing memo must not qualify")
+	}
+	ctx.memo = &decodingMemo{}
+	if ctx.unavailableURLContext(gate) || !ctx.memo.inspectionIncomplete() {
+		t.Fatal("non-URL unavailable context must still refuse")
+	}
+}
+
+func TestDLPKeywordsURLFallbackMappingBudget(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	gate := sc.dlpPatterns[0].keywords
+	// Exceed the existing source-map size bound without allocating a map.
+	oversized := strings.Repeat("x", maxDecodeTotalBytes/(2*keywordSpanBytes)+1)
+	for _, decoded := range []bool{false, true} {
+		t.Run(fmt.Sprint(decoded), func(t *testing.T) {
+			memo := &decodingMemo{keywordURL: &urlKeywordContext{targets: []dlpTarget{{text: "account"}}}}
+			ctx := keywordCandidateContext{logical: oversized, memo: memo}
+			if decoded {
+				graph := newKeywordDecodeSources(oversized)
+				ctx.decoded = graph.add(oversized, keywordNumber, encodingHex)
+				memo.keywordBudget = graph.budget
+				ctx.logical = keywordNumber
+			}
+			if ctx.matches(gate, keywordNumber, 0, len(keywordNumber)) || !memo.inspectionIncomplete() || !memo.keywordBudget.incomplete {
+				t.Fatal("mapping size bound must refuse despite a URL-wide keyword")
+			}
+		})
+	}
+}
+
+func TestDLPKeywordsURLFallbackSubsequence(t *testing.T) {
+	sc := keywordScanner(t, []string{"account"}, 50)
+	t.Cleanup(sc.Close)
+	escaped := escapeKeywordURLBytes(hex.EncodeToString([]byte(keywordNumber)))
+	for _, label := range []string{"", "account", hex.EncodeToString([]byte("account"))} {
+		t.Run(label, func(t *testing.T) {
+			input := "https://www.vendor.example/?a=" + escaped[:len(escaped)/2] + "&skip=ordinary&b=" + escaped[len(escaped)/2:]
+			if label != "" {
+				input += "#" + strings.Repeat("x", 70) + "/" + label
+			}
+			parsed, err := url.Parse(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			memo := &decodingMemo{}
+			result, _ := sc.checkDLPWithDecodes(parsed, memo)
+			want := label != ""
+			if result.Allowed == want || !result.Allowed && !strings.Contains(result.Reason, keywordPattern) {
+				t.Fatalf("want keyword match=%v, got %+v", want, result)
+			}
+			if memo.keywordURL != nil || memo.keywordUnit != "" {
+				t.Fatal("URL fallback context escaped its scan")
+			}
+		})
+	}
+}
