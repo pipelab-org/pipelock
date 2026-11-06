@@ -25,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
 	"github.com/luckyPipewrench/pipelock/internal/hitl"
+	"github.com/luckyPipewrench/pipelock/internal/httpstream"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/identity"
@@ -359,6 +360,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	// goroutines complete only after in-flight handlers drain).
 	var lifecycleWG sync.WaitGroup
 	proxyDrainIncomplete := false
+	var mcpErr, reverseProxyErr, scanAPIErr chan error
+	listenerShutdownTimeout := s.opts.listenerShutdownTimeout
+	if listenerShutdownTimeout <= 0 {
+		listenerShutdownTimeout = serverShutdownTimeout
+	}
 	defer func() {
 		cancel()
 		if err := s.proxy.ShutdownAgentServers(); err != nil {
@@ -366,14 +372,27 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			startErr = errors.Join(startErr, err)
 		}
 		lifecycleWG.Wait()
+		for _, listener := range []struct {
+			name   string
+			result chan error
+		}{
+			{"MCP listener", mcpErr}, {"reverse proxy listener", reverseProxyErr}, {"scan API listener", scanAPIErr},
+		} {
+			if listener.result != nil {
+				if err := <-listener.result; err != nil {
+					proxyDrainIncomplete = proxyDrainIncomplete || errors.Is(err, proxy.ErrShutdownIncomplete)
+					startErr = errors.Join(startErr, fmt.Errorf("%s: %w", listener.name, err))
+				}
+			}
+		}
 		if s.agentDrainIncomplete.Load() {
 			proxyDrainIncomplete = true
 			startErr = errors.Join(startErr, fmt.Errorf("agent listeners unbound before shutdown: %w", proxy.ErrShutdownIncomplete))
 		}
 		// Join auxiliary listener lifecycles before writing completeness anchors.
 		// Main and agent drain failures, including earlier license-driven agent
-		// unbinds, leave the run unsealed. Auxiliary listener deadlines and
-		// hijacked handlers still need their own drain tracking. Seal before the
+		// unbinds, and auxiliary listener drain failures leave the run unsealed.
+		// Hijacked handlers still need their own drain tracking. Seal before the
 		// deferred cleanup closes the recorder; this is a no-op when receipts are
 		// off or none were emitted.
 		if !proxyDrainIncomplete {
@@ -833,7 +852,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 
 	// Scan API server on a dedicated port: same bind-synchronously +
 	// serve-in-goroutine pattern as the kill switch API.
-	var scanAPIErr chan error
 	if cfg.ScanAPI.Listen != "" {
 		scanAPIMux := http.NewServeMux()
 		scanHandler := scanapi.NewHandler(cfg, s.proxy.ScannerPtr().Load(), s.currentToolPolicyCfg(), s.metrics, cliutil.Version)
@@ -866,33 +884,28 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			writeTimeout = d
 		}
 
-		scanAPISrv := newHTTPServer(scanAPIMux)
+		scanAPIGate := &httpstream.Gate{}
+		scanAPISrv := newHTTPServer(scanAPIGate.Wrap(scanAPIMux))
 		scanAPISrv.ReadTimeout = readTimeout
 		scanAPISrv.ReadHeaderTimeout = readTimeout
 		scanAPISrv.WriteTimeout = writeTimeout
-		lifecycleWG.Add(1)
-		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
-			defer lifecycleWG.Done()
-			<-ctx.Done()
-			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
-			defer shutCancel()
-			_ = scanAPISrv.Shutdown(shutdownCtx)
-		}()
-
 		scanAPIErr = make(chan error, 1)
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()
-			srvErr := scanAPISrv.Serve(scanAPILn)
-			if errors.Is(srvErr, http.ErrServerClosed) {
+			srvErr := httpstream.ServeUntilShutdown(ctx, func() error { return scanAPISrv.Serve(scanAPILn) }, func() error { //nolint:gosec // G118: fresh context preserves shutdown grace after cancellation
+				shutdownCtx, shutCancel := context.WithTimeout(context.Background(), listenerShutdownTimeout)
+				defer shutCancel()
+				return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: scanAPISrv, Gate: scanAPIGate})
+			})
+			if errors.Is(srvErr, http.ErrServerClosed) && !errors.Is(srvErr, proxy.ErrShutdownIncomplete) {
 				srvErr = nil
 			}
 			scanAPIErr <- srvErr
 		}()
-		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: scan API listening on %s\n", cfg.ScanAPI.Listen)
+		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: scan API listening on %s\n", scanAPILn.Addr().String())
 	}
 
-	var mcpErr chan error
 	if s.hasMCPListen {
 		// MCP scanning sections auto-enable inside ResolveRuntime above
 		// when the operator did not configure them; the effective cfg
@@ -1154,11 +1167,11 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 					return readMCPListenerTokenFile(s.opts.MCPAuthTokenFile)
 				}
 			}
+			listenerOpts.ListenerShutdownTimeout = listenerShutdownTimeout
 			mcpErr <- mcp.RunHTTPListenerProxy(ctx, mcpLn, s.opts.MCPUpstream, s.opts.Stderr, listenerOpts)
 		}()
 	}
 
-	var reverseProxyErr chan error
 	if cfg.ReverseProxy.Enabled {
 		rpUpstream, rpErr := url.Parse(cfg.ReverseProxy.Upstream)
 		if rpErr != nil {
@@ -1203,29 +1216,26 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 			return err
 		}
 
-		rpSrv := newReverseProxyServer(rpHandler)
+		rpGate := &httpstream.Gate{}
+		rpSrv := newReverseProxyServer(rpGate.Wrap(rpHandler))
 		rpLn = newLimitListener(rpLn, reverseProxyMaxConns)
-		lifecycleWG.Add(1)
-		go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
-			defer lifecycleWG.Done()
-			<-ctx.Done()
-			shutdownCtx, shutCancel := context.WithTimeout(context.Background(), serverShutdownTimeout)
-			defer shutCancel()
-			_ = rpSrv.Shutdown(shutdownCtx)
-		}()
 
 		reverseProxyErr = make(chan error, 1)
 		lifecycleWG.Add(1)
 		go func() {
 			defer lifecycleWG.Done()
-			srvErr := rpSrv.Serve(rpLn)
-			if errors.Is(srvErr, http.ErrServerClosed) {
+			srvErr := httpstream.ServeUntilShutdown(ctx, func() error { return rpSrv.Serve(rpLn) }, func() error { //nolint:gosec // G118: fresh context preserves the shutdown grace period after cancellation
+				shutdownCtx, shutCancel := context.WithTimeout(context.Background(), listenerShutdownTimeout)
+				defer shutCancel()
+				return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: rpSrv, Gate: rpGate})
+			})
+			if errors.Is(srvErr, http.ErrServerClosed) && !errors.Is(srvErr, proxy.ErrShutdownIncomplete) {
 				srvErr = nil
 			}
 			reverseProxyErr <- srvErr
 		}()
 		_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: reverse proxy listening on %s -> %s\n",
-			cfg.ReverseProxy.Listen, RedactEndpoint(cfg.ReverseProxy.Upstream))
+			rpLn.Addr().String(), RedactEndpoint(cfg.ReverseProxy.Upstream))
 	}
 
 	// Per-agent listener servers. Each listener injects the agent profile
@@ -1349,18 +1359,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		}
 	}
 
-	if mcpErr != nil {
-		if mErr := <-mcpErr; mErr != nil {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: MCP listener error: %v\n", mErr)
-		}
-	}
-
-	if scanAPIErr != nil {
-		if sErr := <-scanAPIErr; sErr != nil {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: scan API listener error: %v\n", sErr)
-		}
-	}
-
 	if metricsErr != nil {
 		if mErr := <-metricsErr; mErr != nil {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: metrics listener error: %v\n", mErr)
@@ -1370,12 +1368,6 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 	if ksAPIErr != nil {
 		if aErr := <-ksAPIErr; aErr != nil {
 			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: kill switch API listener error: %v\n", aErr)
-		}
-	}
-
-	if reverseProxyErr != nil {
-		if rpErr := <-reverseProxyErr; rpErr != nil {
-			_, _ = fmt.Fprintf(s.opts.Stderr, "pipelock: reverse proxy listener error: %v\n", rpErr)
 		}
 	}
 

@@ -2330,39 +2330,26 @@ func RunHTTPListenerProxy(
 		}
 	})
 
+	gate := &httpstream.Gate{}
 	srv := &http.Server{
-		Handler:           mux,
+		Handler:           gate.Wrap(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Graceful shutdown on context cancellation.
-	serveDone := make(chan struct{})
-	shutdownDone := make(chan struct{})
-	go func() { //nolint:gosec // G118: graceful shutdown after <-ctx.Done(); using ctx as parent would skip the grace period
-		defer close(shutdownDone)
-		select {
-		case <-ctx.Done():
-		case <-serveDone:
-			return
-		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer shutdownCancel()
-		if err := srv.Shutdown(shutdownCtx); err != nil {
-			_ = srv.Close()
-		}
-	}()
-
 	_, _ = fmt.Fprintf(safeLogW, "pipelock: MCP reverse proxy listening on %s\n", ln.Addr())
-
-	serveErr := srv.Serve(ln)
-	close(serveDone)
-	// Serve returns as soon as Shutdown closes the listener. Wait for the
-	// graceful shutdown to drain handlers and emit their final outcomes.
-	<-shutdownDone
-	if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-		return fmt.Errorf("HTTP listener: %w", serveErr)
+	timeout := opts.ListenerShutdownTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	serveErr := httpstream.ServeUntilShutdown(ctx, func() error { return srv.Serve(ln) }, func() error { //nolint:gosec // G118: fresh context preserves the shutdown grace period after cancellation
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), timeout)
+		defer shutdownCancel()
+		return httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: srv, Gate: gate})
+	})
+	if serveErr != nil && (!errors.Is(serveErr, http.ErrServerClosed) || errors.Is(serveErr, httpstream.ErrShutdownIncomplete)) {
+		return fmt.Errorf("MCP HTTP listener: %w", serveErr)
 	}
 	return nil
 }

@@ -133,6 +133,10 @@ func (o MCPProxyOpts) minSubjectTrust() config.DoWSubjectTrust {
 // Required: Scanner (dereferenced unconditionally in all scan paths).
 // Optional (nil-safe): all other fields - functions check before use.
 type MCPProxyOpts struct {
+	// ListenerShutdownTimeout bounds graceful HTTP listener shutdown. Zero uses
+	// the existing five-second grace period.
+	ListenerShutdownTimeout time.Duration
+
 	denialTerminal *mcpDeferredTerminal
 	// The listener carries the finalized response denial to its HTTP adapter
 	// before delivery commits headers or adds SSE framing.

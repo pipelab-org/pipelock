@@ -1,7 +1,7 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
-// Package httpstream preserves failure semantics after HTTP headers are sent.
+// Package httpstream preserves HTTP streaming and shutdown failure semantics.
 package httpstream
 
 import (
