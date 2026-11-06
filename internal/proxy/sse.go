@@ -173,6 +173,12 @@ func HijackResponseForSSE(
 	onComplete func(error),
 ) io.ReadCloser {
 	pr, pw := io.Pipe()
+	finish, admitted := httpstream.Begin(ctx)
+	if !admitted {
+		_ = resp.Body.Close()
+		_ = pw.CloseWithError(httpstream.ErrShutdownIncomplete)
+		return pr
+	}
 	upstream := resp.Body
 
 	// Ctx-cancel watcher: DispatchSSEScan only checks ctx.Done() between
@@ -194,6 +200,7 @@ func HijackResponseForSSE(
 	}()
 
 	go func() {
+		defer finish()
 		defer close(done)
 		// nil flusher: httputil.ReverseProxy detects text/event-stream and
 		// flushes per write to the client, so the per-event flush behavior

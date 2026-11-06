@@ -80,6 +80,9 @@ type ServerOpts struct {
 	// harnesses. It is unexported so CLI/operator input cannot enable it.
 	allowEphemeralListenersForTesting bool
 
+	// listenerShutdownTimeout overrides auxiliary receipt-listener grace periods in tests.
+	listenerShutdownTimeout time.Duration
+
 	// expireForTesting overrides the retention pass. Unexported and threaded
 	// through opts rather than a package-level variable so parallel tests do
 	// not share mutable state.
