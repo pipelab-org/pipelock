@@ -155,6 +155,10 @@ func fakeMain(behavior string, args []string) int {
 // fakeRun is a minimal forward proxy: it blocks the synthetic credential and
 // relays everything else, so the harness sees realistic responses.
 func fakeRun(behavior, listen string) int {
+	if behavior == "bundle-malformed" {
+		fmt.Fprintln(os.Stderr, "pipelock: DEGRADED — 1 rule bundle(s) unavailable: community")
+		fmt.Println(`{"level":"error","event":`)
+	}
 	if behavior == "auditgap" || behavior == "auditgap-restartfail" {
 		fmt.Println(`{"level":"error","component":"pipelock","event":"error","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=outcome layer=outcome failure=other"}`)
 	}

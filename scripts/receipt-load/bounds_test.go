@@ -352,6 +352,20 @@ func TestProxyAuditGapFailsIntegrity(t *testing.T) {
 	}
 }
 
+func TestBundleActivitySurvivesMalformedRecord(t *testing.T) {
+	opt := smallOptions(t, newFakePipelock(t, "bundle-malformed"))
+	if code := runModes(context.Background(), opt, []string{modeOff}); code != exitIntegrity {
+		t.Fatalf("exit=%d, want integrity failure", code)
+	}
+	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if len(got.Inputs.Rules.ProxyLogLines) == 0 {
+		t.Fatalf("bundle lines dropped next to a malformed record: %+v", got.Inputs.Rules)
+	}
+	if !hasReason(got.Integrity.Reasons, "proxy reported rule bundle activity under --rules empty: ") {
+		t.Fatalf("bundle reason missing: %+v", got.Integrity)
+	}
+}
+
 func TestRealAuditGapPathDoesNotFailIntegrity(t *testing.T) {
 	bin := realPipelock(t)
 	for _, mode := range []string{modeOff, modeBest, modeRequired} {
