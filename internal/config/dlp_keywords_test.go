@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func keywordConfigYAML(fields string) string {
@@ -223,5 +225,39 @@ func TestDLPKeywordsAgentCloneIsolation(t *testing.T) {
 	p := cfg.Agents["operator"].DLP.Patterns[0]
 	if p.Keywords[0] != "account" || *p.KeywordWindow != 50 {
 		t.Fatal("agent keyword controls shared mutable clone state")
+	}
+}
+
+func TestDLPKeywordsYAMLMerge(t *testing.T) {
+	for _, tc := range []struct {
+		name, fields string
+		wantError    bool
+	}{
+		{name: "legacy"},
+		{name: "keywords", fields: "      keywords: [account]\n      keyword_window: 50\n"},
+		{name: "unknown merged field", fields: "      keywordz: [account]\n", wantError: true},
+		{name: "invalid merged type", fields: "      keywords: [123]\n", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := "dlp:\n  include_defaults: false\n  patterns:\n    - &defaults\n      name: original\n      regex: '[0-9]{16}'\n      severity: high\n" + tc.fields + "    - <<: *defaults\n      name: merged\n"
+			if tc.wantError {
+				data = "dlp:\n  include_defaults: false\n  patterns:\n    - &defaults\n      name: original\n      regex: '[0-9]{16}'\n      severity: high\n    - name: merged\n      <<:\n        regex: '[0-9]{16}'\n        severity: high\n" + strings.ReplaceAll(tc.fields, "      ", "        ")
+			}
+			// The pre-keyword decoder used yaml.v3's native struct merge behavior.
+			type legacyPattern struct{ Name, Regex, Severity string }
+			var legacy struct {
+				DLP struct{ Patterns []legacyPattern }
+			}
+			if err := yaml.Unmarshal([]byte(data), &legacy); err != nil || len(legacy.DLP.Patterns) != 2 || legacy.DLP.Patterns[1].Regex != `[0-9]{16}` {
+				t.Fatalf("legacy merge control: %+v, %v", legacy, err)
+			}
+			cfg, err := LoadBytes([]byte(data))
+			if (err != nil) != tc.wantError {
+				t.Fatalf("load error=%v wantError=%v", err, tc.wantError)
+			}
+			if err == nil && (cfg.DLP.Patterns[1].Regex != cfg.DLP.Patterns[0].Regex || cfg.DLP.Patterns[1].Name != "merged") {
+				t.Fatalf("merged pattern=%+v", cfg.DLP.Patterns[1])
+			}
+		})
 	}
 }

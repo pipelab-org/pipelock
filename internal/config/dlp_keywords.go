@@ -6,6 +6,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -164,17 +165,24 @@ func (m *DLPKeywordMatcher) Matches(source string, start, end int) bool {
 // UnmarshalYAML keeps strict nested fields and rejects YAML scalar coercions.
 func (p *DLPPattern) UnmarshalYAML(node *yaml.Node) error {
 	type plain DLPPattern
-	patternName := "<unnamed>"
-	if name := mappingValue(node, "name"); name != nil {
-		patternName = name.Value
-	}
-	fail := func(reason string) error { return fmt.Errorf("DLP pattern %q %s", patternName, reason) }
 	if node.Kind != yaml.MappingNode {
 		return fmt.Errorf("DLP pattern must be a mapping")
 	}
+	// Let yaml.v3 resolve merge precedence and reject duplicate keys before
+	// checking effective fields. Node values retain the scalar tags needed
+	// to reject coercions in keyword settings.
+	var fields map[string]yaml.Node
+	if err := node.Decode(&fields); err != nil {
+		return err
+	}
+	patternName := "<unnamed>"
+	if name, ok := fields["name"]; ok {
+		patternName = name.Value
+	}
+	fail := func(reason string) error { return fmt.Errorf("DLP pattern %q %s", patternName, reason) }
 	var raw plain
-	for i := 0; i < len(node.Content); i += 2 {
-		key, value := node.Content[i].Value, node.Content[i+1]
+	for _, key := range slices.Sorted(maps.Keys(fields)) {
+		value := fields[key]
 		switch key {
 		case "name", "regex", "severity", "validator", "exempt_domains", "action":
 		case "keywords":
