@@ -211,3 +211,28 @@ func TestHostnameLabelDecodeBudget(t *testing.T) {
 		t.Fatalf("configured DLP lost incomplete hostname inspection: %+v", result)
 	}
 }
+
+func TestHostnameLabelSeedPhraseDecoding(t *testing.T) {
+	cfg := testConfig()
+	cfg.Internal = nil
+	cfg.FetchProxy.Monitoring.MaxURLLength = 4096
+	cfg.SeedPhraseDetection.Enabled = ptrBool(true)
+	cfg.SeedPhraseDetection.MinWords = 12
+	cfg.SeedPhraseDetection.VerifyChecksum = ptrBool(true)
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for encoding, encoded := range hostnameLabelEncodings(testSeedPhrase12) {
+		for _, width := range []int{4, 12, 63} {
+			t.Run(fmt.Sprintf("%s/%d", encoding, width), func(t *testing.T) {
+				parsed, err := url.Parse("https://" + hostnameLabelCarrier(encoded, width) + ".vendor.co.uk/")
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, _ := sc.checkDLP(parsed)
+				if result.Allowed || result.Scanner != ScannerDLP || !strings.Contains(result.Reason, "BIP-39") {
+					t.Fatalf("want seed phrase rejection, got %+v", result)
+				}
+			})
+		}
+	}
+}

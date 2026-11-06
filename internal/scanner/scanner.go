@@ -2295,15 +2295,35 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 	for _, d := range decodes.decode(hostname, true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
-	host := strings.TrimSuffix(hostname, ".")
-	if net.ParseIP(host) != nil {
+	return appendHostnamePrefixDecodes(targets, hostname, decodes)
+}
+
+// appendHostnamePrefixDecodes adds the decodings of the dot-collapsed prefix
+// before the registrable domain. Regex DLP and seed phrase detection share it
+// so a carrier split across DNS labels reaches both before resolution.
+func appendHostnamePrefixDecodes(targets []dlpTarget, hostname string, decodes *decodingMemo) []dlpTarget {
+	prefix, ok := hostnameEncodedPrefix(hostname)
+	if !ok {
 		return targets
+	}
+	for _, d := range decodes.decode(prefix, true) {
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+	}
+	return targets
+}
+
+// hostnameEncodedPrefix returns the dot-collapsed labels before the
+// registrable domain, or false for IP literals and hosts without one.
+func hostnameEncodedPrefix(hostname string) (string, bool) {
+	host := strings.TrimSuffix(hostname, ".")
+	if !strings.Contains(host, ".") || net.ParseIP(host) != nil {
+		return "", false
 	}
 	// PSL lookup is case-insensitive; retain the original prefix bytes because
 	// base64url is case-sensitive. The shared decoder folds base32 itself.
 	regDomain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
 	if err != nil {
-		return targets
+		return "", false
 	}
 	// Count suffix labels rather than bytes: Unicode case folding can change
 	// the suffix byte length without changing its DNS label boundaries.
@@ -2311,14 +2331,11 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 	for range strings.Count(regDomain, ".") + 1 {
 		end := strings.LastIndexByte(prefix, '.')
 		if end < 0 {
-			return targets
+			return "", false
 		}
 		prefix = prefix[:end]
 	}
-	for _, d := range decodes.decode(removeHostnameDots(prefix), true) {
-		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-	}
-	return targets
+	return removeHostnameDots(prefix), true
 }
 
 // orderedQueryConcat concatenates all query parameter values in their original URL
@@ -3572,6 +3589,10 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		if strings.Contains(hostname, ".") {
 			seedTargets = append(seedTargets, dlpTarget{strings.ReplaceAll(hostname, ".", " "), "hostname_labels_joined", ""})
 		}
+		// Decoded hostname prefix: an encoded phrase split across short DNS
+		// labels. Decoding restores its own separators, so the collapsed
+		// prefix does not create the synthetic word runs noted above.
+		seedTargets = appendHostnamePrefixDecodes(seedTargets, hostname, decodes)
 		// Path segments: catch seed words as path components
 		// (e.g., "/abandon/abandon/abandon/.../about").
 		if strings.Contains(parsed.Path, "/") {
