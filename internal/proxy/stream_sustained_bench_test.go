@@ -4,7 +4,6 @@
 package proxy
 
 import (
-	"math/rand/v2"
 	"strings"
 	"testing"
 
@@ -57,23 +56,30 @@ func BenchmarkWSUpstreamCrossMessageSustainedNovel(b *testing.B) {
 }
 
 // novelStreamText emits deterministic ordinary words without replaying a fixed
-// message or tail. Vocabulary may repeat, as in real token deltas, but the PCG
-// state continues across warmup, messages, and benchmark iterations.
+// message or tail. Vocabulary may repeat, as in real token deltas, but the
+// generator state continues across warmup, messages, and benchmark iterations.
+// The step is a 64-bit linear congruential generator with Knuth's MMIX
+// constants; the corpus only needs to be deterministic, not unpredictable.
 type novelStreamText struct {
-	random     *rand.Rand
+	state      uint64
 	dictionary []string
 }
 
 func newNovelStreamText() *novelStreamText {
 	const vocabulary = "the gardens rivers lights greens quietly mornings windows smaller clearly stories blues warmly roads fields clouds brighter leaves homes fresher stones rounded hills softly rains trees calmly lakes longer paths newer days"
-	return &novelStreamText{random: rand.New(rand.NewPCG(1, 2)), dictionary: strings.Fields(vocabulary)} //nolint:gosec // G404: deterministic benchmark corpus, not security-sensitive
+	return &novelStreamText{state: 1, dictionary: strings.Fields(vocabulary)}
+}
+
+func (g *novelStreamText) nextIndex() uint64 {
+	g.state = g.state*6364136223846793005 + 1442695040888963407
+	return (g.state >> 33) % uint64(len(g.dictionary))
 }
 
 func (g *novelStreamText) next(words int) string {
 	var out strings.Builder
 	for range words {
 		out.WriteByte(' ')
-		out.WriteString(g.dictionary[g.random.IntN(len(g.dictionary))])
+		out.WriteString(g.dictionary[g.nextIndex()])
 	}
 	return out.String()
 }
