@@ -140,8 +140,8 @@ func TestDrainServerReportsRunningHandler(t *testing.T) {
 	if err := DrainServer(ctx, gs); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("DrainServer = %v, want the deadline reported", err)
 	}
-	if running, _ := gs.Gate.close(); running != 1 {
-		t.Fatalf("gate reports %d running handlers, want 1", running)
+	if handlers, _, _ := gs.Gate.close(); handlers != 1 {
+		t.Fatalf("gate reports %d running handlers, want 1", handlers)
 	}
 }
 
@@ -154,8 +154,8 @@ func TestHandlerGateRefusesAfterClose(t *testing.T) {
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil)
 
 	h.ServeHTTP(httptest.NewRecorder(), req)
-	if running, _ := gate.close(); running != 0 {
-		t.Fatalf("gate reports %d running handlers after the handler returned, want 0", running)
+	if handlers, _, _ := gate.close(); handlers != 0 {
+		t.Fatalf("gate reports %d running handlers after the handler returned, want 0", handlers)
 	}
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -165,8 +165,8 @@ func TestHandlerGateRefusesAfterClose(t *testing.T) {
 	if n := calls.Load(); n != 1 {
 		t.Fatalf("handler ran %d times, want 1", n)
 	}
-	if running, _ := gate.close(); running != 0 {
-		t.Fatalf("refused request left %d running handlers, want 0", running)
+	if handlers, _, _ := gate.close(); handlers != 0 {
+		t.Fatalf("refused request left %d running handlers, want 0", handlers)
 	}
 }
 
@@ -255,5 +255,38 @@ func TestDrainServerPreservesCancellation(t *testing.T) {
 	cancel()
 	if err := DrainServer(ctx, gs); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled drain = %v", err)
+	}
+}
+
+// A hijacked handler (a CONNECT tunnel or WebSocket relay) stays inside
+// ServeHTTP for the connection's life, and net/http no longer tracks the
+// connection, so Shutdown succeeds while it runs. Hijacked connections have
+// their own drain contract; the gate must not turn every run with an open
+// tunnel into an incomplete drain by waiting on them.
+func TestDrainServerLeavesHijackedHandlers(t *testing.T) {
+	hijacked := make(chan struct{})
+	release := make(chan struct{})
+	gs, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(hijacked)
+		<-release
+	}))
+	defer close(release)
+
+	tunnel := dialTest(t, addr)
+	if _, err := io.WriteString(tunnel, "GET /tunnel HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	<-hijacked
+
+	ctx, cancel := context.WithTimeout(context.Background(), drainTestGrace)
+	defer cancel()
+	if err := DrainServer(ctx, gs); err != nil {
+		t.Fatalf("DrainServer with an open hijacked connection = %v, want the HTTP drain complete", err)
 	}
 }
