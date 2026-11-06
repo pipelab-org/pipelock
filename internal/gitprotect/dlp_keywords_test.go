@@ -4,6 +4,7 @@
 package gitprotect
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -17,7 +18,7 @@ func TestDLPKeywordsCustomPattern(t *testing.T) {
 	for _, tc := range []struct {
 		text string
 		want bool
-	}{{"3333333333333333", false}, {"account 3333333333333333", true}} {
+	}{{"3333333333333333", false}, {"account 3333333333333333", true}, {"account" + strings.Repeat("\u00a0", 100) + "3333333333333333", false}} {
 		if got := rules[0].regexMatches(tc.text); got != tc.want {
 			t.Errorf("got %v want %v", got, tc.want)
 		}

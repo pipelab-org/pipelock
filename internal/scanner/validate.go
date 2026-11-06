@@ -445,7 +445,8 @@ func ContextualPatternMatches(text string, re *regexp.Regexp, validate func(stri
 	}
 	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry, keywords: keywords}
 	if keywords != nil {
-		text = normalize.ForDLP(text)
+		_, _, matched := p.matchSpanWithDecodes(normalize.ForDLP(text), text, nil)
+		return matched
 	}
 	return p.matches(text)
 }
