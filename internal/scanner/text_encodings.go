@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 type encodingSourceRange struct {
@@ -47,8 +48,13 @@ func appendTextEncodingViews(out []decodedResult, s string) []decodedResult {
 			out = append(out, decodedResult{decoded, encoding})
 		}
 	}
-	if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" {
-		out = append(out, decodedResult{decoded, encodingQuotedPrintable})
+	// RFC 2045 quoted-printable is a text carrier. Binary decoder output
+	// containing an incidental escape must not create near-identity views
+	// that consume the recursive budget. Keep literal UTF-8 prose supported.
+	if utf8.ValidString(s) {
+		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" {
+			out = append(out, decodedResult{decoded, encodingQuotedPrintable})
+		}
 	}
 	return out
 }
@@ -58,6 +64,12 @@ func appendTextEncodingViews(out []decodedResult, s string) []decodedResult {
 // manufacturing numeric-code views. The numeric parser still owns exponent
 // forms. Known-value matching retains its existing liberal delimiter handling.
 func characterCodeSeparator(r rune) bool {
+	// NumericLiteral carriers are text. Invalid UTF-8 and non-whitespace
+	// controls break a run instead of joining unrelated digits in binary.
+	// Known-value numeric matching keeps its separate liberal separator rule.
+	if r == utf8.RuneError || unicode.IsControl(r) && !unicode.IsSpace(r) {
+		return false
+	}
 	return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '.' && r != '+' && r != '-' && r != '_'
 }
 

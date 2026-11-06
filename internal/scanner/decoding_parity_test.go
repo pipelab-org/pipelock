@@ -164,7 +164,10 @@ func referenceDecodeEncodingsFixpoint(s string, includeURL bool) []decodedResult
 	consumed := 0
 	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
 		text := queue[head]
-		candidates := referenceDecodeEncodings(text)
+		// Carrier parser behavior has separate cases. This reference checks
+		// traversal and byte accounting with their views included.
+		candidates := appendTextEncodingViews(nil, text)
+		candidates = append(candidates, referenceDecodeEncodings(text)...)
 		if includeURL {
 			if decoded := IterativeDecode(text); decoded != text && decoded != "" {
 				candidates = append(candidates, decodedResult{decoded, encodingURL})
