@@ -163,6 +163,7 @@ func TestMultipartRegionsDLPLimits(t *testing.T) {
 			{"missing close", []byte(secret + "\r\n--region-boundary\r\nContent-Disposition: form-data; name=field\r\n\r\nordinary text"), "parse_error", "unexpected EOF", http.StatusForbidden},
 		} {
 			t.Run(surface+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
 				wantReason, wantStatus := tc.reason, tc.status
 				// Reverse rejects a known oversized Content-Length before body scanning.
 				if surface == "reverse" && tc.name == "over limit" {

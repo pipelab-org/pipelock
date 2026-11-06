@@ -17,6 +17,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -830,18 +831,117 @@ func TestHTTPListener_HeaderContractCanceledLockWait(t *testing.T) {
 	}
 }
 
-func TestHTTPListener_ContractDiscoveryTimeout(t *testing.T) {
-	canceled := make(chan struct{})
-	f := newDiscoveryFixture(t, paramContractOpts(t), func(_ http.ResponseWriter, r *http.Request, _ MCPFrame, _ int) { <-r.Context().Done(); close(canceled) })
+func TestHTTPListener_ContractDiscoveryRequestFailure(t *testing.T) {
+	// Exercise the listener's real HTTP refusal path without waiting for expiry.
+	// Caller cancellation reaches a real upstream in ContractDiscoveryCancellation.
+	f := newDiscoveryFixture(t, paramContractOpts(t), func(http.ResponseWriter, *http.Request, MCPFrame, int) {
+		panic(http.ErrAbortHandler)
+	})
 	status, body := f.call(t, "body", "first")
-	if status != 503 || f.calls.Load() != 0 || !strings.Contains(body, "upstream discovery request failed") {
-		t.Fatalf("timeout status=%d calls=%d body=%s", status, f.calls.Load(), body)
+	if status != http.StatusServiceUnavailable || f.lists.Load() != 1 || f.calls.Load() != 0 || !strings.Contains(body, "upstream discovery request failed") {
+		t.Fatalf("discovery failure status=%d lists=%d calls=%d body=%s", status, f.lists.Load(), f.calls.Load(), body)
+	}
+}
+
+func TestContractDiscoveryTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		upstream := &discoveryTimeoutTransport{}
+		state := newMCPListenerClientState("", "test")
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/", nil)
+		req.Header = currentWireHeaders(methodToolsCall, "echo")
+		start := time.Now()
+		err := discoverMCPToolContract(mcpContractDiscoveryRequest{
+			request: req, client: &http.Client{Transport: upstream}, upstream: "http://upstream.vendor.example/",
+			opts: paramContractOpts(t), state: state, log: io.Discard, tool: "echo",
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || discoveryClientReason(err) != "upstream discovery request failed" {
+			t.Fatalf("discovery timeout = %v, want deadline refusal", err)
+		}
+		if elapsed := time.Since(start); elapsed != upstreamIdleReadTimeout {
+			t.Fatalf("discovery deadline = %v, want %v", elapsed, upstreamIdleReadTimeout)
+		}
+		if !upstream.canceled || req.Context().Err() != nil || state.baseline.HeaderContract("echo").State != tools.HeaderContractUnknown {
+			t.Fatalf("timeout did not cancel discovery independently without adopting a contract: canceled=%v caller=%v", upstream.canceled, req.Context().Err())
+		}
+	})
+}
+
+func TestContractDiscoveryTimeoutAfterPartialBody(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Headers and part of the inventory arrive, then the upstream stalls, so
+		// the deadline has to interrupt the body read rather than the round trip.
+		body := &stallingDiscoveryBody{partial: []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[`), closed: make(chan struct{})}
+		state := newMCPListenerClientState("", "test")
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/", nil)
+		req.Header = currentWireHeaders(methodToolsCall, "echo")
+		start := time.Now()
+		err := discoverMCPToolContract(mcpContractDiscoveryRequest{
+			request: req, client: &http.Client{Transport: stallingDiscoveryTransport{body: body}}, upstream: "http://upstream.vendor.example/",
+			opts: paramContractOpts(t), state: state, log: io.Discard, tool: "echo",
+		})
+		if err == nil {
+			t.Fatal("stalled discovery body adopted an inventory")
+		}
+		if elapsed := time.Since(start); elapsed != upstreamIdleReadTimeout {
+			t.Fatalf("partial-body discovery deadline = %v, want %v", elapsed, upstreamIdleReadTimeout)
+		}
+		if body.reads.Load() < 2 || req.Context().Err() != nil || state.baseline.HeaderContract("echo").State != tools.HeaderContractUnknown {
+			t.Fatalf("stalled body: reads=%d caller=%v contract=%v err=%v", body.reads.Load(), req.Context().Err(), state.baseline.HeaderContract("echo").State, err)
+		}
+		select {
+		case <-body.closed:
+		default:
+			t.Fatal("discovery did not close the stalled response body")
+		}
+	})
+}
+
+type stallingDiscoveryTransport struct {
+	body *stallingDiscoveryBody
+}
+
+func (s stallingDiscoveryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.body.ctx = req.Context()
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	return &http.Response{StatusCode: http.StatusOK, Header: header, Body: s.body, Request: req}, nil
+}
+
+// stallingDiscoveryBody returns its partial inventory once, then blocks until
+// it is closed or the discovery request ends.
+type stallingDiscoveryBody struct {
+	partial   []byte
+	ctx       context.Context
+	reads     atomic.Int32
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (b *stallingDiscoveryBody) Read(p []byte) (int, error) {
+	if b.reads.Add(1) == 1 {
+		return copy(p, b.partial), nil
 	}
 	select {
-	case <-canceled:
-	case <-time.After(testwait.Deadline(2 * time.Second)):
-		t.Fatal("timed out discovery still running")
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
 	}
+}
+
+func (b *stallingDiscoveryBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
+type discoveryTimeoutTransport struct {
+	canceled bool
+}
+
+func (d *discoveryTimeoutTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	<-req.Context().Done()
+	d.canceled = true
+	return nil, req.Context().Err()
 }
 
 func TestContractDiscoveryCannotOverwriteKnownSiblingOrRevokedState(t *testing.T) {
