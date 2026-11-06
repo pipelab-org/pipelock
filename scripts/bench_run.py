@@ -233,6 +233,14 @@ ALLOCATION_REPETITIONS = 4
 # Reproduced on linux/amd64 with -count=4 at the stated fixed iteration counts.
 # These are observed post-warm-up allocs/op values, never a numerical tolerance.
 ALLOCATION_EXCLUSIONS: dict[tuple[str, str], str] = {
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkA2AStreamInjectionSustainedNovel/MessageLeadingSpace"):
+        "allocs/op varies after warm-up: 3562102, 3562028, 3562178 (3 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkA2AStreamInjectionSustainedNovel/TokenLeadingSpace"):
+        "allocs/op varies after warm-up: 3008178, 3008173, 3008107 (3 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkGenericSSEInjectionSustainedNovel/MessageLeadingSpace"):
+        "allocs/op varies after warm-up: 4497097, 4497158, 4497166 (3 iterations)",
+    ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkGenericSSEInjectionSustainedNovel/TokenLeadingSpace"):
+        "allocs/op varies after warm-up: 4089526, 4089593, 4089551 (3 iterations)",
     ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkMCPScanResponseLargeWarn"):
         "allocs/op varies after warm-up: 53170, 53171, 53165 (20 iterations)",
     ("github.com/luckyPipewrench/pipelock/internal/mcp", "BenchmarkMCPScanResponse_Clean"):
