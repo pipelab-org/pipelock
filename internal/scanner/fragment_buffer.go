@@ -888,11 +888,47 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}
+	matches := scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, false)
+	// Join the same bounded normalization/matching path with a tag-decoded
+	// view. Keep the original fragments for request attribution. Framing-only
+	// tags produce the existing stripped view and need no additional scan.
+	for _, f := range fragments {
+		text := string(f.data)
+		if !normalize.ContainsTags(text) || normalize.ForDLP(normalize.DecodeTags(text)) == normalize.ForDLP(text) {
+			continue
+		}
+		decoded := scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, true)
+		byPattern := make(map[string][]DLPMatch, len(matches))
+		for _, match := range matches {
+			byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+		}
+		for _, match := range decoded {
+			if slices.ContainsFunc(byPattern[match.PatternName], func(prior DLPMatch) bool {
+				return prior.Matched == match.Matched && prior.Warn == match.Warn && slices.EqualFunc(prior.Contributors, match.Contributors, bytes.Equal)
+			}) {
+				continue
+			}
+			matches = append(matches, match)
+			byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+		}
+		break
+	}
+	return matches
+}
+
+func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string, unicodeTags bool) []DLPMatch {
+	if len(fragments) < minFragmentsForMatch {
+		return nil
+	}
 
 	buf := make([]byte, 0)
 	ranges := make([]fragmentRange, 0, len(fragments))
 	for _, f := range fragments {
-		normalized, stable := normalizeFragmentForDLP(f.data)
+		payload := f.data
+		if unicodeTags {
+			payload = []byte(normalize.DecodeTags(string(payload)))
+		}
+		normalized, stable := normalizeFragmentForDLP(payload)
 		if !stable {
 			// Scanner spans index another normalization pass. If the bounded
 			// pipeline does not reach a fixed point, no fragment boundary can be
@@ -905,7 +941,7 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	}
 
 	text := string(buf)
-	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity)}
+	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: unicodeTags}
 	if memo != nil && memo.lookup(key, text) {
 		return nil
 	}
@@ -1555,6 +1591,7 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 type fragmentCleanKey struct {
 	scanner            *Scanner
 	stream, continuity string
+	unicodeTags        bool
 }
 type fragmentCleanMemo struct {
 	mu                         sync.Mutex

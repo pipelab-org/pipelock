@@ -4,9 +4,11 @@
 package scanner
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -269,6 +271,43 @@ func TestUnicodeTagsSeed(t *testing.T) {
 			}
 			if got.Clean || !found {
 				t.Fatalf("missing decoded seed finding: clean=%v matches=%v", got.Clean, matchNames(got.Matches))
+			}
+		})
+	}
+}
+
+func TestUnicodeTagsFragments(t *testing.T) {
+	s := tagsScanner(t)
+	key := inspectionLimitAWSKey()
+	for _, tc := range []struct {
+		name   string
+		pieces []string
+		match  bool
+	}{
+		{"stripped and decoded deduplicate", []string{unicodeTags("note ") + key[:10], unicodeTags(""), key[10:]}, true},
+		{"tag halves", []string{unicodeTags(key[:10]), unicodeTags(""), unicodeTags(key[10:])}, true},
+		{"mixed", []string{"note " + unicodeTags(key[:10]), unicodeTags(""), unicodeTags(key[10:]) + " done"}, true},
+		{"complete in one request", []string{unicodeTags(key), unicodeTags(""), "ordinary"}, false},
+		{"harmless", []string{"\U0001f3f4" + unicodeTags("gbeng"), "正常な文章", "ordinary prose"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fb := NewFragmentBuffer(4096, 1, testWindowSecs)
+			t.Cleanup(fb.Close)
+			owner, stream := testCEEIdentity(testSessionA), testCEEStream(testSessionA)
+			ids := [][]byte{[]byte("request-a"), []byte("request-noise"), []byte("request-b")}
+			var matches []DLPMatch
+			for i, piece := range tc.pieces {
+				_, results := fb.AppendAndScanOwnedBatch(t.Context(), owner, []FragmentAppend{{Group: stream, Stream: stream, Payload: []byte(piece), SourceRequestID: ids[i]}}, s)
+				if len(results) != 1 {
+					t.Fatal("fragment admission failed")
+				}
+				matches = results[0]
+			}
+			if (len(matches) > 0) != tc.match {
+				t.Fatalf("findings=%d want match=%v", len(matches), tc.match)
+			}
+			if tc.match && (len(matches) != 1 || !slices.EqualFunc(matches[0].Contributors, [][]byte{ids[0], ids[2]}, bytes.Equal)) {
+				t.Fatalf("incorrect contributor attribution or duplicate findings: %+v", matches)
 			}
 		})
 	}

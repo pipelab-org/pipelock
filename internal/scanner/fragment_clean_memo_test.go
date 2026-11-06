@@ -184,6 +184,7 @@ func TestFragmentCleanMemoBoundsAndIdentity(t *testing.T) {
 		{scanner: other, stream: key.stream, continuity: key.continuity},
 		{scanner: sc, stream: "other-owner", continuity: key.continuity},
 		{scanner: sc, stream: key.stream, continuity: "sibling"},
+		{scanner: sc, stream: key.stream, continuity: key.continuity, unicodeTags: true},
 	} {
 		if m.lookup(k, "ordinary") {
 			t.Fatal("identity crossed memo boundary")
