@@ -186,6 +186,42 @@ func TestShutdownClosesAllAgentHijacksBeforeJoining(t *testing.T) {
 	}
 }
 
+func TestShutdownAgentServersSharesOneGrace(t *testing.T) {
+	p := newTestProxy(t)
+	p.shutdownGrace = drainTestGrace
+	release := make(chan struct{})
+	const listeners = 3
+	for range listeners {
+		entered := make(chan struct{})
+		srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			close(entered)
+			<-release
+		}))
+		p.RegisterAgentServer(srv.Config)
+		srv.Start()
+		defer srv.Close()
+		conn := dialTest(t, srv.Listener.Addr().String())
+		if _, err := io.WriteString(conn, "GET /held HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("handler not entered")
+		}
+	}
+	defer close(release)
+	start := time.Now()
+	err := p.ShutdownAgentServers()
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrShutdownIncomplete) {
+		t.Fatalf("held handlers drained as complete: %v", err)
+	}
+	if elapsed >= 2*drainTestGrace {
+		t.Fatalf("shutdown took %v for %d listeners; want one shared %v grace", elapsed, listeners, drainTestGrace)
+	}
+}
+
 // Observe entry into the real TCP Read after the relay armed its deadline.
 // This makes cancellation interrupt an established read rather than letting
 // the next loop's context check hide a missing socket-close callback.
