@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -80,20 +82,23 @@ func TestWaitForParentHardening_DeniesEOF(t *testing.T) {
 }
 
 func TestWaitForParentHardening_DeniesTimeout(t *testing.T) {
-	reader, writer, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create readiness pipe: %v", err)
-	}
-	t.Cleanup(func() { _ = reader.Close() })
-	t.Cleanup(func() { _ = writer.Close() })
-	t.Setenv(sandboxReadinessFDEnv, strconv.FormatUint(uint64(duplicateTestFD(t, reader)), 10))
-
-	// Keep the writer open without sending a release. The production deadline
-	// must refuse startup without waiting for the blocked read to finish.
-	err = waitForParentHardening()
-	if err == nil || err.Error() != "waiting for parent hardening: timed out" {
-		t.Fatalf("unreleased readiness wait = %v, want timeout", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		// An in-memory pipe lets virtual time advance while the read blocks.
+		// Real inherited-descriptor EOF and release are covered alongside this.
+		reader, writer := io.Pipe()
+		defer func() { _ = writer.Close() }()
+		start := time.Now()
+		err := waitForHardeningRelease(reader)
+		if err == nil || err.Error() != "waiting for parent hardening: timed out" {
+			t.Fatalf("unreleased readiness wait = %v, want timeout", err)
+		}
+		if elapsed := time.Since(start); elapsed != 30*time.Second {
+			t.Fatalf("readiness deadline = %v, want 30s", elapsed)
+		}
+		if _, err := writer.Write([]byte{1}); !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("readiness reader after timeout = %v, want closed pipe", err)
+		}
+	})
 }
 
 func TestWaitForParentHardening_ValidatesAndConsumesRelease(t *testing.T) {

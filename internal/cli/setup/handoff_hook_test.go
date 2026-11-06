@@ -23,6 +23,7 @@ type hookRow struct {
 
 // runHookRows runs each row through the cursor and claude hooks, with the
 // default config and with configs/strict.yaml.
+// Rows run in parallel; callers must not change process state.
 func runHookRows(t *testing.T, rows []hookRow) {
 	t.Helper()
 	hooks := []struct {
@@ -48,6 +49,8 @@ func runHookRows(t *testing.T, rows []hookRow) {
 		for _, p := range presets {
 			for _, tt := range rows {
 				t.Run(h.name+"/"+p.name+"/"+tt.name, func(t *testing.T) {
+					t.Parallel()
+
 					deny, inc := tt.denyDefault, tt.incDefault
 					if p.name == "strict" {
 						deny, inc = tt.denyStrict, tt.incStrict
