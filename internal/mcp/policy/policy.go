@@ -296,7 +296,7 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 		paths = append(paths, field...)
 	}
 	expanded, notes := pc.localPaths.expandNoted(paths, true)
-	seen := make(map[string]bool, len(values)+len(expanded))
+	seen := make(map[string]bool)
 	out := slices.Clone(values)
 	for _, value := range values {
 		seen[value] = true
