@@ -19,6 +19,8 @@ import (
 func TestHostnameLabelDecodingTransports(t *testing.T) {
 	addr, cleanup := setupForwardProxy(t, queryViewsProxyConfig)
 	defer cleanup()
+	wsAddr, wsCleanup := setupWSProxy(t, queryViewsProxyConfig)
+	defer wsCleanup()
 	credential := queryViewsCredential()
 	for encoding, encoded := range map[string]string{
 		"hex":       hex.EncodeToString([]byte(credential)),
@@ -32,17 +34,21 @@ func TestHostnameLabelDecodingTransports(t *testing.T) {
 				labels = append(labels, encoded[start:min(start+width, len(encoded))])
 			}
 			host := strings.Join(labels, ".") + ".vendor.example"
-			for _, route := range []string{"fetch", "forward", "connect"} {
+			for _, route := range []string{"fetch", "forward", "connect", "websocket"} {
 				t.Run(fmt.Sprintf("%s/%d/%s", encoding, width, route), func(t *testing.T) {
 					method, target, authority := http.MethodGet, "http://"+host+"/", host
+					proxyAddr := addr
 					switch route {
 					case "fetch":
 						target = "/fetch?url=" + url.QueryEscape("https://"+host+"/")
 						authority = addr
+					case "websocket":
+						target = "/ws?url=" + url.QueryEscape("wss://"+host+"/")
+						authority, proxyAddr = wsAddr, wsAddr
 					case "connect":
 						method, target, authority = http.MethodConnect, host+":443", host+":443"
 					}
-					conn := dialProxy(t, addr)
+					conn := dialProxy(t, proxyAddr)
 					defer func() { _ = conn.Close() }()
 					if _, err := fmt.Fprintf(conn, "%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", method, target, authority); err != nil {
 						t.Fatal(err)

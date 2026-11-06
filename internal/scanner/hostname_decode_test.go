@@ -106,13 +106,49 @@ func TestHostnameLabelHarmless(t *testing.T) {
 		"xn--bcher-kva.example",
 		"api.xn--bcher-kva.example",
 		"xn--r8jz45g.xn--zckzah",
-		"a9k3m7p2v8x4q6r1t5w0y2z8.vendor.example",
 		"6768.6a6b.6c6d.6e6f.7071.7273.7475.7677.vendor.example",
 		"ordinary.status.vendor.co.uk.",
 	} {
 		t.Run(host, func(t *testing.T) {
 			if result := sc.Scan(t.Context(), "https://"+host+"/"); !result.Allowed {
 				t.Fatalf("harmless hostname blocked: %+v", result)
+			}
+		})
+	}
+}
+
+func TestHostnameLabelRandomRetainsEntropyPolicy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for _, label := range []string{"a9k3m7p2v8x4q6r1t5w0y2z8", strings.Repeat("a9k3m7p2v8x4q6r1t5w0y2z8", 3)[:63]} {
+		t.Run(label, func(t *testing.T) {
+			// These non-credential labels already meet the subdomain entropy policy.
+			// Hostname decoding must not replace that decision with a DLP finding.
+			result := sc.Scan(t.Context(), "https://"+label+".vendor.example/")
+			if result.Allowed || result.Scanner != ScannerSubdomainEntropy {
+				t.Fatalf("want existing subdomain entropy refusal, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestHostnameLabelUnicodeSuffix(t *testing.T) {
+	credential := "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	for encoding, encoded := range hostnameLabelEncodings(credential) {
+		t.Run(encoding, func(t *testing.T) {
+			memo := &decodingMemo{}
+			host := hostnameLabelCarrier(encoded, 4) + ".KKK.example"
+			found := false
+			for _, target := range appendHostnameDLPTargets(nil, host, memo) {
+				if target.text == credential {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("case folding the suffix changed the payload boundary")
 			}
 		})
 	}

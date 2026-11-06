@@ -2302,10 +2302,19 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 	// PSL lookup is case-insensitive; retain the original prefix bytes because
 	// base64url is case-sensitive. The shared decoder folds base32 itself.
 	regDomain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
-	if err != nil || len(regDomain) == len(host) {
+	if err != nil {
 		return targets
 	}
-	prefix := host[:len(host)-len(regDomain)-1]
+	// Count suffix labels rather than bytes: Unicode case folding can change
+	// the suffix byte length without changing its DNS label boundaries.
+	prefix := host
+	for range strings.Count(regDomain, ".") + 1 {
+		end := strings.LastIndexByte(prefix, '.')
+		if end < 0 {
+			return targets
+		}
+		prefix = prefix[:end]
+	}
 	for _, d := range decodes.decode(removeHostnameDots(prefix), true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
