@@ -4,13 +4,18 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/config"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestTransformProfileV1Fixtures(t *testing.T) {
@@ -206,6 +211,26 @@ func TestReproduceSpanViewDecodedInputs(t *testing.T) {
 			view:   contractreceipt.NormalizedViewHexDecoded,
 			want:   "hello",
 		},
+		"unicode tags decoded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prefix AB suffix",
+		},
+		"unicode tags DLP decoded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   contractreceipt.NormalizedViewDLPNormalized + ":unicode_tags",
+			want:   "prefix AB suffix",
+		},
+		"unicode tags spaced": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   "invisible_spaced:" + contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prefix A B suffix",
+		},
+		"unicode tags vowel folded": {
+			source: "prefix \U000e0001\U000e0041\u200b\U000e0042\U000e007f suffix",
+			view:   "vowel_fold:" + contractreceipt.NormalizedViewUnicodeTagsDecoded,
+			want:   "prafax AB saffax",
+		},
 		"hex decoded invalid": {
 			source: "not-hex",
 			view:   contractreceipt.NormalizedViewHexDecoded,
@@ -378,4 +403,239 @@ func TestRecheckReport_StrengthIsDistinguishable(t *testing.T) {
 	if exact.Overall == occurrence.Overall {
 		t.Fatalf("exact and occurrence-only collapsed to the same verdict %q", exact.Overall)
 	}
+}
+
+func TestUnicodeTagsReviewCompositeView(t *testing.T) {
+	source := "prefix \U000e0041\U000e0025\U000e0032\U000e0030\U000e0042 suffix"
+	got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags:url_userinfo_username_escaped")
+	if err != nil || got != "prefix A%20B suffix" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestUnicodeTagsReviewCompositeOrder(t *testing.T) {
+	source := "%F3%A0%81%81%F3%A0%80%A5%F3%A0%80%B2%F3%A0%80%B0%F3%A0%81%82"
+	got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags_decoded:url_decoded:url_userinfo_username_escaped")
+	if err != nil || got != "A%20B" {
+		t.Fatalf("got=%q err=%v", got, err)
+	}
+}
+
+func TestUnicodeTagsReviewSharedReceipt(t *testing.T) {
+	path := filepath.Join("..", "..", "sdk", "verifiers", "fixtures", "unicode-tags-receipt.json")
+	key := "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+	stdout, stderr, code := runRoot(t, "receipt", "--key", key, "--json", path)
+	if code != 0 {
+		t.Fatalf("code=%d stdout=%s stderr=%s", code, stdout, stderr)
+	}
+	var report struct {
+		Valid              bool `json:"valid"`
+		SignaturesVerified bool `json:"signatures_verified"`
+		SourceSpanCount    int  `json:"source_span_count"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatal(err)
+	}
+	if !report.Valid || !report.SignaturesVerified || report.SourceSpanCount != 29 {
+		t.Fatalf("unexpected receipt report: %s", stdout)
+	}
+}
+
+func TestUnicodeTagsReviewUserinfoReplay(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "AKIA" + "QWERTYUIOPASDFGH" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := scanner.MustNew(cfg)
+	defer sc.Close()
+	source := "https://" + url.User(tags.String()).String() + "@api.vendor.example/"
+	result := sc.ScanTextForDLP(t.Context(), source)
+	label := "dlp_normalized:unicode_tags_decoded:url_userinfo_username_escaped"
+	for _, m := range result.Matches {
+		span := m.Span()
+		if span.ViewLabel != label {
+			continue
+		}
+		view, err := reproduceSpanView(source, label)
+		if err != nil || span.ByteEnd > len(view) || span.ByteStart < 0 || view[span.ByteStart:span.ByteEnd] != "AKIA"+"QWERTYUIOPASDFGH" {
+			t.Fatalf("label=%s span=%+v view=%q err=%v", label, span, view, err)
+		}
+		return
+	}
+	t.Fatalf("missing producer label %s: %+v", label, result.Matches)
+}
+
+func TestUnicodeTagsReviewUserinfoSources(t *testing.T) {
+	for _, tc := range []struct{ name, source, stage, want string }{
+		{"escaped username", "https://alpha%20beta@api.vendor.example/path", "url_userinfo_username_escaped", "alpha%20beta"},
+		{"password", "https://alpha:beta%20gamma@api.vendor.example/", "url_userinfo_password_escaped", "beta%20gamma"},
+		{"joined pair", "https://alpha%20beta:gamma%20delta@api.vendor.example/", "url_userinfo", "alpha beta:gamma delta"},
+		{"component", "alpha%20beta", "url_userinfo_username_escaped", "alpha%20beta"},
+		{"no userinfo", "https://api.vendor.example/path", "url_userinfo_username_escaped", "https://api.vendor.example/path"},
+		{"raw unicode", "https://\U000e0041@api.vendor.example/path?x=y", "url_userinfo_username_escaped", "\U000e0041"},
+		{"malformed joined pair", "https://alpha%zz:beta%zz@api.vendor.example/", "url_userinfo", "alpha%zz:beta%zz"},
+		{"malformed no userinfo", "https://api.vendor.example/%zz", "url_userinfo_username_escaped", "https://api.vendor.example/%zz"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reproduceTagUserinfoSource(tc.source, tc.stage); got != tc.want {
+				t.Fatalf("got=%q want=%q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestUnicodeTagsReviewLeetspeakRecheck(t *testing.T) {
+	for _, tc := range []struct{ source, view string }{
+		{"\U000e0031\U000e0067\U000e006e\U000e0030\U000e0072\U000e0065", "leetspeak:for_matching:unicode_tags_decoded"},
+		{"MWduMHJl", "leetspeak:for_matching:base64_decoded"},
+		{"31676e307265", "leetspeak:for_matching:hex_decoded"},
+	} {
+		got, err := reproduceSpanView(tc.source, tc.view)
+		if err != nil || got != "ignore" {
+			t.Fatalf("view=%s got=%q err=%v", tc.view, got, err)
+		}
+	}
+	if _, err := reproduceSpanView("source", "leetspeak:unsupported"); err == nil {
+		t.Fatal("unsupported nested view accepted")
+	}
+}
+
+func TestTextEncodingRecheckViews(t *testing.T) {
+	for encoding, source := range map[string]string{
+		"decimal_character_codes": "104 101 108 108 111 32 119 111 114 108 100",
+		"octal_character_codes":   "0o150, 0o145, 0o154, 0o154, 0o157, 0o40, 0o167, 0o157, 0o162, 0o154, 0o144",
+		"binary_character_codes":  "0b1101000, 0b1100101, 0b1101100, 0b1101100, 0b1101111, 0b100000, 0b1110111, 0b1101111, 0b1110010, 0b1101100, 0b1100100",
+		"quoted_printable":        "=68ello world",
+	} {
+		got, err := reproduceSpanView(source, "dlp_normalized:"+encoding)
+		if err != nil || got != "hello world" {
+			t.Fatalf("DLP %s: got %q, %v", encoding, got, err)
+		}
+		for prefix, want := range map[string]string{"": "hello world", "leetspeak:": "hello world", "invisible_spaced:": "hello world", "vowel_fold:": "halla warld"} {
+			view := prefix + "for_matching:" + encoding + "_decoded"
+			got, err := reproduceSpanView(source, view)
+			if err != nil || got != want {
+				t.Fatalf("%s: got %q, %v", view, got, err)
+			}
+		}
+	}
+	if _, err := reproduceSpanView("ordinary text", "for_matching:quoted_printable_decoded"); err == nil {
+		t.Fatal("admitted an unchanged carrier")
+	}
+	for _, tc := range []struct{ source, view string }{
+		{"104 101 invalid 108 111", "dlp_normalized:decimal_character_codes"},
+		{"%%%", "invisible_spaced:for_matching:base64_decoded"},
+		{"zz11", "invisible_spaced:for_matching:hex_decoded"},
+	} {
+		t.Run(tc.view, func(t *testing.T) {
+			if _, err := reproduceSpanView(tc.source, tc.view); err == nil {
+				t.Fatal("admitted an invalid carrier")
+			}
+		})
+	}
+}
+
+func TestDecodedSpacingRecheck(t *testing.T) {
+	for _, tc := range []struct{ source, view string }{
+		{base64.StdEncoding.EncodeToString([]byte("hello\u200bworld")), "invisible_spaced:for_matching:base64_decoded"},
+		{hex.EncodeToString([]byte("hello\u200bworld")), "invisible_spaced:for_matching:hex_decoded"},
+	} {
+		got, err := reproduceSpanView(tc.source, tc.view)
+		if err != nil || got != "hello world" {
+			t.Fatalf("%s: got %q, %v", tc.view, got, err)
+		}
+	}
+}
+
+func TestUnicodeTagsNestedPercentUserinfo(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "A%20B" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	for _, field := range []string{"username", "password"} {
+		view, err := reproduceSpanView(tags.String()+"%2520", "dlp_normalized:unicode_tags_decoded:url_userinfo_"+field)
+		if err != nil || view != "A%20B%2520" {
+			t.Errorf("selected %s view=%q err=%v", field, view, err)
+		}
+		for _, escaped := range []bool{false, true} {
+			stage := "url_userinfo_" + field
+			component := tags.String() + "%2520"
+			if escaped {
+				stage += "_escaped"
+			} else {
+				component = url.PathEscape(component)
+			}
+			source := "https://" + component + "@api.vendor.example/"
+			if field == "password" {
+				source = "https://user:" + component + "@api.vendor.example/"
+			}
+			got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags_decoded:"+stage)
+			if err != nil || got != "A%20B%2520" {
+				t.Errorf("stage=%s got=%q err=%v", stage, got, err)
+			}
+			span := recheckSourceSpanFixture()
+			span.NormalizedView = "dlp_normalized:unicode_tags_decoded:" + stage
+			span.RedactedSample = "A%20B%2520"
+			span.CharOffset, span.CharLength = nil, nil
+			path := filepath.Join(t.TempDir(), "source.txt")
+			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := recheckEvidenceReceiptSpan(recheckReceiptFixture(t, span), path, 0)
+			if err != nil || result.Location != recheckLocationOccurrence {
+				t.Fatalf("stage=%s result=%+v err=%v", stage, result, err)
+			}
+		}
+	}
+}
+
+func TestUnicodeTagsDLPPercentCarrierRecheck(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "hello world" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	for _, source := range []string{tags.String(), url.PathEscape(tags.String()), url.PathEscape(url.PathEscape(tags.String()))} {
+		got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags")
+		if err != nil || got != "hello world" {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	}
+}
+
+func TestUnicodeTagsDLPProducerRecheck(t *testing.T) {
+	const marker = "sample-dlp-marker"
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	includeDefaults := false
+	cfg.DLP.IncludeDefaults = &includeDefaults
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Sample Marker", Regex: marker, Severity: config.SeverityHigh}}
+	s := scanner.MustNew(cfg)
+	t.Cleanup(s.Close)
+	var tags strings.Builder
+	for _, r := range marker {
+		tags.WriteRune(0xe0000 + r)
+	}
+	source := url.PathEscape(tags.String())
+	result := s.ScanTextForDLP(t.Context(), source)
+	if result.Clean {
+		t.Fatalf("unexpected DLP result: %+v", result)
+	}
+	for _, match := range result.Matches {
+		if match.PatternName != "Sample Marker" {
+			continue
+		}
+		view := match.Span().ViewLabel
+		if view != "dlp_normalized:unicode_tags" {
+			t.Fatalf("producer view=%q", view)
+		}
+		got, err := reproduceSpanView(source, view)
+		if err != nil || got != marker {
+			t.Fatalf("producer recheck=%q err=%v", got, err)
+		}
+		return
+	}
+	t.Fatal("missing configured DLP match")
 }

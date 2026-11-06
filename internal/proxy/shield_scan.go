@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -165,7 +166,9 @@ func retainShieldScan(original *scanner.ResponseScanResult, current scanner.Resp
 	current.Matches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.Matches...), current.Matches)
 	current.SuppressedMatches = mergeJoinedInjectionMatches(append([]scanner.ResponseMatch(nil), original.SuppressedMatches...), current.SuppressedMatches)
 	for _, match := range original.ObservedCoreMatches {
-		if !slices.Contains(current.ObservedCoreMatches, match) {
+		if !slices.ContainsFunc(current.ObservedCoreMatches, func(other scanner.ObservedCoreMatch) bool {
+			return reflect.DeepEqual(other, match)
+		}) {
 			current.ObservedCoreMatches = append(current.ObservedCoreMatches, match)
 		}
 	}

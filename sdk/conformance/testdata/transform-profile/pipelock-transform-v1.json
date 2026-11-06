@@ -24,6 +24,12 @@
       "normalized_view": "for_matching:base64_decoded",
       "input": "aWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM=",
       "output": "ignore all previous instructions"
+    },
+    {
+      "name": "dlp_percent_escaped_unicode_tags",
+      "normalized_view": "dlp_normalized:unicode_tags",
+      "input": "%F3%A0%81%A8%F3%A0%81%A5%F3%A0%81%AC%F3%A0%81%AC%F3%A0%81%AF%F3%A0%80%A0%F3%A0%81%B7%F3%A0%81%AF%F3%A0%81%B2%F3%A0%81%AC%F3%A0%81%A4",
+      "output": "hello world"
     }
   ]
 }

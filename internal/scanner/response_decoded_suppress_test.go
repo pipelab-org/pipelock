@@ -29,6 +29,7 @@ func TestScanResponse_DecodedSuppressionContinues(t *testing.T) {
 		encode func(string) string
 	}{
 		{"decimal", func(v string) string { return decimalCharacterCodes(v, " ") }},
+		{"tags decimal", func(v string) string { return unicodeTags(decimalCharacterCodes(v, " ")) }},
 		{"base64", func(v string) string { return base64.StdEncoding.EncodeToString([]byte(v)) }},
 		{"hex", func(v string) string { return hex.EncodeToString([]byte(v)) }},
 	}

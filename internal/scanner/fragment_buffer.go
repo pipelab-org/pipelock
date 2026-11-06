@@ -888,9 +888,61 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	if len(fragments) < minFragmentsForMatch {
 		return nil
 	}
+	// Keep the two whole-stream interpretations: tags stripped as noise, and
+	// tags decoded as text. Per-fragment combinations multiply full DLP scans;
+	// neither view enumerates mixtures of those interpretations.
+	var decoded []fragment
+	for i, f := range fragments {
+		text := string(f.data)
+		if !normalize.ContainsTags(text) {
+			continue
+		}
+		next := normalize.DecodeTags(text)
+		if next == text {
+			continue
+		}
+		if decoded == nil {
+			decoded = append([]fragment(nil), fragments...)
+		}
+		decoded[i].data = []byte(next)
+	}
+	if decoded == nil {
+		return scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, false)
+	}
+	if sharedDecodesFrom(ctx) == nil {
+		var release func()
+		ctx, release = WithSharedDecodes(ctx)
+		defer release()
+	}
+	matches := scanOneFragmentContinuityView(ctx, sc, fragments, memo, stream, false)
+	byPattern := make(map[string][]DLPMatch, len(matches))
+	for _, match := range matches {
+		byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+	}
+	for _, match := range scanOneFragmentContinuityView(ctx, sc, decoded, memo, stream, true) {
+		if slices.ContainsFunc(byPattern[match.PatternName], func(prior DLPMatch) bool {
+			return prior.Matched == match.Matched && prior.Warn == match.Warn && slices.EqualFunc(prior.Contributors, match.Contributors, bytes.Equal)
+		}) {
+			continue
+		}
+		matches = append(matches, match)
+		byPattern[match.PatternName] = append(byPattern[match.PatternName], match)
+	}
 
-	buf := make([]byte, 0)
-	ranges := make([]fragmentRange, 0, len(fragments))
+	return matches
+}
+
+func scanOneFragmentContinuityView(ctx context.Context, sc *Scanner, fragments []fragment, memo *fragmentCleanMemo, stream string, tagView bool) []DLPMatch {
+	if len(fragments) < minFragmentsForMatch {
+		return nil
+	}
+
+	var buf strings.Builder
+	size := 0
+	for _, f := range fragments {
+		size += len(f.data)
+	}
+	buf.Grow(size)
 	for _, f := range fragments {
 		normalized, stable := normalizeFragmentForDLP(f.data)
 		if !stable {
@@ -899,13 +951,11 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 			// trusted; block without claiming contributor provenance.
 			return []DLPMatch{{PatternName: fragmentDLPNormalizationFailure}}
 		}
-		start := len(buf)
-		buf = append(buf, normalized...)
-		ranges = append(ranges, fragmentRange{start: start, end: len(buf), normalized: normalized, fragment: f})
+		_, _ = buf.Write(normalized)
 	}
 
-	text := string(buf)
-	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity)}
+	text := buf.String()
+	key := fragmentCleanKey{scanner: sc, stream: stream, continuity: string(fragments[0].continuity), unicodeTags: tagView}
 	if memo != nil && memo.lookup(key, text) {
 		return nil
 	}
@@ -921,6 +971,17 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	if len(result.Matches) == 0 {
 		// Warnings were emitted by the joined scan. Do not memoize them.
 		return nil
+	}
+
+	// Contributor ranges are only needed for findings. Clean views avoid
+	// retaining a descriptor and normalized byte slice for every fragment.
+	ranges := make([]fragmentRange, 0, len(fragments))
+	position := 0
+	for _, f := range fragments {
+		normalized, _ := normalizeFragmentForDLP(f.data) // Checked above; data is immutable.
+		end := position + len(normalized)
+		ranges = append(ranges, fragmentRange{start: position, end: end, normalized: normalized, fragment: f})
+		position = end
 	}
 
 	// Only report matches NOT found in any individual fragment.
@@ -947,7 +1008,7 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	}
 	sort.Strings(patternNames)
 	for _, patternName := range patternNames {
-		masked := append([]byte(nil), buf...)
+		masked := []byte(text)
 		for _, occurrence := range complete[patternName] {
 			_ = maskFragmentOccurrence(masked, occurrence.start, occurrence.end)
 		}
@@ -994,7 +1055,7 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 					crossed = true
 					continue
 				}
-				matches = appendCrossFragmentMatch(matches, match, ranges, len(buf))
+				matches = appendCrossFragmentMatch(matches, match, ranges, len(text))
 				crossed = true
 			}
 			if len(rawTargets) == 0 && invalidTargetFound {
@@ -1555,6 +1616,7 @@ func (fb *FragmentBuffer) cleanupLocked(now time.Time) {
 type fragmentCleanKey struct {
 	scanner            *Scanner
 	stream, continuity string
+	unicodeTags        bool
 }
 type fragmentCleanMemo struct {
 	mu                         sync.Mutex

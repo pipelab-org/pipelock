@@ -451,6 +451,9 @@ func decodeQuotedPrintable(s string, withRanges bool) (string, []encodingSourceR
 func mapTextEncodingViewSources(set responseMatchSet, source string, view textEncodingView) responseMatchSet {
 	set = mapTextEncodingSources(set, source[view.sourceRange.start:view.sourceRange.end], view.decodedResult)
 	for i := range set.matches {
+		for j := range set.matches[i].fragmentBoundaries {
+			set.matches[i].fragmentBoundaries[j] += view.sourceRange.start
+		}
 		if set.matches[i].hasDecodedSource {
 			set.matches[i].decodedSourceStart += view.sourceRange.start
 			set.matches[i].decodedSourceEnd += view.sourceRange.start
@@ -463,6 +466,7 @@ func mapTextEncodingViewSources(set responseMatchSet, source string, view textEn
 // fragment boundary check. Build the byte map only after a match, not for every
 // clean decoded view. Encoded matches remain ineligible for unsafe stripping.
 func mapTextEncodingSources(set responseMatchSet, source string, view decodedResult) responseMatchSet {
+	mappers := responseSourceMappers{source: view.text}
 	var ranges []encodingSourceRange
 	switch view.encoding {
 	case encodingDecimal:
@@ -476,10 +480,30 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 		m := &set.matches[i]
 		start, end := m.decodedSourceStart, m.decodedSourceEnd
 		hadDecodedSource := m.hasDecodedSource
+		hadBoundaryEvidence := m.fragmentBoundaries != nil
 		m.hasDecodedSource = false
+		// A decoded newline is data unless its byte range is a literal source
+		// newline. Preserve only proven fragment separators from inner layers.
+		if !hadDecodedSource && m.fragmentBoundaries == nil {
+			m.fragmentBoundaries = mappers.forLabel(m.span.ViewLabel).fragmentBoundaries(*m)
+		}
+		boundaries := []int{}
+		for _, at := range m.fragmentBoundaries {
+			if at >= 0 && at < len(ranges) {
+				r := ranges[at]
+				if r.end == r.start+1 && r.start < len(source) && source[r.start] == '\n' {
+					boundaries = append(boundaries, r.start)
+				}
+			}
+		}
+		m.fragmentBoundaries = boundaries
+		m.crossesFragmentBoundary = len(boundaries) > 0
 		if !hadDecodedSource {
+			if hadBoundaryEvidence {
+				continue
+			}
 			var ok bool
-			start, end, ok = normalizedMatchSourceRange(view.text, *m)
+			start, end, ok = mappers.forLabel(m.span.ViewLabel).sourceRange(*m)
 			if !ok {
 				continue
 			}
@@ -504,6 +528,9 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 		m.decodedSourceTransformed = m.decodedSourceTransformed || transformed
 		m.decodedSourceStart, m.decodedSourceEnd = ranges[start].start, ranges[end-1].end
 		m.hasDecodedSource = true
+		if m.decodedSourceTransformed {
+			setFragmentBoundaries(m, source, m.decodedSourceStart, m.decodedSourceEnd)
+		}
 	}
 	if view.encoding == encodingQuotedPrintable {
 		// Literal text was already checked before decoding. An escape elsewhere
@@ -519,4 +546,15 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 		set.matches = kept
 	}
 	return set
+}
+
+// DecodeTextEncoding reproduces a complete textual carrier for receipt rechecks.
+// It uses the same admission rules as response scanning.
+func DecodeTextEncoding(source, encoding string) (string, bool) {
+	for _, view := range textEncodingViews(source) {
+		if view.encoding == encoding && view.sourceRange.start == 0 && view.sourceRange.end == len(source) {
+			return view.text, true
+		}
+	}
+	return "", false
 }
