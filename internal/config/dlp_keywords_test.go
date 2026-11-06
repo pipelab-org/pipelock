@@ -19,6 +19,8 @@ func keywordConfigYAML(fields string) string {
 func TestDLPKeywordsLoad(t *testing.T) {
 	const accountSample = "ACCOUNT 3333333333333333"
 	const abcSample = "abc3333333333333333" // the whole keyword must fit the three-rune window
+	// Beyond the default 50-rune window, so only an honored 300 qualifies it.
+	farSample := "ACCOUNT" + strings.Repeat(" ", 51) + "3333333333333333"
 	for _, tc := range []struct {
 		fields      string
 		wantMatcher bool
@@ -33,7 +35,7 @@ func TestDLPKeywordsLoad(t *testing.T) {
 		{fields: "      keywords: [account]\n      keyword_window: null\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
 		{fields: "      keywords: [account]\n      keyword_window:\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
 		{fields: "      keywords: [abc]\n      keyword_window: 3\n", wantMatcher: true, sample: abcSample, start: 3, end: 19},
-		{fields: "      keywords: [account]\n      keyword_window: 300\n", wantMatcher: true, sample: accountSample, start: 8, end: 24},
+		{fields: "      keywords: [account]\n      keyword_window: 300\n", wantMatcher: true, sample: farSample, start: 58, end: 74},
 	} {
 		t.Run(tc.fields, func(t *testing.T) {
 			cfg, err := LoadBytes([]byte(keywordConfigYAML(tc.fields)))
@@ -275,8 +277,15 @@ func TestDLPKeywordsYAMLMerge(t *testing.T) {
 			if (err != nil) != tc.wantError {
 				t.Fatalf("load error=%v wantError=%v", err, tc.wantError)
 			}
-			if err == nil && (cfg.DLP.Patterns[1].Regex != cfg.DLP.Patterns[0].Regex || cfg.DLP.Patterns[1].Name != "merged") {
-				t.Fatalf("merged pattern=%+v", cfg.DLP.Patterns[1])
+			if err != nil {
+				return
+			}
+			merged := cfg.DLP.Patterns[1]
+			if merged.Regex != cfg.DLP.Patterns[0].Regex || merged.Name != "merged" {
+				t.Fatalf("merged pattern=%+v", merged)
+			}
+			if tc.fields != "" && (len(merged.Keywords) != 1 || merged.Keywords[0] != "account" || merged.KeywordWindow == nil || *merged.KeywordWindow != 50) {
+				t.Fatalf("merged pattern lost inherited keyword controls: %+v", merged)
 			}
 		})
 	}
