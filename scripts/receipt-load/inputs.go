@@ -17,7 +17,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -211,14 +210,34 @@ type rulesReport struct {
 	Source string       `json:"source,omitempty"`
 	Dir    string       `json:"dir"`
 	Files  []fileDigest `json:"files"`
-	// ProxyLogLines are the proxy's own startup lines about rule bundles. The
-	// directory and the environment are pinned, but this is the proxy's word
-	// for what it actually loaded, so under mode "empty" any line here is a
-	// leak and fails integrity.
+	// ProxyLogLines record reported bundle activity, not a complete inventory
+	// of loads: a successful load can be silent. The pinned directory and
+	// environment isolate inputs; any reported activity in mode "empty"
+	// contradicts those inputs and fails integrity.
 	ProxyLogLines []string `json:"proxy_log_bundle_lines"`
 }
 
-var bundleLogPattern = regexp.MustCompile(`(?i)rule bundle|rule_bundle_|\bbundle "[^"]+"|bundle\(s\)`)
+// Startup and reload use different stderr prefixes. The message forms come
+// from reportStartupRuleBundleResult and reportReloadRuleBundleResult in
+// internal/cli/runtime/server_rule_bundles.go, server_reload.go and the loader
+// warnings in internal/rules (each names its bundle with %q). A load without
+// warnings prints nothing.
+const proxyStderrPrefix = "pipelock: "
+
+const proxyReloadPrefix = "WARNING: config reload: "
+
+var bundleMessagePrefixes = []string{
+	"SECURITY WARNING: rule bundle ",
+	"SECURITY WARNING: rules.allow_degraded=true",
+	"DEGRADED",
+	"warning: bundle ",
+	"rule bundle ",
+	"rules.allow_degraded=true",
+}
+
+// bundleAuditEvent is the structured audit event for a degraded bundle
+// (eventcatalog.EventRuleBundleDegraded).
+const bundleAuditEvent = "rule_bundle_degraded"
 
 const (
 	maxBundleLogLines    = 20
@@ -305,8 +324,10 @@ func auditGapMessage(line []byte) (string, error) {
 	return strings.Join(fields[:2], " "), nil
 }
 
-// bundleLogLines returns the lines of a proxy log that talk about rule
-// bundles, bounded so a noisy log cannot bloat the result.
+// bundleLogLines returns the proxy's own messages about rule bundles, bounded
+// so a noisy log cannot bloat the result. Like auditGapLines it matches
+// producer messages, not bundle wording in paths or request fields, and a
+// record that fails to decode is reported rather than skipped.
 func bundleLogLines(logPath string) ([]string, error) {
 	file, err := os.Open(filepath.Clean(logPath))
 	if err != nil {
@@ -316,17 +337,52 @@ func bundleLogLines(logPath string) ([]string, error) {
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 4096), maxProxyLogLineBytes)
 	lines := []string{}
+	var decodeErr error
 	for scanner.Scan() {
-		line := scanner.Bytes()
-		// Every pattern alternative contains b or B. Skip regexp work for unrelated lines.
-		if len(lines) < maxBundleLogLines && bytes.ContainsAny(line, "bB") && bundleLogPattern.Match(line) {
-			lines = append(lines, strings.TrimSpace(string(line)))
+		if len(lines) >= maxBundleLogLines {
+			continue
+		}
+		match, err := isBundleMessage(scanner.Bytes())
+		if err != nil {
+			if decodeErr == nil {
+				decodeErr = err
+			}
+			continue
+		}
+		if match {
+			lines = append(lines, strings.TrimSpace(scanner.Text()))
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("scan proxy log: %w", err)
+		return lines, errors.Join(decodeErr, fmt.Errorf("scan proxy log: %w", err))
 	}
-	return lines, nil
+	return lines, decodeErr
+}
+
+func isBundleMessage(line []byte) (bool, error) {
+	line = bytes.TrimSpace(line)
+	if bytes.HasPrefix(line, []byte("{")) {
+		var entry struct {
+			Event string `json:"event"`
+		}
+		if err := json.Unmarshal(line, &entry); err != nil {
+			return false, fmt.Errorf("decode proxy audit log: %w", err)
+		}
+		return entry.Event == bundleAuditEvent, nil
+	}
+	message, ok := bytes.CutPrefix(line, []byte(proxyStderrPrefix))
+	if !ok {
+		message, ok = bytes.CutPrefix(line, []byte(proxyReloadPrefix))
+		if !ok {
+			return false, nil
+		}
+	}
+	for _, prefix := range bundleMessagePrefixes {
+		if bytes.HasPrefix(message, []byte(prefix)) {
+			return true, nil
+		}
+	}
+	return bytes.Contains(message, []byte(`bundle "`)), nil
 }
 
 const rulesEmpty = "empty"
