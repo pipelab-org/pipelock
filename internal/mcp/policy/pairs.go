@@ -190,6 +190,22 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
 	}
 	tokens, joined := literalArgTokens(args)
 	add(argView{tokens: tokens, joined: joined, inputKnown: inputKnown, checkXargs: true})
+	// A pathname with parent segments can contain quoted or escaped blanks in
+	// command text. Keep its cleaned spelling as a separate interpretation;
+	// joining it into args would change command boundaries and xargs proofs.
+	// As with other word readings, it cannot clear an original incomplete check.
+	for _, value := range args {
+		if !hasParentSegment(value) {
+			continue
+		}
+		spellings := withPathSpellings([]string{value}, true)
+		for _, spelling := range spellings[1:] {
+			for _, n := range norms {
+				tokens, joined := n.tokens([]string{spelling})
+				add(argView{tokens: tokens, joined: joined, wordReading: true, interpreted: true})
+			}
+		}
+	}
 	folded := make(map[string]string)
 	for i := range views {
 		views[i].unreadable = unreadable

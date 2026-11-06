@@ -52,7 +52,7 @@ var shippedCredentialWriteRuleShapes = func() map[string]config.ToolPolicyRule {
 // Recognize only the two shipped argument patterns (the hostile preset adds
 // Kubernetes and Docker locations). A custom pattern, scoped rule, or patch rule
 // retains the ordinary matcher, even if it uses the same rule name.
-func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []string, raw json.RawMessage, memo candidateViews) (matched, incomplete, handled bool) {
+func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []string, raw json.RawMessage, memo candidateViews, pathValues bool) (matched, incomplete, handled bool) {
 	if rule.Name != "Credential File Access" || rule.ArgPattern == nil || rule.ArgKey != nil || rule.ArgSource != "" {
 		return false, false, false
 	}
@@ -85,14 +85,16 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 	// A JSON key is not an alias of the value, but it is text the tool may act
 	// on. Any key that names a protected path on its own keeps the block, so the
 	// exception can only narrow what the value alone would match.
-	for _, key := range pc.localPaths.expand(keys) {
+	keyViews, _ := pc.localPaths.expandNoted(keys, pathValues)
+	for _, key := range keyViews {
 		m, inc := pc.credentialCandidateMatches(rule, key, memo)
 		incomplete = incomplete || inc
 		if m {
 			return true, incomplete, true
 		}
 	}
-	for _, candidate := range pc.localPaths.expand(args) {
+	argViews, _ := pc.localPaths.expandNoted(args, pathValues)
+	for _, candidate := range argViews {
 		m, inc := pc.credentialCandidateMatches(rule, candidate, memo)
 		incomplete = incomplete || inc
 		if m {

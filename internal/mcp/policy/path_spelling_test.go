@@ -201,3 +201,81 @@ func TestDefaultPolicy_CredentialReadPathSpellings(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultPolicy_PathSpellingPreprocessing(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tt := range []struct {
+		name, target string
+		want         bool
+	}{
+		{"uri_opaque_root", "file:etc/shadow", true},
+		{"uri_opaque_parent", "file:foo/../etc/cache/../shadow", true},
+		{"uri_opaque_project", "file:project/notes.md", false},
+		{"uri_surrounding_space", " file:///etc/sha%64ow ", true},
+		{"uri_embedded_tab", "fi\tle:///etc/sha\tdow", true},
+		{"uri_embedded_newline", "fi\nle:///etc/sha\rdow", true},
+		{"uri_surrounding_controls", "\x00file:///etc/sha%64ow\x1f", true},
+		{"uri_parent_with_space", "file:///etc/cache space/../shadow", true},
+		{"path_parent_with_space", "/etc/cache space/../shadow", true},
+		{"path_parent_with_tab", "/etc/cache\tspace/../shadow", true},
+		{"relative_parent_with_space", "config/.aws/cache space/../credentials", true},
+		{"embedded_url_delimiter", "/etc/x://y/../../shadow", true},
+		{"relative_url_delimiter", "cache/.aws/x://y/../../credentials", true},
+		{"project_uri", " fi\tle:///project/cache space/../notes.md ", false},
+		{"project_path", "/project/cache space/../notes.md", false},
+		{"project_delimiter", "/project/x://y/../../notes.md", false},
+		{"custom_uri", "memo://project/etc/cache/../shadow", false},
+		{"url", "https://example.com/etc/cache/../shadow", false},
+		{"command_text", "printf 'cache space/../notes.md'", false},
+		{"multiline_text", "notes\n/etc/cache/../shadow", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			args, err := json.Marshal(map[string]string{"path": tt.target})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, tool := range []string{"read_file", "write_file", "edit_file", "mcp__filesystem__read_file", "filesystem.write_file"} {
+				v := pc.CheckToolCallWithArgs(tool, []string{tt.target}, args)
+				if v.Matched != tt.want || (tt.want && v.Action != config.ActionBlock) {
+					t.Errorf("%s: verdict = %+v; want blocked %v", tool, v, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestDefaultPolicy_ShellPathSpellings(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	for _, tt := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"quoted_path", []string{"cat '/etc/cache space/../shadow'"}, true},
+		{"double_quoted_path", []string{`cat "/etc/cache space/../shadow"`}, true},
+		{"escaped_space", []string{`cat /etc/cache\ space/../shadow`}, true},
+		{"argv_path", []string{"cat", "/etc/cache space/../shadow"}, true},
+		{"quoted_project_path", []string{"cat '/project/cache space/../notes.md'"}, false},
+		{"configured_spelling", []string{`r\m --rec notes`}, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			checker := pc
+			if tt.name == "configured_spelling" {
+				checker = New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "configured command", ToolPattern: "bash", ArgPattern: `^rm --rec notes$`}}})
+			}
+			v := checker.CheckToolCall("bash", tt.args)
+			if v.Matched != tt.want || (tt.want && v.Action != config.ActionBlock) {
+				t.Fatalf("verdict=%+v, want blocked %v", v, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultPolicy_PathReadingPreservesIncompleteAction(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionWarn, OnIncompleteCheck: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "path", ToolPattern: "bash", ArgPattern: `/etc/shadow`, Action: config.ActionWarn}}})
+	command := strings.Repeat("{a,b}", maxPairwiseTokens) + " '/etc/cache space/../shadow'"
+	v := pc.CheckToolCall("bash", []string{command})
+	if v.Action != config.ActionBlock || len(v.IncompleteRules) == 0 {
+		t.Fatalf("path interpretation cleared incomplete block: %+v", v)
+	}
+}

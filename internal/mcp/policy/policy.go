@@ -320,7 +320,8 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// The proof reads the submitted values, before local path identities are
 	// added to the values matched.
 	proof := proveGitBuiltins(proofArgs, jsonArgCarriers(proofShape, proofArgs), gitTool)
-	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
+	pathValues := pathValueToolName.MatchString(policyToolName) || pathValueToolName.MatchString(baselineToolName)
+	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings, pathValues)
 	views := buildArgViews(matchArgs, gitTool, &proof)
 	if !checkInput {
 		for i := range views {
@@ -366,7 +367,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings)
+			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings, pathValues)
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
@@ -376,7 +377,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets))
+				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets), true)
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
@@ -393,7 +394,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
+		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews, pathValues); handled {
 			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {

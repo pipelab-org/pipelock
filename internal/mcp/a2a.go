@@ -19,6 +19,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // FieldClass tells callers which scanner pipeline a leaf value needs.
@@ -58,9 +59,6 @@ const (
 // where they are normalized into lookup maps for case/style-insensitive
 // matching. See normalizedURLFields, normalizedTextFields, normalizedSecretFields.
 
-// uriHierarchicalRe matches hierarchical URI schemes (scheme://).
-var uriHierarchicalRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.\-]*://`)
-
 // nonHierarchicalSchemes lists URI schemes that use scheme: without //.
 // These are security-relevant: data: can embed HTML/JS, javascript: runs code,
 // mailto: can trigger email sends. Included for FieldURL promotion.
@@ -75,7 +73,7 @@ var nonHierarchicalSchemes = map[string]bool{
 // isURILike returns true for strings that look like URI references.
 // Matches both hierarchical (scheme://) and non-hierarchical (data:, javascript:) forms.
 func isURILike(s string) bool {
-	if uriHierarchicalRe.MatchString(s) {
+	if normalize.HasHierarchicalScheme(s) {
 		return true
 	}
 	// Check non-hierarchical: "data:...", "javascript:..."
