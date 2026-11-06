@@ -20,6 +20,11 @@ import (
 
 type keywordByteSpan struct{ start, end int }
 
+const (
+	keywordPercentDrop       = "invalid_percent_drop"
+	keywordPercentEscapeDrop = "invalid_percent_escape_drop"
+)
+
 // keywordDecodeSources records edges of the existing decoder walk, only for
 // scans with contextual rules. It neither adds views nor changes admission.
 // It is scan-local: source-sensitive decisions never enter shared decode caches.
@@ -335,9 +340,13 @@ func (n *keywordDecodeSource) logicalContexts() []string {
 	variants := append([]*keywordDecodeSource{n}, n.variants...)
 	for _, edge := range variants {
 		switch edge.encoding {
-		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode:
+		case "identity", "projection", encodingURL, encodingHTML, encodingJSONUnicode, keywordPercentDrop, keywordPercentEscapeDrop:
 			for _, text := range edge.parent.logicalContexts() {
 				switch edge.encoding {
+				case keywordPercentDrop:
+					text = dropInvalidPercent(text, 0)
+				case keywordPercentEscapeDrop:
+					text = dropInvalidPercentEscapes(text)
 				case encodingURL:
 					text = IterativeDecode(text)
 				case encodingHTML:
@@ -475,6 +484,10 @@ func keywordDecodeOffsets(source, decoded, encoding string) []keywordByteSpan {
 		return offsets
 	case "projection":
 		return keywordProjectionOffsets(source, decoded)
+	case keywordPercentDrop:
+		return keywordPercentOffsets(source, decoded, 0)
+	case keywordPercentEscapeDrop:
+		return keywordPercentOffsets(source, decoded, 2)
 	case encodingHex:
 		symbols, offsets := keywordEncodingSymbols(source, encodingHex, 0, false)
 		if b, err := hex.DecodeString(symbols); err == nil && string(b) == decoded {
@@ -648,9 +661,9 @@ func (p *compiledPattern) matchSpanWithDecodes(view, source string, memo *decodi
 	context := keywordCandidateContext{logical: logical, memo: memo}
 	if memo != nil {
 		context.source = memo.keywordUnit
-		context.alternatives = memo.keywordSources[source]
+		context.alternatives = memo.keywordSources[view]
 		if len(context.alternatives) == 0 {
-			context.alternatives = memo.keywordSources[view]
+			context.alternatives = memo.keywordSources[source]
 		}
 		context.sourceUnavailable = len(context.alternatives) == 0 && memo.keywordBudget != nil && memo.keywordBudget.incomplete && !strings.Contains(memo.keywordUnit, logical) && !strings.ContainsRune(source, 0)
 		if strings.ContainsRune(source, 0) {
@@ -693,4 +706,32 @@ func (s *keywordDecodeSources) bindParents(text string, parents []*keywordDecode
 		s.budget.sourceVersion++
 		root.variants = append(root.variants, &keywordDecodeSource{text: text, encoding: encoding, parent: parent, owner: s})
 	}
+}
+
+// keywordPercentOffsets maps the exact deletion transform used by
+// invalidPercentEscapeViews. Equality with that producer is required.
+func keywordPercentOffsets(source, view string, extra int) []keywordByteSpan {
+	if dropInvalidPercent(source, extra) != view {
+		return nil
+	}
+	offsets := make([]keywordByteSpan, 0, len(view))
+	for i := 0; i < len(source); i++ {
+		if source[i] != '%' {
+			offsets = append(offsets, keywordByteSpan{i, i + 1})
+			continue
+		}
+		if i+2 < len(source) && isHexByte(source[i+1]) && isHexByte(source[i+2]) {
+			for j := i; j < i+3; j++ {
+				offsets = append(offsets, keywordByteSpan{j, j + 1})
+			}
+			i += 2
+			continue
+		}
+		skip := 0
+		for skip < extra && i+1+skip < len(source) && source[i+1+skip] != '%' {
+			skip++
+		}
+		i += skip
+	}
+	return offsets
 }

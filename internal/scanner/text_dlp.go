@@ -1103,9 +1103,16 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// percent-decoding give up on the whole token. A receiver that drops the
 	// invalid escapes recovers the credential, so match that view too.
 	if strings.Contains(cleaned, "%") {
-		for _, dropped := range invalidPercentEscapeViews(cleaned) {
+		for i, dropped := range invalidPercentEscapeViews(cleaned) {
 			if dropped != cleaned {
-				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(IterativeDecode(dropped), encodingURL, cleaned, decodes))...)
+				encoding := keywordPercentDrop
+				if i == 1 {
+					encoding = keywordPercentEscapeDrop
+				}
+				decodes.registerKeywordTransform(cleaned, dropped, encoding)
+				decoded := IterativeDecode(dropped)
+				decodes.registerKeywordTransform(dropped, decoded, encodingURL)
+				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, cleaned, decodes))...)
 			}
 		}
 	}
