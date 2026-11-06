@@ -3038,6 +3038,9 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 // Used by the license expiry watchdog to unbind per-agent listeners when
 // the enterprise license expires at runtime.
 func (p *Proxy) ShutdownAgentServers() error {
+	for _, gs := range p.agentServers {
+		gs.Gate.StopHijacks()
+	}
 	var shutdownErr error
 	for _, gs := range p.agentServers {
 		ctx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
@@ -5354,6 +5357,10 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	}, func() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
 		defer cancel()
+		mainGate.StopHijacks()
+		for _, gs := range p.agentServers {
+			gs.Gate.StopHijacks()
+		}
 		var shutdownErr error
 		for _, gs := range p.agentServers {
 			if shutErr := httpstream.DrainServer(shutdownCtx, gs); shutErr != nil {

@@ -4,6 +4,7 @@
 package httpstream
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -258,36 +259,188 @@ func TestDrainServerPreservesCancellation(t *testing.T) {
 	}
 }
 
-// A hijacked handler (a CONNECT tunnel or WebSocket relay) stays inside
-// ServeHTTP for the connection's life, and net/http no longer tracks the
-// connection, so Shutdown succeeds while it runs. Hijacked connections have
-// their own drain contract; the gate must not turn every run with an open
-// tunnel into an incomplete drain by waiting on them.
-func TestDrainServerLeavesHijackedHandlers(t *testing.T) {
-	hijacked := make(chan struct{})
-	release := make(chan struct{})
+// Shutdown closes a tracked tunnel and joins its deferred completion. A
+// handler that ignores cancellation must instead exhaust the same grace.
+func TestDrainServerHijackedHandlers(t *testing.T) {
+	for _, ignoresClose := range []bool{false, true} {
+		t.Run(map[bool]string{false: "closes", true: "ignores_close"}[ignoresClose], func(t *testing.T) {
+			hijacked, closed, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+			gs, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				defer close(finished)
+				conn, _, err := http.NewResponseController(w).Hijack()
+				if err != nil {
+					t.Errorf("hijack: %v", err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				close(hijacked)
+				_, _ = conn.Read(make([]byte, 1))
+				close(closed)
+				if ignoresClose {
+					<-release
+				}
+			}))
+			t.Cleanup(func() {
+				close(release)
+				select {
+				case <-finished:
+				case <-time.After(5 * time.Second):
+					t.Error("handler did not stop")
+				}
+			})
+			tunnel := dialTest(t, addr)
+			if _, err := io.WriteString(tunnel, "GET /tunnel HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-hijacked:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no hijack")
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), drainTestGrace)
+			defer cancel()
+			err := DrainServer(ctx, gs)
+			if ignoresClose && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("held hijacked drain = %v, want deadline", err)
+			}
+			if !ignoresClose && err != nil {
+				t.Fatalf("closed hijacked drain = %v", err)
+			}
+			select {
+			case <-closed:
+			default:
+				t.Error("shutdown did not close hijacked socket")
+			}
+			if !ignoresClose {
+				select {
+				case <-finished:
+				default:
+					t.Error("drain returned before handler completion")
+				}
+			}
+		})
+	}
+}
+
+func TestHijackContextLifecycle(t *testing.T) {
+	ctx, cancel := hijackContext(t.Context())
+	cancel()
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatal("ungated cancel did not propagate")
+	}
+	gate := &Gate{}
+	var early context.Context
+	var stop context.CancelFunc
+	h := gate.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		early, stop = hijackContext(r.Context())
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	defer stop()
+	gate.StopHijacks()
+	select {
+	case <-early.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("early hijack outlived shutdown")
+	}
+	gate.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		late, finish := hijackContext(r.Context())
+		defer finish()
+		if !errors.Is(late.Err(), context.Canceled) {
+			t.Error("late hijack survived shutdown")
+		}
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+	fresh := &Gate{}
+	fresh.StopHijacks()
+	fresh.Wrap(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		late, finish := hijackContext(r.Context())
+		defer finish()
+		if !errors.Is(late.Err(), context.Canceled) {
+			t.Error("first hijack survived shutdown")
+		}
+	})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+}
+
+type failedHijackWriter struct{ *httptest.ResponseRecorder }
+
+func (failedHijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return nil, nil, http.ErrNotSupported
+}
+
+type failedFlushWriter struct{ failedHijackWriter }
+
+func (failedFlushWriter) FlushError() error { return io.ErrClosedPipe }
+
+func TestGateHijackWriterFailureAndInterfaces(t *testing.T) {
+	for _, failFlush := range []bool{false, true} {
+		t.Run(map[bool]string{false: "flush", true: "flush_error"}[failFlush], func(t *testing.T) {
+			gate := &Gate{}
+			var wantFlush error
+			if failFlush {
+				wantFlush = io.ErrClosedPipe
+			}
+			h := gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if _, _, err := http.NewResponseController(w).Hijack(); !errors.Is(err, http.ErrNotSupported) {
+					t.Errorf("hijack error = %v", err)
+				}
+				if err := http.NewResponseController(w).Flush(); !errors.Is(err, wantFlush) {
+					t.Errorf("Flush = %v, want %v", err, wantFlush)
+				}
+				if err := http.NewResponseController(w).SetWriteDeadline(time.Now()); !errors.Is(err, http.ErrNotSupported) {
+					t.Errorf("unwrapped deadline error = %v", err)
+				}
+			}))
+			w := failedHijackWriter{httptest.NewRecorder()}
+			var writer http.ResponseWriter = w
+			if failFlush {
+				writer = failedFlushWriter{w}
+			}
+			h.ServeHTTP(writer, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+			if w.Flushed == failFlush {
+				t.Errorf("flushed = %t, want %t", w.Flushed, !failFlush)
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+			defer cancel()
+			if err := DrainServer(ctx, GatedServer{Server: &http.Server{ReadHeaderTimeout: time.Second}, Gate: gate}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestGateHijackRacingShutdown(t *testing.T) {
+	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	gs, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer close(finished)
+		close(entered)
+		<-release
 		conn, _, err := http.NewResponseController(w).Hijack()
 		if err != nil {
 			t.Errorf("hijack: %v", err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		close(hijacked)
-		<-release
+		_, _ = conn.Read(make([]byte, 1))
 	}))
-	defer close(release)
-
-	tunnel := dialTest(t, addr)
-	if _, err := io.WriteString(tunnel, "GET /tunnel HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
-		t.Fatalf("write: %v", err)
+	conn := dialTest(t, addr)
+	if _, err := io.WriteString(conn, "GET /tunnel HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatal(err)
 	}
-	<-hijacked
-
-	ctx, cancel := context.WithTimeout(context.Background(), drainTestGrace)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("handler did not start")
+	}
+	gs.Gate.StopHijacks()
+	close(release)
+	ctx, cancel := context.WithTimeout(t.Context(), drainTestGrace)
 	defer cancel()
 	if err := DrainServer(ctx, gs); err != nil {
-		t.Fatalf("DrainServer with an open hijacked connection = %v, want the HTTP drain complete", err)
+		t.Fatalf("late hijack survived shutdown: %v", err)
+	}
+	select {
+	case <-finished:
+	default:
+		t.Error("drain returned before late hijack finished")
 	}
 }
 

@@ -1615,6 +1615,15 @@ func (r *wsRelay) run(ctx context.Context) wsRelayStats {
 	r.clockStart = time.Now()
 	r.lastActivity.Store(0)
 
+	// Parent cancellation ends the session, including listener shutdown. Close
+	// both sockets now; the child cancellation below retains the normal peer
+	// close-handshake grace when just one relay direction finishes.
+	stopSessionClose := context.AfterFunc(ctx, func() {
+		_ = r.clientConn.Close()
+		_ = r.upstreamConn.Close()
+	})
+	defer stopSessionClose()
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
