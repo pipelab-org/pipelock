@@ -4,8 +4,10 @@
 package httpstream
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"sync"
 )
@@ -13,17 +15,19 @@ import (
 // Gate counts handlers and their asynchronous receipt-producing work. Its zero
 // value is ready to use. Closing admission and observing work share one lock.
 //
-// Handlers and child work are counted apart. Shutdown already waits for every
-// handler net/http still tracks, so after it succeeds the only handlers left
-// are hijacked ones (CONNECT tunnels, WebSocket relays), which have their own
-// drain contract; child work registered through Begin is what remains to join.
+// Handlers and child work are counted apart so unread connections can be
+// forgiven without losing receipt-producing work. Hijacked handlers remain
+// counted until ServeHTTP returns, including its deferred outcome receipts.
 type Gate struct {
-	mu        sync.Mutex
-	closed    bool
-	failed    bool // an earlier drain of this server did not complete
-	handlers  int
-	children  int
-	childIdle chan struct{}
+	mu          sync.Mutex
+	closed      bool
+	failed      bool // an earlier drain of this server did not complete
+	handlers    int
+	children    int
+	idle        chan struct{}
+	draining    bool
+	hijackCtx   context.Context
+	stopHijacks context.CancelFunc
 }
 
 type gateContextKey struct{}
@@ -42,8 +46,88 @@ func (g *Gate) Wrap(next http.Handler) http.Handler {
 		if handler == nil {
 			handler = http.DefaultServeMux
 		}
-		handler.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), gateContextKey{}, g)))
+		ctx := context.WithValue(r.Context(), gateContextKey{}, g)
+		if hijacker := findHijacker(w); hijacker != nil {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			defer cancel()
+			tracked := &hijackWriter{ResponseWriter: w, hijacker: hijacker, ctx: ctx, cancel: cancel}
+			defer tracked.finish()
+			w = tracked
+			if flusher, ok := tracked.ResponseWriter.(http.Flusher); ok {
+				w = struct {
+					*hijackWriter
+					http.Flusher
+				}{tracked, flusher}
+			}
+		}
+		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// findHijacker follows the Unwrap chain that http.ResponseController follows,
+// so a wrapper that hides Hijack behind Unwrap cannot take a protocol switch
+// past the gate.
+func findHijacker(w http.ResponseWriter) http.Hijacker {
+	for {
+		if hijacker, ok := w.(http.Hijacker); ok {
+			return hijacker
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = unwrapper.Unwrap()
+	}
+}
+
+// hijackWriter tracks both direct and library-initiated protocol switches.
+// Unwrap retains ResponseController access to the underlying writer's methods.
+// Cancellation starts before Hijack, so a switch racing shutdown cannot escape.
+type hijackWriter struct {
+	http.ResponseWriter
+	hijacker     http.Hijacker
+	ctx          context.Context
+	cancel       context.CancelFunc
+	lifetime     context.Context
+	stopLifetime context.CancelFunc
+	stopCancel   func() bool
+	stopClose    func() bool
+}
+
+func (w *hijackWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+func (w *hijackWriter) FlushError() error {
+	return http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *hijackWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w.lifetime == nil {
+		w.lifetime, w.stopLifetime = hijackContext(w.ctx)
+		w.stopCancel = context.AfterFunc(w.lifetime, w.cancel)
+	}
+	conn, buffered, err := w.hijacker.Hijack()
+	if err != nil {
+		// No protocol switch happened, so a handler that falls back to an
+		// ordinary response keeps the normal drain grace.
+		w.finish()
+		w.lifetime, w.stopCancel, w.stopLifetime = nil, nil, nil
+		return conn, buffered, err
+	}
+	w.stopClose = context.AfterFunc(w.lifetime, func() { _ = conn.Close() })
+	return conn, buffered, err
+}
+
+func (w *hijackWriter) finish() {
+	if w.stopClose != nil {
+		w.stopClose()
+	}
+	if w.stopCancel != nil {
+		w.stopCancel()
+	}
+	if w.stopLifetime != nil {
+		w.stopLifetime()
+	}
 }
 
 // Begin registers work before starting it. The returned function must run after
@@ -74,6 +158,9 @@ func (g *Gate) leaveHandler() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.handlers--
+	if g.handlers+g.children == 0 && g.idle != nil {
+		close(g.idle)
+	}
 }
 
 func (g *Gate) enterChild() bool {
@@ -81,9 +168,6 @@ func (g *Gate) enterChild() bool {
 	defer g.mu.Unlock()
 	if g.closed {
 		return false
-	}
-	if g.children == 0 {
-		g.childIdle = make(chan struct{})
 	}
 	g.children++
 	return true
@@ -93,18 +177,56 @@ func (g *Gate) leaveChild() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.children--
-	if g.children == 0 {
-		close(g.childIdle)
+	if g.handlers+g.children == 0 && g.idle != nil {
+		close(g.idle)
 	}
 }
 
 // close stops admission and reports the handlers and child work still running,
-// with a channel that closes once the child work finishes.
-func (g *Gate) close() (handlers, children int, childIdle <-chan struct{}) {
+// with a channel that closes once all work finishes.
+func (g *Gate) close() (handlers, children int, idle <-chan struct{}) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.closed = true
-	return g.handlers, g.children, g.childIdle
+	if g.handlers+g.children != 0 && g.idle == nil {
+		g.idle = make(chan struct{})
+	}
+	return g.handlers, g.children, g.idle
+}
+
+// hijackContext derives a lifetime canceled when this listener starts draining.
+// Call before hijacking, close both sockets on cancellation, and cancel the
+// returned context when the handler returns. Without a gate it follows ctx.
+func hijackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	lifetime, cancel := context.WithCancel(ctx)
+	g, _ := ctx.Value(gateContextKey{}).(*Gate)
+	if g == nil {
+		return lifetime, cancel
+	}
+	g.mu.Lock()
+	if g.draining {
+		g.mu.Unlock()
+		cancel()
+		return lifetime, cancel
+	}
+	if g.hijackCtx == nil {
+		g.hijackCtx, g.stopHijacks = context.WithCancel(context.Background())
+	}
+	stop := context.AfterFunc(g.hijackCtx, cancel)
+	g.mu.Unlock()
+	return lifetime, func() { stop(); cancel() }
+}
+
+// StopHijacks cancels existing and future hijack lifetimes. Call it on every
+// listener before joining any one of them when listeners share a grace period.
+func (g *Gate) StopHijacks() {
+	g.mu.Lock()
+	g.draining = true
+	cancel := g.stopHijacks
+	g.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // GatedServer pairs a server with the gate wrapping its outermost handler.
@@ -117,12 +239,26 @@ type GatedServer struct {
 // keeps unread and partial-header connections in StateNew for five seconds
 // (Go issue 22682). A deadline with no receipt-producing work is therefore a
 // complete drain: close the stragglers after fencing any late handler entry.
-// After Shutdown succeeds, registered child work must still finish within ctx;
-// hijacked handlers are not waited on (see Gate). Running work or any other
+// Hijack lifetimes are canceled before Shutdown; all handlers and registered
+// child work must finish within ctx. Running work or any other
 // shutdown error remains incomplete. Failed graceful shutdowns force-close
 // connections, but never claim the outstanding work ended.
 func DrainServer(ctx context.Context, gs GatedServer) error {
+	gs.Gate.StopHijacks()
 	return gs.Gate.settle(drainOnce(ctx, gs))
+}
+
+// DrainServers drains every server at once under ctx, so a listener still
+// accepting while another drains cannot admit work the shared deadline then
+// abandons. The result holds each server's error at its index.
+func DrainServers(ctx context.Context, servers []GatedServer) []error {
+	errs := make([]error, len(servers))
+	var wg sync.WaitGroup
+	for i, gs := range servers {
+		wg.Go(func() { errs[i] = DrainServer(ctx, gs) })
+	}
+	wg.Wait()
+	return errs
 }
 
 // ErrEarlierDrainIncomplete reports that an earlier drain of the same server
@@ -148,10 +284,10 @@ func (g *Gate) settle(err error) error {
 
 func drainOnce(ctx context.Context, gs GatedServer) error {
 	err := gs.Server.Shutdown(ctx)
-	handlers, children, childIdle := gs.Gate.close()
-	if err == nil && children != 0 {
+	handlers, children, idle := gs.Gate.close()
+	if err == nil && handlers+children != 0 {
 		select {
-		case <-childIdle:
+		case <-idle:
 		case <-ctx.Done():
 			err = ctx.Err()
 		}

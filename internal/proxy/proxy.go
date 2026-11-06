@@ -3038,12 +3038,12 @@ func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
 // Used by the license expiry watchdog to unbind per-agent listeners when
 // the enterprise license expires at runtime.
 func (p *Proxy) ShutdownAgentServers() error {
-	var shutdownErr error
+	ctx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
+	defer cancel()
 	for _, gs := range p.agentServers {
-		ctx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
-		shutdownErr = errors.Join(shutdownErr, httpstream.DrainServer(ctx, gs))
-		cancel()
+		gs.Gate.StopHijacks()
 	}
+	shutdownErr := errors.Join(httpstream.DrainServers(ctx, p.agentServers)...)
 	if shutdownErr != nil {
 		return errors.Join(ErrShutdownIncomplete, shutdownErr)
 	}
@@ -5354,16 +5354,22 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 	}, func() error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), p.shutdownGraceOrDefault())
 		defer cancel()
-		var shutdownErr error
+		mainGate.StopHijacks()
 		for _, gs := range p.agentServers {
-			if shutErr := httpstream.DrainServer(shutdownCtx, gs); shutErr != nil {
-				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", gs.Server.Addr), shutErr)
-				shutdownErr = errors.Join(shutdownErr, shutErr)
-			}
+			gs.Gate.StopHijacks()
 		}
-		if err := httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: p.server, Gate: mainGate}); err != nil {
-			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
-			shutdownErr = errors.Join(shutdownErr, err)
+		servers := append(slices.Clone(p.agentServers), httpstream.GatedServer{Server: p.server, Gate: mainGate})
+		var shutdownErr error
+		for i, shutErr := range httpstream.DrainServers(shutdownCtx, servers) {
+			if shutErr == nil {
+				continue
+			}
+			addr := servers[i].Server.Addr
+			if i == len(servers)-1 {
+				addr = listenAddr
+			}
+			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", addr), shutErr)
+			shutdownErr = errors.Join(shutdownErr, shutErr)
 		}
 		p.Close()
 		return shutdownErr

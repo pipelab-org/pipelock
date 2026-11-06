@@ -392,7 +392,7 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 		// Join auxiliary listener lifecycles before writing completeness anchors.
 		// Main and agent drain failures, including earlier license-driven agent
 		// unbinds, and auxiliary listener drain failures leave the run unsealed.
-		// Hijacked handlers still need their own drain tracking. Seal before the
+		// Hijacked handlers join the same gate after their sockets close. Seal before the
 		// deferred cleanup closes the recorder; this is a no-op when receipts are
 		// off or none were emitted.
 		if !proxyDrainIncomplete {
