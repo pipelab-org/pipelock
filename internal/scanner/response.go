@@ -683,7 +683,7 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		content = normalize.ForMatching(content)
 		matches := s.matchDecodedCoreResponse(content, filterSuppressed).matches
 		if len(matches) == 0 && s.responseEnabled {
-			matches = filterSuppressed(s.matchDecodedResponse(content).matches)
+			matches = s.matchDecodedResponseWithSuppress(content, filterSuppressed).matches
 		}
 		if ctx != nil && ctx.Err() != nil {
 			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
@@ -776,11 +776,11 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
 	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent)) {
-		decodedSet := s.matchDecodedResponse(content)
-		matches = filterSuppressed(decodedSet.matches)
+		decodedSet := s.matchDecodedResponseWithSuppress(content, filterSuppressed)
+		matches = decodedSet.matches
 		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {
-			decodedSet = s.matchDecodedResponse(preStripContent)
-			matches = filterSuppressed(decodedSet.matches)
+			decodedSet = s.matchDecodedResponseWithSuppress(preStripContent, filterSuppressed)
+			matches = decodedSet.matches
 		}
 	}
 
@@ -1229,20 +1229,24 @@ const responseDecodeMaxDepth = 5
 // multi-layer chains (e.g., base64(hex(injection))). Two strategies per layer:
 // whole-content decode and segment-level decode.
 func (s *Scanner) matchDecodedResponse(content string) responseMatchSet {
-	return markFragmentBoundaries(s.matchDecodedResponseRecursive(content, 0), content)
+	return s.matchDecodedResponseWithSuppress(content, nil)
+}
+
+func (s *Scanner) matchDecodedResponseWithSuppress(content string, suppress coreResponseSuppressor) responseMatchSet {
+	return markFragmentBoundaries(s.matchDecodedResponseRecursive(content, 0, suppress), content)
 }
 
 // matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
-func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) responseMatchSet {
+func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
 
 	for _, view := range appendTextEncodingViews(nil, content) {
-		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded")); len(set.matches) > 0 {
+		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
 			return mapTextEncodingSources(set, content, view)
 		}
-		if set := s.matchDecodedResponseRecursive(view.text, depth+1); len(set.matches) > 0 {
+		if set := s.matchDecodedResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
 			return mapTextEncodingSources(set, content, view)
 		}
 	}
@@ -1257,29 +1261,29 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 	} {
 		if decoded, err := enc.DecodeString(stripped); err == nil && len(decoded) > 0 {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
 			// Always recurse on successful decode. The depth limit is the
 			// safety bound; gating on hasEncodedRun lets attackers bypass
 			// by splitting or punctuating the inner encoded layer.
-			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 				return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 			}
 		}
 	}
 	if decoded, err := hex.DecodeString(stripped); err == nil && len(decoded) > 0 {
 		d := string(decoded)
-		if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
 			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
-		if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+		if decodedSet := s.matchDecodedResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 			return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 		}
 	}
 
 	// Strategy 2: segment-level decode with recursion.
-	if decodedSet := s.matchDecodedSegmentsRecursive(content, depth); len(decodedSet.matches) > 0 {
+	if decodedSet := s.matchDecodedSegmentsRecursive(content, depth, suppress); len(decodedSet.matches) > 0 {
 		return decodedSet
 	}
 
@@ -1289,7 +1293,7 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int) respo
 // matchDecodedSegmentsRecursive extracts contiguous base64-alphabet runs from
 // content, decodes each individually, and checks for injection patterns.
 // Recurses on decoded segments to catch multi-layer encoding.
-func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) responseMatchSet {
+func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
@@ -1302,20 +1306,20 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int) respo
 		} {
 			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
-				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
-				if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+				if decodedSet := s.matchDecodedResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
 				}
 			}
 		}
 		if decoded, err := hex.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 			d := string(decoded)
-			if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedNormalized(d, ViewHexDecoded, suppress); len(decodedSet.matches) > 0 {
 				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
-			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1); len(decodedSet.matches) > 0 {
+			if decodedSet := s.matchDecodedResponseRecursive(d, depth+1, suppress); len(decodedSet.matches) > 0 {
 				return mapDecodedSources(decodedSet, d, sourceOffsets, true)
 			}
 		}
@@ -1751,27 +1755,27 @@ func isPrintableResponseRune(r rune, size int) bool {
 // matchDecodedNormalized runs all response scanning passes (primary, opt-space,
 // vowel-fold) against decoded content. Without this, encoded payloads carrying
 // vowel-substituted or zero-width-separated injection would bypass detection.
-func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string) responseMatchSet {
+func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string, suppress coreResponseSuppressor) responseMatchSet {
 	normalized := normalize.ForMatching(decoded)
-	if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized)); len(matches) > 0 {
-		return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
+	if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+		return responseMatchSet{matches: matches, content: normalized}
 	}
 	spaced := normalize.ForMatchingSpaced(decoded)
 	if spaced != normalized {
-		if matches := filterDefensiveCredentialSolicitationMatches(spaced, matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, spaced)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, spanViewLabel("invisible_spaced", decodedViewLabel)), content: spaced}
+		if matches := filterCoreResponsePass(spaced, "", matchPatternsPreFiltered(s.responsePreFilter, s.responsePatterns, spaced), spanViewLabel("invisible_spaced", decodedViewLabel), suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: spaced}
 		}
 	}
 	if len(s.responseOptSpacePatterns) > 0 {
-		if matches := filterDefensiveCredentialSolicitationMatches(normalized, matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized)); len(matches) > 0 {
-			return responseMatchSet{matches: withResponseSpans(matches, decodedViewLabel), content: normalized}
+		if matches := filterCoreResponsePass(normalized, "", matchPatternsPreFiltered(s.responseOptSpacePreFilter, s.responseOptSpacePatterns, normalized), decodedViewLabel, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: normalized}
 		}
 	}
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := filterDefensiveCredentialSolicitationMatches(folded, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded)); len(matches) > 0 {
-				return responseMatchSet{matches: withResponseSpans(matches, vowelFoldViewLabel(decodedViewLabel)), content: folded}
+			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+				return responseMatchSet{matches: matches, content: folded}
 			}
 		}
 	}
