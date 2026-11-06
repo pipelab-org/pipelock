@@ -289,11 +289,17 @@ func TestDLPKeywordsSourceGraphReuse(t *testing.T) {
 }
 
 func TestDLPKeywordsLogicalContextBudget(t *testing.T) {
-	for _, tc := range []struct{ name, source, decoded, encoding, want string }{
-		{"identity", "account", "account", "identity", "account"},
-		{"percent deletion", "%zzaccount", "zzaccount", keywordPercentDrop, "zzaccount"},
-		{"percent escape deletion", "%zzaccount", "account", keywordPercentEscapeDrop, "account"},
-		{"projection preserves distance", "account 123", "account123", "projection", "account 123"},
+	for _, tc := range []struct {
+		name, source, decoded, encoding, want string
+		// wantUnavailable: a context that must be rebuilt from the source is
+		// withheld and flagged once the keyword budget is exhausted. A context
+		// equal to the decoded text needs no rebuild and stays available.
+		wantUnavailable bool
+	}{
+		{"identity", "account", "account", "identity", "account", false},
+		{"percent deletion", "%zzaccount", "zzaccount", keywordPercentDrop, "zzaccount", false},
+		{"percent escape deletion", "%zzaccount", "account", keywordPercentEscapeDrop, "account", false},
+		{"projection preserves distance", "account 123", "account123", "projection", "account 123", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			graph := newKeywordDecodeSources(tc.source)
@@ -309,8 +315,9 @@ func TestDLPKeywordsLogicalContextBudget(t *testing.T) {
 				node.logicalReady = false
 				graph.budget.used = maxDecodeTotalBytes
 				got = node.logicalContexts()
-				if tc.want != tc.decoded && (len(got) != 0 || !node.logicalUnavailable) {
-					t.Fatalf("unavailable logical context=%q, flag=%v", got, node.logicalUnavailable)
+				if tc.wantUnavailable != node.logicalUnavailable || (tc.wantUnavailable && len(got) != 0) ||
+					(!tc.wantUnavailable && (len(got) != 1 || got[0] != tc.want)) {
+					t.Fatalf("exhausted logical context=%q, unavailable=%v, want unavailable=%v", got, node.logicalUnavailable, tc.wantUnavailable)
 				}
 			}
 		})
