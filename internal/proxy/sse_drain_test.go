@@ -69,11 +69,16 @@ func TestReverseSSECompletionDrain(t *testing.T) {
 			if pending {
 				close(release)
 			}
-			// Drain a second time with a fresh deadline to prove completion releases
-			// the gate, including when the previous drain fenced admission.
+			// Drain a second time with a fresh deadline. After a finished completion
+			// the gate is released; after a drain that gave up, the run stays
+			// incomplete however the abandoned work ends.
 			joined, joinCancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer joinCancel()
-			if err := httpstream.DrainServer(joined, httpstream.GatedServer{Server: &http.Server{Handler: h, ReadHeaderTimeout: time.Second}, Gate: gate}); err != nil {
+			err = httpstream.DrainServer(joined, httpstream.GatedServer{Server: &http.Server{Handler: h, ReadHeaderTimeout: time.Second}, Gate: gate})
+			if pending && !errors.Is(err, httpstream.ErrEarlierDrainIncomplete) {
+				t.Errorf("drain after a failed drain = %v, want ErrEarlierDrainIncomplete", err)
+			}
+			if !pending && err != nil {
 				t.Error(err)
 			}
 		})

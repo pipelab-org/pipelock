@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,19 +28,18 @@ func TestHandlerDrainParity(t *testing.T) {
 			h.scanner = scanner.MustNew(h.cfg)
 			defer h.scanner.Close()
 			entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan struct{})
-			defer func() {
-				select {
-				case <-release:
-				default:
-					close(release)
-				}
-			}()
+			var releaseOnce sync.Once
+			releaseHook := func() { releaseOnce.Do(func() { close(release) }) }
 			h.scanner.SetDLPWarnHook(func(context.Context, string, string) { close(entered); <-release })
 			gate := &httpstream.Gate{}
 			srv := httptest.NewUnstartedServer(gate.Wrap(h))
 			srv.Config.ReadHeaderTimeout = time.Second
 			srv.Start()
-			defer srv.Close()
+			// Release a held hook before Close, which waits for the handler.
+			defer func() {
+				releaseHook()
+				srv.Close()
+			}()
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, srv.URL+"/api/v1/scan", strings.NewReader(`{"kind":"dlp","input":{"text":"drain-warning-probe"}}`))
 			if err != nil {
 				t.Fatal(err)
@@ -60,7 +60,7 @@ func TestHandlerDrainParity(t *testing.T) {
 				t.Fatal("Scan API warning hook did not run")
 			}
 			if !pending {
-				close(release)
+				releaseHook()
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 			defer cancel()
@@ -72,7 +72,7 @@ func TestHandlerDrainParity(t *testing.T) {
 				t.Errorf("finished scan drain = %v", err)
 			}
 			if pending {
-				close(release)
+				releaseHook()
 			}
 			select {
 			case <-finished:
@@ -81,7 +81,12 @@ func TestHandlerDrainParity(t *testing.T) {
 			}
 			joined, joinCancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer joinCancel()
-			if err := httpstream.DrainServer(joined, httpstream.GatedServer{Server: srv.Config, Gate: gate}); err != nil {
+			// After a drain that gave up, every later drain stays incomplete.
+			err = httpstream.DrainServer(joined, httpstream.GatedServer{Server: srv.Config, Gate: gate})
+			if pending && !errors.Is(err, httpstream.ErrEarlierDrainIncomplete) {
+				t.Errorf("drain after a failed drain = %v, want ErrEarlierDrainIncomplete", err)
+			}
+			if !pending && err != nil {
 				t.Error(err)
 			}
 		})

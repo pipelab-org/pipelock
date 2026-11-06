@@ -20,6 +20,7 @@ import (
 type Gate struct {
 	mu        sync.Mutex
 	closed    bool
+	failed    bool // an earlier drain of this server did not complete
 	handlers  int
 	children  int
 	childIdle chan struct{}
@@ -121,6 +122,31 @@ type GatedServer struct {
 // shutdown error remains incomplete. Failed graceful shutdowns force-close
 // connections, but never claim the outstanding work ended.
 func DrainServer(ctx context.Context, gs GatedServer) error {
+	return gs.Gate.settle(drainOnce(ctx, gs))
+}
+
+// ErrEarlierDrainIncomplete reports that an earlier drain of the same server
+// gave up with work still running. A failed drain force-closes connections, so
+// a later Shutdown can succeed while that work still owes receipts.
+var ErrEarlierDrainIncomplete = errors.New("an earlier drain of this listener did not complete")
+
+// settle records a failed drain and keeps every later drain of the same server
+// incomplete, so a retry cannot report a run complete that an earlier attempt
+// could not finish.
+func (g *Gate) settle(err error) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if err != nil {
+		g.failed = true
+		return err
+	}
+	if g.failed {
+		return ErrEarlierDrainIncomplete
+	}
+	return nil
+}
+
+func drainOnce(ctx context.Context, gs GatedServer) error {
 	err := gs.Server.Shutdown(ctx)
 	handlers, children, childIdle := gs.Gate.close()
 	if err == nil && children != 0 {

@@ -290,3 +290,32 @@ func TestDrainServerLeavesHijackedHandlers(t *testing.T) {
 		t.Fatalf("DrainServer with an open hijacked connection = %v, want the HTTP drain complete", err)
 	}
 }
+
+// A drain that gave up force-closes its connections, so retrying Shutdown on
+// the same server succeeds while the abandoned handler may still owe its
+// receipt. Every later drain must stay incomplete.
+func TestDrainServerRetryAfterFailureStaysIncomplete(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	gs, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	}))
+	defer close(release)
+	held := dialTest(t, addr)
+	if _, err := io.WriteString(held, "GET /hold HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	<-entered
+
+	first, cancel := context.WithTimeout(context.Background(), drainTestGrace)
+	defer cancel()
+	if err := DrainServer(first, gs); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first drain = %v, want the deadline reported", err)
+	}
+	retry, cancelRetry := context.WithTimeout(context.Background(), drainTestGrace)
+	defer cancelRetry()
+	if err := DrainServer(retry, gs); !errors.Is(err, ErrEarlierDrainIncomplete) {
+		t.Fatalf("retry drain = %v, want ErrEarlierDrainIncomplete", err)
+	}
+}
