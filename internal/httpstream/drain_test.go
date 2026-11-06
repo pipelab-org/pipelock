@@ -450,11 +450,12 @@ func TestGateHijackRacingShutdown(t *testing.T) {
 func TestDrainServerRetryAfterFailureStaysIncomplete(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	finished := make(chan struct{})
 	gs, addr, _, _ := gatedTestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		defer close(finished)
 		close(entered)
 		<-release
 	}))
-	defer close(release)
 	held := dialTest(t, addr)
 	if _, err := io.WriteString(held, "GET /hold HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
 		t.Fatalf("write: %v", err)
@@ -466,6 +467,10 @@ func TestDrainServerRetryAfterFailureStaysIncomplete(t *testing.T) {
 	if err := DrainServer(first, gs); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("first drain = %v, want the deadline reported", err)
 	}
+	// The abandoned handler finishes after the failed drain. Only the recorded
+	// failure can keep the retry from reporting the run complete.
+	close(release)
+	<-finished
 	retry, cancelRetry := context.WithTimeout(context.Background(), drainTestGrace)
 	defer cancelRetry()
 	if err := DrainServer(retry, gs); !errors.Is(err, ErrEarlierDrainIncomplete) {
