@@ -281,6 +281,11 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			source = root
 		}
 		for from := 0; from <= len(source)-len(root); {
+			// Overlapping occurrences can revisit the same root bytes. Charge
+			// each comparison to the existing keyword inspection budget.
+			if !c.decoded.owner.charge(len(root) + keywordSpanBytes) {
+				return false
+			}
 			at := strings.Index(source[from:], root)
 			if at < 0 {
 				break
@@ -290,7 +295,7 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			if gate.Matches(source, at+rs, at+re) {
 				return true
 			}
-			from = at + max(len(root), 1)
+			from = at + 1
 		}
 		return false
 	})
