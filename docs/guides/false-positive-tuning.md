@@ -80,6 +80,12 @@ Some `dlp_warn` events do not come from the hook. Pipelock also emits an informa
 
 ## Other false positive tuning techniques
 
+### Nearby keywords
+
+For a loose custom pattern, add nearby labels with `dlp.patterns[].keywords` and an optional `keyword_window`. Test a labeled value and the same value without its label before reloading. The unlabeled value deliberately stops producing that custom finding. A qualifying `action: warn` finding remains observable; an unrelated blocking rule can still refuse the request.
+
+Keywords reduce noise for accidental leaks and do not stop deliberate exfiltration. Use an existing `validator:` checksum where the format supports one, or enroll actual sensitive values through environment/file-secret scanning. See the [configuration example and exact window rules](../configuration.md#nearby-keywords-for-custom-patterns), including reload restrictions and encoded context. Built-in and core patterns cannot require keywords.
+
 ### Exempt domains
 
 Use `exempt_domains` on a custom, non-core DLP pattern to skip enforcement for

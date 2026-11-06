@@ -1839,6 +1839,9 @@ func removedOrWeakenedDLPPatterns(old, updated []DLPPattern) []string {
 	}
 	for _, p := range old {
 		next, ok := updatedByName[p.Name]
+		if ok && next.Regex == p.Regex && KeywordCoverageReduced(p, next) {
+			changed = append(changed, p.Name+" (keywords narrowed)")
+		}
 		// Adding or swapping a validator can filter previously detected
 		// candidates without changing the regex. Removing one restores
 		// shape-only detection, so it cannot reduce that pattern's coverage.

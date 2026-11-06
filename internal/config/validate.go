@@ -1621,6 +1621,12 @@ func (c *Config) validateDLPPatternConfig(warnings *[]Warning) error {
 
 	// Validate DLP patterns compile as valid regexes
 	for i, p := range c.DLP.Patterns {
+		if err := p.ValidateKeywords(); err != nil {
+			return err
+		}
+		if len(p.Keywords) > 0 && warnings != nil {
+			*warnings = append(*warnings, Warning{Field: fmt.Sprintf("dlp.patterns[%d].keywords", i), Message: "keyword-gated custom patterns miss values without nearby labels; keywords reduce accidental-leak noise and do not prevent deliberate exfiltration"})
+		}
 		if p.Name == "" {
 			return fmt.Errorf("DLP pattern missing name")
 		}

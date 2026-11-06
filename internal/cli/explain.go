@@ -405,6 +405,11 @@ func buildExplainReport(cmd *cobra.Command, cfg *config.Config, cfgLabel, rawURL
 		Version:    cliutil.Version,
 	}
 
+	for i, pattern := range cfg.DLP.Patterns {
+		if len(pattern.Keywords) > 0 {
+			report.Notes = append(report.Notes, fmt.Sprintf("dlp.patterns[%d] %q requires a complete nearby keyword outside the candidate within %d Unicode scalar values on either side, in source or producing decoded context; missing labels produce no finding; action follows the pattern and surface", i, pattern.Name, pattern.EffectiveKeywordWindow()))
+		}
+	}
 	if notice := cfg.PromptInjectionNotice(); notice != "" {
 		report.Notes = append(report.Notes, notice)
 	}

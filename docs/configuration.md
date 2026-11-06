@@ -978,6 +978,8 @@ dlp:
 | `include_defaults` | `true` | Merge your patterns with the 65 built-in patterns |
 | `patterns` | 65 built-in | DLP credential detection patterns |
 | `patterns[].validator` | `""` | Post-match checksum validator: `luhn`, `mod97`, `aba`, `wif`, `dea`, or `npi` |
+| `patterns[].keywords` | `[]` | Optional literal, case-insensitive nearby labels for custom patterns; 1 to 50 terms, each 3 to 90 Unicode scalar values before and after DLP normalization |
+| `patterns[].keyword_window` | `50` with keywords | Characters on each side of the candidate, from 1 to 300; every keyword must fit wholly within one side; requires nonempty keywords |
 | `patterns[].exempt_domains` | `[]` | Domains where this pattern is not enforced (wildcard supported) |
 | `patterns[].action` | `""` | Per-pattern action override. Only `warn` is supported. When set to `warn`, matches allow traffic through without enforcement. See the [false positive tuning guide](guides/false-positive-tuning.md) for the rollout workflow. Built-in default patterns cannot be set to warn. |
 
@@ -1015,6 +1017,34 @@ dlp:
       severity: low
       validator: aba
 ```
+
+### Nearby keywords for custom patterns
+
+Use `keywords` to narrow a noisy custom detector to values with a nearby label:
+
+```yaml
+dlp:
+  patterns:
+    - name: "Customer account number"
+      regex: '[0-9]{16}'
+      severity: high
+      keywords: ["account", "customer id"]
+      keyword_window: 50
+```
+
+A finding must pass the regex, any existing `validator:`, and the keyword condition. Keywords reduce noise for accidental leaks and do not stop deliberate exfiltration. An agent can omit the label. Prefer the [per-pattern checksum validators](#validated-patterns) as the stronger structural control when the identifier format has a checksum. Known-value scanning through `scan_env` or `secrets_file` doesn't depend on nearby labels.
+
+Keywords are literal, case-insensitive substrings after DLP normalization. `api.key` includes a literal dot; `key` can match inside `monkey`. A complete keyword must occur outside the candidate and wholly within either side's window. Windows count Unicode scalar values, including ordinary spaces, tabs and newlines, rather than bytes or grapheme clusters. A keyword inside the regex match cannot corroborate itself. Either the source window outside the exact encoded candidate hull or the decoded window that produced the candidate may qualify. Whitespace and separator compaction do not shorten the source distance. If required context cannot be inspected within the existing decode budget, the existing inspection-incomplete policy applies.
+
+Omitted, null, blank, or empty `keywords` keep ordinary matching. An omitted, null, or blank `keyword_window` uses 50 when keywords exist. Explicit windows must be integers from 1 to 300 and at least as long as every term. A non-null window without keywords is an error. Terms must be valid UTF-8, contain 3 to 90 Unicode scalar values before and after normalization, and have no controls, leading/trailing whitespace, or duplicates under normalization and case folding. Internal spaces and punctuation remain literal. The optional keywords, list and term bounds, default distance, and distance range follow [AWS Macie custom data identifiers](https://docs.aws.amazon.com/macie/latest/user/cdis-options.html). Pipelock searches both sides and requires disjoint context.
+
+Core patterns, compiled defaults, and unchanged canonical built-in detectors reject keywords. Custom replacements with different non-core regexes can use them. Existing presets and signed rule bundles don't add this control; bundle YAML rejects these fields. Upgrade engines before activating configuration that uses them.
+
+Enabling a gate, removing a keyword, replacing terms without retaining the old set, or shrinking the window produces an existing coverage-reduction warning on reload. Strict and required-receipt contracts reject such reloads and retain the active generation. Adding terms, enlarging the window, removing the gate, and equivalent order/case/default spellings don't produce that keyword warning. Startup warns that unlabeled values are excluded.
+
+Traffic consumers share candidate acceptance in the scanner: fetch, forward proxy and CONNECT destination checks use URL DLP; HTTP headers and bodies, intercepted CONNECT content, outbound WebSocket text, and MCP stdio/HTTP/SSE/WebSocket content use text DLP. The control adds no scan to fetch responses or server-to-client WebSocket text, which remain injection-only, or to encrypted CONNECT bodies without interception. Existing stream and structured-content joins keep their boundaries. Git scanning evaluates an added line; project scanning retains its file/environment units. Sentry privacy scrubbing deliberately ignores keywords and still redacts unlabeled regex matches.
+
+Accepted findings retain the credential-only span and value identity. Receipts bind the effective keyword policy through configuration identity; a credential transform recipe alone doesn't independently prove nearby context. A missing keyword produces no custom finding or warn event. Other detectors and the calling surface's action still apply.
 
 ### Pattern Merging
 

@@ -129,6 +129,15 @@ type canonicalPolicyView struct {
 
 func (c *Config) policySemanticView() canonicalPolicyView {
 	view := *c
+	view.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
+	for i := range view.DLP.Patterns {
+		p := &view.DLP.Patterns[i]
+		if len(p.Keywords) > 0 {
+			p.Keywords = p.CanonicalKeywords()
+			w := p.EffectiveKeywordWindow()
+			p.KeywordWindow = &w
+		}
+	}
 	switch c.PromptInjectionMode() {
 	case ActionAllow:
 		enabled := false

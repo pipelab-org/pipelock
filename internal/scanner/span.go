@@ -6,6 +6,8 @@ package scanner
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // View labels name the exact scanner view that byte offsets index. Labels use
@@ -101,6 +103,12 @@ func (p *compiledPattern) matchSpan(text string) (start, end int, ok bool) {
 // candidate is suppressed only when that same candidate genuinely existed
 // mid-word in source; otherwise the scanner manufactured the adjacency.
 func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, ok bool) {
+	if p.keywords != nil && p.keywordContext == nil {
+		pattern := *p
+		logical := config.DLPKeywordContext(source)
+		pattern.keywordContext = &keywordCandidateContext{logical: logical}
+		return pattern.matchSpanInView(text, source)
+	}
 	if p.requiresEquals && strings.IndexByte(text, '=') < 0 {
 		return 0, 0, false
 	}
@@ -149,6 +157,11 @@ func (p *compiledPattern) matchSpanInView(text, source string) (start, end int, 
 // joined-view validator must also pass it; a rejected candidate never hides a
 // later genuine one. Patterns without one behave exactly as in matchSpanInView.
 func (p *compiledPattern) matchSpanInJoinedView(text, source string, offsets []int) (start, end int, ok bool) {
+	if p.keywords != nil && p.keywordContext == nil {
+		pattern := *p
+		pattern.keywordContext = &keywordCandidateContext{logical: source, offsets: offsets}
+		return pattern.matchSpanInJoinedView(text, source, offsets)
+	}
 	if p.validateJoined == nil || p.withoutLeftBoundary != nil {
 		return p.matchSpanInView(text, source)
 	}

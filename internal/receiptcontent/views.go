@@ -91,12 +91,13 @@ func (e *RejectionError) Is(target error) bool { return target == ErrRejected }
 // member names, so they are for redaction only; Fields are schema paths and
 // are what errors report.
 type Finding struct {
-	View     View
-	Paths    []string
-	Fields   []string
-	Pattern  string
-	Identity bool
-	Key      bool
+	Contextual bool
+	View       View
+	Paths      []string
+	Fields     []string
+	Pattern    string
+	Identity   bool
+	Key        bool
 }
 
 // Report is the result of Scan. When any atom finding exists the joint views
@@ -148,9 +149,14 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 	}
 
 	// (i) Every atom alone. Distinct texts are scanned once.
-	verdict := make(map[string]string, len(p.atoms))
+	type atomVerdict struct {
+		pattern    string
+		contextual bool
+	}
+	verdict := make(map[string]atomVerdict, len(p.atoms))
 	for _, a := range p.atoms {
-		pattern, seen := verdict[a.Text]
+		cached, seen := verdict[a.Text]
+		pattern, contextual := cached.pattern, cached.contextual
 		if !seen {
 			res := det(ctx, a.Text)
 			if err := res.Err(); err != nil {
@@ -158,11 +164,14 @@ func Scan(ctx context.Context, det Detector, p *Projection) (Report, error) {
 			}
 			if !res.Clean {
 				pattern = firstPattern(res)
+				for _, match := range res.Matches {
+					contextual = contextual || match.RequiresKeywordContext()
+				}
 			}
-			verdict[a.Text] = pattern
+			verdict[a.Text] = atomVerdict{pattern: pattern, contextual: contextual}
 		}
 		if pattern != "" {
-			rep.Findings = append(rep.Findings, Finding{View: ViewAtom, Paths: []string{a.Path}, Fields: []string{a.Field}, Pattern: pattern, Identity: a.Identity, Key: a.Kind == AtomKey})
+			rep.Findings = append(rep.Findings, Finding{Contextual: contextual, View: ViewAtom, Paths: []string{a.Path}, Fields: []string{a.Field}, Pattern: pattern, Identity: a.Identity, Key: a.Kind == AtomKey})
 		}
 	}
 	if len(rep.Findings) > 0 {

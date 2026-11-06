@@ -445,10 +445,19 @@ func (e *Emitter) scanActionContent(tmpl Receipt) (Receipt, *recorder.ContentSca
 		det := e.recorder.ReceiptDetector()
 		clean := func(text string) bool { return det(ctx, text).Clean }
 		paths := make([]string, 0, len(rep.Findings))
+		contextualPaths := make(map[string]bool)
 		for _, f := range rep.Findings {
 			paths = append(paths, f.Paths...)
+			if f.Contextual {
+				for _, path := range f.Paths {
+					contextualPaths[path] = true
+				}
+			}
 		}
 		redacted, err := actionReceiptProducer.RedactValues(raw, paths, func(path, value string) string {
+			if contextualPaths[path] {
+				return redactedTarget
+			}
 			if path == "action_record.target" {
 				return sanitizeSignedTarget(value, clean)
 			}

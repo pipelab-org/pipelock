@@ -621,6 +621,9 @@ func builtInAudiencePattern(name string) (DLPPattern, bool) {
 // compiled credential audience.
 func changedFromBuiltIn(p, builtIn DLPPattern) []string {
 	var changed []string
+	if len(p.Keywords) > 0 || p.KeywordWindow != nil {
+		changed = append(changed, "keywords")
+	}
 	if p.Regex != builtIn.Regex {
 		changed = append(changed, "regex")
 	}

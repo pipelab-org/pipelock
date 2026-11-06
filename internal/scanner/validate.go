@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
+	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
 
 // DLPValidators maps validator names from config.DLPPattern.Validator to
@@ -433,9 +434,18 @@ func RetriesWIFOverlaps(p config.DLPPattern) bool {
 // ValidatedPatternMatches shares checksum candidate enumeration with local
 // diff and project scanners. Failed WIF hits cannot consume a valid neighbor.
 func ValidatedPatternMatches(text string, re *regexp.Regexp, validate func(string) bool, cardPrefixRetry, wifOverlapRetry bool) bool {
+	return ContextualPatternMatches(text, re, validate, cardPrefixRetry, wifOverlapRetry, nil)
+}
+
+// ContextualPatternMatches shares candidate continuation and keyword windows
+// with offline consumers that supply their own logical text units.
+func ContextualPatternMatches(text string, re *regexp.Regexp, validate func(string) bool, cardPrefixRetry, wifOverlapRetry bool, keywords *config.DLPKeywordMatcher) bool {
 	if re == nil {
 		return false
 	}
-	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry}
+	p := compiledPattern{re: re, validate: validate, cardPrefixRetry: cardPrefixRetry, wifOverlapRetry: wifOverlapRetry, keywords: keywords}
+	if keywords != nil {
+		text = normalize.ForDLP(text)
+	}
 	return p.matches(text)
 }
