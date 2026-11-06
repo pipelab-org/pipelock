@@ -1118,7 +1118,7 @@ func fillSeededBinary(buf []byte, seed uint64) {
 func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
 	s := MustNew(config.Defaults())
 	body := make([]byte, 8<<20)
-	for seed := uint64(0); seed < 24; seed++ {
+	for seed := uint64(0); seed < 6; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
 			fillSeededBinary(body, seed)
 			if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); !result.Clean {

@@ -21,6 +21,10 @@ func TestTextEncodingSeedWholeTextViews(t *testing.T) {
 	for _, tc := range []struct{ name, encoding, carrier string }{
 		{"decimal", encodingDecimal, decimalCharacterCodes(testSeedPhrase12, " ")},
 		{"quoted printable", encodingQuotedPrintable, fullyEscaped(testSeedPhrase12)},
+		{"quoted printable controls", encodingQuotedPrintable, "=00" + fullyEscaped(testSeedPhrase12) + "=00"},
+		{"quoted printable invalid suffix", encodingQuotedPrintable, fullyEscaped(testSeedPhrase12) + "\xff"},
+		{"quoted printable invalid prefix", encodingQuotedPrintable, "\xff" + fullyEscaped(testSeedPhrase12)},
+		{"quoted printable malformed binary suffix", encodingQuotedPrintable, fullyEscaped(testSeedPhrase12) + "=FF="},
 		{"quoted printable soft break", encodingQuotedPrintable, fullyEscaped(testSeedPhrase12[:7]) + "=\r\n" + fullyEscaped(testSeedPhrase12[7:])},
 		{"octal", encodingOctal, prefixedCharacterCodes(testSeedPhrase12, "0o", 8)},
 		{"binary", encodingBinary, prefixedCharacterCodes(testSeedPhrase12, "0b", 2)},

@@ -683,9 +683,9 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		// Reuse the existing recursive decoders and suppression handling, but
 		// do not pattern-match the stitched encoded alphabet as ordinary text.
 		content = normalize.ForMatching(content)
-		matches := s.matchDecodedCoreResponse(content, filterSuppressed).matches
+		matches := s.matchDecodedCoreResponseMode(content, filterSuppressed, false).matches
 		if len(matches) == 0 && s.responseEnabled {
-			matches = s.matchDecodedResponseWithSuppress(content, filterSuppressed).matches
+			matches = s.matchDecodedResponseWithSuppressMode(content, filterSuppressed, false).matches
 		}
 		if ctx != nil && ctx.Err() != nil {
 			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
@@ -778,10 +778,10 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
 	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent)) {
-		decodedSet := s.matchDecodedResponseWithSuppress(content, filterSuppressed)
+		decodedSet := s.matchDecodedResponseWithSuppressMode(content, filterSuppressed, !options.forceEncodedDecode)
 		matches = decodedSet.matches
 		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {
-			decodedSet = s.matchDecodedResponseWithSuppress(preStripContent, filterSuppressed)
+			decodedSet = s.matchDecodedResponseWithSuppressMode(preStripContent, filterSuppressed, !options.forceEncodedDecode)
 			matches = decodedSet.matches
 		}
 	}
@@ -1235,24 +1235,33 @@ func (s *Scanner) matchDecodedResponse(content string) responseMatchSet {
 }
 
 func (s *Scanner) matchDecodedResponseWithSuppress(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return markFragmentBoundaries(s.matchDecodedResponseRecursive(content, 0, suppress), content)
+	return s.matchDecodedResponseWithSuppressMode(content, suppress, true)
+}
+
+func (s *Scanner) matchDecodedResponseWithSuppressMode(content string, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
+	return markFragmentBoundaries(s.matchDecodedResponseRecursiveMode(content, 0, suppress, recoverQP), content)
 }
 
 // matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
 func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
+	return s.matchDecodedResponseRecursiveMode(content, depth, suppress, true)
+}
+
+func (s *Scanner) matchDecodedResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
 
-	for _, view := range appendTextEncodingViews(nil, content) {
+	views := textEncodingViewsMode(content, recoverQP)
+	for _, view := range views {
 		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
-			set = mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingViewSources(set, content, view)
 			if len(set.matches) > 0 {
 				return set
 			}
 		}
 		if set := s.matchDecodedResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
-			set = mapTextEncodingSources(set, content, view)
+			set = mapTextEncodingViewSources(set, content, view)
 			if len(set.matches) > 0 {
 				return set
 			}

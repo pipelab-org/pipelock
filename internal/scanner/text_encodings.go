@@ -107,12 +107,30 @@ func hasMinimumCharacterCodeFields(s string) bool {
 	return false
 }
 
+type textEncodingView struct {
+	decodedResult
+	sourceRange encodingSourceRange
+}
+
 // appendTextEncodingViews joins textual carriers to the existing decode graph.
 // Each result is at most the input size; the caller owns recursive budgets.
 func appendTextEncodingViews(out []decodedResult, s string) []decodedResult {
+	for _, view := range textEncodingViews(s) {
+		out = append(out, view.decodedResult)
+	}
+	return out
+}
+
+func textEncodingViews(s string) []textEncodingView { return textEncodingViewsMode(s, true) }
+
+// A stitched binary-fragment view retains the original whole-carrier admission.
+// Damaged-carrier recovery belongs to retained source runs and real codec output.
+func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
+	var out []textEncodingView
+
 	if hasCharacterCodeRun(s) {
 		if decoded, _ := decodeCharacterCodes(s, characterCodeSeparatorFast, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
-			out = append(out, decodedResult{decoded, encodingDecimal})
+			out = append(out, textEncodingView{decodedResult{decoded, encodingDecimal}, encodingSourceRange{0, len(s)}})
 		}
 		for _, encoding := range []string{encodingOctal, encodingBinary} {
 			prefix, upperPrefix := "0o", "0O"
@@ -123,20 +141,144 @@ func appendTextEncodingViews(out []decodedResult, s string) []decodedResult {
 				continue
 			}
 			if decoded, _ := decodePrefixedCharacterCodes(s, encoding, false); decoded != "" && decoded != s {
-				out = append(out, decodedResult{decoded, encoding})
+				out = append(out, textEncodingView{decodedResult{decoded, encoding}, encodingSourceRange{0, len(s)}})
 			}
 		}
 	}
 	// RFC 2045 section 6.7 permits binary octets inside a valid carrier.
-	// Otherwise, use the existing isPrintableText decoded-response contract
-	// (including its printable-rune floor) for tolerant malformed carriers.
-	// Incidental escapes in binary noise must not manufacture recursive views.
-	if utf8.ValidString(s) {
-		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" && (isPrintableText([]byte(decoded)) || hasQuotedPrintableCarrier(s)) {
-			out = append(out, decodedResult{decoded, encodingQuotedPrintable})
+	// Otherwise, retain the existing printable-text admission and recover
+	// embedded text runs independently of malformed or non-text padding.
+	if (recoverQP && hasQuotedPrintableSourceRun(s)) || (!recoverQP && utf8.ValidString(s)) {
+		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" {
+			if utf8.ValidString(s) && (isPrintableText([]byte(decoded)) || hasQuotedPrintableCarrier(s)) {
+				out = append(out, textEncodingView{decodedResult{decoded, encodingQuotedPrintable}, encodingSourceRange{0, len(s)}})
+			} else if recoverQP {
+				visitQuotedPrintableTextRuns(s, decoded, func(text string, sourceRange encodingSourceRange) bool {
+					out = append(out, textEncodingView{decodedResult{text, encodingQuotedPrintable}, sourceRange})
+					return true
+				})
+			}
 		}
 	}
 	return out
+}
+
+// hasQuotedPrintableSourceRun keeps binary noise out of the decoder before
+// allocating a whole-input view. Valid UTF-8 retains its existing admission;
+// embedded carriers use opaqueResponseTextView's existing text-run floor.
+func hasQuotedPrintableSourceRun(s string) bool {
+	if utf8.ValidString(s) {
+		return true
+	}
+	for offset := 0; offset < len(s); {
+		next := strings.IndexByte(s[offset:], '=')
+		if next < 0 {
+			return false
+		}
+		i := offset + next
+		offset = i + 1
+		if !hasQuotedPrintable(s[i:min(len(s), i+3)]) {
+			continue
+		}
+		// Only inspect the neighborhood of an actual escape. Walking every
+		// rune of a binary body would repeat work for each recursive view.
+		start := i
+		for start > 0 && i-start < binaryResponseTextRunMinBytes {
+			r, size := utf8.DecodeLastRuneInString(s[:start])
+			if r == utf8.RuneError {
+				break
+			}
+			start -= size
+		}
+		end := i
+		for end < len(s) && end-start < binaryResponseTextRunMinBytes {
+			r, size := utf8.DecodeRuneInString(s[end:])
+			if r == utf8.RuneError {
+				break
+			}
+			end += size
+		}
+		if end-start >= binaryResponseTextRunMinBytes {
+			return true
+		}
+	}
+	return false
+}
+
+// visitQuotedPrintableTextRuns uses opaqueResponseTextView's existing
+// binaryResponseTextRunMinBytes floor and printable-rune classification.
+// Each emitted slice has its own source coordinates. Malformed escapes and
+// invalid UTF-8 end a run. Non-text edges are trimmed; interior controls retain
+// the existing isPrintableText contract and normalization semantics.
+func visitQuotedPrintableTextRuns(source, decoded string, yield func(string, encodingSourceRange) bool) {
+	emit := func(start, end, sourceStart, sourceEnd int) bool {
+		text := decoded[start:end]
+		left := strings.TrimLeftFunc(text, func(r rune) bool { return !isPrintableResponseRune(r, utf8.RuneLen(r)) })
+		trimStart := len(text) - len(left)
+		trimmed := strings.TrimRightFunc(left, func(r rune) bool { return !isPrintableResponseRune(r, utf8.RuneLen(r)) })
+		if len(trimmed) < binaryResponseTextRunMinBytes || !isPrintableText([]byte(trimmed)) {
+			return true
+		}
+		bounds := encodingSourceRange{sourceStart, sourceEnd}
+		if trimStart != 0 || len(trimmed) != len(text) {
+			_, ranges := decodeQuotedPrintable(source[sourceStart:sourceEnd], true)
+			bounds.start += ranges[trimStart].start
+			bounds.end = sourceStart + ranges[trimStart+len(trimmed)-1].end
+		}
+		if trimmed == source[bounds.start:bounds.end] {
+			return true
+		}
+		return yield(trimmed, bounds)
+	}
+	start, offset, nextRune, sourceStart := 0, 0, 0, 0
+	transformed := false
+	for i := 0; i < len(source); {
+		end := i + 1
+		if source[i] == '=' {
+			switch {
+			case i+1 < len(source) && source[i+1] == '\n':
+				transformed = true
+				i += 2
+				continue
+			case i+2 < len(source) && source[i+1:i+3] == "\r\n":
+				transformed = true
+				i += 3
+				continue
+			case i+2 < len(source):
+				if _, ok := quotedPrintableByte(source[i+1], source[i+2]); ok {
+					end = i + 3
+				}
+			}
+		}
+		malformed := source[i] == '=' && end == i+1
+		text := true
+		if offset >= nextRune {
+			// Escaped multibyte characters use the same classification as
+			// literal Unicode; continuation bytes belong to this rune.
+			// U+FFFD also separates opaque-response fragments; it must
+			// not join binary noise into an apparent text run.
+			r, size := utf8.DecodeRuneInString(decoded[offset:])
+			nextRune = offset + size
+			text = r != utf8.RuneError
+		}
+		if malformed || !text {
+			if transformed && offset-start >= binaryResponseTextRunMinBytes {
+				if !emit(start, offset, sourceStart, i) {
+					return
+				}
+			}
+			start, transformed, sourceStart = nextRune, false, end
+		} else if offset >= start {
+			transformed = transformed || end-i > 1
+		} else {
+			sourceStart = end
+		}
+		i = end
+		offset++
+	}
+	if transformed && offset-start >= binaryResponseTextRunMinBytes {
+		emit(start, offset, sourceStart, len(source))
+	}
 }
 
 var asciiCharacterCodeSeparators = func() [utf8.RuneSelf]bool {
@@ -298,6 +440,17 @@ func decodeQuotedPrintable(s string, withRanges bool) (string, []encodingSourceR
 		i = end
 	}
 	return out.String(), ranges
+}
+
+func mapTextEncodingViewSources(set responseMatchSet, source string, view textEncodingView) responseMatchSet {
+	set = mapTextEncodingSources(set, source[view.sourceRange.start:view.sourceRange.end], view.decodedResult)
+	for i := range set.matches {
+		if set.matches[i].hasDecodedSource {
+			set.matches[i].decodedSourceStart += view.sourceRange.start
+			set.matches[i].decodedSourceEnd += view.sourceRange.start
+		}
+	}
+	return set
 }
 
 // mapTextEncodingSources retains exact source ranges for the existing opaque

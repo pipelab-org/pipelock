@@ -973,6 +973,18 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 			label := spanViewLabel(view.encoding+"_decoded", ViewForMatching)
 			addSeedCandidate(seedCandidate{view.text, view.encoding, label})
 			appendInvisibleSpacedSeedCandidate(view.text, view.encoding, label)
+			if view.encoding == encodingQuotedPrintable {
+				// Binary padding must not attach to a phrase's first or last
+				// word. Keep each decoded text run separate; joining across a
+				// non-text boundary could manufacture a phrase.
+				for run := range strings.FieldsFuncSeq(view.text, func(r rune) bool {
+					return !isPrintableResponseRune(r, 1)
+				}) {
+					runLabel := spanViewLabel(label, "text_run")
+					addSeedCandidate(seedCandidate{run, view.encoding, runLabel})
+					appendInvisibleSpacedSeedCandidate(run, view.encoding, runLabel)
+				}
+			}
 		}
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
