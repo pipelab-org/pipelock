@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -475,5 +476,97 @@ func TestDrainServerRetryAfterFailureStaysIncomplete(t *testing.T) {
 	defer cancelRetry()
 	if err := DrainServer(retry, gs); !errors.Is(err, ErrEarlierDrainIncomplete) {
 		t.Fatalf("retry drain = %v, want ErrEarlierDrainIncomplete", err)
+	}
+}
+
+// unwrapOnlyWriter hides Hijack behind Unwrap, like the reverse proxy's
+// write-progress deadline writer.
+type unwrapOnlyWriter struct{ w http.ResponseWriter }
+
+func (u unwrapOnlyWriter) Header() http.Header         { return u.w.Header() }
+func (u unwrapOnlyWriter) Write(b []byte) (int, error) { return u.w.Write(b) }
+func (u unwrapOnlyWriter) WriteHeader(code int)        { u.w.WriteHeader(code) }
+func (u unwrapOnlyWriter) Unwrap() http.ResponseWriter { return u.w }
+
+func TestGateTracksHijackBehindUnwrap(t *testing.T) {
+	hijacked, closed := make(chan struct{}), make(chan struct{})
+	gate := &Gate{}
+	inner := gate.Wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		close(hijacked)
+		_, _ = conn.Read(make([]byte, 1))
+		close(closed)
+	}))
+	srv := &http.Server{
+		ReadHeaderTimeout: 30 * time.Second,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			inner.ServeHTTP(unwrapOnlyWriter{w}, r)
+		}),
+	}
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	tunnel := dialTest(t, ln.Addr().String())
+	if _, err := io.WriteString(tunnel, "GET /upgrade HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-hijacked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no hijack")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), drainTestGrace)
+	defer cancel()
+	if err := DrainServer(ctx, GatedServer{Server: srv, Gate: gate}); err != nil {
+		t.Fatalf("drain of an unwrapped hijack = %v", err)
+	}
+	select {
+	case <-closed:
+	default:
+		t.Fatal("shutdown did not close the hijack behind Unwrap")
+	}
+}
+
+func TestDrainServersStopsEveryListenerBeforeWaiting(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseOnce)
+	held, heldAddr, _, _ := gatedTestServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		close(entered)
+		<-release
+	}))
+	idle, idleAddr, _, _ := gatedTestServer(t, http.NotFoundHandler())
+	conn := dialTest(t, heldAddr)
+	if _, err := io.WriteString(conn, "GET /held HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler not entered")
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	done := make(chan []error, 1)
+	go func() { done <- DrainServers(ctx, []GatedServer{held, idle}) }()
+	testwait.For(t, 3*time.Second, func() bool {
+		c, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", idleAddr)
+		if err != nil {
+			return true
+		}
+		_ = c.Close()
+		return false
+	}, "second listener kept accepting while the first drained")
+	releaseOnce()
+	if errs := <-done; errs[0] != nil || errs[1] != nil {
+		t.Fatalf("drain errors = %v", errs)
 	}
 }

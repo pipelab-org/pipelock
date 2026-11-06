@@ -47,7 +47,7 @@ func (g *Gate) Wrap(next http.Handler) http.Handler {
 			handler = http.DefaultServeMux
 		}
 		ctx := context.WithValue(r.Context(), gateContextKey{}, g)
-		if hijacker, ok := w.(http.Hijacker); ok {
+		if hijacker := findHijacker(w); hijacker != nil {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithCancel(ctx)
 			defer cancel()
@@ -63,6 +63,22 @@ func (g *Gate) Wrap(next http.Handler) http.Handler {
 		}
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// findHijacker follows the Unwrap chain that http.ResponseController follows,
+// so a wrapper that hides Hijack behind Unwrap cannot take a protocol switch
+// past the gate.
+func findHijacker(w http.ResponseWriter) http.Hijacker {
+	for {
+		if hijacker, ok := w.(http.Hijacker); ok {
+			return hijacker
+		}
+		unwrapper, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			return nil
+		}
+		w = unwrapper.Unwrap()
+	}
 }
 
 // hijackWriter tracks both direct and library-initiated protocol switches.
@@ -225,6 +241,19 @@ type GatedServer struct {
 func DrainServer(ctx context.Context, gs GatedServer) error {
 	gs.Gate.StopHijacks()
 	return gs.Gate.settle(drainOnce(ctx, gs))
+}
+
+// DrainServers drains every server at once under ctx, so a listener still
+// accepting while another drains cannot admit work the shared deadline then
+// abandons. The result holds each server's error at its index.
+func DrainServers(ctx context.Context, servers []GatedServer) []error {
+	errs := make([]error, len(servers))
+	var wg sync.WaitGroup
+	for i, gs := range servers {
+		wg.Go(func() { errs[i] = DrainServer(ctx, gs) })
+	}
+	wg.Wait()
+	return errs
 }
 
 // ErrEarlierDrainIncomplete reports that an earlier drain of the same server

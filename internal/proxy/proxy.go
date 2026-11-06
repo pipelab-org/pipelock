@@ -3043,10 +3043,7 @@ func (p *Proxy) ShutdownAgentServers() error {
 	for _, gs := range p.agentServers {
 		gs.Gate.StopHijacks()
 	}
-	var shutdownErr error
-	for _, gs := range p.agentServers {
-		shutdownErr = errors.Join(shutdownErr, httpstream.DrainServer(ctx, gs))
-	}
+	shutdownErr := errors.Join(httpstream.DrainServers(ctx, p.agentServers)...)
 	if shutdownErr != nil {
 		return errors.Join(ErrShutdownIncomplete, shutdownErr)
 	}
@@ -5361,16 +5358,18 @@ func (p *Proxy) start(ctx context.Context, ln net.Listener) error {
 		for _, gs := range p.agentServers {
 			gs.Gate.StopHijacks()
 		}
+		servers := append(slices.Clone(p.agentServers), httpstream.GatedServer{Server: p.server, Gate: mainGate})
 		var shutdownErr error
-		for _, gs := range p.agentServers {
-			if shutErr := httpstream.DrainServer(shutdownCtx, gs); shutErr != nil {
-				p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", gs.Server.Addr), shutErr)
-				shutdownErr = errors.Join(shutdownErr, shutErr)
+		for i, shutErr := range httpstream.DrainServers(shutdownCtx, servers) {
+			if shutErr == nil {
+				continue
 			}
-		}
-		if err := httpstream.DrainServer(shutdownCtx, httpstream.GatedServer{Server: p.server, Gate: mainGate}); err != nil {
-			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", listenAddr), err)
-			shutdownErr = errors.Join(shutdownErr, err)
+			addr := servers[i].Server.Addr
+			if i == len(servers)-1 {
+				addr = listenAddr
+			}
+			p.logger.LogError(audit.NewResourceLogContext("SHUTDOWN", addr), shutErr)
+			shutdownErr = errors.Join(shutdownErr, shutErr)
 		}
 		p.Close()
 		return shutdownErr
