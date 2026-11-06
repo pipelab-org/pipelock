@@ -21,7 +21,7 @@
     "signer_key_id": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
     "key_purpose": "receipt-signing",
     "algorithm": "ed25519",
-    "signature": "ed25519:e21a34fe550d3c81e2b72436dd23c9bb9dd5a935458b0ff1b34011dc28ea194bafcf87bfd9c803d08de6cf91287cdb772d11a7eb18b30467bd71b5e03aa22608"
+    "signature": "ed25519:b475bf24ac4aa6e4bb3b5bdeddafbd52a9f7ffa2359a2817a24a7c81113a8fef7725aefbd29fd61a053e3024274b813e9d0828f8194ce1b1e5df3fed4d71460f"
   },
   "chain_seq": 1,
   "chain_prev_hash": "sha256:0",
@@ -419,6 +419,20 @@
         "source_id": "request-url-27",
         "source_kind": "http_request_url",
         "normalized_view": "vowel_fold:for_matching:hex_decoded",
+        "pipelock_binary_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "rules_bundle_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "transform_profile": "pipelock-transform-v1",
+        "policy_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "rule_id": "aws_access_key",
+        "match_hash": "hmac-sha256:d439ce6e9ccc2608fdc8d7c6168b5fddb435763a8d67f81aa30eb9bf0451f72d",
+        "match_hash_alg": "hmac-sha256",
+        "match_class": "secret:aws_access_key",
+        "redacted_sample": "[redacted-value]"
+      },
+      {
+        "source_id": "request-url-28",
+        "source_kind": "http_request_url",
+        "normalized_view": "dlp_normalized:unicode_tags",
         "pipelock_binary_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "rules_bundle_digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "transform_profile": "pipelock-transform-v1",

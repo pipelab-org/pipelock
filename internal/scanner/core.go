@@ -474,7 +474,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth in
 	if normalize.ContainsTags(content) {
 		if stripped := normalize.StripZeroWidth(content); hasQuotedPrintable(stripped) {
 			if found := s.matchDecodedCoreResponseRecursiveMode(stripped, depth+1, suppress, recoverQP); len(found.matches) > 0 {
-				return mapResponseTransformSources(found, content, ViewForMatching)
+				return mapResponseStrippedSources(found, content)
 			}
 		}
 		source := content

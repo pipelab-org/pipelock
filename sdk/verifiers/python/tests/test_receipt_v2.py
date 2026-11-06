@@ -854,4 +854,4 @@ def test_text_encoding_shared_receipt_verifies() -> None:
     path = ROOT / "sdk/verifiers/fixtures/unicode-tags-receipt.json"
     report = verify_receipt_file(path, V2_GOLDEN_PUBLIC_KEY)
     assert report["valid"] is True, report.get("error")
-    assert report["source_span_count"] == 28
+    assert report["source_span_count"] == 29

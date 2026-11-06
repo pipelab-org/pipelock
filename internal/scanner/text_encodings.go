@@ -466,6 +466,7 @@ func mapTextEncodingViewSources(set responseMatchSet, source string, view textEn
 // fragment boundary check. Build the byte map only after a match, not for every
 // clean decoded view. Encoded matches remain ineligible for unsafe stripping.
 func mapTextEncodingSources(set responseMatchSet, source string, view decodedResult) responseMatchSet {
+	mappers := responseSourceMappers{source: view.text}
 	var ranges []encodingSourceRange
 	switch view.encoding {
 	case encodingDecimal:
@@ -484,7 +485,7 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 		// A decoded newline is data unless its byte range is a literal source
 		// newline. Preserve only proven fragment separators from inner layers.
 		if !hadDecodedSource && m.fragmentBoundaries == nil {
-			m.fragmentBoundaries = normalizedFragmentBoundaries(view.text, *m)
+			m.fragmentBoundaries = mappers.forLabel(m.span.ViewLabel).fragmentBoundaries(*m)
 		}
 		boundaries := []int{}
 		for _, at := range m.fragmentBoundaries {
@@ -502,7 +503,7 @@ func mapTextEncodingSources(set responseMatchSet, source string, view decodedRes
 				continue
 			}
 			var ok bool
-			start, end, ok = normalizedMatchSourceRange(view.text, *m)
+			start, end, ok = mappers.forLabel(m.span.ViewLabel).sourceRange(*m)
 			if !ok {
 				continue
 			}

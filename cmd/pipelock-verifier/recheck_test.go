@@ -436,7 +436,7 @@ func TestUnicodeTagsReviewSharedReceipt(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
 		t.Fatal(err)
 	}
-	if !report.Valid || !report.SignaturesVerified || report.SourceSpanCount != 28 {
+	if !report.Valid || !report.SignaturesVerified || report.SourceSpanCount != 29 {
 		t.Fatalf("unexpected receipt report: %s", stdout)
 	}
 }
@@ -525,6 +525,17 @@ func TestTextEncodingRecheckViews(t *testing.T) {
 	if _, err := reproduceSpanView("ordinary text", "for_matching:quoted_printable_decoded"); err == nil {
 		t.Fatal("admitted an unchanged carrier")
 	}
+	for _, tc := range []struct{ source, view string }{
+		{"104 101 invalid 108 111", "dlp_normalized:decimal_character_codes"},
+		{"%%%", "invisible_spaced:for_matching:base64_decoded"},
+		{"zz11", "invisible_spaced:for_matching:hex_decoded"},
+	} {
+		t.Run(tc.view, func(t *testing.T) {
+			if _, err := reproduceSpanView(tc.source, tc.view); err == nil {
+				t.Fatal("admitted an invalid carrier")
+			}
+		})
+	}
 }
 
 func TestDecodedSpacingRecheck(t *testing.T) {
@@ -579,4 +590,52 @@ func TestUnicodeTagsNestedPercentUserinfo(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestUnicodeTagsDLPPercentCarrierRecheck(t *testing.T) {
+	var tags strings.Builder
+	for _, r := range "hello world" {
+		tags.WriteRune(0xe0000 + r)
+	}
+	for _, source := range []string{tags.String(), url.PathEscape(tags.String()), url.PathEscape(url.PathEscape(tags.String()))} {
+		got, err := reproduceSpanView(source, "dlp_normalized:unicode_tags")
+		if err != nil || got != "hello world" {
+			t.Fatalf("got=%q err=%v", got, err)
+		}
+	}
+}
+
+func TestUnicodeTagsDLPProducerRecheck(t *testing.T) {
+	const marker = "sample-dlp-marker"
+	cfg := config.Defaults()
+	cfg.DLP.ScanEnv = false
+	includeDefaults := false
+	cfg.DLP.IncludeDefaults = &includeDefaults
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Sample Marker", Regex: marker, Severity: config.SeverityHigh}}
+	s := scanner.MustNew(cfg)
+	t.Cleanup(s.Close)
+	var tags strings.Builder
+	for _, r := range marker {
+		tags.WriteRune(0xe0000 + r)
+	}
+	source := url.PathEscape(tags.String())
+	result := s.ScanTextForDLP(t.Context(), source)
+	if result.Clean {
+		t.Fatalf("unexpected DLP result: %+v", result)
+	}
+	for _, match := range result.Matches {
+		if match.PatternName != "Sample Marker" {
+			continue
+		}
+		view := match.Span().ViewLabel
+		if view != "dlp_normalized:unicode_tags" {
+			t.Fatalf("producer view=%q", view)
+		}
+		got, err := reproduceSpanView(source, view)
+		if err != nil || got != marker {
+			t.Fatalf("producer recheck=%q err=%v", got, err)
+		}
+		return
+	}
+	t.Fatal("missing configured DLP match")
 }

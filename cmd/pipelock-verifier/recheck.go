@@ -231,8 +231,6 @@ func reproduceSpanView(source, view string) (string, error) {
 		return normalize.ForMatchingSpaced(normalize.DecodeTags(source)), nil
 	case view == "vowel_fold:"+contractreceipt.NormalizedViewUnicodeTagsDecoded:
 		return normalize.FoldVowels(normalize.ForMatching(normalize.DecodeTags(source))), nil
-	case view == contractreceipt.NormalizedViewDLPNormalized+":unicode_tags":
-		return normalize.ForDLP(normalize.DecodeTags(source)), nil
 	case view == contractreceipt.NormalizedViewDLPNormalized || strings.HasPrefix(view, "dlp_normalized:"):
 		stages := strings.Split(view, ":")
 		for i := len(stages) - 1; i > 0; i-- {

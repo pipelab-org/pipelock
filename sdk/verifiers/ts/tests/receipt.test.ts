@@ -346,5 +346,5 @@ test("receipt command reports an input it cannot open instead of rejecting", asy
 test("receipt command accepts Unicode tag decoded view", async () => {
   const report = await runReceipt("../fixtures/unicode-tags-receipt.json", v2GoldenPublicKey);
   assert.equal(report.valid, true, report.error ?? "receipt rejected");
-  assert.equal(report.source_span_count, 28);
+  assert.equal(report.source_span_count, 29);
 });

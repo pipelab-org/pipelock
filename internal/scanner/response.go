@@ -1271,7 +1271,7 @@ func (s *Scanner) matchDecodedResponseRecursiveMode(content string, depth int, s
 	if normalize.ContainsTags(content) {
 		if stripped := normalize.StripZeroWidth(content); hasQuotedPrintable(stripped) {
 			if found := s.matchDecodedResponseRecursiveMode(stripped, depth+1, suppress, recoverQP); len(found.matches) > 0 {
-				return mapResponseTransformSources(found, content, ViewForMatching)
+				return mapResponseStrippedSources(found, content)
 			}
 		}
 		source := content
@@ -1398,12 +1398,13 @@ func stripDecodeWhitespace(content string, offset int) (string, []int) {
 }
 
 func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []int, hexEncoded bool) responseMatchSet {
+	mappers := responseSourceMappers{source: decoded}
 	for i := range set.matches {
 		match := &set.matches[i]
 		start, end := 0, len(decoded)
 		if match.hasDecodedSource {
 			start, end = match.decodedSourceStart, match.decodedSourceEnd
-		} else if mappedStart, mappedEnd, ok := normalizedMatchSourceRange(decoded, *match); ok {
+		} else if mappedStart, mappedEnd, ok := mappers.forLabel(match.span.ViewLabel).sourceRange(*match); ok {
 			start, end = mappedStart, mappedEnd
 		}
 		if start < 0 || end <= start || end > len(decoded) {
@@ -1425,6 +1426,17 @@ func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []in
 // mapResponseTransformSources projects a transformed view's nested source
 // ranges back to the original bytes before opaque-fragment boundary checks.
 func mapResponseTransformSources(set responseMatchSet, source, viewLabel string) responseMatchSet {
+	return mapResponseSources(set, &responseSourceMappers{source: source}, viewLabel)
+}
+
+// The QP retry strips invisibles without composing or folding visible text.
+// Its nested source coordinates therefore belong to that stripped view.
+func mapResponseStrippedSources(set responseMatchSet, source string) responseMatchSet {
+	return mapResponseSources(set, &responseSourceMappers{source: source, stripped: true}, ViewForMatching)
+}
+
+func mapResponseSources(set responseMatchSet, mappers *responseSourceMappers, viewLabel string) responseMatchSet {
+	source := mappers.source
 	for i := range set.matches {
 		match := &set.matches[i]
 		mapped := *match
@@ -1436,7 +1448,7 @@ func mapResponseTransformSources(set responseMatchSet, source, viewLabel string)
 		}
 		start, end, ok := 0, 0, false
 		if match.hasDecodedSource || match.fragmentBoundaries == nil {
-			start, end, ok = normalizedMatchSourceRange(source, mapped)
+			start, end, ok = mappers.forLabel(mapped.span.ViewLabel).sourceRange(mapped)
 		} else {
 			// Inner coordinates no longer index this view; project only its
 			// proven boundary positions, including a proven empty set.
@@ -1449,7 +1461,7 @@ func mapResponseTransformSources(set responseMatchSet, source, viewLabel string)
 		} else {
 			match.hasDecodedSource = false
 			match.decodedSourceStart, match.decodedSourceEnd = 0, 0
-			match.fragmentBoundaries = normalizedFragmentBoundaries(source, mapped)
+			match.fragmentBoundaries = mappers.forLabel(mapped.span.ViewLabel).fragmentBoundaries(mapped)
 			match.crossesFragmentBoundary = len(match.fragmentBoundaries) > 0
 		}
 	}
@@ -1461,37 +1473,134 @@ func mapResponseTransformSources(set responseMatchSet, source, viewLabel string)
 // verifies the whole view and supplies only boundary membership, never guessed
 // source coordinates to the stripping path.
 func normalizedFragmentBoundaries(source string, match ResponseMatch) []int {
-	if !strings.ContainsRune(source, '\n') {
-		return []int{}
+	mappers := responseSourceMappers{source: source}
+	return mappers.forLabel(match.span.ViewLabel).fragmentBoundaries(match)
+}
+
+// responseSourceMappers shares whole-view work across all findings in a layer.
+// Labels can differ within one set (for example spaced and leetspeak matches).
+type responseSourceMappers struct {
+	source   string
+	stripped bool
+	byLabel  map[string]*responseSourceMapper
+}
+
+func (m *responseSourceMappers) forLabel(label string) *responseSourceMapper {
+	if m.byLabel == nil {
+		m.byLabel = make(map[string]*responseSourceMapper)
 	}
-	label := match.span.ViewLabel
-	view := normalizedResponseMatchView(source, label)
-	if match.fragmentBoundaries == nil && (match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd) {
-		return []int{}
+	if cached := m.byLabel[label]; cached != nil {
+		return cached
 	}
-	newline := normalizedResponseMatchView("\n", label)
+	transform := func(value string) string { return normalizedResponseMatchView(value, label) }
+	if m.stripped {
+		transform = normalize.StripZeroWidth
+	}
+	mapper := newResponseSourceMapper(m.source, transform)
+	m.byLabel[label] = mapper
+	return mapper
+}
+
+type responseSourceMapper struct {
+	source, view    string
+	transform       func(string) string
+	starts, ends    []int
+	exact           bool
+	boundariesBuilt bool
+	// Each pair is the transformed newline position and its original position.
+	boundaries [][2]int
+}
+
+func newResponseSourceMapper(source string, transform func(string) string) *responseSourceMapper {
+	m := &responseSourceMapper{source: source, view: transform(source), transform: transform, exact: true}
+	if m.view == source {
+		return m
+	}
 	var rebuilt strings.Builder
-	boundaries := []int{}
+	m.starts = make([]int, 0, len(m.view))
+	m.ends = make([]int, 0, len(m.view))
 	for start := 0; start < len(source); {
-		end := len(source)
-		if at := strings.IndexByte(source[start:], '\n'); at >= 0 {
-			end = start + at
+		_, size := utf8.DecodeRuneInString(source[start:])
+		end := start + size
+		piece := transform(source[start:end])
+		rebuilt.WriteString(piece)
+		for range len(piece) {
+			m.starts = append(m.starts, start)
+			m.ends = append(m.ends, end)
 		}
-		rebuilt.WriteString(normalizedResponseMatchView(source[start:end], label))
-		if end < len(source) {
-			crosses := match.span.ByteStart <= rebuilt.Len() && match.span.ByteEnd > rebuilt.Len()
-			if match.fragmentBoundaries != nil {
-				_, crosses = slices.BinarySearch(match.fragmentBoundaries, rebuilt.Len())
-			}
-			if newline == "\n" && crosses {
-				boundaries = append(boundaries, end)
-			}
-			rebuilt.WriteString(newline)
-		}
-		start = end + 1
+		start = end
 	}
-	if rebuilt.String() != view {
+	m.exact = rebuilt.String() == m.view
+	if m.exact {
+		// Extend each rune's range through following erased characters once,
+		// rather than rescanning the same suffix for every overlapping match.
+		next := len(source)
+		for i := len(m.ends) - 1; i >= 0; {
+			start := m.starts[i]
+			for i >= 0 && m.starts[i] == start {
+				m.ends[i] = next
+				i--
+			}
+			next = start
+		}
+	}
+	return m
+}
+
+func (m *responseSourceMapper) sourceRange(match ResponseMatch) (int, int, bool) {
+	start, end := match.span.ByteStart, match.span.ByteEnd
+	if !m.exact || start < 0 || end > len(m.view) || start >= end {
+		return 0, 0, false
+	}
+	if m.view == m.source {
+		return start, end, true
+	}
+	return m.starts[start], m.ends[end-1], true
+}
+
+func (m *responseSourceMapper) fragmentBoundaries(match ResponseMatch) []int {
+	if match.fragmentBoundaries == nil && (match.span.ByteStart < 0 || match.span.ByteEnd > len(m.view) || match.span.ByteStart >= match.span.ByteEnd) {
 		return []int{}
+	}
+	if !m.boundariesBuilt {
+		m.boundariesBuilt = true
+		if !strings.ContainsRune(m.source, '\n') {
+			return []int{}
+		}
+		newline := m.transform("\n")
+		var rebuilt strings.Builder
+		for start := 0; start < len(m.source); {
+			end := len(m.source)
+			if at := strings.IndexByte(m.source[start:], '\n'); at >= 0 {
+				end = start + at
+			}
+			rebuilt.WriteString(m.transform(m.source[start:end]))
+			if end < len(m.source) {
+				if newline == "\n" {
+					m.boundaries = append(m.boundaries, [2]int{rebuilt.Len(), end})
+				}
+				rebuilt.WriteString(newline)
+			}
+			start = end + 1
+		}
+		// Composition across a separator makes its membership unprovable.
+		if rebuilt.String() != m.view {
+			m.boundaries = nil
+		}
+	}
+	boundaries := []int{}
+	if match.fragmentBoundaries != nil {
+		for _, at := range match.fragmentBoundaries {
+			i, ok := slices.BinarySearchFunc(m.boundaries, at, func(pair [2]int, target int) int { return pair[0] - target })
+			if ok {
+				boundaries = append(boundaries, m.boundaries[i][1])
+			}
+		}
+	} else {
+		start, _ := slices.BinarySearchFunc(m.boundaries, match.span.ByteStart, func(pair [2]int, target int) int { return pair[0] - target })
+		for i := start; i < len(m.boundaries) && m.boundaries[i][0] < match.span.ByteEnd; i++ {
+			boundaries = append(boundaries, m.boundaries[i][1])
+		}
 	}
 	return boundaries
 }
@@ -1525,11 +1634,8 @@ func normalizedResponseMatchView(value, label string) string {
 }
 
 func normalizedMatchSourceRange(decoded string, match ResponseMatch) (int, int, bool) {
-	ranges, ok := normalizedMatchSourceRanges(decoded, []ResponseMatch{match})
-	if !ok {
-		return 0, 0, false
-	}
-	return ranges[0][0], ranges[0][1], true
+	mappers := responseSourceMappers{source: decoded}
+	return mappers.forLabel(match.span.ViewLabel).sourceRange(match)
 }
 
 // normalizedMatchSourceRanges builds one source map for an entire match set,
@@ -1539,48 +1645,18 @@ func normalizedMatchSourceRanges(decoded string, matches []ResponseMatch) ([][2]
 		return nil, false
 	}
 	label := matches[0].span.ViewLabel
-	transform := func(value string) string { return normalizedResponseMatchView(value, label) }
-	view := transform(decoded)
+	mappers := responseSourceMappers{source: decoded}
+	mapper := mappers.forLabel(label)
 	ranges := make([][2]int, len(matches))
 	for i, match := range matches {
-		if match.span.ViewLabel != label || match.span.ByteStart < 0 || match.span.ByteEnd > len(view) || match.span.ByteStart >= match.span.ByteEnd {
+		if match.span.ViewLabel != label {
 			return nil, false
 		}
-		ranges[i] = [2]int{match.span.ByteStart, match.span.ByteEnd}
-	}
-	if view == decoded {
-		return ranges, true
-	}
-	var rebuilt strings.Builder
-	starts := make([]int, 0, len(view))
-	ends := make([]int, 0, len(view))
-	for start := 0; start < len(decoded); {
-		_, size := utf8.DecodeRuneInString(decoded[start:])
-		end := start + size
-		piece := transform(decoded[start:end])
-		rebuilt.WriteString(piece)
-		for range len(piece) {
-			starts = append(starts, start)
-			ends = append(ends, end)
+		start, end, ok := mapper.sourceRange(match)
+		if !ok {
+			return nil, false
 		}
-		start = end
-	}
-	if rebuilt.String() != view {
-		return nil, false
-	}
-	for i, match := range matches {
-		end := ends[match.span.ByteEnd-1]
-		// Characters that normalize to nothing, such as combining marks, have
-		// no position in the view. Extend the range over any that directly
-		// follow it, so a redaction never splits a visible character.
-		for end < len(decoded) {
-			_, size := utf8.DecodeRuneInString(decoded[end:])
-			if transform(decoded[end:end+size]) != "" {
-				break
-			}
-			end += size
-		}
-		ranges[i] = [2]int{starts[match.span.ByteStart], end}
+		ranges[i] = [2]int{start, end}
 	}
 	return ranges, true
 }
