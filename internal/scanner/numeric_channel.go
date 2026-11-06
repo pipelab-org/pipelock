@@ -146,37 +146,62 @@ func numericLeafBoundary(text string, index int) bool {
 // so ordinary numeric data decodes to nothing rather than to noise. Runs are
 // joined with newlines so a needle cannot straddle two of them.
 func decodeDecimalCharacterCodes(numeric string) string {
+	decoded, _ := decodeCharacterCodes(numeric, isDecimalCodeSeparator, parseDecimalCharacterCode, false)
+	return decoded
+}
+
+// decodeCharacterCodes shares run admission and Unicode validation between
+// known values and pattern views. Source ranges are retained only for inbound
+// matches, where reconstructed fragments must prove their source boundary.
+func decodeCharacterCodes(numeric string, separator func(rune) bool, parse func(string) (rune, bool), withRanges bool) (string, []encodingSourceRange) {
 	// Every accepted number has at least one ASCII digit, and a decoded run
 	// needs minDecimalCodeRun numbers. Fewer digits cannot produce any output.
 	// Once the necessary count is reached, preserve the complete parser below.
 	if !hasMinimumASCIIDigits(numeric, minDecimalCodeRun) {
-		return ""
+		return "", nil
 	}
 	var out strings.Builder
 	var run strings.Builder
 	runLen := 0
+	var ranges, runRanges []encodingSourceRange
 	flush := func() {
 		if runLen >= minDecimalCodeRun {
 			if out.Len() > 0 {
 				out.WriteByte('\n')
+				if withRanges {
+					ranges = append(ranges, encodingSourceRange{})
+				}
 			}
 			out.WriteString(run.String())
+			ranges = append(ranges, runRanges...)
 		}
 		run.Reset()
 		runLen = 0
+		runRanges = runRanges[:0]
 	}
-	fields := strings.FieldsFunc(numeric, isDecimalCodeSeparator)
-	for _, field := range fields {
-		code, ok := parseDecimalCharacterCode(field)
+	offset := 0
+	for field := range strings.FieldsFuncSeq(numeric, separator) {
+		start := offset + strings.Index(numeric[offset:], field)
+		offset = start + len(field)
+		if !hasMinimumASCIIDigits(field, 1) {
+			flush()
+			continue
+		}
+		code, ok := parse(field)
 		if !ok {
 			flush()
 			continue
 		}
 		run.WriteRune(code)
+		if withRanges {
+			for range utf8.RuneLen(code) {
+				runRanges = append(runRanges, encodingSourceRange{start, offset})
+			}
+		}
 		runLen++
 	}
 	flush()
-	return out.String()
+	return out.String(), ranges
 }
 
 // isDecimalCodeSeparator reports whether r separates two numbers rather than

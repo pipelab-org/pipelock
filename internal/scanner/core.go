@@ -423,9 +423,15 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	}
 
 	// Senary: base64/hex decode pass for encoded injection payloads.
-	if forceEncodedDecode || hasEncodedRun(content) {
-		if decodedSet := s.matchDecodedCoreResponse(content, suppress); len(decodedSet.matches) > 0 {
+	if forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(original) {
+		if decodedSet := s.matchDecodedCoreResponseMode(content, suppress, !forceEncodedDecode); len(decodedSet.matches) > 0 {
 			return decodedSet
+		}
+		// Preserve soft line breaks beside the normalized decode view.
+		if original != content && hasQuotedPrintable(original) {
+			if decodedSet := s.matchDecodedCoreResponseMode(original, suppress, !forceEncodedDecode); len(decodedSet.matches) > 0 {
+				return decodedSet
+			}
 		}
 	}
 
@@ -435,19 +441,44 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 // matchDecodedCoreResponse tries base64/hex decoding content and checks the
 // decoded result against core response patterns. Entry point for the senary pass.
 func (s *Scanner) matchDecodedCoreResponse(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return markFragmentBoundaries(s.matchDecodedCoreResponseRecursive(content, 0, suppress), content)
+	return s.matchDecodedCoreResponseMode(content, suppress, true)
+}
+
+func (s *Scanner) matchDecodedCoreResponseMode(content string, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
+	return markFragmentBoundaries(s.matchDecodedCoreResponseRecursiveMode(content, 0, suppress, recoverQP), content)
 }
 
 // matchDecodedCoreResponseRecursive is the recursive implementation of
 // matchDecodedCoreResponse. Mirrors the main scanner's matchDecodedResponseRecursive
 // but uses only core response patterns.
 func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
+	return s.matchDecodedCoreResponseRecursiveMode(content, depth, suppress, true)
+}
+
+func (s *Scanner) matchDecodedCoreResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
 
+	views := textEncodingViewsMode(content, recoverQP)
+	for _, view := range views {
+		if set := s.matchDecodedCoreNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
+			set = mapTextEncodingViewSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
+		}
+		if set := s.matchDecodedCoreResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
+			set = mapTextEncodingViewSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
+		}
+	}
+
 	// Strategy 1: whole-content decode (strip whitespace first).
 	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
+	stripped = canonicalMixedBase64(stripped)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -481,7 +512,7 @@ func (s *Scanner) matchDecodedCoreResponseRecursive(content string, depth int, s
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedCoreNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
@@ -588,6 +619,9 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
+	if hasTextEncoding(text) && text != cleaned {
+		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
+	}
 	if len(matches) == 0 {
 		matches = append(matches, s.decodeCoreDLPTextSegmentsWithDecodes(cleaned, decodes)...)
 	}

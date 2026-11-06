@@ -62,6 +62,10 @@
     },
     {
       "package": "./internal/scanner",
+      "target": "FuzzQuotedPrintableTextRuns"
+    },
+    {
+      "package": "./internal/scanner",
       "target": "FuzzScanURL"
     },
     {

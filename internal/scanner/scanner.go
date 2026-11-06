@@ -2434,13 +2434,16 @@ type decodedResult struct {
 
 // Encoding labels for decoded results.
 const (
-	encodingHex         = "hex"
-	encodingBase64      = "base64"
-	encodingBase32      = "base32"
-	encodingURL         = "url"
-	encodingHTML        = "html_entity"
-	encodingDecimal     = "decimal_character_codes"
-	encodingJSONUnicode = "json_unicode"
+	encodingHex             = "hex"
+	encodingBase64          = "base64"
+	encodingBase32          = "base32"
+	encodingURL             = "url"
+	encodingHTML            = "html_entity"
+	encodingDecimal         = "decimal_character_codes"
+	encodingJSONUnicode     = "json_unicode"
+	encodingOctal           = "octal_character_codes"
+	encodingBinary          = "binary_character_codes"
+	encodingQuotedPrintable = "quoted_printable"
 )
 
 const (
@@ -2736,6 +2739,7 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
+	out = appendTextEncodingViews(out, s)
 	var decodedHex []byte
 	var hexErr error
 	if minPrefix == 0 && !hexDecodes(s) {
@@ -2795,6 +2799,20 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		}
 		for _, decoded := range normalizedViews {
 			out = appendBase64View(out, decoded)
+		}
+	}
+	// Keep the existing standard/URL-safe views and append the mixed view;
+	// a new carrier must not replace an older liberal normalization result.
+	if mixed := canonicalMixedBase64(s); mixed != s {
+		for _, decoded := range decodeBase64PaddingVariants(mixed, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
+			out = appendBase64View(out, decoded)
+		}
+		// Canonicalize alphabet symbols before stripping separators so neither
+		// family's data bytes are discarded. Reuse the reassembly bound.
+		if normalized := normalizeEncodedToken(mixed, encodedTokenBase64Std); normalized != "" {
+			for _, decoded := range decodeBase64PaddingVariants(normalized, base64.StdEncoding, base64.RawStdEncoding, base64Buffer, minPrefix) {
+				out = appendBase64View(out, decoded)
+			}
 		}
 	}
 	// RFC 4648 base32 and base32hex are case-insensitive. Folding to ASCII
