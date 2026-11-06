@@ -2282,6 +2282,36 @@ func removeHostnameDots(value string) string {
 	return strings.ReplaceAll(value, ".", "")
 }
 
+// appendHostnameDLPTargets retains the full hostname views and decodes the
+// dot-collapsed prefix before its registrable domain. RFC 1035 section 2.3.4
+// limits DNS labels to 63 octets; label boundaries need not align with the
+// RFC 4648 hex, base32 or base64url encoding groups. The suffix is routing
+// structure, not encoded data. Use the same PSL boundary as subdomain entropy.
+func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *decodingMemo) []dlpTarget {
+	if !strings.Contains(hostname, ".") {
+		return targets
+	}
+	targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
+	for _, d := range decodes.decode(hostname, true) {
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+	}
+	host := strings.TrimSuffix(hostname, ".")
+	if net.ParseIP(host) != nil {
+		return targets
+	}
+	// PSL lookup is case-insensitive; retain the original prefix bytes because
+	// base64url is case-sensitive. The shared decoder folds base32 itself.
+	regDomain, err := publicsuffix.EffectiveTLDPlusOne(strings.ToLower(host))
+	if err != nil || len(regDomain) == len(host) {
+		return targets
+	}
+	prefix := host[:len(host)-len(regDomain)-1]
+	for _, d := range decodes.decode(removeHostnameDots(prefix), true) {
+		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+	}
+	return targets
+}
+
 // orderedQueryConcat concatenates all query parameter values in their original URL
 // order and returns the result. Catches secrets split across multiple query params
 // (e.g., "?part1=sk-ant-api03-&part2=AAAA..." → "sk-ant-api03-AAAA...").
@@ -3381,15 +3411,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		}
 	}
 
-	// Dot-collapse the hostname to catch secrets split across DNS subdomains
-	// (e.g. "sk-ant-api03-.AABBCCDD.EEFFGGHH.evil.com" → "sk-ant-api03-AABBCCDDEEFFGGHHevilcom").
-	// Dots break regex character classes, so individual labels pass DLP checks.
-	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
-		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
-		for _, d := range decodes.decode(hostname, true) {
-			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
-		}
-	}
+	targets = appendHostnameDLPTargets(targets, parsed.Hostname(), decodes)
 
 	// Strip URL noise from path to catch secrets split by dots, slashes, and
 	// other separators (e.g., "/sk-ant-api03-AAAA.AAAA/AAAA" → "sk-ant-api03-AAAAAAAAAAAA").

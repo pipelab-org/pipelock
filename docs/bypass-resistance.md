@@ -56,7 +56,9 @@ These techniques leak data through DNS queries rather than HTTP bodies.
 | High-entropy subdomains | `jk3n4k5n.evil.com` | Tested | Shannon entropy > 4.0 on labels > 8 chars |
 | Subdomain rotation | `a.evil.com`, `b.evil.com`, `c.evil.com` | Tested | Rate limiting and data budget keyed on the registrable base domain (public-suffix eTLD+1, not just the last two labels) |
 
-**Key design choice:** DLP and subdomain entropy run at layers 3-4, before DNS resolution at layer 6. This means secrets are caught before any DNS query leaves the proxy.
+URL DLP uses the Public Suffix List to separate the registrable domain from its subdomain prefix. It removes dots from that prefix and passes it through the existing bounded decoders, including hex, base32, base32hex and base64url ([RFC 4648](https://www.rfc-editor.org/rfc/rfc4648)). Both the immutable core floor and configured DLP inspect the decoded views for credential matches. Label boundaries can occur anywhere within the encoding; DNS labels have a 63-octet limit ([RFC 1035, section 2.3.4](https://www.rfc-editor.org/rfc/rfc1035#section-2.3.4)). Base32 decoding accepts lowercase DNS spellings; base64url decoding preserves case. This is content detection within one hostname, not reconstruction across requests or arbitrary encoding schemes.
+
+**Key design choice:** DLP and subdomain entropy run before DNS resolution. Credential matches in these views are refused before the proxy resolves the destination. This applies to fetch URLs, forward-proxy URLs and CONNECT hostnames routed through Pipelock; direct DNS requires containment or network policy.
 
 ## Slow/Chunked Exfiltration
 
