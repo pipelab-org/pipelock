@@ -2309,7 +2309,9 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 	if !strings.Contains(hostname, ".") {
 		return targets
 	}
-	targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
+	collapsed := removeHostnameDots(hostname)
+	decodes.registerKeywordTransform(hostname, collapsed, "projection")
+	targets = append(targets, dlpTarget{collapsed, dlpViewLabel("subdomain"), hostname})
 	for _, d := range decodes.decode(hostname, true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
@@ -2320,17 +2322,19 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 // before the registrable domain. Regex DLP and seed phrase detection share it
 // so a carrier split across DNS labels reaches both before resolution.
 func appendHostnamePrefixDecodes(targets []dlpTarget, hostname string, decodes *decodingMemo) []dlpTarget {
-	prefix, ok := hostnameEncodedPrefix(hostname)
+	source, ok := hostnameEncodedPrefix(hostname)
 	if !ok {
 		return targets
 	}
+	prefix := removeHostnameDots(source)
+	decodes.registerKeywordTransform(source, prefix, "projection")
 	for _, d := range decodes.decode(prefix, true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
 	return targets
 }
 
-// hostnameEncodedPrefix returns the dot-collapsed labels before the
+// hostnameEncodedPrefix returns the original labels before the
 // registrable domain, or false for IP literals and hosts without one.
 func hostnameEncodedPrefix(hostname string) (string, bool) {
 	host := strings.TrimSuffix(hostname, ".")
@@ -2353,7 +2357,7 @@ func hostnameEncodedPrefix(hostname string) (string, bool) {
 		}
 		prefix = prefix[:end]
 	}
-	return removeHostnameDots(prefix), true
+	return prefix, true
 }
 
 // orderedQueryConcat concatenates all query parameter values in their original URL
