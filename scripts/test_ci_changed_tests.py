@@ -672,6 +672,96 @@ func TestChanged(t *testing.T) {
         self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestShared"], 90.0)
         self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestShared"], 90.0)
 
+    def test_new_test_heads_run_before_any_base_and_a_late_base_keeps_its_record(self):
+        # Every package with new tests is measured at head before any base, so
+        # whole-package bases can't use up the deadline before the last new
+        # test runs. A base the deadline cuts keeps its recorded weight.
+        first, second = "example.test/internal/proxy", "example.test/internal/scanner"
+        tests = [
+            {"package": "./internal/proxy", "file": "internal/proxy/a_test.go", "name": "TestNewA", "new": True},
+            {"package": "./internal/proxy", "file": "internal/proxy/a_test.go", "name": "TestOldA", "new": False},
+            {"package": "./internal/scanner", "file": "internal/scanner/b_test.go", "name": "TestNewB", "new": True},
+            {"package": "./internal/scanner", "file": "internal/scanner/b_test.go", "name": "TestOldB", "new": False},
+        ]
+        def resolve(tests, tags, import_paths):
+            import_paths.update({"./internal/proxy": first, "./internal/scanner": second})
+            return {first: ["TestNewA", "TestOldA"], second: ["TestNewB", "TestOldB"]}
+        now = [0.0]
+        commands = []
+        def run(command, stream, root, remaining):
+            commands.append((command[-1], root))
+            names = command[-2].split("(?:", 1)[-1].rstrip(")$").split("|")
+            for name in names:
+                for event in ({"Action": "run", "Test": name}, {"Action": "pass", "Test": name, "Elapsed": 1}):
+                    stream.write(json.dumps({"Package": command[-1], **event}) + "\n")
+            stream.write(json.dumps({"Package": command[-1], "Action": "pass", "Elapsed": 2}) + "\n")
+            now[0] += 50.0
+            return 0
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
+             patch.object(planner, "prediction_plan", return_value={}), \
+             patch.object(planner, "list_packages", return_value=[first, second]), \
+             patch.object(planner, "exact_names_regex", side_effect=lambda names: "^(?:" + "|".join(names) + ")$"), \
+             patch.object(planner, "run_measurement", side_effect=run), \
+             patch.object(planner, "check_budget", return_value=0) as budget, \
+             redirect_stdout(io.StringIO()) as out:
+            target = Path(directory) / "changed.json"
+            self.assertEqual(planner.measure_changed_tests(tests, "", target, "base-sha", deadline_seconds=200.0,
+                                                           clock=lambda: now[0]), 0)
+            base_selection = json.loads(target.with_suffix(".base.selection.json").read_text(encoding="utf-8"))
+            replayed = partial_overrides([target.with_suffix(".base.json")])
+        self.assertEqual(commands, [(first, planner.ROOT), (second, planner.ROOT), (first, Path("base"))])
+        self.assertIn(f"::warning title=Changed test base not re-measured::{second}", out.getvalue())
+        self.assertEqual(base_selection["selected"], {first: ["TestOldA"]})
+        self.assertEqual(base_selection["skipped"], [second])
+        head, base = budget.call_args.args[2], budget.call_args.args[3]
+        self.assertEqual(head["trees"]["proxy"], {"TestNewA": 1, "TestOldA": 1})
+        self.assertEqual(head["trees"]["scanner"], {"TestNewB": 1, "TestOldB": 1})
+        # New tests are charged against a zero base; the unmeasured base keeps
+        # its edited test's recorded weight by carrying no override for it.
+        self.assertEqual(base["trees"]["proxy"], {"TestNewA": 0.0, "TestOldA": 1})
+        self.assertEqual(base["trees"]["scanner"], {"TestNewB": 0.0})
+        # Replaying the base artifact likewise leaves the cut base unmeasured.
+        self.assertEqual(replayed["trees"], {"proxy": {"TestOldA": 1.0}})
+
+    def test_skipped_rest_base_cannot_hide_new_work_as_inherited_debt(self):
+        package = "example.test/internal/rest"
+        tests = [{"package": "./internal/rest", "file": "internal/rest/lib_test.go",
+                  "name": "TestChanged", "new": True}]
+        for recorded, head, expected in ((900.0, 1000.0, 1), (1000.0, 900.0, 0), (800.0, 1000.0, 1),
+                                          (None, 1000.0, None)):
+            with self.subTest(recorded=recorded, head=head), tempfile.TemporaryDirectory() as directory:
+                now = [0.0]
+                plan = {"trees": {}, "names": {tree: [] for tree in planner.TEST_SPLITS},
+                        "packages": {} if recorded is None else {package: recorded}, "inventory": [package]}
+                def run(command, stream, root, remaining):
+                    for event in ({"Action": "run", "Test": "TestChanged"},
+                                  {"Action": "pass", "Test": "TestChanged", "Elapsed": 100},
+                                  {"Action": "pass", "Elapsed": head}):
+                        stream.write(json.dumps({"Package": package, **event}) + "\n")
+                    now[0] += 50.0
+                    return 0
+                with patch.object(self, "package", package), \
+                     patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                     patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                     patch.object(planner, "prediction_plan", return_value=plan), \
+                     patch.object(planner, "list_packages", return_value=[package]), \
+                     patch.object(planner, "run_measurement", side_effect=run), \
+                     redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()):
+                    target = Path(directory) / "changed.json"
+                    if recorded is None:
+                        with self.assertRaisesRegex(ValueError, "unmeasured base has no recorded package weight"):
+                            planner.measure_changed_tests(tests, "", target, "base-sha",
+                                                          deadline_seconds=100, clock=lambda: now[0])
+                        continue
+                    status = planner.measure_changed_tests(tests, "", target, "base-sha",
+                                                           deadline_seconds=100, clock=lambda: now[0])
+                    self.assertEqual(partial_overrides([target])["packages"], {package: head})
+                    self.assertEqual(partial_overrides([target.with_suffix(".base.json")]),
+                                     {"trees": {}, "packages": {}})
+                    self.assertEqual(status, expected, output.getvalue())
+
     def test_deadline_refuses_edited_and_new_tests(self):
         for new in (False, True):
             with self.subTest(new=new), tempfile.TemporaryDirectory() as directory, \
