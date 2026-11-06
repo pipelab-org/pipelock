@@ -37,6 +37,7 @@ func TestCardJSONHTTPRequests(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept"} {
 		for _, tt := range cardTransportCases() {
 			t.Run(surface+"/"+tt.Name, func(t *testing.T) {
+				t.Parallel()
 				cfg := testScannerConfig()
 				cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
 				cfg.DLP.ScanEnv = false
@@ -101,6 +102,7 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 	cases = append(cases, cardtest.JSONCase{Name: "scalar decimal", Body: "0." + "41111111" + "11111111", Clean: false})
 	for _, tt := range cases {
 		t.Run(tt.Name, func(t *testing.T) {
+			t.Parallel()
 			cfg := testScannerConfig()
 			cfg.DLP.ScanEnv = false
 			s := scanner.MustNew(cfg)
