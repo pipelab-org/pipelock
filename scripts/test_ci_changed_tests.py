@@ -8,7 +8,7 @@ import json
 import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import nullcontext, redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,10 +129,13 @@ func Testhelper() {}
             git("init", "-q")
             (root / "go.mod").write_text("module example.test/fixture\n\ngo 1.26\n")
             (root / "lib.go").write_text("package fixture\n")
+            (root / "lib_test.go").write_text(
+                'package fixture\nimport "testing"\nfunc TestEdited(t *testing.T) { t.Log("before") }\n')
             git("add", ".")
             git("commit", "-m", "fixture base")
             (root / "lib_test.go").write_text(
-                'package fixture\nimport "testing"\nfunc TestNew(t *testing.T) { t.Log("selected") }\n')
+                'package fixture\nimport "testing"\nfunc TestEdited(t *testing.T) { t.Log("after") }\n'
+                'func TestNew(t *testing.T) { t.Log("selected") }\n')
             (root / "enterprise_test.go").write_text(
                 '//go:build enterprise\n\npackage fixture\nimport "testing"\nfunc TestEnterprise(t *testing.T) {}\n')
             git("add", ".")
@@ -143,130 +146,280 @@ func Testhelper() {}
                                             cwd=root, check=True, capture_output=True, text=True)
                     tests = json.loads(result.stdout)
                     stream = root / (tags or "oss") / "changed.json"
-                    self.assertEqual(planner.measure_changed_tests(tests, tags, stream), 0)
+                    self.assertEqual(planner.measure_changed_tests(tests, tags, stream, "HEAD~1"), 0)
                     events = [json.loads(line) for line in stream.read_text().splitlines()]
                     passed = {event["Test"] for event in events if event.get("Test") and event["Action"] == "pass"}
-                    self.assertEqual(passed, {"TestNew", "TestEnterprise"} if tags else {"TestNew"})
+                    self.assertEqual(passed, {"TestEdited", "TestNew", "TestEnterprise"} if tags else {"TestEdited", "TestNew"})
                     selection = json.loads(stream.with_suffix(".selection.json").read_text())
-                    self.assertEqual(selection["new"], {"example.test/fixture": sorted(passed)})
+                    self.assertEqual(selection["new"], {"example.test/fixture": sorted(passed - {"TestEdited"})})
+                    base_events = [json.loads(line) for line in stream.with_suffix(".base.json").read_text().splitlines()]
+                    self.assertEqual({event["Test"] for event in base_events
+                                      if event.get("Test") and event["Action"] == "pass"}, {"TestEdited"})
                     # A rest package (outside the split trees) runs whole.
                     self.assertEqual(selection["whole"], ["example.test/fixture"])
 
 
 
 class ChangedTestRunnerTest(unittest.TestCase):
-    def test_no_tests_is_fast_success(self):
-        with patch.object(planner, "runnable_changed_tests") as resolve, \
-             patch.object(planner, "check_budget") as budget, redirect_stdout(io.StringIO()):
-            self.assertEqual(planner.measure_changed_tests([], "", Path("unused.json")), 0)
-            resolve.assert_not_called()
-            budget.assert_not_called()
+    package = "example.test/internal/proxy"
 
-    def test_runner_measurements_reach_budget_and_refresh_diagnostic(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "changed.json"
-            package = "example.test/internal/proxy"
-            def run(command, **kwargs):
-                for event in ({"Action": "run", "Test": "TestNew"},
-                              {"Action": "pass", "Test": "TestNew", "Elapsed": 700},
-                              {"Action": "pass", "Elapsed": 701}):
-                    kwargs["stdout"].write(json.dumps({"Package": package, **event}) + "\n")
-                return subprocess.CompletedProcess(command, 0)
-            with patch.object(planner, "runnable_changed_tests", return_value={package: ["TestNew"]}), \
-                 patch.object(planner.subprocess, "run", side_effect=run), \
-                 patch.object(planner, "check_budget", return_value=1) as budget, \
-                 redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as error:
-                self.assertEqual(planner.measure_changed_tests([{}], "", target), 1)
-                self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestNew"], 700)
-                self.assertIn("TestNew", error.getvalue())
-                self.assertIn("scripts/ci_test_durations.py --partial --write", error.getvalue())
-                self.assertIn(str(target), error.getvalue())
+    def fixture_tests(self, new=False):
+        return [{"package": "./internal/proxy", "file": "internal/proxy/lib_test.go",
+                 "name": "TestChanged", "new": new}]
 
-    def test_runner_flags_and_missing_results(self):
-        with tempfile.TemporaryDirectory() as directory:
-            target = Path(directory) / "changed.json"
-            commands = []
-            def run(command, **kwargs):
-                commands.append(command)
-                kwargs["stdout"].write(json.dumps({"Package": "example.test/internal/proxy",
-                    "Action": "pass", "Elapsed": 1}) + "\n")
-                return subprocess.CompletedProcess(command, 0)
-            with patch.object(planner, "runnable_changed_tests", return_value={"example.test/internal/proxy": ["TestNew"]}), \
-                 patch.object(planner.subprocess, "run", side_effect=run), redirect_stdout(io.StringIO()):
-                with self.assertRaisesRegex(ValueError, "no terminal result"):
-                    planner.measure_changed_tests([{}], "enterprise", target)
-            command = commands[0]
-            for flag in ("-race", "-parallel=2", "-count=1", "-json", "-timeout=900s", "-covermode=atomic"):
-                self.assertIn(flag, command)
-            self.assertEqual(command[command.index("-tags") + 1], "enterprise")
-            self.assertTrue(planner.selector_selects(next(arg for arg in command if arg.startswith("-run=")), "TestNew"))
-            self.assertFalse(planner.selector_selects(next(arg for arg in command if arg.startswith("-run=")), "TestNewSuffix"))
+    def resolve(self, tests, tags, import_paths):
+        import_paths.update({test["package"]: self.package for test in tests})
+        return {self.package: [test["name"] for test in tests]}
 
-    def scripted_run(self, commands, elapsed=1):
-        def run(command, **kwargs):
-            commands.append(command)
-            package = command[-1]
-            selector = next((arg for arg in command if arg.startswith("-run=")), None)
-            for name in ("TestNew", "TestEdited"):
-                if selector is None or planner.selector_selects(selector, name):
-                    for event in ({"Action": "run", "Test": name},
-                                  {"Action": "pass", "Test": name, "Elapsed": elapsed}):
-                        kwargs["stdout"].write(json.dumps({"Package": package, **event}) + "\n")
-            kwargs["stdout"].write(json.dumps({"Package": package, "Action": "pass", "Elapsed": elapsed + 1}) + "\n")
-            return subprocess.CompletedProcess(command, 0)
+    def scripted_run(self, commands, events=None, status=0):
+        def run(command, stream, root, remaining):
+            commands.append((command, root, remaining))
+            output = events if events is not None else [
+                {"Action": "run", "Test": "TestChanged"},
+                {"Action": "pass", "Test": "TestChanged", "Elapsed": 1},
+                {"Action": "pass", "Elapsed": 2},
+            ]
+            for event in output:
+                stream.write(json.dumps({"Package": command[-1], **event}) + "\n")
+            return status
         return run
 
-    def test_rest_packages_run_whole_and_new_tests_go_first(self):
-        tree, rest = "example.test/internal/proxy", "example.test/internal/rest"
-        selected = {rest: ["TestEdited"], tree: ["TestNew"]}
-        tests = [{"package": "./internal/proxy", "name": "TestNew", "new": True},
-                 {"package": "./internal/rest", "name": "TestEdited", "new": False}]
-        def resolve(tests, tags, import_paths):
-            import_paths.update({"./internal/proxy": tree, "./internal/rest": rest})
-            return selected
+    def test_base_worktree_cleanup_removes_untracked_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args, check=True):
+                return subprocess.run(["git", "-c", "user.email=ci@example.invalid", "-c", "user.name=ci", *args],
+                                      cwd=root, check=check, text=True, capture_output=True)
+            git("init", "-q")
+            git("commit", "-q", "--allow-empty", "-m", "base")
+            revision = git("rev-parse", "HEAD").stdout.strip()
+            with patch.object(planner, "ROOT", root):
+                with planner.measurement_base(revision) as base:
+                    (base / "untracked.txt").write_text("dirt", encoding="utf-8")
+                listed = git("worktree", "list", "--porcelain").stdout
+                self.assertNotIn(str(base), listed)
+                with self.assertRaisesRegex(ValueError, "boom"):
+                    with planner.measurement_base(revision) as base:
+                        (base / "untracked.txt").write_text("dirt", encoding="utf-8")
+                        raise ValueError("boom")
+                listed = git("worktree", "list", "--porcelain").stdout
+                self.assertNotIn("untracked.txt", listed)
+                self.assertEqual(listed.count("worktree "), 1)
+
+    def test_empty_selection_still_resolves_base(self):
+        with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))) as base, \
+             patch.object(planner, "runnable_changed_tests") as resolve, redirect_stdout(io.StringIO()):
+            self.assertEqual(planner.measure_changed_tests([], "", Path("unused.json"), "base-sha"), 0)
+            base.assert_called_once_with("base-sha")
+            resolve.assert_not_called()
+
+    def test_unresolved_base_is_not_empty_selection(self):
+        with patch.object(planner.subprocess, "run", side_effect=subprocess.CalledProcessError(1, "git")):
+            with self.assertRaises(subprocess.CalledProcessError):
+                planner.measure_changed_tests([], "", Path("unused.json"), "missing-ref")
+
+    def test_unknown_classifier_fails(self):
+        for test in ({}, {**self.fixture_tests()[0], "new": "false"}):
+            with self.subTest(test=test), \
+                 patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))):
+                with self.assertRaisesRegex(ValueError, "unknown changed-test classification"):
+                    planner.measure_changed_tests([test], "", Path("unused.json"), "base-sha")
+
+    def test_unknown_go_list_result_is_not_empty_selection(self):
+        for info in ([], {}, {"ImportPath": self.package},
+                     {"ImportPath": self.package, "TestGoFiles": ["other_test.go"]}):
+            with self.subTest(info=info), patch.object(planner.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, stdout=json.dumps(info))):
+                with self.assertRaises(ValueError):
+                    planner.runnable_changed_tests(self.fixture_tests(), "")
+
+    def test_file_excluded_by_this_build_is_left_to_the_other_edition(self):
+        # An enterprise-only test file in a package that also builds without
+        # tags is go list's IgnoredGoFiles in the OSS run, not unclassified.
+        excluded = {**self.fixture_tests()[0], "file": "internal/proxy/lib_enterprise_test.go", "name": "TestEnterprise"}
+        cases = (
+            ([excluded], {}),
+            ([self.fixture_tests()[0], excluded], {self.package: ["TestChanged"]}),
+        )
+        for tests, want in cases:
+            info = {"ImportPath": self.package, "TestGoFiles": ["lib_test.go"],
+                    "IgnoredGoFiles": ["lib_enterprise_test.go"]}
+            with self.subTest(tests=[test["name"] for test in tests]), \
+                 patch.object(planner.subprocess, "run", return_value=
+                    subprocess.CompletedProcess([], 0, stdout=json.dumps(info))):
+                self.assertEqual(planner.runnable_changed_tests(tests, ""), want)
+
+    def test_existing_changed_test_requires_base_package(self):
+        with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+             patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+             patch.object(planner, "list_packages", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "no base package"):
+                planner.measure_changed_tests(self.fixture_tests(), "", Path("unused.json"), "base-sha")
+
+    def test_paired_invocation_and_overrides(self):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "changed.json"
             commands = []
-            with patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
-                 patch.object(planner.subprocess, "run", side_effect=self.scripted_run(commands)), \
+            with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "list_packages", return_value=[self.package]), \
+                 patch.object(planner, "run_measurement", side_effect=self.scripted_run(commands)), \
                  patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
-                self.assertEqual(planner.measure_changed_tests(tests, "", target), 0)
-            self.assertEqual([command[-1] for command in commands], [tree, rest])
-            self.assertTrue(any(arg.startswith("-run=") for arg in commands[0]))
-            self.assertFalse(any(arg.startswith("-run=") for arg in commands[1]))
-            overrides = budget.call_args.args[2]
-            self.assertEqual(overrides["packages"], {rest: 2})
-            selection = json.loads(target.with_suffix(".selection.json").read_text())
-            self.assertEqual((selection["whole"], selection["skipped"]), ([rest], []))
+                self.assertEqual(planner.measure_changed_tests(self.fixture_tests(), "enterprise", target, "base-sha"), 0)
+            self.assertEqual(len(commands), 2)
+            self.assertEqual(commands[0][0], commands[1][0])
+            self.assertEqual([root for _, root, _ in commands], [Path("base"), planner.ROOT])
+            command = commands[0][0]
+            for flag in ("-race", "-p=1", "-parallel=2", "-count=1", "-json", "-timeout=900s"):
+                self.assertIn(flag, command)
+            self.assertFalse(any(arg.startswith("-cover") for arg in command))
+            self.assertEqual(command[command.index("-tags") + 1], "enterprise")
+            self.assertEqual(budget.call_args.args[2], budget.call_args.args[3])
+            self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestChanged"], 1)
+            self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
 
-    def test_deadline_skips_edited_packages_and_refuses_unmeasured_new_tests(self):
-        first, second = "example.test/internal/alpha", "example.test/internal/beta"
-        def clock_after(*readings):
-            values = iter(readings)
-            return lambda: next(values)
-        for second_is_new, want in ((False, 0), (True, 1)):
-            tests = [{"package": "./a", "name": "TestNew", "new": True},
-                     {"package": "./b", "name": "TestEdited", "new": second_is_new}]
-            def resolve(tests, tags, import_paths):
-                import_paths.update({"./a": first, "./b": second})
-                return {first: ["TestNew"], second: ["TestEdited"]}
-            with self.subTest(second_is_new=second_is_new), tempfile.TemporaryDirectory() as directory:
-                target = Path(directory) / "changed.json"
-                commands = []
-                # Start, then before alpha (300s left), then before beta (30s left).
-                clock = clock_after(0, 100, 370)
-                with patch.object(planner, "runnable_changed_tests", side_effect=resolve), \
-                     patch.object(planner.subprocess, "run", side_effect=self.scripted_run(commands)), \
-                     patch.object(planner, "check_budget", return_value=0), \
-                     redirect_stdout(io.StringIO()) as out, redirect_stderr(io.StringIO()) as error:
-                    self.assertEqual(planner.measure_changed_tests(tests, "", target, 400, clock), want)
-                self.assertEqual([command[-1] for command in commands], [first])
-                # The package that started got only the time left as its timeout.
-                self.assertIn("-timeout=300s", commands[0])
-                if want:
-                    self.assertIn("TestEdited", error.getvalue())
+    def test_new_test_has_zero_base_and_full_head_cost(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "changed.json"
+            commands = []
+            with patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "list_packages", return_value=[self.package]), \
+                 patch.object(planner, "run_measurement", side_effect=self.scripted_run(commands)), \
+                 patch.object(planner, "check_budget", return_value=1) as budget, redirect_stdout(io.StringIO()):
+                self.assertEqual(planner.measure_changed_tests(self.fixture_tests(new=True), "", target, "base-sha"), 1)
+            self.assertEqual(len(commands), 1)
+            self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestChanged"], 1)
+            self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestChanged"], 0)
+            self.assertEqual(budget.call_args.kwargs["introduced"],
+                             {"trees": {"proxy": ["TestChanged"]}, "packages": []})
+
+    def test_rest_packages_measure_whole_on_both_sides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "changed.json"
+            commands = []
+            package = "example.test/internal/rest"
+            tests = [{"package": "./internal/rest", "file": "internal/rest/lib_test.go",
+                      "name": "TestChanged", "new": True}]
+            with patch.object(self, "package", package), \
+                 patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "list_packages", return_value=[package]), \
+                 patch.object(planner, "run_measurement", side_effect=self.scripted_run(commands)), \
+                 patch.object(planner, "check_budget", return_value=0) as budget, redirect_stdout(io.StringIO()):
+                self.assertEqual(planner.measure_changed_tests(tests, "", target, "base-sha"), 0)
+            self.assertEqual(len(commands), 2)
+            self.assertFalse(any(arg.startswith("-run=") for command, _, _ in commands for arg in command))
+            self.assertEqual(budget.call_args.args[2]["packages"], {package: 2})
+            self.assertEqual(budget.call_args.args[3]["packages"], {package: 2})
+            # The package exists on the base, so its new test is inside the
+            # paired whole-package total rather than a zero-base charge.
+            self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
+
+    def test_missing_skipped_failed_or_invalid_terminal_events_fail_closed(self):
+        cases = [
+            [{"Action": "pass", "Elapsed": 1}],
+            [{"Action": "pass", "Test": "TestChanged", "Elapsed": 1}],
+            [{"Action": "run", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
+            [{"Action": "skip", "Test": "TestChanged"}, {"Action": "pass", "Elapsed": 1}],
+            [{"Action": "fail", "Test": "TestChanged", "Elapsed": 1}],
+            [{"Action": "pass", "Test": "TestChanged", "Elapsed": float("nan")}],
+            [{"Action": "pass", "Test": "TestChanged", "Elapsed": -1}],
+        ]
+        for events in cases:
+            with self.subTest(events=events), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(planner, "run_measurement", side_effect=self.scripted_run([], events)), \
+                 redirect_stdout(io.StringIO()):
+                with self.assertRaises(ValueError):
+                    planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                               planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+
+    def test_build_output_and_subtest_skips_are_not_failures(self):
+        # A successful build's toolchain output is a build event keyed by
+        # ImportPath (go help buildjson), and a selected test may skip some
+        # subtests; neither is a missing or skipped measurement.
+        events = [
+            {"Action": "run", "Test": "TestChanged"},
+            {"Action": "run", "Test": "TestChanged/linux"},
+            {"Action": "skip", "Test": "TestChanged/windows", "Elapsed": 0},
+            {"Action": "pass", "Test": "TestChanged/linux", "Elapsed": 1},
+            {"Action": "pass", "Test": "TestChanged", "Elapsed": 1},
+            {"Action": "pass", "Elapsed": 2},
+        ]
+        def run(command, stream, root, remaining):
+            stream.write(json.dumps({"ImportPath": command[-1], "Action": "build-output", "Output": "warning\n"}) + "\n")
+            for event in events:
+                stream.write(json.dumps({"Package": command[-1], **event}) + "\n")
+            return 0
+        with tempfile.TemporaryDirectory() as directory, patch.object(planner, "run_measurement", side_effect=run), \
+             redirect_stdout(io.StringIO()):
+            overrides = planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                                   planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+        self.assertEqual(overrides["trees"]["proxy"]["TestChanged"], 1)
+        # A build failure still has no Package and is not a successful result.
+        def failed(command, stream, root, remaining):
+            stream.write(json.dumps({"ImportPath": command[-1], "Action": "build-fail"}) + "\n")
+            return 0
+        with tempfile.TemporaryDirectory() as directory, patch.object(planner, "run_measurement", side_effect=failed), \
+             redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "unexpected measurement event"):
+                planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                           planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+
+    def test_base_package_discovery_is_inside_the_deadline(self):
+        with patch.object(planner.subprocess, "run", side_effect=subprocess.TimeoutExpired("go list", 1)) as run:
+            with self.assertRaisesRegex(ValueError, "measurement timeout: package discovery"):
+                planner.list_packages("race", root=Path("base"), tests_only=True, timeout=1)
+        self.assertEqual(run.call_args.kwargs["timeout"], 1)
+
+    def test_base_package_discovery_receives_remaining_pair_deadline(self):
+        for elapsed in (2, 30):
+            with self.subTest(elapsed=elapsed), \
+                 patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "prediction_plan", return_value={}), \
+                 patch.object(planner, "list_packages", side_effect=ValueError("discovery timeout")) as discovery, \
+                 patch.object(planner, "run_measurement") as run:
+                # The first read checks expiry; the next read supplies the
+                # subprocess timeout. Both share the pair's start time.
+                ticks = iter([10, 10 + elapsed, 10 + elapsed + 1])
+                message = "discovery timeout" if elapsed < 30 else "deadline reached before base package discovery"
+                with self.assertRaisesRegex(ValueError, message):
+                    planner.measure_changed_tests(self.fixture_tests(), "enterprise", Path("unused.json"), "base-sha",
+                                                  deadline_seconds=30, clock=lambda: next(ticks))
+                if elapsed < 30:
+                    discovery.assert_called_once_with("race,enterprise", root=Path("base"),
+                                                      tests_only=True, timeout=27)
                 else:
-                    self.assertIn("kept its recorded weight", out.getvalue())
+                    discovery.assert_not_called()
+                run.assert_not_called()
+
+    def test_deadline_refuses_edited_and_new_tests(self):
+        for new in (False, True):
+            with self.subTest(new=new), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(planner, "measurement_base", return_value=nullcontext(Path("base"))), \
+                 patch.object(planner, "runnable_changed_tests", side_effect=self.resolve), \
+                 patch.object(planner, "list_packages", return_value=[self.package]), \
+                 patch.object(planner, "run_measurement") as run:
+                ticks = iter([0, planner.MEASURE_DEADLINE_SECONDS])
+                with self.assertRaisesRegex(ValueError, "measurement deadline"):
+                    planner.measure_changed_tests(self.fixture_tests(new=new), "", Path(directory) / "run.json", "base-sha",
+                                                  clock=lambda: next(ticks, planner.MEASURE_DEADLINE_SECONDS))
+                run.assert_not_called()
+
+    def test_process_failure_and_timeout_fail_closed(self):
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(planner, "run_measurement", side_effect=self.scripted_run([], status=1)), \
+             redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(ValueError, "race run failed"):
+                planner.measured_selection({self.package: ["TestChanged"]}, [], "", Path(directory) / "run.json",
+                                           planner.ROOT, lambda: planner.MEASURE_DEADLINE_SECONDS)
+        with patch.object(planner.subprocess, "Popen") as popen, patch.object(planner.os, "killpg") as kill:
+            process = popen.return_value.__enter__.return_value
+            process.wait.side_effect = [subprocess.TimeoutExpired("go test", 1), 0]
+            with self.assertRaisesRegex(ValueError, "measurement timeout"):
+                planner.run_measurement(["go", "test"], io.StringIO(), planner.ROOT, 1)
+            kill.assert_called_once_with(process.pid, planner.signal.SIGKILL)
 
 
 if __name__ == "__main__":

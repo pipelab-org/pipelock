@@ -414,7 +414,7 @@ func loadOneBundle(bundleDir, dirName string, opts LoadOptions, ctx *bundleExecC
 	// Check pipelock-* name reservation: only official signers allowed.
 	// Track official status for degraded-mode detection (based on verified
 	// signature, not directory name).
-	official := strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint, trustEmbeddedKeys)
+	official := !lock.Unsigned && strings.HasPrefix(bundle.Name, reservedBundlePrefix) && isOfficialFingerprint(lock.SignerFingerprint, trustEmbeddedKeys)
 	if strings.HasPrefix(bundle.Name, reservedBundlePrefix) && !official {
 		ctx.Result.Errors = append(ctx.Result.Errors, BundleError{
 			Name:   dirName,
