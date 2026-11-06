@@ -287,9 +287,13 @@ type hookScanViews struct {
 
 func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanViews, surface string, dir scanDirection) (decision HookDecision) {
 	numberOnly := false
+	partialEncoded := false
 	defer func() {
 		if numberOnly {
 			decision.warnings = []string{"pipelock: warning: informational JSON card run detected (action=warn)"}
+		}
+		if partialEncoded {
+			decision.warnings = append(decision.warnings, "pipelock: warning: "+scanner.PartialEncodedContentPattern+" (action=warn)")
 		}
 	}()
 	text, cards := views.text, views.cards
@@ -334,7 +338,11 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		var enforceable []scanner.TextDLPMatch
 		for _, match := range dlp.Matches {
 			if match.IsInformational() {
-				numberOnly = true
+				if match.PatternName == scanner.PartialEncodedContentPattern {
+					partialEncoded = true
+				} else {
+					numberOnly = true
+				}
 			} else {
 				enforceable = append(enforceable, match)
 			}
