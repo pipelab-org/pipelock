@@ -242,13 +242,20 @@ type dualEmitFixture struct {
 
 func newDualEmitFixture(t *testing.T, redact bool) *dualEmitFixture {
 	t.Helper()
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	return newDualEmitFixtureWithConfig(t, redact, cfg)
+}
+
+// Build the recorder and the proxy that will actually serve the test request.
+// Callers with a response policy need no second proxy or compiled scanner.
+func newDualEmitFixtureWithConfig(t *testing.T, redact bool, cfg *config.Config) *dualEmitFixture {
+	t.Helper()
 	dir := t.TempDir()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
-	cfg := config.Defaults()
-	cfg.Internal = nil
 	sc := scanner.MustNew(cfg)
 
 	var redactFn recorder.RedactFunc
