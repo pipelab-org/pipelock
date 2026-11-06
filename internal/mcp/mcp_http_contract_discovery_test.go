@@ -866,6 +866,69 @@ func TestContractDiscoveryTimeout(t *testing.T) {
 	})
 }
 
+func TestContractDiscoveryTimeoutAfterPartialBody(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		// Headers and part of the inventory arrive, then the upstream stalls, so
+		// the deadline has to interrupt the body read rather than the round trip.
+		body := &stallingDiscoveryBody{partial: []byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[`), closed: make(chan struct{})}
+		state := newMCPListenerClientState("", "test")
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://proxy.vendor.example/", nil)
+		req.Header = currentWireHeaders(methodToolsCall, "echo")
+		start := time.Now()
+		err := discoverMCPToolContract(mcpContractDiscoveryRequest{
+			request: req, client: &http.Client{Transport: stallingDiscoveryTransport{body: body}}, upstream: "http://upstream.vendor.example/",
+			opts: paramContractOpts(t), state: state, log: io.Discard, tool: "echo",
+		})
+		if err == nil {
+			t.Fatal("stalled discovery body adopted an inventory")
+		}
+		if elapsed := time.Since(start); elapsed != upstreamIdleReadTimeout {
+			t.Fatalf("partial-body discovery deadline = %v, want %v", elapsed, upstreamIdleReadTimeout)
+		}
+		if body.reads.Load() < 2 || req.Context().Err() != nil || state.baseline.HeaderContract("echo").State != tools.HeaderContractUnknown {
+			t.Fatalf("stalled body: reads=%d caller=%v contract=%v err=%v", body.reads.Load(), req.Context().Err(), state.baseline.HeaderContract("echo").State, err)
+		}
+	})
+}
+
+type stallingDiscoveryTransport struct {
+	body *stallingDiscoveryBody
+}
+
+func (s stallingDiscoveryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.body.ctx = req.Context()
+	header := http.Header{}
+	header.Set("Content-Type", "application/json")
+	return &http.Response{StatusCode: http.StatusOK, Header: header, Body: s.body, Request: req}, nil
+}
+
+// stallingDiscoveryBody returns its partial inventory once, then blocks until
+// it is closed or the discovery request ends.
+type stallingDiscoveryBody struct {
+	partial   []byte
+	ctx       context.Context
+	reads     atomic.Int32
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func (b *stallingDiscoveryBody) Read(p []byte) (int, error) {
+	if b.reads.Add(1) == 1 {
+		return copy(p, b.partial), nil
+	}
+	select {
+	case <-b.closed:
+		return 0, io.ErrClosedPipe
+	case <-b.ctx.Done():
+		return 0, b.ctx.Err()
+	}
+}
+
+func (b *stallingDiscoveryBody) Close() error {
+	b.closeOnce.Do(func() { close(b.closed) })
+	return nil
+}
+
 type discoveryTimeoutTransport struct {
 	canceled bool
 }
