@@ -120,8 +120,8 @@ func TestScanRequest_ResourcesReadHTTPSpellingsUseURLPolicy(t *testing.T) {
 	}
 }
 
-// Host spellings inside a well-formed HTTP(S) URI are the URL scanner's job;
-// these pin that resources/read hands them over intact.
+// Host spellings must reach destination policy unless the raw parser refuses
+// them first. Opaque spellings also exercise normalization without that refusal.
 func TestScanRequest_ResourcesReadHostSpellingsUseURLPolicy(t *testing.T) {
 	sc := testInputScanner(t)
 	ip := metadataHost()
@@ -148,11 +148,20 @@ func TestScanRequest_ResourcesReadHostSpellingsUseURLPolicy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			uri := "http://" + tt.host + resourceTestPath
-			line := makeRequest(1, "resources/read", map[string]string{"uri": uri})
-			verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
-			if verdict.Clean {
-				t.Fatalf("%s: resources/read reached no URL policy", tt.name)
+			for _, prefix := range []string{"http://", "http:"} {
+				uri := prefix + tt.host + resourceTestPath
+				wantScanner := scanner.ScannerCoreSSRF
+				if tt.name == "host_percent_escaped" && prefix == "http://" {
+					wantScanner = scanner.ScannerParser
+				}
+				line := makeRequest(1, "resources/read", map[string]string{"uri": uri})
+				verdict := ScanRequest(t.Context(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
+				if verdict.Clean || len(verdict.URLFindings) != 1 || verdict.URLFindings[0].Scanner != wantScanner {
+					t.Fatalf("%s: expected %s finding, got %+v", uri, wantScanner, verdict)
+				}
+				if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
+					t.Fatalf("%s: effective action = %q, want %q", uri, got, config.ActionBlock)
+				}
 			}
 		})
 	}
@@ -230,6 +239,9 @@ func TestScanRequest_ResourcesReadNonASCIIHostSpellingsUseURLPolicy(t *testing.T
 				verdict := ScanRequest(context.Background(), []byte(line), sc, config.ActionWarn, config.ActionBlock)
 				if verdict.Clean {
 					t.Fatalf("%s: resources/read reached no URL policy", uri)
+				}
+				if len(verdict.URLFindings) != 1 || verdict.URLFindings[0].Scanner != scanner.ScannerCoreSSRF {
+					t.Fatalf("%s: expected core SSRF finding, got %+v", uri, verdict.URLFindings)
 				}
 				if got := inputVerdictEffectiveAction(verdict, config.ActionWarn); got != config.ActionBlock {
 					t.Fatalf("%s: effective action = %q, want %q", uri, got, config.ActionBlock)
