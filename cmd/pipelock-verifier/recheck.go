@@ -261,11 +261,11 @@ func reproduceTagUserinfoSource(source, stage string) string {
 		if err != nil {
 			username = user
 		}
-		password, err := url.PathUnescape(second)
+		secondField, err := url.PathUnescape(second)
 		if err != nil {
-			password = second
+			secondField = second
 		}
-		return username + ":" + password
+		return username + ":" + secondField
 	}
 	return user
 }
