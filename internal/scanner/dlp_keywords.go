@@ -551,7 +551,7 @@ func keywordTextEncodingOffsets(source, decoded, encoding string) []keywordByteS
 		if r.start < 0 || r.end <= r.start || r.end > len(source) {
 			return nil
 		}
-		offsets[i] = keywordByteSpan{r.start, r.end}
+		offsets[i] = keywordByteSpan(r)
 	}
 	return offsets
 }
