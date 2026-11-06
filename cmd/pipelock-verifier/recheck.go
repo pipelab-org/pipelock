@@ -178,6 +178,42 @@ func reproduceSpanView(source, view string) (string, error) {
 		}
 		return normalize.Leetspeak(base), nil
 	}
+	for _, prefix := range []string{"invisible_spaced:", "vowel_fold:"} {
+		if strings.HasPrefix(view, prefix) && !strings.Contains(view, "unicode_tags_decoded") {
+			base, err := reproduceSpanView(source, strings.TrimPrefix(view, prefix))
+			if err != nil {
+				return "", err
+			}
+			if prefix == "invisible_spaced:" {
+				var decoded string
+				switch strings.TrimPrefix(view, prefix) {
+				case contractreceipt.NormalizedViewBase64Decoded:
+					decoded, err = decodeWholeBase64(source)
+				case contractreceipt.NormalizedViewHexDecoded:
+					decoded, err = decodeWholeHex(source)
+				}
+				if err != nil {
+					return "", err
+				}
+				if decoded != "" {
+					return normalize.ForMatchingSpaced(decoded), nil
+				}
+				// Spacing must precede invisible-character stripping.
+				if encoding, ok := strings.CutPrefix(strings.TrimPrefix(view, prefix), "for_matching:"); ok {
+					if decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(encoding, "_decoded")); ok {
+						return normalize.ForMatchingSpaced(decoded), nil
+					}
+				}
+				return normalize.ForMatchingSpaced(base), nil
+			}
+			return normalize.FoldVowels(base), nil
+		}
+	}
+	if encoding, ok := strings.CutPrefix(view, "for_matching:"); ok {
+		if decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(encoding, "_decoded")); ok {
+			return normalize.ForMatching(decoded), nil
+		}
+	}
 	switch {
 	case view == contractreceipt.NormalizedViewSanitizedTarget:
 		return source, nil
@@ -201,6 +237,12 @@ func reproduceSpanView(source, view string) (string, error) {
 		stages := strings.Split(view, ":")
 		for i := len(stages) - 1; i > 0; i-- {
 			switch stages[i] {
+			case "decimal_character_codes", "decimal_character_codes_decoded", "octal_character_codes", "octal_character_codes_decoded", "binary_character_codes", "binary_character_codes_decoded", "quoted_printable", "quoted_printable_decoded":
+				decoded, ok := scanner.DecodeTextEncoding(source, strings.TrimSuffix(stages[i], "_decoded"))
+				if !ok {
+					return "", fmt.Errorf("cannot reproduce textual encoding %q", stages[i])
+				}
+				source = decoded
 			case "unicode_tags", "unicode_tags_decoded":
 				source = normalize.DecodeTags(scanner.IterativeDecode(source))
 			case "url_userinfo_username_escaped", "url_userinfo_username", "url_userinfo_password_escaped", "url_userinfo_password", "url_userinfo":

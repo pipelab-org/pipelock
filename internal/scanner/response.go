@@ -84,6 +84,8 @@ type ResponseMatch struct {
 	decodedSourceStart      int
 	decodedSourceEnd        int
 	hasDecodedSource        bool
+	// Literal bytes in a quoted-printable view are not evidence of decoding.
+	decodedSourceTransformed bool
 }
 
 type responseMatchSet struct {
@@ -682,9 +684,9 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 		// Reuse the existing recursive decoders and suppression handling, but
 		// do not pattern-match the stitched encoded alphabet as ordinary text.
 		content = normalize.ForMatching(content)
-		matches := s.matchDecodedCoreResponse(content, filterSuppressed).matches
+		matches := s.matchDecodedCoreResponseMode(content, filterSuppressed, false).matches
 		if len(matches) == 0 && s.responseEnabled {
-			matches = filterSuppressed(s.matchDecodedResponseWithSuppress(content, filterSuppressed).matches)
+			matches = filterSuppressed(s.matchDecodedResponseWithSuppressMode(content, filterSuppressed, false).matches)
 		}
 		if ctx != nil && ctx.Err() != nil {
 			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
@@ -780,9 +782,13 @@ func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, s
 	if normalize.ContainsTags(preStripContent) {
 		decodeContent = preStripContent
 	}
-	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || normalize.ContainsTags(preStripContent)) {
-		decodedSet := s.matchDecodedResponseWithSuppress(decodeContent, filterSuppressed)
+	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content) || hasTextEncoding(content) || hasQuotedPrintable(preStripContent) || normalize.ContainsTags(preStripContent)) {
+		decodedSet := s.matchDecodedResponseWithSuppressMode(decodeContent, filterSuppressed, !options.forceEncodedDecode)
 		matches = filterSuppressed(decodedSet.matches)
+		if len(matches) == 0 && preStripContent != content && hasQuotedPrintable(preStripContent) {
+			decodedSet = s.matchDecodedResponseWithSuppressMode(preStripContent, filterSuppressed, !options.forceEncodedDecode)
+			matches = filterSuppressed(decodedSet.matches)
+		}
 	}
 
 	// Post-scan context check: if context expired during scanning, fail closed.
@@ -1234,11 +1240,19 @@ func (s *Scanner) matchDecodedResponse(content string) responseMatchSet {
 }
 
 func (s *Scanner) matchDecodedResponseWithSuppress(content string, suppress coreResponseSuppressor) responseMatchSet {
-	return markFragmentBoundaries(s.matchDecodedResponseRecursive(content, 0, suppress), content)
+	return s.matchDecodedResponseWithSuppressMode(content, suppress, true)
+}
+
+func (s *Scanner) matchDecodedResponseWithSuppressMode(content string, suppress coreResponseSuppressor, recoverQP bool) responseMatchSet {
+	return markFragmentBoundaries(s.matchDecodedResponseRecursiveMode(content, 0, suppress, recoverQP), content)
 }
 
 // matchDecodedResponseRecursive is the recursive implementation of matchDecodedResponse.
-func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppress coreResponseSuppressor) (out responseMatchSet) {
+func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppress coreResponseSuppressor) responseMatchSet {
+	return s.matchDecodedResponseRecursiveMode(content, depth, suppress, true)
+}
+
+func (s *Scanner) matchDecodedResponseRecursiveMode(content string, depth int, suppress coreResponseSuppressor, recoverQP bool) (out responseMatchSet) {
 	if depth >= responseDecodeMaxDepth {
 		return responseMatchSet{}
 	}
@@ -1251,13 +1265,35 @@ func (s *Scanner) matchDecodedResponseRecursive(content string, depth int, suppr
 		}
 	}
 	if normalize.ContainsTags(content) {
+		if stripped := normalize.StripZeroWidth(content); hasQuotedPrintable(stripped) {
+			if found := s.matchDecodedResponseRecursiveMode(stripped, depth+1, suppress, recoverQP); len(found.matches) > 0 {
+				return mapResponseTransformSources(found, content, ViewForMatching)
+			}
+		}
 		source := content
 		content = normalize.ForMatching(content)
 		defer func() { out = mapResponseTransformSources(out, source, ViewForMatching) }()
 	}
 
+	views := textEncodingViewsMode(content, recoverQP)
+	for _, view := range views {
+		if set := s.matchDecodedNormalized(view.text, spanViewLabel(ViewForMatching, view.encoding+"_decoded"), suppress); len(set.matches) > 0 {
+			set = mapTextEncodingViewSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
+		}
+		if set := s.matchDecodedResponseRecursive(view.text, depth+1, suppress); len(set.matches) > 0 {
+			set = mapTextEncodingViewSources(set, content, view)
+			if len(set.matches) > 0 {
+				return set
+			}
+		}
+	}
+
 	// Strategy 1: whole-content decode.
 	stripped, sourceOffsets := stripDecodeWhitespace(content, 0)
+	stripped = canonicalMixedBase64(stripped)
 
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding, base64.URLEncoding,
@@ -1308,7 +1344,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int, suppr
 			base64.StdEncoding, base64.URLEncoding,
 			base64.RawStdEncoding, base64.RawURLEncoding,
 		} {
-			if decoded, err := enc.DecodeString(seg.text); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
+			if decoded, err := enc.DecodeString(canonicalMixedBase64(seg.text)); err == nil && len(decoded) > 0 && isPrintableText(decoded) {
 				d := string(decoded)
 				if decodedSet := s.matchDecodedNormalized(d, ViewBase64Decoded, suppress); len(decodedSet.matches) > 0 {
 					return mapDecodedSources(decodedSet, d, sourceOffsets, false)
@@ -1334,7 +1370,7 @@ func (s *Scanner) matchDecodedSegmentsRecursive(content string, depth int, suppr
 func markFragmentBoundaries(set responseMatchSet, source string) responseMatchSet {
 	for i := range set.matches {
 		match := &set.matches[i]
-		if match.hasDecodedSource && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
+		if match.hasDecodedSource && match.decodedSourceTransformed && match.decodedSourceStart >= 0 && match.decodedSourceEnd <= len(source) && match.decodedSourceStart < match.decodedSourceEnd {
 			match.crossesFragmentBoundary = strings.ContainsRune(source[match.decodedSourceStart:match.decodedSourceEnd], '\n')
 		}
 	}
@@ -1377,6 +1413,7 @@ func mapDecodedSources(set responseMatchSet, decoded string, encodedOffsets []in
 		match.decodedSourceStart = encodedOffsets[encodedStart]
 		match.decodedSourceEnd = encodedOffsets[encodedEnd-1] + 1
 		match.hasDecodedSource = true
+		match.decodedSourceTransformed = true
 	}
 	return set
 }
@@ -1848,7 +1885,7 @@ func (s *Scanner) matchDecodedNormalized(decoded, decodedViewLabel string, suppr
 	if len(s.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
 		if folded != normalized {
-			if matches := filterCoreResponsePass(folded, "", matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.responseVowelFoldPreFilter, s.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
 				return responseMatchSet{matches: matches, content: folded}
 			}
 		}

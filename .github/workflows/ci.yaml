@@ -1000,11 +1000,21 @@ jobs:
           if [ "$EVENT_NAME" = push ]; then
             echo "Main's complete race lane supplies measurements"
             echo 'changed=false' >> "$GITHUB_OUTPUT"
-          elif git diff --quiet "${BASE_SHA}...${HEAD_SHA}" -- '*_test.go'; then
-            echo "No test source changes; race measurement is a no-op"
-            echo 'changed=false' >> "$GITHUB_OUTPUT"
           else
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            case "$EVENT_NAME" in
+              pull_request|merge_group) ;;
+              *) echo "Unknown changed-test event: $EVENT_NAME" >&2; exit 1 ;;
+            esac
+            # Resolve before the no-change path; a failed diff is not an empty one.
+            base=$(git merge-base "$BASE_SHA" "$HEAD_SHA")
+            status=0
+            git diff --quiet "$base" "$HEAD_SHA" -- '*_test.go' || status=$?
+            case "$status" in
+              0) echo "No test source changes; race measurement is a no-op"
+                 echo 'changed=false' >> "$GITHUB_OUTPUT" ;;
+              1) echo 'changed=true' >> "$GITHUB_OUTPUT" ;;
+              *) exit "$status" ;;
+            esac
           fi
 
       - name: Set up Go
@@ -1020,6 +1030,8 @@ jobs:
       - name: Measure changed tests and check shard budget
         if: steps.sources.outputs.changed == 'true'
         env:
+          # Both revisions must use setup-go's toolchain, without auto-upgrades.
+          GOTOOLCHAIN: local
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           HEAD_SHA: ${{ github.sha }}
           VARIANT: ${{ matrix.variant }}
@@ -1043,6 +1055,8 @@ jobs:
           path: |
             changed-tests-${{ matrix.variant }}.json
             changed-tests-${{ matrix.variant }}.selection.json
+            changed-tests-${{ matrix.variant }}.base.json
+            changed-tests-${{ matrix.variant }}.base.selection.json
           retention-days: 14
           if-no-files-found: ignore
 

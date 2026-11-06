@@ -68,8 +68,20 @@ func TestDecodingPreprocessingParity(t *testing.T) {
 			if len(want) > 0 {
 				decodedCases++
 			}
-			if got := decodeEncodings(input); !reflect.DeepEqual(got, want) {
-				t.Fatalf("ordered decoding differs for %q:\ngot %#v\nwant %#v", input, got, want)
+			// Numeric and quoted-printable views have separate behavioral
+			// tests. This reference freezes the other decoders' ordering and
+			// duplicates, including inputs that also form a textual carrier.
+			var legacy []decodedResult
+			for _, view := range decodeEncodings(input) {
+				switch view.encoding {
+				case encodingDecimal, encodingOctal, encodingBinary, encodingQuotedPrintable:
+					continue
+				default:
+					legacy = append(legacy, view)
+				}
+			}
+			if !reflect.DeepEqual(legacy, want) {
+				t.Fatalf("ordered decoding differs for %q:\ngot %#v\nwant %#v", input, legacy, want)
 			}
 		})
 	}
@@ -152,7 +164,10 @@ func referenceDecodeEncodingsFixpoint(s string, includeURL bool) []decodedResult
 	consumed := 0
 	for head := 0; head < len(queue) && len(out) < maxDecodeCandidates && consumed < maxDecodeTotalBytes; head++ {
 		text := queue[head]
-		candidates := referenceDecodeEncodings(text)
+		// Carrier parser behavior has separate cases. This reference checks
+		// traversal and byte accounting with their views included.
+		candidates := appendTextEncodingViews(nil, text)
+		candidates = append(candidates, referenceDecodeEncodings(text)...)
 		if includeURL {
 			if decoded := IterativeDecode(text); decoded != text && decoded != "" {
 				candidates = append(candidates, decodedResult{decoded, encodingURL})
@@ -292,6 +307,18 @@ func referenceDecodeEncodings(s string) []decodedResult {
 		for _, enc := range []*base64.Encoding{base64.URLEncoding, base64.RawURLEncoding} {
 			if decoded, err := enc.DecodeString(normalized); err == nil && len(decoded) > 0 {
 				out = append(out, decodedResult{string(decoded), encodingBase64})
+			}
+		}
+	}
+	// RFC 4648 sections 4 and 5 share symbol values. Keep mixed-family
+	// raw and separator-normalized views in addition to the original views.
+	if strings.ContainsAny(s, "+/") && strings.ContainsAny(s, "-_") {
+		mixed := strings.NewReplacer("-", "+", "_", "/").Replace(s)
+		for _, value := range []string{mixed, referenceNormalizeEncodedToken(mixed, encodedTokenBase64Std)} {
+			for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding} {
+				if decoded, err := enc.DecodeString(value); err == nil && len(decoded) > 0 {
+					out = append(out, decodedResult{string(decoded), encodingBase64})
+				}
 			}
 		}
 	}

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/url"
 	"os"
@@ -487,5 +489,41 @@ func TestUnicodeTagsReviewLeetspeakRecheck(t *testing.T) {
 	}
 	if _, err := reproduceSpanView("source", "leetspeak:unsupported"); err == nil {
 		t.Fatal("unsupported nested view accepted")
+	}
+}
+
+func TestTextEncodingRecheckViews(t *testing.T) {
+	for encoding, source := range map[string]string{
+		"decimal_character_codes": "104 101 108 108 111 32 119 111 114 108 100",
+		"octal_character_codes":   "0o150, 0o145, 0o154, 0o154, 0o157, 0o40, 0o167, 0o157, 0o162, 0o154, 0o144",
+		"binary_character_codes":  "0b1101000, 0b1100101, 0b1101100, 0b1101100, 0b1101111, 0b100000, 0b1110111, 0b1101111, 0b1110010, 0b1101100, 0b1100100",
+		"quoted_printable":        "=68ello world",
+	} {
+		got, err := reproduceSpanView(source, "dlp_normalized:"+encoding)
+		if err != nil || got != "hello world" {
+			t.Fatalf("DLP %s: got %q, %v", encoding, got, err)
+		}
+		for prefix, want := range map[string]string{"": "hello world", "leetspeak:": "hello world", "invisible_spaced:": "hello world", "vowel_fold:": "halla warld"} {
+			view := prefix + "for_matching:" + encoding + "_decoded"
+			got, err := reproduceSpanView(source, view)
+			if err != nil || got != want {
+				t.Fatalf("%s: got %q, %v", view, got, err)
+			}
+		}
+	}
+	if _, err := reproduceSpanView("ordinary text", "for_matching:quoted_printable_decoded"); err == nil {
+		t.Fatal("admitted an unchanged carrier")
+	}
+}
+
+func TestDecodedSpacingRecheck(t *testing.T) {
+	for _, tc := range []struct{ source, view string }{
+		{base64.StdEncoding.EncodeToString([]byte("hello\u200bworld")), "invisible_spaced:for_matching:base64_decoded"},
+		{hex.EncodeToString([]byte("hello\u200bworld")), "invisible_spaced:for_matching:hex_decoded"},
+	} {
+		got, err := reproduceSpanView(tc.source, tc.view)
+		if err != nil || got != "hello world" {
+			t.Fatalf("%s: got %q, %v", tc.view, got, err)
+		}
 	}
 }

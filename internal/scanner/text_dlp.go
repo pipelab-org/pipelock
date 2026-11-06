@@ -976,6 +976,25 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 			}
 		}
 		appendInvisibleSpacedSeedCandidate(text, "", ViewForMatching)
+		// Character-code lists and fully escaped quoted-printable text can
+		// lose their word boundaries when split into individual segments.
+		for _, view := range appendTextEncodingViews(nil, text) {
+			label := spanViewLabel(view.encoding+"_decoded", ViewForMatching)
+			addSeedCandidate(seedCandidate{view.text, view.encoding, label})
+			appendInvisibleSpacedSeedCandidate(view.text, view.encoding, label)
+			if view.encoding == encodingQuotedPrintable {
+				// Binary padding must not attach to a phrase's first or last
+				// word. Keep each decoded text run separate; joining across a
+				// non-text boundary could manufacture a phrase.
+				for run := range strings.FieldsFuncSeq(view.text, func(r rune) bool {
+					return !isPrintableResponseRune(r, 1)
+				}) {
+					runLabel := spanViewLabel(label, "text_run")
+					addSeedCandidate(seedCandidate{run, view.encoding, runLabel})
+					appendInvisibleSpacedSeedCandidate(run, view.encoding, runLabel)
+				}
+			}
+		}
 		// URL-decoded variant
 		if decoded := IterativeDecode(seedText); decoded != seedText {
 			addSeedCandidate(seedCandidate{decoded, "url", spanViewLabel("url_decoded", ViewForMatching)})
@@ -1071,8 +1090,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// NFKC, cross-script confusable mapping, and combining mark removal.
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
+	var canaryMatches []TextDLPMatch
 	if opts.patterns != textDLPCardPatterns {
-		matches = append(matches, s.scanCanaryTextWithDecodes(text, decodes)...)
+		canaryMatches = s.scanCanaryTextWithDecodes(text, decodes)
+		matches = append(matches, canaryMatches...)
 	}
 
 	// Check raw text against DLP patterns (before URL decoding).
@@ -1166,7 +1187,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// until no new bounded candidates appear. Catches base64(secret),
 	// hex(secret), and nested chains (e.g., base64(hex(secret))).
 	matches = append(matches, s.decodeAndMatchWithDecodes(cleaned, decodes, opts.patterns)...)
-	if normalize.ContainsTags(text) {
+	if normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned) {
 		matches = append(matches, s.decodeAndMatchWithDecodes(text, decodes, opts.patterns)...)
 	}
 
@@ -1200,7 +1221,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if opts.scanSecretLeak {
 		matches = append(matches, s.checkSecretsInTextWithDecodes(s.envSecrets, cleaned, "Environment Variable Leak", "env", decodes)...)
 		matches = append(matches, s.checkSecretsInTextWithDecodes(s.fileSecrets, cleaned, "Known Secret Leak", "", decodes)...)
-		if normalize.ContainsTags(text) {
+		if normalize.ContainsTags(text) || (hasTextEncoding(text) && text != cleaned) {
 			matches = append(matches, s.checkSecretsInTextWithDecodes(s.envSecrets, text, "Environment Variable Leak", "env", decodes)...)
 			matches = append(matches, s.checkSecretsInTextWithDecodes(s.fileSecrets, text, "Known Secret Leak", "", decodes)...)
 		}
@@ -1209,8 +1230,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
 
-	// Prepend core matches - core findings cannot be overridden.
+	// Retain every core finding, with configured canary attribution first.
+	// A canary can also have a credential's shape; its encoding provenance
+	// must not be hidden behind the pattern finding for the same value.
 	if len(coreMatches) > 0 {
+		if len(canaryMatches) > 0 {
+			coreMatches = append(canaryMatches[:len(canaryMatches):len(canaryMatches)], coreMatches...)
+		}
 		matches = append(coreMatches, matches...)
 		matches = deduplicateMatches(matches)
 	}
@@ -1530,6 +1556,8 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 		return nil
 	}
 
+	original := text
+	text = decodes.normalize(text)
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 	// Form decoding turns an escaped '+' into a space; the RFC 3986 view keeps
@@ -1545,6 +1573,9 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
+			if original != text && (hasTextEncoding(original) || normalize.ContainsTags(original)) {
+				texts = append(texts, s.decodedKnownSecretViews(original, decodes)...)
+			}
 			// URL serialization can escape a separator into path data. Split
 			// the decoded view too, as known-value URL scanning already does.
 			if decoded != text {
