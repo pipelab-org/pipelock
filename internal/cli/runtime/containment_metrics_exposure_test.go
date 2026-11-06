@@ -34,7 +34,23 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- s.Start(ctx) }()
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		done <- s.Start(ctx)
+	}()
+	// Registered after the server's own cleanup, so it runs first: a failed
+	// assertion must not tear the server down under a Start that is still
+	// returning, or its shutdown log write panics and takes the package with it.
+	t.Cleanup(func() {
+		cancel()
+		_ = s.Shutdown(context.Background())
+		select {
+		case <-returned:
+		case <-time.After(testwait.Deadline(10 * time.Second)):
+			t.Error("contained proxy Start did not return before cleanup")
+		}
+	})
 
 	client := &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: 500 * time.Millisecond}
 	get := func(path string) (int, bool) {
@@ -79,7 +95,7 @@ func TestServer_ContainmentDeletedMetricsKeyDoesNotExposeMetricsOnTheProxyPort(t
 		if startErr != nil {
 			t.Fatalf("Start: %v", startErr)
 		}
-	case <-time.After(3 * time.Second):
+	case <-time.After(testwait.Deadline(3 * time.Second)):
 		t.Fatal("timed out waiting for contained proxy shutdown")
 	}
 }
