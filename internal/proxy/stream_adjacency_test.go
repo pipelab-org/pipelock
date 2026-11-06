@@ -4,6 +4,8 @@
 package proxy
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +25,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func streamAdjacencyCases() []struct {
@@ -122,8 +125,10 @@ func TestStreamInjectionAdjacency(t *testing.T) {
 						if err := wsutil.WriteClientMessage(conn, ws.OpText, []byte("hello")); err != nil {
 							t.Fatal(err)
 						}
-						_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 						for len(got) < len(tc.messages) {
+							if err := conn.SetReadDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+								t.Fatal(err)
+							}
 							data, op, err := wsutil.ReadServerData(conn)
 							if err != nil {
 								requireWSClosed(t, err)
@@ -141,7 +146,7 @@ func TestStreamInjectionAdjacency(t *testing.T) {
 						}
 						tr := &http.Transport{Proxy: http.ProxyURL(proxyURL)}
 						defer tr.CloseIdleConnections()
-						client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+						client := &http.Client{Transport: tr, Timeout: testwait.Deadline(5 * time.Second)}
 						req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, backend.URL+"/events", nil)
 						if err != nil {
 							t.Fatal(err)
@@ -170,7 +175,7 @@ func TestStreamInjectionAdjacency(t *testing.T) {
 					}
 					select {
 					case <-done:
-					case <-time.After(5 * time.Second):
+					case <-time.After(testwait.Deadline(5 * time.Second)):
 						t.Fatal("stream handler did not finish")
 					}
 					logger.Close()
@@ -213,5 +218,83 @@ func BenchmarkWSUpstreamCrossMessageClean(b *testing.B) {
 				b.Fatal("benign stream blocked")
 			}
 		}
+	}
+}
+
+func TestWebSocketCrossMessageCombinedFindings(t *testing.T) {
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		t.Run(action, func(t *testing.T) {
+			cfg := config.Defaults()
+			cfg.ResponseScanning.Action = action
+			cfg.ResponseScanning.IncludeDefaults = new(bool)
+			cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+				{Name: "adjacent marker", Regex: `alphabeta`},
+				{Name: "spaced marker", Regex: `alpha beta`},
+				{Name: "shared marker", Regex: `alpha ?beta`},
+			}
+			p := newTestProxyWithConfig(t, cfg)
+			var output bytes.Buffer
+			log, err := audit.NewWithStream("json", "stdout", "", true, true, &output)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(log.Close)
+			client := &receiptFrameConn{input: bytes.NewReader(nil)}
+			upstream := &receiptFrameConn{input: bytes.NewReader(nil)}
+			r := &wsRelay{
+				proxy: p, cfg: cfg, scanner: p.scannerPtr.Load(), scanText: true,
+				clientConn: client, upstreamConn: upstream, targetURL: "wss://api.vendor.example/chat",
+			}
+			state := newUpstreamCrossMessage(config.DefaultWebSocketCrossMessageFieldLimit)
+			if state.enforce(t.Context(), r, log, []byte("alpha")) {
+				t.Fatal("first part blocked")
+			}
+			if blocked := state.enforce(t.Context(), r, log, []byte("beta")); blocked != (action == config.ActionBlock) {
+				t.Fatalf("blocked=%v action=%s", blocked, action)
+			}
+			var event struct {
+				Event      string   `json:"event"`
+				Patterns   []string `json:"patterns"`
+				MatchCount int      `json:"match_count"`
+			}
+			lines := bytes.Split(bytes.TrimSpace(output.Bytes()), []byte("\n"))
+			if len(lines) != 1 {
+				t.Fatalf("want one event, got %s", output.String())
+			}
+			if err := json.Unmarshal(lines[0], &event); err != nil {
+				t.Fatal(err)
+			}
+			if action == config.ActionWarn {
+				if event.Event != "ws_scan" || event.MatchCount != 3 || len(event.Patterns) != 3 {
+					t.Fatalf("unexpected event: %s", output.String())
+				}
+				for _, name := range []string{"adjacent marker", "spaced marker", "shared marker"} {
+					if !slices.Contains(event.Patterns, name) {
+						t.Fatalf("missing %s: %s", name, output.String())
+					}
+				}
+				if client.output.Len() != 0 || upstream.output.Len() != 0 {
+					t.Fatal("warn closed connection")
+				}
+				before := output.String()
+				if state.enforce(t.Context(), r, log, []byte(" ordinary text")) {
+					t.Fatal("benign continuation blocked")
+				}
+				if output.String() != before {
+					t.Fatalf("benign continuation repeated findings: %s", output.String())
+				}
+			} else {
+				if event.Event != "ws_blocked" {
+					t.Fatalf("unexpected event: %s", output.String())
+				}
+				for _, data := range [][]byte{client.output.Bytes(), upstream.output.Bytes()} {
+					reader := bytes.NewReader(data)
+					header, err := ws.ReadHeader(reader)
+					if err != nil || header.OpCode != ws.OpClose || int(header.Length) != reader.Len() {
+						t.Fatalf("want exactly one close frame: header=%+v err=%v remaining=%d", header, err, reader.Len())
+					}
+				}
+			}
+		})
 	}
 }

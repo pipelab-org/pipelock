@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plwsutil "github.com/luckyPipewrench/pipelock/internal/wsutil"
 )
 
@@ -50,32 +51,20 @@ func (c *upstreamCrossMessage) enforce(ctx context.Context, r *wsRelay, log *aud
 		return false
 	}
 	frame := c.fields.ParseFrame(msg)
-	reported := false
+	var views [][2]string
 	if len(c.tail) > 0 {
 		// Applications may concatenate messages directly or separate words.
 		// Inspect both interpretations without changing delivered bytes.
 		for _, separator := range []string{"", " "} {
-			blocked, hit := r.enforceUpstreamCrossMessage(ctx, log, string(c.tail)+separator, string(msg))
-			if blocked {
-				return true
-			}
-			if hit {
-				reported = true
-				break
-			}
+			views = append(views, [2]string{string(c.tail) + separator, string(msg)})
 		}
 	}
-	if !reported {
-		for _, view := range c.fields.Views(frame) {
-			blocked, hit := r.enforceUpstreamCrossMessage(ctx, log, view.Tail, view.Value)
-			if blocked {
-				return true
-			}
-			if hit {
-				reported = true
-				break
-			}
-		}
+	for _, view := range c.fields.Views(frame) {
+		views = append(views, [2]string{view.Tail, view.Value})
+	}
+	blocked, reported := r.enforceUpstreamCrossMessageViews(ctx, log, views)
+	if blocked {
+		return true
 	}
 	// A finding may be warn-only. An unjoined field is not a finding: the
 	// raw tail cannot see across the JSON envelope, so the message closes
@@ -107,34 +96,50 @@ func (r *wsRelay) upstreamCrossMessageAction() string {
 // per-message scan. A cross-message finding cannot be stripped because the
 // first half was already delivered, so every action except warn closes.
 func (r *wsRelay) enforceUpstreamCrossMessage(ctx context.Context, log *audit.Logger, tail, msg string) (blocked, reported bool) {
-	joined := r.scanner.ScanResponseWithSuppress(ctx, tail+msg, r.targetURL, r.cfg.Suppress)
-	if ctx.Err() != nil {
-		return false, false
-	}
-	if joined.Failed() {
-		r.closeUpstreamCrossMessage(log, "response scan failed: "+joined.ScanError, "response scan incomplete", "response_scan_error",
-			blockInfoFor(blockreason.ParseError, "response_scan_error"))
-		return true, false
-	}
-	if joined.Clean {
-		return false, false
-	}
-	seen := make(map[string]struct{})
-	for _, part := range []string{tail, msg} {
-		for _, match := range r.scanner.ScanResponseWithSuppress(ctx, part, r.targetURL, r.cfg.Suppress).Matches {
-			seen[match.PatternName] = struct{}{}
-		}
-	}
+	return r.enforceUpstreamCrossMessageViews(ctx, log, [][2]string{{tail, msg}})
+}
+
+// enforceUpstreamCrossMessageViews reports each pattern once for the message,
+// even when multiple joins find it. Parts already matched alone are excluded.
+func (r *wsRelay) enforceUpstreamCrossMessageViews(ctx context.Context, log *audit.Logger, views [][2]string) (blocked, reported bool) {
+	var matches []scanner.ResponseMatch
 	var names []string
-	for _, match := range joined.Matches {
-		if _, ok := seen[match.PatternName]; !ok {
+	reportedPatterns := make(map[string]struct{})
+	for _, view := range views {
+		joined := r.scanner.ScanResponseWithSuppress(ctx, view[0]+view[1], r.targetURL, r.cfg.Suppress)
+		if ctx.Err() != nil {
+			return false, false
+		}
+		if joined.Failed() {
+			r.closeUpstreamCrossMessage(log, "response scan failed: "+joined.ScanError, "response scan incomplete", "response_scan_error",
+				blockInfoFor(blockreason.ParseError, "response_scan_error"))
+			return true, false
+		}
+		if joined.Clean {
+			continue
+		}
+		seen := make(map[string]struct{})
+		for _, part := range view {
+			for _, match := range r.scanner.ScanResponseWithSuppress(ctx, part, r.targetURL, r.cfg.Suppress).Matches {
+				seen[match.PatternName] = struct{}{}
+			}
+		}
+		for _, match := range joined.Matches {
+			if _, ok := seen[match.PatternName]; ok {
+				continue
+			}
+			if _, ok := reportedPatterns[match.PatternName]; ok {
+				continue
+			}
+			reportedPatterns[match.PatternName] = struct{}{}
 			names = append(names, match.PatternName)
+			matches = append(matches, match)
 		}
 	}
 	if len(names) == 0 {
 		return false, false
 	}
-	if !r.observeUpstreamResponseFindings(responseScanFindingKinds(joined)) {
+	if !r.observeUpstreamResponseFindings(responseScanFindingKinds(scanner.ResponseScanResult{Matches: matches})) {
 		return true, true
 	}
 	r.proxy.metrics.RecordWSScanHit("injection")
@@ -143,7 +148,7 @@ func (r *wsRelay) enforceUpstreamCrossMessage(ctx context.Context, log *audit.Lo
 		log.LogWSScan(audit.WSScanEvent{
 			Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID,
 			Agent: r.agent, AgentAuth: string(r.actorAuth), Action: config.ActionWarn, MatchCount: len(names),
-			PatternNames: names, BundleRules: responseBundleRules(joined.Matches),
+			PatternNames: names, BundleRules: responseBundleRules(matches),
 		})
 		return false, true
 	}

@@ -1467,16 +1467,26 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		if currentTruncated {
 			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
+		var crossInjectionMatches []scanner.ResponseMatch
 		if currentText != "" {
 			for _, view := range injectionTail.views(currentText) {
 				tailResult := sc.ScanResponse(ctx, view)
-				if !tailResult.Clean {
-					if tailResult.Failed() {
-						return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
-					}
-					return fmt.Errorf("%w: cross-event injection detected", sseFindingCause(ErrA2AStreamFinding, session.FindingWording))
+				if tailResult.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
 				}
+				crossInjectionMatches = appendUniqueResponseViewMatches(crossInjectionMatches, tailResult.Matches)
 			}
+		}
+		frame := extract.ParseFieldTailFrame(event)
+		for _, view := range fieldInjectionTail.Views(frame) {
+			tailResult := sc.ScanResponse(ctx, view.Joined)
+			if tailResult.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
+			}
+			crossInjectionMatches = appendUniqueResponseViewMatches(crossInjectionMatches, tailResult.Matches)
+		}
+		if len(crossInjectionMatches) > 0 {
+			return fmt.Errorf("%w: cross-event injection detected: %s", sseFindingCause(ErrA2AStreamFinding, session.FindingWording), sseInjectionNames(crossInjectionMatches))
 		}
 		if dlpTail != "" && currentText != "" {
 			combined := dlpTail + currentText
@@ -1516,16 +1526,6 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
 
-		frame := extract.ParseFieldTailFrame(event)
-		for _, view := range fieldInjectionTail.Views(frame) {
-			tailResult := sc.ScanResponse(ctx, view.Joined)
-			if tailResult.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, tailResult.ScanError)
-			}
-			if !tailResult.Clean {
-				return fmt.Errorf("%w: cross-event injection detected", sseFindingCause(ErrA2AStreamFinding, session.FindingWording))
-			}
-		}
 		for _, view := range fieldTail.Views(frame) {
 			dlpResult := sc.ScanTextForDLP(ctx, view.Joined)
 			if dlpResult.Incomplete {

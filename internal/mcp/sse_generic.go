@@ -265,14 +265,16 @@ func ScanGenericSSEStreamWithOptions(
 			return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
 		}
 		for _, view := range []string{rollingInjectionText, idDataInjectionText} {
-			if !injectResult.Clean || view == "" {
+			if view == "" {
 				continue
 			}
-			injectResult = sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
-			observedCore.record(injectResult)
-			if injectResult.Failed() {
-				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injectResult.ScanError)
+			result := sc.ScanResponseWithSuppress(ctx, view, opts.Target, opts.Suppress)
+			observedCore.record(result)
+			if result.Failed() {
+				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 			}
+			injectResult.Clean = injectResult.Clean && result.Clean
+			injectResult.Matches = appendUniqueResponseViewMatches(injectResult.Matches, result.Matches)
 		}
 		if !injectResult.Clean {
 			findingErr := fmt.Errorf("%w: injection: %s",
@@ -310,6 +312,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
+		var crossInjectionMatches []scanner.ResponseMatch
 		resetInjectionTail := false
 		if !skipTailInjection {
 			views := injectionTail.views(rollingInjectionText)
@@ -326,13 +329,30 @@ func ScanGenericSSEStreamWithOptions(
 				if result.Clean {
 					continue
 				}
-				findingErr := fmt.Errorf("%w: cross-event injection: %s",
-					sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
-				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-					onFinding(findingErr)
-					resetInjectionTail = true
-					break
+				crossInjectionMatches = appendUniqueResponseViewMatches(crossInjectionMatches, result.Matches)
+			}
+		}
+
+		frame := extract.ParseFieldTailFrame(event)
+		if !skipTailInjection {
+			for _, view := range fieldInjectionTail.Views(frame) {
+				result := sc.ScanResponseWithSuppress(ctx, view.Joined, opts.Target, opts.Suppress)
+				observedCore.record(result)
+				if result.Failed() {
+					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
 				}
+				if result.Clean {
+					continue
+				}
+				crossInjectionMatches = appendUniqueResponseViewMatches(crossInjectionMatches, result.Matches)
+			}
+		}
+		if len(crossInjectionMatches) > 0 {
+			findingErr := fmt.Errorf("%w: cross-event injection: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(crossInjectionMatches))
+			if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
+				onFinding(findingErr)
+				resetInjectionTail = true
+			} else {
 				return findingErr
 			}
 		}
@@ -413,27 +433,6 @@ func ScanGenericSSEStreamWithOptions(
 			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
 
-		frame := extract.ParseFieldTailFrame(event)
-		resetFieldInjectionTail := false
-		if !skipTailInjection && !resetInjectionTail {
-			for _, view := range fieldInjectionTail.Views(frame) {
-				result := sc.ScanResponseWithSuppress(ctx, view.Joined, opts.Target, opts.Suppress)
-				observedCore.record(result)
-				if result.Failed() {
-					return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, result.ScanError)
-				}
-				if result.Clean {
-					continue
-				}
-				findingErr := fmt.Errorf("%w: cross-event injection: %s", sseFindingCause(ErrSSEStreamFinding, session.FindingWording), sseInjectionNames(result.Matches))
-				if opts.ResponseScanExempt || cfg.Action == config.ActionWarn {
-					onFinding(findingErr)
-					resetFieldInjectionTail = true
-					break
-				}
-				return findingErr
-			}
-		}
 		resetFieldTail := false
 		if !skipTailDLP && !resetDLPTail {
 			for _, view := range fieldTail.Views(frame) {
@@ -465,7 +464,7 @@ func ScanGenericSSEStreamWithOptions(
 		// Any finding reported for this event clears the field tails so the
 		// same bytes are not reported again by the next event.
 		fieldTail.Advance(frame, resetFieldTail || resetDLPTail || clearDLPTailAfterCurrent)
-		fieldInjectionTail.Advance(frame, resetFieldInjectionTail || resetInjectionTail || clearInjectionTailAfterCurrent)
+		fieldInjectionTail.Advance(frame, resetInjectionTail || clearInjectionTailAfterCurrent)
 
 		if clearDLPTailAfterCurrent {
 			if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
@@ -930,7 +929,12 @@ func sseInjectionNames(matches []scanner.ResponseMatch) string {
 		return patternUnknown
 	}
 	names := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
 	for _, m := range matches {
+		if _, ok := seen[m.PatternName]; ok {
+			continue
+		}
+		seen[m.PatternName] = struct{}{}
 		names = append(names, m.PatternName)
 	}
 	return strings.Join(names, ", ")

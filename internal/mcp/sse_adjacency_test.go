@@ -103,3 +103,50 @@ func BenchmarkA2AStreamInjectionClean(b *testing.B) {
 		}
 	}
 }
+
+func TestSSEInjectionAdjacencyCombinedFindings(t *testing.T) {
+	for _, kind := range []string{"generic", "a2a"} {
+		for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+			t.Run(kind+"/"+action, func(t *testing.T) {
+				cfg := config.Defaults()
+				cfg.ResponseScanning.IncludeDefaults = new(bool)
+				cfg.ResponseScanning.Patterns = []config.ResponseScanPattern{
+					{Name: "adjacent marker", Regex: `alphabeta`},
+					{Name: "spaced marker", Regex: `alpha beta`},
+					{Name: "shared marker", Regex: `alpha ?beta`},
+				}
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				var out bytes.Buffer
+				var findings []error
+				opts := GenericSSEScanOptions{OnFinding: func(err error) { findings = append(findings, err) }}
+				var err error
+				if kind == "a2a" {
+					a2aCfg := enabledA2ACfg()
+					a2aCfg.Action = action
+					err = ScanA2AStreamWithOptions(t.Context(), strings.NewReader("data: [\"alpha\"]\n\ndata: [\"beta\"]\n\n"), &out, nil, sc, A2AStreamOptions{Config: a2aCfg, Warning: opts})
+					if !errors.Is(err, ErrA2AStreamFinding) || strings.Contains(out.String(), "beta") {
+						t.Fatalf("err=%v out=%q", err, out.String())
+					}
+				} else {
+					streamCfg := enabledSSECfg()
+					streamCfg.Action = action
+					err = ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader("data: alpha\n\ndata: beta\n\ndata: ordinary text\n\n"), &out, nil, sc, streamCfg, opts)
+					if action == config.ActionWarn {
+						if err != nil || len(findings) != 1 || !strings.Contains(out.String(), "data: beta") {
+							t.Fatalf("err=%v findings=%v out=%q", err, findings, out.String())
+						}
+						err = findings[0]
+					} else if !errors.Is(err, ErrSSEStreamFinding) || strings.Contains(out.String(), "data: beta") {
+						t.Fatalf("err=%v out=%q", err, out.String())
+					}
+				}
+				for _, name := range []string{"adjacent marker", "spaced marker", "shared marker"} {
+					if got := strings.Count(err.Error(), name); got != 1 {
+						t.Fatalf("%s count=%d in %v", name, got, err)
+					}
+				}
+			})
+		}
+	}
+}
