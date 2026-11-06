@@ -604,7 +604,7 @@ func (s *Scanner) scanCoreDLPWithDecodes(text string, decodes *decodingMemo) []T
 	// until no new bounded candidates appear. Catches stacked encodings while
 	// bounding candidate count and candidate size.
 	matches = append(matches, s.decodeAndMatchCoreWithDecodes(cleaned, decodes)...)
-	if hasQuotedPrintable(text) && text != cleaned {
+	if hasTextEncoding(text) && text != cleaned {
 		matches = append(matches, s.decodeAndMatchCoreWithDecodes(text, decodes)...)
 	}
 	if len(matches) == 0 {

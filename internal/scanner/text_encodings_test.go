@@ -367,3 +367,46 @@ func TestTextEncodingSourceRangeFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestTextEncodingCanaryQuotedPrintableSoftBreak(t *testing.T) {
+	s := numericChannelCanaryScanner(t, "xyz12mnopq", "")
+	for _, carrier := range []string{"xyz=31=\r\n=32mnopq", "xyz=31=\n=32mnopq"} {
+		t.Run(fmt.Sprintf("%q", carrier), func(t *testing.T) {
+			result := s.ScanTextForDLP(t.Context(), carrier)
+			for _, match := range result.Matches {
+				if match.PatternName == "Canary Token (planted)" && match.Encoded == encodingQuotedPrintable {
+					return
+				}
+			}
+			t.Fatalf("quoted-printable canary was not detected: %+v", result)
+		})
+	}
+}
+
+func TestTextEncodingNumericLineSeparators(t *testing.T) {
+	canary := "xyz12mnopq"
+	secret := strings.Join([]string{"fixture", "Q7m2X9z4R8v3N6p1"}, "-")
+	sc := numericChannelCanaryScanner(t, canary, secret)
+	for _, value := range []struct{ text, pattern string }{
+		{canary, "Canary Token (planted)"},
+		{secret, "Environment Variable Leak"},
+		{"xoxb-" + "1234567890abcdef", "Slack Token"},
+		{inspectionLimitAWSKey(), patternNameAWSAccessID},
+	} {
+		for _, carrier := range []string{
+			decimalCharacterCodes(value.text, "\n"),
+			strings.ReplaceAll(prefixedCharacterCodes(value.text, "0o", 8), ", ", "\n"),
+			strings.ReplaceAll(prefixedCharacterCodes(value.text, "0b", 2), ", ", "\n"),
+		} {
+			t.Run(value.pattern+carrier[:2], func(t *testing.T) {
+				result := sc.ScanTextForDLP(t.Context(), carrier)
+				for _, match := range result.Matches {
+					if match.PatternName == value.pattern {
+						return
+					}
+				}
+				t.Fatalf("line-separated character codes not detected: %+v", result)
+			})
+		}
+	}
+}

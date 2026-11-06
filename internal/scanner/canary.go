@@ -127,7 +127,7 @@ func (s *Scanner) scanCanaryTextWithDecodes(text string, decodes *decodingMemo) 
 	// and the candidates are already generated for DLP, so this adds substring
 	// checks rather than decode work.
 	decodedViews := decodes.decode(cleaned, true)
-	if text != cleaned && hasQuotedPrintable(text) {
+	if text != cleaned && hasTextEncoding(text) {
 		decodedViews = append(append([]decodedResult(nil), decodedViews...), decodes.decode(text, true)...)
 	}
 	for _, d := range decodedViews {

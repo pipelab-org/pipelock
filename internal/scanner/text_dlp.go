@@ -1038,7 +1038,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
 	if opts.patterns != textDLPCardPatterns {
-		matches = append(matches, s.scanCanaryTextWithDecodes(cleaned, decodes)...)
+		matches = append(matches, s.scanCanaryTextWithDecodes(text, decodes)...)
 	}
 
 	// Check raw text against DLP patterns (before URL decoding).
@@ -1132,7 +1132,7 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// until no new bounded candidates appear. Catches base64(secret),
 	// hex(secret), and nested chains (e.g., base64(hex(secret))).
 	matches = append(matches, s.decodeAndMatchWithDecodes(cleaned, decodes, opts.patterns)...)
-	if hasQuotedPrintable(text) && text != cleaned {
+	if hasTextEncoding(text) && text != cleaned {
 		matches = append(matches, s.decodeAndMatchWithDecodes(text, decodes, opts.patterns)...)
 	}
 
@@ -1509,7 +1509,7 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 	for phase := range 2 {
 		if phase == 1 {
 			texts = s.decodedKnownSecretViews(text, decodes)
-			if original != text && hasQuotedPrintable(original) {
+			if original != text && hasTextEncoding(original) {
 				texts = append(texts, s.decodedKnownSecretViews(original, decodes)...)
 			}
 			// URL serialization can escape a separator into path data. Split
