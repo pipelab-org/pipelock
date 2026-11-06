@@ -254,6 +254,7 @@ class ChangedTestRunnerTest(unittest.TestCase):
             self.assertEqual(command[command.index("-tags") + 1], "enterprise")
             self.assertEqual(budget.call_args.args[2], budget.call_args.args[3])
             self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestChanged"], 1)
+            self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
 
     def test_new_test_has_zero_base_and_full_head_cost(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -268,6 +269,8 @@ class ChangedTestRunnerTest(unittest.TestCase):
             self.assertEqual(len(commands), 1)
             self.assertEqual(budget.call_args.args[2]["trees"]["proxy"]["TestChanged"], 1)
             self.assertEqual(budget.call_args.args[3]["trees"]["proxy"]["TestChanged"], 0)
+            self.assertEqual(budget.call_args.kwargs["introduced"],
+                             {"trees": {"proxy": ["TestChanged"]}, "packages": []})
 
     def test_rest_packages_measure_whole_on_both_sides(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -287,6 +290,9 @@ class ChangedTestRunnerTest(unittest.TestCase):
             self.assertFalse(any(arg.startswith("-run=") for command, _, _ in commands for arg in command))
             self.assertEqual(budget.call_args.args[2]["packages"], {package: 2})
             self.assertEqual(budget.call_args.args[3]["packages"], {package: 2})
+            # The package exists on the base, so its new test is inside the
+            # paired whole-package total rather than a zero-base charge.
+            self.assertEqual(budget.call_args.kwargs["introduced"], {"trees": {}, "packages": []})
 
     def test_missing_skipped_failed_or_invalid_terminal_events_fail_closed(self):
         cases = [

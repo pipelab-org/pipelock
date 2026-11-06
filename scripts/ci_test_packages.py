@@ -623,9 +623,32 @@ def package_makespan(seconds: list[float], slots: int) -> float:
     return sum(seconds) / slots + (1 - 1 / slots) * max(seconds)
 
 
+def _without_introduced(overrides: dict | None, base_overrides: dict | None, introduced: dict) -> dict:
+    """Head weights with zero-base names and packages put back at their base cost.
+
+    New tests and packages are stored as 0 on the base and their measured time
+    on the head. Restoring that base cost shows the predicted time they add,
+    without comparing a re-measured existing test to itself.
+    """
+    mixed: dict = {"trees": {}, "packages": {}}
+    if overrides:
+        mixed["trees"] = {tree: dict(tests) for tree, tests in overrides.get("trees", {}).items()}
+        mixed["packages"] = dict(overrides.get("packages", {}))
+    base_trees = (base_overrides or {}).get("trees", {})
+    base_packages = (base_overrides or {}).get("packages", {})
+    for tree, names in introduced.get("trees", {}).items():
+        weights = mixed["trees"].setdefault(tree, {})
+        known = base_trees.get(tree, {})
+        for name in names:
+            weights[name] = float(known.get(name, 0.0))
+    for package in introduced.get("packages", ()):
+        mixed["packages"][package] = float(base_packages.get(package, 0.0))
+    return mixed
+
+
 def check_budget(
     tags: str, budget: float, overrides: dict | None = None, base_overrides: dict | None = None,
-    plan: dict | None = None,
+    plan: dict | None = None, *, introduced: dict | None = None,
 ) -> int:
     # NaN compares false with everything, so it would pass every shard.
     if not math.isfinite(budget) or budget <= 0:
@@ -634,15 +657,21 @@ def check_budget(
     plan = prediction_plan(tags) if plan is None else plan
     loads = predicted_loads(tags, overrides, plan)
     base = predicted_loads(tags, base_overrides, plan) if base_overrides is not None else None
-    # Paired runs fail only a shard this change takes over budget. A base that
-    # is already over carries debt the change didn't create; with no sourced
-    # noise band, failing any measured increase there would fail unchanged
-    # tests on run-to-run variance, so a further increase is reported instead.
+    # A name or package with no base weight contributes its full head measurement.
+    # That charge is not run-to-run noise. Re-measured existing tests are: with
+    # no sourced noise band, failing any increase there would fail unchanged
+    # tests, so that increase is reported when the shard was already over.
+    new_work: set[str] = set()
+    if base is not None and introduced and (introduced.get("trees") or introduced.get("packages")):
+        without = predicted_loads(tags, _without_introduced(overrides, base_overrides, introduced), plan)
+        for shard, load in loads.items():
+            if load > without[shard]:
+                new_work.add(shard)
     over = {shard: load for shard, load in loads.items()
-            if load > budget and (base is None or base[shard] <= budget)}
+            if load > budget and (base is None or base[shard] <= budget or shard in new_work)}
     if base is not None:
         for shard, load in loads.items():
-            if base[shard] > budget and load > base[shard]:
+            if shard not in over and base[shard] > budget and load > base[shard]:
                 print(f"::warning title=Shard already over budget::{shard} base={base[shard]:.0f}s "
                       f"head={load:.0f}s against the {budget:.0f}s budget; the debt predates this change")
     for shard in SHARDS:
@@ -658,10 +687,15 @@ def check_budget(
         print(f"Paired predicted shard time: base={sum(base.values()):.3f}s "
               f"head={sum(loads.values()):.3f}s delta={sum(loads.values()) - sum(base.values()):+.3f}s")
     if over:
+        if base is not None and any(base[shard] > budget for shard in over):
+            why = " because this change added measured tests to a shard already over budget"
+        elif base is not None:
+            why = " and pushed over by this change"
+        else:
+            why = ""
         print(
             f"ci_test_packages.py: {len(over)} shard(s) predicted over the {budget:.0f}s budget "
-            f"(tags={tags or 'none'})" + (" and pushed over by this change" if base is not None else "")
-            + "; reduce test cost or review the shard allocation",
+            f"(tags={tags or 'none'}){why}; reduce test cost or review the shard allocation",
             file=sys.stderr,
         )
         return 1
@@ -886,17 +920,28 @@ def measure_changed_tests(
         selection = json.loads(selection_path(json_out).read_text(encoding="utf-8"))
         selection["new"] = {pkg: sorted(names) for pkg, names in new.items()}
         selection_path(json_out).write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        introduced: dict[str, dict | list] = {"trees": {}, "packages": []}
         for package, names in new.items():
             tree = tree_for_package(package)
             if tree is not None:
+                # Full head measurement against an explicit zero base weight.
                 base_overrides["trees"].setdefault(tree, {}).update(dict.fromkeys(names, 0.0))
-        for package in whole:
-            if package not in base_packages:
+                introduced["trees"].setdefault(tree, []).extend(names)
+            elif package not in base_packages:
+                # No base package total exists to subtract. An existing rest
+                # package is measured whole on both sides, so a new test inside
+                # it stays on the re-measured path.
                 base_overrides["packages"][package] = 0.0
+                introduced["packages"].append(package)
+        for tree in introduced["trees"]:
+            introduced["trees"][tree] = sorted(set(introduced["trees"][tree]))
+        introduced["packages"] = sorted(set(introduced["packages"]))
         print(f"Paired measurement wall time: {clock() - started:.3f}s "
               f"(shared deadline {deadline_seconds:.0f}s; base={base_seconds:.3f}s/{len(base_selected)} packages, "
               f"head={head_seconds:.3f}s/{len(selected)} packages)")
-        return check_budget(tags, SHARD_BUDGET_SECONDS, overrides, base_overrides, plan)
+        return check_budget(
+            tags, SHARD_BUDGET_SECONDS, overrides, base_overrides, plan, introduced=introduced,
+        )
 
 
 def main() -> int:

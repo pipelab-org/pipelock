@@ -304,8 +304,9 @@ class TestPackageSharding(unittest.TestCase):
 
     def test_paired_budget_distinguishes_growth_from_inherited_debt(self) -> None:
         budget = SHARD_BUDGET_SECONDS
-        # Only a change that takes a shard over budget fails. Growth on a base
-        # that is already over is variance-sized evidence, so it warns.
+        # Only a change that takes a shard over budget fails. Growth of the same
+        # measured tests on a base that is already over is variance-sized
+        # evidence, so it warns. New names are covered separately.
         for base_seconds, head_seconds, want in (
             (budget + 100, budget + 100, 0),
             (budget + 100, budget + 50, 0),
@@ -325,6 +326,71 @@ class TestPackageSharding(unittest.TestCase):
                     self.assertIn("inherited-debt=", out.getvalue())
                 warned = "Shard already over budget" in out.getvalue()
                 self.assertEqual(warned, base_seconds > budget and head_seconds > base_seconds)
+
+    def test_inherited_debt_fails_on_new_work_not_on_remeasured_growth(self) -> None:
+        budget = SHARD_BUDGET_SECONDS
+        tree = "proxy"
+        names = [f"TestDebt{index}" for index in range(TEST_SPLITS[tree])] + ["TestNew", "TestEdited"]
+        baseline = {name: budget + 100 for name in names if name not in ("TestNew", "TestEdited")}
+        baseline["TestEdited"] = 10.0
+        packages = [f"example.test/debt{index}" for index in range(len(ci_test_packages.REST_SHARDS))]
+        packages.append("example.test/new")
+        package_weights = {package: budget + 100 for package in packages if package != "example.test/new"}
+        package_weights["example.test/new"] = 0.0
+
+        def names_for(path: object) -> list[str]:
+            return names if str(path).endswith(HEAVY_TREES[tree]) else ["TestA"]
+
+        def budget_for(head: dict, base: dict, introduced: dict) -> tuple[int, str, str]:
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(ci_test_packages, "list_packages", return_value=packages), \
+                 patch.object(ci_test_packages, "load_durations", return_value={tree: baseline}), \
+                 patch.object(ci_test_packages, "load_package_durations", return_value=package_weights), \
+                 patch.object(ci_test_packages, "tree_test_names", side_effect=names_for), \
+                 redirect_stdout(out), redirect_stderr(err):
+                status = ci_test_packages.check_budget("", budget, head, base, introduced=introduced)
+            return status, out.getvalue(), err.getvalue()
+
+        new_base = {"trees": {tree: {"TestNew": 0.0, "TestEdited": 10.0}}}
+        status, out, err = budget_for(
+            {"trees": {tree: {"TestNew": 25.0, "TestEdited": 10.0}}}, new_base,
+            {"trees": {tree: ["TestNew"]}, "packages": []},
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("added measured tests", err)
+        self.assertIn("  OVER", out)
+        self.assertNotIn("::warning title=Shard already over budget::", out)
+        status, out, err = budget_for(
+            {"trees": {tree: {"TestNew": 0.0, "TestEdited": 40.0}}}, new_base,
+            {"trees": {}, "packages": []},
+        )
+        self.assertEqual(status, 0, err)
+        self.assertIn("::warning title=Shard already over budget::", out)
+        self.assertNotIn("added measured tests", err)
+        # A new test whose full cost still fits does not fail the shard.
+        fitting_out, fitting_err = io.StringIO(), io.StringIO()
+        with patch.object(ci_test_packages, "list_packages", return_value=[]), \
+             patch.object(ci_test_packages, "load_durations", return_value={tree: {}}), \
+             patch.object(ci_test_packages, "load_package_durations", return_value={}), \
+             patch.object(ci_test_packages, "tree_test_names", return_value=["TestKept"]), \
+             redirect_stdout(fitting_out), redirect_stderr(fitting_err):
+            status = ci_test_packages.check_budget(
+                "", budget,
+                {"trees": {tree: {"TestKept": 25.0}}}, {"trees": {tree: {"TestKept": 0.0}}},
+                introduced={"trees": {tree: ["TestKept"]}, "packages": []},
+            )
+        self.assertEqual(status, 0, fitting_err.getvalue())
+        status, out, err = budget_for(
+            {"packages": {"example.test/new": 30.0}}, {"packages": {"example.test/new": 0.0}},
+            {"trees": {}, "packages": ["example.test/new"]},
+        )
+        self.assertEqual(status, 1, out)
+        self.assertIn("added measured tests", err)
+        status, out, err = budget_for(
+            {"packages": {"example.test/debt0": budget + 130}}, {}, {"trees": {}, "packages": []},
+        )
+        self.assertEqual(status, 0, err)
+        self.assertIn("::warning title=Shard already over budget::", out)
 
     def test_new_test_cost_is_not_discounted_by_the_unknown_weight_floor(self) -> None:
         # Both predictions use one fixed inventory, packing and unknown-name
