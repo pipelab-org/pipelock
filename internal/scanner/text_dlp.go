@@ -1044,8 +1044,10 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// NFKC, cross-script confusable mapping, and combining mark removal.
 	// Must match response scanning depth - otherwise attackers use homoglyphs
 	// in key prefixes (e.g., sk-օnt-... with Armenian օ U+0585 for 'a').
+	var canaryMatches []TextDLPMatch
 	if opts.patterns != textDLPCardPatterns {
-		matches = append(matches, s.scanCanaryTextWithDecodes(text, decodes)...)
+		canaryMatches = s.scanCanaryTextWithDecodes(text, decodes)
+		matches = append(matches, canaryMatches...)
 	}
 
 	// Check raw text against DLP patterns (before URL decoding).
@@ -1178,8 +1180,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Deduplicate matches by pattern name + encoding.
 	matches = deduplicateMatches(matches)
 
-	// Prepend core matches - core findings cannot be overridden.
+	// Retain every core finding, with configured canary attribution first.
+	// A canary can also have a credential's shape; its encoding provenance
+	// must not be hidden behind the pattern finding for the same value.
 	if len(coreMatches) > 0 {
+		if len(canaryMatches) > 0 {
+			coreMatches = append(canaryMatches[:len(canaryMatches):len(canaryMatches)], coreMatches...)
+		}
 		matches = append(coreMatches, matches...)
 		matches = deduplicateMatches(matches)
 	}
