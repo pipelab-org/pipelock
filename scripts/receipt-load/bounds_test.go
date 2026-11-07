@@ -108,18 +108,18 @@ func TestBundleLogBoundaries(t *testing.T) {
 	}
 }
 
-func TestUnavailableProcessStatsPreserveIntegrity(t *testing.T) {
+func TestUnavailableProcessStatsStopBeforeWorkload(t *testing.T) {
 	old := readProcessStat
 	readProcessStat = func(string) ([]byte, error) { return nil, os.ErrNotExist }
 	t.Cleanup(func() { readProcessStat = old })
 	opt := smallOptions(t, realPipelock(t))
 	opt.requests, opt.warmup = 10, 2
-	res, err := runMode(context.Background(), opt, modeRequired)
-	if err != nil {
-		t.Fatalf("process stats aborted integrity collection: %v", err)
+	if code := runModes(t.Context(), opt, []string{modeRequired}); code != 4 {
+		t.Fatalf("process stats failure exited %d, want harness error 4", code)
 	}
-	if res.Integrity.Verdict != verdictPass || !res.Integrity.Shutdown.Clean || res.Performance.Verdict != perfInvalid || !hasReason(res.Performance.Reasons, "measurement unavailable") {
-		t.Fatalf("result: %+v", res)
+	res := readResult(t, filepath.Join(opt.out, modeRequired))
+	if res.Integrity.Verdict == verdictPass || res.Integrity.Verify.Ran || res.Performance.Verdict != perfInvalid {
+		t.Fatalf("process stats failure reached evidence evaluation: %+v", res)
 	}
 }
 

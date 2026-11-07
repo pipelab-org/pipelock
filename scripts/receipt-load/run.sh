@@ -9,7 +9,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-make -C "$repo" build
+make -C "$repo" build || exit 4
 cd "$repo"
 lock_args=()
 if [[ -n ${RECEIPT_LOAD_LOCK:-} ]]; then
@@ -23,7 +23,12 @@ verify_args=()
 if [[ -n ${RECEIPT_LOAD_VERIFY_TIMEOUT:-} ]]; then
   verify_args=(--verify-timeout "$RECEIPT_LOAD_VERIFY_TIMEOUT")
 fi
-go run ./scripts/receipt-load --binary "$repo/pipelock" --out "$1" \
+# go run collapses every program failure to 1. Execute the built harness so
+# callers receive integrity=1, usage=2, performance=3, or harness error=4.
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/receipt-load.XXXXXX") || exit 4
+trap 'rm -rf "$scratch"' EXIT
+go build -o "$scratch/receipt-load" ./scripts/receipt-load || exit 4
+"$scratch/receipt-load" --binary "$repo/pipelock" --out "$1" \
   --requests "${RECEIPT_LOAD_REQUESTS:-1000000}" \
   --warmup "${RECEIPT_LOAD_WARMUP:-1000}" \
   --concurrency "${RECEIPT_LOAD_CONCURRENCY:-128}" \

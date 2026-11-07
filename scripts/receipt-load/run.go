@@ -64,7 +64,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 	}
 	dirs := newRunDirs(filepath.Join(opt.out, name))
 	if err := dirs.create(); err != nil {
-		return nil, err
+		return nil, &setupError{err}
 	}
 	plan := newWorkload(opt.seed, opt.warmup, opt.requests)
 	nonce := make([]byte, 16)
@@ -85,10 +85,13 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 	if err != nil {
 		res.Integrity.fail("run failed: " + err.Error())
 		res.Performance.invalidate("run failed: " + err.Error())
-		failOnAuditGaps(&res.Integrity, dirs, true)
+		if !isSetupFailure(err) {
+			failOnAuditGaps(&res.Integrity, dirs, true)
+		}
 	}
 	if writeErr := writeResult(dirs.root, res); writeErr != nil {
-		return res, errors.Join(err, writeErr)
+		// Failure to preserve the report makes the classification uncertain.
+		return res, fmt.Errorf("write result: %w (run error: %s)", writeErr, fmt.Sprint(err))
 	}
 	logSummary(mode, res)
 	return res, err
@@ -126,7 +129,13 @@ func formatStatusCounts(counts map[int]int) string {
 
 // execute performs the run and fills res. Any error it returns is recorded by
 // runMode as a failure of both verdicts.
-func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan workload, res *result) error {
+func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan workload, res *result) (err error) {
+	setup := true
+	defer func() {
+		if setup && err != nil {
+			err = &setupError{err}
+		}
+	}()
 	childEnv, envRep := buildChildEnv(os.Environ(), dirs)
 	res.Inputs.Env = envRep
 	res.Inputs.Host = describeHost(childEnv, opt.out)
@@ -178,6 +187,9 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return err
 	}
 	defer func() { samples.close() }()
+	if _, err := readProc(proxy.cmd.Process.Pid); err != nil {
+		return fmt.Errorf("initial process measurement: %w", err)
+	}
 
 	proxyURL, err := url.Parse("http://" + proxyAddr)
 	if err != nil {
@@ -189,6 +201,10 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	}
 	defer transport.CloseIdleConnections()
 	params := loadParams{client: &http.Client{Transport: transport, Timeout: clientTimeout}, plan: plan, sinkAddr: sink.addr(), concurrency: opt.concurrency}
+
+	// From this point receipt evidence may exist, even if a later restart,
+	// sampler, or verifier fails. Such failures must retain integrity status.
+	setup = false
 
 	// Warmup shares the proxy process and its connections with the measured
 	// phase; only the measured phase feeds the performance numbers.

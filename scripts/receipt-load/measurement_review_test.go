@@ -48,7 +48,7 @@ func TestReviewSummaryRefusesInvalidPopulation(t *testing.T) {
 }
 
 func TestReviewShellFailures(t *testing.T) {
-	for _, code := range []string{"0", "7"} {
+	for _, code := range []string{"0", "4", "7"} {
 		t.Run("scope-exit-"+code, func(t *testing.T) {
 			root := t.TempDir()
 			scope := filepath.Join(root, "systemd-run")
@@ -89,8 +89,10 @@ func TestReviewShellFailures(t *testing.T) {
 		cmd := exec.CommandContext(ctx, "bash", "./run.sh")
 		cmd.Args = append(cmd.Args, filepath.Join(root, "out"))
 		cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "RECEIPT_LOAD_REQUESTS=1")
-		if log, err := cmd.CombinedOutput(); err == nil {
-			t.Fatalf("build failure passed: %s", log)
+		log, err := cmd.CombinedOutput()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 4 {
+			t.Fatalf("build failure exit=%v, want harness error 4: %s", err, log)
 		}
 	})
 }
@@ -203,7 +205,7 @@ func TestReviewRunForwardsVerifyTimeout(t *testing.T) {
 			argv := filepath.Join(root, "argv")
 			stubs := map[string]string{
 				"make": "#!/bin/sh\nexit 0\n",
-				"go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"" + argv + "\"\nexit 0\n",
+				"go":   "#!/bin/sh\ncat >\"$3\" <<'SH'\n#!/bin/sh\nprintf './scripts/receipt-load\\n' > \"" + argv + "\"\nprintf '%s\\n' \"$@\" >> \"" + argv + "\"\nSH\nchmod 700 \"$3\"\n",
 			}
 			for name, body := range stubs {
 				path := filepath.Join(root, name)
@@ -550,5 +552,24 @@ func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
 				t.Fatalf("invalid settings created output: %v", err)
 			}
 		})
+	}
+}
+
+func TestRunPreservesHarnessExitCode(t *testing.T) {
+	root := t.TempDir()
+	for name, body := range map[string]string{
+		"make": "#!/bin/sh\nexit 0\n",
+		"go":   "#!/bin/sh\nif [ \"$1\" = run ]; then exit 1; fi\nprintf '#!/bin/sh\\nexit 4\\n' > \"$3\"\nchmod 700 \"$3\"\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o700); err != nil { // #nosec G306 -- executable tool fixture.
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.CommandContext(t.Context(), "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with output under t.TempDir.
+	cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"))
+	out, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 4 {
+		t.Fatalf("run.sh exit=%v, want harness error 4; %s", err, out)
 	}
 }
