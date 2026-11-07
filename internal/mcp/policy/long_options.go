@@ -156,6 +156,7 @@ func normalizeLineOptions(tokens []string, gitTool bool, proof *gitProof) ([]str
 // option word's destructive Git readings, once each per call. gitTool is as
 // for normalizeLineOptions.
 func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unknownGit bool, judged []string) {
+	tokens = gitDashedReadings(tokens)
 	hasLongOption := slices.ContainsFunc(tokens, func(token string) bool { return strings.Contains(token, "--") })
 	if !hasLongOption {
 		return tokens, false, nil
@@ -359,6 +360,42 @@ func normalizeOptions(tokens []string, strict, gitTool bool) (out []string, unkn
 		}
 	}
 	return out, unknownGit || depth > 0, judged
+}
+
+// gitDashedReadings joins the dashed Git builtin names already classified by
+// utilityKey to their subcommand spelling. The shell-word boundary must not
+// rely on matching reset as a substring of git-reset. Other utility names and
+// their option interpretation are unchanged.
+func gitDashedReadings(tokens []string) []string {
+	var out []string
+	for index, token := range tokens {
+		var text strings.Builder
+		start := 0
+		for _, word := range shellPathWords(token) {
+			sub, dashed := strings.CutPrefix(commandName(word.value), "git-")
+			if _, covered := gitCommandKey(sub); !dashed || !covered {
+				continue
+			}
+			text.WriteString(token[start:word.start])
+			text.WriteString("git " + sub)
+			start = word.end
+		}
+		if start == 0 {
+			if out != nil {
+				out = append(out, token)
+			}
+			continue
+		}
+		if out == nil {
+			out = slices.Clone(tokens[:index])
+		}
+		text.WriteString(token[start:])
+		out = append(out, strings.Fields(text.String())...)
+	}
+	if out == nil {
+		return tokens
+	}
+	return out
 }
 
 // redirectOperatorRe matches the operator that starts a redirection word; the
