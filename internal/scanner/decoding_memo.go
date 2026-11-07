@@ -57,9 +57,10 @@ type decodingMemo struct {
 	reassemblySeen             map[string]int
 	reassemblyFindings         []TextDLPMatch
 
-	keywordMode   bool
-	keywordBudget *keywordWorkBudget
-	keywordUnit   string
+	keywordPresence map[keywordPresenceKey]bool
+	keywordMode     bool
+	keywordBudget   *keywordWorkBudget
+	keywordUnit     string
 	// keywordInput is the text DLP input whose keyword unit is keywordUnit.
 	keywordInput   string
 	keywordRawURL  string

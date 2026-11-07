@@ -219,6 +219,7 @@ func (n *keywordDecodeSource) visitOneSource(start, end int, visit func(string, 
 type keywordProjectionKey struct{ source, view string }
 
 type keywordCandidateContext struct {
+	presence map[*config.DLPKeywordMatcher]bool
 	// exactDecoded uses candidate offsets from an unnormalized decoded view.
 	exactDecoded       bool
 	exactSources       map[string]*string
@@ -250,6 +251,13 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			}
 		}()
 	}
+	logical := c.logical
+	if logical == "" {
+		logical = view
+	}
+	if !c.exactDecoded && !c.keywordPossible(gate, logical, true) {
+		return false
+	}
 	if len(c.alternatives) > 0 {
 		if c.projections == nil {
 			c.projections = make(map[keywordProjectionKey][]keywordByteSpan)
@@ -272,10 +280,6 @@ func (c *keywordCandidateContext) matches(gate *config.DLPKeywordMatcher, view s
 			}
 		}
 		return false
-	}
-	logical := c.logical
-	if logical == "" {
-		logical = view
 	}
 	ls, le, ok := start, end, true
 	if c.exactDecoded {
