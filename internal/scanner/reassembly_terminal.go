@@ -104,6 +104,12 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 				if err != nil {
 					return nil, err
 				}
+				if pattern.name == "IBAN" || pattern.name == "Bitcoin WIF Private Key" {
+					validation := *pattern
+					validation.keywords = nil
+					validation.keywordContext = nil
+					shape.validate = &validation
+				}
 				a.shapes = append(a.shapes, shape)
 			}
 		}
@@ -329,6 +335,7 @@ func (s *assembledScan) literal(codec, phase, symbols, end int, hit reassemblyNe
 type assembledLane struct {
 	view          string
 	keyword       *keywordCandidateContext
+	presence      map[*config.DLPKeywordMatcher]bool
 	keywordMapped bool
 	retained      bool
 }
@@ -396,6 +403,10 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 			if _, exists := s.budget.produced[key]; exists {
 				return false
 			}
+		}
+		if pattern.keywords != nil && !s.keywordPossible(pattern, lane) {
+			s.rememberKeyword(lane, codec, phase, id, -1, -1)
+			return true
 		}
 		if pattern.keywords != nil {
 			s.rememberKeyword(lane, codec, phase, id, begin, finish)

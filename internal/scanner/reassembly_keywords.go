@@ -11,6 +11,46 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
+// keywordPossible checks the decoded lane and every source context before
+// candidate enumeration. Projection reuse keeps a replay recipe on absence,
+// so another source can still qualify it later.
+func (s *assembledScan) keywordPossible(pattern *compiledPattern, lane *assembledLane) (possible bool) {
+	if present, ok := lane.presence[pattern.keywords]; ok {
+		return present
+	}
+	defer func() {
+		if lane.presence == nil {
+			lane.presence = make(map[*config.DLPKeywordMatcher]bool)
+		}
+		lane.presence[pattern.keywords] = possible
+	}()
+	if pattern.keywords == nil {
+		return true
+	}
+	m := s.budget.memo
+	context := keywordCandidateContext{memo: m, logical: lane.view, source: s.text}
+	if m != nil {
+		context.alternatives = m.keywordSources[s.text]
+		if m.keywordInput != "" && !strings.Contains(m.keywordUnit, s.text) && len(context.alternatives) == 0 {
+			return true
+		}
+		if m.keywordPresent(pattern.keywords, m.keywordUnit, false, true) {
+			return true
+		}
+		for source, steps := s.text, 0; steps <= len(m.reassemblyParents); steps++ {
+			parent, ok := m.reassemblyParents[source]
+			if !ok {
+				break
+			}
+			if m.keywordPresent(pattern.keywords, parent, false, false) {
+				return true
+			}
+			source = parent
+		}
+	}
+	return context.keywordPossible(pattern.keywords, config.DLPKeywordContext(lane.view), false)
+}
+
 // keywordMatches joins the existing context predicate. Exact RFC bit positions
 // supply source hulls; separators retain their original distance. Source maps
 // use the existing keyword work budget and are built only after decoded context

@@ -17,11 +17,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-// The unlabeled encoded record exhausts the existing keyword-source mapping
+// The source-labeled encoded record exhausts the existing keyword-source mapping
 // allowance. The scanner package covers the full decoded-byte allowance; these
 // tests exercise delivery of the same partial-inspection evidence on each surface.
 var policyPartialBody = sync.OnceValue(func() string {
-	return strings.Repeat("7!8!", 300000) + strings.Repeat("3!3!", 16)
+	return "lookup" + strings.Repeat("!", 100) + strings.Repeat("7!8!", 300000) + strings.Repeat("3!3!", 16)
 })
 
 // Each inbound surface retains its own hook, delivery and evidence assertions.

@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"regexp"
 	"regexp/syntax"
+	"unicode/utf8"
 )
 
 // Each byte lane counts consecutive compatible raw symbols for one phase.
@@ -19,6 +20,7 @@ type assembledShape struct {
 	minimum  int
 	window   int
 	local    *regexp.Regexp
+	validate *compiledPattern
 	segments [8][9][4]uint64
 	members  [256]bool
 	masks    [5][8][64]uint64
@@ -39,7 +41,7 @@ func newAssembledShape(id int, expr string) (*assembledShape, error) {
 	// A finite grammar bounds the bytes of any match, including folded runes.
 	if n := reassemblyMaxBytes(tree); n > 0 && n <= maxReassembledTokenLen {
 		s.window = n
-		s.local = regexp.MustCompile(assembledWithoutAssertions(tree).String())
+		s.local = regexp.MustCompile(tree.String())
 	}
 	// Join the existing regex-derived shape analysis. A rune-length lower
 	// bound is also a byte-length lower bound, including folded UTF-8 runes.
@@ -139,33 +141,27 @@ func (s *assembledShape) run(text string, codec, phase, symbols, end int) bool {
 
 // A cue that confirms a genuine match lies inside it, so its last complete
 // byte belongs to the match and every match byte lies within window bytes of
-// it. The window's edges are not the lane's, so assertions are removed; this
-// widens the language and keeps the condition necessary. Existence, not the
-// lane's leftmost-first search order, decides admission.
+// it. Complete neighboring runes preserve the assertion context of every
+// genuine match around that cue. Existence decides admission.
 func (s *assembledShape) grammarNear(text string, position assembledPosition) bool {
 	if s.local == nil {
 		return true
 	}
-	ref := assembledOrigin(text, position, s.window)
-	data := make([]byte, 0, 2*s.window)
+	// utf8.UTFMax supplies complete neighboring runes for empty-width
+	// assertions. Every match byte lies within window of the interior cue;
+	// anchored genuine matches also include their actual lane edge.
+	window := s.window + utf8.UTFMax
+	ref := assembledOrigin(text, position, window)
+	data := make([]byte, 0, 2*window)
 	assembledReplay(text, position.codec, ref.raw, len(text), ref.skip, func(b byte, _ int) bool {
 		data = append(data, b)
 		return len(data) < cap(data)
 	})
+	if s.validate != nil {
+		_, _, ok := s.validate.firstAcceptedSpan(string(data), nil)
+		return ok
+	}
 	return s.local.Match(data)
-}
-
-func assembledWithoutAssertions(r *syntax.Regexp) *syntax.Regexp {
-	switch r.Op {
-	case syntax.OpBeginLine, syntax.OpEndLine, syntax.OpBeginText, syntax.OpEndText, syntax.OpWordBoundary, syntax.OpNoWordBoundary:
-		return &syntax.Regexp{Op: syntax.OpEmptyMatch}
-	}
-	out := *r
-	out.Sub = make([]*syntax.Regexp, len(r.Sub))
-	for i, sub := range r.Sub {
-		out.Sub[i] = assembledWithoutAssertions(sub)
-	}
-	return &out
 }
 
 func (s *assembledShape) classRun(text string, position assembledPosition) bool {

@@ -38,7 +38,7 @@ func (s *assembledScan) rememberKeyword(lane *assembledLane, codec, phase, id, b
 		capacity = max(1, 2*capacity)
 		cost += (capacity - cap(candidates)) * assembledKeywordCandidateBytes
 	}
-	if !lane.retained {
+	if begin >= 0 && !lane.retained {
 		cost += len(lane.view)
 	}
 	work := keywordDecodeSources{budget: m.keywordBudgetForScan()}
@@ -46,7 +46,11 @@ func (s *assembledScan) rememberKeyword(lane *assembledLane, codec, phase, id, b
 		s.keywordIncomplete()
 		return
 	}
-	lane.retained = true
+	if begin >= 0 {
+		lane.retained = true
+	} else {
+		lane = nil
+	}
 	if m.assembledKeywordReplays == nil {
 		m.assembledKeywordReplays = make(map[assembledReplayKey][]assembledKeywordCandidate)
 	}
@@ -74,20 +78,36 @@ func (m *decodingMemo) replayKeywords(view, previous, codec int) {
 			break
 		}
 		pattern := m.reassemblyPlan.patterns[candidate.pattern]
-		identity := assembledIdentity{candidate.pattern, sha256.Sum256([]byte(candidate.lane.view[candidate.begin:candidate.end]))}
-		if _, produced := m.reassemblyProduced[identity]; produced {
+		if scan.budget.decoderOnly && !scan.p.assembled.decoderAllowed[candidate.pattern] {
 			continue
 		}
-		if scan.budget.decoderOnly && !scan.p.assembled.decoderAllowed[candidate.pattern] {
+		if candidate.begin < 0 {
+			if scan.keywordPossible(pattern, &assembledLane{}) {
+				// A newly labeled source may enumerate the previously absent lane.
+				// Charge this rework before replay; cached presence cannot make
+				// repeated whole-lane regex work free.
+				if !work.charge(len(scan.text)) {
+					scan.keywordIncomplete()
+					break
+				}
+				scan.checked[codec] = make([]uint8, len(scan.p.patterns))
+				scan.searchLane(codec, candidate.phase, candidate.pattern)
+			}
+			continue
+		}
+		identity := assembledIdentity{candidate.pattern, sha256.Sum256([]byte(candidate.lane.view[candidate.begin:candidate.end]))}
+		if _, produced := m.reassemblyProduced[identity]; produced {
 			continue
 		}
 		lane := lanes[candidate.lane]
 		if lane == nil {
 			copyLane := *candidate.lane
 			copyLane.keywordMapped = false
+			copyLane.presence = nil
 			if copyLane.keyword != nil {
 				context := *copyLane.keyword
 				context.decoded = nil
+				context.presence = nil
 				copyLane.keyword = &context
 			}
 			lane = &copyLane
