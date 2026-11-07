@@ -280,6 +280,7 @@ func ForwardScannedInput(
 ) {
 	liveWatchOpts := opts
 	opts = opts.snapshotScanPolicy()
+	sessionOpts := opts
 	policyCfg := opts.policyCfg()
 	ks := opts.KillSwitch
 	auditLogger := opts.AuditLogger
@@ -324,7 +325,14 @@ func ForwardScannedInput(
 
 	for {
 		line, err := reader.ReadMessage()
-		opts := liveWatchOpts.snapshotWatchPolicy()
+		// Without watch-only, the scanner and policy hash stay pinned for the
+		// session as before; require_receipts is still read live. Watch-only
+		// takes one complete policy snapshot per message, after the read, so a
+		// reload while the session is idle governs the next message.
+		opts := sessionOpts
+		if liveWatchOpts.watchOnly() {
+			opts = liveWatchOpts.snapshotWatchPolicy()
+		}
 		sc := opts.scanner()
 		policyHash := opts.receiptPolicyHash()
 		// Helper: record an adaptive signal and handle escalation side-effects.

@@ -75,7 +75,9 @@ func watchRequestBody(ctx context.Context, r *http.Request, opts watchRequestOpt
 	}
 	source := r.Body
 	if !cfg.RequestBodyScanning.Enabled {
-		if !cfg.A2AScanning.Enabled || !mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type")) {
+		// Matches the reverse proxy, which skips A2A body inspection when
+		// request body scanning is disabled.
+		if opts.Transport == TransportReverse || !cfg.A2AScanning.Enabled || !mcp.IsA2ARequest(r.URL.Path, r.Header.Get("Content-Type")) {
 			return false
 		}
 		raw, err := readForwardBodyForProtocolScan(source, strings.Join(r.Header.Values("Content-Encoding"), ","), cfg.RequestBodyScanning.MaxBodyBytes, r.Trailer)

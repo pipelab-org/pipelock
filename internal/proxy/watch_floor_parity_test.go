@@ -162,8 +162,18 @@ func TestWatchFetchRedirectLimit(t *testing.T) {
 	out := httptest.NewRecorder()
 	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.URL), nil)
 	p.handleFetch(out, req)
-	if out.Code != http.StatusForbidden || out.Header().Get("X-Pipelock-Block-Reason") != "redirect_scan_denied" || hits.Load() != maxFetchRedirects {
-		t.Fatalf("redirect cap lost: status=%d hops=%d", out.Code, hits.Load())
+	// The cap still stops the chain; like audit mode, an exhausted chain is an
+	// upstream failure rather than an enforced block.
+	if out.Code != http.StatusBadGateway || out.Header().Get("X-Pipelock-Block-Reason") != "" || hits.Load() != maxFetchRedirects {
+		t.Fatalf("redirect cap lost: status=%d reason=%q hops=%d", out.Code, out.Header().Get("X-Pipelock-Block-Reason"), hits.Load())
+	}
+	audit := httptest.NewRecorder()
+	_, auditProxy, auditCleanup := setupForwardProxyWithInstance(t, func(cfg *config.Config) { cfg.Enforce = ptrBool(false) })
+	defer auditCleanup()
+	hits.Store(0)
+	auditProxy.handleFetch(audit, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+url.QueryEscape(upstream.URL), nil))
+	if audit.Code != out.Code {
+		t.Fatalf("watch-only redirect cap status %d differs from audit %d", out.Code, audit.Code)
 	}
 }
 

@@ -1279,7 +1279,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 		log.LogError(actx, fmt.Errorf("upstream dial: %w", dialErr))
 		if clientConn == nil {
-			writeBlockedError(w, blockInfoFor(blockreason.BadRequest, "websocket"), "WebSocket upstream handshake refused", http.StatusBadGateway)
+			http.Error(w, "WebSocket upstream handshake failed", http.StatusBadGateway)
 		} else {
 			plwsutil.WriteCloseFrame(clientConn, ws.StatusInternalServerError, "upstream dial failed")
 		}

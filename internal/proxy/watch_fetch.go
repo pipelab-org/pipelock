@@ -69,7 +69,7 @@ func (p *Proxy) handleWatchFetch(w http.ResponseWriter, r *http.Request, o watch
 			return err
 		}
 		if len(via) >= maxFetchRedirects {
-			return refuse("redirect", fmt.Sprintf("too many redirects (max %d)", maxFetchRedirects))
+			return fmt.Errorf("too many redirects (max %d)", maxFetchRedirects)
 		}
 		access := r.Clone(next.Context())
 		access.URL = next.URL
