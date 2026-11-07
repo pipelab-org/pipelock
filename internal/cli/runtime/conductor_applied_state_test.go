@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/policysync"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func newAppliedStateReporter(t *testing.T) *conductorPolicyStatusReporter {
@@ -320,7 +321,7 @@ func TestAppliedStateHeartbeat_CancelsBlockedNegotiation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("callback error = %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("callback did not return after cancellation")
 	}
 }

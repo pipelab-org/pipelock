@@ -154,7 +154,7 @@ func TestFlightRecorderRetentionFailureDoesNotBlockStartupOrHealth(t *testing.T)
 		select {
 		case err := <-errCh:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("server did not stop after cancellation")
 		}
 	})
@@ -219,7 +219,7 @@ func TestFlightRecorderRetentionStartNilInputs(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("nil retention runner left goroutine running")
 	}
 }

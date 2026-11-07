@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/proxy"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestServer_ShutdownDeadlineDoesNotSealTranscriptRoot(t *testing.T) {
@@ -50,7 +51,7 @@ func testServerShutdownDeadlineDoesNotSeal(t *testing.T, bindFailure bool) {
 		t.Cleanup(func() { _ = reserved.Close() })
 		listen = reserved.Addr().String()
 	}
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = listen
 		o.ListenChanged = true
@@ -110,8 +111,7 @@ func testServerShutdownDeadlineDoesNotSeal(t *testing.T, bindFailure bool) {
 	<-entered
 	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
-	returned := make(chan error, 1)
-	go func() { returned <- s.Start(ctx) }()
+	returned := runJoined(t, ctx, s.Start, releaseHandler)
 	if !bindFailure {
 		waitForServerOutput(t, buf, "Pipelock")
 		cancel()
@@ -121,7 +121,7 @@ func testServerShutdownDeadlineDoesNotSeal(t *testing.T, bindFailure bool) {
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("Start = %v, want shutdown deadline error", err)
 		}
-	case <-time.After(20 * time.Second):
+	case <-time.After(testwait.Deadline(20 * time.Second)):
 		t.Fatal("Start did not finish after shutdown deadline")
 	}
 	for _, marker := range []string{"transcript_root", "session_close"} {
@@ -253,16 +253,15 @@ func TestServer_GracefulShutdownSealsTranscriptRoot(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { errCh <- s.Start(ctx) }()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	waitForServerCancel(t, s)
 	waitForServerOutput(t, buf, "flight recorder enabled")
@@ -292,7 +291,7 @@ func TestServer_GracefulShutdownSealsTranscriptRoot(t *testing.T) {
 		if startErr != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", startErr)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return within 5s of Shutdown")
 	}
 
@@ -341,15 +340,14 @@ func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
 		"  signing_key_path: " + strconv.Quote(keyPath),
 		"",
 	}, "\n"))
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() { errCh <- s.Start(ctx) }()
+	errCh := runJoined(t, ctx, s.Start, nil)
 	waitForServerCancel(t, s)
 	waitForServerOutput(t, buf, "flight recorder enabled")
 
@@ -379,7 +377,7 @@ func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
 	// listener, which it does before its first Accept.
 	select {
 	case <-agentLn.accepting:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("agent server never called Accept")
 	}
 	// Drive the real license-expiry entrypoint, not the helper, so the test
@@ -398,7 +396,7 @@ func TestServer_EarlierAgentDrainFailureLeavesRunUnsealed(t *testing.T) {
 		if !errors.Is(startErr, proxy.ErrShutdownIncomplete) {
 			t.Fatalf("Start = %v, want ErrShutdownIncomplete", startErr)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("Start did not return within 10s of Shutdown")
 	}
 	for _, marker := range []string{"transcript_root", "session_close"} {

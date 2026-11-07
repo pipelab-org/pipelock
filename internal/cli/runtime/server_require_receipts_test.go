@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // TestNewServer_RequireReceiptsWithoutEmitterFailsClosed pins the startup
@@ -250,7 +251,7 @@ func TestServer_StartReturnsRequiredReceiptHeartbeatFailure(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -261,10 +262,7 @@ func TestServer_StartReturnsRequiredReceiptHeartbeatFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.Start(ctx)
-	}()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	select {
 	case err := <-errCh:
@@ -276,7 +274,7 @@ func TestServer_StartReturnsRequiredReceiptHeartbeatFailure(t *testing.T) {
 			!strings.Contains(err.Error(), "recorder is closed") {
 			t.Fatalf("Start error = %q, want required heartbeat recorder-closed failure", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		cancel()
 		t.Fatal("timed out waiting for Start to return required heartbeat failure")
 	}

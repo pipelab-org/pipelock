@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 const reverseWriteTestStall = 150 * time.Millisecond
@@ -103,7 +105,7 @@ func TestReverseProxyServer_StalledReaderIsCutOff(t *testing.T) {
 		if err == nil {
 			t.Fatal("handler wrote 512 MiB to a client that never read; stalled reader was not cut off")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("stalled reader was not cut off within 10s")
 	}
 }
@@ -176,7 +178,7 @@ func TestReverseProxyServer_DripReaderIsCutOffByTotalBudget(t *testing.T) {
 		if r.elapsed > 3*time.Second {
 			t.Fatalf("cut off after %v, want about the %v budget", r.elapsed, budget)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(testwait.Deadline(15 * time.Second)):
 		t.Fatal("drip response was not cut off within 15s")
 	}
 }
@@ -271,7 +273,7 @@ func TestLimitListener_CapsConcurrentConnectionsAndReleasesOnClose(t *testing.T)
 	select {
 	case c := <-accepted:
 		_ = c.Close()
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("second connection not accepted after the first closed")
 	}
 	if err := ln.Close(); err != nil {
@@ -316,7 +318,7 @@ func TestReverseProxyServer_BlockedWriteDeadlineClampedToBudget(t *testing.T) {
 		if elapsed == 0 || elapsed > 5*time.Second {
 			t.Fatalf("blocked write ended after %v, want about the %v budget", elapsed, budget)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("blocked write outlived the total budget: stall window extended past it")
 	}
 }

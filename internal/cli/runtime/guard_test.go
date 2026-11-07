@@ -27,6 +27,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestLaunchGuardBuildsEnforcedStandaloneLaunch(t *testing.T) {
@@ -173,7 +174,7 @@ func TestLaunchGuardRejectsMalformedChildProof(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("proxy handler did not return after cancellation")
 	}
 }

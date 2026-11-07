@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type coreConductorCloser struct {
@@ -170,7 +172,7 @@ func TestConductorShutdownDrainRevocationCancelsAndJoins(t *testing.T) {
 	}()
 	select {
 	case <-started:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("final drain did not start")
 	}
 	revoked := make(chan struct{})
@@ -180,7 +182,7 @@ func TestConductorShutdownDrainRevocationCancelsAndJoins(t *testing.T) {
 	}()
 	select {
 	case <-cancelled:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("revocation did not cancel the final drain")
 	}
 	if queue.closes.Load() != 0 {
@@ -195,7 +197,7 @@ func TestConductorShutdownDrainRevocationCancelsAndJoins(t *testing.T) {
 	for _, done := range []<-chan struct{}{finished, revoked} {
 		select {
 		case <-done:
-		case <-time.After(time.Second):
+		case <-time.After(testwait.Deadline(time.Second)):
 			t.Fatal("shutdown or revocation did not join")
 		}
 	}

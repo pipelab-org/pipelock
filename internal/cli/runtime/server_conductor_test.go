@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/emergency"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestNewServer_ConductorAuditProducerFromConfig(t *testing.T) {
@@ -144,7 +145,7 @@ func (serverConductorBlockingRunner) Run(ctx context.Context) error {
 }
 
 func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
@@ -160,12 +161,9 @@ func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 	s.conductorRemoteKill = poller
 	s.cfg.Conductor.ConductorURL = "https://conductor.example"
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		errCh <- s.Start(ctx)
-	}()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	waitForServerCancel(t, s)
 	waitForServerOutput(t, buf, "Conductor: remote kill polling enabled -> https://conductor.example")
@@ -178,25 +176,22 @@ func TestServer_StartRunsConductorRemoteKillPoller(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return within 5s of Shutdown")
 	}
 }
 
 func TestServer_StartRunsConductorBundlePoller(t *testing.T) {
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 	s.conductorBundle = serverConductorBlockingRunner{}
 	s.cfg.Conductor.ConductorURL = "https://conductor.example"
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		errCh <- s.Start(ctx)
-	}()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	waitForServerCancel(t, s)
 	waitForServerOutput(t, buf, "Conductor: policy bundle polling enabled -> https://conductor.example")
@@ -209,7 +204,7 @@ func TestServer_StartRunsConductorBundlePoller(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return within 5s of Shutdown")
 	}
 }

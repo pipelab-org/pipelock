@@ -29,6 +29,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emit"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // syncBuffer is defined in helpers_test.go (no build constraint).
@@ -325,7 +326,7 @@ func TestBuildEmitSinksWebhookOCSFOverHTTP(t *testing.T) {
 		if got["message"] != "body_dlp: secret detected" {
 			t.Fatalf("webhook OCSF message = %#v", got["message"])
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("timed out waiting for OCSF webhook delivery")
 	}
 }
@@ -412,7 +413,7 @@ func TestBuildEmitSinks_FilteredWebhookProof(t *testing.T) {
 			t.Fatalf("emitter Close: %v", err)
 		}
 
-		deadline := time.After(2 * time.Second)
+		deadline := time.After(testwait.Deadline(2 * time.Second))
 		for count.Load() < 2 {
 			if filter.Actions != nil {
 				break
@@ -1006,7 +1007,7 @@ logging:
 				// our command then loses the bind race.
 				return fmt.Errorf("RunCmd returned error after readiness: %w", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -1207,7 +1208,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -1339,7 +1340,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -1435,7 +1436,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -1538,7 +1539,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("RunCmd returned error after readiness: %w\nstderr:\n%s", err, stderr.String())
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -2111,7 +2112,7 @@ logging:
 			if err != nil {
 				return fmt.Errorf("RunCmd returned error after readiness: %w", err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("RunCmd did not exit within 5s")
 		}
 		return nil
@@ -2283,7 +2284,7 @@ func TestSameSpoolReloadWindowRejectsLoudlyWithoutSwappingFailedReplacement(t *t
 	// into a closed sink or panic on a closed channel.
 	select {
 	case <-oldSink.closeStarted:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("old sink did not enter the same-spool close window")
 	}
 	emitter.EmitWithSeverity(t.Context(), emit.SeverityWarn, "during-reload-window", nil)
@@ -2292,7 +2293,7 @@ func TestSameSpoolReloadWindowRejectsLoudlyWithoutSwappingFailedReplacement(t *t
 	var got activationResult
 	select {
 	case got = <-result:
-	case <-time.After(time.Second):
+	case <-time.After(testwait.Deadline(time.Second)):
 		t.Fatal("replacement activation did not finish")
 	}
 	if !got.preclosed[0] || !errors.Is(got.err, wantErr) || !newSink.activated.Load() {

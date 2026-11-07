@@ -472,8 +472,18 @@ func TestNeedsHITLApprover(t *testing.T) {
 // listener bindings yet. Defaults() provides a populated api_allowlist so
 // strict-mode overrides stay valid through cfg.Validate. The returned
 // buffer captures every stderr write performed during construction and
-// any subsequent Reload call.
+// any subsequent Reload call. Tests that call Start use newTestServerForStart
+// so Start owns resource cleanup.
 func newTestServer(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer) {
+	t.Helper()
+	s, buf := newTestServerForStart(t, mutate)
+	t.Cleanup(s.cleanup)
+	return s, buf
+}
+
+// newTestServerForStart leaves resource cleanup to Start. Callers join Start
+// before test cleanup restores configuration, hooks, or the environment.
+func newTestServerForStart(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer) {
 	t.Helper()
 	buf := &syncBuffer{}
 	opts := ServerOpts{
@@ -488,7 +498,6 @@ func newTestServer(t *testing.T, mutate func(*ServerOpts)) (*Server, *syncBuffer
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
-	t.Cleanup(func() { s.cleanup() })
 	return s, buf
 }
 
@@ -1163,18 +1172,15 @@ func TestNewServer_StrictAllowDegradedBootsAndEmitsRuleBundleAudit(t *testing.T)
 // address so nothing conflicts with a developer's already-running
 // pipelock instance.
 func TestServer_StartShutdown(t *testing.T) {
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go func() {
-		errCh <- s.Start(ctx)
-	}()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	waitForServerCancel(t, s)
 
@@ -1187,7 +1193,7 @@ func TestServer_StartShutdown(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
 }
@@ -1197,18 +1203,15 @@ func TestServer_StartShutdown(t *testing.T) {
 // the literal ":0". An operator or script must be able to learn the
 // real port from stdout without shelling out to `ss`.
 func TestServer_StartupReportsResolvedFetchPort(t *testing.T) {
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen // 127.0.0.1:0
 		o.ListenChanged = true
 		o.AgentArgs = []string{"agent", "--flag"}
 	})
 
-	errCh := make(chan error, 1)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go func() {
-		errCh <- s.Start(ctx)
-	}()
+	errCh := runJoined(t, ctx, s.Start, nil)
 
 	waitForServerCancel(t, s)
 	// Wait for the LAST-printed address line (PIPELOCK_FETCH_URL, emitted after
@@ -1242,7 +1245,7 @@ func TestServer_StartupReportsResolvedFetchPort(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
 }
@@ -1279,7 +1282,7 @@ func TestServer_StartArmsFileSentry(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1308,7 +1311,7 @@ func TestServer_StartArmsFileSentry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
 }
@@ -1326,7 +1329,7 @@ func TestServer_StartReturnsFileSentryRuntimeFailure(t *testing.T) {
 		"    - " + strconv.Quote(t.TempDir()),
 		"",
 	}, "\n"))
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1335,7 +1338,7 @@ func TestServer_StartReturnsFileSentryRuntimeFailure(t *testing.T) {
 	done := runJoined(t, context.Background(), s.Start, nil)
 	select {
 	case <-watcher.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("file sentry watcher did not start")
 	}
 	waitForServerOutput(t, buf, "  Health:")
@@ -1346,7 +1349,7 @@ func TestServer_StartReturnsFileSentryRuntimeFailure(t *testing.T) {
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("Start error = %v, want file sentry runtime failure wrapping %v", err, wantErr)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return after file sentry runtime failure")
 	}
 }
@@ -1363,7 +1366,7 @@ func TestServer_StartKeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 		"    - " + strconv.Quote(t.TempDir()),
 		"",
 	}, "\n"))
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1372,7 +1375,7 @@ func TestServer_StartKeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 	done := runJoined(t, context.Background(), s.Start, nil)
 	select {
 	case <-watcher.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("file sentry watcher did not start")
 	}
 	waitForServerOutput(t, buf, "  Health:")
@@ -1384,7 +1387,7 @@ func TestServer_StartKeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start error after clean Shutdown = %v, want nil", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return after Shutdown")
 	}
 }
@@ -1399,7 +1402,7 @@ func TestServer_StartRejectsFileSentryBlockWithoutSubprocessChild(t *testing.T) 
 		"    - " + strconv.Quote(t.TempDir()),
 		"",
 	}, "\n"))
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1447,7 +1450,7 @@ func TestServer_StartReportsArmedWatchCount(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1473,7 +1476,7 @@ func TestServer_StartReportsArmedWatchCount(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
 }
@@ -1490,7 +1493,7 @@ func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1514,14 +1517,14 @@ func TestServer_StartFailsWhenFileSentryArmsNoPaths(t *testing.T) {
 		if strings.Contains(err.Error(), "set file_sentry.best_effort: true to trade coverage") {
 			t.Errorf("Start error = %q, must not offer best_effort for a fail-closed error", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
 		case err := <-errCh:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("Start did not return after Shutdown")
 		}
 		t.Fatal("Start continued even though file sentry armed no paths")
@@ -1541,7 +1544,7 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 		"",
 	}, "\n"))
 
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1554,14 +1557,14 @@ func TestServer_StartFileSentryBestEffortRejectsZeroArmedPaths(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "no watch paths armed") {
 			t.Fatalf("Start error = %v, want zero-armed file-sentry failure", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
 		case err := <-errCh:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("Start did not return after Shutdown")
 		}
 		t.Fatal("Start continued despite zero file-sentry coverage")
@@ -1614,7 +1617,7 @@ func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 		"",
 	}, "\n"))
 
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1627,14 +1630,14 @@ func TestServer_StartFileSentryBestEffortRejectsRequiredPathFailure(t *testing.T
 		if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
 			t.Fatalf("Start error = %v, want required file-sentry failure", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
 		case err := <-errCh:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("Start did not return after Shutdown")
 		}
 		t.Fatal("Start continued despite required file-sentry coverage failure")
@@ -1658,7 +1661,7 @@ func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *t
 		"",
 	}, "\n"))
 
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -1669,14 +1672,14 @@ func TestServer_StartFileSentryBestEffortRejectsNormalizedRequiredDuplicate(t *t
 		if err == nil || !strings.Contains(err.Error(), "required watch coverage unavailable") {
 			t.Fatalf("Start error = %v, want required duplicate file-sentry failure", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		if err := s.Shutdown(context.Background()); err != nil {
 			t.Fatalf("Shutdown after unexpected startup: %v", err)
 		}
 		select {
 		case err := <-errCh:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("Start did not return after Shutdown")
 		}
 		t.Fatal("Start continued despite normalized required duplicate coverage failure")
@@ -1855,7 +1858,7 @@ func TestServer_RefreshRuntimeStateClearsBundleDerivedState(t *testing.T) {
 func TestServer_StartAuxiliaryListeners(t *testing.T) {
 	t.Setenv(config.EnvKillSwitchAPIToken, "test-token")
 
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 		o.MCPListen = serverTestEphemeralListen
@@ -1878,17 +1881,14 @@ func TestServer_StartAuxiliaryListeners(t *testing.T) {
 	s.apiOnSeparatePort = true
 	s.cfg.WebSocketProxy.Enabled = true
 
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- s.Start(context.Background())
-	}()
+	errCh := runJoined(t, context.Background(), s.Start, nil)
 
 	select {
 	case err := <-errCh:
 		if err != nil {
 			t.Fatalf("Start returned error: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not return after capture duration")
 	}
 
@@ -4602,7 +4602,7 @@ func TestServer_MCPListener_ResponseScanningFallback(t *testing.T) {
 // ctx.Done(); the WaitGroup must join it during shutdown so cleanup() does not
 // race the watcher's read of s.logger/s.sentry.
 func TestServer_StartJoinsLicenseExpiryWatcher(t *testing.T) {
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
@@ -4630,7 +4630,7 @@ func TestServer_StartJoinsLicenseExpiryWatcher(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Start returned error after Shutdown: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatalf("Start did not return within 5s of Shutdown")
 	}
 }

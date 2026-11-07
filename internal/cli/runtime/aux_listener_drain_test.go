@@ -39,7 +39,7 @@ func TestServer_AuxiliaryListenerDrainSeal(t *testing.T) {
 			t.Run(fmt.Sprintf("%s/incomplete=%t", listener, incomplete), func(t *testing.T) {
 				upstream, entered, release := heldDrainUpstream(t)
 				dir, cfgPath := drainReceiptConfig(t, 1)
-				s, log := newTestServer(t, func(o *ServerOpts) {
+				s, log := newTestServerForStart(t, func(o *ServerOpts) {
 					o.ConfigFile = cfgPath
 					o.Listen = serverTestEphemeralListen
 					o.ListenChanged = true
@@ -207,7 +207,7 @@ func awaitDrainSignal(t *testing.T, signal <-chan struct{}, what string) {
 	t.Helper()
 	select {
 	case <-signal:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("timed out waiting for " + what)
 	}
 }
@@ -217,7 +217,7 @@ func awaitDrainResult(t *testing.T, done <-chan error) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("listener lifecycle did not return")
 		return nil
 	}
@@ -268,7 +268,7 @@ func awaitDrainRequest(t *testing.T, done <-chan error, incomplete bool) {
 		if !incomplete && err != nil {
 			t.Fatalf("clean request failed: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testwait.Deadline(10 * time.Second)):
 		t.Fatal("downstream request did not close after listener stopped")
 	}
 }
@@ -293,8 +293,8 @@ func startDrainLifecycle(t *testing.T, cancel context.CancelFunc, release func()
 		defer close(finished)
 		done <- run()
 	}()
-	// This runs before newTestServer's cleanup, even on an assertion failure.
-	// Release the controlled handler and join Start before it clears resources.
+	// Release the controlled handler and join Start before earlier test cleanups
+	// restore configuration. Start owns server resource cleanup.
 	t.Cleanup(func() {
 		release()
 		cancel()
@@ -309,7 +309,7 @@ func TestServer_AuxiliaryUnreadConnectionsSeal(t *testing.T) {
 	for _, listener := range []string{"reverse proxy", "MCP", "scan API"} {
 		t.Run(listener, func(t *testing.T) {
 			dir, cfgPath := drainReceiptConfig(t, 1)
-			s, log := newTestServer(t, func(o *ServerOpts) {
+			s, log := newTestServerForStart(t, func(o *ServerOpts) {
 				o.ConfigFile = cfgPath
 				o.Listen = serverTestEphemeralListen
 				o.ListenChanged = true
@@ -415,7 +415,7 @@ func TestServer_ScanAPIDrainSeal(t *testing.T) {
 			if err := os.WriteFile(cfgPath, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			s, log := newTestServer(t, func(o *ServerOpts) {
+			s, log := newTestServerForStart(t, func(o *ServerOpts) {
 				o.ConfigFile = cfgPath
 				o.Listen = serverTestEphemeralListen
 				o.ListenChanged = true
@@ -489,7 +489,7 @@ func TestServer_ReverseSSEPendingScanLeavesRunUnsealed(t *testing.T) {
 		_, _ = io.WriteString(w, "data: drain-warning-probe\n\n")
 	}))
 	defer upstream.Close()
-	s, log := newTestServer(t, func(o *ServerOpts) {
+	s, log := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -542,7 +542,7 @@ func TestServer_ReverseSSEPendingScanLeavesRunUnsealed(t *testing.T) {
 
 func TestServer_MainAgentUnreadConnectionsSeal(t *testing.T) {
 	dir, cfgPath := drainReceiptConfig(t, 1)
-	s, log := newTestServer(t, func(o *ServerOpts) {
+	s, log := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true

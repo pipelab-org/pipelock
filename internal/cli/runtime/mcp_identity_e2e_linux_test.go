@@ -459,7 +459,7 @@ func TestServerRunListenerVerifiedLocalServiceFollowsRegistration(t *testing.T) 
 			t.Fatal(err)
 		}
 		listenerCfg := writeServerTestConfig(t, string(text)+fmt.Sprintf("\nfetch_proxy:\n  listen: %q\n  timeout_seconds: 5\nlogging:\n  format: json\n  output: stdout\n", fetchAddr))
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = listenerCfg
 			o.Listen = fetchAddr
 			o.ListenChanged = true

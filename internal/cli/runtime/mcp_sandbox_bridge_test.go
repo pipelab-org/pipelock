@@ -26,6 +26,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/sandbox"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestMCPSandboxBridgeRequiredGroupNeedsCancellation(t *testing.T) {
@@ -385,7 +386,7 @@ func TestStartMCPSandboxBridge_ContextCancelClosesTunnel(t *testing.T) {
 	}
 	select {
 	case <-targetSeen:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("target did not receive tunnel payload before cancel")
 	}
 

@@ -34,6 +34,7 @@ import (
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 	"github.com/spf13/cobra"
 )
 
@@ -274,7 +275,7 @@ func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 
 	select {
 	case <-watcher.started:
-	case <-time.After(mcpChildProcessDeadline):
+	case <-time.After(testwait.Deadline(mcpChildProcessDeadline)):
 		t.Fatal("file sentry watcher did not start after MCP child launch")
 	}
 	close(watcher.release)
@@ -287,7 +288,7 @@ func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("mcp proxy error = %v, want file sentry runtime failure wrapping %v\nstderr:\n%s", err, wantErr, stderr.String())
 		}
-	case <-time.After(mcpChildProcessDeadline):
+	case <-time.After(testwait.Deadline(mcpChildProcessDeadline)):
 		t.Fatal("mcp proxy did not return after file sentry runtime failure")
 	}
 }
@@ -325,7 +326,7 @@ func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 
 	select {
 	case <-watcher.started:
-	case <-time.After(mcpChildProcessDeadline):
+	case <-time.After(testwait.Deadline(mcpChildProcessDeadline)):
 		t.Fatal("file sentry watcher did not start after MCP child launch")
 	}
 	cancel()
@@ -338,7 +339,7 @@ func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("mcp proxy error after clean cancellation = %v, want nil\nstderr:\n%s", err, stderr.String())
 		}
-	case <-time.After(mcpChildProcessDeadline):
+	case <-time.After(testwait.Deadline(mcpChildProcessDeadline)):
 		t.Fatal("mcp proxy did not return after clean cancellation")
 	}
 }
@@ -1959,7 +1960,7 @@ func runMCPProxyCommandWithInputAndCommand(t *testing.T, args []string, input st
 		// Execute returned: all writes to the buffers are complete, so
 		// reading them here is race-free.
 		return stdout.String(), stderr.String(), err
-	case <-time.After(mcpProxyRunHangBackstop):
+	case <-time.After(testwait.Deadline(mcpProxyRunHangBackstop)):
 		// A genuinely stuck run: cancel so Execute observes cancellation and
 		// returns, then fail fast rather than hanging the whole-suite deadline.
 		cancel()
@@ -1967,7 +1968,7 @@ func runMCPProxyCommandWithInputAndCommand(t *testing.T, args []string, input st
 		case err := <-done:
 			t.Fatalf("mcp proxy command did not complete within %s (hang backstop); Execute returned after cancellation with: %v",
 				mcpProxyRunHangBackstop, err)
-		case <-time.After(mcpProxyCancelGrace):
+		case <-time.After(testwait.Deadline(mcpProxyCancelGrace)):
 			t.Fatalf("mcp proxy command did not complete within %s and did not stop within %s after cancellation",
 				mcpProxyRunHangBackstop, mcpProxyCancelGrace)
 		}

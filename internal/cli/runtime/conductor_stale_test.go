@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/applycache"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func staleEnforcerBaseConfig(dir string) config.Conductor {
@@ -165,7 +166,7 @@ func TestStaleEnforcerEndToEndDeniesAllThroughRealKillSwitch(t *testing.T) {
 	go func() { done <- enforcer.Run(ctx) }()
 
 	// Poll for the immediate on-entry evaluation to engage the kill switch.
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testwait.Deadline(2 * time.Second))
 	for !ks.IsActive() {
 		select {
 		case <-deadline:
@@ -196,7 +197,7 @@ func TestStaleEnforcerEndToEndDeniesAllThroughRealKillSwitch(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("Run returned %v, want context.Canceled", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("Run did not return after cancel")
 	}
 }

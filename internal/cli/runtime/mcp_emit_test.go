@@ -239,7 +239,7 @@ emit:
     url: %q
     min_severity: info
 `, fetchAddr, webhook.URL))
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = cfgPath
 			o.Listen = fetchAddr
 			o.ListenChanged = true
@@ -254,11 +254,12 @@ emit:
 			errCh <- s.Start(ctx)
 		}()
 		defer func() {
+			cancel()
 			_ = s.Shutdown(context.Background())
 			select {
 			case err := <-errCh:
 				t.Logf("goroutine result: %v", err)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
 				t.Error("run MCP listener did not stop")
 			}
 		}()
