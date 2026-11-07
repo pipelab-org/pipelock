@@ -82,8 +82,8 @@ func TestServer_ContainmentMetricsCleanupWaitsForStart(t *testing.T) {
 	for _, waitForStartup := range []bool{false, true} {
 		t.Run(fmt.Sprintf("wait_for_startup_%t", waitForStartup), func(t *testing.T) {
 			t.Setenv(config.ContainmentManagedEnvKey, config.ContainmentManagedEnvValue)
-			fetchListen := testport.ListenAddrs(t, 1)[0]
-			s, _ := newContainmentMetricsTestServerWithFetch(t, "", "", fetchListen)
+			// Nothing dials the fetch listener, so Start picks the port.
+			s, _ := newContainmentMetricsTestServerWithFetch(t, "", "", serverTestEphemeralListen)
 			var done <-chan error
 			// Registered first, this must run after the cancel-and-join cleanup.
 			t.Cleanup(func() {
