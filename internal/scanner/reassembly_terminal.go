@@ -391,15 +391,15 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 			finish = begin + loc[1]
 			begin += loc[0]
 		}
-		if pattern.keywords != nil {
-			s.rememberKeyword(lane, codec, phase, id, begin, finish)
-			if accepted || s.budget.incomplete {
-				return false
-			}
-		}
 		if pattern.keywords != nil && s.budget.produced != nil {
 			key := assembledIdentity{pattern: id, value: sha256.Sum256([]byte(lane.view[begin:finish]))}
 			if _, exists := s.budget.produced[key]; exists {
+				return false
+			}
+		}
+		if pattern.keywords != nil {
+			s.rememberKeyword(lane, codec, phase, id, begin, finish)
+			if accepted || s.budget.incomplete {
 				return false
 			}
 		}

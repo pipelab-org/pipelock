@@ -4,10 +4,13 @@
 package scanner
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestReassemblyDistinctSourceContext(t *testing.T) {
@@ -71,5 +74,28 @@ func TestReassemblyKeywordReuseBudget(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestReassemblyCoveredKeywordValue(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Covered record", Regex: `[0-9]{16}`, Severity: config.SeverityHigh, Action: config.ActionWarn, Keywords: []string{"lookup"}}}
+	sc := MustNew(cfg)
+	defer sc.Close()
+	body := reassemblyBang(hex.EncodeToString([]byte(strings.Repeat(keywordNumber, 512))))
+	for _, inbound := range []bool{false, true} {
+		t.Run(fmt.Sprint(inbound), func(t *testing.T) {
+			source := "lookup " + keywordNumber + "; " + body
+			m := &decodingMemo{keywordMode: true, keywordInput: source, keywordUnit: source, keywordBudget: &keywordWorkBudget{used: maxDecodeTotalBytes}, reassemblyPlan: sc.reassemblyPlan, reassemblyDeferred: true, reassemblyInbound: inbound}
+			defer m.releaseProjection()
+			m.reassemblyObserve(body)
+			prior := TextDLPMatch{PatternName: "Covered record", Warn: true, valueIdentity: sha256.Sum256([]byte(keywordNumber)), hasValueIdentity: true}
+			result := finishAssembled(TextDLPResult{Clean: true, InformationalMatches: []TextDLPMatch{prior}}, m)
+			if !result.Clean || len(result.Matches) != 0 || len(result.InformationalMatches) != 1 {
+				t.Fatalf("covered value spent keyword allowance again: %+v", result)
+			}
+		})
 	}
 }
