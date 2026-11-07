@@ -144,7 +144,7 @@ func TestFailedSignalHasBoundedWait(t *testing.T) {
 	p := &proxyProc{cmd: cmd, exited: exited, log: logFile}
 	go func() { _, p.exitErr = original.Wait(); close(exited) }()
 	t.Cleanup(func() { _ = original.Kill(); <-exited })
-	if err := awaitProxy(context.Background(), addr, p); err != nil {
+	if err := awaitProxy(context.Background(), addr, p, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	duplicate, err := os.FindProcess(original.Pid)

@@ -18,7 +18,7 @@ func smallOptions(t *testing.T, binary string) options {
 	t.Helper()
 	return options{
 		binary: binary, out: t.TempDir(), rules: rulesEmpty, requests: 40, warmup: 10, concurrency: 4,
-		chains: 1, seed: 1, window: 50 * time.Millisecond, shutdownTimeout: 20 * time.Second,
+		chains: 1, seed: 1, window: 50 * time.Millisecond, readyTimeout: 10 * time.Second, shutdownTimeout: 20 * time.Second,
 	}
 }
 
@@ -46,11 +46,15 @@ func hasReason(reasons []string, substr string) bool {
 
 func TestShutdownFailureStillWritesResult(t *testing.T) {
 	opt := smallOptions(t, newFakePipelock(t, "shutdownfail"))
+	opt.readyTimeout = 30 * time.Second
 	res, err := runMode(context.Background(), opt, modeOff)
 	if err != nil {
 		t.Fatalf("runMode: %v", err)
 	}
 	got := readResult(t, filepath.Join(opt.out, modeOff))
+	if got.Inputs.ReadyTimeoutSeconds != opt.readyTimeout.Seconds() {
+		t.Fatalf("recorded readiness timeout = %v, want %v", got.Inputs.ReadyTimeoutSeconds, opt.readyTimeout.Seconds())
+	}
 	if got.Integrity.Verdict != verdictFail || got.Integrity.Shutdown.Clean || !hasReason(got.Integrity.Reasons, "shutdown") {
 		t.Fatalf("integrity = %+v, want a failed verdict naming the shutdown", got.Integrity)
 	}
@@ -380,7 +384,7 @@ func TestHostileHomeBundlesDoNotLoad(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer controlProxy.cleanup()
-	if err := awaitProxy(controlCtx, addr, controlProxy); err != nil {
+	if err := awaitProxy(controlCtx, addr, controlProxy, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	_ = controlProxy.stop(5 * time.Second)

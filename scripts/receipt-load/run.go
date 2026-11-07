@@ -46,6 +46,7 @@ type options struct {
 	chains          int
 	seed            uint64
 	window          time.Duration
+	readyTimeout    time.Duration
 	shutdownTimeout time.Duration
 	verifyTimeout   time.Duration
 	restartAfter    int
@@ -75,6 +76,7 @@ func runMode(ctx context.Context, opt options, mode string) (*result, error) {
 		Performance: performanceReport{Verdict: perfInvalid, Reasons: []string{"measurement did not complete"}},
 		Integrity:   integrityReport{Verdict: verdictFail, Reasons: []string{"integrity was not evaluated"}},
 	}
+	res.Inputs.ReadyTimeoutSeconds = opt.readyTimeout.Seconds()
 	res.Inputs.Workload = workloadReport{
 		Seed: plan.seed, Tag: plan.tag(), KeyParam: workloadKeyParam,
 		Destinations: destinationMode(opt.destinations), BlockEvery: blockEvery, BlockOffset: plan.blockOffset, WindowSeconds: opt.window.Seconds(),
@@ -166,7 +168,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return err
 	}
 	defer func() { proxy.cleanup() }()
-	if err := awaitProxy(ctx, proxyAddr, proxy); err != nil {
+	if err := awaitProxy(ctx, proxyAddr, proxy, opt.readyTimeout); err != nil {
 		return err
 	}
 	logf("%s: proxy ready; warmup %d then %d requests at concurrency %d", mode, opt.warmup, opt.requests, opt.concurrency)
@@ -245,7 +247,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 			return fmt.Errorf("restart proxy: %w", err)
 		}
 		proxy = next
-		if err := awaitProxy(ctx, proxyAddr, proxy); err != nil {
+		if err := awaitProxy(ctx, proxyAddr, proxy, opt.readyTimeout); err != nil {
 			return fmt.Errorf("restart readiness: %w", err)
 		}
 		samples.close()
