@@ -66,3 +66,12 @@ deploy/wasm-verify/out/wasm_exec.js
 deploy/wasm-verify/*.tar.gz
 scripts/__pycache__/
 __pycache__/
+
+# Scratch directories conductor tests create under their package directory,
+# because the config validator rejects fleet paths under world-writable /tmp.
+# Ignored so tests running in parallel do not show up as source changes.
+.bootstrap-test-*/
+.bootstrap-apply-test-*/
+.bootstrap-cli-*/
+.publish-bootstrap-test-*/
+.runtime-conductor-*/

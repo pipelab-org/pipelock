@@ -136,10 +136,92 @@ SHARDS = (*HEAVY_SHARDS, *REST_SHARDS)
 # file runs with -count=1 in the no-race lane.
 GO_TOOL_EXEC_RE = re.compile(r"\bexec\.Command(?:Context)?\(")
 GO_TOOL_NAME_RE = re.compile(r'"go"')
+# The same key misses any file a test reads through another program: helm
+# rendering charts/, a shell or python script from the repository. So a test
+# file that starts any program makes its own package run fresh, unless the
+# program cannot read repository files (a no-op builtin) or is the test binary
+# itself, whose code is already in the key. A program the file names only
+# through a variable is assumed to read files. Library files keep the go-tool
+# rule above: library code that runs git or systemctl acts on the host, and
+# widening that rule would run most packages fresh.
+EXTERNAL_CALL_RE = re.compile(r"\bexec\.(Command|CommandContext)\(")
+HARMLESS_PROGRAMS = frozenset({"true", "false", "sleep", "echo", "yes", "/proc/self/exe"})
+SELF_EXEC_RE = re.compile(r"\b(\w+)(?:\s*,\s*\w+)?\s*:?=\s*(?:os\.Executable\(\)|os\.Args\[0\])")
+# Go specification, Comments and String/Rune literals: comments may contain
+# commas and brackets, while quoted text may contain comment delimiters.
+GO_QUOTED_OR_COMMENT_RE = re.compile(
+    r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\[\s\S]|[^"\\])*"|`[^`]*`|\'(?:\\[\s\S]|[^\'\\])*\''
+)
+
+
+def go_source_views(text: str) -> tuple[str, str]:
+    """Return comment-free source and a code-only mask with identical offsets."""
+    source, code = list(text), list(text)
+    for match in GO_QUOTED_OR_COMMENT_RE.finditer(text):
+        blank = re.sub(r"[^\n]", " ", match.group())
+        code[match.start():match.end()] = blank
+        if match.group().startswith(("//", "/*")):
+            source[match.start():match.end()] = blank
+    return "".join(source), "".join(code)
+
+
+def call_arguments(text: str, start: int) -> list[str]:
+    """Top-level arguments of the call whose "(" ends at start, as written."""
+    args: list[str] = []
+    depth, current, i = 0, [], start
+    while i < len(text):
+        c = text[i]
+        if c in "\"`'":
+            end = i + 1
+            while end < len(text) and text[end] != c:
+                end += 2 if c != "`" and text[end] == "\\" else 1
+            current.append(text[i:end + 1])
+            i = end + 1
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                args.append("".join(current).strip())
+                return args
+            depth -= 1
+        elif c == "," and depth == 0:
+            args.append("".join(current).strip())
+            current = []
+            i += 1
+            continue
+        current.append(c)
+        i += 1
+    return args
+
+
+def runs_external_program(text: str) -> bool:
+    """Whether a test file starts a program that may read repository files."""
+    # Most test files start nothing; the raw search also finds calls written in
+    # comments or strings, which the masked scan below discards.
+    if not EXTERNAL_CALL_RE.search(text):
+        return False
+    source, code = go_source_views(text)
+    self_names = {m.group(1) for m in SELF_EXEC_RE.finditer(code)}
+    for match in EXTERNAL_CALL_RE.finditer(code):
+        args = call_arguments(source, match.end())
+        index = 1 if match.group(1) == "CommandContext" else 0
+        if len(args) <= index:
+            return True
+        program = args[index]
+        if program.startswith('"') and program.endswith('"') and len(program) >= 2:
+            if program[1:-1] not in HARMLESS_PROGRAMS:
+                return True
+        elif program != "os.Args[0]" and program not in self_names:
+            return True
+    return False
 
 
 def go_tool_dirs(root: Path = ROOT) -> tuple[set[str], set[str]]:
-    """Repository-relative directories with a .go file that runs the go tool.
+    """Repository-relative directories whose tests run fresh.
+
+    A non-test file counts when it runs the go tool; a _test.go file when it
+    runs the go tool or any program that may read repository files.
 
     Returns (library, test): a non-test file is compiled into every test binary
     that imports its package; a _test.go file only into its own package's.
@@ -152,9 +234,11 @@ def go_tool_dirs(root: Path = ROOT) -> tuple[set[str], set[str]]:
             if not filename.endswith(".go"):
                 continue
             text = (Path(directory) / filename).read_text(encoding="utf-8", errors="replace")
+            rel = Path(directory).relative_to(root).as_posix()
             if GO_TOOL_EXEC_RE.search(text) and GO_TOOL_NAME_RE.search(text):
-                rel = Path(directory).relative_to(root).as_posix()
                 (test if filename.endswith("_test.go") else library).add(rel)
+            elif filename.endswith("_test.go") and runs_external_program(text):
+                test.add(rel)
     return library, test
 
 

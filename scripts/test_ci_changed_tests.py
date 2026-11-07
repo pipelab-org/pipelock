@@ -382,6 +382,61 @@ func TestChanged(t *testing.T) {
             events = [json.loads(line) for line in result.stdout.splitlines()]
             self.assertTrue(any(e.get("Test") == "TestChanged" and e["Action"] == "pass" for e in events))
 
+    def test_skipped_subtest_charges_unmeasured_floor_and_cannot_bypass_the_gate(self):
+        # Measurement accepts a platform subtest skip. An unrecorded parent must
+        # still cost the unmeasured floor, or a zero weight passes the budget
+        # gate that refuses an unmeasured new test.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text(f"module {self.package}\n\ngo 1.26\n")
+            (root / "lib_test.go").write_text('''package proxy
+import "testing"
+func TestParent(t *testing.T) {
+    t.Run("skipped", func(t *testing.T) { t.Skip("platform") })
+}
+''')
+            target = root / "run.json"
+            with patch("scripts.ci_test_durations.load_durations", return_value={}), \
+                 redirect_stdout(io.StringIO()):
+                overrides = planner.measured_selection(
+                    {self.package: ["TestParent"]}, [], "", target, root,
+                    lambda: planner.MEASURE_DEADLINE_SECONDS)
+            events = [json.loads(line) for line in target.read_text().splitlines()]
+            self.assertTrue(any(e.get("Test") == "TestParent/skipped" and e["Action"] == "skip" for e in events))
+            self.assertTrue(any(e.get("Test") == "TestParent" and e["Action"] == "pass" for e in events))
+        self.assertEqual(overrides["trees"]["proxy"]["TestParent"], planner.MIN_UNMEASURED_SECONDS)
+        plan = {
+            "trees": {},
+            "packages": {},
+            "names": {tree: ["TestParent"] if tree == "proxy" else [] for tree in planner.TEST_SPLITS},
+            "inventory": [],
+        }
+        base = {"trees": {"proxy": {"TestParent": 0.0}}, "packages": {}}
+        introduced = {"trees": {"proxy": ["TestParent"]}, "packages": []}
+        below = planner.MIN_UNMEASURED_SECONDS - 0.1
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(planner.check_budget(
+                "", below, overrides, base, plan, introduced=introduced), 1)
+            free = {"trees": {"proxy": {"TestParent": 0.0}}, "packages": {}}
+            self.assertEqual(planner.check_budget(
+                "", below, free, base, plan, introduced=introduced), 0)
+        # A recorded weight still wins, and the selection is not refused.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "go.mod").write_text(f"module {self.package}\n\ngo 1.26\n")
+            (root / "lib_test.go").write_text('''package proxy
+import "testing"
+func TestParent(t *testing.T) {
+    t.Run("skipped", func(t *testing.T) { t.Skip("platform") })
+}
+''')
+            with patch("scripts.ci_test_durations.load_durations", return_value={"proxy": {"TestParent": 100}}), \
+                 redirect_stdout(io.StringIO()):
+                recorded = planner.measured_selection(
+                    {self.package: ["TestParent"]}, [], "", Path(directory) / "run.json", root,
+                    lambda: planner.MEASURE_DEADLINE_SECONDS)
+        self.assertEqual(recorded["trees"]["proxy"]["TestParent"], 100)
+
     def test_missing_skipped_failed_or_invalid_terminal_events_fail_closed(self):
         cases = [
             [{"Action": "pass", "Elapsed": 1}],
