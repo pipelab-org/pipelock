@@ -194,18 +194,6 @@ func (r *wsRelay) recordCredentialAudienceAllow(allow scanner.CredentialAudience
 	return nil
 }
 
-// wsBodyDefaultAction is the action the client-body handler uses when neither
-// the scan result nor request_body_scanning names one.
-func wsBodyDefaultAction(cfg *config.Config) string {
-	if cfg != nil && cfg.RequestBodyScanning.Action != "" {
-		return cfg.RequestBodyScanning.Action
-	}
-	if cfg == nil || cfg.EnforceEnabled() {
-		return config.ActionBlock
-	}
-	return config.ActionWarn
-}
-
 // blockOnCredentialAudienceReceiptFailure closes the WebSocket relay in both
 // directions when flight_recorder.require_receipts is on and a credential
 // audience allow receipt could not be durably confirmed before the frame
@@ -1766,9 +1754,6 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 		AudienceSurface: surface,
 		OnDroppedDLP: func(match scanner.TextDLPMatch, reason string) {
 			r.recordClientFrameDroppedDLP(match, reason)
-		},
-		DeliveryBlocks: func(result BodyScanResult) bool {
-			return bodyDeliveryBlocks(result, r.hostname, r.cfg, r.escalationLevel(), false, wsBodyDefaultAction(r.cfg))
 		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 			return r.recordCredentialAudienceAllow(allow)

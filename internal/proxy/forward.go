@@ -1597,9 +1597,6 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 				}
 				p.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 			},
-			DeliveryBlocks: func(result BodyScanResult) bool {
-				return bodyDeliveryBlocks(result, r.URL.Hostname(), cfg, sr.Level, true, cfg.RequestBodyScanning.Action)
-			},
 			OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 				return p.recordCredentialAudienceAllow(cfg, actx, allow, TransportForward, r.Method, targetURL, requestID, agent, selectedReceiptShard)
 			},

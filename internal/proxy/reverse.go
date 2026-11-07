@@ -2045,9 +2045,6 @@ func (rp *ReverseProxyHandler) scanRequest(w http.ResponseWriter, r *http.Reques
 			}
 			rp.metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 		},
-		DeliveryBlocks: func(result BodyScanResult) bool {
-			return blockingBodyFinding(result, rp.upstream.Hostname(), cfg) != bodyBlockCauseUnknown
-		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 			return rp.recordCredentialAudienceAllow(cfg, newHTTPAuditContext(r.Context(), rp.logger, httpAuditEvent{Method: r.Method, TargetURL: receiptInput.Target, ClientIP: reverseClientIP(r), RequestID: receiptInput.RequestID, Agent: receiptInput.Agent}), allow, r.Method, receiptInput.Target, receiptInput.RequestID, receiptInput.Agent, receiptShardFromContext(r.Context()))
 		},

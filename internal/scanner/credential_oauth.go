@@ -21,16 +21,24 @@ const credentialAudienceAnthropicOAuthSurface = "anthropic_oauth_body" // #nosec
 // credential field qualifies; independent and joined remainder views retain DLP.
 // Source: Claude Code 2.1.310, documented in claude-code-credentials.md.
 func (s *Scanner) OAuthCredentialAudienceSurface(ctx context.Context, body []byte, target, method, contentType string) string {
+	surface, _ := s.OAuthCredentialAudience(ctx, body, target, method, contentType)
+	return surface
+}
+
+// OAuthCredentialAudience returns the OAuth surface and, when the body
+// qualifies, the exact designated credential value so callers can keep that
+// one value out of non-credential heuristics such as content entropy.
+func (s *Scanner) OAuthCredentialAudience(ctx context.Context, body []byte, target, method, contentType string) (string, string) {
 	const fallback = "body"
 	mediaType, _, err := mime.ParseMediaType(contentType)
 	if err != nil || mediaType != "application/json" || method != http.MethodPost || ctx.Err() != nil {
-		return fallback
+		return fallback, ""
 	}
 	host, ok := canonicalCredentialAudienceDestination(target)
 	u, err := url.Parse(target)
 	if !ok || err != nil || host != "platform.claude.com" || u.Scheme != "https" ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return fallback
+		return fallback, ""
 	}
 	var field, discriminator, expected string
 	switch u.EscapedPath() {
@@ -39,16 +47,16 @@ func (s *Scanner) OAuthCredentialAudienceSurface(ctx context.Context, body []byt
 	case "/v1/oauth/token/revoke":
 		field, discriminator, expected = "token", "token_type_hint", "refresh_token"
 	default:
-		return fallback
+		return fallback, ""
 	}
 	if !json.Valid(body) || jsonscan.RejectDuplicateKeys(body) != nil {
-		return fallback
+		return fallback, ""
 	}
 	var envelope map[string]json.RawMessage
 	var credential, kind string
 	if json.Unmarshal(body, &envelope) != nil || !jsonField(envelope, discriminator, &kind) ||
 		kind != expected || !jsonField(envelope, field, &credential) || credential == "" {
-		return fallback
+		return fallback, ""
 	}
 	// Only the compiled built-in pattern metadata can earn this carrier.
 	for _, pattern := range s.dlpPatterns {
@@ -57,17 +65,17 @@ func (s *Scanner) OAuthCredentialAudienceSurface(ctx context.Context, body []byt
 		}
 		start, end, matched := pattern.matchSpan(credential)
 		if !matched || start != 0 || end != len(credential) {
-			return fallback
+			return fallback, ""
 		}
 		if _, allowed := s.credentialAudienceAllows(pattern, target, credentialAudienceAnthropicOAuthSurface); !allowed {
-			return fallback
+			return fallback, ""
 		}
 		delete(envelope, field)
 		remaining, err := json.Marshal(envelope)
 		if err != nil || gatewayRemainderHasCredential(ctx, remaining, pattern.name, s.ScanTextForDLPQuiet) {
-			return fallback
+			return fallback, ""
 		}
-		return credentialAudienceAnthropicOAuthSurface
+		return credentialAudienceAnthropicOAuthSurface, credential
 	}
-	return fallback
+	return fallback, ""
 }

@@ -32,7 +32,6 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
-	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/fileinspect"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
@@ -563,54 +562,6 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 	return bodyBlockCauseUnknown
 }
 
-// bodyDeliveryBlocks mirrors the refusal a body path applies after scanning:
-// the hard-block floors, then adaptive escalation. In enforcement mode an
-// escalated block refuses; in audit mode only an action escalation changed to
-// block refuses, as the forward, intercept and WebSocket handlers do.
-// dlpDestinationExempt selects the forward and intercept rule that keeps
-// adaptive-exempt destinations from escalating DLP findings. defaultAction is
-// the caller's action when the result carries none.
-func bodyDeliveryBlocks(result BodyScanResult, hostname string, cfg *config.Config, level int, dlpDestinationExempt bool, defaultAction string) bool {
-	if blockingBodyFinding(result, hostname, cfg) != bodyBlockCauseUnknown {
-		return true
-	}
-	if cfg == nil {
-		return false
-	}
-	resolved := result.Action
-	if resolved == "" {
-		resolved = defaultAction
-	}
-	// In enforcement mode a finding whose resolved action is block is refused
-	// even without escalation, including the caller's empty-action fallback.
-	if cfg.EnforceEnabled() && resolved == config.ActionBlock {
-		return true
-	}
-	if level <= 0 {
-		return false
-	}
-	exempt := result.IsEntropyOnly() || result.IsInformationalCardRuns() || result.IsIncompleteFileWarningOnly()
-	if dlpDestinationExempt && !exempt {
-		label := ""
-		if len(result.DLPMatches) > 0 && result.RedactionBlockReason == "" {
-			label = scannerLabelBodyDLP
-		}
-		exempt = isBodyAdaptiveExempt(label, result, hostname, cfg)
-	}
-	if exempt {
-		return false
-	}
-	action := result.Action
-	if action == "" {
-		action = defaultAction
-	}
-	upgraded := decide.UpgradeAction(action, level, &cfg.AdaptiveEnforcement)
-	if upgraded != config.ActionBlock {
-		return false
-	}
-	return cfg.EnforceEnabled() || upgraded != action
-}
-
 // bodyBlockCauseLabel returns the scanner label for a blocking finding, or
 // current when no single finding blocks.
 func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
@@ -852,17 +803,11 @@ type BodyScanRequest struct {
 	// once per distinct compiled credential audience allow after scanning.
 	AudienceSurface string
 	// OnCredentialAudienceAllow is invoked once per distinct compiled
-	// credential audience allow after scanning permits delivery. A non-nil
+	// credential audience allow after scanning completes cleanly. A non-nil
 	// return means the allow's receipt could not be durably confirmed;
 	// scanRequestBody surfaces it on BodyScanResult.CredentialAudienceReceiptErr
 	// so the caller blocks before forwarding instead of losing the signal.
 	OnCredentialAudienceAllow func(scanner.CredentialAudienceAllow) error
-	// DeliveryBlocks reports whether the caller will refuse this result even
-	// though its configured action is not block, such as an enforced
-	// critical credential or prompt-injection floor. A refused body earns no
-	// audience allow, so no receipt claims delivery and a receipt failure
-	// cannot replace the blocking finding. Nil means only the action decides.
-	DeliveryBlocks func(BodyScanResult) bool
 	// Content entropy checks catch opaque non-credential-shaped exfiltration.
 	// Destination trust/exclusions are supplied from the parsed upstream
 	// authority, not from user-controlled Host headers.
@@ -884,11 +829,11 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
 		final.CredentialAudienceMismatches = scanner.TextDLPCredentialAudienceMismatches(final.DLPMatches, req.suppressTarget(), req.audienceSurface())
-		// Warnings can still deliver an allowed credential, so they need the
-		// same receipt confirmation as a clean body. A blocking result keeps
-		// its original finding and does not earn an audience allow.
-		if req.OnCredentialAudienceAllow == nil || (!final.Clean && (final.Action == config.ActionBlock ||
-			(req.DeliveryBlocks != nil && req.DeliveryBlocks(final)))) {
+		// An audience allow is evidence that a credential was delivered. A
+		// pre-redaction DLP pass can collect one before redaction, content
+		// entropy, or injection scanning blocks the body, so emit only for a
+		// body whose final result is clean.
+		if req.OnCredentialAudienceAllow == nil || !final.Clean {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {
@@ -959,8 +904,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 
+	oauthCredential := ""
 	if req.RedactMatcher != nil && req.audienceSurface() == "body" {
-		audienceSurface = req.Scanner.OAuthCredentialAudienceSurface(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
 	}
 
 	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
@@ -1047,7 +993,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 
 	if req.audienceSurface() == "body" {
-		audienceSurface = req.Scanner.OAuthCredentialAudienceSurface(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
 	}
 
 	// Extract text strings from body based on content type. The DLP extractor
@@ -1147,6 +1093,12 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	}
 	if dnsInspection.Parsed {
 		entropyTexts = dnsInspection.EntropyTexts
+	}
+	if oauthCredential != "" {
+		// The designated refresh or revocation credential is a high-entropy
+		// secret by design and already passed its audience check; score the
+		// rest of the body only.
+		entropyTexts = slices.DeleteFunc(slices.Clone(entropyTexts), func(text string) bool { return text == oauthCredential })
 	}
 	finding := scanBodyTextsForContentEntropy(entropyTexts, req)
 	for _, token := range dlpExtracted.HeaderTokens {
