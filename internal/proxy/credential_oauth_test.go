@@ -253,6 +253,7 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 	warnBody := BodyScanResult{Action: config.ActionWarn, InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
 	entropyOnly := BodyScanResult{Action: config.ActionWarn, EntropyFinding: &ContentEntropyFinding{}}
 	blockBody := BodyScanResult{Action: config.ActionBlock, InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
+	emptyAction := BodyScanResult{InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
 	for _, tc := range []struct {
 		name    string
 		result  BodyScanResult
@@ -260,6 +261,8 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 		enforce bool
 		trusted bool
 		want    bool
+
+		defaultAction string
 	}{
 		{name: "escalated warning blocks", result: warnBody, level: 2, enforce: true, trusted: true, want: true},
 		{name: "normal level delivers", result: warnBody, level: 0, enforce: true, trusted: true},
@@ -267,6 +270,8 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 		{name: "audit normal level delivers", result: warnBody, level: 0, trusted: true},
 		{name: "audit unchanged block delivers", result: blockBody, level: 2, trusted: true},
 		{name: "entropy-only warning stays exempt", result: entropyOnly, level: 2, enforce: true, trusted: true},
+		{name: "enforced empty action falls back to block", result: emptyAction, level: 0, enforce: true, trusted: true, defaultAction: config.ActionBlock, want: true},
+		{name: "audit empty action falls back to warn", result: emptyAction, level: 0, trusted: true, defaultAction: config.ActionWarn},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testScannerConfig()
@@ -277,7 +282,11 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 			}
 			cfg.AdaptiveEnforcement.Enabled = true
 			cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn = &block
-			got := bodyDeliveryBlocks(tc.result, "platform.claude.com", cfg, tc.level, true, config.ActionWarn)
+			defaultAction := tc.defaultAction
+			if defaultAction == "" {
+				defaultAction = config.ActionWarn
+			}
+			got := bodyDeliveryBlocks(tc.result, "platform.claude.com", cfg, tc.level, true, defaultAction)
 			if got != tc.want {
 				t.Fatalf("bodyDeliveryBlocks = %v, want %v", got, tc.want)
 			}

@@ -574,7 +574,19 @@ func bodyDeliveryBlocks(result BodyScanResult, hostname string, cfg *config.Conf
 	if blockingBodyFinding(result, hostname, cfg) != bodyBlockCauseUnknown {
 		return true
 	}
-	if cfg == nil || level <= 0 {
+	if cfg == nil {
+		return false
+	}
+	resolved := result.Action
+	if resolved == "" {
+		resolved = defaultAction
+	}
+	// In enforcement mode a finding whose resolved action is block is refused
+	// even without escalation, including the caller's empty-action fallback.
+	if cfg.EnforceEnabled() && resolved == config.ActionBlock {
+		return true
+	}
+	if level <= 0 {
 		return false
 	}
 	exempt := result.IsEntropyOnly() || result.IsInformationalCardRuns() || result.IsIncompleteFileWarningOnly()
