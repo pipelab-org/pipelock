@@ -808,6 +808,12 @@ type BodyScanRequest struct {
 	// scanRequestBody surfaces it on BodyScanResult.CredentialAudienceReceiptErr
 	// so the caller blocks before forwarding instead of losing the signal.
 	OnCredentialAudienceAllow func(scanner.CredentialAudienceAllow) error
+	// DeliveryBlocks reports whether the caller will refuse this result even
+	// though its configured action is not block, such as an enforced
+	// critical credential or prompt-injection floor. A refused body earns no
+	// audience allow, so no receipt claims delivery and a receipt failure
+	// cannot replace the blocking finding. Nil means only the action decides.
+	DeliveryBlocks func(BodyScanResult) bool
 	// Content entropy checks catch opaque non-credential-shaped exfiltration.
 	// Destination trust/exclusions are supplied from the parsed upstream
 	// authority, not from user-controlled Host headers.
@@ -832,7 +838,8 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		// Warnings can still deliver an allowed credential, so they need the
 		// same receipt confirmation as a clean body. A blocking result keeps
 		// its original finding and does not earn an audience allow.
-		if req.OnCredentialAudienceAllow == nil || (!final.Clean && final.Action == config.ActionBlock) {
+		if req.OnCredentialAudienceAllow == nil || (!final.Clean && (final.Action == config.ActionBlock ||
+			(req.DeliveryBlocks != nil && req.DeliveryBlocks(final)))) {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {

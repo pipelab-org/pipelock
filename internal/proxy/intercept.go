@@ -1350,6 +1350,9 @@ func newInterceptHandler(
 					}
 					ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 				},
+				DeliveryBlocks: func(result BodyScanResult) bool {
+					return blockingBodyFinding(result, r.URL.Hostname(), ic.Config) != bodyBlockCauseUnknown
+				},
 				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {
 						return ic.Proxy.recordCredentialAudienceAllow(ic.Config, actx, allow, TransportConnect, r.Method, targetURL, ic.RequestID, ic.Agent, ic.receiptShard)
