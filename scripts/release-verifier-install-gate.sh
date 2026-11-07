@@ -7,7 +7,13 @@
 # copy. This is intentionally separate from source-tree conformance: a green
 # local build does not prove that the package a customer receives works.
 
+# Exit codes: 0 verified; 2 contradiction or unclassified failure (do not retry);
+# 3 proven registry transport outage (retry later); 64 invalid invocation.
 set -euo pipefail
+# Embedded tools can use their own failure codes. Normalize every unclassified
+# failure, including malformed registry JSON, to the non-retryable class.
+failure_code=2
+trap 'status=$?; if ((status != 0)); then exit "$failure_code"; fi' EXIT
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INVENTORY="$ROOT_DIR/release/verifier-installers.json"
@@ -28,6 +34,10 @@ candidate receipt while rejecting its tampered copy.
 verifier tag. It fails when committed verifier package source differs from
 --base unless both package versions advanced together and the inventory is
 marked pending publication.
+
+Exit codes: 0 verified; 2 contradiction or unclassified failure (non-retryable);
+3 proven registry transport outage (retry later); 64 invalid invocation.
+Every nonzero code blocks release publication.
 EOF
 }
 
@@ -38,7 +48,7 @@ base_rev=""
 while (($#)); do
 	case "$1" in
 		--tag)
-			(($# >= 2)) || { usage >&2; exit 64; }
+			(($# >= 2)) || { usage >&2; failure_code=64; exit 64; }
 			tag="$2"
 			shift 2
 			;;
@@ -51,7 +61,7 @@ while (($#)); do
 			shift
 			;;
 		--base)
-			(($# >= 2)) || { usage >&2; exit 64; }
+			(($# >= 2)) || { usage >&2; failure_code=64; exit 64; }
 			base_rev="$2"
 			shift 2
 			;;
@@ -62,22 +72,22 @@ while (($#)); do
 		*)
 			printf 'release verifier install gate: unknown argument: %s\n' "$1" >&2
 			usage >&2
-			exit 64
+			failure_code=64; exit 64
 			;;
 	esac
 done
 
 if ((source_drift_only && inventory_only)); then
 	printf 'release verifier install gate: --source-drift-only and --inventory-only are different checks\n' >&2
-	exit 64
+	failure_code=64; exit 64
 fi
 if ((source_drift_only)) && [[ -z "$base_rev" ]]; then
 	printf 'release verifier install gate: --source-drift-only requires --base\n' >&2
-	exit 64
+	failure_code=64; exit 64
 fi
 if ((source_drift_only == 0)) && [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
 	printf 'release verifier install gate: --tag must be a release tag such as v3.4.0\n' >&2
-	exit 64
+	failure_code=64; exit 64
 fi
 if [[ ! -f "$INVENTORY" ]]; then
 	printf 'release verifier install gate: inventory is missing: %s\n' "$INVENTORY" >&2
@@ -469,9 +479,13 @@ if [[ ! "$ts_artifact_digest" =~ ^sha512-[A-Za-z0-9+/]+={0,2}$ ]]; then
 	printf 'release verifier install gate: inventory must pin npm dist.integrity for @pipelock/verifier-ts@%s\n' "$ts_version" >&2
 	exit 2
 fi
-if ! published_ts_digest="$("$CI_RETRY" npm view "@pipelock/verifier-ts@$ts_version" dist.integrity)"; then
+if published_ts_digest="$(registry_read npm view "@pipelock/verifier-ts@$ts_version" dist.integrity --json)"; then
+	:
+else
+	status=$?
 	printf 'release verifier install gate: could not reach npm for @pipelock/verifier-ts@%s\n' "$ts_version" >&2
-	exit 2
+	failure_code=$status
+	exit "$status"
 fi
 if [[ "$published_ts_digest" != "$ts_artifact_digest" ]]; then
 	printf 'release verifier install gate: npm integrity for @pipelock/verifier-ts@%s is %s, inventory requires %s\n' \
@@ -483,9 +497,13 @@ if [[ ! "$rust_artifact_digest" =~ ^[0-9a-f]{64}$ ]]; then
 	printf 'release verifier install gate: inventory must pin the crates.io checksum for pipelock-verifier-rs@%s\n' "$rust_version" >&2
 	exit 2
 fi
-if ! rust_index="$("$CI_RETRY" curl -fsSL --max-time 10 https://index.crates.io/pi/pe/pipelock-verifier-rs)"; then
+if rust_index="$(registry_read curl -fsSL --max-time 10 https://index.crates.io/pi/pe/pipelock-verifier-rs)"; then
+	:
+else
+	status=$?
 	printf 'release verifier install gate: could not reach crates.io for pipelock-verifier-rs@%s\n' "$rust_version" >&2
-	exit 2
+	failure_code=$status
+	exit "$status"
 fi
 if ! published_rust_digest="$(python3 -c '
 import json, sys
@@ -508,10 +526,14 @@ if [[ ! "$python_artifact_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
 	printf 'release verifier install gate: inventory must pin the PyPI wheel SHA-256 for pipelock-verify@%s\n' "$python_version" >&2
 	exit 2
 fi
-if ! python_release_metadata="$("$CI_RETRY" curl -fsSL --max-time 10 \
+if python_release_metadata="$(registry_read curl -fsSL --max-time 10 \
 	"https://pypi.org/pypi/pipelock-verify/$python_version/json")"; then
+	:
+else
+	status=$?
 	printf 'release verifier install gate: could not reach PyPI for pipelock-verify@%s\n' "$python_version" >&2
-	exit 2
+	failure_code=$status
+	exit "$status"
 fi
 python3 - "$python_version" "${python_artifact_digest#sha256:}" "$python_release_metadata" <<'PY'
 import json
@@ -583,10 +605,13 @@ fi
 # cache, and interpreter environment, so this detects bad package contents,
 # entrypoints, and runtime dependencies instead of exercising our source tree.
 printf '{"private":true}\n' >"$scratch_dir/typescript/package.json"
-if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" \
-	npm install --ignore-scripts --omit=dev --prefix "$scratch_dir/typescript" "@pipelock/verifier-ts@$ts_version"; then
+if registry_read env npm_config_cache="$scratch_dir/npm-cache" \
+	npm install --json --ignore-scripts --omit=dev --prefix "$scratch_dir/typescript" "@pipelock/verifier-ts@$ts_version"; then
+	:
+else
+	failure_code=$?
 	printf 'release verifier install gate: could not install the TypeScript verifier after retries\n' >&2
-	exit 2
+	exit "$failure_code"
 fi
 if [[ ! -f "$scratch_dir/typescript/package-lock.json" ]]; then
 	printf 'release verifier install gate: npm install did not produce the lockfile required for signature auditing\n' >&2
@@ -603,13 +628,15 @@ if (withInstallScripts.length) {
   process.exit(2)
 }
 NODE
-# Redirect inside each retry so a failed attempt cannot contaminate the JSON
-# report from a later successful audit.
-if ! "$CI_RETRY" env npm_config_cache="$scratch_dir/npm-cache" sh -c \
-	'exec npm audit signatures --json --include-attestations --prefix "$1" >"$2"' \
-	sh "$scratch_dir/typescript" "$scratch_dir/npm-signatures.json"; then
+# registry_read captures each attempt independently; only the final successful
+# report reaches the file used for provenance verification.
+if registry_read env npm_config_cache="$scratch_dir/npm-cache" \
+	npm audit signatures --json --include-attestations --prefix "$scratch_dir/typescript" >"$scratch_dir/npm-signatures.json"; then
+	:
+else
+	failure_code=$?
 	printf 'release verifier install gate: could not verify npm signatures after retries\n' >&2
-	exit 2
+	exit "$failure_code"
 fi
 verify_npm_provenance "$ts_version" "$ts_artifact_digest" "$ts_ref" "$ts_source_commit" \
 	"$ts_repository" "$scratch_dir/npm-signatures.json"

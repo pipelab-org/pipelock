@@ -100,6 +100,8 @@ release artifacts. A missing verifier tag, stale package, mismatched source
 commit, changed registry digest, install failure, valid-receipt rejection, or
 tampered-receipt acceptance stops the release.
 
+The install gate returns `0` for success, `2` for a contradiction or an unclassified failure, `3` for a proven registry transport outage after retries, and `64` for invalid arguments. Only `3` is retryable. Malformed metadata, digest or source mismatches, and unknown tool failures return `2`. Every nonzero code blocks publication.
+
 ## Auto-publish on release tag
 
 `.github/workflows/publish-verifiers.yaml` publishes both verifiers automatically

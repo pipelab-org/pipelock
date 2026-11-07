@@ -1269,3 +1269,127 @@ func TestReleaseVerifierTaggedRepositoryChecksEachManifest(t *testing.T) {
 		})
 	}
 }
+
+func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	for _, tc := range []struct {
+		name, target, failure, wantText string
+		code                            int
+	}{
+		{"npm-refused", "npm", "refused", "could not reach npm", 3},
+		{"npm-server", "npm", "server", "could not reach npm", 3},
+		{"npm-timeout", "npm", "timeout", "could not reach npm", 3},
+		{"crates-refused", "crates", "refused", "could not reach crates.io", 3},
+		{"crates-server", "crates", "server", "could not reach crates.io", 3},
+		{"crates-timeout", "crates", "timeout", "could not reach crates.io", 3},
+		{"pypi-refused", "pypi", "refused", "could not reach PyPI", 3},
+		{"pypi-server", "pypi", "server", "could not reach PyPI", 3},
+		{"pypi-timeout", "pypi", "timeout", "could not reach PyPI", 3},
+		{"npm-digest", "npm", "mismatch", "npm integrity", 2},
+		{"crates-checksum", "crates", "mismatch", "crates.io checksum", 2},
+		{"pypi-digest", "pypi", "mismatch", "does not bind the pinned wheel digest", 2},
+		{"python-tag", "git", "mismatch", "inventory requires", 2},
+		{"npm-unknown", "npm", "unknown", "could not reach npm", 2},
+		{"npm-classifier", "npm", "classifier", "could not reach npm", 2},
+		{"crates-unknown", "crates", "unknown", "could not reach crates.io", 2},
+		{"pypi-malformed", "pypi", "malformed", "JSONDecodeError", 2},
+		{"pypi-unclassified", "pypi", "parser", "unclassified parser failure", 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := stageReleaseVerifierInventoryTest(t)
+			if err := os.Chmod(filepath.Join(root, "scripts", "ci-retry.sh"), 0o700); err != nil { // #nosec G302 -- executable checked-in script fixture.
+				t.Fatal(err)
+			}
+			workflow := filepath.Join(root, ".github", "workflows", "publish-verifiers.yaml")
+			if err := os.MkdirAll(filepath.Dir(workflow), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(workflow, []byte("environment: verifier-release\nid-token: write\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			commitReleaseVerifierFixture(t, root, ".github/workflows/publish-verifiers.yaml")
+			commit := releaseVerifierFixtureHEAD(t, root)
+			runReleaseVerifierGit(t, root, "tag", stagedVerifierSourceRef(t, root, "TypeScript"))
+			rewriteStagedVerifierInventory(t, root, func(inventory map[string]interface{}) {
+				inventory["release_blocked"] = false
+				setStagedVerifierSourceCommits(t, inventory, commit, "TypeScript", "Rust")
+				for _, entry := range inventory["verifiers"].([]interface{}) {
+					v := entry.(map[string]interface{})
+					switch v["language"] {
+					case "TypeScript":
+						v["artifact_digest"] = "sha512-YWJj"
+					case "Rust":
+						v["artifact_digest"] = strings.Repeat("a", 64)
+					case "Python":
+						v["artifact_digest"] = "sha256:" + strings.Repeat("b", 64)
+						v["publisher"].(map[string]interface{})["source_commit"] = strings.Repeat("c", 40)
+					}
+				}
+			})
+			bin := t.TempDir()
+			git, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			python, err := exec.LookPath("python3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			stubs := map[string]string{
+				"python3": "if [[ $FAILURE == classifier && $1 == -c && $2 == *'outage ='* ]]; then exit 3; fi\nif [[ $FAILURE == parser && $# == 4 && $1 == - && $2 == 0.4.1 ]]; then echo 'unclassified parser failure' >&2; exit 64; fi\nexec " + strconv.Quote(python) + " \"$@\"\n",
+				"git":     "if [[ $1 == ls-remote ]]; then\nif [[ $TARGET == git ]]; then printf '%040d\\trefs/tags/v0.4.1\\n' 0; else printf '%s\\trefs/tags/v0.4.1\\n' " + strings.Repeat("c", 40) + "; fi\nelse exec " + strconv.Quote(git) + " \"$@\"; fi\n",
+				"npm": `if [[ $1 == --version ]]; then echo 11.12.0; exit 0; fi
+if [[ $TARGET == npm ]]; then
+  case $FAILURE in
+    refused|classifier) echo '{"error":{"code":"ECONNREFUSED"}}'; exit 1 ;;
+    timeout) echo '{"error":{"code":"ETIMEDOUT"}}'; exit 1 ;;
+    server) echo '{"error":{"code":"E503"}}'; exit 1 ;;
+    unknown) echo '{"error":{"code":"E401"}}'; exit 1 ;;
+    mismatch) if [[ "$*" == *--json* ]]; then echo '"sha512-ZGVm"'; else echo sha512-ZGVm; fi; exit 0 ;;
+  esac
+fi
+if [[ "$*" == *--json* ]]; then echo '"sha512-YWJj"'; else echo sha512-YWJj; fi
+`,
+				"curl": `http_code() { [[ "$*" == *--write-out* ]] && printf '\n%s' "$HTTP_CODE"; return 0; }
+args="$*"
+target=crates
+[[ "$*" == *pypi.org* ]] && target=pypi
+if [[ $TARGET == "$target" ]]; then
+  case $FAILURE in
+    refused) HTTP_CODE=000; http_code "$args"; exit 7 ;;
+    timeout) HTTP_CODE=000; http_code "$args"; exit 28 ;;
+    server) HTTP_CODE=503; http_code "$args"; exit 22 ;;
+    unknown) HTTP_CODE=000; http_code "$args"; exit 35 ;;
+    malformed) printf invalid-json; HTTP_CODE=200; http_code "$args"; exit 0 ;;
+  esac
+fi
+if [[ $target == crates ]]; then
+  digest=` + strings.Repeat("a", 64) + `
+  [[ $TARGET == crates && $FAILURE == mismatch ]] && digest=` + strings.Repeat("d", 64) + `
+  printf '{"vers":"%s","cksum":"%s"}' "$RUST_VERSION" "$digest"
+else
+  digest=` + strings.Repeat("b", 64) + `
+  [[ $TARGET == pypi && $FAILURE == mismatch ]] && digest=` + strings.Repeat("d", 64) + `
+  printf '{"urls":[{"packagetype":"bdist_wheel","filename":"pipelock_verify-0.4.1-py3-none-any.whl","digests":{"sha256":"%s"}}]}' "$digest"
+fi
+HTTP_CODE=200; http_code "$args"
+`,
+				"sleep": "exit 0\n",
+			}
+			for name, body := range stubs {
+				if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/usr/bin/env bash\n"+body), 0o700); err != nil { // #nosec G306 -- executable registry fixtures.
+					t.Fatal(err)
+				}
+			}
+			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts/release-verifier-install-gate.sh"), "--tag", "v3.4.0") // #nosec G204 -- checked-in script in an isolated fixture.
+			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != tc.code || !strings.Contains(string(out), tc.wantText) {
+				t.Fatalf("exit=%v, want %d and %q; output:\n%s", err, tc.code, tc.wantText, out)
+			}
+		})
+	}
+}
