@@ -60,6 +60,12 @@ const (
 	EventWSClose                     = "ws_close"
 	EventWSOpen                      = "ws_open"
 	EventWSScan                      = "ws_scan"
+	EventWouldBlock                  = "would_block"
+	EventWouldEscalate               = "would_escalate"
+	EventUninspected                 = "uninspected"
+	EventWatchOnlyEnforced           = "watch_only_enforced"
+	EventWatchOnlyMode               = "watch_only_mode"
+	EventWatchOnlyObservation        = "watch_only_observation"
 )
 
 // Descriptor contains only metadata consumed by external emission. Local log
@@ -129,5 +135,11 @@ func Builtins() []Descriptor {
 		{EventWSClose, "info", "allow"},
 		{EventWSOpen, "info", "allow"},
 		{EventWSScan, "warn", "warn"},
+		{EventWouldBlock, "warn", "warn"},
+		{EventWouldEscalate, "warn", "warn"},
+		{EventUninspected, "warn", "warn"},
+		{EventWatchOnlyEnforced, "warn", "block"},
+		{EventWatchOnlyMode, "warn", "warn"},
+		{EventWatchOnlyObservation, "warn", "warn"},
 	}
 }

@@ -26,7 +26,12 @@ const DoWAgentDefault = "_default"
 
 // Metrics collects Prometheus counters and histograms for the fetch proxy.
 type Metrics struct {
-	registry *prometheus.Registry
+	registry                  *prometheus.Registry
+	watchOnlyMode             prometheus.Gauge
+	watchOnlyEvents           *prometheus.CounterVec
+	watchOnlyBytes            *prometheus.CounterVec
+	watchOnlyEnabled          bool
+	watchOnlyUninspectedBytes int64
 
 	// Proxy / tunnel / SNI / reverse proxy (proxy.go).
 	requestsTotal           *prometheus.CounterVec
@@ -254,6 +259,7 @@ func New() *Metrics {
 		evidenceRequirementValues:   make(map[string]bool),
 	}
 
+	m.registerWatchOnlyMetrics(reg)
 	m.registerProxyMetrics(reg)
 	m.registerDecisionMetrics(reg)
 	m.registerWSMetrics(reg)

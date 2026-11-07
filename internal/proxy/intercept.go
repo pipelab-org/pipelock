@@ -611,9 +611,51 @@ func newInterceptHandler(
 	target := net.JoinHostPort(ic.TargetHost, ic.TargetPort)
 	// Initialize the shared budget before taking request-local context copies.
 	_ = interceptSizeExemptScanBudget(ic)
+	var watchTouched atomic.Bool
+	watchTouched.Store(ic.Config.WatchOnly)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestContext := *ic
 		ic := &requestContext
+		// Refresh the mode for each request in a long-lived intercepted tunnel.
+		if ic.Proxy != nil {
+			current := ic.Proxy.cfgPtr.Load()
+			if current != nil && current.WatchOnly {
+				watchTouched.Store(true)
+			}
+			if watchTouched.Load() {
+				ic.Proxy.reloadMu.RLock()
+				resolved := ic.Proxy.resolveAgent(ic.Agent)
+				if resolved != nil {
+					ic.Config = resolved.Config
+					ic.IssuerRuntime = ic.Proxy.issuerCookieRuntime.Load()
+					var release func()
+					ic.Scanner, release, _ = ic.Proxy.pinResolvedScanner(resolved)
+					defer release()
+				}
+				ic.Proxy.reloadMu.RUnlock()
+			}
+		}
+		if ic.Config.WatchOnly {
+			reqHost, reqPort, splitErr := net.SplitHostPort(r.Host)
+			if splitErr != nil {
+				reqHost, reqPort = r.Host, "443"
+			}
+			if !strings.EqualFold(reqHost, ic.TargetHost) || reqPort != ic.TargetPort {
+				watchObservation(ic.Logger, ic.Metrics, "intercept", "tls_authority_mismatch", "request authority differs from CONNECT authority", config.ActionBlock, 0, true)
+				writeBlockedError(w, blockInfoFor(blockreason.AuthorityMismatch, ""), "enforced in watch-only: authority mismatch", http.StatusForbidden)
+				return
+			}
+
+			r.URL.Scheme, r.URL.Host, r.RequestURI = schemeHTTPS, target, ""
+			serveWatchHTTP(w, r, watchHTTPOptions{
+				Intercept: ic, Config: ic.Config, Scanner: ic.Scanner, Logger: ic.Logger,
+				Metrics: ic.Metrics, Transport: "intercept", Upstream: upstream, Proxy: ic.Proxy, Agent: ic.Agent, ActorAuth: ic.ActorAuth,
+				ClientIP: ic.ClientIP, RequestID: ic.RequestID, KillSwitch: ic.KillSwitch,
+				MaxResponseBytes: ic.Config.TLSInterception.MaxResponseBytes,
+			})
+			return
+		}
+
 		w = ic.Proxy.withAdaptiveRefusal(w, adaptiveRefusalOptions{config: ic.Config, agent: ic.Agent, clientIP: ic.ClientIP, auth: ic.ActorAuth, host: func() string { return ic.TargetHost }, transport: "intercept", level: func() int { return interceptEscalationLevel(ic) }})
 		if ic.Proxy != nil {
 			ic.receiptShard = ic.Proxy.admitReceiptShard()

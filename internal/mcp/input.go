@@ -278,6 +278,7 @@ func ForwardScannedInput(
 	tracker *RequestTracker,
 	opts MCPProxyOpts,
 ) {
+	liveWatchOpts := opts
 	opts = opts.snapshotScanPolicy()
 	sc := opts.scanner()
 	policyCfg := opts.policyCfg()
@@ -347,6 +348,17 @@ func ForwardScannedInput(
 
 	for {
 		line, err := reader.ReadMessage()
+		var uninspected *transport.UninspectedMessageChunkError
+		if errors.As(err, &uninspected) && liveWatchOpts.watchOnly() {
+			forwardMu.Lock()
+			forwardErr := forwardWatchUninspected(line, err, reader, writer, liveWatchOpts.snapshotWatchPolicy())
+			forwardMu.Unlock()
+			if forwardErr != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: watch-only message stopped: %v\n", forwardErr)
+				return
+			}
+			continue
+		}
 		if err != nil {
 			expectedClose := opts.sessionExit.inProgress() && isSessionExitCloseErr(err)
 			if !errors.Is(err, io.EOF) && !expectedClose {
@@ -355,6 +367,27 @@ func ForwardScannedInput(
 			return
 		}
 		lineNum++
+		opts = liveWatchOpts.snapshotWatchPolicy()
+		if !mcpWatchCapacityAvailable(opts, len(line)) {
+			_, _ = fmt.Fprintln(logW, "pipelock: session capacity unavailable after enabling enforcement")
+			return
+		}
+		if opts.watchOnly() {
+			decision := watchInputDecision(line, logW, "default", opts)
+			if decision.Blocked != nil {
+				blockedCh <- *decision.Blocked
+				continue
+			}
+			frame := ParseMCPFrame(line)
+			if tracker != nil && isTrackableRequest(line, frame.ID) {
+				tracker.TrackRequest(frame.ID, frame.Method)
+			}
+			if err := forwardMessage(decision.ForwardMessage); err != nil {
+				_, _ = fmt.Fprintf(logW, "pipelock: watch-only input forward failed: %v\n", err)
+				return
+			}
+			continue
+		}
 		var denialAudit mcpDenialAudit
 		hadAdaptiveFinding = false
 		var deferredGeneration uint64

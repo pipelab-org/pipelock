@@ -3,6 +3,14 @@
 This guide covers techniques for managing DLP pattern false positives
 in pipelock, including the per-pattern warn mode for safe rollout of new patterns.
 
+## Observing before enforcement
+
+Set `watch_only: true` in the configuration used by your proxy, then route the agent through it. TLS interception remains a separate setting and requires the client to trust the configured CA. Use `pipelock doctor` to check the selected mode and the running proxy's `/stats` to check the applied mode.
+
+Exercise the work you need the agent to do, including authentication, downloads, streaming responses, and tool calls. Review `would_block` and `would_escalate` events for policy changes you may need. Review `uninspected` events separately: they identify traffic that passed without complete inspection. The core credential floor, kill switch, and access controls remain active. Watch-only can still refuse a detected credential leak, an explicit operator stop, or a caller that fails authentication, trusted-origin checks, API or administrator authorization, or listener bind restrictions.
+
+After reviewing the findings and inspection gaps, set `watch_only: false` and confirm the `watch_only_mode` reload event. The configured policy actions apply again. See the [configuration reference](../configuration.md#watch-only) for fields, metrics, and retained enforcement.
+
 ## Staging new DLP patterns with warn mode
 
 When deploying a new DLP pattern to production, there is always a risk of

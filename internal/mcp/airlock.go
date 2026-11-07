@@ -20,6 +20,11 @@ const (
 // edge-bound prevents a timer-deescalated session from being re-armed merely
 // because its adaptive level has not yet recovered.
 func recordMCPAdaptiveSignal(opts MCPProxyOpts, rec session.Recorder, sig session.SignalType, p decide.EscalationParams) bool {
+	if opts.watchOnly() {
+		observeWatchMCPSignal(opts, rec, sig, p)
+		return false
+	}
+
 	if session.ClassifiedDenialSignal(sig) &&
 		(p.DenialScanner != "" || p.DenialReason != "") &&
 		!session.NoteClassifiedDenial(rec, "", p.DenialScanner, p.DenialReason, p.PolicyHash) {
@@ -61,4 +66,27 @@ func recordMCPAdaptiveSignal(opts MCPProxyOpts, rec session.Recorder, sig sessio
 		}
 	}
 	return true
+}
+
+// The optional observation recorder reuses the existing scoring rules while
+// keeping enforcement score, escalation and airlock state unchanged.
+func observeWatchMCPSignal(opts MCPProxyOpts, rec session.Recorder, sig session.SignalType, p decide.EscalationParams) {
+	observer, ok := rec.(interface {
+		ObserveWatchOnlySignal(string, session.SignalType, *config.AdaptiveEnforcement, decide.EscalationParams) (bool, string, string)
+	})
+	cfg := opts.adaptiveCfg()
+	if !ok || cfg == nil || !cfg.Enabled {
+		return
+	}
+	if escalated, from, to := observer.ObserveWatchOnlySignal("", sig, cfg, p); escalated {
+		opts.recordWatch("adaptive", "session would escalate from "+from+" to "+to, "escalate", 0, false)
+	}
+}
+
+func observeWatchMCPClean(opts MCPProxyOpts) {
+	if observer, ok := opts.Rec.(interface {
+		ObserveWatchOnlyClean(string, *config.AdaptiveEnforcement)
+	}); ok {
+		observer.ObserveWatchOnlyClean("", opts.adaptiveCfg())
+	}
 }

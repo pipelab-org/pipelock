@@ -596,7 +596,7 @@ func (c *Config) Validate() error {
 func (c *Config) ModeAuditEnforcedWarnings() []Warning {
 	var warnings []Warning
 	add := func(mode string, enforce *bool, field, control string) {
-		effective := Config{Mode: mode, Enforce: enforce}
+		effective := Config{Mode: mode, Enforce: enforce, WatchOnly: c.WatchOnly}
 		if effective.Mode != ModeAudit || !effective.EnforceEnabled() {
 			return
 		}

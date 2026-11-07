@@ -1100,6 +1100,8 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				mcpCaptureObs = s.captureWriter
 			}
 			listenerOpts := mcp.MCPProxyOpts{
+				WatchOnly:                    cfg.WatchOnly,
+				WatchOnlyFn:                  func() bool { return s.proxy.CurrentConfig().WatchOnly },
 				ListenerBearerToken:          s.mcpListenerBearerToken,
 				ListenerAllowedOrigins:       s.opts.MCPAllowedOrigins,
 				ListenerAllowUnauthenticated: s.opts.MCPAllowUnauthenticated,
@@ -1159,7 +1161,12 @@ func (s *Server) Start(ctx context.Context) (startErr error) {
 				FrozenToolStableKey:      s.opts.MCPUpstream,
 				ContractLoaderPtr:        s.proxy.ContractLoaderPtr(),
 				ContractAgent:            edition.ProfileDefault,
-				DialContext:              verifiedDialContext(mcp.NewMetadataSafeDialContext(mcpScannerFn), mcpResolution, s.opts.Stderr),
+				DialContext: verifiedDialContext(mcp.NewWatchMetadataSafeDialContext(mcpScannerFn,
+					func() bool { return s.proxy.CurrentConfig().WatchOnly },
+					func(reason string) {
+						s.logger.LogWatchOnly("mcp_http", "ssrf_metadata", reason, config.ActionBlock, 0, false)
+						s.metrics.RecordWatchOnly("mcp_http", "ssrf_metadata", config.ActionBlock, 0)
+					}), mcpResolution, s.opts.Stderr),
 			}
 			applyMCPDoWOpts(&listenerOpts, mcpDoWWiring, true)
 			if s.opts.MCPAuthTokenFile != "" {

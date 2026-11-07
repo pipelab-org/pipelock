@@ -24,6 +24,9 @@ import (
 // to an upstream MCP server. MCP is JSON-RPC over text frames only; binary frames
 // are rejected (fail-closed). Fragment reassembly uses the shared wsutil package.
 type WSClient struct {
+	WatchOnly  func() bool
+	watchState watchWSState
+
 	conn     net.Conn
 	r        io.Reader // reader for frames (may differ from conn when Dial returns a buffered reader)
 	isServer bool      // true = unmasked writes (server side), false = masked writes (client side)
@@ -108,6 +111,9 @@ func NewWSClientFromConn(conn net.Conn, server bool) *WSClient {
 // Handles fragment reassembly, rejects binary frames, and validates UTF-8.
 // Returns io.EOF on clean close.
 func (c *WSClient) ReadMessage() ([]byte, error) {
+	if c.watchState.active || c.WatchOnly != nil && c.WatchOnly() {
+		return c.readWatchMessage()
+	}
 	for {
 		hdr, err := ws.ReadHeader(c.r)
 		if err != nil {

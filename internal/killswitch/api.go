@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/authlimit"
@@ -24,7 +25,8 @@ const (
 
 // APIHandler handles HTTP requests to the kill switch API.
 type APIHandler struct {
-	ctrl *Controller
+	ctrl         *Controller
+	accessDenied atomic.Pointer[func()]
 
 	mu          sync.Mutex
 	reqCount    int
@@ -45,6 +47,12 @@ func NewAPIHandler(ctrl *Controller) *APIHandler {
 	}
 }
 
+// SetAccessDeniedObserver installs an observational callback for API refusals.
+// It cannot alter the authentication decision.
+func (h *APIHandler) SetAccessDeniedObserver(fn func()) {
+	h.accessDenied.Store(&fn)
+}
+
 // authenticate enforces bearer authentication for both API endpoints. It
 // returns false after writing the response when the request must not proceed.
 //
@@ -54,8 +62,15 @@ func NewAPIHandler(ctrl *Controller) *APIHandler {
 // gets no oracle from the refusal and a parallel burst cannot outrun the
 // count. A request that presents no token is rejected but not counted. A valid
 // token releases the address's reservations.
-func (h *APIHandler) authenticate(w http.ResponseWriter, r *http.Request) (*runtime, bool) {
-	rt := h.ctrl.cfg.Load()
+func (h *APIHandler) authenticate(w http.ResponseWriter, r *http.Request) (rt *runtime, allowed bool) {
+	defer func() {
+		if !allowed {
+			if fn := h.accessDenied.Load(); fn != nil && *fn != nil {
+				(*fn)()
+			}
+		}
+	}()
+	rt = h.ctrl.cfg.Load()
 	if rt.apiToken == "" {
 		// No token configured - API disabled
 		http.Error(w, "kill switch API not configured (no api_token)", http.StatusServiceUnavailable)

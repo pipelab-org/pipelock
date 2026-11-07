@@ -69,7 +69,7 @@ func (c *upstreamCrossMessage) enforce(ctx context.Context, r *wsRelay, log *aud
 	// A finding may be warn-only. An unjoined field is not a finding: the
 	// raw tail cannot see across the JSON envelope, so the message closes
 	// in every action, including warn and response-scan exemptions.
-	if !reported && c.fields.Incomplete(frame) {
+	if !reported && r.watchRefusal(c.fields.Incomplete(frame), "ws_protocol", crossMessageIncompleteReason, "uninspected") {
 		r.blockCrossMessageIncomplete(log, audit.DirectionServerToClient)
 		return true
 	}
@@ -110,6 +110,10 @@ func (r *wsRelay) enforceUpstreamCrossMessageViews(ctx context.Context, log *aud
 		if ctx.Err() != nil {
 			return false, false
 		}
+		if joined.Failed() && r.watchOnly() {
+			r.recordWatch(responseScanLayer, joined.ScanError, "uninspected", int64(len(view[1])), false)
+			continue
+		}
 		if joined.Failed() {
 			r.closeUpstreamCrossMessage(log, "response scan failed: "+joined.ScanError, "response scan incomplete", "response_scan_error",
 				blockInfoFor(blockreason.ParseError, "response_scan_error"))
@@ -144,6 +148,10 @@ func (r *wsRelay) enforceUpstreamCrossMessageViews(ctx context.Context, log *aud
 	}
 	r.proxy.metrics.RecordWSScanHit("injection")
 	action := r.upstreamCrossMessageAction()
+	if r.watchOnly() {
+		r.recordWatch(responseScanLayer, strings.Join(names, ", "), action, 0, false)
+		return false, true
+	}
 	if action == config.ActionWarn {
 		log.LogWSScan(audit.WSScanEvent{
 			Target: r.targetURL, Direction: audit.DirectionServerToClient, ClientIP: r.clientIP, RequestID: r.requestID,

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 // applyFullResponsePolicy prepares an outbound request when headers are supplied,
@@ -99,4 +100,13 @@ func openEndedByteRange(value string) bool {
 
 func writeUnsupportedRange(w http.ResponseWriter, requestID string) {
 	writeBlockedError(w, blockInfoFor(blockreason.ResponseIncomplete, "browser_cache").WithRequestID(requestID), unsupportedRangeMessage, http.StatusForbidden)
+}
+
+// applyFullResponsePolicyForConfig preserves range and cache semantics while
+// watching. The caller reports partial representations as uninspected.
+func applyFullResponsePolicyForConfig(cfg *config.Config, headers http.Header, resp *http.Response) bool {
+	if cfg != nil && cfg.WatchOnly {
+		return true
+	}
+	return applyFullResponsePolicy(headers, resp)
 }

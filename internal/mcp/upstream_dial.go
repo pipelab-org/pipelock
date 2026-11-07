@@ -19,25 +19,46 @@ var defaultMCPDialLookupHost = net.DefaultResolver.LookupHost
 // transports. It enforces the cloud metadata hard floor at connection time while
 // preserving existing support for legitimate local/private MCP servers.
 func NewMetadataSafeDialContext(scannerFn func() *scanner.Scanner) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	dialer := &net.Dialer{
-		Timeout:   10 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}
-	return newMetadataSafeDialContext(scannerFn, dialer.DialContext)
+	return NewWatchMetadataSafeDialContext(scannerFn, nil, nil)
+}
+
+// NewWatchMetadataSafeDialContext observes the existing destination refusal in
+// watch-only mode while retaining the same resolution and dialing behavior.
+// The mode is sampled per dial, so a reload applies to subsequent connections.
+func NewWatchMetadataSafeDialContext(scannerFn func() *scanner.Scanner, watchOnly func() bool, onWouldBlock func(string)) func(context.Context, string, string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	return newWatchMetadataSafeDialContext(scannerFn, dialer.DialContext, watchOnly, onWouldBlock)
 }
 
 func newMetadataSafeDialContext(
 	scannerFn func() *scanner.Scanner,
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error),
 ) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return newWatchMetadataSafeDialContext(scannerFn, dialContext, nil, nil)
+}
+
+func newWatchMetadataSafeDialContext(scannerFn func() *scanner.Scanner, dialContext func(context.Context, string, string) (net.Conn, error), watchOnly func() bool, onWouldBlock func(string)) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		watch := watchOnly != nil && watchOnly()
+		metadataRefusal := func(host string, ip net.IP) error {
+			err := mcpMetadataDialBlock(host, ip)
+			if !watch {
+				return err
+			}
+			if onWouldBlock != nil {
+				onWouldBlock(err.Error())
+			}
+			return nil
+		}
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("mcp upstream dial: split addr %q: %w", addr, err)
 		}
 		if ip := normalizeMCPDialIP(net.ParseIP(stripMCPDialIPv6Zone(host))); ip != nil {
 			if scanner.IsCloudMetadataIP(ip) {
-				return nil, mcpMetadataDialBlock(host, ip)
+				if err := metadataRefusal(host, ip); err != nil {
+					return nil, err
+				}
 			}
 			return dialContext(ctx, network, addr)
 		}
@@ -61,7 +82,9 @@ func newMetadataSafeDialContext(
 				return nil, fmt.Errorf("mcp upstream dial: unparseable IP %q from DNS for %s", ipStr, host)
 			}
 			if scanner.IsCloudMetadataIP(ip) {
-				return nil, mcpMetadataDialBlock(host, ip)
+				if err := metadataRefusal(host, ip); err != nil {
+					return nil, err
+				}
 			}
 			dialAddrs = append(dialAddrs, net.JoinHostPort(ip.String(), port))
 		}

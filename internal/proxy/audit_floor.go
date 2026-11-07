@@ -30,6 +30,12 @@ func urlResultBlocks(cfg *config.Config, sc *scanner.Scanner, rawURL string, res
 	if result.Allowed {
 		return false
 	}
+	if cfg != nil && cfg.WatchOnly {
+		if scanner.IsCoreCredentialResult(result) {
+			return true
+		}
+		return sc != nil && scanner.IsCoreCredentialResult(sc.ScanURLCoreFloor(rawURL))
+	}
 	if enforcedBlock(cfg, config.ActionBlock, scanner.IsCoreCriticalResult(result)) {
 		return true
 	}

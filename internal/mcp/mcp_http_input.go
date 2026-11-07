@@ -71,6 +71,14 @@ func scanHTTPInput(msg []byte, logW io.Writer, sessionKey, auditSessionKey strin
 // When cee is non-nil, outbound payloads are recorded for cross-request
 // exfiltration detection after content scanning passes.
 func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionKey string, opts MCPProxyOpts) (result httpInputDecision) {
+	opts = opts.snapshotWatchPolicy()
+	if !mcpWatchCapacityAvailable(opts, len(msg)) {
+		frame := ParseMCPFrame(msg)
+		return httpInputDecision{Blocked: &BlockedRequest{ID: frame.ID, IsNotification: isRPCNotification(frame.ID), ErrorMessage: "pipelock: session capacity unavailable"}}
+	}
+	if opts.watchOnly() {
+		return watchInputDecision(msg, logW, sessionKey, opts)
+	}
 	// Strip any inbound com.pipelock/mediation from _meta before
 	// parsing, scanning, or forwarding. Prevents an agent (or compromised
 	// upstream that managed to send back through the listener) from

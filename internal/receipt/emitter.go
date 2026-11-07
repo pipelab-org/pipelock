@@ -592,6 +592,8 @@ func (e *Emitter) SignerKeyHex() string {
 
 // EmitOpts holds the per-decision context for emitting a receipt.
 type EmitOpts struct {
+	watchOnlySet           bool
+	watchOnly              bool
 	promptInjectionModeSet bool
 	promptInjectionMode    string
 	// ShardIndex is selected once at admission and copied into later outcome,

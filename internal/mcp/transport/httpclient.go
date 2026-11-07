@@ -82,6 +82,8 @@ func HasSingleSSEContentType(header http.Header) bool {
 // transport specification, handling both JSON and SSE response types,
 // session ID tracking, and 202 Accepted for notifications.
 type HTTPClient struct {
+	WatchOnly func() bool
+
 	// ResponseKeyValidator is installed by the MCP pipeline before use. It
 	// gates transport state while leaving rejected bytes for pipeline diagnostics.
 	ResponseKeyValidator func([]byte) error
@@ -195,7 +197,11 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 
 // SendMessageWithOptions sends one message with body-derived request metadata.
 func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opts HTTPMessageOptions) (MessageReader, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, bytes.NewReader(msg))
+	return c.sendMessageReader(ctx, msg, bytes.NewReader(msg), opts)
+}
+
+func (c *HTTPClient) sendMessageReader(ctx context.Context, msg []byte, body io.Reader, opts HTTPMessageOptions) (MessageReader, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url, body)
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
@@ -279,6 +285,27 @@ func (c *HTTPClient) SendMessageWithOptions(ctx context.Context, msg []byte, opt
 			c.listenerSessionToken = token
 		}
 		return nil
+	}
+
+	if c.WatchOnly != nil && c.WatchOnly() {
+		if token := resp.Header.Get(pipelockSessionTokenHeader); token != "" && !validPipelockSessionToken(token) {
+			_ = resp.Body.Close()
+			return nil, ErrInvalidPipelockSessionToken
+		}
+		var reader interface {
+			MessageReader
+			io.Closer
+		}
+		if HasSingleSSEContentType(resp.Header) && !responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+			reader = newWatchSSEBridgeReader(resp.Body)
+		} else {
+			reader = &WatchBodyReader{Body: resp.Body, Uninspected: responseencoding.HasNonIdentityContentEncoding(resp.Header), Reason: "opaque or oversized HTTP response"}
+		}
+		reader = &sessionResponseReader{reader: reader, validate: c.ResponseKeyValidator, commit: trackSessionID}
+		if initializeID != nil {
+			reader = &initializeResponseReader{reader: reader, client: c, id: initializeID, generation: generation}
+		}
+		return reader, nil
 	}
 
 	// An empty 2xx acknowledges a notification or client response; there is
@@ -759,6 +786,12 @@ func (c *HTTPClient) OpenGETStream(ctx context.Context) (MessageReader, error) {
 	if resp.StatusCode == http.StatusMethodNotAllowed {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%w (HTTP 405)", ErrStreamNotSupported)
+	}
+	if c.WatchOnly != nil && c.WatchOnly() {
+		if HasSingleSSEContentType(resp.Header) && !responseencoding.HasNonIdentityContentEncoding(resp.Header) {
+			return newWatchSSEBridgeReader(resp.Body), nil
+		}
+		return &WatchBodyReader{Body: resp.Body, Uninspected: true, Reason: "GET response cannot be inspected as SSE"}, nil
 	}
 	// Redirect or other 3xx - since we disabled redirect-following, treat these
 	// as errors (consistent with SendMessage).

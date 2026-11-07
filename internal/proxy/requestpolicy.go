@@ -246,15 +246,26 @@ func (p *Proxy) prepareRequestPolicyBody(r *http.Request, in *requestPolicyInput
 		return requestPolicyResult{}
 	}
 	limit := p.requestPolicyBodyLimit()
+	sourceBody := r.Body
 	buf, err := io.ReadAll(io.LimitReader(r.Body, int64(limit)+1))
 	if err != nil {
+		if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+			r.Body = &watchRequestReplayBody{Reader: io.MultiReader(bytes.NewReader(buf), sourceBody), source: sourceBody}
+		}
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body could not be inspected: %v", err))
 	}
 	if len(buf) > limit {
+		if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+			r.Body = &watchRequestReplayBody{Reader: io.MultiReader(bytes.NewReader(buf), sourceBody), source: sourceBody}
+		}
 		return p.requestPolicyReadBlocked(*in, fmt.Sprintf("request body exceeds max_body_bytes (%d)", limit))
 	}
-	r.Body = io.NopCloser(bytes.NewReader(buf))
-	r.ContentLength = int64(len(buf))
+	if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+		r.Body = &watchRequestReplayBody{Reader: bytes.NewReader(buf), source: sourceBody}
+	} else {
+		r.Body = io.NopCloser(bytes.NewReader(buf))
+		r.ContentLength = int64(len(buf))
+	}
 	bufCopy := buf
 	r.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(bufCopy)), nil
@@ -375,6 +386,10 @@ func (p *Proxy) evaluateRequestPolicyBodyPredicates(in requestPolicyInput) reqpo
 // metered, audited, and receipted identically.
 func (p *Proxy) finalizeRequestPolicyDecision(in requestPolicyInput, d reqpolicy.Decision) requestPolicyResult {
 	if !d.Matched() {
+		return requestPolicyResult{}
+	}
+	if cfg := p.cfgPtr.Load(); cfg != nil && cfg.WatchOnly {
+		watchObservation(p.logger, p.metrics, in.Transport, blockLayerRequestPolicy, d.RuleName, d.Action, 0, false)
 		return requestPolicyResult{}
 	}
 	p.metrics.RecordRequestPolicyDecision(d.RuleName, d.Action)

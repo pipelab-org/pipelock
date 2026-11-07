@@ -86,7 +86,7 @@ func withReceiptPolicyHash(opts receipt.EmitOpts, canonicalHash string) receipt.
 
 func withReceiptConfig(opts receipt.EmitOpts, cfg *config.Config) receipt.EmitOpts {
 	opts = withReceiptPolicyHash(opts, cfg.CanonicalPolicyHash())
-	return receipt.WithPromptInjectionMode(opts, cfg.PromptInjectionMode())
+	return receipt.WithWatchOnly(receipt.WithPromptInjectionMode(opts, cfg.PromptInjectionMode()), cfg.WatchOnly)
 }
 
 // killSwitchLayer is the EmitOpts.Layer label used by kill-switch block sites

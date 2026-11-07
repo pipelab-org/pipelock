@@ -44,6 +44,7 @@ const doctorRootBannerText = "running as root: readability checks reflect root's
 
 type doctorReport struct {
 	ConfigFile    string              `json:"config_file"`
+	WatchOnly     bool                `json:"watch_only"`
 	Mode          string              `json:"mode"`
 	Version       string              `json:"version"`
 	RootRunBanner string              `json:"root_run_banner,omitempty"`
@@ -143,6 +144,7 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 	report := doctorReport{
 		ConfigFile: cfgLabel,
 		Mode:       cfg.Mode,
+		WatchOnly:  cfg.WatchOnly,
 		Version:    cliutil.Version,
 	}
 	report.Checks = []doctorReportCheck{
@@ -162,6 +164,13 @@ func buildDoctorReport(cfg *config.Config, cfgLabel string) doctorReport {
 		checkDoctorLicense(cfg),
 		checkDoctorSentry(cfg),
 		checkDoctorDeploymentBoundary(cfg),
+	}
+	if cfg.WatchOnly {
+		report.Checks = append(report.Checks, doctorReportCheck{
+			Name: "watch_only", Surface: doctorSurfaceConfig, Status: doctorStatusWarn, Configured: true,
+			Detail: "watch-only enabled: policy findings are observations; the core credential floor, kill switch, access controls, and forwarding failures remain enforced",
+			Next:   "review would_block and uninspected events before setting watch_only: false",
+		})
 	}
 	for _, warning := range cfg.MCPCompatibilityWarnings() {
 		report.Checks = append(report.Checks, doctorReportCheck{
@@ -387,8 +396,8 @@ func checkDoctorHTTPProxy(cfg *config.Config) doctorReportCheck {
 			Status:     doctorStatusWarn,
 			Configured: true,
 			Reachable:  true,
-			Detail:     "proxy listener is configured, but global enforce=false means observation/audit mode",
-			Next:       "set enforce=true before claiming blocking enforcement",
+			Detail:     doctorObservationDetail(cfg, "proxy listener is configured, but global enforce=false means observation/audit mode"),
+			Next:       doctorObservationNext(cfg, "set enforce=true before claiming blocking enforcement"),
 		}
 	}
 	return doctorReportCheck{
@@ -431,8 +440,8 @@ func checkDoctorTLSInterception(cfg *config.Config) doctorReportCheck {
 			Status:     doctorStatusWarn,
 			Configured: true,
 			Reachable:  true,
-			Detail:     "CA material is readable, but global enforce=false means findings on intercepted bodies are not blocking",
-			Next:       "set enforce=true before claiming blocking enforcement on intercepted HTTPS",
+			Detail:     doctorObservationDetail(cfg, "CA material is readable, but global enforce=false means findings on intercepted bodies are not blocking"),
+			Next:       doctorObservationNext(cfg, "set enforce=true before claiming blocking enforcement on intercepted HTTPS"),
 		}
 	}
 	return doctorReportCheck{
@@ -485,8 +494,8 @@ func checkDoctorRequestBodyScanning(cfg *config.Config) doctorReportCheck {
 			Status:     doctorStatusWarn,
 			Configured: true,
 			Reachable:  true,
-			Detail:     "enabled, but global enforce=false means request body findings are not blocking",
-			Next:       "set enforce=true and request_body_scanning.action=block for blocking enforcement",
+			Detail:     doctorObservationDetail(cfg, "enabled, but global enforce=false means request body findings are not blocking"),
+			Next:       doctorObservationNext(cfg, "set enforce=true and request_body_scanning.action=block for blocking enforcement"),
 		}
 	}
 	if cfg.RequestBodyScanning.Action != config.ActionBlock {
@@ -533,8 +542,8 @@ func checkDoctorBrowserShield(cfg *config.Config) doctorReportCheck {
 		enforcing = false
 	case !doctorGlobalEnforce(cfg):
 		status = doctorStatusWarn
-		detail = "enabled with TLS interception, but global enforce=false means findings are not blocking"
-		next = "set enforce=true before claiming blocking enforcement on browser responses"
+		detail = doctorObservationDetail(cfg, "enabled with TLS interception, but global enforce=false means findings are not blocking")
+		next = doctorObservationNext(cfg, "set enforce=true before claiming blocking enforcement on browser responses")
 		enforcing = false
 	}
 	return doctorReportCheck{
@@ -1068,8 +1077,22 @@ func openReadable(path string) bool {
 	return true
 }
 
+func doctorObservationDetail(cfg *config.Config, legacy string) string {
+	if cfg.WatchOnly {
+		return "watch_only=true observes configured findings; core credential floor, kill switch, and access controls remain enforced"
+	}
+	return legacy
+}
+
+func doctorObservationNext(cfg *config.Config, legacy string) string {
+	if cfg.WatchOnly {
+		return "review would_block and uninspected events, then set watch_only=false to apply the configured policy"
+	}
+	return legacy
+}
+
 func doctorGlobalEnforce(cfg *config.Config) bool {
-	return cfg.Enforce == nil || *cfg.Enforce
+	return cfg.EnforceEnabled()
 }
 
 // doctorRootBannerMessage returns a non-empty advisory string when the
@@ -1090,6 +1113,9 @@ func printDoctorReport(cmd *cobra.Command, report doctorReport, color bool) {
 	_, _ = fmt.Fprintln(w, "===========================")
 	_, _ = fmt.Fprintf(w, "Config: %s\n", report.ConfigFile)
 	_, _ = fmt.Fprintf(w, "Mode:   %s\n", report.Mode)
+	if report.WatchOnly {
+		_, _ = fmt.Fprintln(w, "Watch-only: enabled (core credential floor, kill switch, and access controls still enforced)")
+	}
 	if banner := doctorRootBannerMessage(); banner != "" {
 		_, _ = fmt.Fprintln(w)
 		_, _ = fmt.Fprintf(w, "%s %s\n", doctorStatusTag(doctorStatusWarn, color), banner)
