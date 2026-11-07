@@ -242,13 +242,19 @@ class GoToolchainTest(unittest.TestCase):
                   "        shard: [a, b, c]\n        go:\n")
         self.assert_unchanged("release shard list")
 
-    def test_matrix_include_entries_are_projected_to_the_read_keys(self) -> None:
+    def test_matrix_include_and_exclude_entries_stay_whole(self) -> None:
+        # Include and exclude entries match on every dimension, so editing
+        # only shard there can still change which Go versions run.
         self.edit(".github/workflows/release.yaml", "          - version: '1.27.3'\n",
                   "          - version: '1.27.3'\n        include:\n          - shard: x\n")
         self.commit("include entry")
         self.base = self.rev()
         self.edit(".github/workflows/release.yaml", "          - shard: x\n", "          - shard: y\n")
-        self.assert_unchanged("include entry edits only a key setup-go does not read")
+        self.assert_changed("include entry edits a key setup-go does not read")
+        self.base = self.rev()
+        self.edit(".github/workflows/release.yaml", "        include:\n",
+                  "        exclude:\n          - {go: {version: '1.27.3'}, shard: z}\n        include:\n")
+        self.assert_changed("exclude entry on an unread dimension")
         self.base = self.rev()
         self.edit(".github/workflows/release.yaml", "          - shard: y\n", "          - shard: x\n")
         self.edit(".github/workflows/release.yaml", "          - shard: x\n",
@@ -264,9 +270,17 @@ class GoToolchainTest(unittest.TestCase):
         self.edit(".github/workflows/ci.yaml", "      - run: go test ./...\n",
                   "      - run: go test ./...\n  bench:\n    steps:\n"
                   "      - uses: actions/setup-go@1111111111111111111111111111111111111111\n"
-                  "        if: steps.sources.outputs.changed == 'true'\n"
                   "        with:\n          go-version: '1.26'\n      - run: go test -bench=. ./...\n")
         self.assert_unchanged("new job, same pin")
+
+    def test_new_job_that_can_skip_a_known_setup_go_is_a_toolchain_change(self) -> None:
+        # When the condition is false, the job's Go commands use the runner's Go.
+        self.edit(".github/workflows/ci.yaml", "      - run: go test ./...\n",
+                  "      - run: go test ./...\n  bench:\n    steps:\n"
+                  "      - uses: actions/setup-go@1111111111111111111111111111111111111111\n"
+                  "        if: steps.sources.outputs.changed == 'true'\n"
+                  "        with:\n          go-version: '1.26'\n      - run: go test -bench=. ./...\n")
+        self.assert_changed("new job, conditional install")
 
     def test_existing_job_switching_to_another_known_pin_is_a_toolchain_change(self) -> None:
         # 1.27 already appears elsewhere; the test job still runs Go it did not run.
@@ -299,6 +313,80 @@ class GoToolchainTest(unittest.TestCase):
                 self.reset_ci()
                 self.edit(".github/workflows/ci.yaml", old, new)
                 self.assert_changed(new)
+
+    def write_job(self, name: str, body: str) -> None:
+        self.write(f".github/workflows/{name}.yaml", body)
+        self.commit(f"base {name}")
+        self.base = self.rev()
+
+    def test_bracket_matrix_reference_tracks_the_whole_matrix(self) -> None:
+        self.write_job("b", "jobs:\n  b:\n    strategy:\n      matrix:\n        go: ['1.26']\n    steps:\n"
+                       "      - uses: actions/setup-go@v7\n        with:\n          go-version: ${{ matrix['go'] }}\n")
+        self.edit(".github/workflows/b.yaml", "go: ['1.26']", "go: ['1.27']")
+        self.assert_changed("bracket matrix reference")
+
+    def test_env_reference_in_go_version_tracks_env(self) -> None:
+        self.write_job("e", "env:\n  GO_VERSION: '1.26'\njobs:\n  e:\n    steps:\n"
+                       "      - uses: actions/setup-go@v7\n        with:\n          go-version: ${{ env.GO_VERSION }}\n")
+        self.edit(".github/workflows/e.yaml", "GO_VERSION: '1.26'", "GO_VERSION: '1.27'")
+        self.assert_changed("env-driven go-version")
+
+    def test_matrix_reference_in_gotoolchain_tracks_the_key(self) -> None:
+        self.write_job("t", "jobs:\n  t:\n    strategy:\n      matrix:\n        toolchain: [local]\n"
+                       "        shard: [a]\n    env:\n      GOTOOLCHAIN: ${{ matrix.toolchain }}\n    steps:\n"
+                       "      - run: go test ./...\n")
+        self.edit(".github/workflows/t.yaml", "shard: [a]", "shard: [a, b]")
+        self.assert_unchanged("unread matrix key")
+        self.base = self.rev()
+        self.edit(".github/workflows/t.yaml", "toolchain: [local]", "toolchain: [go1.27.3]")
+        self.assert_changed("matrix-driven GOTOOLCHAIN")
+
+    def test_matrix_reference_in_setup_go_condition_tracks_the_key(self) -> None:
+        self.write_job("c", "jobs:\n  c:\n    strategy:\n      matrix:\n        install_go: [true]\n    steps:\n"
+                       "      - uses: actions/setup-go@v7\n        if: matrix.install_go\n"
+                       "        with:\n          go-version: '1.26'\n")
+        self.edit(".github/workflows/c.yaml", "install_go: [true]", "install_go: [false]")
+        self.assert_changed("matrix-driven setup-go condition")
+
+    def test_local_action_inputs_are_tracked(self) -> None:
+        self.write(".github/actions/go/action.yml",
+                   "inputs:\n  go:\n    default: '1.26'\nruns:\n  using: composite\n  steps:\n"
+                   "    - uses: actions/setup-go@v7\n      with:\n        go-version: ${{ inputs.go }}\n")
+        self.write_job("l", "jobs:\n  l:\n    steps:\n      - uses: ./.github/actions/go\n        with:\n          go: '1.26'\n")
+        self.edit(".github/workflows/l.yaml", "go: '1.26'", "go: '1.27'")
+        self.assert_changed("version passed to a local action")
+        self.base = self.rev()
+        self.edit(".github/actions/go/action.yml", "default: '1.26'", "default: '1.27'")
+        self.assert_changed("local action input default")
+
+    def test_gotoolchain_run_step_condition_is_tracked(self) -> None:
+        self.write_job("r", "jobs:\n  r:\n    steps:\n      - run: echo GOTOOLCHAIN=go1.27.3 >> \"$GITHUB_ENV\"\n"
+                       "      - run: go test ./...\n")
+        self.edit(".github/workflows/r.yaml", "      - run: echo GOTOOLCHAIN",
+                  "      - if: false\n        run: echo GOTOOLCHAIN")
+        self.assert_changed("disabled GOTOOLCHAIN writer")
+
+    def test_swapping_setup_go_order_is_a_toolchain_change(self) -> None:
+        self.write_job("o", "jobs:\n  o:\n    steps:\n"
+                       "      - uses: actions/setup-go@v7\n        with: {go-version: '1.26'}\n"
+                       "      - uses: actions/setup-go@v7\n        with: {go-version: '1.27'}\n")
+        self.write(".github/workflows/o.yaml", "jobs:\n  o:\n    steps:\n"
+                   "      - uses: actions/setup-go@v7\n        with: {go-version: '1.27'}\n"
+                   "      - uses: actions/setup-go@v7\n        with: {go-version: '1.26'}\n")
+        self.assert_changed("setup-go order swap")
+
+    def test_go_version_file_contents_are_tracked(self) -> None:
+        self.write("tools/go.mod", "module example.invalid/tools\n\ngo 1.26.0\n")
+        self.write_job("v", "jobs:\n  v:\n    steps:\n      - uses: actions/setup-go@v7\n"
+                       "        with:\n          go-version-file: ./tools/go.mod\n")
+        self.write("tools/go.mod", "module example.invalid/tools\n\ngo 1.27.0\n")
+        self.assert_changed("nested go-version-file edited, workflow unchanged")
+
+    def test_expression_go_version_file_always_runs_the_proof(self) -> None:
+        self.write_job("x", "jobs:\n  x:\n    steps:\n      - uses: actions/setup-go@v7\n"
+                       "        with:\n          go-version-file: ${{ env.VERSION_FILE }}\n")
+        self.write("internal/x.go", "package x\n")
+        self.assert_changed("unrelated edit with an untrackable version file")
 
     def test_unparseable_workflow_runs_the_proof(self) -> None:
         self.write(".github/workflows/ci.yaml", "jobs: [unclosed\n")
