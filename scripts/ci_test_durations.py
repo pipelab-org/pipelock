@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from ci_test_packages import (  # noqa: E402
     DURATIONS_FILE,
     HEAVY_TREES,
+    MIN_UNMEASURED_SECONDS,
     ROOT,
     SHARDS,
     TEST_SPLITS,
@@ -101,6 +102,9 @@ def collect(
     # time; the resulting estimate is a lower bound, not a complete run.
     events: dict[tuple[str, str], float | None] = {}
     incomplete: set[tuple[str, str]] = set()
+    # Top-level names whose own subtest skipped. Distinct from a failure or a
+    # test that never finished: only this gap has no elapsed time to record.
+    skipped_subtests: set[tuple[str, str]] = set()
     paused: set[tuple[str, str]] = set()
     parents: dict[tuple[str, str], set[tuple[str, str]]] = {}
     for path in paths:
@@ -149,7 +153,10 @@ def collect(
                     active.discard(key)
                     pending.discard(key)
                     if action in ("fail", "skip"):
-                        incomplete.add((package, name.split("/", 1)[0]))
+                        top = (package, name.split("/", 1)[0])
+                        incomplete.add(top)
+                        if action == "skip" and "/" in name:
+                            skipped_subtests.add(top)
                 elapsed = event.get("Elapsed")
                 if action in ("pass", "fail", "skip") and isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
                     events[key] = max(events[key] or 0.0, float(elapsed))
@@ -193,7 +200,16 @@ def collect(
             continue
         tree = tree_for_package(package)
         if (package, name) in incomplete:
-            weight = max(weight, (previous or {}).get(tree, {}).get(name, 0.0))
+            recorded = (previous or {}).get(tree) or {}
+            if name in recorded:
+                # A recorded test keeps the slower of this run and its previous
+                # weight. A stored zero stays zero; it is a weight, not "missing".
+                weight = max(weight, recorded[name])
+            elif (package, name) in skipped_subtests:
+                # No previous weight. A skipped subtest did not measure the work
+                # the race shards run, so charge the floor an unmeasured new
+                # test already pays instead of recording zero.
+                weight = max(weight, MIN_UNMEASURED_SECONDS)
         tests = measured.setdefault(tree, {})
         tests[name] = max(tests.get(name, 0.0), round(weight, 1))
     return measured
@@ -209,8 +225,10 @@ def merge(
     A completely re-measured name takes its new time, so a test that got faster
     stops being charged its old cost. collect() charges a name whose run failed,
     never finished, or skipped any subtest at least its previous weight, so such
-    a run can raise a weight but never lower it. A name absent from the inputs keeps its old
-    time, so refreshing from a few shards never erases the rest of a tree.
+    a run can raise a weight but never lower it. A name with no previous weight
+    whose subtest skipped is charged MIN_UNMEASURED_SECONDS, the same floor an
+    unmeasured test already pays, instead of zero. A name absent from the inputs
+    keeps its old time, so refreshing from a few shards never erases the rest of a tree.
     When an inventory is given, names no longer present in the tree are dropped.
     """
     trees: dict[str, dict[str, float]] = {}

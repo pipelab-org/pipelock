@@ -96,6 +96,9 @@ func TestBodyReadErrorsAreCounted(t *testing.T) {
 	if perf.BodyReadErrors != plan.measured || perf.Errors != 0 {
 		t.Fatalf("body_read_errors=%d errors=%d, want %d and 0", perf.BodyReadErrors, perf.Errors, plan.measured)
 	}
+	if len(perf.TransportErrorSamples) != 0 || len(perf.TransportErrorKinds) != 0 {
+		t.Fatalf("body read failures contributed transport diagnostics: %+v", perf)
+	}
 	if perf.Verdict != perfInvalid {
 		t.Fatal("a run whose bodies failed to read must not be a valid measurement")
 	}
