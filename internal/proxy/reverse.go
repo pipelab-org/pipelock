@@ -1969,7 +1969,7 @@ func (t *reverseOutcomeTracker) RecordObserved(status int, bytesTransferred int6
 func (t *reverseOutcomeTracker) RecordFlushError() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.emitted {
+	if !t.emitted && outcomeReasonClaimsDelivery(t.reason) {
 		t.reason, t.bytesTransferred = receiptReasonIncomplete, -1
 		exact := false
 		t.bytesExact = &exact

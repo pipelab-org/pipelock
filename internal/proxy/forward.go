@@ -752,7 +752,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && !clientHijacked && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil {
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
 				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
 			}
 		}
@@ -2358,7 +2358,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil {
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
 				outcomeReason, outcomeBytes = receiptReasonIncomplete, -1
 			}
 		}

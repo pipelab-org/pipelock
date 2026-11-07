@@ -32,3 +32,16 @@ func sseStreamReason(reason string) string {
 	}
 	return reason
 }
+
+// outcomeReasonClaimsDelivery identifies the success markers emitted by the
+// forward, intercept and reverse outcome producers. A flush failure may replace
+// these delivery claims, but must retain existing failure and inspection reasons.
+func outcomeReasonClaimsDelivery(reason string) bool {
+	switch reason {
+	case "", "complete", "sse_stream", "sse_stream_unscanned", "unscannable_passthrough",
+		mediaUnscannedOutcome, "non_shieldable_passthrough", "strip":
+		return true
+	default:
+		return false
+	}
+}

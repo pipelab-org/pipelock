@@ -6527,7 +6527,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		var flushErr error
 		if cfg.FlightRecorder.RequireReceipts && aborted == nil {
 			flushErr = flushResponseBeforeOutcome(w, r, cfg)
-			if flushErr != nil {
+			if flushErr != nil && outcomeReasonClaimsDelivery(outcomeReason) {
 				delivery.err = flushErr
 			}
 		}
@@ -6539,7 +6539,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case denied:
 			verdict = config.ActionBlock
-		case delivery.err != nil:
+		case delivery.err != nil && outcomeReasonClaimsDelivery(outcomeReason):
 			verdict = config.ActionWarn
 			outcomeReason = "delivery_error"
 		case outcomeReason != "complete":

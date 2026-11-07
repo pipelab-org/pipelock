@@ -2166,7 +2166,7 @@ func newInterceptHandler(
 			var flushErr error
 			if ic.Config.FlightRecorder.RequireReceipts {
 				flushErr = flushResponseBeforeOutcome(w, r, ic.Config)
-				if flushErr != nil {
+				if flushErr != nil && outcomeReasonClaimsDelivery(reason) {
 					reason, transferred = receiptReasonIncomplete, -1
 				}
 			}
