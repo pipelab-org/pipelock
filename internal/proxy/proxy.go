@@ -1938,8 +1938,8 @@ func receiptFailureClass(err error) string {
 		return "entry_too_large"
 	case errors.Is(err, receipt.ErrChainSealed):
 		return "chain_sealed"
-	case errors.Is(err, errV2ReceiptEmit):
-		return "v2_emit"
+	// The specific causes come before v2_emit, which wraps any v2 receipt
+	// failure: a v2 lock timeout must still report append_lock_timeout.
 	case errors.Is(err, recorder.ErrAppendLockTimeout):
 		return receiptFailureAppendLockTimeout
 	case errors.Is(err, receiptcontent.ErrRejected):
@@ -1948,6 +1948,8 @@ func receiptFailureClass(err error) string {
 		return receiptFailureContentChanged
 	case errors.Is(err, scanner.ErrTextDLPIncomplete):
 		return receiptFailureScanIncomplete
+	case errors.Is(err, errV2ReceiptEmit):
+		return "v2_emit"
 	default:
 		return receiptLabelOther
 	}

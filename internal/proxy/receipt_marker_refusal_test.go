@@ -278,6 +278,9 @@ func TestReceiptFailureClass(t *testing.T) {
 		{"scan incomplete", fmt.Errorf("scan: %w", scanner.ErrTextDLPIncomplete), "scan_incomplete"},
 		{"content joined with durability", errors.Join(receiptcontent.ErrRejected, durable), "durability"},
 		{"lock timeout joined with post-advance", errors.Join(recorder.ErrAppendLockTimeout, postAdvance), "post_advance"},
+		{"v2 lock timeout", fmt.Errorf("%w: %w", errV2ReceiptEmit, recorder.ErrAppendLockTimeout), "append_lock_timeout"},
+		{"v2 content rejection", fmt.Errorf("%w: %w", errV2ReceiptEmit, receiptcontent.ErrRejected), "content_rejected"},
+		{"v2 unclassified", fmt.Errorf("%w: x", errV2ReceiptEmit), "v2_emit"},
 		{"untyped timeout text", errors.New(recorder.ErrAppendLockTimeout.Error()), receiptLabelOther},
 		{"unknown", errors.New(refusalSentinel), receiptLabelOther},
 	} {

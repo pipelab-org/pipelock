@@ -439,6 +439,28 @@ func TestAuditGapWarningDiagnostics(t *testing.T) {
 	}
 }
 
+func TestAuditGapSamplesKeepDistinctMessagesWithOneLabel(t *testing.T) {
+	// Samples are deduplicated by the whole message, not the failure label,
+	// so a different phase or verdict with the same cause still prints.
+	dirs := newRunDirs(t.TempDir())
+	intent := "event=receipt_channel_broken audit_gap=true verdict=allow phase=intent layer=none failure=append_lock_timeout"
+	outcome := "event=receipt_channel_broken audit_gap=true verdict=block phase=outcome layer=none failure=append_lock_timeout"
+	log := `{"event":"error","error":"` + intent + `"}` + "\n" + `{"event":"error","error":"` + outcome + `"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dirs.root, "proxy.log"), []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var integrity integrityReport
+	failOnAuditGaps(&integrity, dirs, false)
+	if !hasReason(integrity.Reasons, "proxy reported 2 audit gap(s); first:") {
+		t.Fatalf("integrity did not count both gaps: %q", integrity.Reasons)
+	}
+	for _, message := range []string{intent, outcome} {
+		if !hasReason(integrity.Reasons, message) {
+			t.Fatalf("sample %q missing from printed reasons: %q", message, integrity.Reasons)
+		}
+	}
+}
+
 func TestAuditGapFailureSamples(t *testing.T) {
 	dirs := newRunDirs(t.TempDir())
 	var log strings.Builder
