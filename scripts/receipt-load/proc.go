@@ -51,8 +51,8 @@ func freePort(ctx context.Context) (int, error) {
 	return tcp.Port, l.Close()
 }
 
-func awaitProxy(ctx context.Context, addr string, p *proxyProc) error {
-	deadline := time.NewTimer(10 * time.Second)
+func awaitProxy(ctx context.Context, addr string, p *proxyProc, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
