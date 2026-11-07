@@ -445,7 +445,9 @@ func TestPolicy_NestedFilePathLocalIdentity(t *testing.T) {
 		{"listed", map[string]any{"operations": []any{map[string]any{"destination": "/p/b"}, map[string]any{"destination": alias}}}, true},
 		{"other_key", map[string]any{"operation": map[string]any{"note": alias}}, true},
 		{"spaced_path", map[string]any{"destination": spacedAlias}, true},
-		{"spaced_note", map[string]any{"note": spacedAlias}, false},
+		// A value outside the pathname fields still gets the baseline identity
+		// lookup as written, spaces included, matching other_key above.
+		{"spaced_note", map[string]any{"note": spacedAlias}, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			raw, err := json.Marshal(tt.input)
