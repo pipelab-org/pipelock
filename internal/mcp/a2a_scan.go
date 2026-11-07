@@ -24,6 +24,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
+	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	"github.com/luckyPipewrench/pipelock/internal/session"
@@ -148,8 +149,30 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 	}
 
+	// Preserve classification from the submitted body. Adding a scan-only
+	// data-URL header must not turn a binary field into a network URL.
+	// Both views preserve keys, types and traversal order. Use emission
+	// ordinals, since display paths can collide or be truncated.
+	imageViews := make(map[int]string)
+	if scanBody := media.ImageDataURLView(body); !bytes.Equal(scanBody, body) {
+		ordinal := 0
+		err := WalkA2AJSON(json.RawMessage(scanBody), func(_ string, value string, _ FieldClass) {
+			if strings.HasPrefix(value, "data:image/") {
+				imageViews[ordinal] = value
+			}
+			ordinal++
+		})
+		if err != nil {
+			imageViews = nil
+		} // Normal scanning remains the fallback.
+	}
 	// Pass 1: field-aware walker - classifies and routes each leaf.
+	ordinal := 0
 	walkErr := WalkA2AJSON(json.RawMessage(body), func(path, value string, class FieldClass) {
+		if view, ok := imageViews[ordinal]; ok {
+			value = view
+		}
+		ordinal++
 		if class == FieldBudgetExceeded {
 			budgetExceeded = true
 			return
@@ -256,7 +279,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// without inserting field names between them; per-leaf scanning above still
 	// owns keys and field-aware URL checks. This bounded pass also covers values
 	// beyond the classified walk's node allowance.
-	joinedValues := jsonrpc.ExtractStringsFromJSONResult(body)
+	joinedValues := jsonrpc.ExtractDLPStringsFromJSONResult(body)
 	if joinedValues.Truncated {
 		return A2AScanResult{Action: config.ActionBlock, InspectionIncomplete: true, Reason: "a2a: input exceeds maximum inspectable nesting depth"}
 	}
@@ -324,7 +347,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				action = config.StrongestAction(action, scanner.CardRunAction(matches, defaultFindingAction))
 			}
 		}
-		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
+		extracted := extract.AllDLPStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
 				Clean:                false,
@@ -434,7 +457,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, matches)
 		forceBlock = a2aDLPForcesBlock(matches)
 	}
-	extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
+	extracted := extract.AllDLPStringsFromJSONResult(json.RawMessage(body))
 	if extracted.Truncated {
 		result.ScanError = "a2a: overflow inspection exceeds maximum nesting depth"
 		return true
@@ -1579,7 +1602,7 @@ func extractTextViewsFromEvent(event []byte) (string, string, bool, bool, bool) 
 	if len(event) == 0 {
 		return "", "", false, false, false
 	}
-	extracted := extract.AllStringsFromJSONResult(json.RawMessage(event))
+	extracted := extract.AllDLPStringsFromJSONResult(json.RawMessage(event))
 	texts := extracted.Strings
 	if len(texts) == 0 {
 		return "", "", false, false, extracted.Truncated

@@ -442,7 +442,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		raw := string(trimmed)
 
 		// Extract individual strings for per-field encoded DLP checks.
-		extracted := extract.AllStringsFromJSONResult(trimmed)
+		extracted := extract.AllDLPStringsFromJSONResult(trimmed)
 		if extracted.Truncated {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 		}
@@ -548,7 +548,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 
 	// The forwarded envelope can contain extension fields outside params.
 	// Inspect all of it before treating the request as clean.
-	extracted := extract.AllStringsFromJSONResult(trimmed)
+	extracted := extract.AllDLPStringsFromJSONResult(trimmed)
 	if extracted.Truncated {
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
@@ -681,7 +681,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	recoveredID := recoverTopLevelJSONRPCID(bytes.TrimSpace(raw))
 
 	// Extract individual strings for encoded DLP checks.
-	extracted := extract.AllStringsFromJSONResult(raw)
+	extracted := extract.AllDLPStringsFromJSONResult(raw)
 	if extracted.Truncated {
 		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
@@ -877,7 +877,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	if !result.Clean && !scanner.OnlyInformational(result.Matches) {
 		return result
 	}
-	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
+	extracted := jsonrpc.ExtractDLPStringsFromJSONResult(raw)
 	if extracted.Truncated {
 		return scanner.TextDLPResult{
 			Clean: false,
@@ -888,7 +888,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 		}
 	}
 	vals := extracted.Strings
-	cardAtoms := extract.AllStringsFromJSONResult(raw).Atoms
+	cardAtoms := extract.AllDLPStringsFromJSONResult(raw).Atoms
 	if len(vals) <= 1 {
 		return result
 	}

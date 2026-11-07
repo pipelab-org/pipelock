@@ -524,17 +524,16 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 			return result
 		}
 	}
-	// Match coordinates refer to the text after verified image data URLs are
-	// excised. They address the original only before the first excision; the
-	// first image data URL prefix is a lower bound on where that starts.
-	scanned := exciseVerifiedImageDataURLs(content)
+	// Match coordinates address the original only before the first verified
+	// image excision, whether its carrier is a data URL or bare JSON base64.
+	scanned, _, removed := stripVerifiedImageDataURLSpans(content, false)
 	ranges, ok := normalizedMatchSourceRanges(scanned, result.Matches)
 	if !ok {
 		return result
 	}
 	shared := len(content)
-	if scanned != content {
-		shared = indexDataImagePrefix(content)
+	if len(removed) > 0 {
+		shared = removed[0].start
 	}
 	for _, r := range ranges {
 		if r[1] > shared {

@@ -1322,6 +1322,7 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 }
 
 func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []extract.DLPAtom, []string, []string, bool, error) {
+	body = media.ImageDataURLView(body)
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 

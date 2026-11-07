@@ -321,7 +321,7 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 	// Catches non-standard result shapes (plain string, nested objects, etc).
 	// DLP normalization deletes the newline, so the space keeps each value's
 	// word boundary, as the typed content join above does.
-	extracted := ExtractStringsFromJSONResult(raw)
+	extracted := ExtractDLPStringsFromJSONResult(raw)
 	if len(extracted.Strings) > 0 {
 		joined := strings.Join(extracted.Strings, fallbackTextSeparator)
 		cards := ResponseCardText(extract.AllStringsFromJSONOrderedResult(raw).Atoms)

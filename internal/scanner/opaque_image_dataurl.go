@@ -7,12 +7,16 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"hash/crc32"
+	"sort"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/media"
 )
 
 const dataImagePrefix = "data:image/"
 
-// exciseVerifiedImageDataURLs removes only data:image PNG/JPEG payloads whose
+// exciseVerifiedImageDataURLs removes supported data:image and structured bare
+// base64 image payloads whose
 // base64 bytes verify as a complete image, discarding the decoded bytes.
 //
 // This is the injection/response-scanning variant. A structurally valid image's
@@ -52,7 +56,7 @@ func exciseImagesRetainingDecodedForDLP(text string) string {
 	return b.String()
 }
 
-// stripVerifiedImageDataURLs removes verified data:image PNG/JPEG base64 payloads
+// stripVerifiedImageDataURLs removes verified data-URL and bare JSON image payloads
 // from text and returns the excised text. When retainDecoded is set it also
 // returns the concatenated decoded image bytes (newline-separated, one trailing
 // newline per image); callers that only need the base64 text removed pass false
@@ -70,6 +74,16 @@ func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, d
 	copyFrom := 0
 	var out strings.Builder
 	var decoded strings.Builder
+	type imageSpan struct {
+		start, end int
+		data       []byte
+	}
+	var images []imageSpan
+	for _, span := range media.BareImagePayloadSpans(text) {
+		if imageBytes, ok := decodeVerifiedImage(span.Payload, span.MediaType); ok {
+			images = append(images, imageSpan{span.Start, span.End, imageBytes})
+		}
+	}
 
 	for searchFrom < len(text) {
 		rel := indexDataImagePrefix(text[searchFrom:])
@@ -93,21 +107,26 @@ func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, d
 			searchFrom = payloadStart
 			continue
 		}
-		decodedImage, ok := decodeVerifiedPNGOrJPEG(text[payloadStart:payloadEnd])
+		declared := strings.SplitN(strings.ToLower(text[start:headerEnd]), ";", 2)[0][len("data:"):]
+		decodedImage, ok := decodeVerifiedImage(text[payloadStart:payloadEnd], declared)
 		if !ok {
 			searchFrom = payloadStart
 			continue
 		}
 
+		images = append(images, imageSpan{start, payloadEnd, decodedImage})
+		searchFrom = payloadEnd
+	}
+	sort.Slice(images, func(i, j int) bool { return images[i].start < images[j].start })
+	for _, span := range images {
 		if out.Cap() == 0 {
 			out.Grow(len(text))
 		}
-		out.WriteString(text[copyFrom:start])
-		removed = append(removed, textByteSpan{start: start, end: payloadEnd})
-		copyFrom = payloadEnd
-		searchFrom = payloadEnd
+		out.WriteString(text[copyFrom:span.start])
+		removed = append(removed, textByteSpan{start: span.start, end: span.end})
+		copyFrom = span.end
 		if retainDecoded {
-			decoded.Write(decodedImage)
+			decoded.Write(span.data)
 			decoded.WriteByte('\n')
 		}
 	}
@@ -156,7 +175,7 @@ func isPNGOrJPEGBase64DataImageHeader(header string) bool {
 		return false
 	}
 	switch parts[0] {
-	case "data:image/png", "data:image/jpeg", "data:image/jpg":
+	case "data:image/png", "data:image/jpeg", "data:image/jpg", "data:image/gif", "data:image/webp":
 	default:
 		return false
 	}
@@ -207,6 +226,10 @@ func isBase64DataURLByte(c byte) bool {
 // only if they parse as a complete PNG or JPEG. The returned bytes are what DLP
 // re-scans so a secret embedded inside a structurally valid image is not lost.
 func decodeVerifiedPNGOrJPEG(payload string) ([]byte, bool) {
+	return decodeVerifiedImage(payload, "")
+}
+
+func decodeVerifiedImage(payload, declared string) ([]byte, bool) {
 	for _, enc := range []*base64.Encoding{
 		base64.StdEncoding,
 		base64.RawStdEncoding,
@@ -217,7 +240,7 @@ func decodeVerifiedPNGOrJPEG(payload string) ([]byte, bool) {
 		if err != nil || len(decoded) == 0 {
 			continue
 		}
-		if isCompletePNG(decoded) || isCompleteJPEG(decoded) {
+		if completeImageMatchesType(decoded, declared) {
 			return decoded, true
 		}
 	}
@@ -396,4 +419,134 @@ func isJPEGSOFMarker(marker byte) bool {
 	default:
 		return false
 	}
+}
+
+// completeImageMatchesType keeps the declared media type bound to its bytes.
+// Empty declarations are used only by the legacy PNG/JPEG helper.
+func completeImageMatchesType(data []byte, declared string) bool {
+	switch declared {
+	case "":
+		return isCompletePNG(data) || isCompleteJPEG(data)
+	case "image/png":
+		return isCompletePNG(data)
+	case "image/jpeg", "image/jpg":
+		return isCompleteJPEG(data)
+	case "image/gif":
+		return isCompleteGIF(data)
+	case "image/webp":
+		return isCompleteWebP(data)
+	default:
+		return false
+	}
+}
+
+// GIF89a sections 15-27 define the screen descriptor, color tables, image
+// blocks, extension sub-blocks and final trailer. Walk their lengths without
+// allocating pixels. https://www.w3.org/Graphics/GIF/spec-gif89a.txt
+func isCompleteGIF(data []byte) bool {
+	if len(data) < 14 || (string(data[:6]) != "GIF87a" && string(data[:6]) != "GIF89a") ||
+		binary.LittleEndian.Uint16(data[6:8]) == 0 || binary.LittleEndian.Uint16(data[8:10]) == 0 {
+		return false
+	}
+	pos := 13
+	if data[10]&0x80 != 0 {
+		pos += 3 * (1 << ((data[10] & 7) + 1))
+	}
+	seenImage := false
+	for pos < len(data) {
+		kind := data[pos]
+		pos++
+		switch kind {
+		case 0x3b:
+			return seenImage && pos == len(data)
+		case 0x21:
+			if pos >= len(data) {
+				return false
+			}
+			pos++
+		case 0x2c:
+			if len(data)-pos < 9 || binary.LittleEndian.Uint16(data[pos+4:pos+6]) == 0 || binary.LittleEndian.Uint16(data[pos+6:pos+8]) == 0 {
+				return false
+			}
+			packed := data[pos+8]
+			pos += 9
+			if packed&0x80 != 0 {
+				pos += 3 * (1 << ((packed & 7) + 1))
+			}
+			if pos >= len(data) || data[pos] < 2 || data[pos] > 8 {
+				return false
+			}
+			pos++
+			seenImage = true
+		default:
+			return false
+		}
+		for {
+			if pos >= len(data) {
+				return false
+			}
+			size := int(data[pos])
+			pos++
+			if size > len(data)-pos {
+				return false
+			}
+			pos += size
+			if size == 0 {
+				break
+			}
+		}
+	}
+	return false
+}
+
+// WebP uses a size-delimited RIFF file and padded chunks. Require an image
+// bitstream (or an animated frame containing one) and consume the entire file.
+// https://developers.google.com/speed/webp/docs/riff_container
+func isCompleteWebP(data []byte) bool {
+	if len(data) < 20 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" ||
+		uint64(binary.LittleEndian.Uint32(data[4:8]))+8 != uint64(len(data)) {
+		return false
+	}
+	return completeWebPChunks(data[12:], false)
+}
+
+func completeWebPChunks(data []byte, frame bool) bool {
+	seenImage := false
+	for len(data) > 0 {
+		if len(data) < 8 {
+			return false
+		}
+		size := int(binary.LittleEndian.Uint32(data[4:8]))
+		if size < 0 || size > len(data)-8 {
+			return false
+		}
+		padded := size + (size & 1)
+		if padded > len(data)-8 {
+			return false
+		}
+		if size&1 != 0 && data[8+size] != 0 {
+			return false
+		}
+		body := data[8 : 8+size]
+		switch string(data[:4]) {
+		case "VP8 ":
+			if len(body) < 10 || body[0]&1 != 0 || string(body[3:6]) != "\x9d\x01\x2a" ||
+				binary.LittleEndian.Uint16(body[6:8])&0x3fff == 0 || binary.LittleEndian.Uint16(body[8:10])&0x3fff == 0 {
+				return false
+			}
+			seenImage = true
+		case "VP8L":
+			if len(body) < 5 || body[0] != 0x2f || body[4]>>5 != 0 {
+				return false
+			}
+			seenImage = true
+		case "ANMF":
+			if frame || len(body) < 16 || !completeWebPChunks(body[16:], true) {
+				return false
+			}
+			seenImage = true
+		}
+		data = data[8+padded:]
+	}
+	return seenImage
 }
