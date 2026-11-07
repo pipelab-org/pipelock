@@ -116,6 +116,9 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 					pattern = &copyPattern
 				}
 				start, end, ok := pattern.matchSpanInView(decoded, decoded)
+				if !ok && pattern.keywords != nil && budget.memo != nil && (budget.memo.inspectionIncomplete() || budget.memo.keywordBudget != nil && budget.memo.keywordBudget.incomplete) {
+					plain.keywordIncomplete()
+				}
 				if ok {
 					plain.produce(id, decoded, start, end)
 				}
