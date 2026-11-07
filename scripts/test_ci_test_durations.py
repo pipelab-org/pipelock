@@ -10,7 +10,7 @@ from unittest.mock import patch
 from scripts import ci_test_durations as durations
 
 from scripts.ci_test_durations import RACE_PARALLELISM, collect, collect_packages
-from scripts.ci_test_packages import ROOT
+from scripts.ci_test_packages import MIN_UNMEASURED_SECONDS, ROOT
 
 
 class DurationTest(unittest.TestCase):
@@ -278,6 +278,74 @@ class DurationTest(unittest.TestCase):
             path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
                                     for event in events), encoding="utf-8")
             self.assertEqual(collect([path], {"proxy": {"TestPartial": 100}})["proxy"]["TestPartial"], 100)
+
+    def proxy_stream(self, events):
+        directory = tempfile.TemporaryDirectory()
+        path = Path(directory.name) / "events.json"
+        path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
+                                for event in events), encoding="utf-8")
+        return directory, path
+
+    def test_unrecorded_skipped_subtest_charges_unmeasured_floor(self):
+        # A new parent that passes while a subtest skips has no previous weight.
+        # Its own elapsed time is zero because the skipped work never ran.
+        events = [
+            {"Action": "run", "Test": "TestParent"},
+            {"Action": "run", "Test": "TestParent/skipped"},
+            {"Action": "skip", "Test": "TestParent/skipped", "Elapsed": 0},
+            {"Action": "pass", "Test": "TestParent", "Elapsed": 0},
+        ]
+        directory, path = self.proxy_stream(events)
+        with directory:
+            self.assertEqual(collect([path])["proxy"]["TestParent"], MIN_UNMEASURED_SECONDS)
+            # Above the floor, the measured time still wins.
+            events[-1]["Elapsed"] = 4
+            path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
+                                    for event in events), encoding="utf-8")
+            self.assertEqual(collect([path])["proxy"]["TestParent"], 4)
+
+    def test_recorded_skipped_subtest_keeps_max_of_measured_and_previous(self):
+        events = [
+            {"Action": "run", "Test": "TestParent"},
+            {"Action": "run", "Test": "TestParent/skipped"},
+            {"Action": "skip", "Test": "TestParent/skipped", "Elapsed": 0},
+            {"Action": "pass", "Test": "TestParent", "Elapsed": 4},
+        ]
+        directory, path = self.proxy_stream(events)
+        with directory:
+            self.assertEqual(collect([path], {"proxy": {"TestParent": 100}})["proxy"]["TestParent"], 100)
+            self.assertEqual(collect([path], {"proxy": {"TestParent": 1}})["proxy"]["TestParent"], 4)
+            # A stored zero is a recorded weight, not a missing one.
+            events[-1]["Elapsed"] = 0
+            path.write_text("".join(json.dumps(dict(Package="example.test/internal/proxy", **event)) + "\n"
+                                    for event in events), encoding="utf-8")
+            self.assertEqual(collect([path], {"proxy": {"TestParent": 0.0}})["proxy"]["TestParent"], 0.0)
+
+    def test_ran_subtests_and_childless_parent_keep_measured_time(self):
+        ran = [
+            {"Action": "run", "Test": "TestParent"},
+            {"Action": "run", "Test": "TestParent/ran"},
+            {"Action": "pass", "Test": "TestParent/ran", "Elapsed": 0.4},
+            {"Action": "pass", "Test": "TestParent", "Elapsed": 0.4},
+        ]
+        self.assertEqual(self.collect_events(ran)["TestParent"], 0.4)
+        self.assertEqual(self.collect_events([
+            {"Action": "pass", "Test": "TestParent", "Elapsed": 0.2},
+        ])["TestParent"], 0.2)
+        # A complete run that rounds to zero stays zero. The floor is only for
+        # a skipped subtest with no recorded weight.
+        self.assertEqual(self.collect_events([
+            {"Action": "pass", "Test": "TestAlone", "Elapsed": 0},
+        ])["TestAlone"], 0.0)
+
+    def test_unrecorded_failed_subtest_is_not_charged_the_floor(self):
+        events = [
+            {"Action": "run", "Test": "TestParent"},
+            {"Action": "run", "Test": "TestParent/bad"},
+            {"Action": "fail", "Test": "TestParent/bad", "Elapsed": 0},
+            {"Action": "fail", "Test": "TestParent", "Elapsed": 0},
+        ]
+        self.assertEqual(self.collect_events(events)["TestParent"], 0.0)
 
     def test_incomplete_paused_child_keeps_previous(self):
         with tempfile.TemporaryDirectory() as directory:
