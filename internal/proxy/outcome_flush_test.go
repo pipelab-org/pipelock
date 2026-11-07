@@ -59,7 +59,7 @@ func (r *blockingOutcomeRecorder) RecordDurable(e recorder.Entry) error {
 }
 
 func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
-	for _, surface := range []string{"forward_scanned", "forward_streamed", "reverse", "fetch"} {
+	for _, surface := range []string{"forward_scanned", "forward_core", "reverse", "fetch"} {
 		for _, fail := range []bool{false, true} {
 			t.Run(surface+"/"+map[bool]string{false: "success", true: "failure"}[fail], func(t *testing.T) {
 				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -83,7 +83,10 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 				cfg.APIAllowlist = nil
 				cfg.ForwardProxy.Enabled = true
 				cfg.FlightRecorder.RequireReceipts = true
-				cfg.ResponseScanning.Enabled = surface != "forward_streamed"
+				cfg.ResponseScanning.Enabled = surface != "forward_core"
+				if surface == "forward_core" {
+					cfg.MediaPolicy.Enabled = ptrBool(false)
+				}
 				sc := scanner.MustNew(cfg)
 				p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithReceiptEmitter(rph.emitter))
 				if err != nil {
@@ -161,13 +164,11 @@ func TestOutcomeResponseFlushBeforeReceipt(t *testing.T) {
 						if requestErr == nil && body.Content != "ok" {
 							requestErr = errors.New("unexpected fetch content: " + body.Content)
 						}
-					case "forward_streamed":
-						body := make([]byte, 2)
-						_, requestErr = io.ReadFull(resp.Body, body)
-						if requestErr == nil && string(body) != "ok" {
-							requestErr = errors.New("unexpected streamed body: " + string(body))
-						}
 					default:
+						if resp.ContentLength != 2 {
+							requestErr = errors.New("buffered response missing exact length")
+							break
+						}
 						var body []byte
 						body, requestErr = io.ReadAll(resp.Body)
 						if requestErr == nil && string(body) != "ok" {
