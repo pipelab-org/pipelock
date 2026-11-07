@@ -2262,7 +2262,7 @@ func newInterceptHandler(
 				return
 			}
 			ic.Logger.LogError(actx, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
+			writeHTTPError(w, "upstream error", http.StatusBadGateway)
 			emitBlockedPostRoundTripOutcome(http.StatusBadGateway, "upstream_error")
 			return
 		}

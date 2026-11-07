@@ -397,3 +397,9 @@ func TestInterceptTunnelOutcomeFlushStalledClient(t *testing.T) {
 		t.Fatal("inner HTTP flush prevented outcome storage")
 	}
 }
+
+func TestInterceptOutcomeSyntheticResponseBeforeReceipt(t *testing.T) {
+	for _, condition := range []string{"upstream_error", "blocked"} {
+		t.Run(condition, func(t *testing.T) { testOutcomeSyntheticResponseBeforeReceipt(t, "intercept", condition) })
+	}
+}

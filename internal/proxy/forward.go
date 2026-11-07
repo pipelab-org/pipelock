@@ -798,7 +798,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.logger.LogError(targetCtx, err)
-		http.Error(w, "tunnel dial failed", http.StatusBadGateway)
+		writeHTTPError(w, "tunnel dial failed", http.StatusBadGateway)
 		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
 		outcomeReason = "dial_failed"
 		return
@@ -814,7 +814,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		p.logger.LogError(targetCtx,
 			fmt.Errorf("response writer does not support hijacking"))
-		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		writeHTTPError(w, "hijack not supported", http.StatusInternalServerError)
 		outcomeStatus = strconv.Itoa(http.StatusInternalServerError)
 		outcomeReason = "hijack_unsupported"
 		return
@@ -2454,7 +2454,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.logger.LogError(actx, err)
-		http.Error(w, "forward proxy fetch failed", http.StatusBadGateway)
+		writeHTTPError(w, "forward proxy fetch failed", http.StatusBadGateway)
 		outcomeStatus = strconv.Itoa(http.StatusBadGateway)
 		outcomeReason = "fetch_failed"
 		return

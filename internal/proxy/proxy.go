@@ -5468,7 +5468,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 	// Count the representation sent by the refusal projection, including
 	// partial writes, rather than the detector body it may discard.
-	delivery := &fetchDeliveryWriter{ResponseWriter: w, frameJSON: cfg.FlightRecorder.RequireReceipts && r.Method != http.MethodHead}
+	delivery := &fetchDeliveryWriter{ResponseWriter: w}
 	w = p.withAdaptiveRefusal(delivery, adaptiveRefusalOptions{config: cfg, agent: agent, clientIP: clientIP, auth: id.Auth, host: func() string { return refusalTargetHost(r) }, transport: TransportFetch})
 	// Carry the provenance grade on the request from the moment identity is
 	// resolved. Every audit context below derives from r.Context(), so setting

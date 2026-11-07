@@ -662,7 +662,11 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 	emPtr.Store(emitter)
 	handler.SetReceiptEmitter(&emPtr)
 
-	proxySrv := newIPv4Server(t, handler)
+	done := make(chan struct{})
+	proxySrv := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		handler.ServeHTTP(w, r)
+	}))
 	t.Cleanup(proxySrv.Close)
 
 	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxySrv.URL+"/unreachable", nil)
@@ -684,7 +688,9 @@ func TestReverseProxy_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) {
 		t.Fatalf("upstream transport calls = %d, want 1", got)
 	}
 
-	waitForReceiptOrTimeout(t, dir)
+	// Exact framing lets EOF precede outcome storage. Wait for this handler,
+	// rather than the admission receipt, before closing its recorder.
+	integrityWait(t, done)
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder close: %v", err)
 	}

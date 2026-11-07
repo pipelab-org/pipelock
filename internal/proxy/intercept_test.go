@@ -849,6 +849,9 @@ func interceptAndRequestWithProxy(
 	})
 	t.Cleanup(func() { _ = tlsConn.Close() })
 
+	if cfg.FlightRecorder.RequireReceipts {
+		req.Close = true
+	}
 	if err := req.Write(tlsConn); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -3832,6 +3835,11 @@ func interceptWithRTResult(
 	})
 	t.Cleanup(func() { _ = tlsConn.Close() })
 
+	if cfg.FlightRecorder.RequireReceipts {
+		// This helper serves one request. Let the server close after outcome
+		// emission so an EOF reader need not close during the final flush.
+		req.Close = true
+	}
 	if err := req.Write(tlsConn); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
@@ -3851,8 +3859,17 @@ func interceptWithRTResult(
 func waitForInterceptReceipts(t *testing.T, resp *http.Response, conn net.Conn, done <-chan struct{}) {
 	t.Helper()
 	var once sync.Once
-	resp.Body = &interceptReceiptWaitBody{ReadCloser: resp.Body, wait: func() {
+	resp.Body = &interceptReceiptWaitBody{ReadCloser: resp.Body, wait: func(disconnect bool) {
 		once.Do(func() {
+			if !disconnect {
+				// Keep consuming the final TLS close notification after HTTP
+				// EOF. Closing here would race successful flush cleanup;
+				// waiting without reading would pin the net.Pipe TLS close.
+				_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+				if _, err := io.Copy(io.Discard, conn); err != nil {
+					t.Errorf("intercept connection did not finish after response EOF: %v", err)
+				}
+			}
 			_ = conn.Close()
 			select {
 			case <-done:
@@ -3865,20 +3882,20 @@ func waitForInterceptReceipts(t *testing.T, resp *http.Response, conn net.Conn, 
 
 type interceptReceiptWaitBody struct {
 	io.ReadCloser
-	wait func()
+	wait func(bool)
 }
 
 func (b *interceptReceiptWaitBody) Read(p []byte) (int, error) {
 	n, err := b.ReadCloser.Read(p)
 	if err != nil {
-		b.wait()
+		b.wait(!errors.Is(err, io.EOF))
 	}
 	return n, err
 }
 
 func (b *interceptReceiptWaitBody) Close() error {
 	err := b.ReadCloser.Close()
-	b.wait()
+	b.wait(true)
 	return err
 }
 

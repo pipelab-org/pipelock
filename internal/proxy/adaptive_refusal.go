@@ -5,7 +5,6 @@ package proxy
 
 import (
 	"bufio"
-	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
@@ -150,11 +149,9 @@ func (w *adaptiveRefusalWriter) WriteHeader(status int) {
 	case TransportFetch:
 		writeJSON(w.ResponseWriter, http.StatusForbidden, FetchResponse{Blocked: true, BlockReason: message})
 	case TransportReverse:
-		w.Header().Set("Content-Type", "application/json")
-		w.ResponseWriter.WriteHeader(http.StatusForbidden)
-		_ = json.NewEncoder(w.ResponseWriter).Encode(ReverseProxyBlockResponse{Error: "blocked by pipelock", Blocked: true, BlockReason: message, Direction: scanDirectionRequest})
+		writeJSON(w.ResponseWriter, http.StatusForbidden, ReverseProxyBlockResponse{Error: "blocked by pipelock", Blocked: true, BlockReason: message, Direction: scanDirectionRequest})
 	default:
-		http.Error(w.ResponseWriter, message, http.StatusForbidden)
+		writeHTTPError(w.ResponseWriter, message, http.StatusForbidden)
 	}
 }
 

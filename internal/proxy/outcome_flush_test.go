@@ -4,8 +4,10 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,10 +36,11 @@ import (
 // Block the existing v2 recorder seam, after the v1 outcome but before its
 // paired v2 write completes. Admission still uses the real durable recorder.
 type blockingOutcomeRecorder struct {
-	rec     *recorder.Recorder
-	entered chan struct{}
-	release chan struct{}
-	fail    bool
+	rec           *recorder.Recorder
+	entered       chan struct{}
+	release       chan struct{}
+	fail          bool
+	beforeOutcome func()
 }
 
 func (r *blockingOutcomeRecorder) Record(e recorder.Entry) error {
@@ -46,6 +49,9 @@ func (r *blockingOutcomeRecorder) Record(e recorder.Entry) error {
 		return err
 	}
 	if bytes.Contains(detail, []byte(`"rule_id":"status=`)) {
+		if r.beforeOutcome != nil {
+			r.beforeOutcome()
+		}
 		close(r.entered)
 		<-r.release
 		if r.fail {
@@ -641,5 +647,221 @@ func TestOutcomeFlushStalledClient(t *testing.T) {
 func TestOutcomeFlushPreservesServerWriteDeadline(t *testing.T) {
 	for _, surface := range []string{"fetch", "forward", "reverse"} {
 		t.Run(surface, func(t *testing.T) { runOutcomeFlushFailure(t, surface, false, 100*time.Millisecond) })
+	}
+}
+
+func testOutcomeSyntheticResponseBeforeReceipt(t *testing.T, surface, condition string) {
+	t.Helper()
+	const blockedBody = "synthetic response test marker"
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if condition == "upstream_error" {
+			panic(http.ErrAbortHandler)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = io.WriteString(w, blockedBody)
+	}))
+	t.Cleanup(origin.Close)
+	cache, pool, cfg, _, logger, m := testInterceptSetup(t)
+	cfg.Internal = nil
+	cfg.SSRF.IPAllowlist = []string{"127.0.0.0/8", "::1/128"}
+	cfg.APIAllowlist = nil
+	cfg.ForwardProxy.Enabled = true
+	cfg.FlightRecorder.RequireReceipts = true
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionBlock
+	cfg.ResponseScanning.Patterns = append(cfg.ResponseScanning.Patterns, config.ResponseScanPattern{Name: "synthetic response marker", Regex: blockedBody})
+	sc := scanner.MustNew(cfg)
+	rph := newReceiptProxyHelper(t)
+	t.Cleanup(func() { _ = rph.rec.Close() })
+	storage := &blockingOutcomeRecorder{rec: rph.rec, entered: make(chan struct{}), release: make(chan struct{})}
+	var once sync.Once
+	release := func() { once.Do(func() { close(storage.release) }) }
+	defer release()
+	// The assertion runs at the recorder boundary, before storage is entered.
+	// A receipt-before-flush regression cannot make the EOF read finish here.
+	readResult := make(chan error, 1)
+	orderingResult := make(chan error, 1)
+	storage.beforeOutcome = func() {
+		select {
+		case err := <-readResult:
+			orderingResult <- err
+		case <-time.After(2 * time.Second):
+			orderingResult <- errors.New("response not fully received before outcome storage was entered")
+		}
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{Recorder: storage, Signer: proxydecision.NewKeyedSigner(rph.priv), Principal: "local", Actor: "pipelock"})
+	p, err := New(cfg, logger, sc, m, WithReceiptEmitter(rph.emitter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	p.v2EmitterPtr.Store(v2)
+	handler := p.buildHandler(p.buildMux())
+	target := origin.URL
+	switch surface {
+	case "fetch":
+		target = "/fetch?url=" + url.QueryEscape(origin.URL)
+	case "reverse":
+		u, err := url.Parse(origin.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cfgPtr atomic.Pointer[config.Config]
+		var scPtr atomic.Pointer[scanner.Scanner]
+		cfgPtr.Store(cfg)
+		scPtr.Store(sc)
+		rp := NewReverseProxy(u, &cfgPtr, &scPtr, logger, m, killswitch.New(cfg), nil, nil)
+		rp.SetReceiptEmitter(&p.receiptEmitterPtr)
+		rp.SetV2ReceiptEmitter(&p.v2EmitterPtr)
+		handler, target = rp, "/data"
+	case "intercept":
+		target = "https://" + testLoopbackIP + "/data"
+	}
+	client, server := net.Pipe()
+	rawClient := client
+	done := make(chan error, 1)
+	if surface == "intercept" {
+		rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			if condition == "upstream_error" {
+				return nil, errors.New("upstream unavailable")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader(blockedBody)), Request: r}, nil
+		})
+		go func() {
+			done <- interceptTunnel(t.Context(), server, &InterceptContext{Config: cfg, Scanner: sc, Logger: logger, Metrics: m, CertCache: cache, TargetHost: testLoopbackIP, TargetPort: "443", Proxy: p, UpstreamRT: rt})
+		}()
+		client = tls.Client(client, &tls.Config{RootCAs: pool, ServerName: testLoopbackIP})
+	} else {
+		ln := newSingleConnListener(server)
+		srv := &http.Server{Handler: handler, ReadHeaderTimeout: time.Second, ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed {
+				_ = ln.Close()
+			}
+		}}
+		go func() {
+			err := srv.Serve(ln)
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, http.ErrServerClosed) {
+				err = nil
+			}
+			done <- err
+		}()
+		t.Cleanup(func() { _ = srv.Close() })
+	}
+	t.Cleanup(func() {
+		release()
+		_ = rawClient.Close()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("server exit: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("server did not finish after storage release")
+		}
+	})
+	if err := client.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Close = true
+	if surface == "forward" {
+		err = req.WriteProxy(client)
+	} else {
+		err = req.Write(client)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		resp, err := http.ReadResponse(bufio.NewReader(client), req)
+		if err == nil {
+			defer func() { _ = resp.Body.Close() }()
+			var body []byte
+			body, err = io.ReadAll(resp.Body)
+			wantStatus := http.StatusForbidden
+			if condition == "upstream_error" {
+				wantStatus = http.StatusBadGateway
+			}
+			if err == nil && (resp.StatusCode != wantStatus || resp.ContentLength != int64(len(body)) || len(resp.TransferEncoding) != 0 || len(body) == 0) {
+				err = errors.New("synthetic response missing expected status, body or exact framing")
+			}
+		}
+		readResult <- err
+	}()
+	select {
+	case <-storage.entered:
+	case <-time.After(4 * time.Second):
+		t.Fatal("outcome recorder did not enter storage")
+	}
+	if err := <-orderingResult; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("handler returned before outcome storage was released: %v", err)
+	default:
+	}
+}
+
+func TestOutcomeSyntheticResponseBeforeReceipt(t *testing.T) {
+	for _, surface := range []string{"forward", "fetch", "reverse"} {
+		for _, condition := range []string{"upstream_error", "blocked"} {
+			t.Run(surface+"/"+condition, func(t *testing.T) { testOutcomeSyntheticResponseBeforeReceipt(t, surface, condition) })
+		}
+	}
+}
+
+func TestOutcomeSyntheticFramingSemantics(t *testing.T) {
+	for _, format := range []string{"text", "json"} {
+		for _, status := range []int{http.StatusOK, http.StatusNoContent, http.StatusNotModified} {
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				t.Run(format+"/"+strconv.Itoa(status)+"/"+method, func(t *testing.T) {
+					const message = "diagnostic café"
+					wantBody := message + "\n"
+					if format == "json" {
+						wantBody = `{"message":"` + message + `"}` + "\n"
+					}
+					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						// Synthetic bodies replace any earlier framing.
+						w.Header().Set("Content-Length", "999")
+						w.Header().Set("Transfer-Encoding", "chunked") //nolint:gosec // G113: regression fixture verifies conflicting framing is removed before headers are committed.
+						if format == "text" {
+							writeHTTPError(w, message, status)
+						} else {
+							writeJSON(w, status, map[string]string{"message": message})
+						}
+					}))
+					t.Cleanup(srv.Close)
+					req, err := http.NewRequestWithContext(t.Context(), method, srv.URL, nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp, err := srv.Client().Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer func() { _ = resp.Body.Close() }()
+					body, err := io.ReadAll(resp.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if resp.StatusCode != status || len(resp.TransferEncoding) != 0 {
+						t.Fatalf("unexpected response status or framing: %+v", resp)
+					}
+					if status == http.StatusNoContent || status == http.StatusNotModified {
+						if len(body) != 0 || resp.Header.Get("Content-Length") != "" {
+							t.Fatalf("bodyless status has body=%q or length=%q", body, resp.Header.Get("Content-Length"))
+						}
+					} else if resp.ContentLength != int64(len(wantBody)) {
+						t.Fatalf("representation length=%d, want %d", resp.ContentLength, len(wantBody))
+					} else if method == http.MethodHead && len(body) != 0 || method != http.MethodHead && string(body) != wantBody {
+						t.Fatalf("unexpected body %q", body)
+					}
+				})
+			}
+		}
 	}
 }

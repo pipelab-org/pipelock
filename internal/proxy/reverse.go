@@ -3774,14 +3774,13 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 	rp.metrics.RecordReverseProxyRequest(r.Method, "502")
 	rp.logger.LogError(actx, err)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadGateway)
 	resp := ReverseProxyBlockResponse{
 		Error:   "upstream unavailable",
 		Blocked: false,
 	}
 	body, _ := json.Marshal(resp)
 	body = append(body, '\n')
-	written, _ := w.Write(body)
+	written, _ := writeSyntheticResponse(w, http.StatusBadGateway, body)
 	recordErrorOutcome(http.StatusBadGateway, int64(written), "upstream_error")
 }
 
@@ -3793,7 +3792,6 @@ func (rp *ReverseProxyHandler) errorHandler(w http.ResponseWriter, r *http.Reque
 func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.Info, reason string) int64 {
 	info.SetHeaders(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
 	resp := ReverseProxyBlockResponse{
 		Error:       "blocked by pipelock",
 		Blocked:     true,
@@ -3802,7 +3800,7 @@ func writeReverseProxyBlock(w http.ResponseWriter, status int, info blockreason.
 	}
 	body, _ := json.Marshal(resp)
 	body = append(body, '\n')
-	written, _ := w.Write(body)
+	written, _ := writeSyntheticResponse(w, status, body)
 	return int64(written)
 }
 
