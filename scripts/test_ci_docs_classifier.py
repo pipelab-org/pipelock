@@ -83,6 +83,7 @@ class DocsClassifierTest(unittest.TestCase):
                     "BASE_SHA": base or self.base,
                     "HEAD_SHA": self.rev(),
                     "GITHUB_OUTPUT": output_path,
+                    "GITHUB_WORKSPACE": str(ROOT),
                 },
                 capture_output=True,
                 text=True,
@@ -149,9 +150,10 @@ class DocsClassifierTest(unittest.TestCase):
         self.commit("prose")
         self.assertEqual(self.classify(base), (0, "docs_only=false"))
 
-    def test_queue_range_keeps_policy_changes_from_earlier_members(self) -> None:
-        self.write(".github/workflows/ci.yaml", "name: policy change\n")
-        self.commit("queued policy member")
+    def test_queue_range_keeps_toolchain_changes_from_earlier_members(self) -> None:
+        self.write(".github/workflows/ci.yaml",
+                   "jobs:\n  t:\n    steps:\n      - uses: actions/setup-go@v7\n        with: {go-version: '1.27'}\n")
+        self.commit("queued toolchain member")
         earlier_head = self.rev()
         self.write("docs/guide.md", "queued prose change\n")
         self.commit("queued prose member")
@@ -163,11 +165,12 @@ class DocsClassifierTest(unittest.TestCase):
         with tempfile.NamedTemporaryFile("r", encoding="utf-8") as output:
             result = subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", policy], cwd=self.repo,
-                env=os.environ | {"BASE_SHA": self.base, "HEAD_SHA": self.rev(), "GITHUB_OUTPUT": output.name},
+                env=os.environ | {"BASE_SHA": self.base, "HEAD_SHA": self.rev(), "GITHUB_OUTPUT": output.name,
+                                  "GITHUB_WORKSPACE": str(ROOT)},
                 capture_output=True, text=True, check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(Path(output.name).read_text().strip(), "ci_policy=true\nbenchmark_smoke=true\nbenchmark_alloc=true")
+            self.assertEqual(Path(output.name).read_text().strip(), "go_toolchain=true\nbenchmark_smoke=true\nbenchmark_alloc=true")
 
     def test_empty_diff_runs_everything(self) -> None:
         self.commit("empty")

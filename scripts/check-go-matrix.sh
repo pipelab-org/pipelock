@@ -4,8 +4,9 @@
 #
 # Pull-request CI runs only the Go floor version (see ci.yaml's
 # test-oss-go127/test-enterprise-go127/test-replay-go127 jobs, which are
-# skipped on pull_request unless the diff touches CI/Go-pin files). Pushes to
-# main and the release workflow are the only two places every supported Go
+# skipped on pull_request unless scripts/ci_go_toolchain.py finds a Go
+# toolchain change). Pushes to main and the release workflow are the only two
+# places every supported Go
 # minor is still exercised together, and AGENTS.md promises "CI tests Go 1.26
 # and 1.27". This asserts release.yaml's release-tests matrix is a superset of
 # the Go minors ci.yaml's producer jobs actually install, so trimming a
