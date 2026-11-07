@@ -30,9 +30,37 @@ type decodingMemoKey struct {
 // stopped at a depth or work bound with decodable work left. It is a property of the
 // scan, not of one view, so it survives cache hits and unretained decodes.
 type decodingMemo struct {
-	keywordMode   bool
-	keywordBudget *keywordWorkBudget
-	keywordUnit   string
+	reassemblyPatternSelected  bool
+	reassemblyPatterns         textDLPPatternSet
+	assembledBytes             int
+	assembledKeywordReplays    map[assembledReplayKey][]assembledKeywordCandidate
+	assembledAllowance         *assembledAllowance
+	reassemblyBudget           assembledBudget
+	assembledProjectionTable   []assembledProjectionEntry
+	assembledProjectionStorage *assembledProjectionStorage
+	assembledProjectionFirst   [5]assembledProjectionEntry
+	assembledProjectionEntries int
+	reassemblyDeferred         bool
+	reassemblyNestedDeferred   bool
+	reassemblyNestedPending    []int
+	reassemblyInbound          bool
+	reassemblyPending          []string
+	reassemblyViewKinds        map[string]assembledViewKind
+	reassemblyTextRoots        map[string]bool
+	reassemblyParents          map[string]string
+	reassemblyIncomplete       bool
+	assembledCharged           map[string]*assembledCharges
+	assembledChargeRegistry    *assembledChargeRegistry
+	reassemblyInspected        int
+	reassemblyProduced         map[assembledIdentity]struct{}
+	reassemblyPlan             *reassemblyPlan
+	reassemblySeen             map[string]int
+	reassemblyFindings         []TextDLPMatch
+
+	keywordPresence map[keywordPresenceKey]bool
+	keywordMode     bool
+	keywordBudget   *keywordWorkBudget
+	keywordUnit     string
 	// keywordInput is the text DLP input whose keyword unit is keywordUnit.
 	keywordInput   string
 	keywordRawURL  string
@@ -63,6 +91,7 @@ type decodingMemo struct {
 // result. Callers only read the offsets.
 func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	if m != nil && m.compactReady && m.compactSource == text {
+		m.reassemblyDerive(text, m.compactText)
 		return m.compactText, m.compactOffsets
 	}
 	compacted, offsets := text, []int(nil)
@@ -71,6 +100,7 @@ func (m *decodingMemo) compactWhitespace(text string) (string, []int) {
 	}
 	if m != nil {
 		m.compactSource, m.compactText, m.compactOffsets, m.compactReady = text, compacted, offsets, true
+		m.reassemblyDerive(text, compacted)
 	}
 	return compacted, offsets
 }
@@ -218,6 +248,7 @@ func (m *decodingMemo) inspectionIncomplete() bool {
 // pass limit.
 func (m *decodingMemo) decodeHTML(text string) string {
 	decoded, converged := decodeHTMLEntitiesChecked(text)
+	m.reassemblyDerive(text, decoded)
 	if !converged {
 		m.markIncomplete()
 	}
@@ -242,6 +273,9 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 			if !cached.complete {
 				m.incomplete = true
 			}
+			if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
+				m.reassemblyObserveDecoded(text, cached.views)
+			}
 			return cached.views
 		}
 		sources := newKeywordDecodeSources(text)
@@ -261,12 +295,15 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		for _, d := range views {
 			if d.source != nil {
 				m.keywordSources[d.text] = append(m.keywordSources[d.text], d.source)
-				if normalized := m.normalize(d.text); normalized != d.text {
+				if normalized := m.normalizeUntracked(d.text); normalized != d.text {
 					m.keywordSources[normalized] = append(m.keywordSources[normalized], d.source)
 				}
 			}
 		}
 		m.incomplete = m.incomplete || !complete
+		if complete || m.inbound {
+			m.reassemblyObserveDecoded(text, views)
+		}
 		return views
 	}
 	if m == nil {
@@ -279,17 +316,28 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		if !complete {
 			m.incomplete = true
 		}
+		if complete || m.inbound {
+			m.reassemblyObserveDecoded(text, decoded)
+		}
 		return decoded
 	}
 	if cached, ok := m.views[key]; ok {
 		if !cached.complete {
 			m.incomplete = true
 		}
+		if (cached.complete || m.inbound) && m.reassemblyViewKinds[text].textual() && !m.reassemblyTextRoots[text] {
+			m.reassemblyObserveDecoded(text, cached.views)
+		}
 		return cached.views
 	}
 	decoded, complete := decodeEncodingsBudgetMode(text, includeURL, minPrefix, m.inbound)
 	if !complete {
 		m.incomplete = true
+	}
+	// An existing outbound refusal already decides this scan. Inbound keeps
+	// its partial-view contract and never turns this skip into a refusal.
+	if complete || m.inbound {
+		m.reassemblyObserveDecoded(text, decoded)
 	}
 	m.retainDecode(key, decoded, complete)
 	return decoded
@@ -325,6 +373,17 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 // normalize preserves each call's exact input and normalization depth. A
 // normalized output is not treated as already normalized on a later call.
 func (m *decodingMemo) normalize(text string) string {
+	normalized := m.normalizeUntracked(text)
+	if m != nil {
+		m.reassemblyDerive(text, normalized)
+	}
+	return normalized
+}
+
+// normalizeUntracked records no terminal ancestry. A decoded view's kind is
+// set only after its decode completes; deriving before then would give a
+// decoder view's normalization the text kind.
+func (m *decodingMemo) normalizeUntracked(text string) string {
 	if m == nil {
 		return normalize.ForDLP(text)
 	}

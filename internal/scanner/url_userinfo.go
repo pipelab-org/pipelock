@@ -63,6 +63,7 @@ func userinfoTargets(values []dlpTarget, decodes *decodingMemo) []dlpTarget {
 			texts = append(texts, dlpTarget{percent, spanViewLabel("percent_decoded", source.viewLabel), ""})
 		}
 		for _, target := range texts {
+			decodes.reassemblyDerive(source.text, target.text)
 			if target.text == "" || seen[target.text] {
 				continue
 			}
@@ -118,6 +119,7 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 	var matches []TextDLPMatch
 	opts.skipURLUserinfo = true
 	opts.emitWarns = false
+	kind := decodes.reassemblyDerivedKind(text)
 	seen := make(map[string]struct{})
 	for _, token := range textURLTokenRe.FindAllString(text, -1) {
 		if ctx.Err() != nil {
@@ -139,7 +141,11 @@ func (s *Scanner) textURLUserinfoMatches(ctx context.Context, text string, decod
 		if !present {
 			continue
 		}
-		for _, target := range userinfoTargets(urlUserinfoValues(user, second, hasSecond, true), decodes) {
+		values := urlUserinfoValues(user, second, hasSecond, true)
+		for _, value := range values {
+			decodes.reassemblySetKind(value.text, kind)
+		}
+		for _, target := range userinfoTargets(values, decodes) {
 			result := s.scanTextForDLPWithDecodes(ctx, target.text, opts, decodes)
 			for _, match := range append(result.Matches, result.InformationalMatches...) {
 				match.span.ViewLabel = spanViewLabel(match.span.ViewLabel, target.viewLabel)
