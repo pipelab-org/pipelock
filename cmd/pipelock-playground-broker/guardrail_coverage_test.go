@@ -16,7 +16,6 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/playground/broker"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
-	"github.com/luckyPipewrench/pipelock/internal/testexec"
 )
 
 func TestBuildImagesBrokerPreflightArgumentsPassCheckConfig(t *testing.T) {
@@ -57,39 +56,6 @@ func TestBuildImagesBrokerPreflightArgumentsPassCheckConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "valid") {
 		t.Fatalf("preflight output = %q, want validity statement", out.String())
-	}
-}
-
-func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
-	tmp := t.TempDir()
-	dockerLog := filepath.Join(tmp, "docker.log")
-	dockerPath := filepath.Join(tmp, "docker")
-	dockerStub := "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$DOCKER_LOG\"\n"
-	// The temporary file has to be executable because build-images.sh resolves
-	// docker through PATH. It contains only the fixed test stub above.
-	testexec.WriteExecutable(t, dockerPath, []byte(dockerStub), 0o700)
-	cmd := exec.CommandContext(t.Context(), "bash", "../../deploy/fly-playground/build-images.sh", "--only", "vm")
-	cmd.Env = append(os.Environ(),
-		"PATH="+tmp+":"+os.Getenv("PATH"),
-		"DOCKER_LOG="+dockerLog,
-		"PLAYGROUND_REGISTRY=registry.example/playground",
-		"PLAYGROUND_UI_DIR=",
-		"PLAYGROUND_PUSH=",
-		"PLAYGROUND_ALLOW_DIRTY=1",
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("VM-only build failed: %v\n%s", err, output)
-	}
-	logBytes, err := os.ReadFile(filepath.Clean(dockerLog))
-	if err != nil {
-		t.Fatalf("read docker log: %v", err)
-	}
-	logText := string(logBytes)
-	// The provenance check runs its own context export first, so match the VM
-	// recipe itself rather than any line that mentions a Dockerfile.
-	if !strings.Contains(logText, "-f deploy/fly-playground/Dockerfile -t registry.example/playground:vm-") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
-		t.Fatalf("VM-only docker calls = %q", logText)
 	}
 }
 

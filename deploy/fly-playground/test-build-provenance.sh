@@ -91,6 +91,16 @@ git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit
 
 export PATH="${tmp}/bin:${PATH}" PLAYGROUND_REGISTRY=registry.example/playground
 export PLAYGROUND_UI_DIR="${tmp}/site/static/playground/demo" DOCKER_LOG="${tmp}/docker.log" CAPTURE_DIR="${tmp}/capture"
+# Exercise VM-only selection in the fixture's Git tree, where unrelated tests
+# cannot change the source while the build's provenance checks run.
+PLAYGROUND_UI_DIR= PLAYGROUND_PUSH= "${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/vm-only.out"
+if ! grep -qF -- '-f deploy/fly-playground/Dockerfile -t registry.example/playground:vm-' "${DOCKER_LOG}" ||
+	grep -qE 'Dockerfile\.broker|^run( |$)' "${DOCKER_LOG}"; then
+	echo 'VM-only build did not select only the VM recipe' >&2
+	cat "${DOCKER_LOG}" >&2
+	exit 1
+fi
+: > "${DOCKER_LOG}"
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/clean.out"
 cp -a "${tmp}/capture" "${tmp}/clean-capture"
 python3 -m json.tool "${tmp}/clean-capture/build-info.json" > /dev/null
