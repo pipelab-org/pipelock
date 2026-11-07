@@ -16,9 +16,12 @@ permissions:
 
 jobs:
   timing:
+    # A superseded main run is cancelled whole (ci.yaml's concurrency) and has
+    # no complete timing to report.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.event == 'push'
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
     # Source: the existing read-only ci-shard-drift.yaml job's fetch budget.
     timeout-minutes: 15
@@ -46,7 +49,7 @@ jobs:
           run_id="$TRIGGER_RUN_ID"
           attempt="$TRIGGER_RUN_ATTEMPT"
           if [ -z "$run_id" ]; then
-            latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0] | "\(.id) \(.run_attempt)"')"
+            latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=20" --jq '[.workflow_runs[] | select(.conclusion != "cancelled")][0] | "\(.id) \(.run_attempt)"')"
             read -r run_id attempt <<< "$latest"
           fi
           if [[ ! "$run_id" =~ ^[0-9]+$ || ! "$attempt" =~ ^[0-9]+$ ]]; then

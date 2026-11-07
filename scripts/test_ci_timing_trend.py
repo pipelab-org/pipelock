@@ -11,6 +11,7 @@ import copy
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -129,6 +130,13 @@ class TimingTrendTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["failed_jobs"], [jobs[0]["name"] + " (cancelled)"])
         self.assertIn(jobs[0]["name"] + " (cancelled)", trend.summary(report))
+
+    def test_superseded_cancelled_run_is_refused(self):
+        # ci.yaml cancels a main run a newer push supersedes; its jobs stopped
+        # part way, so it must not be reported as a timing sample.
+        self.data["current_run"]["conclusion"] = "cancelled"
+        with self.assertRaisesRegex(ValueError, "cancelled"):
+            self.report()
 
     def test_failed_run_times_its_timed_out_job(self):
         # A job that hit its timeout-minutes ends cancelled; in a failed run its
@@ -322,6 +330,27 @@ class TimingWorkflowTest(unittest.TestCase):
         self.assertEqual(artifact["with"]["if-no-files-found"], "error")
         report = next(step for step in self.job["steps"] if step.get("name") == "Report CI timing")
         self.assertIn('--summary "$GITHUB_STEP_SUMMARY"', report["run"])
+
+    def test_cancelled_runs_are_skipped_by_trigger_and_dispatch(self):
+        # Pairs with ci.yaml's concurrency: superseded main runs are cancelled.
+        ci = yaml.load((ROOT / ".github/workflows/ci.yaml").read_text(), Loader=WorkflowLoader)
+        self.assertIs(ci["concurrency"]["cancel-in-progress"], True)
+        self.assertIn("github.event.workflow_run.conclusion != 'cancelled'", self.job["if"])
+        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
+        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", fetch["run"]).group(1)
+
+        def pick(conclusions):
+            runs = [{"id": 100 + i, "run_attempt": 1, "conclusion": c} for i, c in enumerate(conclusions)]
+            return subprocess.run(["jq", "-r", selector], input=json.dumps({"workflow_runs": runs}),
+                                  capture_output=True, text=True, check=True).stdout.strip()
+
+        # The API lists newest first; the newest uncancelled run is measured,
+        # whether it succeeded or failed.
+        self.assertEqual(pick(["cancelled", "cancelled", "success"]), "102 1")
+        self.assertEqual(pick(["cancelled", "failure", "success"]), "101 1")
+        self.assertEqual(pick(["success", "cancelled"]), "100 1")
+        # No usable run yields no id, which the step's id check rejects.
+        self.assertEqual(pick(["cancelled"]), "null null")
 
     def test_fetch_step_with_offline_paginated_api_and_dispatch(self):
         # Execute the shipped fetch step, including the Python/gh boundary.

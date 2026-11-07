@@ -155,6 +155,10 @@ def compute(directory: Path) -> dict:
     current = read_json(directory / "current-run.json")
     if not is_main_ci(current):
         raise ValueError("current run must be a completed main-push ci.yaml run")
+    if current.get("conclusion") == "cancelled":
+        # ci.yaml cancels a main run when a newer push supersedes it; its jobs
+        # stopped part way, so any timing from it would be wrong.
+        raise ValueError("current run was cancelled; a superseded run has no complete timing")
     current_payload = read_json(directory / "current-jobs.json")
     jobs = job_records(current, current_payload)
     samples: dict[str, list[float]] = {}
@@ -198,8 +202,8 @@ def compute(directory: Path) -> dict:
     # https://docs.github.com/en/rest/actions/workflow-jobs#list-jobs-for-a-workflow-run
     failed = [job["name"] for job in items(current_payload, "jobs")
               if job["conclusion"] not in (None, "success", "skipped", "cancelled", "neutral")]
-    # A job that hits its timeout-minutes ends "cancelled", not "failure". Main
-    # never cancels a run in progress (ci.yaml's concurrency), so in a failed
+    # A job that hits its timeout-minutes ends "cancelled", not "failure". A
+    # superseded main run is cancelled whole and refused above, so in a failed
     # main run a cancelled job is a timeout, and hiding it would hide why main
     # went red.
     if current["conclusion"] == "failure":
