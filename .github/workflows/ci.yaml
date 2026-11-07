@@ -445,9 +445,13 @@ jobs:
   # shard measured 302s cold and 46s with every result cached. Go's cache is
   # content-addressed, so a stale entry is never used for changed input; the
   # race lane on main still runs everything with -count=1. Only main saves,
-  # once per shard per day, after pruning what that run did not use, which
-  # keeps the shards inside the repository's cache allowance. A pull request
-  # can read main's entries but cannot write any main reads.
+  # after every successful push and after pruning what that run did not use,
+  # so a pull request restores the entry built from the newest main commit,
+  # which its merge base usually is; an entry saved once a day missed every
+  # package downstream of anything merged since. GitHub keeps a repository's
+  # caches under its size limit by evicting the least recently used entries,
+  # so superseded saves age out first. A pull request can read main's entries
+  # but cannot write any main reads.
   test-unit-go126:
     needs: [security-scan, changed-files]
     # Skipped only on a documentation-only pull request; see changed-files.
@@ -480,7 +484,6 @@ jobs:
           set -euo pipefail
           {
             echo "go=$(go env GOVERSION)"
-            echo "day=$(date -u +%Y%m%d)"
             echo "dir=$(go env GOCACHE)"
           } >> "$GITHUB_OUTPUT"
           # Anything older than this marker after the tests ran was restored
@@ -488,21 +491,18 @@ jobs:
           touch "$RUNNER_TEMP/go-cache-start"
 
       # v2 entries hold test results recorded with stable input timestamps
-      # (scripts/ci_stable_mtimes.py); v1 results were recorded against
-      # checkout times and can never match, so a v2 key makes the first main
-      # push save usable results instead of waiting for the next UTC day.
-      # The v1 fallback still supplies compiled packages until then.
+      # (scripts/ci_stable_mtimes.py). The exact key names this commit, so
+      # it matches only a rerun on main; everything else takes the newest
+      # entry by prefix, falling back across a go.sum change.
       - name: Restore Go build and test-result cache
         id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
             go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
             go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
-            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
-            go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
 
       - name: Verify dependencies
         run: bash scripts/ci-retry.sh go mod verify
@@ -550,23 +550,28 @@ jobs:
           test_status=0
           : > /tmp/go-test.json
           profiles=()
+          # Profiles go outside the checkout: go test creates them when it
+          # starts, and a new entry in the checkout root changes the root's
+          # mtime, which every test that stats the root hashes.
+          fresh_profile="$RUNNER_TEMP/coverage-fresh.out"
+          cached_profile="$RUNNER_TEMP/coverage-cached.out"
           if [ -n "$fresh_packages" ]; then
             # shellcheck disable=SC2086 # a space-separated package list
-            go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile=coverage-fresh.out ${test_selector:+"$test_selector"} $fresh_packages -json \
+            go test "${tags[@]}" -p=4 -timeout=8m -count=1 -covermode=set -coverprofile="$fresh_profile" ${test_selector:+"$test_selector"} $fresh_packages -json \
               | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL fresh" --json-out /tmp/go-test-fresh.json
             status=$?
             [ "$status" -eq 0 ] || test_status=$status
             cat /tmp/go-test-fresh.json >> /tmp/go-test.json
-            profiles+=(coverage-fresh.out)
+            profiles+=("$fresh_profile")
           fi
           if [ -n "$cached_packages" ]; then
             # shellcheck disable=SC2086 # a space-separated package list
-            go test "${tags[@]}" -p=4 -timeout=8m -covermode=set -coverprofile=coverage-cached.out ${test_selector:+"$test_selector"} $cached_packages -json \
+            go test "${tags[@]}" -p=4 -timeout=8m -covermode=set -coverprofile="$cached_profile" ${test_selector:+"$test_selector"} $cached_packages -json \
               | python3 scripts/stream_go_test_json.py --label "$TEST_LABEL" --json-out /tmp/go-test-cached.json
             status=$?
             [ "$status" -eq 0 ] || test_status=$status
             cat /tmp/go-test-cached.json >> /tmp/go-test.json
-            profiles+=(coverage-cached.out)
+            profiles+=("$cached_profile")
           fi
           # One set-mode profile for the upload: one mode line, then every
           # block from both passes.
@@ -609,8 +614,8 @@ jobs:
 
       # Go marks a cache entry used by touching it, so files still older than
       # the start marker were restored and never needed. Dropping them keeps
-      # each day's entry to what that day's tree uses instead of every day's
-      # leftovers. Go refreshes a used entry's mtime only when it is at least an
+      # each entry to what its commit's tree uses instead of every earlier
+      # commit's leftovers. Go refreshes a used entry's mtime only when it is at least an
       # hour old (mtimeInterval in cmd/go/internal/cache), so an entry written
       # less than an hour before this run can be in use without being touched.
       # The cutoff therefore sits an hour before the start marker; anything
@@ -631,7 +636,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
 
   test-oss-go127:
     needs: [security-scan, changed-files]

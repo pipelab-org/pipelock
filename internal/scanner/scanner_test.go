@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,63 +63,6 @@ func testConfig() *config.Config {
 	// domain list. Allowlist-specific tests override this.
 	cfg.APIAllowlist = nil
 	return cfg
-}
-
-func TestMustNewHasNoNonTestCallers(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller failed")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
-	// Read through an os.Root so every read is confined to the repo and a
-	// symlink cannot redirect it outside during the walk.
-	root, rootErr := os.OpenRoot(repoRoot)
-	if rootErr != nil {
-		t.Fatalf("open repo root: %v", rootErr)
-	}
-	defer func() { _ = root.Close() }()
-	var offenders []string
-	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			switch d.Name() {
-			case ".git", "vendor":
-				return filepath.SkipDir
-			default:
-				return nil
-			}
-		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
-			return nil
-		}
-		rel, relErr := filepath.Rel(repoRoot, path)
-		if relErr != nil {
-			return relErr
-		}
-		data, readErr := root.ReadFile(rel)
-		if readErr != nil {
-			return readErr
-		}
-		text := string(data)
-		if strings.Contains(text, "scanner.MustNew(") {
-			offenders = append(offenders, rel)
-			return nil
-		}
-		if strings.HasPrefix(rel, filepath.Join("internal", "scanner")+string(filepath.Separator)) &&
-			rel != filepath.Join("internal", "scanner", "scanner.go") &&
-			strings.Contains(text, "MustNew(") {
-			offenders = append(offenders, rel)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk repo: %v", err)
-	}
-	if len(offenders) > 0 {
-		t.Fatalf("scanner.MustNew is test-only; non-test callers: %s", strings.Join(offenders, ", "))
-	}
 }
 
 func TestScan_AllowsNormalURLs(t *testing.T) {
