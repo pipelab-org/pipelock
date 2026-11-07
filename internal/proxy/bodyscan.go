@@ -803,7 +803,7 @@ type BodyScanRequest struct {
 	// once per distinct compiled credential audience allow after scanning.
 	AudienceSurface string
 	// OnCredentialAudienceAllow is invoked once per distinct compiled
-	// credential audience allow after scanning completes cleanly. A non-nil
+	// credential audience allow after scanning permits delivery. A non-nil
 	// return means the allow's receipt could not be durably confirmed;
 	// scanRequestBody surfaces it on BodyScanResult.CredentialAudienceReceiptErr
 	// so the caller blocks before forwarding instead of losing the signal.
@@ -829,11 +829,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	var audienceAllows []scanner.CredentialAudienceAllow
 	defer func() {
 		final.CredentialAudienceMismatches = scanner.TextDLPCredentialAudienceMismatches(final.DLPMatches, req.suppressTarget(), req.audienceSurface())
-		// An audience allow is evidence that a credential was delivered. A
-		// pre-redaction DLP pass can collect one before redaction, content
-		// entropy, or injection scanning blocks the body, so emit only for a
-		// body whose final result is clean.
-		if req.OnCredentialAudienceAllow == nil || !final.Clean {
+		// Warnings can still deliver an allowed credential, so they need the
+		// same receipt confirmation as a clean body. A blocking result keeps
+		// its original finding and does not earn an audience allow.
+		if req.OnCredentialAudienceAllow == nil || (!final.Clean && final.Action == config.ActionBlock) {
 			return
 		}
 		for _, allow := range uniqueCredentialAudienceAllows(audienceAllows) {

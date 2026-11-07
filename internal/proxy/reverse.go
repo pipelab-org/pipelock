@@ -589,6 +589,7 @@ func reverseTargetURL(upstream *url.URL, r *http.Request) string {
 	target := *upstream
 	target.Path = joinReversePaths(upstream.Path, r.URL.Path)
 	target.RawPath = ""
+	target.ForceQuery = upstream.ForceQuery || r.URL.ForceQuery
 	switch {
 	case upstream.RawQuery == "":
 		target.RawQuery = r.URL.RawQuery

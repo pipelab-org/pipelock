@@ -4,16 +4,23 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -52,6 +59,7 @@ func TestAnthropicOAuthBodyCarrier(t *testing.T) {
 		{name: "escaped path", body: auth(""), target: "https://platform.claude.com/v1/oauth%2ftoken"},
 		{name: "path traversal", body: auth(""), target: "https://platform.claude.com/v1/../v1/oauth/token"},
 		{name: "query", body: auth(""), target: target + "?extra=1"},
+		{name: "empty query", body: auth(""), target: target + "?"},
 		{name: "GET", body: auth(""), method: http.MethodGet},
 		{name: "plain text", body: auth(""), media: "text/plain"},
 		{name: "websocket", body: auth(""), surface: "websocket_frame"},
@@ -142,5 +150,153 @@ func TestAnthropicOAuthBodyRedactionAndReceipt(t *testing.T) {
 			t.Fatal("missing receipt error")
 		}
 
+	}
+}
+
+func TestAnthropicOAuthBodyReceiptWarnings(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	key := "sk-" + "ant-ort01-" + strings.Repeat("a", 32)
+	body := fmt.Sprintf("{\"grant_type\":\"refresh_token\",\"refresh_token\":%q,\"extra\":%q}", key, opaqueHighEntropyBodyValue())
+	receiptErr := errors.New("receipt unavailable")
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		t.Run(action, func(t *testing.T) {
+			calls := 0
+			req := BodyScanRequest{
+				Body: strings.NewReader(body), Method: http.MethodPost, ContentType: "application/json",
+				MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc,
+				Target: "https://platform.claude.com/v1/oauth/token", Action: config.ActionBlock,
+				OnCredentialAudienceAllow: func(scanner.CredentialAudienceAllow) error {
+					calls++
+					return receiptErr
+				},
+			}
+			applyContentEntropyConfig(&req, cfg)
+			req.ContentEntropyEnabled = true
+			req.ContentEntropyAction = action
+			_, result := scanRequestBody(t.Context(), req)
+			if result.Clean || result.EntropyFinding == nil || result.Action != action {
+				t.Fatalf("expected entropy %s, got %+v", action, result)
+			}
+			if action == config.ActionWarn {
+				if calls != 1 || !errors.Is(result.CredentialAudienceReceiptErr, receiptErr) {
+					t.Fatalf("warning lost receipt failure: calls=%d err=%v", calls, result.CredentialAudienceReceiptErr)
+				}
+			} else if calls != 0 || result.CredentialAudienceReceiptErr != nil {
+				t.Fatal("blocked body earned an audience allow")
+			}
+		})
+	}
+}
+
+func TestAnthropicOAuthBodyTransports(t *testing.T) {
+	const host = "platform.claude.com"
+	const endpoint = "https://" + host + "/v1/oauth/token"
+	key := "sk-" + "ant-ort01-" + strings.Repeat("a", 32)
+	for _, transport := range []string{TransportForward, "intercept", TransportReverse} {
+		for _, tc := range []struct {
+			name, query           string
+			warning, receiptFails bool
+			wantStatus            int
+		}{
+			{name: "allowed", wantStatus: http.StatusOK},
+			{name: "empty query", query: "?", wantStatus: http.StatusForbidden},
+			{name: "query", query: "?extra=1", wantStatus: http.StatusForbidden},
+			{name: "receipt failure", receiptFails: true, wantStatus: http.StatusForbidden},
+			{name: "warning allowed", warning: true, wantStatus: http.StatusOK},
+			{name: "warning receipt failure", warning: true, receiptFails: true, wantStatus: http.StatusForbidden},
+		} {
+			t.Run(transport+"/"+tc.name, func(t *testing.T) {
+				cfg := testScannerConfig()
+				cfg.ResponseScanning.Enabled = false
+				cfg.FlightRecorder.RequireReceipts = true
+				cfg.RequestBodyScanning.ContentEntropyEnabled = true
+				cfg.RequestBodyScanning.ContentEntropyAction = config.ActionWarn
+				cfg.DNS.HostOverrides = map[string][]string{host: {"93.184.216.34"}}
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				p, err := New(cfg, audit.NewNop(), sc, metrics.New())
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(p.Close)
+				var rejected atomic.Int32
+				rph := newReceiptProxyHelperWithRedactor(t, p.metrics, func(_ context.Context, text string) scanner.TextDLPResult {
+					if tc.receiptFails && strings.Contains(text, credentialAudienceReceiptExtensionKey) {
+						rejected.Add(1)
+						return scanner.TextDLPResult{Incomplete: true}
+					}
+					return scanner.TextDLPResult{Clean: true}
+				})
+				t.Cleanup(func() { _ = rph.rec.Close() })
+				p.receiptEmitterPtr.Store(rph.emitter)
+				// Generic admission evidence succeeds; only audience evidence fails.
+				if err := p.emitAllowPathReceipt(cfg, receipt.EmitOpts{
+					ActionID: receipt.NewActionID(), Verdict: config.ActionAllow,
+					Layer: "proxy", Transport: transport, Method: http.MethodPost, Target: endpoint,
+				}); err != nil {
+					t.Fatalf("generic admission receipt: %v", err)
+				}
+				body := fmt.Sprintf("{\"grant_type\":\"refresh_token\",\"refresh_token\":%q}", key)
+				if tc.warning {
+					body = strings.TrimSuffix(body, "}") + fmt.Sprintf(",\"extra\":%q}", opaqueHighEntropyBodyValue())
+				}
+				var hits atomic.Int32
+				rt := roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+					hits.Add(1)
+					got, readErr := io.ReadAll(r.Body)
+					if readErr != nil || string(got) != body {
+						t.Errorf("upstream body changed: %v", readErr)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("ok")), Request: r}, nil
+				})
+				p.client.Transport = rt
+				req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, endpoint+tc.query, strings.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				w := httptest.NewRecorder()
+				switch transport {
+				case TransportForward:
+					p.handleForwardHTTP(w, req)
+				case "intercept":
+					// The decrypted request enters in origin form.
+					req.URL.Scheme, req.URL.Host = "", ""
+					newInterceptHandler(&InterceptContext{
+						TargetHost: host, TargetPort: "443", Config: cfg, Scanner: sc,
+						Logger: p.logger, Metrics: p.metrics, Proxy: p,
+					}, rt).ServeHTTP(w, req)
+				case TransportReverse:
+					upstream, parseErr := url.Parse("https://" + host)
+					if parseErr != nil {
+						t.Fatal(parseErr)
+					}
+					rp := NewReverseProxy(upstream, &p.cfgPtr, &p.scannerPtr, p.logger, p.metrics, nil, nil, nil)
+					rp.receiptEmitterPtr = &p.receiptEmitterPtr
+					rp.proxy.Transport = rt
+					rp.ServeHTTP(w, req)
+				}
+				wantHits := int32(0)
+				if tc.wantStatus == http.StatusOK {
+					wantHits = 1
+				}
+				if w.Code != tc.wantStatus || hits.Load() != wantHits {
+					t.Fatalf("status/hits=%d/%d want=%d/%d; %s", w.Code, hits.Load(), tc.wantStatus, wantHits, w.Body.String())
+				}
+				if tc.receiptFails {
+					if rejected.Load() == 0 || w.Header().Get(blockreason.HeaderLayer) != blockLayerCredentialAudienceReceipt {
+						t.Fatalf("audience receipt failure not enforced: rejected=%d layer=%s", rejected.Load(), w.Header().Get(blockreason.HeaderLayer))
+					}
+				}
+				allows := 0
+				for _, r := range rph.findReceipts(t) {
+					if r.ActionRecord.Layer == credentialAudienceReceiptExtensionKey {
+						allows++
+					}
+				}
+				if allows != int(wantHits) {
+					t.Fatalf("audience receipts=%d want=%d", allows, wantHits)
+				}
+			})
+		}
 	}
 }

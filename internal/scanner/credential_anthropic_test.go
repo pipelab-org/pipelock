@@ -5,9 +5,13 @@ package scanner
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func TestAnthropicClientHeaderEndpoints(t *testing.T) {
@@ -75,34 +79,97 @@ func TestAnthropicClientHeaderEndpoints(t *testing.T) {
 }
 
 func TestAnthropicOAuthCarrierQualification(t *testing.T) {
-	s := MustNew(credentialAudienceEntropyConfig())
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	s := MustNew(cfg)
 	defer s.Close()
 	key := "sk-" + "ant-ort01-" + strings.Repeat("a", 32)
-	body := []byte(`{"grant_type":"refresh_token","refresh_token":"` + key + `","client_id":"client","scope":"user:profile"}`)
+	tokenBody := func(token, extra string) []byte {
+		return []byte(fmt.Sprintf("{\"grant_type\":\"refresh_token\",\"refresh_token\":%q%s}", token, extra))
+	}
+	body := tokenBody(key, "")
 	const target = "https://platform.claude.com/v1/oauth/token"
 	for _, tc := range []struct {
-		target, method, media string
-		body                  []byte
-		allow                 bool
+		name, target, method, media string
+		body                        []byte
+		cancel, allow               bool
 	}{
-		{target, http.MethodPost, "application/json", body, true},
-		{target, http.MethodGet, "application/json", body, false},
-		{target, http.MethodPost, "text/plain", body, false},
-		{target + "?extra=1", http.MethodPost, "application/json", body, false},
-		{target + "?", http.MethodPost, "application/json", body, false},
-		{target + "#fragment", http.MethodPost, "application/json", body, false},
-		{"wss://platform.claude.com/v1/oauth/token", http.MethodPost, "application/json", body, false},
-		{target, http.MethodPost, "application/json", []byte(`null`), false},
-		{target, http.MethodPost, "application/json", []byte(`{}`), false},
-		{target, http.MethodPost, "application/json", []byte(`{"grant_type":"refresh_token","refresh_token":""}`), false},
-		{target, http.MethodPost, "application/json", []byte(`{"grant_type":"refresh_token","refresh_token":"ordinary"}`), false},
-		{"://", http.MethodPost, "application/json", body, false},
-		{target, http.MethodPost, "application/json;", body, true},
-		{target, http.MethodPost, "application/json;broken", body, false},
+		{name: "refresh", allow: true},
+		{name: "revocation", target: target + "/revoke", body: []byte(fmt.Sprintf("{\"token_type_hint\":\"refresh_token\",\"token\":%q}", key)), allow: true},
+		{name: "media trailing separator", media: "application/json;", allow: true},
+		{name: "non POST", method: http.MethodGet},
+		{name: "wrong media", media: "text/plain"},
+		{name: "malformed media", media: "application/json;broken"},
+		{name: "cancelled context", cancel: true},
+		{name: "bad URL", target: "://"},
+		{name: "HTTP", target: "http://platform.claude.com/v1/oauth/token"},
+		{name: "WebSocket", target: "wss://platform.claude.com/v1/oauth/token"},
+		{name: "query", target: target + "?extra=1"},
+		{name: "empty query", target: target + "?"},
+		{name: "fragment", target: target + "#fragment"},
+		{name: "wrong host", target: "https://api.vendor.example/v1/oauth/token"},
+		{name: "unknown path", target: target + "/extra"},
+		{name: "escaped path", target: "https://platform.claude.com/v1/oauth%2ftoken"},
+		{name: "invalid JSON", body: append(append([]byte(nil), body...), '{')},
+		{name: "duplicate JSON key", body: tokenBody(key, ",\"refresh_token\":\"ordinary\"")},
+		{name: "escaped duplicate JSON key", body: tokenBody(key, ",\"refresh_\\u0074oken\":\"ordinary\"")},
+		{name: "nested duplicate JSON key", body: tokenBody(key, ",\"extra\":{\"x\":1,\"x\":2}")},
+		{name: "array", body: []byte("[]")},
+		{name: "null", body: []byte("null")},
+		{name: "empty object", body: []byte("{}")},
+		{name: "wrong discriminator", body: []byte(strings.Replace(string(body), "\"grant_type\":\"refresh_token\"", "\"grant_type\":\"authorization_code\"", 1))},
+		{name: "discriminator type", body: []byte(strings.Replace(string(body), "\"grant_type\":\"refresh_token\"", "\"grant_type\":true", 1))},
+		{name: "empty credential", body: tokenBody("", "")},
+		{name: "credential type", body: []byte("{\"grant_type\":\"refresh_token\",\"refresh_token\":[]}")},
+		{name: "nonmatching credential", body: tokenBody("ordinary", "")},
+		{name: "credential prefix", body: tokenBody("prefix "+key, "")},
+		{name: "credential suffix", body: tokenBody(key+" suffix", "")},
+		{name: "credential in remainder", body: tokenBody(key, fmt.Sprintf(",\"extra\":%q", key))},
+		{name: "encoded credential in remainder", body: tokenBody(key, fmt.Sprintf(",\"extra\":%q", base64.StdEncoding.EncodeToString([]byte(key))))},
+		{name: "split credential in remainder", body: tokenBody(key, fmt.Sprintf(",\"extra\":[%q,%q]", key[:12], key[12:]))},
 	} {
-		if got := s.OAuthCredentialAudienceSurface(t.Context(), tc.body, tc.target, tc.method, tc.media); (got == credentialAudienceAnthropicOAuthSurface) != tc.allow {
-			t.Fatalf("%+v surface=%s", tc, got)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			dest, method, media := tc.target, tc.method, tc.media
+			if dest == "" {
+				dest = target
+			}
+			if method == "" {
+				method = http.MethodPost
+			}
+			if media == "" {
+				media = "application/json"
+			}
+			input := tc.body
+			if input == nil {
+				input = body
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if tc.cancel {
+				cancel()
+			}
+			got := s.OAuthCredentialAudienceSurface(ctx, input, dest, method, media)
+			want := "body"
+			if tc.allow {
+				want = credentialAudienceAnthropicOAuthSurface
+			}
+			if got != want {
+				t.Fatalf("surface=%s want=%s", got, want)
+			}
+			// A rejected carrier must retain ordinary body DLP for the token.
+			matches := s.ScanTextForDLP(t.Context(), key).Matches
+			if len(matches) == 0 {
+				t.Fatal("credential fixture did not match")
+			}
+			kept, allows := s.FilterTextDLPMatchesForDestination(matches, dest, got)
+			if tc.allow {
+				if len(kept) != 0 || len(allows) != 1 {
+					t.Fatalf("qualified carrier kept=%v allows=%v", kept, allows)
+				}
+			} else if len(kept) == 0 || len(allows) != 0 {
+				t.Fatalf("fallback dropped credential: kept=%v allows=%v", kept, allows)
+			}
+		})
 	}
 	matches := s.ScanTextForDLP(t.Context(), key).Matches
 	for _, target := range []string{"https://platform.claude.com/v1/messages", "https://mcp-proxy.anthropic.com/v1/messages", "https://api.anthropic.com/v1/oauth/token"} {
@@ -112,17 +179,47 @@ func TestAnthropicOAuthCarrierQualification(t *testing.T) {
 	}
 }
 
+func TestAnthropicCredentialAudienceEndpointHosts(t *testing.T) {
+	candidate := credentialAudienceCandidate{patternName: "Anthropic API Key"}
+	for _, tc := range []struct {
+		host, path, surface string
+		allow               bool
+	}{
+		{"api.anthropic.com", "/v1/messages", CredentialAudienceAuthorizationHeaderSurface, true},
+		{"platform.claude.com", "/v1/oauth/token", credentialAudienceAnthropicOAuthSurface, true},
+		{"mcp-proxy.anthropic.com", "/v1/mcp/server-id", CredentialAudienceAuthorizationHeaderSurface, true},
+		{"api.vendor.example", "/v1/messages", CredentialAudienceAuthorizationHeaderSurface, false},
+		{"api.anthropic.com.vendor.example", "/v1/messages", CredentialAudienceAuthorizationHeaderSurface, false},
+	} {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := audienceAPIEndpointAllowed(candidate, tc.host, "https://"+tc.host+tc.path, tc.surface); got != tc.allow {
+				t.Fatalf("endpoint allowed=%t want=%t", got, tc.allow)
+			}
+		})
+	}
+}
+
 func TestAnthropicOAuthRequiresCompiledPattern(t *testing.T) {
-	cfg := credentialAudienceEntropyConfig()
-	cfg.DLP.Patterns = nil
-	s := MustNew(cfg)
-	defer s.Close()
 	body := []byte(`{"grant_type":"refresh_token","refresh_token":"` + "sk-" + "ant-" + strings.Repeat("a", 32) + `"}`)
 	const target = "https://platform.claude.com/v1/oauth/token"
-	if got := s.OAuthCredentialAudienceSurface(t.Context(), body, target, http.MethodPost, "application/json"); got != "body" {
-		t.Fatal("missing configured pattern qualified")
+	for _, tc := range []struct {
+		name     string
+		patterns []config.DLPPattern
+	}{
+		{name: "no patterns"},
+		{name: "unrelated pattern", patterns: []config.DLPPattern{{Name: "Other credential", Regex: "ordinary", Severity: config.SeverityHigh}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := credentialAudienceEntropyConfig()
+			cfg.DLP.Patterns = tc.patterns
+			s := MustNew(cfg)
+			t.Cleanup(s.Close)
+			if got := s.OAuthCredentialAudienceSurface(t.Context(), body, target, http.MethodPost, "application/json"); got != "body" {
+				t.Fatal("missing configured pattern qualified")
+			}
+		})
 	}
-	s = MustNew(credentialAudienceEntropyConfig())
+	s := MustNew(credentialAudienceEntropyConfig())
 	defer s.Close()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
