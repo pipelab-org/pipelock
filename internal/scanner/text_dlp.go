@@ -944,24 +944,30 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		decodes.keywordInput = text
 		decodes.registerKeywordTransform(decodes.keywordUnit, cleaned, "projection")
 	}
-	segmentViews := textDLPEncodingSegmentViews(cleaned)
+	segmentViewsFor := func(source string) []spanTextView {
+		views := textDLPEncodingSegmentViews(source)
+		for _, view := range views {
+			decodes.reassemblyDerive(source, view.text)
+		}
+		return views
+	}
+	segmentViews := segmentViewsFor(cleaned)
 	segmentDecodeViews := segmentViews
 	// Decode before normalization can erase the tag alphabet. Segment the
 	// admitted tag views too: surrounding prose must not hide another encoding.
 	if normalize.ContainsTags(text) {
 		for _, d := range decodes.decode(text, true) {
 			if d.encoding == encodingUnicodeTags {
-				segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(decodes.normalize(d.text))...)
+				segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, segmentViewsFor(decodes.normalize(d.text))...)
 			}
 		}
 	}
 	htmlDecoded := decodes.decodeHTML(cleaned)
 	if htmlDecoded != cleaned {
-		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, textDLPEncodingSegmentViews(htmlDecoded)...)
+		segmentDecodeViews = appendUniqueTextDLPViews(segmentDecodeViews, segmentViewsFor(htmlDecoded)...)
 	}
 	// Build the complete budget view set before the core-only return.
 	for _, view := range segmentDecodeViews {
-		decodes.reassemblyDerive(text, view.text)
 		budgetViews = append(budgetViews, view.text)
 	}
 
