@@ -336,13 +336,10 @@ class TimingWorkflowTest(unittest.TestCase):
         ci = yaml.load((ROOT / ".github/workflows/ci.yaml").read_text(), Loader=WorkflowLoader)
         self.assertIs(ci["concurrency"]["cancel-in-progress"], True)
         self.assertIn("github.event.workflow_run.conclusion != 'cancelled'", self.job["if"])
-        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
-        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", fetch["run"]).group(1)
 
         def pick(conclusions):
             runs = [{"id": 100 + i, "run_attempt": 1, "conclusion": c} for i, c in enumerate(conclusions)]
-            return subprocess.run(["jq", "-r", selector], input=json.dumps([{"workflow_runs": runs}]),
-                                  capture_output=True, text=True, check=True).stdout.strip()
+            return self.dispatch_lookup([{"workflow_runs": runs}])
 
         # The API lists newest first; the newest uncancelled run is measured,
         # whether it succeeded or failed.
@@ -350,20 +347,31 @@ class TimingWorkflowTest(unittest.TestCase):
         self.assertEqual(pick(["cancelled", "failure", "success"]), "101 1")
         self.assertEqual(pick(["success", "cancelled"]), "100 1")
         # No usable run yields no id, which the step's id check rejects.
-        self.assertEqual(pick(["cancelled"]), "null null")
+        self.assertEqual(pick(["cancelled"]), "")
+
+    def dispatch_lookup(self, pages):
+        """Run the shipped lookup the way gh does: --jq on each page, then the
+        step keeps the first output line."""
+        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
+        lookup = next(line for line in fetch["run"].splitlines() if "status=completed" in line)
+        # gh refuses --slurp together with --jq; the lookup must not use it.
+        self.assertIn("--paginate", lookup)
+        self.assertNotIn("--slurp", lookup)
+        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", lookup).group(1)
+        lines = []
+        for page in pages:
+            out = subprocess.run(["jq", "-r", selector], input=json.dumps(page),
+                                 capture_output=True, text=True, check=True).stdout
+            lines += [line for line in out.splitlines() if line]
+        self.assertIn('latest="${usable%%$\'\\n\'*}"', fetch["run"])
+        return lines[0] if lines else ""
 
     def test_dispatch_finds_uncancelled_run_after_first_page(self):
         # A burst of main pushes can cancel every run on the first API page.
-        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
-        lookup = next(line for line in fetch["run"].splitlines() if "status=completed" in line)
-        self.assertIn("--paginate --slurp", lookup)
-        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", fetch["run"]).group(1)
         pages = [{"workflow_runs": [{"id": i, "run_attempt": 1, "conclusion": "cancelled"}
                                     for i in range(100, 0, -1)]},
                  {"workflow_runs": [{"id": 999, "run_attempt": 2, "conclusion": "failure"}]}]
-        result = subprocess.run(["jq", "-r", selector], input=json.dumps(pages),
-                                capture_output=True, text=True, check=True)
-        self.assertEqual(result.stdout.strip(), "999 2")
+        self.assertEqual(self.dispatch_lookup(pages), "999 2")
 
     def test_fetch_step_with_offline_paginated_api_and_dispatch(self):
         # Execute the shipped fetch step, including the Python/gh boundary.
@@ -380,6 +388,10 @@ args = sys.argv[1:]
 endpoint = next(arg for arg in args if arg.startswith('repos/'))
 if os.environ.get('FAIL_FETCH'):
     sys.exit(9)
+if '--slurp' in args and ('--jq' in args or '--template' in args):
+    # Real gh refuses this combination.
+    print('the `--slurp` option is not supported with `--jq` or `--template`', file=sys.stderr)
+    sys.exit(1)
 if '--jq' in args:
     print('99 1')
 elif '/attempts/' in endpoint and '/jobs' not in endpoint:
