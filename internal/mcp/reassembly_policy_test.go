@@ -109,7 +109,7 @@ func runReassemblyPolicyInbound(t *testing.T, surface string) {
 			cfg := enabledA2ACfg()
 			cfg.Action = config.ActionBlock
 			r := ScanA2AResponseBody(t.Context(), data, sc, cfg)
-			if r.ScanError != "" || r.Action != config.ActionWarn || !scanner.OnlyInformational(r.DLPFindings) {
+			if r.ScanError != "" || r.Action != config.ActionWarn || !scanner.OnlyInformational(r.DLPFindings) || !hasNamedDLP(r.DLPFindings, scanner.PartialEncodedContentPattern) {
 				t.Fatalf("A2A partial response enforces or loses evidence: %s %s %v", r.ScanError, r.Action, r.DLPFindings)
 			}
 		default:

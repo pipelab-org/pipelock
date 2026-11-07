@@ -837,14 +837,16 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		runResult = finishAssembled(runResult, &runDecodes)
 		runDecodes.releaseProjection()
 		for i := range runResult.Matches {
-			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry {
+			// A retry run contributes only its card-prefix findings, but an
+			// inspection limit reached while finishing that run still refuses.
+			if run.RetryOnly && !runResult.Matches[i].cardPrefixRetry && !runResult.Matches[i].IsInspectionLimit() {
 				continue
 			}
 			s.classifyCardRun(&runResult.Matches[i], run)
 			original.Matches = append(original.Matches, runResult.Matches[i])
 		}
 		for i := range runResult.InformationalMatches {
-			if run.RetryOnly && !runResult.InformationalMatches[i].cardPrefixRetry {
+			if run.RetryOnly && !runResult.InformationalMatches[i].cardPrefixRetry && runResult.InformationalMatches[i].PatternName != PartialEncodedContentPattern {
 				continue
 			}
 			runResult.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.InformationalMatches[i].span.ViewLabel)

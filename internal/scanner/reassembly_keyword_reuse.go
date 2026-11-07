@@ -5,6 +5,7 @@ package scanner
 
 import (
 	"crypto/sha256"
+	"fmt"
 	"reflect"
 )
 
@@ -115,7 +116,7 @@ func (m *decodingMemo) replayKeywords(view, previous, codec int) {
 		}
 		if scan.keywordMatches(pattern, lane, codec, candidate.phase, candidate.begin, candidate.end) {
 			scan.encoding = reassemblyCodecs[codec].name
-			scan.viewLabel = spanViewLabel("reassembly", scan.encoding)
+			scan.viewLabel = fmt.Sprintf("reassembly:%s:phase_%d", scan.encoding, candidate.phase)
 			scan.produce(candidate.pattern, lane.view, candidate.begin, candidate.end)
 		}
 		if scan.budget.incomplete {

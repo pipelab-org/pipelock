@@ -295,7 +295,7 @@ func (m *decodingMemo) decodeMode(text string, includeURL bool, minPrefix int) [
 		for _, d := range views {
 			if d.source != nil {
 				m.keywordSources[d.text] = append(m.keywordSources[d.text], d.source)
-				if normalized := m.normalize(d.text); normalized != d.text {
+				if normalized := m.normalizeUntracked(d.text); normalized != d.text {
 					m.keywordSources[normalized] = append(m.keywordSources[normalized], d.source)
 				}
 			}
@@ -373,21 +373,28 @@ func (m *decodingMemo) retainDecode(key decodingMemoKey, decoded []decodedResult
 // normalize preserves each call's exact input and normalization depth. A
 // normalized output is not treated as already normalized on a later call.
 func (m *decodingMemo) normalize(text string) string {
+	normalized := m.normalizeUntracked(text)
+	if m != nil {
+		m.reassemblyDerive(text, normalized)
+	}
+	return normalized
+}
+
+// normalizeUntracked records no terminal ancestry. A decoded view's kind is
+// set only after its decode completes; deriving before then would give a
+// decoder view's normalization the text kind.
+func (m *decodingMemo) normalizeUntracked(text string) string {
 	if m == nil {
 		return normalize.ForDLP(text)
 	}
 	if m.shared != nil {
-		normalized := m.shared.normalize(text)
-		m.reassemblyDerive(text, normalized)
-		return normalized
+		return m.shared.normalize(text)
 	}
 	if normalized, ok := m.normalized[text]; ok {
-		m.reassemblyDerive(text, normalized)
 		return normalized
 	}
 	normalized := normalize.ForDLP(text)
 	m.retainNormalized(text, normalized)
-	m.reassemblyDerive(text, normalized)
 	return normalized
 }
 
