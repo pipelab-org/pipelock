@@ -135,10 +135,12 @@ def dependencies(texts: list[str], context: dict) -> dict:
             name, accessor = match.group(1), match.group(2)
             if name in RUNTIME_CONTEXTS:
                 continue
-            if name == "matrix" and accessor == ".":
+            # Only a named key resolves; matrix.*.go and the like read every entry.
+            dotted = DOTTED_MATRIX_RE.match(text, match.start(1))
+            if name == "matrix" and dotted:
+                keys.add(dotted.group(1))
                 continue
             whole = True
-        keys |= set(DOTTED_MATRIX_RE.findall(text))
     if whole:
         return {"context": context}
     if keys:

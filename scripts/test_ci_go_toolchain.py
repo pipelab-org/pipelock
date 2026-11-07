@@ -325,6 +325,13 @@ class GoToolchainTest(unittest.TestCase):
         self.edit(".github/workflows/b.yaml", "go: ['1.26']", "go: ['1.27']")
         self.assert_changed("bracket matrix reference")
 
+    def test_wildcard_matrix_reference_tracks_the_whole_matrix(self) -> None:
+        self.write_job("w", "jobs:\n  w:\n    strategy:\n      matrix:\n        cfg: [{go: '1.26'}]\n    steps:\n"
+                       "      - uses: actions/setup-go@v7\n        if: contains(matrix.*.go, '1.26')\n"
+                       "        with:\n          go-version: '1.26'\n")
+        self.edit(".github/workflows/w.yaml", "cfg: [{go: '1.26'}]", "cfg: [{go: '1.27'}]")
+        self.assert_changed("wildcard matrix read in a setup-go condition")
+
     def test_env_reference_in_go_version_tracks_env(self) -> None:
         self.write_job("e", "env:\n  GO_VERSION: '1.26'\njobs:\n  e:\n    steps:\n"
                        "      - uses: actions/setup-go@v7\n        with:\n          go-version: ${{ env.GO_VERSION }}\n")
