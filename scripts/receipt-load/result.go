@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,6 +18,8 @@ const (
 
 	perfMeasured = "measured"
 	perfInvalid  = "invalid"
+
+	maxTransportErrorSamples = 8
 )
 
 // result is the contents of result.json. Performance and integrity are
@@ -75,29 +78,37 @@ type windowsReport struct {
 }
 
 type performanceReport struct {
-	Verdict           string         `json:"verdict"`
-	Reasons           []string       `json:"reasons"`
-	Seconds           float64        `json:"seconds"`
-	RequestsPerSecond float64        `json:"requests_per_second"`
-	Latency           latencyReport  `json:"latency"`
-	Windows           windowsReport  `json:"windows"`
-	Allowed           int            `json:"allowed"`
-	Blocked           int            `json:"blocked"`
-	Unexpected        int            `json:"unexpected"`
-	Errors            int            `json:"errors"`
-	BodyReadErrors    int            `json:"body_read_errors"`
-	NotRun            int            `json:"not_run"`
-	StatusCounts      map[int]int    `json:"status_counts"`
-	ResponseSamples   map[int]string `json:"response_samples"`
-	CPUSeconds        float64        `json:"cpu_seconds"`
-	CPUCores          float64        `json:"cpu_cores_average"`
-	RSSStartBytes     int64          `json:"rss_start_bytes"`
-	RSSEndBytes       int64          `json:"rss_end_bytes"`
-	RSSPeakBytes      int64          `json:"rss_peak_bytes"`
-	EvidenceBytes     int64          `json:"evidence_bytes"`
-	EvidenceAtStart   int64          `json:"evidence_bytes_at_measurement_start"`
-	FlushLagMS        float64        `json:"last_receipt_after_last_response_ms"`
-	RecorderFileLagMS float64        `json:"last_recorder_file_write_after_last_response_ms"`
+	Verdict               string                 `json:"verdict"`
+	Reasons               []string               `json:"reasons"`
+	Seconds               float64                `json:"seconds"`
+	RequestsPerSecond     float64                `json:"requests_per_second"`
+	Latency               latencyReport          `json:"latency"`
+	Windows               windowsReport          `json:"windows"`
+	Allowed               int                    `json:"allowed"`
+	Blocked               int                    `json:"blocked"`
+	Unexpected            int                    `json:"unexpected"`
+	Errors                int                    `json:"errors"`
+	TransportErrorSamples []transportErrorSample `json:"transport_error_samples"`
+	TransportErrorKinds   map[string]int         `json:"transport_error_kinds"`
+	BodyReadErrors        int                    `json:"body_read_errors"`
+	NotRun                int                    `json:"not_run"`
+	StatusCounts          map[int]int            `json:"status_counts"`
+	ResponseSamples       map[int]string         `json:"response_samples"`
+	CPUSeconds            float64                `json:"cpu_seconds"`
+	CPUCores              float64                `json:"cpu_cores_average"`
+	RSSStartBytes         int64                  `json:"rss_start_bytes"`
+	RSSEndBytes           int64                  `json:"rss_end_bytes"`
+	RSSPeakBytes          int64                  `json:"rss_peak_bytes"`
+	EvidenceBytes         int64                  `json:"evidence_bytes"`
+	EvidenceAtStart       int64                  `json:"evidence_bytes_at_measurement_start"`
+	FlushLagMS            float64                `json:"last_receipt_after_last_response_ms"`
+	RecorderFileLagMS     float64                `json:"last_recorder_file_write_after_last_response_ms"`
+}
+
+type transportErrorSample struct {
+	Index int    `json:"index"`
+	Kind  string `json:"kind"`
+	Error string `json:"error"`
 }
 
 func (p *performanceReport) invalidate(reason string) {
@@ -113,6 +124,7 @@ func summarizeMeasured(plan workload, phase phaseResult, window time.Duration, s
 	p := performanceReport{
 		Verdict: perfMeasured, Reasons: []string{},
 		StatusCounts: map[int]int{}, ResponseSamples: samples,
+		TransportErrorSamples: []transportErrorSample{}, TransportErrorKinds: map[string]int{},
 		Seconds: phase.elapsed.Seconds(),
 	}
 	latency := make([]int64, 0, len(phase.outcomes))
@@ -128,6 +140,13 @@ func summarizeMeasured(plan workload, phase phaseResult, window time.Duration, s
 		case out.transportErr:
 			p.Errors++
 			p.StatusCounts[0]++
+			p.TransportErrorKinds[out.transportErrKind]++
+			// Outcomes are in measured request order, including after a restart.
+			if len(p.TransportErrorSamples) < maxTransportErrorSamples {
+				p.TransportErrorSamples = append(p.TransportErrorSamples, transportErrorSample{
+					Index: index, Kind: out.transportErrKind, Error: out.transportErrText,
+				})
+			}
 			continue
 		case out.bodyReadErr:
 			p.BodyReadErrors++
@@ -152,7 +171,8 @@ func summarizeMeasured(plan workload, phase phaseResult, window time.Duration, s
 	p.Latency = latencyReport{Samples: len(sorted), P50MS: quantileMS(sorted, 0.50), P95MS: quantileMS(sorted, 0.95), P99MS: quantileMS(sorted, 0.99), MaxMS: quantileMS(sorted, 1)}
 	p.Windows = summarizeWindows(windowRates(doneAt, phase.elapsed, window), window)
 	if p.Errors > 0 {
-		p.invalidate("transport errors: throughput is not comparable")
+		first := p.TransportErrorSamples[0]
+		p.invalidate(fmt.Sprintf("transport errors: throughput is not comparable (first: %s: %s)", first.Kind, first.Error))
 	}
 	if p.BodyReadErrors > 0 {
 		p.invalidate("response bodies failed to read to the end")
