@@ -132,11 +132,6 @@ func (m *decodingMemo) assembledSkip(view int) uint8 {
 	if m.assembledProjectionEntries >= maxDecodeCandidates {
 		return 0
 	}
-	// Keyword eligibility depends on source coordinates, even when RFC
-	// projections agree. A different source must check its own windows.
-	if m.keywordsActive() {
-		return 0
-	}
 	text := m.reassemblyPending[view]
 	fingerprint := assembledFingerprint(text)
 	var skip uint8
