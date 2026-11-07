@@ -564,7 +564,9 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 }
 
 // bodyDeliveryBlocks mirrors the refusal a body path applies after scanning:
-// the hard-block floors, then adaptive escalation in enforcement mode.
+// the hard-block floors, then adaptive escalation. In enforcement mode an
+// escalated block refuses; in audit mode only an action escalation changed to
+// block refuses, as the forward, intercept and WebSocket handlers do.
 // dlpDestinationExempt selects the forward and intercept rule that keeps
 // adaptive-exempt destinations from escalating DLP findings. defaultAction is
 // the caller's action when the result carries none.
@@ -572,7 +574,7 @@ func bodyDeliveryBlocks(result BodyScanResult, hostname string, cfg *config.Conf
 	if blockingBodyFinding(result, hostname, cfg) != bodyBlockCauseUnknown {
 		return true
 	}
-	if cfg == nil || !cfg.EnforceEnabled() || level <= 0 {
+	if cfg == nil || level <= 0 {
 		return false
 	}
 	exempt := result.IsEntropyOnly() || result.IsInformationalCardRuns() || result.IsIncompleteFileWarningOnly()
@@ -590,7 +592,11 @@ func bodyDeliveryBlocks(result BodyScanResult, hostname string, cfg *config.Conf
 	if action == "" {
 		action = defaultAction
 	}
-	return decide.UpgradeAction(action, level, &cfg.AdaptiveEnforcement) == config.ActionBlock
+	upgraded := decide.UpgradeAction(action, level, &cfg.AdaptiveEnforcement)
+	if upgraded != config.ActionBlock {
+		return false
+	}
+	return cfg.EnforceEnabled() || upgraded != action
 }
 
 // bodyBlockCauseLabel returns the scanner label for a blocking finding, or

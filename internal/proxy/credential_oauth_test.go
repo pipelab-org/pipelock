@@ -246,11 +246,13 @@ func TestAnthropicOAuthBodyCallerBlockSuppressesReceipt(t *testing.T) {
 
 // Adaptive escalation can refuse a warning-level body after scanning, so the
 // delivery decision that gates audience receipts must include it, keep the
-// entropy-only exemption, and never claim a block in audit mode.
+// entropy-only exemption, and refuse in audit mode only when escalation
+// changed the action.
 func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 	block := config.ActionBlock
 	warnBody := BodyScanResult{Action: config.ActionWarn, InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
 	entropyOnly := BodyScanResult{Action: config.ActionWarn, EntropyFinding: &ContentEntropyFinding{}}
+	blockBody := BodyScanResult{Action: config.ActionBlock, InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
 	for _, tc := range []struct {
 		name    string
 		result  BodyScanResult
@@ -261,7 +263,9 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 	}{
 		{name: "escalated warning blocks", result: warnBody, level: 2, enforce: true, trusted: true, want: true},
 		{name: "normal level delivers", result: warnBody, level: 0, enforce: true, trusted: true},
-		{name: "audit mode never blocks", result: warnBody, level: 2, trusted: true},
+		{name: "audit escalated warning blocks", result: warnBody, level: 2, trusted: true, want: true},
+		{name: "audit normal level delivers", result: warnBody, level: 0, trusted: true},
+		{name: "audit unchanged block delivers", result: blockBody, level: 2, trusted: true},
 		{name: "entropy-only warning stays exempt", result: entropyOnly, level: 2, enforce: true, trusted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,6 +280,29 @@ func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
 			got := bodyDeliveryBlocks(tc.result, "platform.claude.com", cfg, tc.level, true, config.ActionWarn)
 			if got != tc.want {
 				t.Fatalf("bodyDeliveryBlocks = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestWSBodyDefaultAction(t *testing.T) {
+	enforceOff := false
+	for _, tc := range []struct {
+		name    string
+		action  string
+		enforce *bool
+		want    string
+	}{
+		{name: "configured action wins", action: config.ActionWarn, want: config.ActionWarn},
+		{name: "enforcement defaults to block", want: config.ActionBlock},
+		{name: "audit defaults to warn", enforce: &enforceOff, want: config.ActionWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.RequestBodyScanning.Action = tc.action
+			cfg.Enforce = tc.enforce
+			if got := wsBodyDefaultAction(cfg); got != tc.want {
+				t.Fatalf("wsBodyDefaultAction = %q, want %q", got, tc.want)
 			}
 		})
 	}
