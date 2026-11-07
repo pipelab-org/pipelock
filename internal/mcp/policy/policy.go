@@ -366,8 +366,10 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 			paths = keyed
 		}
 	}
-	// The identity resolver already refuses NUL, line breaks, URLs and
-	// oversized values, so content strings stay out of the lookup.
+	// The identity resolver refuses NUL, line breaks, hierarchical URLs and
+	// oversized values. Single-line content that also names a local path remains
+	// a candidate; excluding it would let an unrecognized pathname key bypass
+	// the baseline identity check.
 	paths = append(withPathSpellings(paths, true), values...)
 	expanded, notes := pc.localPaths.expandNoted(paths, false)
 	seen := make(map[string]bool)
