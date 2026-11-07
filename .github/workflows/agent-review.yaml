@@ -36,7 +36,7 @@ jobs:
       contents: read
       issues: write
       pull-requests: write
-    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@250991344a567c7c0832869ecce9279c8b0084c5 # main
+    uses: pipelab-org/agent-review/.github/workflows/agent-review-reusable.yaml@d295f33a9048e70d9b6e401bc8268e75d6c1f830 # main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
