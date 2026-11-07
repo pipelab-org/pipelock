@@ -6,10 +6,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -25,20 +29,24 @@ const (
 	// bodySamples is how many leading responses keep their body text in the
 	// result as evidence of what each class looks like.
 	bodySamples = 3
+
+	maxTransportErrorText = 300
 )
 
 // requestOutcome is what the client observed for one planned request. Latency
 // runs from just before the request is issued until the response body has been
 // read to its end, so it includes body transfer and not only time to headers.
 type requestOutcome struct {
-	ran           bool
-	status        int
-	transportErr  bool
-	bodyReadErr   bool
-	bodyMismatch  bool
-	latencyNS     int64
-	doneAtNS      int64
-	receiptHeader string
+	ran              bool
+	status           int
+	transportErr     bool
+	transportErrText string
+	transportErrKind string
+	bodyReadErr      bool
+	bodyMismatch     bool
+	latencyNS        int64
+	doneAtNS         int64
+	receiptHeader    string
 }
 
 // phaseResult holds every per-request outcome for a phase, indexed by the
@@ -116,13 +124,13 @@ func (p loadParams) issue(ctx context.Context, slot int, base time.Time) (reques
 	target := "http://" + authority + p.plan.pathAndQuery(slot)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		out.transportErr = true
+		out.setTransportError(err)
 		return out, nil
 	}
 	before := time.Now()
 	resp, err := p.client.Do(req)
 	if err != nil {
-		out.transportErr = true
+		out.setTransportError(err)
 		out.latencyNS = time.Since(before).Nanoseconds()
 		out.doneAtNS = time.Since(base).Nanoseconds()
 		return out, nil
@@ -140,6 +148,32 @@ func (p loadParams) issue(ctx context.Context, slot int, base time.Time) (reques
 		out.bodyMismatch = true
 	}
 	return out, body
+}
+
+func (out *requestOutcome) setTransportError(err error) {
+	out.transportErr = true
+	out.transportErrKind = classifyTransportError(err)
+	out.transportErrText = strings.ToValidUTF8(err.Error(), "\uFFFD")
+	if len(out.transportErrText) > maxTransportErrorText {
+		// Drop a partial final rune so JSON encoding preserves the byte cap.
+		out.transportErrText = strings.ToValidUTF8(out.transportErrText[:maxTransportErrorText], "")
+	}
+}
+
+func classifyTransportError(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection_refused"
+	case errors.Is(err, syscall.ECONNRESET):
+		return "connection_reset"
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return "eof"
+	default:
+		return "other"
+	}
 }
 
 // readBody reads a response body to its end. A body longer than maxBodyRead is
