@@ -464,7 +464,7 @@ func TestLocalPathIdentity_HardLinkWalkOncePerCall(t *testing.T) {
 	const n = 200
 	values := make([]string, 0, n+1)
 	for i := 0; i < n; i++ {
-		link := filepath.Join(f.ws, "link"+strconv.Itoa(i))
+		link := filepath.Join(f.ws, "link "+strconv.Itoa(i))
 		hardLink(t, filepath.Join(f.ws, "other"), link)
 		values = append(values, link)
 	}
@@ -487,6 +487,21 @@ func TestLocalPathIdentity_HardLinkWalkOncePerCall(t *testing.T) {
 	for dir, count := range reads {
 		if strings.HasPrefix(dir, f.home) && count != 1 {
 			t.Fatalf("%s read %d times, want once", dir, count)
+		}
+	}
+	// Unrecognized keys retain the same once-per-call walk for names with
+	// whitespace, without acquiring the extra pathname spellings.
+	clear(reads)
+	raw, err := json.Marshal(map[string][]string{"entries": values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := pc.CheckToolCallWithArgs(testReadTool, values, raw); v.Matched {
+		t.Fatalf("unrelated links under an unrecognized key matched: %+v", v)
+	}
+	for _, dir := range []string{ssh, filepath.Join(ssh, "sub")} {
+		if reads[dir] != 1 {
+			t.Fatalf("unrecognized key: %s read %d times, want once", dir, reads[dir])
 		}
 	}
 

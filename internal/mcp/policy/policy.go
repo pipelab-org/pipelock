@@ -343,8 +343,10 @@ func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, 
 	return paths, truncated, true
 }
 
-// expandToolPaths retains baseline path checks for whitespace-free values and
-// adds whitespace-preserving spellings for explicit pathname fields. A scoped
+// expandToolPaths retains the baseline local identity check for every submitted
+// value, as written, and adds whitespace-preserving spellings only for explicit
+// pathname fields. A name with a space under an unrecognized key is still
+// followed, so a link to a protected file cannot hide behind one. A scoped
 // rule cannot acquire paths from other keys. All values share one local identity
 // pass so hard-link inspection does not repeat for each reading.
 // Arguments with no JSON key to tell path from content keep every value as a
@@ -364,13 +366,11 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 			paths = keyed
 		}
 	}
-	paths = withPathSpellings(paths, true)
-	for _, value := range values {
-		if !strings.ContainsAny(value, " \t\x00\n\r") {
-			paths = append(paths, value)
-		}
-	}
-	expanded, notes := pc.localPaths.expandNoted(paths, false)
+	// The identity resolver refuses NUL, line breaks, hierarchical URLs and
+	// oversized values. Single-line content that also names a local path remains
+	// a candidate; excluding it would let an unrecognized pathname key bypass
+	// the baseline identity check.
+	expanded, notes := pc.localPaths.expandNoted(identityCandidates(paths, values), false)
 	seen := make(map[string]bool)
 	out := slices.Clone(values)
 	for _, value := range values {
@@ -383,6 +383,27 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 		}
 	}
 	return out, notes, false
+}
+
+// identityCandidates is the local identity lookup list: pathname-field values
+// with their spellings, then every submitted value as written. Each distinct
+// candidate appears once, so a value repeated many times in one call costs one
+// filesystem lookup. Rule matching still sees every submitted value.
+func identityCandidates(pathnames, values []string) []string {
+	return uniqueStrings(append(withPathSpellings(pathnames, true), values...))
+}
+
+// uniqueStrings returns values without repeats, keeping first-seen order.
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
