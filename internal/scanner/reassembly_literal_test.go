@@ -4,8 +4,10 @@
 package scanner
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"slices"
 	"testing"
 )
 
@@ -34,7 +36,9 @@ func TestReassemblyValidatorContinuation(t *testing.T) {
 	}
 	for _, enc := range reassemblyEncodings("MARK9999 MARK1234") {
 		result := reassemblyTerminal(p, reassemblyBang(enc.text), &assembledBudget{})
-		if result.incomplete || len(result.findings) == 0 {
+		if result.incomplete || !slices.ContainsFunc(result.findings, func(m TextDLPMatch) bool {
+			return m.hasValueIdentity && m.valueIdentity == sha256.Sum256([]byte("MARK1234"))
+		}) {
 			t.Fatal("rejected candidate hid accepted value", enc.name, result)
 		}
 	}
