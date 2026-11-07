@@ -94,7 +94,7 @@ func runReassemblyPolicyInbound(t *testing.T, surface string) {
 					t.Fatal(err)
 				}
 			}
-			if !strings.Contains(log.String(), "action=warn") {
+			if !strings.Contains(log.String(), "action=warn") || !strings.Contains(log.String(), scanner.PartialEncodedContentPattern) {
 				t.Fatal("operator warning absent")
 			}
 		case "a2a-response":
