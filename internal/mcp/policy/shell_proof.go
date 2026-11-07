@@ -6,12 +6,14 @@ package policy
 import (
 	"encoding/json"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
 
-// CheckShellCommand checks a known shell program. Only the two shipped command
-// patterns can use literal-data and dry-run proofs; every other rule and every
+// CheckShellCommand checks a known shell program. Only the shipped command
+// patterns in shellDataProofRules can use the literal-data proof, and only
+// Destructive Git Operation the dry-run proof; every other rule and every
 // unproved program keeps the ordinary whole-script matching views.
 func (pc *Config) CheckShellCommand(command string, rawArgs json.RawMessage) Verdict {
 	args := []string{command}
@@ -35,7 +37,7 @@ func (p *shellRuleProof) views(rule *CompiledRule) ([]argView, bool) {
 		return nil, false
 	}
 	pattern := rule.ArgPattern.String()
-	if pattern != shippedShellPatterns["Destructive Git Operation"] && pattern != shippedShellPatterns["Reverse Shell"] {
+	if !slices.ContainsFunc(shellDataProofRules, func(name string) bool { return pattern == shippedShellPatterns[name] }) {
 		return nil, false
 	}
 	if p.data != nil {
@@ -47,10 +49,19 @@ func (p *shellRuleProof) views(rule *CompiledRule) ([]argView, bool) {
 	return nil, false
 }
 
+// shellDataProofRules are the shipped rules that describe running a command.
+// When the whole script is proved to be read-only utilities given literal data,
+// a match inside that data is text, not a command. Rules about which file a
+// command touches, such as credential reads, are deliberately absent: there the
+// data is the target.
+var shellDataProofRules = []string{
+	"Destructive Git Operation", "Reverse Shell", "Destructive File Delete", "Recursive Permission Change",
+}
+
 var shippedShellPatterns = func() map[string]string {
 	patterns := make(map[string]string)
 	for _, rule := range DefaultToolPolicyRules() {
-		if rule.Name == "Destructive Git Operation" || rule.Name == "Reverse Shell" {
+		if slices.Contains(shellDataProofRules, rule.Name) {
 			patterns[rule.Name] = rule.ArgPattern
 		}
 	}
