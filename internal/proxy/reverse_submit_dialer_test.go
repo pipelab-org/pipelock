@@ -318,6 +318,7 @@ func TestSubmitProfile_SafeDialerCoreCIDRBlockPreservesSSRFReason(t *testing.T) 
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	if err := rec.Close(); err != nil {
 		t.Fatalf("recorder close: %v", err)
 	}

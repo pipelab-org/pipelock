@@ -1684,6 +1684,7 @@ func TestReverseProxy_GenericNonMediaUnscannedNotLabeledComplete(t *testing.T) {
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	var outcome receipt.Receipt
 	var outcomeCount int
@@ -1732,6 +1733,7 @@ func TestReverseProxy_GenericNonMediaCleanStillFlowsWhenScanningDisabled(t *test
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	var outcome receipt.Receipt
 	var outcomeCount int

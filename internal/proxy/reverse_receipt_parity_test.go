@@ -603,6 +603,7 @@ func TestReverseProxy_RequireReceiptsSuccessEmitsSingleAllow(t *testing.T) {
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	var allowCount int
@@ -752,6 +753,7 @@ func TestReverseProxy_RequireReceiptsMediaBlockEmitsOutcome(t *testing.T) {
 	}
 
 	waitForReceiptOrTimeout(t, dir)
+	waitForReverseOutcomeReceipt(t, dir)
 	closeRec()
 	receipts := extractReceiptsFromDir(t, dir)
 	admission := findReverseAdmissionAllowReceipt(t, receipts)
@@ -879,6 +881,7 @@ func TestReverseProxy_RequireReceiptsMediaPassthroughLabeledUnscanned(t *testing
 			}
 
 			waitForReceiptOrTimeout(t, dir)
+			waitForReverseOutcomeReceipt(t, dir)
 			closeRec()
 			receipts := extractReceiptsFromDir(t, dir)
 			var outcome receipt.Receipt
