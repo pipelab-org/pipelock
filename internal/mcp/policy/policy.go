@@ -522,9 +522,10 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		argPatternMatched := patchInspection == patchTargetsUninspectable || rule.ArgPattern == nil
 		pairIncomplete := false
 		if !argPatternMatched {
-			argPatternMatched, pairIncomplete = matchArgViews(rule.ArgPattern, ruleViews[:]...)
 			if replacement, ok := opts.shell.views(rule); ok {
 				argPatternMatched, pairIncomplete = matchArgViews(rule.ArgPattern, replacement...)
+			} else {
+				argPatternMatched, pairIncomplete = matchArgViews(rule.ArgPattern, ruleViews[:]...)
 			}
 		}
 		// The shipped credential exception describes one submitted value. JSON

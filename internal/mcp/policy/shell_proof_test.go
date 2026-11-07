@@ -253,6 +253,40 @@ func TestShellCleanVisibleOverrides(t *testing.T) {
 	}
 }
 
+func TestShellOverrideAfterReservedWordsAndAttachedPrintfVariable(t *testing.T) {
+	pc := defaultConfigWithIncomplete(t, config.ActionBlock)
+	for _, command := range []string{
+		"if true; then . ./setup.sh; fi; git clean -fdn",
+		"for x in 1; do . ./setup.sh; done; git clean -fdn",
+		"if false; then :; else . ./setup.sh; fi; git clean -fdn",
+		"while . ./setup.sh; do break; done; git clean -fdn",
+		"until . ./setup.sh; do break; done; git clean -fdn",
+		"if false; then :; elif . ./setup.sh; then :; fi; git clean -fdn",
+		"! . ./setup.sh; git clean -fdn",
+		"time . ./setup.sh; git clean -fdn",
+		"printf -vPATH '%s' ./tools; git clean -fdn",
+		"printf -v PATH '%s' ./tools; git clean -fdn",
+	} {
+		t.Run(command, func(t *testing.T) {
+			checkShellOverride(t, pc, command)
+		})
+	}
+	// A -v-prefixed word after the format or -- is printed, not assigned.
+	// Both proofs still refuse it, so the command keeps the whole-script match.
+	for _, command := range []string{
+		"printf -vaction '%s' x", "printf -v action '%s' x",
+		"printf '%s\\n' -vaction", "printf -- -vaction",
+	} {
+		words, ok := shellProofWords(command)
+		if !ok {
+			t.Fatal("literal words were not read")
+		}
+		if shellDataUtility(words, "printf") {
+			t.Fatalf("printf variable assignment counted as read-only data: %q", command)
+		}
+	}
+}
+
 func checkShellOverride(t *testing.T, pc *Config, command string) {
 	t.Helper()
 	if p := proveShellRules(command); p != nil && (p.clean != nil || p.data != nil) {

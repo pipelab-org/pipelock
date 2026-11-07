@@ -189,12 +189,12 @@ func shellCleanPreviews(source string, words []shellProofWord) (string, bool) {
 	}
 	for i := range words {
 		switch normalized[i] {
-		case "enable", "hash", "alias", "unalias", "source", "eval", "exec", "command_not_found_handle", "trap", "unset", "let":
+		// A standalone "." is treated like source wherever it appears: after
+		// reserved words (then, do, else, !, time, ...) it is still a command
+		// word, and a sourced file can redefine git or PATH. Refusing every
+		// position errs toward the existing whole-script match.
+		case "enable", "hash", "alias", "unalias", "source", ".", "eval", "exec", "command_not_found_handle", "trap", "unset", "let":
 			return "", false
-		case ".":
-			if i == 0 || words[i-1].operator || normalized[i-1] == "command" || normalized[i-1] == "builtin" {
-				return "", false
-			}
 		case "git":
 			// Any function body form, not only the brace spelling.
 			if i+1 < len(words) && normalized[i+1] == "(" || i > 0 && normalized[i-1] == "function" {
@@ -202,7 +202,8 @@ func shellCleanPreviews(source string, words []shellProofWord) (string, bool) {
 			}
 		case "printf":
 			for j := i + 1; j < len(words) && !words[j].operator; j++ {
-				if normalized[j] == "-v" || !shellPrintfOutput.MatchString(normalized[j]) && strings.Contains(normalized[j], "%") {
+				// bash accepts the variable name attached (-vNAME) as well as separate.
+				if strings.HasPrefix(normalized[j], "-v") || !shellPrintfOutput.MatchString(normalized[j]) && strings.Contains(normalized[j], "%") {
 					return "", false
 				}
 			}
@@ -413,7 +414,8 @@ func shellDataUtility(words []shellProofWord, name string) bool {
 		return true
 	case "printf":
 		for _, w := range words {
-			if w.value == "-v" {
+			// -v NAME and the attached -vNAME both assign instead of printing.
+			if strings.HasPrefix(w.value, "-v") {
 				return false
 			}
 		}
