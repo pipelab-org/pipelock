@@ -74,15 +74,13 @@ func TestIssueTransportErrors(t *testing.T) {
 		{
 			name: "connection refused",
 			setup: func(t *testing.T) loadParams {
-				listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
-				if err != nil {
-					t.Fatal(err)
+				// Inject the refusal the kernel would report, so no released port
+				// can be taken by another listener before the dial.
+				refuse := func(_ context.Context, network, _ string) (net.Conn, error) {
+					return nil, &net.OpError{Op: "dial", Net: network, Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
 				}
-				addr := listener.Addr().String()
-				if err := listener.Close(); err != nil {
-					t.Fatal(err)
-				}
-				return loadParams{client: &http.Client{Transport: &http.Transport{Proxy: nil}, Timeout: time.Second}, plan: plan, sinkAddr: addr}
+				transport := &http.Transport{Proxy: nil, DialContext: refuse}
+				return loadParams{client: &http.Client{Transport: transport, Timeout: time.Second}, plan: plan, sinkAddr: "refused.load.example"}
 			},
 			kind: "connection_refused", text: "connection refused",
 		},
