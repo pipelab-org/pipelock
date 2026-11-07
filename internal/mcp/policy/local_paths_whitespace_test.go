@@ -63,6 +63,32 @@ func TestLocalPathIdentity_WhitespaceValueUnderUnrecognizedKey(t *testing.T) {
 	}
 }
 
+func TestUniqueStringsKeepsFirstSeenOrder(t *testing.T) {
+	got := uniqueStrings([]string{"b", "a b", "b", "", "a b", ""})
+	if want := []string{"b", "a b", ""}; !slices.Equal(got, want) {
+		t.Fatalf("uniqueStrings = %q, want %q", got, want)
+	}
+}
+
+// A value repeated many times in one call is still resolved and matched.
+func TestLocalPathIdentity_RepeatedWhitespaceValue(t *testing.T) {
+	f := newLocalPathFixture(t)
+	f.write(t, filepath.Join(f.home, ".profile"))
+	alias := filepath.Join(f.ws, "my notes.txt")
+	f.link(t, filepath.Join(f.home, ".profile"), alias)
+	values := make([]string, 2000)
+	for i := range values {
+		values[i] = alias
+	}
+	raw, err := json.Marshal(map[string][]string{"workspace_entries": values})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := f.policy(true).CheckToolCallWithArgs(testWriteTool, values, raw); !slices.Contains(v.Rules, testShellProfileRule) {
+		t.Fatalf("repeated alias was not resolved: %+v", v)
+	}
+}
+
 func TestLocalPathIdentity_ContentCandidateBoundary(t *testing.T) {
 	f := newLocalPathFixture(t)
 	profile := filepath.Join(f.home, ".profile")

@@ -370,8 +370,10 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 	// oversized values. Single-line content that also names a local path remains
 	// a candidate; excluding it would let an unrecognized pathname key bypass
 	// the baseline identity check.
-	paths = append(withPathSpellings(paths, true), values...)
-	expanded, notes := pc.localPaths.expandNoted(paths, false)
+	// Each distinct candidate is resolved once; a value repeated many times
+	// in one call costs one filesystem lookup. Rule matching still sees every
+	// submitted value.
+	expanded, notes := pc.localPaths.expandNoted(uniqueStrings(append(withPathSpellings(paths, true), values...)), false)
 	seen := make(map[string]bool)
 	out := slices.Clone(values)
 	for _, value := range values {
@@ -384,6 +386,19 @@ func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool
 		}
 	}
 	return out, notes, false
+}
+
+// uniqueStrings returns values without repeats, keeping first-seen order.
+func uniqueStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 // checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
