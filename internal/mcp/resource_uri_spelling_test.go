@@ -93,7 +93,7 @@ func TestScanRequest_ResourcesReadHTTPSpellingsUseURLPolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			uri := tt.spell(tt.scheme, rest)
 			wantView := strings.ToLower(tt.scheme) + "://" + rest
-			if view, ok := httpResourceURLView(uri); !ok || view != wantView {
+			if view, ok, err := httpResourceURLView(uri); !ok || err != nil || view != wantView {
 				t.Fatalf("%s: URL view = %q, %v; want %q", tt.name, view, ok, wantView)
 			}
 			line := makeRequest(1, "resources/read", map[string]string{"uri": uri})
@@ -258,6 +258,8 @@ func TestScanRequest_ResourcesReadNonASCIIPublicHostStaysClean(t *testing.T) {
 		"https://bücher.example/docs",
 		"HTTPS://BÜCHER.example/docs",
 		"https://xn--bcher-kva.example/docs",
+		"https://foo_。example/docs",
+		"http:foo_。example/docs",
 		"https://[2001:db8::1]/docs",
 		"https://user@bücher.example:8443/docs?q=1#f",
 	} {
@@ -285,21 +287,51 @@ func TestScanRequest_ResourcesReadNonASCIIPublicHostStaysClean(t *testing.T) {
 func TestAsciiAuthorityHost(t *testing.T) {
 	tests := []struct {
 		name, in, want string
+		wantErr        bool
 	}{
-		{"plain_ascii", "example.com/a", "example.com/a"},
-		{"ipv6_literal", "[::1]:80/a", "[::1]:80/a"},
-		{"mapped_stop", "169。254。169。254/a?q=。", "169.254.169.254/a?q=。"},
-		{"userinfo_and_port", "u:p@1０.0.0.1:8080/x", "u:p@10.0.0.1:8080/x"},
-		{"escaped_stop", "169%E3%80%82254%E3%80%82169%E3%80%82254", "169.254.169.254"},
-		{"mapping_rejected_keeps_input", "a\u200db\u0378.example/x", "a\u200db\u0378.example/x"},
-		{"empty_host_with_escape", "%/x", "%/x"},
-		{"no_path", "bücher.example", "xn--bcher-kva.example"},
+		{"plain_ascii", "example.com/a", "example.com/a", false},
+		{"ipv6_literal", "[::1]:80/a", "[::1]:80/a", false},
+		{"mapped_stop", "169。254。169。254/a?q=。", "169.254.169.254/a?q=。", false},
+		{"userinfo_and_port", "u:p@1０.0.0.1:8080/x", "u:p@10.0.0.1:8080/x", false},
+		{"escaped_stop", "169%E3%80%82254%E3%80%82169%E3%80%82254", "169.254.169.254", false},
+		{"mapping_rejected", "a\u200db\u0378.example/x", "", true},
+		{"no_path", "bücher.example", "xn--bcher-kva.example", false},
+		{"url_host_underscore", "foo_。example/x", "foo_.example/x", false},
+		{"ignored_host", "\u00ad/x", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := asciiAuthorityHost(tt.in); got != tt.want {
-				t.Fatalf("asciiAuthorityHost(%q) = %q, want %q", tt.in, got, tt.want)
+			got, err := asciiAuthorityHost(tt.in)
+			if got != tt.want || (err != nil) != tt.wantErr {
+				t.Fatalf("host view = %q, %v; want %q, error %v", got, err, tt.want, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestScanRequest_ResourcesReadURLHostMapping(t *testing.T) {
+	for _, prefix := range []string{"http:", "http://", "https:"} {
+		for _, host := range []string{"foo_。example", "foo_．example", "foo_｡example", "ＦＯＯ_。example", "foo_%E3%80%82example"} {
+			t.Run(prefix+host, func(t *testing.T) {
+				cfg := config.Defaults()
+				cfg.Internal = nil
+				cfg.FetchProxy.Monitoring.Blocklist = []string{"*.example"}
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				uri := prefix + host + "/"
+				v := ScanRequest(t.Context(), []byte(makeRequest(1, "resources/read", map[string]string{"uri": uri})), sc, config.ActionWarn, config.ActionBlock)
+				want := scanner.ScannerBlocklist
+				if v.Clean || len(v.URLFindings) != 1 || v.URLFindings[0].Scanner != want || inputVerdictEffectiveAction(v, config.ActionWarn) != config.ActionBlock {
+					t.Fatalf("mapped destination must be blocked by %s: %+v", want, v)
+				}
+			})
+		}
+	}
+	for _, uri := range []string{"http:a\u200db\u0378.example/", "http:\u00ad/"} {
+		sc := testInputScanner(t)
+		v := ScanRequest(t.Context(), []byte(makeRequest(1, "resources/read", map[string]string{"uri": uri})), sc, config.ActionWarn, config.ActionWarn)
+		if v.Clean || len(v.URLFindings) != 1 || v.URLFindings[0].Scanner != scanner.ScannerParser || inputVerdictEffectiveAction(v, config.ActionWarn) != config.ActionBlock {
+			t.Fatalf("invalid host must fail closed: %+v", v)
+		}
 	}
 }

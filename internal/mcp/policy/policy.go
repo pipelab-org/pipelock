@@ -265,6 +265,126 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 	return pc.checkToolCallWithArgs(toolName, argStrings, rawArgs, true, argStrings, rawArgs)
 }
 
+// File target/destination names follow the shipped rule contracts; source and
+// paths are the move/copy and multi-file reader carriers exercised by policy.
+// location, relative_path and output follow TestPolicy_FileArgumentPathScope's
+// alternate pathname contract, including filenames containing whitespace.
+var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths|location|relative_path|output)$`)
+
+// pathnameValues returns the string values under pathname keys. A scoped rule
+// uses its operator-supplied arg_key to select top-level pathname candidates,
+// as ExtractStringsForKeys does, including custom keys. An unscoped rule reads
+// a built-in pathname key at any depth, since a tool may
+// nest its operands (an operation object, a list of operations). Every string
+// under a pathname key is a value of that key; strings under other keys do not
+// receive its whitespace-preserving pathname reading. Nesting past the shared
+// extraction bound under a pathname key is reported rather than skipped, so the caller
+// fails closed as it does for a scoped rule. ok is false when raw is not a JSON
+// object, so no key tells path from content.
+func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, truncated, ok bool) {
+	var parsed any
+	if extract.DecodeJSON(raw, &parsed) != nil {
+		return nil, false, false
+	}
+	top, isObject := parsed.(map[string]any)
+	if !isObject {
+		return nil, false, false
+	}
+	var leaves func(v any, depth int)
+	leaves = func(v any, depth int) {
+		if depth > extract.MaxExtractDepth {
+			truncated = true
+			return
+		}
+		switch val := v.(type) {
+		case string:
+			paths = append(paths, val)
+		case []any:
+			for _, item := range val {
+				leaves(item, depth+1)
+			}
+		case map[string]any:
+			for _, key := range jsonrpc.SortedKeys(val) {
+				leaves(val[key], depth+1)
+			}
+		}
+	}
+	var walk func(v any, depth int)
+	walk = func(v any, depth int) {
+		if depth > extract.MaxExtractDepth {
+			// Nothing below the bound is extracted as a value either; callers
+			// that extract the values already treat that as uninspectable.
+			return
+		}
+		switch val := v.(type) {
+		case []any:
+			for _, item := range val {
+				walk(item, depth+1)
+			}
+		case map[string]any:
+			for _, key := range jsonrpc.SortedKeys(val) {
+				if filePathArgumentKey.MatchString(key) {
+					leaves(val[key], depth+1)
+					continue
+				}
+				walk(val[key], depth+1)
+			}
+		}
+	}
+	if scope == nil {
+		walk(top, 0)
+		return paths, truncated, true
+	}
+	for _, key := range jsonrpc.SortedKeys(top) {
+		if scope.MatchString(key) {
+			leaves(top[key], 0)
+		}
+	}
+	return paths, truncated, true
+}
+
+// expandToolPaths retains baseline path checks for whitespace-free values and
+// adds whitespace-preserving spellings for explicit pathname fields. A scoped
+// rule cannot acquire paths from other keys. All values share one local identity
+// pass so hard-link inspection does not repeat for each reading.
+// Arguments with no JSON key to tell path from content keep every value as a
+// candidate path, as a call without raw arguments does.
+func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool bool, scope *regexp.Regexp) ([]string, []string, bool) {
+	if !fileTool {
+		expanded, notes := pc.localPaths.expandNoted(values, false)
+		return expanded, notes, false
+	}
+	paths := values
+	if len(raw) != 0 {
+		keyed, truncated, ok := pathnameValues(raw, scope)
+		if truncated {
+			return nil, nil, true
+		}
+		if ok {
+			paths = keyed
+		}
+	}
+	paths = withPathSpellings(paths, true)
+	for _, value := range values {
+		if !strings.ContainsAny(value, " \t\x00\n\r") {
+			paths = append(paths, value)
+		}
+	}
+	expanded, notes := pc.localPaths.expandNoted(paths, false)
+	seen := make(map[string]bool)
+	out := slices.Clone(values)
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, value := range expanded {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out, notes, false
+}
+
 // checkToolCallWithArgs checks argStrings. proofArgs and proofShape are the
 // submitted values and the JSON that carried them, read for the Git builtin
 // exception (see proveGitBuiltins); a shape is used only where it reproduces
@@ -320,8 +440,12 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	// The proof reads the submitted values, before local path identities are
 	// added to the values matched.
 	proof := proveGitBuiltins(proofArgs, jsonArgCarriers(proofShape, proofArgs), gitTool)
-	matchArgs, linkNotes := pc.localPaths.expandNoted(argStrings)
-	views := buildArgViews(matchArgs, gitTool, &proof)
+	pathValues := pathValueToolName.MatchString(policyToolName) || pathValueToolName.MatchString(baselineToolName)
+	matchArgs, linkNotes, truncatedPaths := pc.expandToolPaths(argStrings, proofShape, pathValues, nil)
+	if truncatedPaths {
+		return uninspectableJSONDepthVerdict()
+	}
+	views := buildArgViews(matchArgs, gitTool, &proof, !pathValues)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -366,21 +490,24 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			if scoped.Truncated {
 				return uninspectableJSONDepthVerdict()
 			}
-			scopedStrings, scopedNotes := pc.localPaths.expandNoted(scoped.Strings)
+			scopedStrings, scopedNotes, truncated := pc.expandToolPaths(scoped.Strings, proofShape, pathValues, rule.ArgKey)
+			if truncated {
+				return uninspectableJSONDepthVerdict()
+			}
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViews(scopedStrings, gitTool, nil)
+			ruleViews = buildArgViews(scopedStrings, gitTool, nil, !pathValues)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
 			patchInspection = inspection
 			if inspection != patchTargetsOrdinary {
-				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets))
+				expandedTargets, patchNotes := pc.localPaths.expandNoted(withPatchPrefixStripped(patchTargets), true)
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleViews = buildArgViews(matchStrings, gitTool, nil)
+				ruleViews = buildArgViews(matchStrings, gitTool, nil, false)
 			}
 		}
 
@@ -393,11 +520,11 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 		// keys and local aliases are not additional arguments to that value.
 		// Keep the shared pairwise matcher unchanged for every other rule and
 		// for calls with more than one string value.
-		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews); handled {
+		if matched, incomplete, handled := pc.matchSingleCredentialArgument(rule, argStrings, rawArgs, credentialViews, pathValues); handled {
 			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
+			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews, !pathValues); handled {
 				argPatternMatched, pairIncomplete = matched, incomplete
 			}
 		}
