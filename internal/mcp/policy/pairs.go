@@ -103,13 +103,12 @@ var argViewNorms = []argViewNorm{
 // gitTool reads args as the dedicated git tool's arguments (see
 // normalizeLineOptions). proof decides which builtin subcommands keep their own
 // reading (see gitProof); nil reads args themselves without a recorded shape.
-func buildArgViews(args []string, gitTool bool, proof *gitProof) []argView {
-	return buildArgViewsWithPaths(args, gitTool, proof, true)
-}
-
-// buildArgViewsWithPaths keeps file content out of shell pathname readings.
-// File tools supply their separately scoped path spellings instead.
-func buildArgViewsWithPaths(args []string, gitTool bool, proof *gitProof, pathReadings bool) []argView {
+//
+// pathReadings adds the pathname readings of shell operands (see
+// pathOperandReadings). It is false for values that are not shell text, so file
+// content and descriptions never gain a pathname spelling; file tools supply
+// their separately scoped path spellings instead.
+func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bool) []argView {
 	segs, plain := splitCommands(args)
 	if proof == nil {
 		p := proveGitBuiltins(args, nil, gitTool)
@@ -200,12 +199,16 @@ func buildArgViewsWithPaths(args []string, gitTool bool, proof *gitProof, pathRe
 	// The number of views depends on the spelling algorithm, not operand count;
 	// each view retains the existing bounded pair matcher and incomplete state.
 	if pathReadings {
+		segReadings := make([][][]string, len(segs))
+		for i, seg := range segs {
+			segReadings[i] = pathOperandReadings([]string{seg})
+		}
 		for _, reading := range pathOperandReadings(args) {
 			for _, n := range norms {
 				tokens, joined := n.tokens(reading)
 				v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, wordReading: true, interpreted: true}
-				for _, seg := range segs {
-					for _, part := range pathOperandReadings([]string{seg}) {
+				for i, seg := range segs {
+					for _, part := range segReadings[i] {
 						t, _ := n.tokens(part)
 						v.segments = append(v.segments, t)
 					}
@@ -233,33 +236,163 @@ func buildArgViewsWithPaths(args []string, gitTool bool, proof *gitProof, pathRe
 	return views
 }
 
+// spellingSlot is the stretch args[arg][start:end] that names one file, the
+// option text kept in front of the name (the "of=" in of=/tmp/x), and the other
+// spellings of that name, which replace the stretch in a reading.
+type spellingSlot struct {
+	arg, start, end int
+	prefix          string
+	spellings       []string
+}
+
+// pickSpelling is the spelling reading j uses: slots with fewer alternatives
+// than the most numerous keep their first one.
+func (s spellingSlot) pickSpelling(j int) string {
+	if j < len(s.spellings) {
+		return s.spellings[j]
+	}
+	return s.spellings[0]
+}
+
 // pathOperandReadings substitutes cleaned operand spellings without dropping
-// their command. withPathSpellings supplies a fixed number of alternatives per
-// value; transposition avoids one additional view for every submitted operand.
+// their command. Two kinds of operand are read: an argument that is itself a
+// pathname, as an argv operand or a file tool value is, and each word of an
+// argument that holds shell text, where one command string carries many names
+// and a name may hold a blank (see shellPathWords). withPathSpellings supplies a
+// fixed number of alternatives per value; transposition avoids one additional
+// reading for every submitted operand.
 func pathOperandReadings(args []string) [][]string {
-	spellings := make([][]string, len(args))
-	base := slices.Clone(args)
-	count := 0
+	var whole, words []spellingSlot
 	for i, value := range args {
-		if !hasParentSegment(value) {
+		if hasParentSegment(value) {
+			if spellings := withPathSpellings([]string{value}, true)[1:]; len(spellings) > 0 {
+				whole = append(whole, spellingSlot{arg: i, end: len(value), spellings: spellings})
+			}
+		}
+		if !strings.ContainsAny(value, shellWordBreakers) {
 			continue
 		}
-		spellings[i] = withPathSpellings([]string{value}, true)[1:]
-		if len(spellings[i]) > 0 {
-			base[i] = spellings[i][0]
-			count = max(count, len(spellings[i]))
-		}
-	}
-	readings := make([][]string, count)
-	for j := range readings {
-		readings[j] = slices.Clone(base)
-		for i, alternatives := range spellings {
-			if j < len(alternatives) {
-				readings[j][i] = alternatives[j]
+		for _, w := range shellPathWords(value) {
+			operand, prefix := w.value, ""
+			// An option value or assignment names the file after its '='.
+			if eq := strings.IndexByte(operand, '='); eq >= 0 && !strings.ContainsAny(operand[:eq], `/\`) {
+				operand, prefix = operand[eq+1:], operand[:eq+1]
+			}
+			if !hasParentSegment(operand) {
+				continue
+			}
+			if spellings := withPathSpellings([]string{operand}, true)[1:]; len(spellings) > 0 {
+				words = append(words, spellingSlot{arg: i, start: w.start, end: w.end, prefix: prefix, spellings: spellings})
 			}
 		}
 	}
+	return append(transposeSpellings(args, whole), transposeSpellings(args, words)...)
+}
+
+// transposeSpellings returns one reading of args per alternative, ordered by
+// argument and then position. Each reading is written in one pass over the
+// text, so its cost follows the length of args and not the number of slots.
+func transposeSpellings(args []string, slots []spellingSlot) [][]string {
+	count := 0
+	for _, s := range slots {
+		count = max(count, len(s.spellings))
+	}
+	readings := make([][]string, count)
+	for j := range readings {
+		reading := slices.Clone(args)
+		for k := 0; k < len(slots); {
+			arg := slots[k].arg
+			var b strings.Builder
+			last := 0
+			for ; k < len(slots) && slots[k].arg == arg; k++ {
+				s := slots[k]
+				b.WriteString(args[arg][last:s.start])
+				b.WriteString(s.prefix)
+				b.WriteString(s.pickSpelling(j))
+				last = s.end
+			}
+			b.WriteString(args[arg][last:])
+			reading[arg] = b.String()
+		}
+		readings[j] = reading
+	}
 	return readings
+}
+
+// shellWordBreakers are the characters that make an argument shell text rather
+// than one name: blanks, quoting and escape, and the operators that end a word.
+const shellWordBreakers = " \t\n'\"\\;|&<>()"
+
+// shellPathWord is a word of shell text: its value with quoting and escapes
+// removed, and the stretch of the text it came from.
+type shellPathWord struct {
+	value      string
+	start, end int
+}
+
+// shellPathWords splits shell text into words the way POSIX Shell Command
+// Language 2.3 and 2.2 read them: blanks and the operators ; | & < > ( ) end an
+// unquoted word; a backslash outside single quotes keeps the next character
+// literal; single quotes keep everything literal; double quotes keep everything
+// but a backslash before $ ` " \ or a newline. A quote left open runs to the end
+// of the text. Expansions are not resolved: the value is the text as written,
+// which is the name when the word has none.
+func shellPathWords(s string) []shellPathWord {
+	var words []shellPathWord
+	var value strings.Builder
+	start, inWord := 0, false
+	var quote byte
+	open := func(i int) {
+		if !inWord {
+			start, inWord = i, true
+		}
+	}
+	closeWord := func(end int) {
+		if inWord {
+			words = append(words, shellPathWord{value: value.String(), start: start, end: end})
+			value.Reset()
+			inWord = false
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case quote == '\'':
+			if c == '\'' {
+				quote = 0
+			} else {
+				value.WriteByte(c)
+			}
+		case quote == '"':
+			switch {
+			case c == '"':
+				quote = 0
+			case c == '\\' && i+1 < len(s) && strings.IndexByte("$`\"\\\n", s[i+1]) >= 0:
+				i++
+				if s[i] != '\n' {
+					value.WriteByte(s[i])
+				}
+			default:
+				value.WriteByte(c)
+			}
+		case c == '\'' || c == '"':
+			open(i)
+			quote = c
+		case c == '\\' && i+1 < len(s):
+			open(i)
+			i++
+			if s[i] != '\n' {
+				value.WriteByte(s[i])
+			}
+		case strings.IndexByte(" \t\n;|&<>()", c) >= 0:
+			closeWord(i)
+		default:
+			open(i)
+			value.WriteByte(c)
+		}
+	}
+	closeWord(len(s))
+	return words
 }
 
 // commandSegments splits a single shell command string into the parts that

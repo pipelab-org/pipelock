@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 )
 
 // pathSpelling rewrites a canonical absolute path into another spelling that
@@ -300,15 +302,156 @@ func TestPolicy_FileURIExactPath(t *testing.T) {
 
 func TestPolicy_PathOperandCommandContext(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
-	for _, args := range [][]string{{"tee", "/etc/cache space/../cron.d/job"}, {"tee '/etc/cache space/../cron.d/job'"}, {`tee /etc/cache\ space/../cron.d/job`}} {
-		v := pc.CheckToolCall("bash", args)
-		if !slices.Contains(v.Rules, "Persistence Path Write via Command") {
-			t.Errorf("args=%q: verdict=%+v", args, v)
-		}
+	const rule = "Persistence Path Write via Command"
+	for _, tt := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{"argv_blank", []string{"tee", "/etc/cache space/../cron.d/job"}, true},
+		{"quoted_blank", []string{"tee '/etc/cache space/../cron.d/job'"}, true},
+		{"escaped_blank", []string{`tee /etc/cache\ space/../cron.d/job`}, true},
+		{"parents_past_the_command", []string{"tee /tmp/../../var/tmp/../spool/cron/job"}, true},
+		{"parents_past_the_command_argv", []string{"tee", "/tmp/../../var/tmp/../spool/cron/job"}, true},
+		{"parents_quoted_pipeline", []string{"echo hi | tee '/tmp/x y/../../../var/tmp/../spool/cron/job'"}, true},
+		{"parents_redirect", []string{"echo x >/a/b/../../etc/x/../cron.d/job"}, true},
+		{"parents_copy", []string{"cp notes /a/b/../../etc/x/../cron.d/job"}, true},
+		{"parents_second_command", []string{"cd /srv && tee /tmp/../../var/tmp/../spool/cron/job"}, true},
+		{"safe_parents", []string{"tee /tmp/../../var/tmp/../notes/job"}, false},
+		{"safe_quoted_parents", []string{"tee '/tmp/x y/../../../var/tmp/../notes/job'"}, false},
+		{"separate_commands", []string{"echo tee; printf '/etc/cache space/../cron.d/job'"}, false},
+		{"separate_commands_parents", []string{"echo tee; printf /tmp/../../var/tmp/../spool/cron/job"}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			v := pc.CheckToolCall("bash", tt.args)
+			if got := slices.Contains(v.Rules, rule); got != tt.want {
+				t.Fatalf("args=%q: matched=%v, want %v: %+v", tt.args, got, tt.want, v)
+			}
+		})
 	}
-	v := pc.CheckToolCall("bash", []string{"echo tee; printf '/etc/cache space/../cron.d/job'"})
-	if slices.Contains(v.Rules, "Persistence Path Write via Command") {
-		t.Fatalf("path interpretation joined separate commands: %+v", v)
+}
+
+// A patch names its files in its headers. Other values sent beside it, such as
+// a description, are not pathnames and must not acquire a pathname spelling.
+func TestPolicy_PatchFallbackPathScope(t *testing.T) {
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	const safeTarget = "*** Begin Patch\n*** Update File: /project/notes.txt\n@@\n-a\n+b\n*** End Patch"
+	for _, tt := range []struct {
+		name  string
+		input map[string]string
+		want  bool
+	}{
+		{"description_with_parents", map[string]string{"input": safeTarget, "description": "/etc/other/../systemd/example"}, false},
+		{"description_with_blank_and_parents", map[string]string{"input": safeTarget, "description": "/etc/other dir/../systemd/example"}, false},
+		{"target_with_parents", map[string]string{"input": "*** Begin Patch\n*** Update File: /etc/other/../systemd/example\n@@\n-a\n+b\n*** End Patch"}, true},
+		{"literal_protected_description", map[string]string{"input": safeTarget, "description": "/etc/systemd/example"}, true},
+		{"safe_patch", map[string]string{"input": safeTarget}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values, _ := ArgValues(raw)
+			v := pc.CheckToolCallWithArgs("apply_patch", values, raw)
+			if v.Matched != tt.want || (tt.want && v.Action != config.ActionBlock) {
+				t.Fatalf("verdict=%+v, want blocked %v", v, tt.want)
+			}
+		})
+	}
+}
+
+// A tool may nest its operands. A pathname key is read at any depth; a rule
+// scoped by arg_key still reads only the top-level keys it names, and nothing
+// under another key is a pathname.
+func TestPolicy_NestedFilePathScope(t *testing.T) {
+	var deep any = "/etc/cache space/../cron.d/job"
+	for range extract.MaxExtractDepth + 2 {
+		deep = map[string]any{"a": deep}
+	}
+	deepJSON, err := json.Marshal(deep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
+	scoped := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "destination only", ToolPattern: "move_file", ArgPattern: `^/etc/cron\.d/job$`, ArgKey: "^destination$"}}})
+	// The shipped rules include scoped ones, which fail closed on too-deep JSON by
+	// themselves. A policy of unscoped rules shows the pathname read does so too.
+	unscoped := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: []config.ToolPolicyRule{{Name: "any value", ToolPattern: "write_file", ArgPattern: `^/etc/cron\.d/job$`}}})
+	for _, tt := range []struct {
+		name    string
+		checker *Config
+		tool    string
+		raw     string
+		want    string // rule that must be among the verdict's rules; empty for none
+	}{
+		{"nested_destination", pc, "move_file", `{"operation":{"source":"/project/a","destination":"/etc/cache space/../cron.d/job"}}`, "Persistence Path Write"},
+		{"nested_destination_no_blank", pc, "move_file", `{"operation":{"destination":"/etc/x/../cron.d/job"}}`, "Persistence Path Write"},
+		{"listed_destinations", pc, "move_file", `{"operations":[{"source":"/p/a","destination":"/p/b"},{"source":"/p/c","destination":"/etc/cache space/../cron.d/job"}]}`, "Persistence Path Write"},
+		{"top_level_destination", pc, "move_file", `{"source":"/project/a","destination":"/etc/cache space/../cron.d/job"}`, "Persistence Path Write"},
+		{"nested_pathname_list", pc, "read_multiple_files", `{"request":{"paths":["/p/a","/etc/cache space/../shadow"]}}`, "Credential File Access"},
+		{"nested_content_is_not_a_path", pc, "write_file", `{"path":"/project/notes","edits":[{"oldText":"a","newText":"/etc/cache space/../cron.d/job"}]}`, ""},
+		{"nested_content_object", pc, "write_file", `{"path":"/project/notes","content":{"body":"/etc/cache space/../cron.d/job"}}`, ""},
+		{"scoped_top_level", scoped, "move_file", `{"source":"/p/a","destination":"/etc/cache space/../cron.d/job"}`, "destination only"},
+		{"scoped_under_the_scoped_key", scoped, "move_file", `{"destination":{"path":"/etc/cache space/../cron.d/job"}}`, "destination only"},
+		{"scoped_ignores_nested_key", scoped, "move_file", `{"destination":"/p/b","operation":{"destination":"/etc/cache space/../cron.d/job"}}`, ""},
+		{"scoped_ignores_source", scoped, "move_file", `{"source":"/etc/cache space/../cron.d/job","destination":"/p/b"}`, ""},
+		{"too_deep_under_a_pathname_key", pc, "write_file", `{"path":` + string(deepJSON) + `}`, uninspectableJSONDepthRule},
+		{"too_deep_under_a_scoped_key", scoped, "move_file", `{"destination":` + string(deepJSON) + `}`, uninspectableJSONDepthRule},
+		{"too_deep_under_a_pathname_key_unscoped_rules", unscoped, "write_file", `{"path":` + string(deepJSON) + `}`, uninspectableJSONDepthRule},
+		{"nested_spelling_unscoped_rules", unscoped, "write_file", `{"request":{"file_path":"/etc/x/../cron.d/job"}}`, "any value"},
+		{"unkeyed_arguments_are_candidates", pc, "write_file", `["/etc/cache space/../cron.d/job"]`, "Persistence Path Write"},
+		{"unkeyed_safe", pc, "write_file", `["/project/cache space/../notes"]`, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := json.RawMessage(tt.raw)
+			values, _ := ArgValues(raw)
+			v := tt.checker.CheckToolCallWithArgs(tt.tool, values, raw)
+			if tt.want == "" {
+				if v.Matched {
+					t.Fatalf("verdict=%+v, want none", v)
+				}
+				return
+			}
+			if !slices.Contains(v.Rules, tt.want) || v.Action != config.ActionBlock {
+				t.Fatalf("verdict=%+v, want a block by %q", v, tt.want)
+			}
+		})
+	}
+}
+
+// A link behind a nested pathname resolves exactly as a top-level one does,
+// with and without local path identity, and a value under another key is not
+// resolved.
+func TestPolicy_NestedFilePathLocalIdentity(t *testing.T) {
+	f := newLocalPathFixture(t)
+	f.write(t, filepath.Join(f.home, ".bashrc"))
+	alias := filepath.Join(f.ws, "notes.txt")
+	f.link(t, filepath.Join(f.home, ".bashrc"), alias)
+	for _, tt := range []struct {
+		name  string
+		input map[string]any
+		want  bool
+	}{
+		{"top_level", map[string]any{"source": "/p/a", "destination": alias}, true},
+		{"nested", map[string]any{"operation": map[string]any{"source": "/p/a", "destination": alias}}, true},
+		{"listed", map[string]any{"operations": []any{map[string]any{"destination": "/p/b"}, map[string]any{"destination": alias}}}, true},
+		{"other_key", map[string]any{"operation": map[string]any{"note": alias}}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			raw, err := json.Marshal(tt.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			values, _ := ArgValues(raw)
+			if v := f.policy(false).CheckToolCallWithArgs("move_file", values, raw); slices.Contains(v.Rules, testShellProfileRule) {
+				t.Fatalf("fixture matched by text alone: %+v", v)
+			}
+			v := f.policy(true).CheckToolCallWithArgs("move_file", values, raw)
+			if got := slices.Contains(v.Rules, testShellProfileRule); got != tt.want {
+				t.Fatalf("matched=%v, want %v: %+v", got, tt.want, v)
+			}
+		})
 	}
 }
 
@@ -333,17 +476,126 @@ func TestPolicy_FileContentPathSpellings(t *testing.T) {
 	}
 }
 
+// The pathname readings add views that depend on the spelling algorithm, never
+// on how many operands a command names. Each case compares the same input with
+// and without the readings, so an input the readings never touch cannot pass.
 func TestPolicy_PathViewCount(t *testing.T) {
-	views := func(count int) []argView {
-		args := []string{"cat"}
-		for i := range count {
-			args = append(args, fmt.Sprintf("/project/cache %d/../notes%d", i, i))
+	operand := func(i int) string { return fmt.Sprintf("/project/cache %d/../notes%d", i, i) }
+	joinWords := func(sep string, quote bool) func(n int) []string {
+		return func(n int) []string {
+			parts := make([]string, n)
+			for i := range parts {
+				parts[i] = "cat " + operand(i)
+				if quote {
+					parts[i] = "cat '" + operand(i) + "'"
+				}
+			}
+			return []string{strings.Join(parts, sep)}
 		}
-		return buildArgViews(args, false, nil)
 	}
-	short, long := views(2), views(maxPairwiseTokens)
-	if len(long) != len(short) {
-		t.Fatalf("view count grows with operands: short=%d long=%d", len(short), len(long))
+	for _, tt := range []struct {
+		name  string
+		build func(n int) []string
+	}{
+		{"argv_operands", func(n int) []string {
+			args := []string{"cat"}
+			for i := range n {
+				args = append(args, operand(i))
+			}
+			return args
+		}},
+		{"commands_in_one_string", joinWords("; ", true)},
+		{"words_in_one_string", func(n int) []string {
+			words := []string{"cat"}
+			for i := range n {
+				words = append(words, "'"+operand(i)+"'")
+			}
+			return []string{strings.Join(words, " ")}
+		}},
+		{"piped_commands", joinWords(" | ", true)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			added := func(n int) int {
+				args := tt.build(n)
+				return len(buildArgViews(args, false, nil, true)) - len(buildArgViews(args, false, nil, false))
+			}
+			short, long := added(2), added(maxPairwiseTokens)
+			if short == 0 {
+				t.Fatal("the pathname readings added no view, so the comparison proves nothing")
+			}
+			if long != short {
+				t.Fatalf("added views grow with operands: short=%d long=%d", short, long)
+			}
+			// Each family transposes at most the spellings of one operand into one
+			// reading per normalization.
+			spellings := len(withPathSpellings([]string{operand(0)}, true)) - 1
+			if bound := 2 * spellings * len(argViewNorms); long > bound {
+				t.Fatalf("added views = %d, exceeds %d (2 families x %d spellings x %d normalizations)", long, bound, spellings, len(argViewNorms))
+			}
+		})
+	}
+}
+
+func TestShellPathWords(t *testing.T) {
+	for _, tt := range []struct {
+		name, text string
+		want       []string
+		span       []string
+	}{
+		{"blanks", "tee /a  b\tc", []string{"tee", "/a", "b", "c"}, []string{"tee", "/a", "b", "c"}},
+		{"single_quoted", `cat '/etc/cache space/../shadow'`, []string{"cat", "/etc/cache space/../shadow"}, []string{"cat", `'/etc/cache space/../shadow'`}},
+		{"double_quoted_escape", `cat "a\"b c" x`, []string{"cat", `a"b c`, "x"}, []string{"cat", `"a\"b c"`, "x"}},
+		{"double_quoted_literal_backslash", `echo "a\bc"`, []string{"echo", `a\bc`}, []string{"echo", `"a\bc"`}},
+		{"single_quote_keeps_backslash", `echo 'a\ b'`, []string{"echo", `a\ b`}, []string{"echo", `'a\ b'`}},
+		{"escaped_blank", `cat /etc/cache\ space/../shadow`, []string{"cat", "/etc/cache space/../shadow"}, []string{"cat", `/etc/cache\ space/../shadow`}},
+		{"adjacent_quotes", `cat /a/'b c'/"d e"`, []string{"cat", "/a/b c/d e"}, []string{"cat", `/a/'b c'/"d e"`}},
+		{"operators", "a;b|c&d>e<f(g)", []string{"a", "b", "c", "d", "e", "f", "g"}, []string{"a", "b", "c", "d", "e", "f", "g"}},
+		{"open_quote", "cat 'abc def", []string{"cat", "abc def"}, []string{"cat", "'abc def"}},
+		{"line_continuation", "cat /a\\\n/b", []string{"cat", "/a/b"}, []string{"cat", "/a\\\n/b"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			words := shellPathWords(tt.text)
+			var got, span []string
+			for _, w := range words {
+				got = append(got, w.value)
+				span = append(span, tt.text[w.start:w.end])
+			}
+			if !slices.Equal(got, tt.want) || !slices.Equal(span, tt.span) {
+				t.Fatalf("words = %q (spans %q), want %q (spans %q)", got, span, tt.want, tt.span)
+			}
+		})
+	}
+}
+
+func TestPathOperandReadings(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		args []string
+		want []string // one reading, joined with a newline between arguments
+	}{
+		{"argv_operand", []string{"cat", "/x y/../z"}, []string{"cat\n/z"}},
+		{"parents_past_the_command", []string{"tee /tmp/../../var/tmp/../spool/cron/job"}, []string{"tee /var/spool/cron/job"}},
+		{"quoted_blank", []string{"tee '/etc/cache space/../cron.d/job'"}, []string{"tee /etc/cron.d/job"}},
+		{"escaped_blank", []string{`tee /etc/cache\ space/../cron.d/job`}, []string{"tee /etc/cron.d/job"}},
+		{"redirect_target", []string{"echo x >/a/b/../../etc/x/../cron.d/y"}, []string{"echo x >/etc/cron.d/y"}},
+		{"option_value", []string{"dd of=/a/b/../../etc/x/../cron.d/y"}, []string{"dd of=/etc/cron.d/y"}},
+		{"two_operands_one_reading", []string{"cp /a/../b /c/../d"}, []string{"cp /b /d"}},
+		{"no_parent_segment", []string{"tee /tmp/x /var/tmp/y"}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, reading := range pathOperandReadings(tt.args) {
+				got = append(got, strings.Join(reading, "\n"))
+			}
+			for _, want := range tt.want {
+				if !slices.Contains(got, want) {
+					t.Fatalf("readings = %q, want one to be %q", got, want)
+				}
+			}
+			if tt.want == nil && len(got) != 0 {
+				t.Fatalf("readings = %q, want none", got)
+			}
+		})
 	}
 }
 

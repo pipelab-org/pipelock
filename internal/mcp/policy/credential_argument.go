@@ -16,7 +16,7 @@ import (
 // identities independently. Joining a public-key path to another identity must
 // not manufacture text after its .pub extension. Custom rules retain their
 // ordinary matching semantics.
-func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []string, memo candidateViews) (matched, incomplete, handled bool) {
+func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []string, memo candidateViews, pathReadings bool) (matched, incomplete, handled bool) {
 	if rule.Name != "Credential File Write" || rule.ArgPattern == nil || rule.ArgKey == nil || rule.ToolPattern == nil {
 		return false, false, false
 	}
@@ -25,7 +25,7 @@ func (pc *Config) matchCredentialDestinations(rule *CompiledRule, candidates []s
 		return false, false, false
 	}
 	for _, candidate := range candidates {
-		m, inc := pc.credentialCandidateMatches(rule, candidate, memo)
+		m, inc := pc.credentialCandidateMatches(rule, candidate, memo, pathReadings)
 		incomplete = incomplete || inc
 		if m {
 			return true, incomplete, true
@@ -87,7 +87,7 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 	// exception can only narrow what the value alone would match.
 	keyViews, _ := pc.localPaths.expandNoted(keys, pathValues)
 	for _, key := range keyViews {
-		m, inc := pc.credentialCandidateMatches(rule, key, memo)
+		m, inc := pc.credentialCandidateMatches(rule, key, memo, !pathValues)
 		incomplete = incomplete || inc
 		if m {
 			return true, incomplete, true
@@ -95,7 +95,7 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 	}
 	argViews, _ := pc.localPaths.expandNoted(args, pathValues)
 	for _, candidate := range argViews {
-		m, inc := pc.credentialCandidateMatches(rule, candidate, memo)
+		m, inc := pc.credentialCandidateMatches(rule, candidate, memo, !pathValues)
 		incomplete = incomplete || inc
 		if m {
 			return true, incomplete, true
@@ -109,10 +109,12 @@ func (pc *Config) matchSingleCredentialArgument(rule *CompiledRule, args []strin
 type candidateViews map[string][]argView
 
 // credentialCandidateMatches runs every normalization view of one string.
-func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate string, memo candidateViews) (matched, incomplete bool) {
+// pathReadings is the flag buildArgViews takes: false for a file tool's values,
+// which are pathnames and carry their own spellings.
+func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate string, memo candidateViews, pathReadings bool) (matched, incomplete bool) {
 	views, ok := memo[candidate]
 	if !ok {
-		views = buildArgViews([]string{candidate}, false, nil)
+		views = buildArgViews([]string{candidate}, false, nil, pathReadings)
 		if memo != nil {
 			memo[candidate] = views
 		}

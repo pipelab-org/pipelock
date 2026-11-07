@@ -269,31 +269,95 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 // paths are the move/copy and multi-file reader carriers exercised by policy.
 var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths)$`)
 
-// expandToolPaths preserves every submitted value but derives file spellings
-// only from pathname fields. A scoped rule cannot acquire paths from other keys.
-func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool bool, scope *regexp.Regexp) ([]string, []string, bool) {
-	if !fileTool || len(raw) == 0 {
-		expanded, notes := pc.localPaths.expandNoted(values, fileTool)
-		return expanded, notes, false
+// pathnameValues returns the string values under pathname keys. A scoped rule
+// reads only the top-level keys its arg_key selects, as ExtractStringsForKeys
+// does; an unscoped rule reads a pathname key at any depth, since a tool may
+// nest its operands (an operation object, a list of operations). Every string
+// under a pathname key is a value of that key; strings under any other key are
+// content and never gain a pathname spelling. Nesting past the shared extraction
+// bound under a pathname key is reported rather than skipped, so the caller
+// fails closed as it does for a scoped rule. ok is false when raw is not a JSON
+// object, so no key tells path from content.
+func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, truncated, ok bool) {
+	var parsed any
+	if extract.DecodeJSON(raw, &parsed) != nil {
+		return nil, false, false
 	}
-	var object map[string]json.RawMessage
-	if json.Unmarshal(raw, &object) != nil {
-		return values, nil, false
+	top, isObject := parsed.(map[string]any)
+	if !isObject {
+		return nil, false, false
 	}
-	var keys []string
-	for key := range object {
-		if filePathArgumentKey.MatchString(key) && (scope == nil || scope.MatchString(key)) {
-			keys = append(keys, key)
+	var leaves func(v any, depth int)
+	leaves = func(v any, depth int) {
+		if depth > extract.MaxExtractDepth {
+			truncated = true
+			return
+		}
+		switch val := v.(type) {
+		case string:
+			paths = append(paths, val)
+		case []any:
+			for _, item := range val {
+				leaves(item, depth+1)
+			}
+		case map[string]any:
+			for _, key := range jsonrpc.SortedKeys(val) {
+				leaves(val[key], depth+1)
+			}
 		}
 	}
-	slices.Sort(keys)
-	var paths []string
-	for _, key := range keys {
-		field, truncated := ArgValues(object[key])
+	var walk func(v any, depth int)
+	walk = func(v any, depth int) {
+		if depth > extract.MaxExtractDepth {
+			// Nothing below the bound is extracted as a value either; callers
+			// that extract the values already treat that as uninspectable.
+			return
+		}
+		switch val := v.(type) {
+		case []any:
+			for _, item := range val {
+				walk(item, depth+1)
+			}
+		case map[string]any:
+			for _, key := range jsonrpc.SortedKeys(val) {
+				if filePathArgumentKey.MatchString(key) {
+					leaves(val[key], depth+1)
+					continue
+				}
+				walk(val[key], depth+1)
+			}
+		}
+	}
+	if scope == nil {
+		walk(top, 0)
+		return paths, truncated, true
+	}
+	for _, key := range jsonrpc.SortedKeys(top) {
+		if filePathArgumentKey.MatchString(key) && scope.MatchString(key) {
+			leaves(top[key], 0)
+		}
+	}
+	return paths, truncated, true
+}
+
+// expandToolPaths preserves every submitted value but derives file spellings
+// only from pathname fields. A scoped rule cannot acquire paths from other keys.
+// Arguments with no JSON key to tell path from content keep every value as a
+// candidate path, as a call without raw arguments does.
+func (pc *Config) expandToolPaths(values []string, raw json.RawMessage, fileTool bool, scope *regexp.Regexp) ([]string, []string, bool) {
+	if !fileTool {
+		expanded, notes := pc.localPaths.expandNoted(values, false)
+		return expanded, notes, false
+	}
+	paths := values
+	if len(raw) != 0 {
+		keyed, truncated, ok := pathnameValues(raw, scope)
 		if truncated {
 			return nil, nil, true
 		}
-		paths = append(paths, field...)
+		if ok {
+			paths = keyed
+		}
 	}
 	expanded, notes := pc.localPaths.expandNoted(paths, true)
 	seen := make(map[string]bool)
@@ -370,7 +434,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 	if truncatedPaths {
 		return uninspectableJSONDepthVerdict()
 	}
-	views := buildArgViewsWithPaths(matchArgs, gitTool, &proof, !pathValues)
+	views := buildArgViews(matchArgs, gitTool, &proof, !pathValues)
 	if !checkInput {
 		for i := range views {
 			views[i].checkXargs = false
@@ -422,7 +486,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			patchFallbackArgs = scopedStrings
 			credentialDestinations = scopedStrings
 			linkNotes = appendUniqueNotes(linkNotes, scopedNotes)
-			ruleViews = buildArgViewsWithPaths(scopedStrings, gitTool, nil, !pathValues)
+			ruleViews = buildArgViews(scopedStrings, gitTool, nil, !pathValues)
 		}
 		if rule.ArgSource == config.ToolPolicyArgSourcePatchTargets {
 			patchTargets, inspection := extractPatchTargetPaths(argStrings)
@@ -432,7 +496,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 				linkNotes = appendUniqueNotes(linkNotes, patchNotes)
 				matchStrings := patchTargetMatchStrings(patchFallbackArgs, expandedTargets)
 				credentialDestinations = matchStrings
-				ruleViews = buildArgViews(matchStrings, gitTool, nil)
+				ruleViews = buildArgViews(matchStrings, gitTool, nil, false)
 			}
 		}
 
@@ -449,7 +513,7 @@ func (pc *Config) checkToolCallWithArgs(toolName string, argStrings []string, ra
 			argPatternMatched, pairIncomplete = matched, incomplete
 		}
 		if patchInspection != patchTargetsUninspectable {
-			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews); handled {
+			if matched, incomplete, handled := pc.matchCredentialDestinations(rule, credentialDestinations, credentialViews, !pathValues); handled {
 				argPatternMatched, pairIncomplete = matched, incomplete
 			}
 		}
