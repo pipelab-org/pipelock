@@ -23,7 +23,7 @@ func TestLicenseExpiryWatchdogClosesCIDRGeneration(t *testing.T) {
 	t.Cleanup(func() { edition.NewEditionFunc = oldFactory })
 	token, pub := realValidAgentsLicense(t)
 	path := writeServerTestConfig(t, "mode: balanced\nlicense_require_intermediate: false\nlicense_key: "+token+"\nlicense_public_key: "+pub+"\nagents:\n  client:\n    source_cidrs: [192.0.2.0/24]\n")
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = path
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
@@ -53,7 +53,7 @@ func TestLicenseExpiryWatchdogClosesCIDRGeneration(t *testing.T) {
 	clk.Advance(time.Hour)
 	select {
 	case <-ra.LicenseRevoked:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("CIDR-only expiry did not end the generation")
 	}
 	if _, ok := s.proxy.Edition().LookupProfile("client"); ok {
@@ -65,7 +65,7 @@ func TestLicenseExpiryWatchdogClosesCIDRGeneration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("server did not stop")
 	}
 }

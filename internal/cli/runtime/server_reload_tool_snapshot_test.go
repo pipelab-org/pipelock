@@ -78,7 +78,7 @@ logging:
   format: json
   output: stdout
 `, fetchAddr))
-				s, buf := newTestServer(t, func(o *ServerOpts) {
+				s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 					o.ConfigFile = cfgPath
 					o.Listen = fetchAddr
 					o.ListenChanged = true

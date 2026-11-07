@@ -31,6 +31,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type countingAnchorBackend struct {
@@ -742,7 +743,7 @@ func TestAutoAnchorConcurrentPassesSubmitHeadOnce(t *testing.T) {
 	}()
 	select {
 	case <-submitEntered:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("first submit did not start")
 	}
 	// Second pass while the first submit is blocked: it must observe the
@@ -754,7 +755,7 @@ func TestAutoAnchorConcurrentPassesSubmitHeadOnce(t *testing.T) {
 	close(releaseSubmit)
 	select {
 	case <-firstDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("first pass did not finish")
 	}
 	if got := backend.submits.Load(); got != 1 {
@@ -1403,7 +1404,7 @@ func TestAutoAnchorConcurrentEmitterAndEvidenceHealth(t *testing.T) {
 	}()
 	select {
 	case <-submitStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("auto-anchor submit did not start")
 	}
 	healthDone := make(chan struct{})
@@ -1415,12 +1416,12 @@ func TestAutoAnchorConcurrentEmitterAndEvidenceHealth(t *testing.T) {
 	close(releaseSubmit)
 	select {
 	case <-anchorDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("auto-anchor pass did not finish")
 	}
 	select {
 	case <-healthDone:
-	case <-time.After(2 * time.Second):
+	case <-time.After(testwait.Deadline(2 * time.Second)):
 		t.Fatal("evidence-health pass did not finish")
 	}
 
@@ -1474,12 +1475,12 @@ func TestAutoAnchorPassRecoversPanicAndRetriesOnCadence(t *testing.T) {
 		trig.monitor.start(ctx, &wg)
 		select {
 		case <-firstPass:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("initial inactive auto-anchor pass did not run")
 		}
 		select {
 		case <-submitted:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("auto-anchor did not activate from live config on next cadence")
 		}
 		cancel()
@@ -1518,13 +1519,13 @@ func TestAutoAnchorPassRecoversPanicAndRetriesOnCadence(t *testing.T) {
 		trig.monitor.start(ctx, &wg)
 		select {
 		case <-inactiveObserved:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("inactive auto-anchor pass did not run")
 		}
 		live.Store(active)
 		select {
 		case <-submitted:
-		case <-time.After(2 * time.Second):
+		case <-time.After(testwait.Deadline(2 * time.Second)):
 			t.Fatal("auto-anchor did not activate after anchor-point addition")
 		}
 		live.Store(inactive)
@@ -1532,7 +1533,7 @@ func TestAutoAnchorPassRecoversPanicAndRetriesOnCadence(t *testing.T) {
 		for range 2 {
 			select {
 			case <-inactiveObserved:
-			case <-time.After(2 * time.Second):
+			case <-time.After(testwait.Deadline(2 * time.Second)):
 				t.Fatal("auto-anchor did not observe anchor-point removal")
 			}
 		}

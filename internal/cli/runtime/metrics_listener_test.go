@@ -32,14 +32,13 @@ func TestServerMetricsRequireDedicatedListener(t *testing.T) {
 				body += fmt.Sprintf("metrics_listen: %q\n", metricsAddr)
 			}
 			path := writeServerTestConfig(t, body)
-			s, output := newTestServer(t, func(o *ServerOpts) {
+			s, output := newTestServerForStart(t, func(o *ServerOpts) {
 				o.ConfigFile = path
 				o.Listen = serverTestEphemeralListen
 				o.ListenChanged = true
 			})
 			ctx, cancel := context.WithCancel(t.Context())
-			done := make(chan error, 1)
-			go func() { done <- s.Start(ctx) }()
+			done := runJoined(t, ctx, s.Start, nil)
 			defer func() {
 				cancel()
 				select {
@@ -47,7 +46,7 @@ func TestServerMetricsRequireDedicatedListener(t *testing.T) {
 					if err != nil {
 						t.Errorf("Start: %v", err)
 					}
-				case <-time.After(10 * time.Second):
+				case <-time.After(testwait.Deadline(10 * time.Second)):
 					t.Error("server shutdown exceeded deadline")
 				}
 			}()

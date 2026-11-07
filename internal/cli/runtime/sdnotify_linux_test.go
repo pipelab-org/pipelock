@@ -18,9 +18,8 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/luckyPipewrench/pipelock/internal/testwait"
-
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func newNotifySocket(t *testing.T) <-chan string {
@@ -170,12 +169,11 @@ func TestSDNotify(t *testing.T) {
 func TestServerSystemdNotifications(t *testing.T) {
 	t.Run("startup sends ready once", func(t *testing.T) {
 		messages := newNotifySocket(t)
-		s, _ := newTestServer(t, func(opts *ServerOpts) {
+		s, _ := newTestServerForStart(t, func(opts *ServerOpts) {
 			opts.Listen = serverTestEphemeralListen
 			opts.ListenChanged = true
 		})
-		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(context.Background()) }()
+		errCh := runJoined(t, context.Background(), s.Start, nil)
 		if got := receiveNotify(t, messages); got != "READY=1" {
 			t.Fatalf("startup notification = %q, want READY=1", got)
 		}
@@ -453,14 +451,13 @@ func TestSDNotifyReloadCompleteRetriesReadyAlone(t *testing.T) {
 func TestReloadWithoutSystemdIsUnchangedAndSilent(t *testing.T) {
 	t.Setenv("NOTIFY_SOCKET", "")
 	var stderr bytes.Buffer
-	s, _ := newTestServer(t, func(opts *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(opts *ServerOpts) {
 		opts.Listen = serverTestEphemeralListen
 		opts.ListenChanged = true
 	})
 	s.opts.Stderr = &stderr
 
-	errCh := make(chan error, 1)
-	go func() { errCh <- s.Start(context.Background()) }()
+	errCh := runJoined(t, context.Background(), s.Start, nil)
 
 	deadline := time.After(testwait.Deadline(10 * time.Second))
 	for !s.startupNotifiedAlready() {

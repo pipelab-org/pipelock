@@ -23,7 +23,7 @@ func TestServer_StartLaterBindFailureReleasesEarlierMetricsListener(t *testing.T
 		}
 		defer func() { _ = scanBlocker.Close() }()
 
-		s, stderr := newTestServer(t, func(o *ServerOpts) {
+		s, stderr := newTestServerForStart(t, func(o *ServerOpts) {
 			o.Listen = serverTestEphemeralListen
 			o.ListenChanged = true
 		})

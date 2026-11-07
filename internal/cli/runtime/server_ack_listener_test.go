@@ -152,7 +152,7 @@ logging:
 `, ackListenerKeyed(ackListenerKey, binding), ackListenerSHA(string(canonical)), ackListenerSHA(ackListenerKeyDesc),
 			len(ackListenerKeyDesc), ackListenerSHA(ackListenerKeyDesc), expires, fetchAddr))
 
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = cfgPath
 			o.Listen = fetchAddr
 			o.ListenChanged = true
@@ -271,7 +271,7 @@ logging:
 `, ackListenerKeyed(ackListenerKey, mcpRunListenerBinding(upstream.URL)), ackListenerSHA(string(canonical)), ackListenerSHA(ackListenerKeyDesc),
 			len(ackListenerKeyDesc), ackListenerSHA(ackListenerKeyDesc), expires, fetchAddr))
 
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = cfgPath
 			o.Listen = fetchAddr
 			o.ListenChanged = true
@@ -393,7 +393,7 @@ logging:
 `, ackListenerKeyed(ackListenerKey, mcpRunListenerBinding(upstream.URL)), ackListenerSHA(string(canonical)), ackListenerSHA(ackListenerKeyDesc),
 			len(ackListenerKeyDesc), ackListenerSHA(ackListenerKeyDesc), expires, fetchAddr))
 
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = cfgPath
 			o.Listen = fetchAddr
 			o.ListenChanged = true
@@ -592,7 +592,7 @@ logging:
 	})
 	defer restore()
 
-	s, buf := newTestServer(t, func(o *ServerOpts) {
+	s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 		o.ConfigFile = cfgPath
 		o.Listen = fetchAddr
 		o.ListenChanged = true

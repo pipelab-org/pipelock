@@ -20,13 +20,14 @@ import (
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor"
 	"github.com/luckyPipewrench/pipelock/enterprise/conductor/auditbatcher"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Exercise the complete Start/Shutdown ordering with the real recorder,
 // producer, encrypted queue and transport. The incomplete checkpoint span
 // cannot be uploaded until cleanup closes the recorder.
 func TestServerShutdownDrainsFinalAuditBatch(t *testing.T) {
-	s, _ := newTestServer(t, func(o *ServerOpts) {
+	s, _ := newTestServerForStart(t, func(o *ServerOpts) {
 		o.Listen = serverTestEphemeralListen
 		o.ListenChanged = true
 	})
@@ -90,13 +91,12 @@ func TestServerShutdownDrainsFinalAuditBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.conductorAudit = transport
-	result := make(chan error, 1)
-	go func() { result <- s.Start(t.Context()) }()
+	result := runJoined(t, t.Context(), s.Start, nil)
 	select {
 	case <-s.startupNotified():
 	case err := <-result:
 		t.Fatalf("Start returned before readiness: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("Start did not become ready")
 	}
 	if err := s.Shutdown(context.Background()); err != nil {
@@ -107,7 +107,7 @@ func TestServerShutdownDrainsFinalAuditBatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * serverShutdownTimeout):
+	case <-time.After(testwait.Deadline(2 * serverShutdownTimeout)):
 		t.Fatal("Start did not finish shutdown")
 	}
 	if got, ok := uploads.Load(), admitted.Load(); got != 1 || ok != 1 {

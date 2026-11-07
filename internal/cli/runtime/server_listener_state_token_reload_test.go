@@ -17,6 +17,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/testport"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestServer_Reload_ListenerRequireStateTokenUpdatesRunningListener(t *testing.T) {
@@ -55,7 +56,7 @@ logging:
   output: stdout
 `, fetchAddr))
 
-		s, buf := newTestServer(t, func(o *ServerOpts) {
+		s, buf := newTestServerForStart(t, func(o *ServerOpts) {
 			o.ConfigFile = cfgPath
 			o.Listen = fetchAddr
 			o.ListenChanged = true
@@ -74,11 +75,13 @@ logging:
 			errCh <- s.Start(ctx)
 		}()
 		defer func() {
+			cancel()
 			_ = s.Shutdown(context.Background())
 			select {
 			case err := <-errCh:
 				t.Logf("goroutine result: %v", err)
-			case <-time.After(5 * time.Second):
+			case <-time.After(testwait.Deadline(5 * time.Second)):
+				t.Error("listener did not stop after cancellation")
 			}
 		}()
 

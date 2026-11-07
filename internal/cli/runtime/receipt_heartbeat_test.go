@@ -18,6 +18,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 type heartbeatFailureLog struct {
@@ -201,7 +202,7 @@ func TestReceiptHeartbeatWithoutAnEmitterStaysQuiet(t *testing.T) {
 	case <-observedCadence:
 	case err := <-failures:
 		t.Fatalf("a nil emitter reported a required-receipt failure: %v", err)
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for cadence heartbeat calls")
 	}
 	cancel()
@@ -321,7 +322,7 @@ func TestRequiredReceiptHeartbeatFailureMarksEmitterUnhealthy(t *testing.T) {
 		if err == nil {
 			t.Fatal("required heartbeat failure callback received nil error")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for required heartbeat failure")
 	}
 	if e.HealthError() == nil {
@@ -394,7 +395,7 @@ func TestRequiredCadenceHeartbeatFailureAfterAHealthyStartFailsClosed(t *testing
 	// would race the startup emission and this could pass on the wrong branch.
 	select {
 	case <-beats:
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for the immediate heartbeat")
 	}
 
@@ -407,7 +408,7 @@ func TestRequiredCadenceHeartbeatFailureAfterAHealthyStartFailsClosed(t *testing
 		if err == nil {
 			t.Fatal("cadence heartbeat failure callback received nil error")
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for a required cadence heartbeat failure")
 	}
 	if e.HealthError() == nil {
@@ -477,7 +478,7 @@ func waitForHeartbeatReceipt(t *testing.T, seen <-chan receipt.Receipt) {
 			if sc != nil && sc.Heartbeat != nil {
 				return
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(testwait.Deadline(5 * time.Second)):
 			t.Fatal("timed out waiting for heartbeat receipt")
 		}
 	}
@@ -488,7 +489,7 @@ func waitForHeartbeatFailureLog(t *testing.T, seen <-chan string) string {
 	select {
 	case msg := <-seen:
 		return msg
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("timed out waiting for heartbeat failure log")
 		return ""
 	}

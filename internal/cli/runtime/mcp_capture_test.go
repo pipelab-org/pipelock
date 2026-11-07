@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // writeMCPCaptureProbeConfig writes a config that fires DLP (input args),
@@ -82,13 +83,13 @@ func runMCPProxyStdin(t *testing.T, stdin string, args []string) (string, error)
 	select {
 	case err := <-done:
 		return stderr.String(), err
-	case <-time.After(mcpProxyRunHangBackstop):
+	case <-time.After(testwait.Deadline(mcpProxyRunHangBackstop)):
 		cancel()
 		select {
 		case err := <-done:
 			t.Fatalf("mcp proxy command did not complete within %s (hang backstop); Execute returned after cancellation with: %v",
 				mcpProxyRunHangBackstop, err)
-		case <-time.After(mcpProxyCancelGrace):
+		case <-time.After(testwait.Deadline(mcpProxyCancelGrace)):
 			t.Fatalf("mcp proxy command did not complete within %s and did not stop within %s after cancellation",
 				mcpProxyRunHangBackstop, mcpProxyCancelGrace)
 		}

@@ -33,6 +33,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // Real transports run on the main listener and on a registered listener whose
@@ -43,7 +44,7 @@ func TestServer_HijackedDrainSeal(t *testing.T) {
 		for _, listener := range []string{"main", "agent", "held_agent"} {
 			t.Run(transport+"/"+listener, func(t *testing.T) {
 				dir, cfgPath, roots := hijackDrainConfig(t, transport == "intercept")
-				s, log := newTestServer(t, func(o *ServerOpts) {
+				s, log := newTestServerForStart(t, func(o *ServerOpts) {
 					o.ConfigFile = cfgPath
 					o.Listen = serverTestEphemeralListen
 					o.ListenChanged = true
@@ -191,7 +192,7 @@ func openDrainTransport(t *testing.T, address, transport string, roots *x509.Cer
 	select {
 	case upstream := <-accepted:
 		t.Cleanup(func() { _ = upstream.Close() })
-	case <-time.After(5 * time.Second):
+	case <-time.After(testwait.Deadline(5 * time.Second)):
 		t.Fatal("upstream not accepted")
 	}
 	if transport == "intercept" {

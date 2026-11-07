@@ -454,7 +454,7 @@ func TestMCPProxyCmdHTTPReverseProxyStartsAndStopsWithContext(t *testing.T) {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("mcp reverse proxy after context cancel: %v\nstderr:\n%s", err, stderr.String())
 		}
-	case <-time.After(lifecycleTimeout):
+	case <-time.After(testwait.Deadline(lifecycleTimeout)):
 		t.Fatalf("mcp reverse proxy did not stop after context cancel\nstderr:\n%s", stderr.String())
 	}
 }

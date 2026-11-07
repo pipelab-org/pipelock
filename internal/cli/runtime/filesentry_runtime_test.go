@@ -20,6 +20,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/filesentry"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 // fileSentryCloseBackstop converts a deadlocked stop path into a fast, clear
@@ -97,7 +98,7 @@ func TestFileSentryWatcherCloseUnblocksStartWithLiveContext(t *testing.T) {
 		if startErr != nil {
 			t.Fatalf("Start after Close on a live context = %v, want nil; a non-nil return here reports a file sentry runtime failure on every clean shutdown", startErr)
 		}
-	case <-time.After(fileSentryCloseBackstop):
+	case <-time.After(testwait.Deadline(fileSentryCloseBackstop)):
 		t.Fatalf("Start did not return within %s of Close on a live context; the stop path deadlocks on every clean shutdown", fileSentryCloseBackstop)
 	}
 }
@@ -175,7 +176,7 @@ var leakedRuns atomic.Int64
 // never construct a watcher through the next test's hook.
 func runJoined(t *testing.T, parent context.Context, fn func(ctx context.Context) error, stop func()) <-chan error {
 	t.Helper()
-	return runJoinedWithin(t, orphanJoinDeadline, parent, fn, stop)
+	return runJoinedWithin(t, testwait.Deadline(orphanJoinDeadline), parent, fn, stop)
 }
 
 func runJoinedWithin(tb testing.TB, deadline time.Duration, parent context.Context, fn func(ctx context.Context) error, stop func()) <-chan error {
@@ -305,7 +306,7 @@ func TestRunJoinedReportsLeakedRun(t *testing.T) {
 		select {
 		case err := <-done:
 			t.Logf("goroutine result: %v", err)
-		case <-time.After(orphanJoinDeadline):
+		case <-time.After(testwait.Deadline(orphanJoinDeadline)):
 			t.Error("released run did not return")
 		}
 	}()
