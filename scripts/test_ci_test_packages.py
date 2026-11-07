@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -758,12 +759,12 @@ class TestTestNameSplit(unittest.TestCase):
         # Why the rule exists: Go keys a cached result only on files the test
         # process itself opens, so a file read through sh can change under a
         # cached pass even after scripts/ci_stable_mtimes.py stamps the tree.
-        if subprocess.run(["sh", "-c", "command -v go"], capture_output=True).returncode != 0:
+        if shutil.which("go") is None:
             self.skipTest("go is not on PATH")
         with tempfile.TemporaryDirectory() as temp:
             repo, cache = Path(temp) / "m", Path(temp) / "cache"
             repo.mkdir()
-            (repo / "go.mod").write_text("module example.invalid/m\n\ngo 1.26\n", encoding="utf-8")
+            (repo / "go.mod").write_text("module example.invalid/m\n", encoding="utf-8")
             (repo / "value.txt").write_text("good", encoding="utf-8")
             (repo / "m_test.go").write_text(
                 'package m\nimport ("context"; "os/exec"; "testing")\n'
@@ -775,7 +776,7 @@ class TestTestNameSplit(unittest.TestCase):
             subprocess.run([*git, "init", "-q"], cwd=repo, check=True)
             subprocess.run([*git, "add", "-A"], cwd=repo, check=True)
             subprocess.run([*git, "commit", "-q", "-m", "fixture"], cwd=repo, check=True)
-            env = {**os.environ, "GOCACHE": str(cache), "GOFLAGS": "-mod=mod", "GOWORK": "off"}
+            env = {**os.environ, "GOCACHE": str(cache), "GOFLAGS": "-mod=mod", "GOWORK": "off", "GOTOOLCHAIN": "local"}
             stamp = [sys.executable, str(Path(__file__).resolve().parent / "ci_stable_mtimes.py"), "--root", str(repo)]
 
             def run() -> subprocess.CompletedProcess[str]:

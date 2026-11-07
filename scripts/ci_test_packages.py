@@ -197,6 +197,10 @@ def call_arguments(text: str, start: int) -> list[str]:
 
 def runs_external_program(text: str) -> bool:
     """Whether a test file starts a program that may read repository files."""
+    # Most test files start nothing; the raw search also finds calls written in
+    # comments or strings, which the masked scan below discards.
+    if not EXTERNAL_CALL_RE.search(text):
+        return False
     source, code = go_source_views(text)
     self_names = {m.group(1) for m in SELF_EXEC_RE.finditer(code)}
     for match in EXTERNAL_CALL_RE.finditer(code):
