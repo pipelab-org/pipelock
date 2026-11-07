@@ -114,8 +114,17 @@ func TestUnavailableProcessStatsStopBeforeWorkload(t *testing.T) {
 	t.Cleanup(func() { readProcessStat = old })
 	opt := smallOptions(t, realPipelock(t))
 	opt.requests, opt.warmup = 10, 2
-	if code := runModes(t.Context(), opt, []string{modeRequired}); code != 4 {
-		t.Fatalf("process stats failure exited %d, want harness error 4", code)
+	if code := runModes(t.Context(), opt, []string{modeRequired}); code != exitIntegrity {
+		t.Fatalf("process stats failure exited %d, want integrity 1", code)
+	}
+	// Even without workload requests, required-mode startup already emitted
+	// session_open. Losing process measurements cannot erase that obligation.
+	observed, err := scanRecorder(filepath.Join(opt.out, modeRequired, "recorder"), newWorkload(opt.seed, opt.warmup, opt.requests), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(observed.opens) == 0 {
+		t.Fatal("proxy startup produced no session_open receipt")
 	}
 	res := readResult(t, filepath.Join(opt.out, modeRequired))
 	if res.Integrity.Verdict == verdictPass || res.Integrity.Verify.Ran || res.Performance.Verdict != perfInvalid {

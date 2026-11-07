@@ -5,11 +5,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -53,7 +56,11 @@ func TestHarnessExitCodes(t *testing.T) {
 	for _, scenario := range []string{"directory", "binary", "rules", "config", "sink-bind", "free-port", "proxy-start", "readiness-exit", "readiness-timeout", "sampler", "proc"} {
 		t.Run(scenario, func(t *testing.T) {
 			opt := smallOptions(t, newFakePipelock(t, "ok"))
-			root := filepath.Join(opt.out, modeOff)
+			mode := modeOff
+			if scenario == "sink-bind" || scenario == "free-port" || scenario == "proxy-start" {
+				mode = modeRequired
+			}
+			root := filepath.Join(opt.out, mode)
 			savedListen, savedStat := listenTCP, readProcessStat
 			t.Cleanup(func() { listenTCP, readProcessStat = savedListen, savedStat })
 			calls := 0
@@ -95,8 +102,12 @@ func TestHarnessExitCodes(t *testing.T) {
 			case "proc":
 				readProcessStat = func(string) ([]byte, error) { return nil, os.ErrPermission }
 			}
-			if code := runModes(t.Context(), opt, []string{modeOff}); code != 4 {
-				t.Fatalf("exit=%d, want harness error 4", code)
+			want := exitHarness
+			if scenario == "readiness-exit" || scenario == "readiness-timeout" || scenario == "sampler" || scenario == "proc" {
+				want = exitIntegrity
+			}
+			if code := runModes(t.Context(), opt, []string{mode}); code != want {
+				t.Fatalf("exit=%d, want %d", code, want)
 			}
 			if scenario != "directory" {
 				res := readResult(t, root)
@@ -135,4 +146,82 @@ func TestHarnessExitCodes(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHarnessBinaryAvailabilityThroughCLI(t *testing.T) {
+	for _, kind := range []string{"missing", "directory", "non-executable"} {
+		t.Run(kind, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "binary")
+			switch kind {
+			case "directory":
+				if err := os.Mkdir(path, 0o750); err != nil {
+					t.Fatal(err)
+				}
+			case "non-executable":
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if code := realMain([]string{"--binary", path, "--out", t.TempDir()}); code != exitHarness {
+				t.Fatalf("binary %s exited %d, want setup 4", kind, code)
+			}
+		})
+	}
+}
+
+func TestHarnessRequiredStartupReceiptFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds and runs the real proxy")
+	}
+	// Inject a recorder failure at the production startup session_open seam.
+	// The proxy must actually refuse required-mode startup before listening.
+	root, err := filepath.Abs(filepath.Join("..", ".."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(root, "internal", "cli", "runtime", "receipt_session_open.go")
+	raw, err := os.ReadFile(filepath.Clean(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patched := strings.Replace(string(raw), "var beforeStartupSessionOpenForTest func(*receipt.Emitter) error",
+		`var beforeStartupSessionOpenForTest = func(*receipt.Emitter) error { return fmt.Errorf("injected recorder write failure") }`, 1)
+	patched = strings.Replace(patched, `import "github.com/luckyPipewrench/pipelock/internal/receipt"`,
+		`import ("fmt"; "github.com/luckyPipewrench/pipelock/internal/receipt")`, 1)
+	dir := t.TempDir()
+	replacement := filepath.Join(dir, "receipt_session_open.go")
+	if err := os.WriteFile(replacement, []byte(patched), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := json.Marshal(map[string]any{"Replace": map[string]string{source: replacement}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlayPath := filepath.Join(dir, "overlay.json")
+	if err := os.WriteFile(overlayPath, overlay, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, "pipelock")
+	cmd := exec.CommandContext(t.Context(), "go", "build")
+	cmd.Args = append(cmd.Args, "-overlay", overlayPath, "-o", binary)
+	if realBuildTags != "" {
+		cmd.Args = append(cmd.Args, "-tags", realBuildTags)
+	}
+	cmd.Args = append(cmd.Args, "./cmd/pipelock")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v: %s", err, out)
+	}
+	opt := smallOptions(t, binary)
+	res, err := runMode(t.Context(), opt, modeRequired)
+	log, readErr := os.ReadFile(filepath.Join(opt.out, modeRequired, "proxy.log"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(log), "session_open receipt could not be emitted: injected recorder write failure") {
+		t.Fatalf("did not exercise startup receipt refusal: %s", log)
+	}
+	if code := modeExitCode(res, err); code != exitIntegrity {
+		t.Fatalf("startup receipt failure exited %d, want integrity 1: %v", code, err)
+	}
 }

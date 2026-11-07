@@ -1283,6 +1283,15 @@ func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
 		{"npm-refused", "npm", "refused", "could not reach npm", 3},
 		{"npm-server", "npm", "server", "could not reach npm", 3},
 		{"npm-timeout", "npm", "timeout", "could not reach npm", 3},
+		{"npm-fetch-not-timeout", "npm", "fetch-not-timeout", "could not reach npm", 2},
+		{"npm-bare-fetch-error", "npm", "bare-fetch-error", "could not reach npm", 2},
+		{"npm-socket-timeout", "npm", "socket-timeout", "could not reach npm", 3},
+		{"npm-idle-timeout", "npm", "idle-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-timeout", "npm", "fetch-errno-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-socket-timeout", "npm", "fetch-errno-socket-timeout", "could not reach npm", 3},
+		{"npm-fetch-errno-idle-timeout", "npm", "fetch-errno-idle-timeout", "could not reach npm", 3},
+		{"npm-fetch-body-timeout", "npm", "fetch-body-timeout", "could not reach npm", 3},
+		{"npm-fetch-request-timeout", "npm", "fetch-request-timeout", "could not reach npm", 3},
 		{"crates-refused", "crates", "refused", "could not reach crates.io", 3},
 		{"crates-server", "crates", "server", "could not reach crates.io", 3},
 		{"crates-timeout", "crates", "timeout", "could not reach crates.io", 3},
@@ -1297,6 +1306,8 @@ func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
 		{"npm-classifier", "npm", "classifier", "could not reach npm", 2},
 		{"crates-unknown", "crates", "unknown", "could not reach crates.io", 2},
 		{"pypi-malformed", "pypi", "malformed", "JSONDecodeError", 2},
+		{"npm-provenance-after-scratch", "install", "provenance", "expected one verified npm package", 2},
+		{"npm-audit-timeout-after-scratch", "install", "audit-timeout", "could not verify npm signatures", 3},
 		{"pypi-unclassified", "pypi", "parser", "unclassified parser failure", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1343,9 +1354,31 @@ func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
 				"python3": "if [[ $FAILURE == classifier && $1 == -c && $2 == *'outage ='* ]]; then exit 3; fi\nif [[ $FAILURE == parser && $# == 4 && $1 == - && $2 == 0.4.1 ]]; then echo 'unclassified parser failure' >&2; exit 64; fi\nexec " + strconv.Quote(python) + " \"$@\"\n",
 				"git":     "if [[ $1 == ls-remote ]]; then\nif [[ $TARGET == git ]]; then printf '%040d\\trefs/tags/v0.4.1\\n' 0; else printf '%s\\trefs/tags/v0.4.1\\n' " + strings.Repeat("c", 40) + "; fi\nelse exec " + strconv.Quote(git) + " \"$@\"; fi\n",
 				"npm": `if [[ $1 == --version ]]; then echo 11.12.0; exit 0; fi
+if [[ $TARGET == install ]]; then
+  if [[ $1 == install ]]; then
+    while (($#)); do
+      if [[ $1 == --prefix ]]; then printf '{}' >"$2/package-lock.json"; break; fi
+      shift
+    done
+    echo '{}'; exit 0
+  fi
+  if [[ $1 == audit ]]; then
+    if [[ $FAILURE == audit-timeout ]]; then echo '{"error":{"code":"ERR_SOCKET_TIMEOUT"}}'; exit 1; fi
+    echo '{}'; exit 0
+  fi
+fi
 if [[ $TARGET == npm ]]; then
   case $FAILURE in
     refused|classifier) echo '{"error":{"code":"ECONNREFUSED"}}'; exit 1 ;;
+    fetch-request-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"request-timeout"}}'; exit 1 ;;
+    fetch-body-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"body-timeout"}}'; exit 1 ;;
+    fetch-errno-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"ETIMEDOUT"}}'; exit 1 ;;
+    idle-timeout) echo '{"error":{"code":"EIDLETIMEOUT"}}'; exit 1 ;;
+    socket-timeout) echo '{"error":{"code":"ERR_SOCKET_TIMEOUT"}}'; exit 1 ;;
+    bare-fetch-error) echo '{"error":{"code":"FETCH_ERROR"}}'; exit 1 ;;
+    fetch-not-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"invalid-json","errno":"FETCH_ERROR"}}'; exit 1 ;;
+    fetch-errno-idle-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"EIDLETIMEOUT"}}'; exit 1 ;;
+    fetch-errno-socket-timeout) echo '{"error":{"code":"FETCH_ERROR","errno":"ERR_SOCKET_TIMEOUT"}}'; exit 1 ;;
     timeout) echo '{"error":{"code":"ETIMEDOUT"}}'; exit 1 ;;
     server) echo '{"error":{"code":"E503"}}'; exit 1 ;;
     unknown) echo '{"error":{"code":"E401"}}'; exit 1 ;;
@@ -1379,13 +1412,29 @@ fi
 HTTP_CODE=200; http_code "$args"
 `,
 				"sleep": "exit 0\n",
+				"node":  "exit 0\n",
+				"cargo": "exit 99\n",
+				"go": `if [[ $1 == env ]]; then echo go1.26.10; fi
+if [[ $1 == run ]]; then
+  while (($#)); do
+    if [[ $1 == --out-dir ]]; then printf '%064d' 0 >"$2/candidate-receipt-public-key.txt"; break; fi
+    shift
+  done
+fi
+exit 0
+`,
 			}
 			for name, body := range stubs {
 				testexec.WriteExecutable(t, filepath.Join(bin, name), []byte("#!/usr/bin/env bash\n"+body), 0o700)
 			}
 			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts/release-verifier-install-gate.sh"), "--tag", "v3.4.0") // #nosec G204 -- checked-in script in an isolated fixture.
-			cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
+			scratchParent := t.TempDir()
+			cmd.Env = append(os.Environ(), "TMPDIR="+scratchParent, "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
 			out, err := cmd.CombinedOutput()
+			left, readErr := os.ReadDir(scratchParent)
+			if readErr != nil || len(left) != 0 {
+				t.Fatalf("scratch cleanup: entries=%v error=%v", left, readErr)
+			}
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != tc.code || !strings.Contains(string(out), tc.wantText) {
 				t.Fatalf("exit=%v, want %d and %q; output:\n%s", err, tc.code, tc.wantText, out)

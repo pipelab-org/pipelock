@@ -13,7 +13,23 @@ set -euo pipefail
 # Embedded tools can use their own failure codes. Normalize every unclassified
 # failure, including malformed registry JSON, to the non-retryable class.
 failure_code=2
-trap 'status=$?; if ((status != 0)); then exit "$failure_code"; fi' EXIT
+scratch_dir=""
+finish() {
+	local status=$?
+	if [[ -n "$scratch_dir" ]]; then
+		# Go module caches can contain read-only files.
+		chmod -R u+w "$scratch_dir" 2>/dev/null || true
+		rm -rf "$scratch_dir" || true
+	fi
+	if ((status == 0)); then
+		exit 0
+	fi
+	case "$failure_code" in
+		3|64) exit "$failure_code" ;;
+		*) exit 2 ;;
+	esac
+}
+trap finish EXIT
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INVENTORY="$ROOT_DIR/release/verifier-installers.json"
@@ -553,14 +569,6 @@ for command in go node cargo sha256sum find diff cmp; do
 done
 
 scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/pipelock-verifier-install.XXXXXX")"
-cleanup() {
-	# Go marks downloaded modules read-only. Restore write permission before
-	# removal so a successful verification cannot be reported as failed merely
-	# because the disposable cache is protected.
-	chmod -R u+w "$scratch_dir" 2>/dev/null || true
-	rm -rf "$scratch_dir" || true
-}
-trap cleanup EXIT
 
 fixture_dir="$scratch_dir/fixture"
 go_cache="$scratch_dir/go-cache"

@@ -94,7 +94,7 @@ func runModes(ctx context.Context, opt options, modes []string) int {
 	return code
 }
 
-// setupError is only attached before the workload can produce receipt evidence.
+// setupError is only attached when receipt emission cannot yet have been attempted.
 // An unmarked error (even without a result) is an integrity failure.
 type setupError struct{ err error }
 
@@ -156,7 +156,7 @@ func parseFlags(args []string) (options, []string, string, error) {
 		return options{}, nil, "", err
 	}
 	if info, statErr := os.Stat(absBinary); statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return options{}, nil, "", fmt.Errorf("binary %q is %w", absBinary, errNotExecutable)
+		return options{}, nil, "", &setupError{fmt.Errorf("binary %q is %w", absBinary, errNotExecutable)}
 	}
 	absOut, err := filepath.Abs(*out)
 	if err != nil {

@@ -177,6 +177,9 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		return err
 	}
 	defer func() { proxy.cleanup() }()
+	// Startup can emit session_open before the listener is ready. Once the
+	// process starts, readiness and later failures cannot prove setup-only.
+	setup = false
 	if err := awaitProxy(ctx, proxyAddr, proxy, opt.readyTimeout); err != nil {
 		return err
 	}
@@ -201,10 +204,6 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	}
 	defer transport.CloseIdleConnections()
 	params := loadParams{client: &http.Client{Transport: transport, Timeout: clientTimeout}, plan: plan, sinkAddr: sink.addr(), concurrency: opt.concurrency}
-
-	// From this point receipt evidence may exist, even if a later restart,
-	// sampler, or verifier fails. Such failures must retain integrity status.
-	setup = false
 
 	// Warmup shares the proxy process and its connections with the measured
 	// phase; only the measured phase feeds the performance numbers.

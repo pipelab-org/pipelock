@@ -115,7 +115,15 @@ PY
 }
 
 # curl exit codes: https://curl.se/docs/manpage.html#EXIT
-# npm --json exposes Node.js system error codes; HTTP E5xx means a server error
+# npm fetch errors copy system code into code/errno and expose timeout types:
+# https://github.com/npm/minipass-fetch/blob/main/lib/fetch-error.js
+# https://github.com/npm/minipass-fetch/blob/main/lib/index.js (request-timeout)
+# https://github.com/npm/minipass-fetch/blob/main/lib/body.js (body-timeout)
+# https://github.com/npm/agent/blob/main/lib/errors.js (EIDLETIMEOUT)
+# https://github.com/node-modules/agentkeepalive/blob/master/lib/agent.js (ERR_SOCKET_TIMEOUT)
+# The CLI may omit errno/type; a bare FETCH_ERROR remains unclassified.
+# https://github.com/npm/cli/blob/latest/lib/utils/output-error.js
+# HTTP E5xx means a server error
 # (RFC 9110 section 15.6). Everything else, including invalid JSON, fails closed.
 registry_read() {
 	local tool="$1" output status http_code attempt classification
@@ -147,8 +155,11 @@ registry_read() {
 			if ! classification="$(python3 -c '
 import json, re, sys
 try:
-    code = json.load(sys.stdin)["error"]["code"]
-    outage = code in {"ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH"} or re.fullmatch(r"E5[0-9][0-9]", code)
+    error = json.load(sys.stdin)["error"]
+    code = error["code"]
+    timeouts = {"ETIMEDOUT", "EIDLETIMEOUT", "ERR_SOCKET_TIMEOUT"}
+    fetch_timeout = code == "FETCH_ERROR" and (error.get("errno") in timeouts or error.get("type") in {"request-timeout", "body-timeout"})
+    outage = fetch_timeout or code in timeouts or code in {"ECONNREFUSED", "ECONNRESET", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH"} or re.fullmatch(r"E5[0-9][0-9]", code)
 except (ValueError, KeyError, TypeError):
     outage = False
 print(3 if outage else 2)
