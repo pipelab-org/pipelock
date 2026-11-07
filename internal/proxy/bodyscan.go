@@ -904,6 +904,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 		}
 	}
 
+	if req.RedactMatcher != nil && req.audienceSurface() == "body" {
+		audienceSurface = req.Scanner.OAuthCredentialAudienceSurface(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+	}
+
 	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
 	// names, record payloads and fixed-width fields. Those pieces join the
 	// ordinary body DLP pipeline below, so suppressions, disabled patterns,
@@ -985,6 +989,10 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			buf = rewritten
 			redactReport = report
 		}
+	}
+
+	if req.audienceSurface() == "body" {
+		audienceSurface = req.Scanner.OAuthCredentialAudienceSurface(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
 	}
 
 	// Extract text strings from body based on content type. The DLP extractor

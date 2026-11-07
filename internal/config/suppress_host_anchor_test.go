@@ -63,7 +63,7 @@ func TestBuiltInCredentialAudienceHosts_ReplaceDerivedProviderDefaults(t *testin
 	// vendor serves the credential on several domains, so this asserts the
 	// exact SET rather than a single value.
 	expected := map[string][]string{ // #nosec G101 -- compiled audience host assertions, not credential material
-		"Anthropic API Key":     {"api.anthropic.com"},
+		"Anthropic API Key":     {"api.anthropic.com", "platform.claude.com", "mcp-proxy.anthropic.com"},
 		"OpenAI API Key":        {"api.openai.com"},
 		"OpenAI Service Key":    {"api.openai.com"},
 		"Fireworks API Key":     {"api.fireworks.ai"},
