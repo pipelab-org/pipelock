@@ -88,7 +88,8 @@ func TestServer_ContainmentMetricsCleanupWaitsForStart(t *testing.T) {
 			// Registered first, this must run after the cancel-and-join cleanup.
 			t.Cleanup(func() {
 				select {
-				case <-done:
+				case err := <-done:
+					t.Logf("goroutine result: %v", err)
 				default:
 					t.Error("test cleanup ran before Start returned")
 				}
