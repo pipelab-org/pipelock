@@ -827,7 +827,7 @@ func TestOutcomeSyntheticFramingSemantics(t *testing.T) {
 					srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 						// Synthetic bodies replace any earlier framing.
 						w.Header().Set("Content-Length", "999")
-						w.Header().Set("Transfer-Encoding", "chunked") //nolint:gosec // G113: regression fixture verifies conflicting framing is removed before headers are committed.
+						w.Header()["Transfer-Encoding"] = []string{"chunked"}
 						if format == "text" {
 							writeHTTPError(w, message, status)
 						} else {
