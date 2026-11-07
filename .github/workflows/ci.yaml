@@ -491,6 +491,9 @@ jobs:
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
 
+      - name: Stabilize tracked input timestamps
+        run: python3 scripts/ci_stable_mtimes.py
+
       - name: Run tests (no race)
         env:
           TEST_LABEL: ${{ matrix.variant }} Go 1.26 ${{ matrix.shard }}
