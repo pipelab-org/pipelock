@@ -13,10 +13,18 @@ import (
 	"unicode/utf8"
 )
 
-// Admission uses the existing 4096-byte reference and 13.562 decoded bytes
-// per raw byte across RFC 4648 phases. This is a uniform-junk model, not a
-// probability guarantee about natural language or adversarial input.
-const assembledJunkExposure = 13.562 * maxReassembledTokenLen
+// assembledEmissionRatio is the measured number of decoded bytes the RFC 4648
+// lanes emit per raw byte of prose: 100,905 decoded bytes from 7,440 raw bytes
+// across every hex, base64, base64url, base32 and base32hex phase. Other
+// measured bodies ranged from about 11.0 to 15.0. It is an empirical value,
+// not a bound; the all-alphabet capacity is 17, and using that would admit
+// fewer configured grammars to the terminal.
+const assembledEmissionRatio = 13.5625
+
+// Admission uses the existing 4096-byte reference and the measured emission
+// ratio. This is a uniform-junk model, not a probability guarantee about
+// natural language or adversarial input.
+const assembledJunkExposure = assembledEmissionRatio * maxReassembledTokenLen
 
 // Compute the syntax tree's minimum-match model weight. Concatenation
 // multiplies and alternatives sum, including overlapping derivations;
@@ -157,7 +165,7 @@ func assembledRawAdmits(tree *syntax.Regexp) bool {
 	literals := assembledAdmissionLiterals(tree)
 	rate := 0.0
 	for _, literal := range literals {
-		rate += 13.562 * math.Pow(1.0/128, float64(len(literal)))
+		rate += assembledEmissionRatio * math.Pow(1.0/128, float64(len(literal)))
 	}
 	return len(literals) > 0 && rate <= 1.0/maxReassembledTokenLen && !slices.ContainsFunc(literals, func(lit string) bool { return strings.ContainsRune(lit, utf8.RuneError) })
 }

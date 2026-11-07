@@ -118,11 +118,11 @@ func newAssembledPlan(p *reassemblyPlan) (*assembledPlan, error) {
 			}
 		}
 		// The admission unit is the existing normalizer cap. Under independent
-		// folded ASCII bytes, sum 13.562*(2/256)^length over the literal set.
+		// folded ASCII bytes, sum assembledEmissionRatio*(2/256)^length over the literal set.
 		// One expected cue per cap-sized raw region gives a three-byte minimum.
 		rate := 0.0
 		for _, lit := range literals {
-			rate += 13.562 * math.Pow(1.0/128, float64(len(lit)))
+			rate += assembledEmissionRatio * math.Pow(1.0/128, float64(len(lit)))
 		}
 		// A finite grammar without an admitted raw literal can join the
 		// paired screen when its syntax supplies a positive run bound.
