@@ -11,6 +11,7 @@ import copy
 import io
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -129,6 +130,13 @@ class TimingTrendTest(unittest.TestCase):
         report = self.report()
         self.assertEqual(report["failed_jobs"], [jobs[0]["name"] + " (cancelled)"])
         self.assertIn(jobs[0]["name"] + " (cancelled)", trend.summary(report))
+
+    def test_superseded_cancelled_run_is_refused(self):
+        # ci.yaml cancels a main run a newer push supersedes; its jobs stopped
+        # part way, so it must not be reported as a timing sample.
+        self.data["current_run"]["conclusion"] = "cancelled"
+        with self.assertRaisesRegex(ValueError, "cancelled"):
+            self.report()
 
     def test_failed_run_times_its_timed_out_job(self):
         # A job that hit its timeout-minutes ends cancelled; in a failed run its
@@ -323,6 +331,48 @@ class TimingWorkflowTest(unittest.TestCase):
         report = next(step for step in self.job["steps"] if step.get("name") == "Report CI timing")
         self.assertIn('--summary "$GITHUB_STEP_SUMMARY"', report["run"])
 
+    def test_cancelled_runs_are_skipped_by_trigger_and_dispatch(self):
+        # Pairs with ci.yaml's concurrency: superseded main runs are cancelled.
+        ci = yaml.load((ROOT / ".github/workflows/ci.yaml").read_text(), Loader=WorkflowLoader)
+        self.assertIs(ci["concurrency"]["cancel-in-progress"], True)
+        self.assertIn("github.event.workflow_run.conclusion != 'cancelled'", self.job["if"])
+
+        def pick(conclusions):
+            runs = [{"id": 100 + i, "run_attempt": 1, "conclusion": c} for i, c in enumerate(conclusions)]
+            return self.dispatch_lookup([{"workflow_runs": runs}])
+
+        # The API lists newest first; the newest uncancelled run is measured,
+        # whether it succeeded or failed.
+        self.assertEqual(pick(["cancelled", "cancelled", "success"]), "102 1")
+        self.assertEqual(pick(["cancelled", "failure", "success"]), "101 1")
+        self.assertEqual(pick(["success", "cancelled"]), "100 1")
+        # No usable run yields no id, which the step's id check rejects.
+        self.assertEqual(pick(["cancelled"]), "")
+
+    def dispatch_lookup(self, pages):
+        """Run the shipped lookup the way gh does: --jq on each page, then the
+        step keeps the first output line."""
+        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
+        lookup = next(line for line in fetch["run"].splitlines() if "status=completed" in line)
+        # gh refuses --slurp together with --jq; the lookup must not use it.
+        self.assertIn("--paginate", lookup)
+        self.assertNotIn("--slurp", lookup)
+        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", lookup).group(1)
+        lines = []
+        for page in pages:
+            out = subprocess.run(["jq", "-r", selector], input=json.dumps(page),
+                                 capture_output=True, text=True, check=True).stdout
+            lines += [line for line in out.splitlines() if line]
+        self.assertIn('latest="${usable%%$\'\\n\'*}"', fetch["run"])
+        return lines[0] if lines else ""
+
+    def test_dispatch_finds_uncancelled_run_after_first_page(self):
+        # A burst of main pushes can cancel every run on the first API page.
+        pages = [{"workflow_runs": [{"id": i, "run_attempt": 1, "conclusion": "cancelled"}
+                                    for i in range(100, 0, -1)]},
+                 {"workflow_runs": [{"id": 999, "run_attempt": 2, "conclusion": "failure"}]}]
+        self.assertEqual(self.dispatch_lookup(pages), "999 2")
+
     def test_fetch_step_with_offline_paginated_api_and_dispatch(self):
         # Execute the shipped fetch step, including the Python/gh boundary.
         # The fixture gh responds to plain read calls; nothing contacts GitHub.
@@ -338,6 +388,10 @@ args = sys.argv[1:]
 endpoint = next(arg for arg in args if arg.startswith('repos/'))
 if os.environ.get('FAIL_FETCH'):
     sys.exit(9)
+if '--slurp' in args and ('--jq' in args or '--template' in args):
+    # Real gh refuses this combination.
+    print('the `--slurp` option is not supported with `--jq` or `--template`', file=sys.stderr)
+    sys.exit(1)
 if '--jq' in args:
     print('99 1')
 elif '/attempts/' in endpoint and '/jobs' not in endpoint:
