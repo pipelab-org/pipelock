@@ -244,6 +244,43 @@ func TestAnthropicOAuthBodyCallerBlockSuppressesReceipt(t *testing.T) {
 	}
 }
 
+// Adaptive escalation can refuse a warning-level body after scanning, so the
+// delivery decision that gates audience receipts must include it, keep the
+// entropy-only exemption, and never claim a block in audit mode.
+func TestBodyDeliveryBlocksAdaptiveEscalation(t *testing.T) {
+	block := config.ActionBlock
+	warnBody := BodyScanResult{Action: config.ActionWarn, InjectionMatches: []scanner.ResponseMatch{{PatternName: "probe"}}}
+	entropyOnly := BodyScanResult{Action: config.ActionWarn, EntropyFinding: &ContentEntropyFinding{}}
+	for _, tc := range []struct {
+		name    string
+		result  BodyScanResult
+		level   int
+		enforce bool
+		trusted bool
+		want    bool
+	}{
+		{name: "escalated warning blocks", result: warnBody, level: 2, enforce: true, trusted: true, want: true},
+		{name: "normal level delivers", result: warnBody, level: 0, enforce: true, trusted: true},
+		{name: "audit mode never blocks", result: warnBody, level: 2, trusted: true},
+		{name: "entropy-only warning stays exempt", result: entropyOnly, level: 2, enforce: true, trusted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			enforce := tc.enforce
+			cfg.Enforce = &enforce
+			if tc.trusted {
+				cfg.RequestBodyScanning.TrustedHosts = []string{"platform.claude.com"}
+			}
+			cfg.AdaptiveEnforcement.Enabled = true
+			cfg.AdaptiveEnforcement.Levels.High.UpgradeWarn = &block
+			got := bodyDeliveryBlocks(tc.result, "platform.claude.com", cfg, tc.level, true, config.ActionWarn)
+			if got != tc.want {
+				t.Fatalf("bodyDeliveryBlocks = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestAnthropicOAuthBodyTransports(t *testing.T) {
 	const host = "platform.claude.com"
 	const endpoint = "https://" + host + "/v1/oauth/token"

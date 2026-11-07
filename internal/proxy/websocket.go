@@ -1756,7 +1756,7 @@ func (r *wsRelay) scanClientMessageBodyWithSurface(ctx context.Context, msg []by
 			r.recordClientFrameDroppedDLP(match, reason)
 		},
 		DeliveryBlocks: func(result BodyScanResult) bool {
-			return blockingBodyFinding(result, r.hostname, r.cfg) != bodyBlockCauseUnknown
+			return bodyDeliveryBlocks(result, r.hostname, r.cfg, r.escalationLevel(), false, config.ActionBlock)
 		},
 		OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 			return r.recordCredentialAudienceAllow(allow)

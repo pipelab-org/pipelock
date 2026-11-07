@@ -1351,7 +1351,7 @@ func newInterceptHandler(
 					ic.Metrics.RecordDLPDroppedMatch(match.PatternName, "body", reason)
 				},
 				DeliveryBlocks: func(result BodyScanResult) bool {
-					return blockingBodyFinding(result, r.URL.Hostname(), ic.Config) != bodyBlockCauseUnknown
+					return bodyDeliveryBlocks(result, r.URL.Hostname(), ic.Config, interceptEscalationLevel(ic), true, ic.Config.RequestBodyScanning.Action)
 				},
 				OnCredentialAudienceAllow: func(allow scanner.CredentialAudienceAllow) error {
 					if ic.Proxy != nil {

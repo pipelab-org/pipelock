@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/blockreason"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
+	"github.com/luckyPipewrench/pipelock/internal/decide"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/fileinspect"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
@@ -560,6 +561,36 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 		return bodyBlockCauseEntropy
 	}
 	return bodyBlockCauseUnknown
+}
+
+// bodyDeliveryBlocks mirrors the refusal a body path applies after scanning:
+// the hard-block floors, then adaptive escalation in enforcement mode.
+// dlpDestinationExempt selects the forward and intercept rule that keeps
+// adaptive-exempt destinations from escalating DLP findings. defaultAction is
+// the caller's action when the result carries none.
+func bodyDeliveryBlocks(result BodyScanResult, hostname string, cfg *config.Config, level int, dlpDestinationExempt bool, defaultAction string) bool {
+	if blockingBodyFinding(result, hostname, cfg) != bodyBlockCauseUnknown {
+		return true
+	}
+	if cfg == nil || !cfg.EnforceEnabled() || level <= 0 {
+		return false
+	}
+	exempt := result.IsEntropyOnly() || result.IsInformationalCardRuns() || result.IsIncompleteFileWarningOnly()
+	if dlpDestinationExempt && !exempt {
+		label := ""
+		if len(result.DLPMatches) > 0 && result.RedactionBlockReason == "" {
+			label = scannerLabelBodyDLP
+		}
+		exempt = isBodyAdaptiveExempt(label, result, hostname, cfg)
+	}
+	if exempt {
+		return false
+	}
+	action := result.Action
+	if action == "" {
+		action = defaultAction
+	}
+	return decide.UpgradeAction(action, level, &cfg.AdaptiveEnforcement) == config.ActionBlock
 }
 
 // bodyBlockCauseLabel returns the scanner label for a blocking finding, or
