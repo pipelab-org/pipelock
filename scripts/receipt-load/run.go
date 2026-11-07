@@ -692,6 +692,9 @@ func failOnAuditGaps(integrity *integrityReport, dirs runDirs, failedRun bool) {
 	count, lines, err := auditGapLines(filepath.Join(dirs.root, "proxy.log"))
 	if count > 0 {
 		integrity.fail(fmt.Sprintf("proxy reported %d audit gap(s); first: %s", count, lines[0]))
+		for _, line := range lines[1:] {
+			integrity.fail("proxy audit gap sample: " + line)
+		}
 	}
 	if err != nil && (!failedRun || !errors.Is(err, fs.ErrNotExist)) {
 		integrity.fail("reading proxy.log failed: " + err.Error())

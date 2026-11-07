@@ -288,7 +288,7 @@ func TestAuditGapLines(t *testing.T) {
 		{"empty", "", 0, 0},
 		{"none", "{\"event\":\"forward_http\"}\naudit_gap=false\n", 0, 0},
 		{"one", "noise\n" + gap, 1, 1},
-		{"many", strings.Repeat(gap, maxAuditGapLines+3), maxAuditGapLines + 3, maxAuditGapLines},
+		{"many", strings.Repeat(gap, maxAuditGapLines+3), maxAuditGapLines + 3, 1},
 		{"long", `{"event":"error","error":"event=receipt_channel_broken audit_gap=true ` + strings.Repeat("x", 2*maxAuditGapLineSize) + `"}` + "\n", 1, 1},
 		{"startup path", "  Recorder: /audit_gap=true/recorder (flight recorder enabled)\n", 0, 0},
 		{"URL field", `{"event":"forward_http","url":"http://api.vendor.example/?audit_gap=true"}` + "\n", 0, 0},
@@ -439,6 +439,34 @@ func TestAuditGapWarningDiagnostics(t *testing.T) {
 	}
 }
 
+func TestAuditGapFailureSamples(t *testing.T) {
+	dirs := newRunDirs(t.TempDir())
+	var log strings.Builder
+	labels := []string{"other", "append_lock_timeout", "content_rejected", "content_changed", "scan_incomplete", "chain_sealed"}
+	for _, label := range labels {
+		// Repeated symptoms must not fill the sample before a different
+		// underlying failure appears. Every occurrence still counts.
+		line := `{"event":"error","request_id":"private-context","error":"event=receipt_channel_broken audit_gap=true verdict=allow phase=intent layer=none failure=` + label + `"}` + "\n"
+		log.WriteString(strings.Repeat(line, 10))
+	}
+	if err := os.WriteFile(filepath.Join(dirs.root, "proxy.log"), []byte(log.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var integrity integrityReport
+	failOnAuditGaps(&integrity, dirs, false)
+	if integrity.Verdict != verdictFail || len(integrity.Reasons) != maxAuditGapLines || !hasReason(integrity.Reasons, "proxy reported 60 audit gap(s); first:") {
+		t.Fatalf("integrity did not retain the gap count and bounded samples: %+v", integrity)
+	}
+	for _, label := range labels[:maxAuditGapLines] {
+		if !hasReason(integrity.Reasons, "failure="+label) {
+			t.Fatalf("failure class %q missing from printed reasons: %q", label, integrity.Reasons)
+		}
+	}
+	if hasReason(integrity.Reasons, "private-context") || hasReason(integrity.Reasons, "chain_sealed") {
+		t.Fatalf("samples included context or exceeded their bound: %q", integrity.Reasons)
+	}
+}
+
 // A malformed record neither hides gaps found before it nor stops the scan
 // from finding gaps after it; the decode error comes back with them.
 func TestAuditGapLinesKeepsGapsAroundBadRecords(t *testing.T) {
@@ -448,8 +476,8 @@ func TestAuditGapLinesKeepsGapsAroundBadRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	count, lines, err := auditGapLines(path)
-	if err == nil || count != 2 || len(lines) != 2 {
-		t.Fatalf("count=%d lines=%d error=%v, want both gaps and the decode error", count, len(lines), err)
+	if err == nil || count != 2 || len(lines) != 1 {
+		t.Fatalf("count=%d lines=%d error=%v, want both gaps counted, one distinct sample and the decode error", count, len(lines), err)
 	}
 	path = filepath.Join(t.TempDir(), "proxy.log")
 	if err := os.WriteFile(path, []byte(gap+strings.Repeat("x", 70*1024)), 0o600); err != nil {

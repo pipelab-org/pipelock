@@ -23,7 +23,9 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 const (
@@ -270,11 +272,31 @@ func TestReceiptFailureClass(t *testing.T) {
 		{"emitter unavailable", errReceiptEmitterUnavailable, "emitter_unavailable"},
 		{"chain sealed", fmt.Errorf("emit: %w", receipt.ErrChainSealed), "chain_sealed"},
 		{"v2 emit", fmt.Errorf("%w: x", errV2ReceiptEmit), "v2_emit"},
+		{"append lock timeout", fmt.Errorf("acquire: %w", recorder.ErrAppendLockTimeout), "append_lock_timeout"},
+		{"content rejected", fmt.Errorf("scan: %w", &receiptcontent.RejectionError{Kind: refusalSentinel, Reason: refusalSentinel}), "content_rejected"},
+		{"content changed", fmt.Errorf("bind: %w", recorder.ErrContentChanged), "content_changed"},
+		{"scan incomplete", fmt.Errorf("scan: %w", scanner.ErrTextDLPIncomplete), "scan_incomplete"},
+		{"content joined with durability", errors.Join(receiptcontent.ErrRejected, durable), "durability"},
+		{"lock timeout joined with post-advance", errors.Join(recorder.ErrAppendLockTimeout, postAdvance), "post_advance"},
+		{"untyped timeout text", errors.New(recorder.ErrAppendLockTimeout.Error()), receiptLabelOther},
 		{"unknown", errors.New(refusalSentinel), receiptLabelOther},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := receiptFailureClass(tc.err); got != tc.want {
 				t.Fatalf("receiptFailureClass = %q, want %q", got, tc.want)
+			}
+			// Both producers must report the class without copying any part of
+			// the wrapped error or request into the diagnostic.
+			opts := receipt.EmitOpts{Verdict: config.ActionAllow, DecisionPhase: receipt.DecisionPhaseIntent, Target: refusalSentinel, Agent: refusalSentinel}
+			wrapped := tc.err
+			if wrapped != nil {
+				wrapped = fmt.Errorf("%s: %w", refusalSentinel, wrapped)
+			}
+			for _, diagnostic := range []error{receiptEmissionError(opts, wrapped), receiptChannelBrokenError(opts, wrapped)} {
+				message := diagnostic.Error()
+				if strings.Contains(message, refusalSentinel) || !strings.HasSuffix(message, "failure="+tc.want) {
+					t.Fatalf("unsafe or misclassified diagnostic: %q", message)
+				}
 			}
 		})
 	}
