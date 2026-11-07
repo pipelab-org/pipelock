@@ -10,9 +10,17 @@ on:
     types: [checks_requested]
     branches: [main]
 
+# A new run cancels an in-progress run on the same ref, main included. Each
+# main push carries the full race suite (about an hour), so main runs queued
+# behind one another; GitHub already cancelled superseded runs that were still
+# pending, and the newest main commit runs the complete suite over all earlier
+# changes. A release candidate whose main run was superseded needs that run
+# rerun before its CI proof. Rerunning an older commit can cancel a newer run
+# on the same ref, so exact-candidate proof needs a quiet main branch.
+# ci-timing-trend.yaml skips cancelled runs.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -479,13 +487,20 @@ jobs:
           # and never used; the save step prunes it.
           touch "$RUNNER_TEMP/go-cache-start"
 
+      # v2 entries hold test results recorded with stable input timestamps
+      # (scripts/ci_stable_mtimes.py); v1 results were recorded against
+      # checkout times and can never match, so a v2 key makes the first main
+      # push save usable results instead of waiting for the next UTC day.
+      # The v1 fallback still supplies compiled packages until then.
       - name: Restore Go build and test-result cache
         id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
           restore-keys: |
+            go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
+            go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
             go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-
             go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-
 
@@ -494,6 +509,9 @@ jobs:
 
       - name: Download dependencies
         run: bash scripts/ci-retry.sh go mod download
+
+      - name: Stabilize tracked input timestamps
+        run: python3 scripts/ci_stable_mtimes.py
 
       - name: Run tests (no race)
         env:
@@ -592,9 +610,11 @@ jobs:
       # Go marks a cache entry used by touching it, so files still older than
       # the start marker were restored and never needed. Dropping them keeps
       # each day's entry to what that day's tree uses instead of every day's
-      # leftovers. Go touches an entry only when it is over an hour old, so an
-      # entry saved less than an hour earlier can be pruned while in use; that
-      # costs a rebuild later, never a wrong result.
+      # leftovers. Go refreshes a used entry's mtime only when it is at least an
+      # hour old (mtimeInterval in cmd/go/internal/cache), so an entry written
+      # less than an hour before this run can be in use without being touched.
+      # The cutoff therefore sits an hour before the start marker; anything
+      # newer is kept.
       - name: Prune unused Go cache entries
         if: ${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true' }}
         env:
@@ -602,7 +622,8 @@ jobs:
         run: |
           set -euo pipefail
           before="$(du -sh "$GO_CACHE_DIR" | cut -f1)"
-          find "$GO_CACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-start" -delete
+          touch -r "$RUNNER_TEMP/go-cache-start" -d '-1 hour' "$RUNNER_TEMP/go-cache-cutoff"
+          find "$GO_CACHE_DIR" -type f ! -newer "$RUNNER_TEMP/go-cache-cutoff" -delete
           echo "Go cache: ${before} before pruning, $(du -sh "$GO_CACHE_DIR" | cut -f1) after"
 
       - name: Save Go build and test-result cache
@@ -610,7 +631,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ steps.go-cache-key.outputs.dir }}
-          key: go-test-v1-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
+          key: go-test-v2-${{ matrix.variant }}-${{ matrix.shard }}-${{ steps.go-cache-key.outputs.go }}-${{ hashFiles('go.sum') }}-${{ steps.go-cache-key.outputs.day }}
 
   test-oss-go127:
     needs: [security-scan, changed-files]

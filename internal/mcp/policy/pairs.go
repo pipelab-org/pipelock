@@ -1228,7 +1228,11 @@ func leadingWordsBounded(pat *regexp.Regexp) (words []string, over bool) {
 		r := cached.(leadWordsResult)
 		return r.words, r.over
 	}
-	if re, err := syntax.Parse(pat.String(), syntax.Perl); err == nil {
+	// The shipped shell start consumes a delimiter; command discovery wants
+	// the word after it, just as with the older zero-width word boundary.
+	// Change only this known grammar in the discovery view, never matching.
+	leadPattern := strings.ReplaceAll(pat.String(), shellCommandStart, `\b`)
+	if re, err := syntax.Parse(leadPattern, syntax.Perl); err == nil {
 		seq := []*syntax.Regexp{re.Simplify()}
 		steps := maxLeadWordSteps
 		words = leadWords(seq, "", &steps)

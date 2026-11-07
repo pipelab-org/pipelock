@@ -23,3 +23,11 @@ mcp_tool_policy:
 Built-in credential destination rules cover recognized file writes, edits, moves, copies and patches, including NTFS stream destinations. They inspect target fields and patch headers, preserving each preset's configured credential action. Ordinary `.env` writes and document content that mentions a credential path remain allowed by these rules. Custom tool names, custom credential locations and a remote server's filesystem aliases need operator-specific rules or filesystem containment.
 
 See the [MCP development listener guide](mcp-inspector-front.md) for a reverse proxy example and the [false-positive tuning guide](false-positive-tuning.md) for DLP warn-mode patterns.
+
+## Shell command text
+
+The shipped destructive-Git and reverse-shell patterns require a command-word start, so names such as `stack::push` and `async` do not match `push` or `nc`. Path-qualified commands remain covered.
+
+On the shell execution hook path, these two rules can exclude fully quoted literal arguments to read-only printing and search commands when the entire script uses the supported read-only command set. Pipelines, redirections, expansions, functions and unknown commands retain ordinary whole-script matching. Other policy rules and custom patterns continue to inspect the original text.
+
+The destructive-Git rule also recognizes literal `git clean -n` and `git clean --dry-run` previews. Every `git clean` occurrence must be a preview, with literal operands and no visible command-resolution override. A literal directory change alone is allowed; dynamic directory targets, modified `PATH`, shell setup files, aliases and Git functions retain conservative matching. These checks inspect submitted command text; they do not establish which executable an inherited environment will run. Generic MCP tool arguments keep their existing text-matching behavior.

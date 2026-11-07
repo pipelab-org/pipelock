@@ -1,6 +1,6 @@
 name: CI timing trend
 
-# Read-only reporting after every main-push CI completion, including failures.
+# Read-only reporting after uncancelled main-push CI completions, including failures.
 # Join the weekly ci-shard-drift.yaml check without changing its shard budget.
 # This token cannot push or open PRs; regressions produce warnings, never gates.
 on:
@@ -16,9 +16,12 @@ permissions:
 
 jobs:
   timing:
+    # A superseded main run is cancelled whole (ci.yaml's concurrency) and has
+    # no complete timing to report.
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.event == 'push'
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion != 'cancelled')
     runs-on: ubuntu-latest
     # Source: the existing read-only ci-shard-drift.yaml job's fetch budget.
     timeout-minutes: 15
@@ -46,11 +49,18 @@ jobs:
           run_id="$TRIGGER_RUN_ID"
           attempt="$TRIGGER_RUN_ATTEMPT"
           if [ -z "$run_id" ]; then
-            latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=1" --jq '.workflow_runs[0] | "\(.id) \(.run_attempt)"')"
+            # Cancellation bursts can fill the first page. The filtered REST
+            # search returns at most 1,000 runs, with at most 100 per page.
+            # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+            # --jq runs on each page (gh rejects --slurp with --jq), printing
+            # every usable run newest first; keep the first line in the shell,
+            # since piping to head would cut gh off and fail under pipefail.
+            usable="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=100" --jq '.workflow_runs[] | select(.conclusion != "cancelled") | "\(.id) \(.run_attempt)"')"
+            latest="${usable%%$'\n'*}"
             read -r run_id attempt <<< "$latest"
           fi
           if [[ ! "$run_id" =~ ^[0-9]+$ || ! "$attempt" =~ ^[0-9]+$ ]]; then
-            echo '::error title=CI timing fetch::No completed main-push CI run found'
+            echo '::error title=CI timing fetch::No uncancelled completed main-push CI run found in the API search results'
             exit 1
           fi
           # Pin the attempt that completed: during a rerun the plain run record

@@ -1,7 +1,7 @@
 codecov:
   require_ci_to_pass: true
   notify:
-    # CI uploads 25 coverage reports on a successful run: every no-race
+    # CI uploads 27 coverage reports on a successful run: every no-race
     # Go 1.26 shard (scripts/ci_test_packages.py --list-unit-shards) under
     # both build variants, plus the merged sandbox subprocess profile.
     # Both build variants are needed because enterprise profiles exclude
