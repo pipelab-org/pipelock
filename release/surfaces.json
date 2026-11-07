@@ -1726,6 +1726,14 @@
       "expected": "170",
       "count": 1,
       "reason": "Published configuration-score budget. The scoring contract is internal/cli/audit/audit_score.go and audit_score_v2.go; changes to that contract require a matching documentation and inventory update."
+    },
+    {
+      "id": "docs-claude-code-credential-producer",
+      "path": "docs/security/claude-code-credentials.md",
+      "pattern": "(?P<value>2\\.1\\.310)",
+      "expected": "2.1.310",
+      "count": 3,
+      "reason": "Fixed Anthropic client artifact used as the endpoint source, verified by its own version output and SHA-256 in this document; not the current Pipelock release."
     }
   ],
   "external": [

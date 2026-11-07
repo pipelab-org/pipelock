@@ -68,7 +68,33 @@ func audienceAPIEndpointAllowed(candidate credentialAudienceCandidate, host, tar
 	case "Anthropic API Key":
 		// https://platform.claude.com/docs/en/api/overview (x-api-key, /v1).
 		// https://docs.claude.com/en/api/openai-sdk (OpenAI SDK Bearer, /v1).
-		return under("/v1")
+		// Claude Code 2.1.310 publishes additional first-party carriers.
+		// Exact paths and producer offsets: docs/security/claude-code-credentials.md.
+		if host == "platform.claude.com" {
+			return surface == credentialAudienceAnthropicOAuthSurface &&
+				(path == "/v1/oauth/token" || path == "/v1/oauth/token/revoke")
+		}
+		if host == "mcp-proxy.anthropic.com" {
+			id, found := strings.CutPrefix(path, "/v1/mcp/")
+			return surface == CredentialAudienceAuthorizationHeaderSurface &&
+				found && id != "" && !strings.Contains(id, "/")
+		}
+		if host != "api.anthropic.com" {
+			return false
+		}
+		switch path {
+		case "/api/oauth/profile", "/api/oauth/validate",
+			"/api/oauth/claude_cli/roles", "/api/oauth/claude_cli/create_api_key":
+			return surface == CredentialAudienceAuthorizationHeaderSurface
+		case "/api/claude_cli_profile":
+			return surface == credentialAudienceXKeySurface
+		case "/api/claude_code/settings", "/api/claude_code/policy_limits",
+			"/api/claude_code/metrics", "/api/claude_code/organizations/metrics_enabled",
+			"/api/event_logging/v2/batch":
+			return surface == CredentialAudienceAuthorizationHeaderSurface || surface == credentialAudienceXKeySurface
+		default:
+			return surface != credentialAudienceAnthropicOAuthSurface && under("/v1")
+		}
 	case "OpenAI API Key", "OpenAI Service Key":
 		// https://developers.openai.com/api/reference/overview (Bearer, /v1).
 		return under("/v1")

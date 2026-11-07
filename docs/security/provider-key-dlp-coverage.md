@@ -17,7 +17,7 @@ A separate git-over-HTTPS rule lets `GitHub Token`, `GitHub Fine-Grained PAT`, a
 
 | Rule | Shape | Compiled API endpoint and carrier | Source |
 |------|-------|--------------------------|--------|
-| Anthropic API Key | `sk-ant-` + 20+ token chars | `api.anthropic.com/v1` (`X-Api-Key` or `Authorization: Bearer`) | [Anthropic API overview](https://platform.claude.com/docs/en/api/overview); [OpenAI SDK compatibility](https://docs.claude.com/en/api/openai-sdk) |
+| Anthropic API Key | `sk-ant-` + 20+ token chars | `api.anthropic.com/v1` (`X-Api-Key` or `Authorization: Bearer`), plus the exact [Claude Code endpoints and carriers](claude-code-credentials.md) | [Anthropic API overview](https://platform.claude.com/docs/en/api/overview); [OpenAI SDK compatibility](https://docs.claude.com/en/api/openai-sdk) |
 | OpenAI API Key | `sk-proj-` + 20+ token chars | `api.openai.com/v1` (`Authorization: Bearer`) | [OpenAI API overview](https://developers.openai.com/api/reference/overview) |
 | OpenAI Service Key | `sk-svcacct-` + 20+ token chars | `api.openai.com/v1` (`Authorization: Bearer`) | [OpenAI API overview](https://developers.openai.com/api/reference/overview) |
 | Fireworks API Key | `fw_` + 22 alphanumeric chars | `api.fireworks.ai/inference/v1` or `/v1` (`Authorization: Bearer`) | [Fireworks authentication](https://docs.fireworks.ai/api-reference/authentication); unverified binding carried from prior defaults |

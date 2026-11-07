@@ -74,8 +74,8 @@ func TestMarkBuiltInCredentialAudienceHosts_OnlyExactBuiltins(t *testing.T) {
 
 	patterns := []DLPPattern{builtIn}
 	markBuiltInCredentialAudienceHosts(patterns)
-	if got := patterns[0].CredentialAudienceHosts; len(got) != 1 || got[0] != "api.anthropic.com" {
-		t.Fatalf("exact built-in audience hosts = %#v, want [api.anthropic.com]", got)
+	if got := patterns[0].CredentialAudienceHosts; len(got) != 3 || got[0] != "api.anthropic.com" || got[1] != "platform.claude.com" || got[2] != "mcp-proxy.anthropic.com" {
+		t.Fatalf("exact built-in audience hosts = %#v, want the three compiled Anthropic hosts", got)
 	}
 
 	patterns[0].CredentialAudienceHosts = nil
