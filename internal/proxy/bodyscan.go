@@ -562,6 +562,30 @@ func blockingBodyFinding(result BodyScanResult, hostname string, cfg *config.Con
 	return bodyBlockCauseUnknown
 }
 
+// oauthRemainderHasCredential runs the ordinary body DLP views over the body
+// with the one designated OAuth credential blanked. Any other Anthropic key
+// those views can see, including one split across a value and the next key,
+// denies the OAuth carrier so the whole body keeps its normal DLP result.
+func oauthRemainderHasCredential(ctx context.Context, req BodyScanRequest, buf []byte, credential string) bool {
+	quoted, err := json.Marshal(credential)
+	if err != nil || bytes.Count(buf, quoted) != 1 {
+		return true
+	}
+	blank := bytes.Replace(buf, quoted, []byte(`""`), 1)
+	extracted := extractBodyTextForDLP(blank, req)
+	var matches []scanner.TextDLPMatch
+	for _, view := range bodyDLPExtractionViews(blank, extracted, nil) {
+		matches = append(matches, scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, view, req.suppressTarget(), nil, nil, false, nil, "body", nil)...)
+	}
+	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), nil, nil, false, nil, "body", nil)...)
+	for _, match := range matches {
+		if match.PatternName == "Anthropic API Key" {
+			return true
+		}
+	}
+	return ctx.Err() != nil
+}
+
 // bodyBlockCauseLabel returns the scanner label for a blocking finding, or
 // current when no single finding blocks.
 func bodyBlockCauseLabel(cause bodyBlockCause, current string) string {
@@ -907,6 +931,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 	oauthCredential := ""
 	if req.RedactMatcher != nil && req.audienceSurface() == "body" {
 		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthCredential) {
+			audienceSurface, oauthCredential = "body", ""
+		}
 	}
 
 	// RFC 8484 DNS-over-HTTPS POST. A strict DNS message is read as its
@@ -994,6 +1021,9 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	if req.audienceSurface() == "body" {
 		audienceSurface, oauthCredential = req.Scanner.OAuthCredentialAudience(ctx, buf, req.suppressTarget(), req.Method, req.ContentType)
+		if oauthCredential != "" && oauthRemainderHasCredential(ctx, req, buf, oauthCredential) {
+			audienceSurface, oauthCredential = "body", ""
+		}
 	}
 
 	// Extract text strings from body based on content type. The DLP extractor

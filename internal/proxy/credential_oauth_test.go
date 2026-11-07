@@ -232,6 +232,35 @@ func TestAnthropicOAuthBodyEntropyExcludesCredential(t *testing.T) {
 	}
 }
 
+// A second Anthropic key split across a value and the following key is
+// visible to body DLP, so it must also deny the OAuth carrier.
+func TestAnthropicOAuthRemainderSplitCredential(t *testing.T) {
+	cfg := testScannerConfig()
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	key := "sk-" + "ant-ort01-" + strings.Repeat("a", 32)
+	head, tail := "sk-"+"ant-", "api03-"+strings.Repeat("Q", 40)
+	for _, tc := range []struct {
+		name      string
+		body      string
+		wantClean bool
+	}{
+		{name: "clean refresh", body: fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":%q}`, key), wantClean: true},
+		{name: "split second key", body: fmt.Sprintf(`{"grant_type":"refresh_token","refresh_token":%q,"z":%q,%q:1}`, key, head, tail)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, result := scanRequestBody(t.Context(), BodyScanRequest{
+				Body: strings.NewReader(tc.body), Method: http.MethodPost, ContentType: "application/json",
+				MaxBytes: cfg.RequestBodyScanning.MaxBodyBytes, Scanner: sc,
+				Target: "https://platform.claude.com/v1/oauth/token", Action: config.ActionBlock,
+			})
+			if result.Clean != tc.wantClean {
+				t.Fatalf("clean=%v want %v; dlp=%v", result.Clean, tc.wantClean, dlpMatchNames(result.DLPMatches))
+			}
+		})
+	}
+}
+
 func TestAnthropicOAuthBodyTransports(t *testing.T) {
 	const host = "platform.claude.com"
 	const endpoint = "https://" + host + "/v1/oauth/token"

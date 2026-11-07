@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"mime"
@@ -70,9 +71,16 @@ func (s *Scanner) OAuthCredentialAudience(ctx context.Context, body []byte, targ
 		if _, allowed := s.credentialAudienceAllows(pattern, target, credentialAudienceAnthropicOAuthSurface); !allowed {
 			return fallback, ""
 		}
-		delete(envelope, field)
-		remaining, err := json.Marshal(envelope)
-		if err != nil || gatewayRemainderHasCredential(ctx, remaining, pattern.name, s.ScanTextForDLPQuiet) {
+		// Blank the credential in the original bytes, as the Discord Gateway
+		// carrier does, so the remainder keeps source order. Re-marshaling the
+		// map would sort keys and hide a copy split across a value and the
+		// next key.
+		raw := envelope[field]
+		if bytes.Count(body, raw) != 1 {
+			return fallback, ""
+		}
+		remaining := bytes.Replace(body, raw, []byte(`""`), 1)
+		if gatewayRemainderHasCredential(ctx, remaining, pattern.name, s.ScanTextForDLPQuiet) {
 			return fallback, ""
 		}
 		return credentialAudienceAnthropicOAuthSurface, credential
