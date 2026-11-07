@@ -266,13 +266,15 @@ type (
 		produced    map[assembledIdentity]struct{}
 	}
 	assembledScan struct {
-		p       *reassemblyPlan
-		text    string
-		result  reassemblyResult
-		budget  *assembledBudget
-		charges *assembledCharges
-		lanes   [5][8]*assembledLane
-		checked [5][]uint8
+		p         *reassemblyPlan
+		text      string
+		result    reassemblyResult
+		budget    *assembledBudget
+		charges   *assembledCharges
+		lanes     [5][8]*assembledLane
+		checked   [5][]uint8
+		encoding  string
+		viewLabel string
 	}
 )
 
@@ -378,6 +380,14 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		matchPattern = &copyPattern
 	}
 	matchPattern.firstAcceptedSpan(lane.view, func(begin, finish int) bool {
+		if pattern.withoutLeftBoundary != nil {
+			loc := pattern.withoutLeftBoundary.FindStringIndex(lane.view[begin:finish])
+			if loc == nil {
+				return false
+			}
+			finish = begin + loc[1]
+			begin += loc[0]
+		}
 		if pattern.keywords != nil && s.budget.produced != nil {
 			key := assembledIdentity{pattern: id, value: sha256.Sum256([]byte(lane.view[begin:finish]))}
 			if _, exists := s.budget.produced[key]; exists {
@@ -387,6 +397,8 @@ func (s *assembledScan) searchLane(codec, phase, id int) {
 		if !s.keywordMatches(pattern, lane, codec, phase, begin, finish) {
 			return false
 		}
+		s.encoding = reassemblyCodecs[codec].name
+		s.viewLabel = fmt.Sprintf("reassembly:%s:phase_%d", s.encoding, phase)
 		return s.produce(id, lane.view, begin, finish)
 	})
 }
@@ -404,7 +416,7 @@ func (s *assembledScan) produce(id int, view string, begin, finish int) bool {
 		s.budget.produced[key] = struct{}{}
 	}
 	pattern := s.p.patterns[id]
-	s.result.findings = append(s.result.findings, TextDLPMatch{keywordGated: pattern.keywords != nil, PatternName: pattern.name, Severity: pattern.severity, Bundle: pattern.bundle, BundleVersion: pattern.bundleVersion, Warn: pattern.warn, genericCard: pattern.genericCard, cardPrefixRetry: pattern.cardPrefixRetry, valueIdentity: identity, hasValueIdentity: true, credentialAudienceHosts: pattern.credentialAudienceHosts, credentialAudienceAuthorizationOnly: pattern.credentialAudienceAuthorizationOnly, credentialAudienceCarrierMask: pattern.credentialAudienceCarrierMask, credentialAudienceGitHosts: pattern.credentialAudienceGitHosts, credentialAudienceRegistryHosts: pattern.credentialAudienceRegistryHosts})
+	s.result.findings = append(s.result.findings, TextDLPMatch{Encoded: s.encoding, span: newMatchSpan(begin, finish, s.viewLabel, pattern.name, pattern.bundle, pattern.bundleVersion), keywordGated: pattern.keywords != nil, PatternName: pattern.name, Severity: pattern.severity, Bundle: pattern.bundle, BundleVersion: pattern.bundleVersion, Warn: pattern.warn, genericCard: pattern.genericCard, cardPrefixRetry: pattern.cardPrefixRetry, valueIdentity: identity, hasValueIdentity: true, credentialAudienceHosts: pattern.credentialAudienceHosts, credentialAudienceAuthorizationOnly: pattern.credentialAudienceAuthorizationOnly, credentialAudienceCarrierMask: pattern.credentialAudienceCarrierMask, credentialAudienceGitHosts: pattern.credentialAudienceGitHosts, credentialAudienceRegistryHosts: pattern.credentialAudienceRegistryHosts})
 	return true
 }
 

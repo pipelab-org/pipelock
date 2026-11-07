@@ -101,7 +101,11 @@ func assembledNestedHexAdmitted(p *reassemblyPlan, text string, budget *assemble
 				break
 			}
 			budget.used += len(decoded)
-			plain := assembledScan{p: p, text: decoded, budget: budget}
+			encoding := encodingHTML
+			if escape == 2 {
+				encoding = encodingJSONUnicode
+			}
+			plain := assembledScan{p: p, text: decoded, budget: budget, encoding: encoding, viewLabel: spanViewLabel("reassembly", encodingHex, encoding)}
 			for id, pattern := range p.patterns {
 				pattern = p.assembled.terminalPattern(id, pattern)
 				if pattern == nil {
