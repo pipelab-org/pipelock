@@ -199,6 +199,12 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 	// The number of views depends on the spelling algorithm, not operand count;
 	// each view retains the existing bounded pair matcher and incomplete state.
 	if pathReadings {
+		pathInputKnown := inputKnown
+		if pathInputKnown != "" {
+			// The raw-input proof still owns the exemption. Only its utility's
+			// pathname changes in this reading; never prove rewritten input.
+			pathInputKnown = path.Clean(pathInputKnown)
+		}
 		segReadings := make([][][]string, len(segs))
 		for i, seg := range segs {
 			segReadings[i] = pathOperandReadings([]string{seg})
@@ -206,7 +212,7 @@ func buildArgViews(args []string, gitTool bool, proof *gitProof, pathReadings bo
 		for _, reading := range pathOperandReadings(args) {
 			for _, n := range norms {
 				tokens, joined := n.tokens(reading)
-				v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, wordReading: true, interpreted: true}
+				v := argView{tokens: tokens, joined: joined, unsplit: unsplit, plain: plain, wordReading: true, interpreted: true, inputKnown: pathInputKnown, checkXargs: true}
 				for i, seg := range segs {
 					for _, part := range segReadings[i] {
 						t, _ := n.tokens(part)
@@ -260,9 +266,10 @@ func (s spellingSlot) pickSpelling(j int) string {
 // argument that holds shell text, where one command string carries many names
 // and a name may hold a blank (see shellPathWords). withPathSpellings supplies a
 // fixed number of alternatives per value; transposition avoids one additional
-// reading for every submitted operand.
+// reading for every submitted operand. A further reading blanks separators
+// inside shell words, as cleanCommandTokens does, including unchanged paths.
 func pathOperandReadings(args []string) [][]string {
-	var whole, words []spellingSlot
+	var whole, words, literalSeparators []spellingSlot
 	for i, value := range args {
 		if hasParentSegment(value) {
 			if spellings := withPathSpellings([]string{value}, true)[1:]; len(spellings) > 0 {
@@ -278,15 +285,34 @@ func pathOperandReadings(args []string) [][]string {
 			if eq := strings.IndexByte(operand, '='); eq >= 0 && !strings.ContainsAny(operand[:eq], `/\`) {
 				operand, prefix = operand[eq+1:], operand[:eq+1]
 			}
-			if !hasParentSegment(operand) {
+			literalSeparator := strings.ContainsAny(operand, ";|&")
+			if !hasParentSegment(operand) && !literalSeparator {
 				continue
 			}
-			if spellings := withPathSpellings([]string{operand}, true)[1:]; len(spellings) > 0 {
-				words = append(words, spellingSlot{arg: i, start: w.start, end: w.end, prefix: prefix, spellings: spellings})
+			spellings := withPathSpellings([]string{operand}, true)[1:]
+			if len(spellings) == 0 && literalSeparator {
+				spellings = []string{operand}
+			}
+			if len(spellings) > 0 {
+				slot := spellingSlot{arg: i, start: w.start, end: w.end, prefix: prefix, spellings: spellings}
+				words = append(words, slot)
+				// shellPathWords already removed unquoted operators. Any
+				// separator inside this word was quoted or escaped, so apply
+				// the same matching view as cleanCommandTokens even when other
+				// syntax prevents splitting the surrounding command.
+				slot.spellings = make([]string, len(spellings))
+				for j, spelling := range spellings {
+					slot.spellings[j] = blankCommandSeparators(spelling)
+				}
+				literalSeparators = append(literalSeparators, slot)
 			}
 		}
 	}
-	return append(transposeSpellings(args, whole), transposeSpellings(args, words)...)
+	readings := append(transposeSpellings(args, whole), transposeSpellings(args, words)...)
+	if !slices.EqualFunc(words, literalSeparators, func(a, b spellingSlot) bool { return slices.Equal(a.spellings, b.spellings) }) {
+		readings = append(readings, transposeSpellings(args, literalSeparators)...)
+	}
+	return readings
 }
 
 // transposeSpellings returns one reading of args per alternative, ordered by
@@ -1390,17 +1416,23 @@ func cleanCommandTokens(tokens []string, blank bool) (cleaned []string, changed 
 			continue
 		}
 		if blank && strings.ContainsAny(t, ";|&") {
-			t = strings.Map(func(r rune) rune {
-				if r == ';' || r == '|' || r == '&' {
-					return '_'
-				}
-				return r
-			}, t)
+			t = blankCommandSeparators(t)
 			changed = true
 		}
 		cleaned = append(cleaned, t)
 	}
 	return cleaned, changed
+}
+
+// blankCommandSeparators gives literal filename separators the existing
+// ordered-pattern spelling. Callers must establish that they aren't operators.
+func blankCommandSeparators(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == ';' || r == '|' || r == '&' {
+			return '_'
+		}
+		return r
+	}, s)
 }
 
 // hereStringData returns tokens with each here-string (<<<word) replaced by

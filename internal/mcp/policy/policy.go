@@ -267,7 +267,9 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 
 // File target/destination names follow the shipped rule contracts; source and
 // paths are the move/copy and multi-file reader carriers exercised by policy.
-var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths)$`)
+// location, relative_path and output follow TestPolicy_FileArgumentPathScope's
+// alternate pathname contract, including filenames containing whitespace.
+var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths|location|relative_path|output)$`)
 
 // pathnameValues returns the string values under pathname keys. A scoped rule
 // reads only the top-level keys its arg_key selects, as ExtractStringsForKeys

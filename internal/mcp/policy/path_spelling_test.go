@@ -321,6 +321,11 @@ func TestPolicy_PathOperandCommandContext(t *testing.T) {
 		{"safe_quoted_parents", []string{"tee '/tmp/x y/../../../var/tmp/../notes/job'"}, false},
 		{"separate_commands", []string{"echo tee; printf '/etc/cache space/../cron.d/job'"}, false},
 		{"separate_commands_parents", []string{"echo tee; printf /tmp/../../var/tmp/../spool/cron/job"}, false},
+		{"quoted_separator_unsplit", []string{`tee '/home/a;b/.config/systemd/tmp/../user/s' $UNSET`}, true},
+		{"quoted_pipe_unsplit", []string{`tee '/home/a|b/.config/systemd/tmp/../user/s' $UNSET`}, true},
+		{"escaped_separator_unsplit", []string{`tee /home/a\&b/.config/systemd/tmp/../user/s $UNSET`}, true},
+		{"quoted_separator_canonical", []string{`tee '/home/a;b/.config/systemd/user/s' $UNSET`}, true},
+		{"quoted_separator_safe", []string{`tee '/home/a;b/.config/systemd/tmp/../notes/s' $UNSET`}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			v := pc.CheckToolCall("bash", tt.args)
@@ -527,6 +532,13 @@ func TestPolicy_PathViewCount(t *testing.T) {
 			return []string{strings.Join(words, " ")}
 		}},
 		{"piped_commands", joinWords(" | ", true)},
+		{"quoted_separators", func(n int) []string {
+			words := []string{"tee"}
+			for i := range n {
+				words = append(words, "'/project/a;b/cache "+fmt.Sprint(i)+"/../notes'")
+			}
+			return []string{strings.Join(words, " ") + " $UNSET"}
+		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			added := func(n int) int {
@@ -543,8 +555,8 @@ func TestPolicy_PathViewCount(t *testing.T) {
 			// Each family transposes at most the spellings of one operand into one
 			// reading per normalization.
 			spellings := len(withPathSpellings([]string{operand(0)}, true)) - 1
-			if bound := 2 * spellings * len(argViewNorms); long > bound {
-				t.Fatalf("added views = %d, exceeds %d (2 families x %d spellings x %d normalizations)", long, bound, spellings, len(argViewNorms))
+			if bound := 3 * spellings * len(argViewNorms); long > bound {
+				t.Fatalf("added views = %d, exceeds %d (3 families x %d spellings x %d normalizations)", long, bound, spellings, len(argViewNorms))
 			}
 		})
 	}
@@ -594,6 +606,8 @@ func TestPathOperandReadings(t *testing.T) {
 		{"redirect_target", []string{"echo x >/a/b/../../etc/x/../cron.d/y"}, []string{"echo x >/etc/cron.d/y"}},
 		{"option_value", []string{"dd of=/a/b/../../etc/x/../cron.d/y"}, []string{"dd of=/etc/cron.d/y"}},
 		{"two_operands_one_reading", []string{"cp /a/../b /c/../d"}, []string{"cp /b /d"}},
+		{"quoted_separator", []string{`tee '/home/a;b/cache/../file' $UNSET`}, []string{`tee /home/a;b/file $UNSET`, `tee /home/a_b/file $UNSET`}},
+		{"real_separator", []string{`tee /tmp/cache/../notes; cat /home/a/cache/../file $UNSET`}, []string{`tee /tmp/notes; cat /home/a/file $UNSET`}},
 		{"no_parent_segment", []string{"tee /tmp/x /var/tmp/y"}, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -606,10 +620,49 @@ func TestPathOperandReadings(t *testing.T) {
 					t.Fatalf("readings = %q, want one to be %q", got, want)
 				}
 			}
+			if tt.name == "real_separator" {
+				for _, reading := range got {
+					if !strings.Contains(reading, "; cat ") {
+						t.Fatalf("unquoted command separator changed: %q", reading)
+					}
+				}
+			}
 			if tt.want == nil && len(got) != 0 {
 				t.Fatalf("readings = %q, want none", got)
 			}
 		})
+	}
+}
+
+func TestPolicy_PathReadingXargsInput(t *testing.T) {
+	const rule = "utility options"
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: action,
+			Rules: []config.ToolPolicyRule{{Name: rule, ToolPattern: "bash", ArgPattern: `/usr/bin/chmod\s+-R`}},
+		})
+		for _, tt := range []struct {
+			command string
+			unknown bool
+		}{
+			{`cat /tmp/list | xargs /usr/share/../bin/chmod`, true},
+			{`cat /tmp/list | xargs /usr/share/../bin/chmod $UNSET`, true},
+			{`echo 755 /tmp/notes | xargs /usr/share/../bin/chmod`, false},
+			{`echo 755 /tmp/notes | xargs /usr/bin/chmod`, false},
+			{`find /tmp -print0 | xargs -0 /usr/share/../bin/chmod`, false},
+			{`cat /tmp/list | xargs --null /usr/share/../bin/chmod`, true},
+		} {
+			t.Run(action+"/"+tt.command, func(t *testing.T) {
+				v := pc.CheckToolCall("bash", []string{tt.command})
+				if tt.unknown {
+					if !slices.Contains(v.IncompleteRules, rule) || v.Action != action {
+						t.Fatalf("unknown input: %+v, want incomplete action %s", v, action)
+					}
+				} else if v.Matched {
+					t.Fatalf("literal input: %+v, want no match", v)
+				}
+			})
+		}
 	}
 }
 
@@ -627,6 +680,10 @@ func TestPolicy_FileArgumentPathScope(t *testing.T) {
 		{"write_file", map[string]any{"relative_path": "/etc/x/../cron.d/job", "content": "notes"}},
 		{"write_file", map[string]any{"output": "file:etc/cron.d/job?notes=1", "content": "notes"}},
 		{"write_file", map[string]any{"operation": map[string]any{"location": "/etc/x/../cron.d/job"}}},
+		{"write_file", map[string]any{"location": "/etc/cache space/../cron.d/job", "content": "notes"}},
+		{"write_file", map[string]any{"relative_path": "/etc/cache space/../cron.d/job", "content": "notes"}},
+		{"write_file", map[string]any{"output": "/etc/cache space/../cron.d/job", "content": "notes"}},
+		{"write_file", map[string]any{"operation": map[string]any{"location": "/etc/cache space/../cron.d/job"}}},
 	} {
 		raw, err := json.Marshal(tt.args)
 		if err != nil {
