@@ -43,7 +43,7 @@ func TestRealReloadBundleWarningIsDetected(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.cleanup()
-	if err := awaitProxy(ctx, addr, p); err != nil {
+	if err := awaitProxy(ctx, addr, p, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	bundleDir := filepath.Join(dirs.rules, "reload-warning")
