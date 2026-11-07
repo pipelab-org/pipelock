@@ -825,7 +825,9 @@ func interceptAndRequestWithProxy(
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = interceptTunnel(ctx, proxyConn, &InterceptContext{
 			TargetHost: host,
 			TargetPort: port,
@@ -854,6 +856,9 @@ func interceptAndRequestWithProxy(
 	resp, err := http.ReadResponse(bufio.NewReader(tlsConn), req)
 	if err != nil {
 		t.Fatalf("read response: %v", err)
+	}
+	if cfg.FlightRecorder.RequireReceipts {
+		waitForInterceptReceipts(t, resp, clientConn, done)
 	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp
@@ -3815,7 +3820,9 @@ func interceptWithRTResult(
 		ic.RequestID = "test-rt"
 	}
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = interceptTunnel(ctx, proxyConn, ic)
 	}()
 
@@ -3832,8 +3839,47 @@ func interceptWithRTResult(
 	if err != nil {
 		return nil, err
 	}
+	if cfg.FlightRecorder.RequireReceipts {
+		waitForInterceptReceipts(t, resp, clientConn, done)
+	}
 	t.Cleanup(func() { _ = resp.Body.Close() })
 	return resp, nil
+}
+
+// Receipt-inspection tests wait for storage separately from HTTP delivery.
+// Timing tests use their own TLS client without this completion barrier.
+func waitForInterceptReceipts(t *testing.T, resp *http.Response, conn net.Conn, done <-chan struct{}) {
+	t.Helper()
+	var once sync.Once
+	resp.Body = &interceptReceiptWaitBody{ReadCloser: resp.Body, wait: func() {
+		once.Do(func() {
+			_ = conn.Close()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Error("intercept handler did not finish receipt emission")
+			}
+		})
+	}}
+}
+
+type interceptReceiptWaitBody struct {
+	io.ReadCloser
+	wait func()
+}
+
+func (b *interceptReceiptWaitBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.wait()
+	}
+	return n, err
+}
+
+func (b *interceptReceiptWaitBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.wait()
+	return err
 }
 
 func TestInterceptTunnel_RequireReceiptsDurabilityFailureBlocksBeforeRoundTrip(t *testing.T) {
@@ -3990,6 +4036,9 @@ func TestInterceptTunnel_RequireReceiptsIntentIsDurableBeforeRoundTrip(t *testin
 	default:
 		t.Fatal("RoundTrip did not report pre-egress receipt state")
 	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
 	receipts := rph.findReceipts(t)
 	if len(receipts) != 2 {
 		t.Fatalf("receipt count = %d, want intent/outcome pair", len(receipts))
@@ -4025,6 +4074,9 @@ func TestInterceptTunnel_RequireReceiptsUpstreamErrorEmitsOutcome(t *testing.T) 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
 	}
 	outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
 	if outcome.ActionRecord.Verdict != config.ActionBlock {
@@ -4063,6 +4115,9 @@ func TestInterceptTunnel_SSRFDialBlockEmitsSSRFOutcome(t *testing.T) {
 	}
 	if got := resp.Header.Get(blockreason.HeaderReason); got != string(blockreason.SSRFPrivateIP) {
 		t.Fatalf("%s = %q, want %q", blockreason.HeaderReason, got, blockreason.SSRFPrivateIP)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
 	}
 	outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
 	if outcome.ActionRecord.Verdict != config.ActionBlock {
@@ -4105,6 +4160,9 @@ func TestInterceptTunnel_RequireReceiptsResponseBlockEmitsOutcome(t *testing.T) 
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
 	}
 	outcome := requireSingleInterceptIntentOutcome(t, rph.findReceipts(t))
 	if outcome.ActionRecord.Verdict != config.ActionBlock {

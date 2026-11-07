@@ -2160,6 +2160,14 @@ func newInterceptHandler(
 			RequestID: ic.RequestID,
 			Agent:     ic.Agent,
 		})
+		// Outcomes run on the inner HTTP writer, before any stream abort.
+		// Release buffered bytes before synchronous required receipt storage.
+		emitOutcome := func(opts receipt.EmitOpts, verdict string, status int, transferred int64, reason string) {
+			if ic.Config.FlightRecorder.RequireReceipts {
+				flushResponseBeforeOutcome(w)
+			}
+			interceptEmitOutcomeReceipt(ic, opts, verdict, status, transferred, reason)
+		}
 		requiredIntentEmitted := false
 		if ic.Config != nil && ic.Config.FlightRecorder.RequireReceipts {
 			if interceptEmitReceiptOrBlock(ic, w, actx, allowReceipt) {
@@ -2169,7 +2177,7 @@ func newInterceptHandler(
 		}
 		emitBlockedPostRoundTripOutcome := func(status int, reason string) {
 			if requiredIntentEmitted {
-				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionBlock, status, -1, reason)
+				emitOutcome(allowReceipt, config.ActionBlock, status, -1, reason)
 			}
 		}
 
@@ -2260,7 +2268,7 @@ func newInterceptHandler(
 		flushIssuedRedirect := func() bool {
 			if err := ic.flushIssuedRedirectHeaders(w, resp); err != nil {
 				reason := recordStreamError(r.Context(), ic.Logger, actx, err)
-				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
+				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, 0, reason)
 				_ = httpstream.Abort(r.Context(), err)
 				return true
 			}
@@ -2421,7 +2429,7 @@ func newInterceptHandler(
 				}
 				ic.Logger.LogError(actx, streamErr)
 				ic.Metrics.RecordTLSResponseBlocked(receiptEmissionFailedLayer)
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, receiptEmissionFailedLayer)
+				emitOutcome(sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, receiptEmissionFailedLayer)
 				_ = httpstream.Abort(r.Context(), streamErr)
 				return
 			}
@@ -2429,7 +2437,7 @@ func newInterceptHandler(
 			// when the client also went away.
 			if streamErr != nil && !IsSSEStreamFinding(streamErr) && !IsSSEStreamScanError(streamErr) {
 				reason := sseStreamReason(recordStreamError(r.Context(), ic.Logger, actx, streamErr))
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, reason)
+				emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, reason)
 				_ = httpstream.Abort(r.Context(), streamErr)
 				return
 			}
@@ -2482,13 +2490,13 @@ func newInterceptHandler(
 			// block mode headers are already sent, so the final HTTP status is
 			// still the upstream status and the close reason carries the block.
 			if streamErr == nil || (IsSSEStreamFinding(streamErr) && sseAction == config.ActionWarn) {
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream")
+				emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream")
 			} else if IsSSEStreamScanError(streamErr) {
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, "response_scan_error")
+				emitOutcome(sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, "response_scan_error")
 			} else if errors.Is(streamErr, context.Canceled) || errors.Is(streamErr, context.DeadlineExceeded) {
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream_cancelled")
+				emitOutcome(sseAllowReceipt, config.ActionAllow, resp.StatusCode, -1, "sse_stream_cancelled")
 			} else {
-				interceptEmitOutcomeReceipt(ic, sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, sseLayer)
+				emitOutcome(sseAllowReceipt, config.ActionBlock, resp.StatusCode, -1, sseLayer)
 			}
 			return
 		}
@@ -2537,7 +2545,7 @@ func newInterceptHandler(
 			recordResponseScanExemptOverCapUnscanned(ic.Metrics, ic.Logger, actx, r.URL.Hostname(), TransportConnect, written, maxResp)
 			if copyErr != nil {
 				reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
-				interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, reason)
+				emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, reason)
 				ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 				_ = httpstream.Abort(r.Context(), copyErr)
 				return
@@ -2548,7 +2556,7 @@ func newInterceptHandler(
 			// streamed a body past the scan ceiling unscanned, or that the
 			// stream broke before the body was delivered.
 			exemptCloseReason := streamCloseReason(copyErr, written, maxResp, "complete")
-			interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
+			emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, written, exemptCloseReason)
 			// Account streamed bytes against the per-domain data budget so a
 			// trusted download still decrements it (no scan-size cap: the host
 			// is trusted to carry large files).
@@ -2684,14 +2692,14 @@ func newInterceptHandler(
 					written, copyErr := httpstream.Copy(w, io.MultiReader(bytes.NewReader(respBody), resp.Body))
 					if copyErr != nil {
 						reason := recordStreamError(r.Context(), ic.Logger, actx, copyErr)
-						interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, reason)
+						emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, reason)
 						ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 						_ = httpstream.Abort(r.Context(), copyErr)
 						return
 					}
 					recordDeliveredIssuerCookies(ic, r, resp, copyErr == nil)
 					recordDeliveredIssuerQuery(ic, resp, nil, true)
-					interceptEmitOutcomeReceipt(ic, passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
+					emitOutcome(passthroughOutcome, config.ActionAllow, resp.StatusCode, written, streamCloseReason(copyErr, written, 0, "unscannable_passthrough"))
 					ic.Scanner.RecordRequest(strings.ToLower(ic.TargetHost), int(written))
 					if ic.Proxy != nil {
 						ic.Proxy.captureObs.ObserveResponseVerdict(r.Context(), &capture.ResponseVerdictRecord{
@@ -3203,6 +3211,14 @@ func newInterceptHandler(
 			}
 		}
 		removeHopByHopHeaders(w.Header())
+		// The final scanned representation has a known length. Explicit
+		// framing lets the client finish before outcome storage completes.
+		// Intercept does not truncate buffered bodies to a byte budget.
+		if ic.Config.FlightRecorder.RequireReceipts && r.Method != http.MethodHead && resp.StatusCode >= http.StatusOK &&
+			resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusNotModified {
+			w.Header().Del("Transfer-Encoding")
+			w.Header().Set("Content-Length", strconv.Itoa(len(respBody)))
+		}
 		if flushIssuedRedirect() {
 			return
 		}
@@ -3214,7 +3230,7 @@ func newInterceptHandler(
 		if !delivered {
 			closeReason = receiptReasonIncomplete
 		}
-		interceptEmitOutcomeReceipt(ic, allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), closeReason)
+		emitOutcome(allowReceipt, config.ActionAllow, resp.StatusCode, int64(written), closeReason)
 	})
 }
 

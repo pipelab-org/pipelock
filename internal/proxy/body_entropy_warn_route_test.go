@@ -6,6 +6,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -260,6 +261,9 @@ func TestInterceptEntropyWarnReceiptPreservesProvenanceAndDoesNotFollowRedirect(
 				t.Fatalf("intercept RoundTrip calls = %d, want 1 (redirects are not followed internally)", got)
 			}
 
+			if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
 			var warningReceiptFound bool
 			for _, rcpt := range rph.findReceipts(t) {
 				ar := rcpt.ActionRecord
