@@ -100,6 +100,22 @@ class StableMtimesTest(unittest.TestCase):
         self.stamp(added)
         listed = self.mtimes(added)
         self.assertEqual({path for path in after if after[path] != listed[path]}, {"testdata/listed"})
+        # Same entry count, different name or mode: the stamp follows both,
+        # not just how many entries there are.
+        listed_stamp = (added / "testdata/listed").stat().st_mtime_ns
+        (self.repo / "testdata/listed/added.txt").rename(self.repo / "testdata/listed/renamed.txt")
+        self.commit()
+        renamed = self.clone("renamed")
+        self.stamp(renamed)
+        self.assertNotEqual((renamed / "testdata/listed").stat().st_mtime_ns, listed_stamp)
+        (self.repo / "testdata/listed/renamed.txt").chmod(0o755)
+        self.commit()
+        executable = self.clone("executable")
+        self.stamp(executable)
+        self.assertNotEqual(
+            (executable / "testdata/listed").stat().st_mtime_ns,
+            (renamed / "testdata/listed").stat().st_mtime_ns,
+        )
 
     def content_mtime(self, text: str) -> int:
         digest = hashlib.sha256(text.encode()).hexdigest().encode()
