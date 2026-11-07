@@ -48,6 +48,66 @@ func TestNoNewExecutableFixtureWrites(t *testing.T) {
 	}
 }
 
+// TestScannerMustNewHasNoNonTestCallers keeps scanner.MustNew, which panics
+// on a bad config, out of production code. It reads every Go file in the
+// module, so its cached result depends on the whole tree; it lives here, in a
+// package that is cheap to rerun, rather than in internal/scanner, where it
+// made every unrelated change rerun that package's tests in CI.
+func TestScannerMustNewHasNoNonTestCallers(t *testing.T) {
+	t.Parallel()
+
+	repoRoot := moduleRoot(t)
+	// Read through an os.Root so every read is confined to the repo and a
+	// symlink cannot redirect it outside during the walk.
+	root, rootErr := os.OpenRoot(repoRoot)
+	if rootErr != nil {
+		t.Fatalf("open repo root: %v", rootErr)
+	}
+	defer func() { _ = root.Close() }()
+	var offenders []string
+	err := filepath.WalkDir(repoRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		rel, relErr := filepath.Rel(repoRoot, path)
+		if relErr != nil {
+			return relErr
+		}
+		data, readErr := root.ReadFile(rel)
+		if readErr != nil {
+			return readErr
+		}
+		text := string(data)
+		if strings.Contains(text, "scanner.MustNew(") {
+			offenders = append(offenders, rel)
+			return nil
+		}
+		if strings.HasPrefix(rel, filepath.Join("internal", "scanner")+string(filepath.Separator)) &&
+			rel != filepath.Join("internal", "scanner", "scanner.go") &&
+			strings.Contains(text, "MustNew(") {
+			offenders = append(offenders, rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk repo: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("scanner.MustNew is test-only; non-test callers: %s", strings.Join(offenders, ", "))
+	}
+}
+
 // TestExecWriteScanFindsEachShape checks the scanner on the shapes it must
 // report and on writes it must leave alone.
 func TestExecWriteScanFindsEachShape(t *testing.T) {

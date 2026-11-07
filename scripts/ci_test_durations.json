@@ -4081,7 +4081,6 @@
    "TestMatchSecretEncodingSpan_SkipsEncodingsLongerThanText": 0.1,
    "TestMatchSpanHelpers": 0.0,
    "TestMergeJoinedHeaderMatches_PreservesUnrelatedSecrets": 0.0,
-   "TestMustNewHasNoNonTestCallers": 0.1,
    "TestNativeOAuthAuthorization": 19.7,
    "TestNativeOAuthBlockHintsNameGrant": 0.7,
    "TestNativeOAuthGrantLifecycleAndScope": 4.0,
