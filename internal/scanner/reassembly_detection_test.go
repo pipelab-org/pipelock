@@ -34,7 +34,14 @@ func TestSelectiveDetection(t *testing.T) {
 		for _, enc := range reassemblyEncodings(" " + plain + " ") {
 			for phase := range enc.quantum {
 				t.Run(fmt.Sprintf("%s/%s/%d", pattern.name, enc.name, phase), func(t *testing.T) {
-					body := strings.Repeat("a!", 4200+phase) + reassemblyBang(enc.text)
+					t.Parallel()
+					// Each codec keeps a long-view witness; the other phases
+					// test alignment without repeating that whole prefix.
+					prefix := enc.quantum + phase
+					if phase == 0 {
+						prefix = 4200
+					}
+					body := strings.Repeat("a!", prefix) + reassemblyBang(enc.text)
 					r := reassemblyTerminal(p, body, &assembledBudget{})
 					found := slices.ContainsFunc(r.findings, func(m TextDLPMatch) bool { return m.PatternName == pattern.name })
 					if found != covered || r.incomplete {

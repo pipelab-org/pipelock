@@ -35,7 +35,12 @@ func TestConfiguredShapePhases(t *testing.T) {
 			for phase := range enc.quantum {
 				name := fmt.Sprintf("%s/%s/%d", tc.expr, enc.name, phase)
 				t.Run(name, func(t *testing.T) {
-					body := strings.Repeat(string(reassemblyCodecs[codec].alphabet[0])+"!", 4200+phase) + reassemblyBang(enc.text)
+					t.Parallel()
+					prefix := enc.quantum + phase
+					if phase == 0 {
+						prefix = 4200
+					}
+					body := strings.Repeat(string(reassemblyCodecs[codec].alphabet[0])+"!", prefix) + reassemblyBang(enc.text)
 					r := reassemblyTerminal(p, body, &assembledBudget{})
 					found := slices.ContainsFunc(r.findings, func(m TextDLPMatch) bool {
 						return m.PatternName == "Configured bounded" && m.hasValueIdentity && m.valueIdentity == sha256.Sum256([]byte(tc.value))

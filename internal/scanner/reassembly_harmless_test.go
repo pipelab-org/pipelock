@@ -27,7 +27,7 @@ func TestReassemblyHarmlessTraffic(t *testing.T) {
 	}
 	for _, seed := range []int64{1, 2, 3, 4} {
 		rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- reproducible binary response corpus.
-		data := make([]byte, 16<<10)
+		data := make([]byte, maxReassembledTokenLen)
 		if _, err := rng.Read(data); err != nil {
 			t.Fatal(err)
 		}
@@ -40,9 +40,11 @@ func TestReassemblyHarmlessTraffic(t *testing.T) {
 		cfg.DLP.ScanEnv = false
 		cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Configured record", Regex: expr, Severity: config.SeverityHigh})
 		sc := MustNew(cfg)
+		t.Cleanup(sc.Close)
 		for _, tc := range cases {
 			for _, inbound := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%s/%s/inbound=%v", expr, tc.name, inbound), func(t *testing.T) {
+					t.Parallel()
 					ctx := t.Context()
 					if inbound {
 						ctx = WithInboundDirection(ctx)
@@ -54,7 +56,6 @@ func TestReassemblyHarmlessTraffic(t *testing.T) {
 				})
 			}
 		}
-		sc.Close()
 	}
 }
 
@@ -92,6 +93,7 @@ func TestReassemblyLargeBinaryUploadAdmission(t *testing.T) {
 	for _, size := range []int{3 << 19, 3 << 20} {
 		for _, seed := range []int64{1, 2, 3} {
 			t.Run(fmt.Sprintf("%d/%d", size, seed), func(t *testing.T) {
+				t.Parallel()
 				rng := rand.New(rand.NewSource(seed)) // #nosec G404 -- reproducible binary upload corpus.
 				data := make([]byte, size)
 				if _, err := rng.Read(data); err != nil {

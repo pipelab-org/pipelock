@@ -64,11 +64,12 @@ func TestPolicyDigitBodies(t *testing.T) {
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
 	sc := MustNew(cfg)
-	defer sc.Close()
+	t.Cleanup(sc.Close)
 	for _, size := range []int{512 << 10, 1 << 20, 4 << 20} {
 		for _, tail := range []bool{false, true} {
 			for _, inbound := range []bool{false, true} {
 				t.Run(fmt.Sprintf("%d/tail=%v/inbound=%v", size, tail, inbound), func(t *testing.T) {
+					t.Parallel()
 					body := strings.Repeat("30", size/2)
 					if tail {
 						body += reassemblyBang(hex.EncodeToString([]byte(inspectionLimitAWSKey())))
