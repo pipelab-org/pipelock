@@ -726,6 +726,27 @@ class TestTestNameSplit(unittest.TestCase):
                 path.write_text(text, encoding="utf-8")
             self.assertEqual(ci_test_packages.go_tool_dirs(root), (set(), {"chart"}))
 
+    def test_external_program_comments_do_not_change_arguments(self) -> None:
+        reads = ci_test_packages.runs_external_program
+        for source in (
+            'exec.CommandContext(ctx /*, "true", */, "sh", "-c", "cat value.txt")',
+            'exec.CommandContext(ctx, // , "true", )\n "sh", "-c", "cat value.txt")',
+            'exec.CommandContext(context.WithValue(ctx, rune(\',\'), []string{"x"}), `sh`, "-c", "cat value.txt")',
+            'exec.CommandContext(ctx, "sh", "-c", `echo "/*"; cat value.txt`)',
+            '// self := os.Executable()\nexec.Command(self)',
+        ):
+            with self.subTest(source=source):
+                self.assertTrue(reads(source))
+        for source in (
+            '// exec.Command("sh")\nexec.Command("true")',
+            '/* exec.Command("sh") */\nexec.CommandContext(ctx /* ) , */, "true")',
+            'const example = `exec.Command("sh")`',
+            'const example = "exec.Command(\\\"sh\\\")"',
+            'exec.Command("echo", "/* not a comment */", `// literal`, \'\\\'\')',
+        ):
+            with self.subTest(source=source):
+                self.assertFalse(reads(source))
+
     def test_real_external_program_packages_run_fresh(self) -> None:
         module = ci_test_packages.module_path()
         setup = f"{module}/internal/cli/setup"            # renders charts/ with helm
@@ -745,9 +766,9 @@ class TestTestNameSplit(unittest.TestCase):
             (repo / "go.mod").write_text("module example.invalid/m\n\ngo 1.26\n", encoding="utf-8")
             (repo / "value.txt").write_text("good", encoding="utf-8")
             (repo / "m_test.go").write_text(
-                'package m\nimport ("os/exec"; "testing")\n'
+                'package m\nimport ("context"; "os/exec"; "testing")\n'
                 'func TestValue(t *testing.T) {\n'
-                '\tout, err := exec.Command("sh", "-c", "cat value.txt").Output()\n'
+                '\tout, err := exec.CommandContext(context.Background() /*, "true", */, "sh", "-c", "cat value.txt").Output()\n'
                 '\tif err != nil || string(out) != "good" { t.Fatalf("value = %q, %v", out, err) }\n}\n',
                 encoding="utf-8")
             git = ["git", "-c", "user.name=ci", "-c", "user.email=ci@example.invalid"]
@@ -768,6 +789,9 @@ class TestTestNameSplit(unittest.TestCase):
             self.assertEqual(stale.returncode, 0, "Go replayed the old pass: the classifier must run this fresh")
             self.assertIn("(cached)", stale.stdout)
             self.assertTrue(ci_test_packages.runs_external_program((repo / "m_test.go").read_text(encoding="utf-8")))
+            fresh = subprocess.run(["go", "test", ".", "-count=1"], cwd=repo, env=env, capture_output=True, text=True)
+            self.assertNotEqual(fresh.returncode, 0, fresh.stdout + fresh.stderr)
+            self.assertIn('value = "evil"', fresh.stdout)
 
     def test_real_go_tool_packages_run_fresh(self) -> None:
         module = ci_test_packages.module_path()

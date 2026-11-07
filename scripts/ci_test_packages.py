@@ -147,6 +147,22 @@ GO_TOOL_NAME_RE = re.compile(r'"go"')
 EXTERNAL_CALL_RE = re.compile(r"\bexec\.(Command|CommandContext)\(")
 HARMLESS_PROGRAMS = frozenset({"true", "false", "sleep", "echo", "yes", "/proc/self/exe"})
 SELF_EXEC_RE = re.compile(r"\b(\w+)(?:\s*,\s*\w+)?\s*:?=\s*(?:os\.Executable\(\)|os\.Args\[0\])")
+# Go specification, Comments and String/Rune literals: comments may contain
+# commas and brackets, while quoted text may contain comment delimiters.
+GO_QUOTED_OR_COMMENT_RE = re.compile(
+    r'//[^\n]*|/\*[\s\S]*?\*/|"(?:\\[\s\S]|[^"\\])*"|`[^`]*`|\'(?:\\[\s\S]|[^\'\\])*\''
+)
+
+
+def go_source_views(text: str) -> tuple[str, str]:
+    """Return comment-free source and a code-only mask with identical offsets."""
+    source, code = list(text), list(text)
+    for match in GO_QUOTED_OR_COMMENT_RE.finditer(text):
+        blank = re.sub(r"[^\n]", " ", match.group())
+        code[match.start():match.end()] = blank
+        if match.group().startswith(("//", "/*")):
+            source[match.start():match.end()] = blank
+    return "".join(source), "".join(code)
 
 
 def call_arguments(text: str, start: int) -> list[str]:
@@ -181,9 +197,10 @@ def call_arguments(text: str, start: int) -> list[str]:
 
 def runs_external_program(text: str) -> bool:
     """Whether a test file starts a program that may read repository files."""
-    self_names = {m.group(1) for m in SELF_EXEC_RE.finditer(text)}
-    for match in EXTERNAL_CALL_RE.finditer(text):
-        args = call_arguments(text, match.end())
+    source, code = go_source_views(text)
+    self_names = {m.group(1) for m in SELF_EXEC_RE.finditer(code)}
+    for match in EXTERNAL_CALL_RE.finditer(code):
+        args = call_arguments(source, match.end())
         index = 1 if match.group(1) == "CommandContext" else 0
         if len(args) <= index:
             return True
