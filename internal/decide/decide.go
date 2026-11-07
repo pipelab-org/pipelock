@@ -169,7 +169,7 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 	// Policy: map shell execution to tool name "bash" to reuse existing rules.
 	if policyCfg != nil {
 		rawArgs := json.RawMessage(`{"command":` + strconv.Quote(p.Command) + `}`)
-		policyVerdict := policyCfg.CheckToolCallWithArgs("bash", []string{p.Command}, rawArgs)
+		policyVerdict := policyCfg.CheckShellCommand(p.Command, rawArgs)
 		evidence = append(evidence, evidenceFromPolicy(policyVerdict)...)
 	}
 
