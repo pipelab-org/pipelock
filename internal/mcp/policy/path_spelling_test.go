@@ -666,6 +666,68 @@ func TestPolicy_PathReadingXargsInput(t *testing.T) {
 	}
 }
 
+func TestPolicy_PathReadingHandoffBound(t *testing.T) {
+	// Each possible command at index i scans i preceding words. Use the
+	// existing ordered-pair work limit, including its exact boundary.
+	count, used := 0, 0
+	for used+count+1 <= maxPairChecks {
+		count++
+		used += count
+	}
+	for _, action := range []string{config.ActionWarn, config.ActionBlock} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock, OnIncompleteCheck: action,
+			Rules: []config.ToolPolicyRule{{Name: "handoff", ToolPattern: "bash", ArgPattern: `cat.*never.*end`}},
+		})
+		for _, n := range []int{maxPairwiseTokens, count, count + 1} {
+			var command strings.Builder
+			command.WriteString("$ ")
+			for i := range n {
+				_, _ = fmt.Fprintf(&command, "/p%d/cat/foo/.. ", i)
+			}
+			v := pc.CheckToolCall("bash", []string{command.String()})
+			if n <= count {
+				if v.Matched {
+					t.Fatalf("%s/%d: within bound: %+v", action, n, v)
+				}
+			} else if !slices.Contains(v.IncompleteRules, "handoff") || v.Action != action {
+				t.Fatalf("%s/%d: exceeded bound: %+v", action, n, v)
+			}
+		}
+	}
+}
+
+func TestPolicy_ScopedCustomPathKeys(t *testing.T) {
+	f := newLocalPathFixture(t)
+	target := filepath.Join(f.home, ".bashrc")
+	f.write(t, target)
+	alias := filepath.Join(f.ws, "safe link")
+	f.link(t, target, alias)
+	for _, key := range []string{"file_name", "dst"} {
+		pc := New(config.MCPToolPolicy{
+			Enabled: true, Action: config.ActionBlock,
+			Rules: []config.ToolPolicyRule{{Name: "selected path", ToolPattern: "write_file", ArgKey: "^" + key + "$", ArgPattern: `\.bashrc$`}},
+		})
+		pc.localPaths = newLocalPathIdentity([]string{f.home}, f.ws)
+		for _, tc := range []struct {
+			selected, content string
+			want              bool
+		}{
+			{alias, "notes", true},
+			{filepath.Join(f.ws, "safe notes"), alias, false},
+		} {
+			raw, err := json.Marshal(map[string]string{key: tc.selected, "content": tc.content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			values, _ := ArgValues(raw)
+			if v := pc.CheckToolCallWithArgs("write_file", values, raw); v.Matched != tc.want {
+				t.Errorf("%s selected=%q: %+v, want match %v", key, tc.selected, v, tc.want)
+			}
+		}
+	}
+}
+
 func TestPolicy_FileArgumentPathScope(t *testing.T) {
 	pc := New(config.MCPToolPolicy{Enabled: true, Action: config.ActionBlock, Rules: DefaultToolPolicyRules()})
 	for _, tt := range []struct {

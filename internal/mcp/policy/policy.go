@@ -272,8 +272,9 @@ func (pc *Config) CheckToolCallWithArgs(toolName string, argStrings []string, ra
 var filePathArgumentKey = regexp.MustCompile(fileTargetKeyPattern + "|" + fileDestinationKeyPattern + `|(?i)^(source|source_?path|paths|location|relative_path|output)$`)
 
 // pathnameValues returns the string values under pathname keys. A scoped rule
-// reads only the top-level keys its arg_key selects, as ExtractStringsForKeys
-// does; an unscoped rule reads a pathname key at any depth, since a tool may
+// uses its operator-supplied arg_key to select top-level pathname candidates,
+// as ExtractStringsForKeys does, including custom keys. An unscoped rule reads
+// a built-in pathname key at any depth, since a tool may
 // nest its operands (an operation object, a list of operations). Every string
 // under a pathname key is a value of that key; strings under other keys do not
 // receive its whitespace-preserving pathname reading. Nesting past the shared
@@ -335,7 +336,7 @@ func pathnameValues(raw json.RawMessage, scope *regexp.Regexp) (paths []string, 
 		return paths, truncated, true
 	}
 	for _, key := range jsonrpc.SortedKeys(top) {
-		if filePathArgumentKey.MatchString(key) && scope.MatchString(key) {
+		if scope.MatchString(key) {
 			leaves(top[key], 0)
 		}
 	}

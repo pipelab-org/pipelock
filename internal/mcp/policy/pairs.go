@@ -1078,6 +1078,9 @@ func endsCommand(t string) bool {
 // each command word in it. When the command words of pat cannot be
 // worked out within the bounds of leadingWords, every word is taken as one,
 // and a command of more than maxPairwiseTokens words is reported as is.
+// The sum of preceding-word counts is bounded by maxPairChecks, the existing
+// ordered-pair work limit. Reaching it also returns true, so the caller reports
+// an incomplete check instead of allowing an unexamined handoff.
 func commandAfterParts(pat *regexp.Regexp, segs [][]string) bool {
 	return commandAfterPartsShared(pat, segs, nil)
 }
@@ -1104,6 +1107,7 @@ func commandAfterPartsShared(pat *regexp.Regexp, segs [][]string, memo *afterPar
 	if len(words) == 0 && !over {
 		return false
 	}
+	remaining := maxPairChecks
 	for k, seg := range segs {
 		if over && len(seg) > maxPairwiseTokens {
 			return true
@@ -1141,6 +1145,12 @@ func commandAfterPartsShared(pat *regexp.Regexp, segs [][]string, memo *afterPar
 			}
 		}
 		for _, i := range at {
+			// Each candidate can rescan every preceding word. Charge that
+			// work even when memoized, so sharing cannot change completeness.
+			if i > remaining {
+				return true
+			}
+			remaining -= i
 			command, before := handed[i], handed[:i]
 			s := scans[command]
 			if s == nil {
