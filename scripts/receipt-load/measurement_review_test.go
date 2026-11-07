@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -558,18 +559,120 @@ func TestMatrixRefusesInvalidReleaseSettings(t *testing.T) {
 }
 
 func TestRunPreservesHarnessExitCode(t *testing.T) {
-	root := t.TempDir()
+	for _, code := range []int{1, 2, 3, 4} {
+		t.Run(strconv.Itoa(code), func(t *testing.T) {
+			root := t.TempDir()
+			marker := filepath.Join(root, "ran")
+			harness := filepath.Join(root, "harness")
+			testexec.WriteExecutable(t, harness, []byte("#!/bin/sh\nprintf ran >\"$HARNESS_MARKER\"\nexit "+strconv.Itoa(code)+"\n"), 0o700)
+			writeRunBuildStubs(t, root)
+			cmd := exec.CommandContext(t.Context(), "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with output under t.TempDir.
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "HARNESS_STUB="+harness, "HARNESS_MARKER="+marker)
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != code {
+				t.Fatalf("run.sh exit=%v, want harness exit %d; %s", err, code, out)
+			}
+			if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != "ran" {
+				t.Fatalf("harness did not run: marker=%q, error=%v", data, err)
+			}
+		})
+	}
+}
+
+func writeRunBuildStubs(t *testing.T, root string) {
+	t.Helper()
 	for name, body := range map[string]string{
 		"make": "#!/bin/sh\nexit 0\n",
-		"go":   "#!/bin/sh\nif [ \"$1\" = run ]; then exit 1; fi\nprintf '#!/bin/sh\\nexit 4\\n' > \"$3\"\nchmod 700 \"$3\"\n",
+		"go":   "#!/bin/sh\n[ \"$1\" = build ] || exit 99\ncp \"$HARNESS_STUB\" \"$3\"\n",
 	} {
 		testexec.WriteExecutable(t, filepath.Join(root, name), []byte(body), 0o700)
 	}
-	cmd := exec.CommandContext(t.Context(), "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with output under t.TempDir.
-	cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"))
-	out, err := cmd.CombinedOutput()
-	var exit *exec.ExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 4 {
-		t.Fatalf("run.sh exit=%v, want harness error 4; %s", err, out)
+}
+
+func TestRunForwardsSignalsAndWaitsForHarness(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		signal syscall.Signal
+		code   int
+	}{
+		{"term", syscall.SIGTERM, 143},
+		{"interrupt", syscall.SIGINT, 130},
+		{"term-harness-status", syscall.SIGTERM, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			python, err := exec.LookPath("python3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			marker := filepath.Join(root, "stopped")
+			harness := filepath.Join(root, "harness")
+			testexec.WriteExecutable(t, harness, []byte("#!"+python+"\n"+`import os, signal, sys, time
+from pathlib import Path
+
+parent = os.getppid()
+
+def stop(signum, frame):
+    # The wrapper and scratch binary must survive through report finalization.
+    assert os.getppid() == parent
+    os.kill(parent, 0)
+    assert Path(sys.argv[0]).exists()
+    Path(os.environ["HARNESS_MARKER"]).write_text(str(signum))
+    if os.environ["HARNESS_CODE"] == "3":
+        sys.exit(3)
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+print(os.getpid(), flush=True)
+while True:
+    time.sleep(60)
+`), 0o700)
+			writeRunBuildStubs(t, root)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "bash", "./run.sh", filepath.Join(root, "out")) // #nosec G204 -- fixed launcher with isolated fixtures.
+			cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "HARNESS_STUB="+harness, "HARNESS_MARKER="+marker, "HARNESS_CODE="+strconv.Itoa(tc.code), "TMPDIR="+root)
+			stdout, err := cmd.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var stderr bytes.Buffer
+			cmd.Stderr = &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill() })
+			var pid int
+			if _, err := fmt.Fscanln(stdout, &pid); err != nil {
+				t.Fatal(err)
+			}
+			child, err := os.FindProcess(pid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = child.Kill() }()
+			stopCleanup := context.AfterFunc(ctx, func() { _ = child.Kill() })
+			defer stopCleanup()
+			if err := cmd.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+			err = cmd.Wait()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != tc.code {
+				t.Fatalf("run.sh exit=%v, want %d; stderr=%s", err, tc.code, stderr.String())
+			}
+			if data, err := os.ReadFile(filepath.Clean(marker)); err != nil || string(data) != strconv.Itoa(int(tc.signal)) {
+				t.Fatalf("harness did not finalize before wrapper exit: marker=%q, error=%v", data, err)
+			}
+			if err := child.Signal(syscall.Signal(0)); !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("harness still running after wrapper exit: %v", err)
+			}
+			if paths, err := filepath.Glob(filepath.Join(root, "receipt-load.*")); err != nil || len(paths) != 0 {
+				t.Fatalf("scratch cleanup: paths=%v, error=%v", paths, err)
+			}
+		})
 	}
 }

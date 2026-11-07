@@ -28,6 +28,14 @@ fi
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/receipt-load.XXXXXX") || exit 4
 trap 'rm -rf "$scratch"' EXIT
 go build -o "$scratch/receipt-load" ./scripts/receipt-load || exit 4
+harness_pid=""
+interrupted=0
+forward_signal() {
+  interrupted=1
+  kill -s "$1" "$harness_pid" 2>/dev/null || true
+}
+trap 'forward_signal TERM' TERM
+trap 'forward_signal INT' INT
 "$scratch/receipt-load" --binary "$repo/pipelock" --out "$1" \
   --requests "${RECEIPT_LOAD_REQUESTS:-1000000}" \
   --warmup "${RECEIPT_LOAD_WARMUP:-1000}" \
@@ -38,4 +46,16 @@ go build -o "$scratch/receipt-load" ./scripts/receipt-load || exit 4
   --rules "${RECEIPT_LOAD_RULES:-empty}" \
   --seed "${RECEIPT_LOAD_SEED:-1}" \
   --window "${RECEIPT_LOAD_WINDOW:-5s}" \
-  ${lock_args[@]+"${lock_args[@]}"} ${restart_args[@]+"${restart_args[@]}"} ${verify_args[@]+"${verify_args[@]}"}
+  ${lock_args[@]+"${lock_args[@]}"} ${restart_args[@]+"${restart_args[@]}"} ${verify_args[@]+"${verify_args[@]}"} &
+harness_pid=$!
+# A trapped signal interrupts wait before the child finishes. Repeat the wait
+# until the child has exited so reports and child cleanup finish before scratch.
+while true; do
+  status=0
+  interrupted=0
+  wait "$harness_pid" || status=$?
+  if ((interrupted == 0)); then
+    break
+  fi
+done
+exit "$status"

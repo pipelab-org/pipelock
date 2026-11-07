@@ -1308,6 +1308,7 @@ func TestReleaseVerifierRegistryExitCodes(t *testing.T) {
 		{"pypi-malformed", "pypi", "malformed", "JSONDecodeError", 2},
 		{"npm-provenance-after-scratch", "install", "provenance", "expected one verified npm package", 2},
 		{"npm-audit-timeout-after-scratch", "install", "audit-timeout", "could not verify npm signatures", 3},
+		{"npm-signature-details", "install", "audit-signature", "fixture-package missing signature", 2},
 		{"pypi-unclassified", "pypi", "parser", "unclassified parser failure", 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1363,11 +1364,14 @@ if [[ $TARGET == install ]]; then
     echo '{}'; exit 0
   fi
   if [[ $1 == audit ]]; then
+    printf 'audit\n' >>"$INVOCATIONS"
     if [[ $FAILURE == audit-timeout ]]; then echo '{"error":{"code":"ERR_SOCKET_TIMEOUT"}}'; exit 1; fi
+    if [[ $FAILURE == audit-signature ]]; then echo '{"error":{"code":"EINTEGRITY","message":"fixture-package missing signature"}}'; exit 1; fi
     echo '{}'; exit 0
   fi
 fi
 if [[ $TARGET == npm ]]; then
+  printf 'view\n' >>"$INVOCATIONS"
   case $FAILURE in
     refused|classifier) echo '{"error":{"code":"ECONNREFUSED"}}'; exit 1 ;;
     fetch-request-timeout) echo '{"error":{"code":"FETCH_ERROR","type":"request-timeout"}}'; exit 1 ;;
@@ -1392,6 +1396,7 @@ args="$*"
 target=crates
 [[ "$*" == *pypi.org* ]] && target=pypi
 if [[ $TARGET == "$target" ]]; then
+  printf '%s\n' "$target" >>"$INVOCATIONS"
   case $FAILURE in
     refused) HTTP_CODE=000; http_code "$args"; exit 7 ;;
     timeout) HTTP_CODE=000; http_code "$args"; exit 28 ;;
@@ -1429,16 +1434,114 @@ exit 0
 			}
 			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "scripts/release-verifier-install-gate.sh"), "--tag", "v3.4.0") // #nosec G204 -- checked-in script in an isolated fixture.
 			scratchParent := t.TempDir()
-			cmd.Env = append(os.Environ(), "TMPDIR="+scratchParent, "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
+			invocations := filepath.Join(t.TempDir(), "invocations")
+			cmd.Env = append(os.Environ(), "INVOCATIONS="+invocations, "TMPDIR="+scratchParent, "PATH="+bin+":"+os.Getenv("PATH"), "TARGET="+tc.target, "FAILURE="+tc.failure, "RUST_VERSION="+strings.TrimPrefix(stagedVerifierSourceRef(t, root, "Rust"), "verifier-v"))
 			out, err := cmd.CombinedOutput()
 			left, readErr := os.ReadDir(scratchParent)
 			if readErr != nil || len(left) != 0 {
 				t.Fatalf("scratch cleanup: entries=%v error=%v", left, readErr)
+			}
+			if tc.target != "git" {
+				calls, readErr := os.ReadFile(filepath.Clean(invocations))
+				wantAttempts := 1
+				if tc.code == 3 {
+					wantAttempts = 3
+				}
+				if readErr != nil || len(strings.Fields(string(calls))) != wantAttempts {
+					t.Fatalf("registry attempts=%q, error=%v; want %d", calls, readErr, wantAttempts)
+				}
 			}
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != tc.code || !strings.Contains(string(out), tc.wantText) {
 				t.Fatalf("exit=%v, want %d and %q; output:\n%s", err, tc.code, tc.wantText, out)
 			}
 		})
+	}
+}
+
+func TestReleaseVerifierRegistryReadReportsAndRetries(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("requires bash")
+	}
+	for _, tool := range []string{"npm", "curl"} {
+		for _, scenario := range []string{"signature", "outage", "transient"} {
+			t.Run(tool+"/"+scenario, func(t *testing.T) {
+				root := t.TempDir()
+				calls := filepath.Join(root, "calls")
+				report := filepath.Join(root, "report.json")
+				for name, body := range map[string]string{
+					"sleep": "exit 0\n",
+					tool: `printf 'attempt\n' >>"$INVOCATIONS"
+attempt=$(wc -l <"$INVOCATIONS")
+if [[ $SCENARIO == signature ]]; then
+  printf '{"error":{"code":"EINTEGRITY","package":"fixture-package","message":"missing signature"}}'
+  [[ $TOOL == curl ]] && printf '\n400'
+  exit 22
+fi
+if [[ $SCENARIO == outage || $attempt == 1 ]]; then
+  printf '{"error":{"code":"ETIMEDOUT","message":"fixture registry unavailable"}}'
+  if [[ $TOOL == curl ]]; then printf '\n000'; exit 28; fi
+  exit 1
+fi
+printf '{"verified":true}'
+[[ $TOOL == curl ]] && printf '\n200'
+exit 0
+`,
+				} {
+					testexec.WriteExecutable(t, filepath.Join(root, name), []byte("#!/usr/bin/env bash\n"+body), 0o700)
+				}
+				lib, err := filepath.Abs("release-verifier-install-gate-lib.sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Keep the function's stdout redirected exactly as the signature audit caller does.
+				cmd := exec.CommandContext(t.Context(), "bash", "-c", `source "$1"; registry_read "$TOOL" audit signatures --json >"$REPORT"`, "registry-test", lib) // #nosec G204 -- fixed shell program and checked-in library with isolated fixture paths.
+				cmd.Env = append(os.Environ(), "PATH="+root+":"+os.Getenv("PATH"), "INVOCATIONS="+calls, "REPORT="+report, "SCENARIO="+scenario, "TOOL="+tool)
+				var stdout, stderr bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &stdout, &stderr
+				err = cmd.Run()
+				wantCode, wantAttempts := 2, 1
+				switch scenario {
+				case "outage":
+					wantCode, wantAttempts = 3, 3
+				case "transient":
+					wantCode, wantAttempts = 0, 2
+				}
+				if wantCode == 0 {
+					if err != nil {
+						t.Fatalf("recovered outage: %v; %s", err, stderr.String())
+					}
+				} else {
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != wantCode {
+						t.Fatalf("exit=%v, want %d", err, wantCode)
+					}
+				}
+				data, readErr := os.ReadFile(filepath.Clean(calls))
+				if readErr != nil || len(strings.Fields(string(data))) != wantAttempts {
+					t.Fatalf("attempts=%q, error=%v; want %d", data, readErr, wantAttempts)
+				}
+				data, readErr = os.ReadFile(filepath.Clean(report))
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("captured output escaped to stdout: %q", stdout.String())
+				}
+				if scenario == "transient" {
+					if string(data) != "{\"verified\":true}\n" || stderr.Len() != 0 {
+						t.Fatalf("recovered report=%q, stderr=%q", data, stderr.String())
+					}
+				} else {
+					detail := "fixture registry unavailable"
+					if scenario == "signature" {
+						detail = "fixture-package"
+					}
+					if len(data) != 0 || !strings.Contains(stderr.String(), detail) {
+						t.Fatalf("failure report=%q, stderr=%q; want stderr detail %q", data, stderr.String(), detail)
+					}
+				}
+			})
+		}
 	}
 }

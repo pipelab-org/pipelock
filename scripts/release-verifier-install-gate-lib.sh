@@ -164,6 +164,7 @@ except (ValueError, KeyError, TypeError):
     outage = False
 print(3 if outage else 2)
 ' <<<"$output")"; then
+				printf '%s\n' "$output" >&2
 				return 2
 			fi
 			if [[ "$classification" == 3 ]]; then status=3; else status=2; fi
@@ -171,6 +172,7 @@ print(3 if outage else 2)
 		# Only a proven transport outage is retried. Match ci-retry.sh's
 		# three-attempt linear backoff without retrying integrity failures.
 		if ((status != 3 || attempt == 3)); then
+			printf '%s\n' "$output" >&2
 			return "$status"
 		fi
 		sleep "$((attempt * 5))"
