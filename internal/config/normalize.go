@@ -972,7 +972,7 @@ func markBuiltInCredentialURLWhitespaceGrammar(patterns []DLPPattern) {
 				candidate.Name == pattern.Name &&
 				candidate.Regex == pattern.Regex &&
 				candidate.Severity == pattern.Severity &&
-				candidate.Validator == pattern.Validator &&
+				candidate.Validator == pattern.Validator && len(candidate.Keywords) == 0 && candidate.KeywordWindow == nil &&
 				sameStrings(candidate.ExemptDomains, pattern.ExemptDomains)
 		}
 		return
@@ -1020,7 +1020,7 @@ func markBuiltInCredentialAudienceHosts(patterns []DLPPattern) {
 			candidate := &patterns[i]
 			if candidate.Bundle != "" || candidate.Name != builtIn.Name ||
 				candidate.Regex != builtIn.Regex || candidate.Severity != builtIn.Severity ||
-				candidate.Validator != builtIn.Validator || candidate.Action != builtIn.Action {
+				candidate.Validator != builtIn.Validator || candidate.Action != builtIn.Action || len(candidate.Keywords) > 0 || candidate.KeywordWindow != nil {
 				continue
 			}
 			candidate.CredentialAudienceHosts = append([]string(nil), builtIn.CredentialAudienceHosts...)

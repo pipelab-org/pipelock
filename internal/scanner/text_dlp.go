@@ -318,6 +318,7 @@ func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match Text
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
+	keywordGated      bool
 	genericCard       bool
 	cardPrefixRetry   bool
 	numberOnlyCardRun bool
@@ -361,6 +362,10 @@ func (m TextDLPMatch) Span() MatchSpan {
 func (m TextDLPMatch) ValueIdentity() ([32]byte, bool) {
 	return m.valueIdentity, m.hasValueIdentity
 }
+
+// RequiresKeywordContext reports that extracting this value from its context
+// must not erase an already-established receipt redaction obligation.
+func (m TextDLPMatch) RequiresKeywordContext() bool { return m.keywordGated }
 
 // IsNumberOnlyCardRun reports a card match assembled solely from two or more
 // typed JSON number integer components. It is evidence, never a block trigger.
@@ -855,6 +860,9 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 // not refused at a decode bound: exfiltration is an outbound threat, and
 // large legitimate downloads must keep their delivery contract.
 func (s *Scanner) scanTextForDLPDetectors(ctx context.Context, text string, opts textDLPOptions, decodes *decodingMemo) TextDLPResult {
+	if decodes == nil && s.hasDLPKeywords() {
+		decodes = &decodingMemo{}
+	}
 	if decodes != nil {
 		decodes.inbound = !opts.scanSecretLeak || inboundDirection(ctx)
 	}
@@ -880,6 +888,16 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	text = exciseImagesRetainingDecodedForDLP(text)
 	text = redactOfficialAWSExampleCredentialsForDocs(text)
 	cleaned := decodes.normalize(text)
+	if decodes != nil {
+		priorKeywordUnit, priorKeywordInput := decodes.keywordUnit, decodes.keywordInput
+		defer func() { decodes.keywordUnit, decodes.keywordInput = priorKeywordUnit, priorKeywordInput }()
+	}
+	if s.hasDLPKeywords() {
+		decodes.keywordMode = true
+		decodes.keywordUnit = config.DLPKeywordContext(text)
+		decodes.keywordInput = text
+		decodes.registerKeywordTransform(decodes.keywordUnit, cleaned, "projection")
+	}
 	segmentViews := textDLPEncodingSegmentViews(cleaned)
 	segmentDecodeViews := segmentViews
 	// Decode before normalization can erase the tag alphabet. Segment the
@@ -1103,8 +1121,9 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 		if !opts.patterns.includes(p.genericCard) {
 			continue
 		}
-		if start, end, ok := p.matchSpanInView(cleaned, text); ok {
+		if start, end, ok := p.matchSpanWithDecodes(cleaned, text, decodes); ok {
 			matches = append(matches, TextDLPMatch{
+				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
 				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,
@@ -1126,11 +1145,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// Iterative URL-decode and re-check DLP patterns (catches %2D → - etc.).
 	// Uses IterativeDecode to defeat multi-layer encoding.
 	if decoded := IterativeDecode(cleaned); decoded != cleaned {
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(decoded, "url"))...)
+		decodes.registerKeywordTransform(cleaned, decoded, encodingURL)
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, decoded, decodes))...)
 	}
 
 	if htmlDecoded != cleaned {
-		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatterns(htmlDecoded, encodingHTML))...)
+		decodes.registerKeywordTransform(cleaned, htmlDecoded, encodingHTML)
+		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(htmlDecoded, encodingHTML, htmlDecoded, decodes))...)
 		matches = append(matches, s.decodeAndMatchWithDecodes(htmlDecoded, decodes, opts.patterns)...)
 	}
 
@@ -1138,9 +1159,16 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	// percent-decoding give up on the whole token. A receiver that drops the
 	// invalid escapes recovers the credential, so match that view too.
 	if strings.Contains(cleaned, "%") {
-		for _, dropped := range invalidPercentEscapeViews(cleaned) {
+		for i, dropped := range invalidPercentEscapeViews(cleaned) {
 			if dropped != cleaned {
-				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInView(IterativeDecode(dropped), encodingURL, cleaned))...)
+				encoding := keywordPercentDrop
+				if i == 1 {
+					encoding = keywordPercentEscapeDrop
+				}
+				decodes.registerKeywordTransform(cleaned, dropped, encoding)
+				decoded := IterativeDecode(dropped)
+				decodes.registerKeywordTransform(dropped, decoded, encodingURL)
+				matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(decoded, encodingURL, cleaned, decodes))...)
 			}
 		}
 	}
@@ -1151,12 +1179,13 @@ func (s *Scanner) scanTextForDLPDetectorsInner(ctx context.Context, text string,
 	if strings.Contains(cleaned, ".") {
 		dotless := removeHostnameDots(cleaned)
 		if dotless != cleaned {
-			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInView(dotless, "subdomain", cleaned))...)
+			matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsWithDecodes(dotless, "subdomain", cleaned, decodes))...)
 		}
 	}
 
 	if len(segmentViews) > 1 {
 		compacted, offsets := decodes.compactWhitespace(cleaned)
+		decodes.registerKeywordTransform(cleaned, compacted, "projection")
 		matches = append(matches, opts.patterns.selectMatches(s.matchDLPPatternsInWhitespaceView(compacted, cleaned, offsets))...)
 	}
 
@@ -1310,6 +1339,17 @@ func (s *Scanner) matchDLPPatternsNormalized(text, encoding, proseSource string)
 // matchDLPPatternsLowered is matchDLPPatternsNormalized for a text whose
 // lowered bytes are already recorded, limited to the rules in patterns.
 func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet) []TextDLPMatch {
+	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource, lowered, patterns, nil)
+}
+
+func (s *Scanner) matchDLPPatternsWithDecodes(text, encoding, source string, decodes *decodingMemo) []TextDLPMatch {
+	text = normalize.ForDLP(text)
+	var lowered dlpLoweredBytes
+	lowered.add(text)
+	return s.matchDLPPatternsLoweredWithDecodes(text, encoding, source, &lowered, textDLPAllPatterns, decodes)
+}
+
+func (s *Scanner) matchDLPPatternsLoweredWithDecodes(text, encoding, proseSource string, lowered *dlpLoweredBytes, patterns textDLPPatternSet, decodes *decodingMemo) []TextDLPMatch {
 	var matches []TextDLPMatch
 	var shape dlpShapeSummary
 	for _, idx := range s.dlpPreFilter.patternsToCheckWith(text, lowered) {
@@ -1320,8 +1360,9 @@ func (s *Scanner) matchDLPPatternsLowered(text, encoding, proseSource string, lo
 		if s.dlpPreFilter.shapeRejects(p.shapeGate, text, &shape) {
 			continue
 		}
-		if start, end, ok := p.matchSpanInView(text, proseSource); ok {
+		if start, end, ok := p.matchSpanWithDecodes(text, proseSource, decodes); ok {
 			matches = append(matches, TextDLPMatch{
+				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
 				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,
@@ -1359,6 +1400,7 @@ func (s *Scanner) matchDLPPatternsInWhitespaceView(text, proseSource string, off
 				continue
 			}
 			matches = append(matches, TextDLPMatch{
+				keywordGated:                        p.keywords != nil,
 				genericCard:                         p.genericCard,
 				cardPrefixRetry:                     p.cardPrefixRetry,
 				PatternName:                         p.name,

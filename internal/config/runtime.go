@@ -332,6 +332,17 @@ func (c *Config) Clone() *Config {
 	}
 
 	clone.DLP.Patterns = cloneDLPPatterns(c.DLP.Patterns)
+	if c.Agents != nil {
+		clone.Agents = make(map[string]AgentProfile, len(c.Agents))
+		for name, profile := range c.Agents {
+			if profile.DLP != nil {
+				dlp := *profile.DLP
+				dlp.Patterns = cloneDLPPatterns(profile.DLP.Patterns)
+				profile.DLP = &dlp
+			}
+			clone.Agents[name] = profile
+		}
+	}
 	if c.DLP.GitHubEnterpriseHosts != nil {
 		clone.DLP.GitHubEnterpriseHosts = append([]string(nil), c.DLP.GitHubEnterpriseHosts...)
 	}
@@ -406,6 +417,9 @@ func cloneRequestBodySigV4CredentialRoutes(entries []RequestBodySigV4CredentialR
 	return out
 }
 
+// CloneDLPPatterns isolates nested pattern controls across policy generations.
+func CloneDLPPatterns(src []DLPPattern) []DLPPattern { return cloneDLPPatterns(src) }
+
 // cloneDLPPatterns returns a deep copy of src. Runtime-only audience hosts are
 // copied with the operator-facing exempt domain list so reload snapshots cannot
 // mutate an immutable built-in policy through a shared backing array.
@@ -416,6 +430,11 @@ func cloneDLPPatterns(src []DLPPattern) []DLPPattern {
 	dst := make([]DLPPattern, len(src))
 	for i := range src {
 		dst[i] = src[i]
+		dst[i].Keywords = slices.Clone(src[i].Keywords)
+		if src[i].KeywordWindow != nil {
+			v := *src[i].KeywordWindow
+			dst[i].KeywordWindow = &v
+		}
 		if src[i].ExemptDomains != nil {
 			dst[i].ExemptDomains = slices.Clone(src[i].ExemptDomains)
 		}

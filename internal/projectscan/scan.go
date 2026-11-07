@@ -295,6 +295,7 @@ func scanEnvSecrets(patterns []compiledDLP) []Finding {
 type compiledDLP struct {
 	name     string
 	re       *regexp.Regexp
+	keywords *config.DLPKeywordMatcher
 	validate func(string) bool
 	// cardPrefixRetry gives the canonical card rule the scanner's accepted-span
 	// policy, so project scans and runtime scanning agree on card endpoints.
@@ -325,6 +326,10 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := compiledDLP{name: p.Name, re: re}
+		cp.keywords, err = p.CompileKeywords()
+		if err != nil {
+			return nil, err
+		}
 		if p.Validator != "" {
 			fn, ok := scanner.DLPValidators[p.Validator]
 			if !ok {
@@ -340,7 +345,7 @@ func compileDLPPatternsFrom(patternDefs []config.DLPPattern) ([]compiledDLP, err
 }
 
 func (p compiledDLP) matches(text string) bool {
-	return scanner.ValidatedPatternMatches(text, p.re, p.validate, p.cardPrefixRetry, p.wifOverlapRetry)
+	return scanner.ContextualPatternMatches(text, p.re, p.validate, p.cardPrefixRetry, p.wifOverlapRetry, p.keywords)
 }
 
 // scanFiles walks the directory and scans config/env files for secrets.

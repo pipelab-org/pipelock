@@ -130,7 +130,7 @@ func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
 
 	if hasCharacterCodeRun(s) {
 		if decoded, _ := decodeCharacterCodes(s, characterCodeSeparatorFast, parseDecimalCharacterCode, false); decoded != "" && decoded != s {
-			out = append(out, textEncodingView{decodedResult{decoded, encodingDecimal}, encodingSourceRange{0, len(s)}})
+			out = append(out, textEncodingView{decodedResult{text: decoded, encoding: encodingDecimal}, encodingSourceRange{0, len(s)}})
 		}
 		for _, encoding := range []string{encodingOctal, encodingBinary} {
 			prefix, upperPrefix := "0o", "0O"
@@ -141,7 +141,7 @@ func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
 				continue
 			}
 			if decoded, _ := decodePrefixedCharacterCodes(s, encoding, false); decoded != "" && decoded != s {
-				out = append(out, textEncodingView{decodedResult{decoded, encoding}, encodingSourceRange{0, len(s)}})
+				out = append(out, textEncodingView{decodedResult{text: decoded, encoding: encoding}, encodingSourceRange{0, len(s)}})
 			}
 		}
 	}
@@ -151,10 +151,10 @@ func textEncodingViewsMode(s string, recoverQP bool) []textEncodingView {
 	if (recoverQP && hasQuotedPrintableSourceRun(s)) || (!recoverQP && utf8.ValidString(s)) {
 		if decoded, _ := decodeQuotedPrintable(s, false); decoded != s && decoded != "" {
 			if utf8.ValidString(s) && (isPrintableText([]byte(decoded)) || hasQuotedPrintableCarrier(s)) {
-				out = append(out, textEncodingView{decodedResult{decoded, encodingQuotedPrintable}, encodingSourceRange{0, len(s)}})
+				out = append(out, textEncodingView{decodedResult{text: decoded, encoding: encodingQuotedPrintable}, encodingSourceRange{0, len(s)}})
 			} else if recoverQP {
 				visitQuotedPrintableTextRuns(s, decoded, func(text string, sourceRange encodingSourceRange) bool {
-					out = append(out, textEncodingView{decodedResult{text, encodingQuotedPrintable}, sourceRange})
+					out = append(out, textEncodingView{decodedResult{text: text, encoding: encodingQuotedPrintable}, sourceRange})
 					return true
 				})
 			}

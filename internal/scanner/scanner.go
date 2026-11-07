@@ -313,6 +313,7 @@ func IsCoreCriticalResult(r Result) bool {
 
 // Scanner checks URLs for suspicious content before fetching.
 type Scanner struct {
+	keywordPatterns           bool
 	now                       func() time.Time
 	inboundCleanViews         inboundCleanViews
 	core                      *compiledCoreScanner // immutable safety floor - always runs, no config knobs
@@ -455,6 +456,8 @@ func (s *Scanner) getDLPWarnHook() func(ctx context.Context, patternName, severi
 }
 
 type compiledPattern struct {
+	keywords            *config.DLPKeywordMatcher
+	keywordContext      *keywordCandidateContext
 	name                string
 	re                  *regexp.Regexp
 	withoutLeftBoundary *regexp.Regexp
@@ -502,7 +505,7 @@ type compiledPattern struct {
 // checksum - prevents a checksum-failing decoy from suppressing a later
 // valid match in the same text blob.
 func (p *compiledPattern) matches(text string) bool {
-	if p.validate == nil && p.validateAt == nil {
+	if p.validate == nil && p.validateAt == nil && p.keywords == nil {
 		return p.re.MatchString(text)
 	}
 	_, _, ok := p.firstAcceptedSpan(text, nil)
@@ -515,7 +518,16 @@ func (p *compiledPattern) accepts(view string, start, end int) bool {
 	if p.validate != nil && !p.validate(view[start:end]) {
 		return false
 	}
-	return p.validateAt == nil || p.validateAt(view, start, end)
+	if p.validateAt != nil && !p.validateAt(view, start, end) {
+		return false
+	}
+	if p.keywords == nil {
+		return true
+	}
+	if p.keywordContext != nil {
+		return p.keywordContext.matches(p.keywords, view, start, end)
+	}
+	return p.keywords.Matches(view, start, end)
 }
 
 // acceptedSpan returns the finding span of one regex hit. For every pattern
@@ -631,6 +643,10 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	// Force case-insensitive matching: agents can trivially .toUpperCase() a
 	// secret before exfiltration, so DLP patterns must match regardless of case.
 	for _, p := range cfg.DLP.Patterns {
+		keywords, err := p.CompileKeywords()
+		if err != nil {
+			return nil, err
+		}
 		pattern := p.Regex
 		if !strings.HasPrefix(pattern, "(?i)") {
 			pattern = "(?i)" + pattern
@@ -640,6 +656,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			return nil, fmt.Errorf("compile DLP pattern %q: %w", p.Name, err)
 		}
 		cp := &compiledPattern{
+			keywords:      keywords,
 			name:          p.Name,
 			re:            re,
 			severity:      p.Severity,
@@ -708,6 +725,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 			cp.validateAt = toolCommandCredentialInURLCandidate
 		}
 		s.dlpPatterns = append(s.dlpPatterns, cp)
+		s.keywordPatterns = s.keywordPatterns || keywords != nil
 	}
 
 	// Build prefix pre-filter for fast DLP short-circuiting on clean input.
@@ -1417,6 +1435,10 @@ func (s *Scanner) scan(ctx context.Context, rawURL string, recordRate, websocket
 	decisions.record(urlCoreDLP, result)
 	if !result.Allowed {
 		return result
+	}
+
+	if s.hasDLPKeywords() {
+		decodes.keywordRawURL = rawURL
 	}
 
 	// DLP + entropy on hostname BEFORE DNS resolution.
@@ -2291,7 +2313,9 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 	if !strings.Contains(hostname, ".") {
 		return targets
 	}
-	targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
+	collapsed := removeHostnameDots(hostname)
+	decodes.registerKeywordTransform(hostname, collapsed, "projection")
+	targets = append(targets, dlpTarget{collapsed, dlpViewLabel("subdomain"), hostname})
 	for _, d := range decodes.decode(hostname, true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
@@ -2302,17 +2326,19 @@ func appendHostnameDLPTargets(targets []dlpTarget, hostname string, decodes *dec
 // before the registrable domain. Regex DLP and seed phrase detection share it
 // so a carrier split across DNS labels reaches both before resolution.
 func appendHostnamePrefixDecodes(targets []dlpTarget, hostname string, decodes *decodingMemo) []dlpTarget {
-	prefix, ok := hostnameEncodedPrefix(hostname)
+	source, ok := hostnameEncodedPrefix(hostname)
 	if !ok {
 		return targets
 	}
+	prefix := removeHostnameDots(source)
+	decodes.registerKeywordTransform(source, prefix, "projection")
 	for _, d := range decodes.decode(prefix, true) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
 	}
 	return targets
 }
 
-// hostnameEncodedPrefix returns the dot-collapsed labels before the
+// hostnameEncodedPrefix returns the original labels before the
 // registrable domain, or false for IP literals and hosts without one.
 func hostnameEncodedPrefix(hostname string) (string, bool) {
 	host := strings.TrimSuffix(hostname, ".")
@@ -2335,7 +2361,7 @@ func hostnameEncodedPrefix(hostname string) (string, bool) {
 		}
 		prefix = prefix[:end]
 	}
-	return removeHostnameDots(prefix), true
+	return prefix, true
 }
 
 // orderedQueryConcat concatenates all query parameter values in their original URL
@@ -2374,6 +2400,10 @@ func appendQueryConcatTargets(targets []dlpTarget, path, rawQuery string, decode
 	}
 	concat := orderedQueryConcat(rawQuery)
 	proseSource := orderedQueryProseSource(rawQuery)
+	if decodes.keywordsActive() {
+		decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+		decodes.registerKeywordTransform(config.DLPKeywordContext(rawQuery), concat, keywordQueryValues)
+	}
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("query_concat"), proseSource})
 	for _, d := range decodeEncodingsRecursiveWithDecodes(concat, decodes) {
 		targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), proseSource})
@@ -2447,6 +2477,9 @@ func appendPathQueryConcatTargets(targets []dlpTarget, path, rawQuery string, de
 // Outbound concatenations use the same recursive budget as other decode
 // roots. Inbound callers retain their previous size shortcut.
 func appendPathQueryConcatViews(targets []dlpTarget, concat, proseSource string, decodes *decodingMemo) []dlpTarget {
+	if decodes.keywordsActive() {
+		decodes.registerKeywordTransform(config.DLPKeywordContext(proseSource), concat, "projection")
+	}
 	targets = append(targets, dlpTarget{concat, dlpViewLabel("path_query_concat"), proseSource})
 	if len(concat) > maxDecodeTotalBytes && decodes != nil && decodes.inbound {
 		return targets
@@ -2486,6 +2519,7 @@ func orderedQueryJoin(rawQuery, separator string) string {
 type decodedResult struct {
 	text     string
 	encoding string
+	source   *keywordDecodeSource
 }
 
 // Encoding labels for decoded results.
@@ -2797,7 +2831,7 @@ func decodeEncodingsMode(s string, minPrefix int) []decodedResult {
 // decodeEncodingsModeInto appends decodeEncodingsMode's views to out.
 func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []decodedResult {
 	if decoded := normalize.DecodeTags(s); decoded != s && decoded != "" {
-		out = append(out, decodedResult{decoded, encodingUnicodeTags})
+		out = append(out, decodedResult{text: decoded, encoding: encodingUnicodeTags})
 	}
 	out = appendTextEncodingViews(out, s)
 	if normalize.ContainsTags(s) {
@@ -2814,13 +2848,13 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		decodedHex, hexErr = hex.DecodeString(s)
 	}
 	if (hexErr == nil || minPrefix > 0) && len(decodedHex) >= max(minPrefix, 1) {
-		out = append(out, decodedResult{string(decodedHex), encodingHex})
+		out = append(out, decodedResult{text: string(decodedHex), encoding: encodingHex})
 	}
 	if hexErr != nil || len(decodedHex) == 0 {
 		// Retain the normalized view even when a raw prefix was recovered.
 		if normalized := normalizeHex(s); normalized != "" {
 			if decoded, err := hex.DecodeString(normalized); (err == nil || minPrefix > 0) && len(decoded) >= max(minPrefix, 1) {
-				out = append(out, decodedResult{string(decoded), encodingHex})
+				out = append(out, decodedResult{text: string(decoded), encoding: encodingHex})
 			}
 		}
 	}
@@ -2893,7 +2927,7 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 			out = appendBase32DecodesMode(out, normalized, 0)
 		}
 		if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-			out = append(out, decodedResult{decoded, encodingJSONUnicode})
+			out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
 		}
 		return out
 	}
@@ -2912,7 +2946,7 @@ func decodeEncodingsModeInto(out []decodedResult, s string, minPrefix int) []dec
 		}
 	}
 	if decoded := normalize.DecodeJSONUnicodeEscapes(s); decoded != s && decoded != "" {
-		out = append(out, decodedResult{decoded, encodingJSONUnicode})
+		out = append(out, decodedResult{text: decoded, encoding: encodingJSONUnicode})
 	}
 	return out
 }
@@ -3011,7 +3045,7 @@ func recoverKnownValuePrefix(value string, complete []byte, minimum, quantum, gr
 
 func appendBase64View(out []decodedResult, text string) []decodedResult {
 	if text != "" {
-		out = append(out, decodedResult{text, encodingBase64})
+		out = append(out, decodedResult{text: text, encoding: encodingBase64})
 	}
 	return out
 }
@@ -3085,10 +3119,10 @@ func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix in
 			paddedText = recoverKnownValuePrefix(value, decoded, minPrefix, 8, 5, err, alphabet.padded.DecodeString)
 		}
 		if paddedText != "" {
-			out = append(out, decodedResult{paddedText, encodingBase32})
+			out = append(out, decodedResult{text: paddedText, encoding: encodingBase32})
 		}
 		if paddedComplete && paddedText != "" && strings.IndexByte(value, '=') < 0 && strings.IndexByte(value, 0xff) < 0 {
-			out = append(out, decodedResult{paddedText, encodingBase32})
+			out = append(out, decodedResult{text: paddedText, encoding: encodingBase32})
 			continue
 		}
 		rawText := ""
@@ -3100,7 +3134,7 @@ func appendBase32AlphabetDecodes(out []decodedResult, value string, minPrefix in
 			rawText = string(decoded)
 		}
 		if rawText != "" {
-			out = append(out, decodedResult{rawText, encodingBase32})
+			out = append(out, decodedResult{text: rawText, encoding: encodingBase32})
 		}
 	}
 	return out
@@ -3169,6 +3203,10 @@ func decodeEncodingsFixpointMode(s string, includeURL bool, minPrefix int) (out 
 
 // Inbound scans retain their existing work accounting and partial-view policy.
 func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
+	return decodeEncodingsBudgetModeTracked(s, includeURL, minPrefix, inbound, nil)
+}
+
+func decodeEncodingsBudgetModeTracked(s string, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	if s == "" || inbound && len(s) > maxDecodeTotalBytes {
 		return nil, true
 	}
@@ -3177,7 +3215,7 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 	var queue [8]string
 	// Views collect on the stack and are copied once at their final size.
 	var views [32]decodedResult
-	collected, complete := runDecodeWalk(inbound, append(queue[:0], s), nil, &seen, includeURL, minPrefix, false, views[:0])
+	collected, complete := runDecodeWalk(inbound, append(queue[:0], s), nil, &seen, includeURL, minPrefix, false, views[:0], sources)
 
 	// Entity roots: the input and every first-part view whose entity decoding
 	// differs. The first part already expanded those texts' other layers.
@@ -3193,18 +3231,22 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 		decoded, converged := decodeHTMLEntitiesChecked(text)
 		complete = complete && converged
 		if decoded != text && decoded != "" {
-			roots = append(roots, decodedResult{decoded, encodingHTML})
+			root := decodedResult{text: decoded, encoding: encodingHTML}
+			if sources != nil {
+				root.source = sources.add(text, decoded, encodingHTML)
+			}
+			roots = append(roots, root)
 		}
 	}
 	if len(roots) > 0 {
-		htmlViews, htmlComplete := runDecodeWalk(inbound, nil, roots, &seen, includeURL, minPrefix, true, nil)
+		htmlViews, htmlComplete := runDecodeWalk(inbound, nil, roots, &seen, includeURL, minPrefix, true, nil, sources)
 		collected = append(collected, htmlViews...)
 		complete = complete && htmlComplete
 	}
 	// Existing decode results retain their admission order and budget. Tag
 	// segments expand afterward under the same ceilings, so extra views cannot
 	// displace a finding from the original graph.
-	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound)
+	tagViews, tagComplete := decodeTagSegmentViews(collected, &seen, includeURL, minPrefix, inbound, sources)
 	collected = append(collected, tagViews...)
 	complete = complete && tagComplete
 	if len(collected) == 0 {
@@ -3217,7 +3259,8 @@ func decodeEncodingsBudgetMode(s string, includeURL bool, minPrefix int, inbound
 // inside encoded segments and additional tag layers revealed during the walk.
 // Its queue is iterative; each distinct root and decoded result spends the
 // existing candidate and byte budgets before it contributes another expansion.
-func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool) ([]decodedResult, bool) {
+// With keyword sources, each segment keeps its edge back to the tag view.
+func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, inbound bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	var queue []string
 	for _, d := range prior {
 		if d.encoding == encodingUnicodeTags {
@@ -3238,9 +3281,14 @@ func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL b
 				}
 				seen.add(segment)
 				before := len(out)
-				out = append(out, decodedResult{segment, encodingUnicodeTags})
+				root := decodedResult{text: segment, encoding: encodingUnicodeTags}
+				if sources != nil {
+					sources.add(queue[head], view.text, "projection")
+					root.source = sources.add(view.text, segment, keywordSegment)
+				}
+				out = append(out, root)
 				var walked bool
-				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out)
+				out, walked = runDecodeWalk(inbound, []string{segment}, nil, seen, includeURL, minPrefix, true, out, sources)
 				complete = complete && walked
 				for i := before; i < len(out); i++ {
 					if len(out[i].text) > maxDecodeTotalBytes-consumed {
@@ -3262,20 +3310,20 @@ func decodeTagSegmentViews(prior []decodedResult, seen *decodeSeen, includeURL b
 
 // runDecodeWalk calls the walk for the scan direction directly, so a caller's
 // stack-held set and queue need not move to the heap.
-func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, out []decodedResult) ([]decodedResult, bool) {
+func runDecodeWalk(inbound bool, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, out []decodedResult, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	if inbound {
-		return decodeEncodingsInboundWalk(out, queue, start, seen, includeURL, minPrefix, withHTML)
+		return decodeEncodingsInboundWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, sources)
 	}
-	return decodeEncodingsWalk(out, queue, start, seen, includeURL, minPrefix, withHTML)
+	return decodeEncodingsWalkTracked(out, queue, start, seen, includeURL, minPrefix, withHTML, sources)
 }
 
-// decodeEncodingsWalk expands queue breadth first. Each non-root expansion
+// decodeEncodingsWalkTracked expands queue breadth first. Each non-root expansion
 // that produces a new view charges its input bytes. Terminal/duplicate-only
 // expansions cost no additional recursive budget. The initial input has
 // already been bounded by the caller's transport limit. HTML roots use the
 // same admission rule and their own recursive budget. Admitted views are
 // appended to out; existing entries retain their candidate admission slots.
-func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
+func decodeEncodingsWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	consumed := 0
 	freeRoots := len(queue)
 	complete := true
@@ -3307,6 +3355,9 @@ func decodeEncodingsWalk(out []decodedResult, queue []string, start []decodedRes
 		complete = complete && stepComplete
 		charged := head < freeRoots
 		for _, d := range views {
+			if sources != nil {
+				d.source = sources.add(queue[head], d.text, d.encoding)
+			}
 			if len(d.text) < max(minPrefix, 1) {
 				continue
 			}
@@ -3337,7 +3388,7 @@ func decodeEncodingsOnceInto(out []decodedResult, s string, includeURL bool, min
 		decoded, converged := decodeHTMLEntitiesChecked(s)
 		complete = converged
 		if decoded != s && decoded != "" {
-			out = append(out, decodedResult{decoded, encodingHTML})
+			out = append(out, decodedResult{text: decoded, encoding: encodingHTML})
 		}
 	}
 	if !includeURL {
@@ -3347,7 +3398,7 @@ func decodeEncodingsOnceInto(out []decodedResult, s string, includeURL bool, min
 		if normalize.QueryUnescapePartial(decoded) != decoded {
 			return out, false
 		}
-		out = append(out, decodedResult{decoded, encodingURL})
+		out = append(out, decodedResult{text: decoded, encoding: encodingURL})
 	}
 	return out, complete
 }
@@ -3405,6 +3456,14 @@ func urlFragmentDLPTargets(parsed *url.URL, decodes *decodingMemo) []dlpTarget {
 	if percent != "" {
 		texts = append(texts, dlpTarget{percent, spanViewLabel("percent_decoded", "url_fragment"), ""})
 	}
+	if decodes.keywordsActive() {
+		var segments []string
+		for _, source := range texts {
+			segments = append(segments, source.text)
+			segments = append(segments, textDLPSegments(source.text)...)
+		}
+		decodes.registerKeywordURLSegments(parsed.EscapedFragment(), segments)
+	}
 	var targets []dlpTarget
 	for _, source := range texts {
 		targets = append(targets, source)
@@ -3434,6 +3493,20 @@ func (s *Scanner) checkDLPWithDecodes(parsed *url.URL, decodes *decodingMemo) (R
 }
 
 func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, now time.Time) (result Result, warnMatches []WarnMatch) {
+	if decodes == nil && s.hasDLPKeywords() {
+		decodes = &decodingMemo{}
+	}
+	if decodes != nil {
+		priorKeywordUnit, priorKeywordInput, priorKeywordURL := decodes.keywordUnit, decodes.keywordInput, decodes.keywordURL
+		defer func() {
+			decodes.keywordUnit, decodes.keywordInput, decodes.keywordURL = priorKeywordUnit, priorKeywordInput, priorKeywordURL
+		}()
+	}
+	if s.hasDLPKeywords() {
+		decodes.keywordMode = true
+		decodes.keywordUnit = config.DLPKeywordContext(parsed.String())
+		decodes.keywordInput = ""
+	}
 	queryLessMemo := queryLessDLPMemo{now: now, nowSet: true, inbound: decodes != nil && decodes.inbound}
 	// Canary check is deferred to after DLP pattern evaluation (below).
 	// DLP patterns provide more specific attribution ("aws_access_key" vs
@@ -3518,8 +3591,12 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 
 	// Try hex/base64/base32 decoding on path segments to catch encoded secrets
 	// in URL paths (e.g. /73732d616e742d... is hex-encoded sk-ant-...).
-	// Path is already URL-decoded by Go's url.Parse, so we decode the segments directly.
-	for _, segment := range urlPathDecodeSegments(parsed.Path, parsed.EscapedPath()) {
+	// Recover the escaped spelling of each decoded segment before its walk.
+	pathSegments := urlPathDecodeSegments(parsed.Path, parsed.EscapedPath())
+	if decodes.keywordsActive() {
+		decodes.registerKeywordURLSegments(rawPath, append(pathSegments, parsed.Path))
+	}
+	for _, segment := range pathSegments {
 		if len(segment) >= 10 { // minimum viable encoded secret length
 			for _, d := range decodes.decode(segment, true) {
 				targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -3553,6 +3630,16 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// keep their more precise view labels when both views match.
 	targets = append(targets, dlpTarget{parsed.String(), dlpViewLabel("url"), ""})
 
+	if decodes.keywordsActive() {
+		// Keep exact windowing where source mapping succeeds. Only an
+		// unavailable mapping consults this URL-wide set of existing views.
+		contexts := targets
+		if decodes.keywordRawURL != "" {
+			contexts = append(contexts, dlpTarget{text: decodes.keywordRawURL})
+		}
+		decodes.keywordURL = &urlKeywordContext{targets: contexts}
+	}
+
 	// A configured content finding must not hide an exhausted outbound walk
 	// from callers that release ordinary findings under warn or audit policy.
 	if decodes != nil && !decodes.inbound && decodes.inspectionIncomplete() {
@@ -3573,7 +3660,7 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		}
 		for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 			p := s.dlpPatterns[idx]
-			if start, end, ok := p.matchSpanInView(cleaned, proseSource); ok {
+			if start, end, ok := p.matchSpanWithDecodes(cleaned, proseSource, decodes); ok {
 				if allow, allowed := s.credentialAudienceAllowsAt(p, parsed.String(), s.urlDLPAudienceSurface(p, parsed, &queryLessMemo), now); allowed {
 					credentialAudienceAllows = append(credentialAudienceAllows, allow)
 					continue
@@ -3948,12 +4035,16 @@ func (s *Scanner) checkDLPCombinations(values []string, n, size int, hostname, t
 			candidates = append(candidates, dlpTarget{d.text, dlpViewLabel(d.encoding), source})
 		}
 
+		if decodes != nil && decodes.keywordURL != nil {
+			decodes.keywordURL.targets = append(decodes.keywordURL.targets, candidates...)
+		}
+
 		for _, candidate := range candidates {
 			cleaned := normalize.ForDLP(candidate.text)
 
 			for _, idx := range s.dlpPreFilter.patternsToCheck(cleaned) {
 				p := s.dlpPatterns[idx]
-				if start, end, ok := p.matchSpanInView(cleaned, candidate.proseSource); ok {
+				if start, end, ok := p.matchSpanWithDecodes(cleaned, candidate.proseSource, decodes); ok {
 					// The reassembled candidate is a token the URL-wide check never
 					// saw, so it must itself be a grant for this host.
 					surface := s.urlDLPAudienceSurfaceForTarget(p, target, memo)
@@ -6608,9 +6699,9 @@ func queryValueDecodedTargetsWithDecodes(decoded string, decodes *decodingMemo) 
 	return targets
 }
 
-// decodeEncodingsInboundWalk preserves response inspection accounting.
+// decodeEncodingsInboundWalkTracked preserves response inspection accounting.
 // Admitted views are appended to out, which must be empty.
-func decodeEncodingsInboundWalk(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool) ([]decodedResult, bool) {
+func decodeEncodingsInboundWalkTracked(out []decodedResult, queue []string, start []decodedResult, seen *decodeSeen, includeURL bool, minPrefix int, withHTML bool, sources *keywordDecodeSources) ([]decodedResult, bool) {
 	consumed := 0
 	complete := true
 	// admit records one view and reports whether the walk may continue.
@@ -6645,6 +6736,9 @@ func decodeEncodingsInboundWalk(out []decodedResult, queue []string, start []dec
 		views, stepComplete = decodeEncodingsOnceInto(views[:0], queue[head], includeURL, minPrefix, withHTML)
 		complete = complete && stepComplete
 		for _, d := range views {
+			if sources != nil {
+				d.source = sources.add(queue[head], d.text, d.encoding)
+			}
 			added, more := admit(d)
 			if !more {
 				return out, complete

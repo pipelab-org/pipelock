@@ -1205,7 +1205,7 @@ type bundlePatternIdentity struct {
 }
 
 func dlpPatternEnforcementIdentity(p config.DLPPattern) string {
-	return p.Severity + "\x00" + p.Validator + "\x00" + p.Action + "\x00" + strings.Join(p.ExemptDomains, "\x00")
+	return p.KeywordPolicyIdentity() + "\x00" + p.Severity + "\x00" + p.Validator + "\x00" + p.Action + "\x00" + strings.Join(p.ExemptDomains, "\x00")
 }
 
 func bundlePatternDropNames(drops []bundlePatternDropDetail) []string {

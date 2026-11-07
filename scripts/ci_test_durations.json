@@ -3362,7 +3362,12 @@
    "TestWsRelayRecordSignal_AdaptiveDisabled": 0.6,
    "TestWsRelayRecordSignal_AnonymousAgent": 0.5,
    "TestWsRelayRecordSignal_NilRecorder": 0.5,
-   "TestWsRelayRecordSignal_RecordsSignal": 0.7
+   "TestWsRelayRecordSignal_RecordsSignal": 0.7,
+   "TestDrainServerIgnoresConnectionsWithoutRequest": 0.6,
+   "TestDrainServerReportsRunningHandler": 0.3,
+   "TestHandlerGateRefusesAfterClose": 0.0,
+   "TestRegisterAgentServerPreservesDefaultHandler": 0.6,
+   "TestStartIgnoresConnectionsWithoutRequest": 0.7
   },
   "scanner": {
    "FuzzMatchDomain": 0.0,
@@ -5089,7 +5094,20 @@
    "TestValidateWIF_EdgeCases": 0.0,
    "TestWIFOverlapWorkBoundAndSpan": 0.0,
    "TestWIFOverlappingCandidates": 0.6,
-   "TestWithDLPWarnContextNilUsesBackground": 0.0
+   "TestWithDLPWarnContextNilUsesBackground": 0.0,
+   "TestDLPKeywordsCandidateAcceptance": 0.6,
+   "TestDLPKeywordsContextCacheIsolation": 1.2,
+   "TestDLPKeywordsDistinctProducingPaths": 0.0,
+   "TestDLPKeywordsEncodedContext": 0.7,
+   "TestDLPKeywordsHarmlessCorpus": 0.7,
+   "TestDLPKeywordsMappingLimits": 0.0,
+   "TestDLPKeywordsMetadataBudgetWithoutCandidate": 1.1,
+   "TestDLPKeywordsPlainContext": 0.7,
+   "TestDLPKeywordsQueryProjection": 0.6,
+   "TestDLPKeywordsScannerRejectsInvalidProgrammaticConfig": 0.9,
+   "TestDLPKeywordsSourceCoordinates": 1.2,
+   "TestDLPKeywordsURL": 0.6,
+   "TestDLPKeywordsWarnAndIndependentBlock": 0.6
   },
   "mcp": {
    "FuzzMCPHeaderEncodingRoundTrip": 0.0,
@@ -9941,7 +9959,9 @@
    "TestWriteDashboardRuntimeSnapshotTickReportsProviderFailure": 0.0,
    "TestWriteDashboardRuntimeSnapshotTickReportsWriteFailure": 0.0,
    "TestWriteRegistration_ReturnsWriteErrors": 0.0,
-   "TestYAMLScalarQuotesWhenNeeded": 0.0
+   "TestYAMLScalarQuotesWhenNeeded": 0.0,
+   "TestDLPKeywordsReloadLifecycle": 3.4,
+   "TestDLPKeywordsReloadRestrictions": 0.0
   }
  },
  "packages": {

@@ -360,7 +360,7 @@ func TestTextEncodingSourceRangeFailure(t *testing.T) {
 				span:             MatchSpan{ByteStart: bounds[0], ByteEnd: bounds[1], ViewLabel: ViewForMatching},
 				hasDecodedSource: inherited, decodedSourceStart: bounds[0], decodedSourceEnd: bounds[1],
 			}
-			set := mapTextEncodingSources(responseMatchSet{matches: []ResponseMatch{match}}, "=61bc", decodedResult{"abc", encodingQuotedPrintable})
+			set := mapTextEncodingSources(responseMatchSet{matches: []ResponseMatch{match}}, "=61bc", decodedResult{text: "abc", encoding: encodingQuotedPrintable})
 			if set.matches[0].hasDecodedSource {
 				t.Fatal("unmappable inner offsets were retained as outer offsets")
 			}

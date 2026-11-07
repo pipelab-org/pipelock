@@ -1340,6 +1340,8 @@ type DLP struct {
 // DLPPattern is a named regex pattern for detecting secrets in URLs, request
 // bodies and headers, and other scanned outbound text.
 type DLPPattern struct {
+	Keywords                            []string `yaml:"keywords,omitempty" json:"Keywords,omitempty"`
+	KeywordWindow                       *int     `yaml:"keyword_window,omitempty" json:"KeywordWindow,omitempty"`
 	Name                                string   `yaml:"name"`
 	Regex                               string   `yaml:"regex"`
 	Severity                            string   `yaml:"severity"`            // critical, high, medium, low

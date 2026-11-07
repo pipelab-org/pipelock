@@ -234,7 +234,10 @@ class TestPackageSharding(unittest.TestCase):
             "example.test/pipelock/internal/gamma",
         ]
 
-        rest_shards = [select_packages(packages, shard) for shard in ci_test_packages.REST_SHARDS]
+        # Exercise round-robin wrapping with a fixed fixture size rather
+        # than tying this assertion to the measured production shard count.
+        with patch.object(ci_test_packages, "REST_SHARDS", ("rest-0", "rest-1", "rest-2", "rest-3")):
+            rest_shards = [select_packages(packages, shard) for shard in ci_test_packages.REST_SHARDS]
 
         self.assertEqual(
             rest_shards,
