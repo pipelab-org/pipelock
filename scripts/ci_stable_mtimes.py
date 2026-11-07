@@ -11,9 +11,18 @@ Each tracked regular file gets a timestamp derived from a SHA-256 of its bytes
 in the working tree, so the timestamp describes the contents a test will read
 even when git's view differs (a filter, an end-of-line conversion, or an index
 flag such as assume-unchanged or skip-worktree). Directories get a timestamp
-from their HEAD tree ID, but only when nothing under them is dirty, staged,
-untracked (including ignored), flagged in the index, or missing; otherwise they
-keep their checkout time. The mapping below is the CI contract.
+from the names and modes of their HEAD entries, but only when nothing under
+them is dirty, staged, untracked (including ignored), flagged in the index, or
+missing; otherwise they keep their checkout time. The mapping below is the CI
+contract.
+
+A directory's timestamp follows its entry list rather than its tree ID because
+that is what a filesystem does: POSIX updates a directory's mtime when an entry
+is created, removed or renamed, not when a file below it changes. Tests stat
+every ancestor of a path they open (secure-open helpers do), and Go hashes each
+stat'd mtime, so a tree-ID stamp on the checkout root made every such test miss
+on any commit. A test that lists a directory still hashes each entry's own
+timestamp, and one that reads a file hashes that file's.
 
 A file is stamped only when its parent path resolves inside the checkout with
 no symlink, so a replaced parent can never redirect a stamp outside it.
@@ -61,8 +70,8 @@ def ancestors(path: Path) -> set[Path]:
 def stabilize(root: Path) -> str:
     # Collect every git result before stamping: a failed query must stop us.
     entries = git(root, "ls-files", "-s", "-z").split(b"\0")
-    trees = git(root, "ls-tree", "-r", "-d", "-z", "HEAD").split(b"\0")
-    root_tree = git(root, "rev-parse", "HEAD^{tree}").strip()
+    # Every HEAD entry, trees included, in git's canonical tree order.
+    tree_entries = git(root, "ls-tree", "-r", "-t", "-z", "HEAD").split(b"\0")
     dirty = paths(git(root, "diff", "--name-only", "-z", "--no-ext-diff"))
     untracked = paths(git(root, "ls-files", "--others", "-z"))
     staged = paths(git(root, "diff", "--cached", "--name-only", "-z", "HEAD", "--no-ext-diff"))
@@ -76,7 +85,7 @@ def stabilize(root: Path) -> str:
     }
     dirty |= flagged
     files: dict[Path, bytes] = {}
-    directories = {Path("."): root_tree}
+    listings: dict[Path, hashlib._Hash] = {Path("."): hashlib.sha256()}
     skipped_links = 0
     for entry in entries:
         if not entry:
@@ -92,10 +101,18 @@ def stabilize(root: Path) -> str:
             # Symlinks and submodules have no regular-file timestamp to use.
             skipped_links += 1
             dirty.add(path)
-    for entry in trees:
-        if entry:
-            metadata, name = entry.split(b"\t", 1)
-            directories[Path(os.fsdecode(name))] = metadata.split()[2]
+    for entry in tree_entries:
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind = metadata.split()[:2]
+        path = Path(os.fsdecode(name))
+        if kind == b"tree":
+            listings.setdefault(path, hashlib.sha256())
+        listings.setdefault(path.parent, hashlib.sha256()).update(
+            mode + b" " + os.fsencode(path.name) + b"\0"
+        )
+    directories = {path: digest.hexdigest().encode() for path, digest in listings.items()}
 
     excluded = set()
     for path in dirty | untracked | staged:
@@ -147,10 +164,10 @@ def stabilize(root: Path) -> str:
         files_stamped += 1
 
     directories_stamped = 0
-    for path, oid in directories.items():
+    for path, listing in directories.items():
         if path in excluded:
             continue
-        timestamp = object_mtime_ns(oid)
+        timestamp = object_mtime_ns(listing)
         os.utime(root / path, ns=(timestamp, timestamp), follow_symlinks=False)
         directories_stamped += 1
     return (

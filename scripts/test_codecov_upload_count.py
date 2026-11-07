@@ -350,9 +350,13 @@ class UploadCountTest(unittest.TestCase):
         # A fresh pass for go-tool packages and a cached pass for the rest,
         # merged into the one profile the upload names.
         self.assertEqual(len(commands), 2)
-        for command, profile in zip(commands, ("coverage-fresh.out", "coverage-cached.out")):
+        # Each pass writes its own profile outside the checkout, and that same
+        # profile is what the merge below reads.
+        for command, profile in zip(commands, ("fresh_profile", "cached_profile")):
             self.assertNotIn("-race", command)
-            self.assertIn(f"-covermode=set -coverprofile={profile}", command)
+            self.assertIn(f'-covermode=set -coverprofile="${profile}"', command)
+            self.assertIn(f'{profile}="$RUNNER_TEMP/', run)
+            self.assertIn(f'profiles+=("${profile}")', run)
         self.assertIn('echo "mode: set" > coverage.out', run)
         self.assertIn('tail -n +2 "$profile" >> coverage.out', run)
         verify = [step for step in steps if step.get("name") == "Verify coverage profile"]
