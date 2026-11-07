@@ -1909,6 +1909,13 @@ func receiptChannelBrokenError(opts receipt.EmitOpts, err error) error {
 
 const receiptLabelOther = "other"
 
+const (
+	receiptFailureAppendLockTimeout = "append_lock_timeout"
+	receiptFailureContentRejected   = "content_rejected"
+	receiptFailureContentChanged    = "content_changed"
+	receiptFailureScanIncomplete    = "scan_incomplete"
+)
+
 // receiptFailureClass reduces a receipt emission failure to a fixed label.
 // An uncertain write outranks a pre-write refusal: a joined error that holds
 // both reports the write that may have reached the disk. A durability
@@ -1931,6 +1938,16 @@ func receiptFailureClass(err error) string {
 		return "entry_too_large"
 	case errors.Is(err, receipt.ErrChainSealed):
 		return "chain_sealed"
+	// The specific causes come before v2_emit, which wraps any v2 receipt
+	// failure: a v2 lock timeout must still report append_lock_timeout.
+	case errors.Is(err, recorder.ErrAppendLockTimeout):
+		return receiptFailureAppendLockTimeout
+	case errors.Is(err, receiptcontent.ErrRejected):
+		return receiptFailureContentRejected
+	case errors.Is(err, recorder.ErrContentChanged):
+		return receiptFailureContentChanged
+	case errors.Is(err, scanner.ErrTextDLPIncomplete):
+		return receiptFailureScanIncomplete
 	case errors.Is(err, errV2ReceiptEmit):
 		return "v2_emit"
 	default:

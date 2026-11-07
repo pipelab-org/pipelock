@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -279,7 +280,10 @@ func auditGapLines(logPath string) (int, []string, error) {
 		}
 		count++
 		if len(lines) < maxAuditGapLines {
-			lines = append(lines, message[:min(len(message), maxAuditGapLineSize)])
+			sample := message[:min(len(message), maxAuditGapLineSize)]
+			if !slices.Contains(lines, sample) {
+				lines = append(lines, sample)
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
