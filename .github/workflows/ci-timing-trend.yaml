@@ -1,6 +1,6 @@
 name: CI timing trend
 
-# Read-only reporting after every main-push CI completion, including failures.
+# Read-only reporting after uncancelled main-push CI completions, including failures.
 # Join the weekly ci-shard-drift.yaml check without changing its shard budget.
 # This token cannot push or open PRs; regressions produce warnings, never gates.
 on:
@@ -49,11 +49,14 @@ jobs:
           run_id="$TRIGGER_RUN_ID"
           attempt="$TRIGGER_RUN_ATTEMPT"
           if [ -z "$run_id" ]; then
-            latest="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=20" --jq '[.workflow_runs[] | select(.conclusion != "cancelled")][0] | "\(.id) \(.run_attempt)"')"
+            # Cancellation bursts can fill the first page. The filtered REST
+            # search returns at most 1,000 runs, with at most 100 per page.
+            # https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-workflow
+            latest="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yaml/runs?branch=main&event=push&status=completed&per_page=100" --jq '[.[].workflow_runs[] | select(.conclusion != "cancelled")][0] | "\(.id) \(.run_attempt)"')"
             read -r run_id attempt <<< "$latest"
           fi
           if [[ ! "$run_id" =~ ^[0-9]+$ || ! "$attempt" =~ ^[0-9]+$ ]]; then
-            echo '::error title=CI timing fetch::No completed main-push CI run found'
+            echo '::error title=CI timing fetch::No uncancelled completed main-push CI run found in the API search results'
             exit 1
           fi
           # Pin the attempt that completed: during a rerun the plain run record

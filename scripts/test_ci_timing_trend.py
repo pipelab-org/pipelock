@@ -341,7 +341,7 @@ class TimingWorkflowTest(unittest.TestCase):
 
         def pick(conclusions):
             runs = [{"id": 100 + i, "run_attempt": 1, "conclusion": c} for i, c in enumerate(conclusions)]
-            return subprocess.run(["jq", "-r", selector], input=json.dumps({"workflow_runs": runs}),
+            return subprocess.run(["jq", "-r", selector], input=json.dumps([{"workflow_runs": runs}]),
                                   capture_output=True, text=True, check=True).stdout.strip()
 
         # The API lists newest first; the newest uncancelled run is measured,
@@ -351,6 +351,19 @@ class TimingWorkflowTest(unittest.TestCase):
         self.assertEqual(pick(["success", "cancelled"]), "100 1")
         # No usable run yields no id, which the step's id check rejects.
         self.assertEqual(pick(["cancelled"]), "null null")
+
+    def test_dispatch_finds_uncancelled_run_after_first_page(self):
+        # A burst of main pushes can cancel every run on the first API page.
+        fetch = next(step for step in self.job["steps"] if step.get("name") == "Fetch CI run history")
+        lookup = next(line for line in fetch["run"].splitlines() if "status=completed" in line)
+        self.assertIn("--paginate --slurp", lookup)
+        selector = re.search(r"status=completed[^\"]*\" --jq '([^']+)'", fetch["run"]).group(1)
+        pages = [{"workflow_runs": [{"id": i, "run_attempt": 1, "conclusion": "cancelled"}
+                                    for i in range(100, 0, -1)]},
+                 {"workflow_runs": [{"id": 999, "run_attempt": 2, "conclusion": "failure"}]}]
+        result = subprocess.run(["jq", "-r", selector], input=json.dumps(pages),
+                                capture_output=True, text=True, check=True)
+        self.assertEqual(result.stdout.strip(), "999 2")
 
     def test_fetch_step_with_offline_paginated_api_and_dispatch(self):
         # Execute the shipped fetch step, including the Python/gh boundary.
