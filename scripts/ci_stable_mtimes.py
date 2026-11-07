@@ -7,13 +7,18 @@
 Rule source: cmd/go/internal/test/test.go, hashOpen and hashWriteStat. Go
 hashes size, mode, mtime and directory status for opened files, and the names
 and stats of directory entries. It rejects recently modified regular files.
-Git blob/tree IDs give clean inputs reproducible, old timestamps without
-rewriting their contents. The mapping below is the CI contract.
+Each tracked regular file gets a timestamp derived from a SHA-256 of its bytes
+in the working tree, so the timestamp describes the contents a test will read
+even when git's view differs (a filter, an end-of-line conversion, or an index
+flag such as assume-unchanged or skip-worktree). Directories get a timestamp
+from their HEAD tree ID, but only when nothing under them is dirty, staged,
+untracked (including ignored), flagged in the index, or missing; otherwise they
+keep their checkout time. The mapping below is the CI contract.
 
-Dirty and untracked inputs (including ignored files) retain their timestamps,
-as do their ancestor directories. Staged changes also exclude ancestor trees:
-the index's blobs are current, but HEAD's tree IDs aren't. Symlinks are skipped
-because Go's os.Stat follows them; stamping a link cannot stabilize its target.
+A file is stamped only when its parent path resolves inside the checkout with
+no symlink, so a replaced parent can never redirect a stamp outside it.
+Symlinks are skipped because Go's os.Stat follows them; stamping a link cannot
+stabilize its target.
 Run after all checkout preparation and immediately before tests, with no
 concurrent worktree writers. This script makes no network requests.
 """
@@ -21,6 +26,7 @@ concurrent worktree writers. This script makes no network requests.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import stat
 import subprocess
@@ -60,6 +66,15 @@ def stabilize(root: Path) -> str:
     dirty = paths(git(root, "diff", "--name-only", "-z", "--no-ext-diff"))
     untracked = paths(git(root, "ls-files", "--others", "-z"))
     staged = paths(git(root, "diff", "--cached", "--name-only", "-z", "HEAD", "--no-ext-diff"))
+    # `git ls-files -v` tags: "H" is an ordinary cached entry; "S" marks
+    # skip-worktree and a lowercase tag marks assume-unchanged. git diff does
+    # not report changes to flagged entries, so treat them as dirty.
+    flagged = {
+        Path(os.fsdecode(entry[2:]))
+        for entry in git(root, "ls-files", "-v", "-z").split(b"\0")
+        if entry and not entry.startswith(b"H ")
+    }
+    dirty |= flagged
     files: dict[Path, bytes] = {}
     directories = {Path("."): root_tree}
     skipped_links = 0
@@ -107,7 +122,7 @@ def stabilize(root: Path) -> str:
         excluded.update(ancestors(path))
 
     files_stamped = 0
-    for path, oid in files.items():
+    for path in files:
         if ancestors(path) & invalid:
             continue
         try:
@@ -116,13 +131,18 @@ def stabilize(root: Path) -> str:
             missing.add(path)
             excluded.update(ancestors(path))
             continue
-        if path in dirty:
-            continue
         if not stat.S_ISREG(info.st_mode):
             dirty.add(path)
             excluded.update(ancestors(path))
             continue
-        timestamp = object_mtime_ns(oid)
+        if (root / path).parent.resolve(strict=True) != root / path.parent:
+            # A symlink somewhere in the parent path: never stamp through it.
+            dirty.add(path)
+            excluded.update(ancestors(path))
+            continue
+        # Stamp what is on disk, not what git expects to be there.
+        digest = hashlib.sha256((root / path).read_bytes()).hexdigest().encode()
+        timestamp = object_mtime_ns(digest)
         os.utime(root / path, ns=(timestamp, timestamp), follow_symlinks=False)
         files_stamped += 1
 

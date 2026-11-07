@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -34,6 +36,9 @@ class StableMtimesTest(unittest.TestCase):
         self.write("testdata/listed/entry.txt", "entry")
         self.write("other/unchanged.txt", "unchanged")
         self.commit()
+        spec = importlib.util.spec_from_file_location("ci_stable_mtimes", SCRIPT)
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
 
     def git(self, repo: Path, *args: str) -> str:
         return subprocess.run(
@@ -87,15 +92,22 @@ class StableMtimesTest(unittest.TestCase):
         )
         self.assertTrue(all(value < time.time_ns() - 2_000_000_000 for value in after.values()))
 
+    def content_mtime(self, text: str) -> int:
+        digest = hashlib.sha256(text.encode()).hexdigest().encode()
+        return self.module.object_mtime_ns(digest)
+
     def test_dirty_and_untracked_paths_keep_their_ancestor_timestamps(self) -> None:
         self.write("testdata/value.txt", "evil")
         self.write("other/new.txt", "new")
         self.write(".gitignore", "other/ignored.txt\n")
         self.write("other/ignored.txt", "ignored")
-        names = (".", "testdata", "testdata/value.txt", "other", "other/new.txt", "other/ignored.txt")
+        names = (".", "testdata", "other", "other/new.txt", "other/ignored.txt")
         before = {name: (self.repo / name).stat().st_mtime_ns for name in names}
         output = self.stamp(self.repo)
         self.assertEqual(before, {name: (self.repo / name).stat().st_mtime_ns for name in names})
+        # A dirty tracked file is stamped from the bytes on disk, never from
+        # the committed blob, so it cannot borrow the clean file's cache entry.
+        self.assertEqual((self.repo / "testdata/value.txt").stat().st_mtime_ns, self.content_mtime("evil"))
         self.assertIn("dirty=1", output)
         self.assertIn("untracked=3", output)
         self.assertIn("directories stamped=1", output)
@@ -107,6 +119,40 @@ class StableMtimesTest(unittest.TestCase):
         self.stamp(self.repo)
         self.assertEqual(before, {name: (self.repo / name).stat().st_mtime_ns for name in before})
         self.assertLess((self.repo / "testdata/value.txt").stat().st_mtime_ns, time.time_ns() - 2_000_000_000)
+
+    def test_index_flags_cannot_hide_changed_contents(self) -> None:
+        # git diff does not report a change to an assume-unchanged or
+        # skip-worktree entry, and a smudge filter can turn the same blob into
+        # different bytes. The file must still be stamped from what is on disk,
+        # and its directories must keep their checkout times.
+        clean = self.clone("clean")
+        self.stamp(clean)
+        clean_value = (clean / "testdata/value.txt").stat().st_mtime_ns
+        for flag in ("--assume-unchanged", "--skip-worktree"):
+            with self.subTest(flag=flag):
+                repo = self.clone(f"flagged{flag}")
+                self.git(repo, "update-index", flag, "testdata/value.txt")
+                (repo / "testdata/value.txt").write_text("evil", encoding="utf-8")  # same size
+                self.assertEqual(self.git(repo, "diff", "--name-only"), "")
+                before = {name: (repo / name).stat().st_mtime_ns for name in (".", "testdata")}
+                self.stamp(repo)
+                value = (repo / "testdata/value.txt").stat().st_mtime_ns
+                self.assertNotEqual(value, clean_value)
+                self.assertEqual(value, self.content_mtime("evil"))
+                self.assertEqual(before, {name: (repo / name).stat().st_mtime_ns for name in before})
+
+    def test_staged_directory_replaced_by_symlink_never_stamps_outside(self) -> None:
+        # A newly staged directory is not in HEAD's tree, so the directory
+        # checks never see it; the file's own parent check must catch it.
+        self.write("fresh/inner.txt", "inner")
+        self.git(self.repo, "add", "fresh/inner.txt")
+        self.git(self.repo, "update-index", "--skip-worktree", "fresh/inner.txt")
+        (self.repo / "fresh").rename(self.base / "outside")
+        (self.repo / "fresh").symlink_to(self.base / "outside", target_is_directory=True)
+        target = self.base / "outside/inner.txt"
+        before = target.stat().st_mtime_ns
+        self.stamp(self.repo)
+        self.assertEqual(target.stat().st_mtime_ns, before)
 
     def test_missing_sparse_path_and_symlinks_are_skipped(self) -> None:
         outside = self.base / "external.txt"
