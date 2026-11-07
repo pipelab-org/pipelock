@@ -98,6 +98,40 @@ func TestBareBase64ImageBoundaries(t *testing.T) {
 	}
 }
 
+// Data URLs keep the earlier contract: PNG and JPEG labels accept either
+// complete format. Only the encoded spelling is removed, so a literal inside
+// the mislabeled image is still found.
+func TestImageDataURLMislabeledPNGOrJPEG(t *testing.T) {
+	cfg := testConfig()
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	key := "AKIA" + "ABCDEFGHIJKLMNOP"
+	clean := base64.StdEncoding.EncodeToString(pngWithBase64AWSLikeRun(t))
+	dirty := base64.StdEncoding.EncodeToString(pngWithLiteralInTextChunk(t, key))
+	body := func(mime, data string) string {
+		return `{"messages":[{"content":[{"type":"image_url","image_url":{"url":"data:` + mime + `;base64,` + data + `"}}]}]}`
+	}
+	for _, mime := range []string{"image/png", "image/jpeg", "image/jpg", "IMAGE/JPEG"} {
+		t.Run(mime, func(t *testing.T) {
+			for _, scan := range []func(context.Context, string) TextDLPResult{sc.ScanTextForDLP, sc.ScanRequestBodyTextForDLP, sc.ScanTextForDLPInbound} {
+				if r := scan(context.Background(), body(mime, clean)); !r.Clean {
+					t.Fatalf("mislabeled image denied: %+v", r.Matches)
+				}
+				if r := scan(context.Background(), body(mime, dirty)); !hasTextDLPPattern(r.Matches, "AWS Access ID") {
+					t.Fatalf("literal inside mislabeled image lost: %+v", r)
+				}
+			}
+		})
+	}
+	// GIF and WebP labels were added with this contract and stay type-bound.
+	for _, mime := range []string{"image/gif", "image/webp"} {
+		if r := sc.ScanTextForDLP(context.Background(), body(mime, clean)); !hasTextDLPPattern(r.Matches, "AWS Access ID") {
+			t.Fatalf("%s label accepted PNG bytes: %+v", mime, r)
+		}
+	}
+}
+
 func BenchmarkBareBase64ImageDLP(b *testing.B) {
 	body := testimage.Carrier(b, "anthropic", "png", testimage.Payload(b, "png"))
 	cfg := testConfig()

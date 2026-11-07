@@ -107,7 +107,7 @@ func stripVerifiedImageDataURLSpans(text string, retainDecoded bool) (excised, d
 			searchFrom = payloadStart
 			continue
 		}
-		declared := strings.SplitN(strings.ToLower(text[start:headerEnd]), ";", 2)[0][len("data:"):]
+		declared := dataURLVerificationType(strings.SplitN(strings.ToLower(text[start:headerEnd]), ";", 2)[0][len("data:"):])
 		decodedImage, ok := decodeVerifiedImage(text[payloadStart:payloadEnd], declared)
 		if !ok {
 			searchFrom = payloadStart
@@ -418,6 +418,19 @@ func isJPEGSOFMarker(marker byte) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// dataURLVerificationType keeps the shipped data-URL contract: a png, jpeg or
+// jpg label accepts either complete PNG or JPEG bytes, since clients commonly
+// mislabel one as the other and the decoded bytes are retained for DLP either
+// way. GIF and WebP labels, added with bare carriers, stay bound to their bytes.
+func dataURLVerificationType(declared string) string {
+	switch declared {
+	case "image/gif", "image/webp":
+		return declared
+	default:
+		return ""
 	}
 }
 
